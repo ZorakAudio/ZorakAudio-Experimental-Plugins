@@ -1,6 +1,4 @@
-declare filename "untitled.dsp";
-declare name "untitled";
-declare name "Vocal Air Restore (LoG HF Expander)";
+declare name "Vocal Air Restore (VAR)";
 declare description "Stereo 'air' restoration: HF carrier expansion + band-limited noise, driven by a level-invariant LoG-ish curvature detector.";
 declare author "Converted from JSFX -> Faust (with perceptual/robustness tweaks)";
 declare license "MIT";
@@ -81,10 +79,18 @@ onePoleExp(a) = *(1.0-a) : (+ ~ *(a));
 
 pow1(x,p) = pow(max(eps,x), p);
 
+smoothstep(a,b,x) = u*u*(3.0 - 2.0*u) with {
+  u = min(1.0, max(0.0, (x-a)/(b-a)));
+};
+
+
 // ---------- UI ----------
 amount = hslider("Air Amount [%]", 35, 0, 100, 1)/100.0 : si.smoo;
 sens   = hslider("Sensitivity [%]", 50, 0, 100, 1)/100.0 : si.smoo;
+floorDB = hslider("Detector Floor [dB]", -60, -90, -30, 1);
 trimDB = 0;
+floorLin = ba.db2linear(floorDB);
+
 
 outGain = ba.db2linear(trimDB);
 
@@ -115,6 +121,13 @@ process(inL, inR) = (outL, outR) with {
   // --- detector BPF ---
   detL = inL : rbjBP_skirt(det_fc, det_Q);
   detR = inR : rbjBP_skirt(det_fc, det_Q);
+  // --- detector-floor gate (soft, detector-only) ---
+  hfAbs  = 0.5*(abs(detL) + abs(detR));
+  hfLvl_a = exp(-1.0/(ma.SR*0.14));               // 140 ms one-pole (audio)
+  hfLvl   = hfAbs : onePoleExp(hfLvl_a);
+
+  gate   = smoothstep(1.0, 2.0, hfLvl/(floorLin + eps));
+
 
   // --- 2-stage smoothing (for LoG-ish curvature) ---
   sm2L = detL : onePoleExp(detSmooth_a) : onePoleExp(detSmooth_a);
@@ -143,7 +156,7 @@ process(inL, inR) = (outL, outR) with {
 
   // Soft trigger mapping (same shape as JSFX)
   u = max(0.0, env/thrN - 1.0);
-  t = u/(1.0+u);
+  t = (u/(1.0+u)) * gate;
   t2 = pow1(t, 1.8);           // late ramp -> less fizz
 
   // Bounded HF expansion gain

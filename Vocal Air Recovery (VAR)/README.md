@@ -18,7 +18,7 @@ Designed to be **safe, minimal, and gain-invariant**, Vocal Air Recovery works j
 
 ## Parameter intuition
 
-Vocal Air Recovery intentionally exposes only two controls. The DSP does the rest: detection, safety limiting, and gain normalization are handled internally so the plugin stays predictable under automation and gain staging.
+Vocal Air Recovery intentionally exposes only a small number of controls. The DSP does the rest: detection, safety limiting, and gain normalization are handled internally so the plugin stays predictable under automation and gain staging.
 
 ### Air Amount (%)
 Controls the **maximum amount of high-frequency “air” the plugin is allowed to recover**.
@@ -37,6 +37,19 @@ Controls **how readily the detector decides HF detail is missing** (vs. already 
 
 Think of this as the detector’s **picky vs. eager** setting.
 
+### Detector Floor (dB)
+Sets a **minimum signal level** below which air recovery is suppressed.
+
+- Prevents room tone, noise floor, or denoiser residue from being “aired up.”
+- Higher values make the plugin more conservative in quiet passages.
+- Lower values allow air recovery on very soft material.
+
+This control affects **only the detector**, not the audio itself.  
+Once the signal rises clearly above the floor, behavior remains **gain-invariant**.
+
+Think of this as *“don’t help below here.”*
+
+
 ### Practical starting points
 - Dull vocal: **Air 30–50**, **Sensitivity 40–60**
 - Over-de-essed / denoised dialogue: **Air 40–70**, **Sensitivity 55–80**
@@ -45,3 +58,4 @@ Think of this as the detector’s **picky vs. eager** setting.
 ### What to listen for (fast diagnosis)
 - If it starts to sound “fizzy” or emphasizes ess: lower **Sensitivity** first, then **Air Amount**.
 - If it’s doing nothing: raise **Sensitivity** first, then **Air Amount**.
+- If room tone or hiss rises during pauses: raise **Detector Floor**.
