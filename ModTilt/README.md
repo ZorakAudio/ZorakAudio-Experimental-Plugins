@@ -69,3 +69,16 @@ A good rule of thumb:
 - **−6 dB** = natural / comfortable  
 - **+ dB** = excited / animated
 
+### Creative tip: tension & release without EQ or compression
+
+Automating **Tilt** from negative to positive can create a strong sense of
+**tension and release** without changing overall loudness, dynamics, or spectral balance.
+
+- **Negative Tilt** → calmer, grounded, held-back motion
+- **Positive Tilt** → nervous, urgent, energized motion
+
+Because ModTilt reshapes *envelope motion* rather than frequency or level,
+this kind of automation increases perceived intensity without obvious processing.
+
+Try slow ramps (e.g. −6 dB → 0 dB or +1 dB) leading into a drop, impact, or climax.
+
