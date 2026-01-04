@@ -1,92 +1,71 @@
 # ModTilt (SAFE)
+### Envelope Tilt Shaper (not EQ) — Minimal + SAFE
 
-**Envelope Tilt Shaper**
+**ModTilt reshapes *gain motion* over time.**  
+It “tilts” the signal’s **envelope modulation** so **fast movement** (micro-transients / chatter) can be emphasized or suppressed relative to **slow movement** (body / swells), without applying any frequency filtering.
 
-Reshapes modulation energy above and below a pivot frequency while preserving loudness, dynamics, and gain safety.  
-Stereo-linked, self-trimming, and bounded by design.
+Internally it:
+1) Detects a linked-stereo envelope (RMS-ish)  
+2) Splits envelope motion into **slow** and **fast** components around a **Pivot (Hz)**  
+3) Applies a dB “tilt” to those motion bands  
+4) Converts the result into a **bounded gain ratio**, smooths it, and applies it to the audio  
+5) Auto-trims average level so loudness stays stable
 
-> Use it to reshape **movement**, not add it.
+This is a **time-domain “feel” shaper**: less jitter vs more snap, without changing the tone via EQ.
 
 ---
 
-## What It Does
-
-ModTilt operates on the **amplitude envelope**, not the spectrum.
-
-1. Detects a linked stereo RMS envelope  
-2. Separates slow baseline from modulation  
-3. Splits modulation around a pivot frequency  
-4. Tilts fast vs slow motion in opposite directions  
-5. Recombines and applies as a gain ratio  
-6. Smooths, clamps, and auto-trims the result  
-
-No pumping. No clipping. No gain drift.
+## What it’s good at
+- **Wet/granular textures:** reduce “nervous sparkle chatter” without dulling the sound
+- **Vocals/dialogue:** tame micro-tension and spitty edge without classic de-esser artifacts
+- **Ambience/rooms:** keep loudness and presence while reducing agitation
+- **SFX layers:** make movement feel more “solid” or more “electric” without tonal EQ
 
 ---
 
 ## Controls
+### 1) Tilt (dB)
+Tilts envelope motion around the pivot:
+- **Negative**: favors **slow** motion → smoother / thicker / calmer
+- **Positive**: favors **fast** motion → snappier / more animated / more “alive”
 
-### Tilt (dB)
-Redistributes modulation energy.
-
-- Positive values emphasize **fast detail**
-- Negative values emphasize **slow movement**
-- Internally split ±½ tilt above / below the pivot
-
----
-
-### Pivot (Hz)
-Defines the modulation crossover frequency.
-
-- Lower = more motion treated as *fast*
-- Higher = more motion treated as *slow*
-
----
+### 2) Pivot (Hz)
+The crossover between slow vs fast envelope motion.  
+Typical range: **2–5 Hz**.
+- Lower = more motion treated as “fast”
+- Higher = only very quick motion treated as “fast”
 
 ### Mix
-Dry / wet blend after processing.
-
-Auto-trim remains active at all mix values.
-
----
-
-## Safety Guarantees
-
-- Hard gain clamp (~−3.5 dB to +3.5 dB instantaneous)
-- Relative envelope floor prevents collapse
-- Ratio smoothing prevents zipper noise
-- Continuous auto-trim preserves perceived loudness
-- Stereo-linked detection prevents image shift
-
-You cannot make this plugin blow up a mix.
+Blends processed vs dry.  
+(Useful for subtlety; processed path is auto-trimmed.)
 
 ---
 
-## What It’s Good For
-
-- Adding detail motion without harshness  
-- Reducing pumping or breathy envelopes  
-- Making modulation feel intentional and controlled  
-- Vocals, pads, ambiences, foley beds  
-- Pre-conditioning modulation before downstream FX  
+## Safety / behavior notes
+- Gain ratio is hard-clamped to a safe range (won’t explode levels)
+- Linked-stereo detection avoids image wobble
+- Auto-trim keeps long-term loudness stable
 
 ---
 
-## What It’s Not
+## Quick Start (recommended)
 
-- Not a compressor  
-- Not an EQ  
-- Not a transient designer  
-- Not a loudness maximizer  
+ModTilt is designed to be hard to misuse. Start here:
 
-Think **motion sculptor**, not dynamics hammer.
+- **Mix:** 1.0  
+- **Pivot:** ~3 Hz  
+- **Tilt:** **−6 dB**  
 
----
+For most material, **−6 dB Tilt** immediately feels more natural.  
+This setting suppresses fast envelope chatter while reinforcing slower body movement, reducing irritation and fatigue without dulling tone.
 
-## Design Philosophy
+From there:
+- If the sound still feels **nervous / jittery**, try **−3 to −6 dB**.
+- If it feels **flat / sleepy**, move Tilt toward **0 dB** or slightly positive.
+- If you can clearly “hear the plugin,” reduce Tilt magnitude or lower Mix.
 
-ModTilt treats modulation as a first-class signal.
+A good rule of thumb:
+- **0 dB** = raw / literal motion  
+- **−6 dB** = natural / comfortable  
+- **+ dB** = excited / animated
 
-By shaping envelope curvature with bounded ratios and automatic compensation, it stays musical, predictable, and fatigue-free.
-
-Set it once. Forget it’s there. Notice the mix feels better.
