@@ -1,133 +1,97 @@
-import argparse
-import json
-import os
-import subprocess
-import sys
-import zipfile
-from pathlib import Path
+name: Build & Release
 
-def die(msg: str) -> None:
-    print(f"ERROR: {msg}", file=sys.stderr)
-    sys.exit(2)
+on:
+  push:
+    tags:
+      - "v*"
+      - "R*"
+  workflow_dispatch: {}
 
-def run(cmd: list[str], cwd: Path | None = None) -> None:
-    print("+ " + " ".join(cmd))
-    subprocess.check_call(cmd, cwd=str(cwd) if cwd else None)
+permissions:
+  contents: write
 
-def host_os() -> str:
-    if sys.platform.startswith("win"):
-        return "windows"
-    if sys.platform == "darwin":
-        return "macos"
-    return "linux"
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
 
-def zip_path(src: Path, dst_zip: Path) -> None:
-    dst_zip.parent.mkdir(parents=True, exist_ok=True)
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-    with zipfile.ZipFile(dst_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        if src.is_dir():
-            base = src.parent
-            for p in src.rglob("*"):
-                if p.is_dir():
-                    continue
-                z.write(p, p.relative_to(base))
-        else:
-            z.write(src, src.name)
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-def find_single_dsp(plugin_dir: Path) -> Path:
-    dsps = list(plugin_dir.glob("*.dsp"))
-    if len(dsps) == 0:
-        die(f"No .dsp found in {plugin_dir}")
-    if len(dsps) > 1:
-        die(f"Multiple .dsp files found in {plugin_dir}. Specify one by renaming or making it 1 file per plugin dir.")
-    return dsps[0]
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            faust ninja-build build-essential pkg-config \
+            libasound2-dev libjack-jackd2-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libfreetype-dev libfontconfig1-dev \
+            libglu1-mesa-dev mesa-common-dev
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="Release")
-    ap.add_argument("--tag", default="dev")
-    ap.add_argument("--out", default="dist")
-    args = ap.parse_args()
+      - name: Install deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install faust ninja
 
-    repo_root = Path(__file__).resolve().parents[1]
-    cfg_path = repo_root / "plugins.json"
-    if not cfg_path.exists():
-        die("plugins.json missing at repo root")
+      - name: Install deps (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install faust ninja --no-progress
 
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    manu = cfg["manufacturer"]
-    plugins = cfg["plugins"]
+      - name: Build + package
+        env:
+          GIT_TAG: ${{ github.ref_name }}
+        run: |
+          python scripts/build.py --config Release --tag "$GIT_TAG" --out dist
 
-    os_id = host_os()
-    out_dir = (repo_root / args.out / args.tag / os_id)
-    build_root = repo_root / "build" / os_id
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          path: dist
+          if-no-files-found: error
 
-    enable_clap = (os_id in ("windows", "linux"))  # matches your “time-optimal” plan
+  release:
+    name: Create/Update Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
 
-    for p in plugins:
-        plugin_dir = repo_root / p["dir"]
-        if not plugin_dir.exists():
-            die(f"Plugin dir not found: {plugin_dir}")
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
 
-        dsp = find_single_dsp(plugin_dir)
-        slug = p["slug"]
+      - name: Publish GitHub Release + upload zips
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
 
-        cmake_build = build_root / slug
-        cmake_build.mkdir(parents=True, exist_ok=True)
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --generate-notes
 
-        cmake_args = [
-            "cmake",
-            "-S", str(repo_root / "cmake" / "plugin"),
-            "-B", str(cmake_build),
-            f"-DZA_ROOT={repo_root}",
-            f"-DPLUGIN_NAME={p['name']}",
-            f"-DPLUGIN_SLUG={slug}",
-            f"-DPLUGIN_CODE={p['pluginCode']}",
-            f"-DMANUFACTURER_NAME={manu['name']}",
-            f"-DMANUFACTURER_CODE={manu['code']}",
-            f"-DBUNDLE_ID={p['bundleId']}",
-            f"-DPLUGIN_VERSION={args.tag}",
-            f"-DPLUGIN_DSP={dsp}",
-        ]
+          files=(dist/**/**/*.zip)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No zip files found to upload"
+            exit 2
+          fi
 
-        if enable_clap:
-            feats = " ".join(p.get("clapFeatures", ["audio-effect"]))
-            cmake_args += [
-                "-DZA_ENABLE_CLAP=ON",
-                f"-DCLAP_ID={p['clapId']}",
-                f"-DCLAP_FEATURES={feats}",
-            ]
-        else:
-            cmake_args += ["-DZA_ENABLE_CLAP=OFF"]
-
-        if os_id == "windows":
-            cmake_args += ["-G", "Visual Studio 17 2022", "-A", "x64"]
-        else:
-            cmake_args += ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release"]
-
-        run(cmake_args)
-        run(["cmake", "--build", str(cmake_build), "--config", args.config])
-
-        artefacts = cmake_build / f"{slug}_artefacts" / args.config
-        if not artefacts.exists():
-            die(f"Expected artefacts dir missing: {artefacts}")
-
-        # Package VST3 / CLAP / AU (AU not enabled in CMake above, but kept here for later)
-        candidates = []
-        candidates += list(artefacts.rglob("*.vst3"))
-        candidates += list(artefacts.rglob("*.clap"))
-        candidates += list(artefacts.rglob("*.component"))
-
-        if not candidates:
-            die(f"No plugin artefacts found under {artefacts}")
-
-        for a in candidates:
-            ext = a.suffix.lstrip(".")
-            zip_name = f"{slug}-{args.tag}-{os_id}-{ext}.zip"
-            zip_path(a, out_dir / zip_name)
-            print(f"Packed: {zip_name}")
-
-    print(f"Done. Output: {out_dir}")
-
-if __name__ == "__main__":
-    main()
+          gh release upload "$TAG" "${files[@]}" --clobber
