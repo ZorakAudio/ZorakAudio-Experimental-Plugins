@@ -1,10 +1,26 @@
+import re
 import argparse
 import json
 import os
 import subprocess
 import sys
+import shutil
 import zipfile
 from pathlib import Path
+
+def copy_bundle(src: Path, dst_dir: Path) -> None:
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    dst = dst_dir / src.name
+    if dst.exists():
+        if dst.is_dir():
+            shutil.rmtree(dst)
+        else:
+            dst.unlink()
+    if src.is_dir():
+        shutil.copytree(src, dst)
+    else:
+        shutil.copy2(src, dst)
+
 
 def die(msg: str) -> None:
     print(f"ERROR: {msg}", file=sys.stderr)
@@ -41,7 +57,7 @@ def find_single_dsp(plugin_dir: Path) -> Path:
     if len(dsps) > 1:
         die(f"Multiple .dsp files found in {plugin_dir}. Specify one by renaming or making it 1 file per plugin dir.")
     return dsps[0]
-import re
+
 
 def cmake_safe_version(tag: str) -> str:
     # Accept things like v0.2.0, R0.1.1, 0.2.0, 0.2
@@ -73,6 +89,11 @@ def main() -> None:
     build_root = repo_root / "build" / os_id
 
     enable_clap = (os_id in ("windows", "linux"))  # matches your “time-optimal” plan
+
+    bundle_root = out_dir / "bundle"
+    vst3_dir = bundle_root / "VST3"
+    clap_dir = bundle_root / "CLAP"
+
 
     for p in plugins:
         plugin_dir = repo_root / p["dir"]
@@ -123,19 +144,26 @@ def main() -> None:
             die(f"Expected artefacts dir missing: {artefacts}")
 
         # Package VST3 / CLAP / AU (AU not enabled in CMake above, but kept here for later)
-        candidates = []
-        candidates += list(artefacts.rglob("*.vst3"))
-        candidates += list(artefacts.rglob("*.clap"))
-        candidates += list(artefacts.rglob("*.component"))
+        # find artefacts
+        vst3s = list(artefacts.rglob("*.vst3"))
+        claps = list(artefacts.rglob("*.clap"))
 
-        if not candidates:
-            die(f"No plugin artefacts found under {artefacts}")
+        for a in vst3s:
+            copy_bundle(a, vst3_dir)
 
-        for a in candidates:
-            ext = a.suffix.lstrip(".")
-            zip_name = f"{slug}-{args.tag}-{os_id}-{ext}.zip"
-            zip_path(a, out_dir / zip_name)
-            print(f"Packed: {zip_name}")
+        for a in claps:
+            copy_bundle(a, clap_dir)
+
+    if clap_dir.exists() and not any(clap_dir.iterdir()):
+        clap_dir.rmdir()
+    if vst3_dir.exists() and not any(vst3_dir.iterdir()):
+        vst3_dir.rmdir()
+
+
+    zip_name = f"ZorakAudio-Experimental-Plugins-{args.tag}-{os_id}.zip"
+    zip_path(bundle_root, out_dir / zip_name)
+    print(f"Packed: {zip_name}")
+
 
     print(f"Done. Output: {out_dir}")
 
