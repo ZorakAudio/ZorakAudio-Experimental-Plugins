@@ -161,11 +161,7 @@ namespace
 class FaustJuceProcessor final : public juce::AudioProcessor
 {
 public:
-    FaustJuceProcessor()
-    : juce::AudioProcessor (BusesProperties()
-      .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
-      .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
-
+    FaustJuceProcessor() : juce::AudioProcessor (makeBusesFromFaust())
     {
         dsp = std::make_unique<mydsp>();
 
@@ -207,24 +203,23 @@ public:
     void releaseResources() override {}
 
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override
-    {
-        const auto ins  = dsp->getNumInputs();
-        const auto outs = dsp->getNumOutputs();
+{
+    const int ins  = dsp->getNumInputs();
+    const int outs = dsp->getNumOutputs();
 
-        if (ins > 0)
-        {
-            if (layouts.getMainInputChannelSet().size() != ins)
-                return false;
-        }
+    const auto inSet  = layouts.getMainInputChannelSet();
+    const auto outSet = layouts.getMainOutputChannelSet();
 
-        if (layouts.getMainOutputChannelSet().size() != outs)
-            return false;
+    if (ins > 0 && inSet.size() != ins)  return false;
+    if (outs > 0 && outSet.size() != outs) return false;
 
-        if (ins > 0 && layouts.getMainInputChannelSet() != layouts.getMainOutputChannelSet())
-            return false;
+    // If you want “must match in/out” for typical effects, keep this:
+    if (ins > 0 && outs > 0 && inSet.size() != outSet.size())
+        return false;
 
-        return true;
-    }
+    return true;
+}
+
 
     void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
     {
@@ -278,6 +273,30 @@ private:
 
     std::vector<FAUSTFLOAT*> inputPtrs;
     std::vector<FAUSTFLOAT*> outputPtrs;
+
+    static BusesProperties makeBusesFromFaust()
+    {
+        mydsp d;
+
+        const int ins  = d.getNumInputs();
+        const int outs = d.getNumOutputs();
+
+        // Use discrete sets for >2 channels so hosts can wire arbitrary multichannel.
+        auto setFor = [] (int ch) -> juce::AudioChannelSet
+        {
+            if (ch <= 0) return juce::AudioChannelSet::disabled();
+            if (ch == 1) return juce::AudioChannelSet::mono();
+            if (ch == 2) return juce::AudioChannelSet::stereo();
+            return juce::AudioChannelSet::discreteChannels (ch);
+        };
+
+        BusesProperties props;
+        if (ins > 0)  props = props.withInput  ("Input",  setFor(ins),  true);
+        if (outs > 0) props = props.withOutput ("Output", setFor(outs), true);
+
+        return props;
+    }
+
 };
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
