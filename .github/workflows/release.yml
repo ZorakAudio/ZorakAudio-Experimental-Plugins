@@ -50,8 +50,24 @@ jobs:
 
       - name: Install deps (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          choco install faust ninja --no-progress
+            choco install ninja --no-progress
+
+            $ErrorActionPreference = "Stop"
+            $faustVersion = "2.79.2"
+            $zip = "$env:RUNNER_TEMP\faust.zip"
+            $dir = "$env:RUNNER_TEMP\faust"
+
+            Invoke-WebRequest -Uri "https://github.com/grame-cncm/faust/releases/download/$faustVersion/Faust-$faustVersion-win64.zip" -OutFile $zip
+            Expand-Archive -Path $zip -DestinationPath $dir -Force
+
+            $faust = Get-ChildItem $dir -Recurse -Filter faust.exe | Select-Object -First 1
+            if (-not $faust) { throw "faust.exe not found in extracted archive" }
+
+            (Split-Path $faust.FullName) | Out-File -FilePath $env:GITHUB_PATH -Append
+            faust -version
+
 
       - name: Build + package
         env:

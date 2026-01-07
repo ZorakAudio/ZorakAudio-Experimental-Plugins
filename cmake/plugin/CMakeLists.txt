@@ -44,13 +44,17 @@ if(ZA_ENABLE_CLAP)
   endif()
 endif()
 
+# ---- Faust tool ----
+find_program(FAUST_CMD faust REQUIRED)
+message(STATUS "Using FAUST_CMD=${FAUST_CMD}")
+
 # ---- Faust codegen ----
 set(FAUST_OUT  "${CMAKE_CURRENT_BINARY_DIR}/FaustDSP.h")
 
 add_custom_command(
   OUTPUT "${FAUST_OUT}"
-  COMMAND faust -lang cpp -i -cn mydsp -o "${FAUST_OUT}" "${PLUGIN_DSP}"
-  DEPENDS "${PLUGIN_DSP}" "${FAUST_ARCH}"
+  COMMAND "${FAUST_CMD}" -lang cpp -i -cn mydsp -o "${FAUST_OUT}" "${PLUGIN_DSP}"
+  DEPENDS "${PLUGIN_DSP}"
   COMMENT "Faust: generating ${FAUST_OUT}"
   VERBATIM
 )
