@@ -1,5 +1,8 @@
 name: Build & Release
 
+env:
+  FAUST_VERSION: "2.81.2"
+
 on:
   push:
     tags:
@@ -52,21 +55,24 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-            choco install ninja --no-progress
+          choco install ninja --no-progress
+          $ErrorActionPreference = "Stop"
 
-            $ErrorActionPreference = "Stop"
-            $faustVersion = "2.79.2"
-            $zip = "$env:RUNNER_TEMP\faust.zip"
-            $dir = "$env:RUNNER_TEMP\faust"
+          $v = "${{ env.FAUST_VERSION }}"
+          $exe = "$env:RUNNER_TEMP\faust.exe"
 
-            Invoke-WebRequest -Uri "https://github.com/grame-cncm/faust/releases/download/$faustVersion/Faust-$faustVersion-win64.zip" -OutFile $zip
-            Expand-Archive -Path $zip -DestinationPath $dir -Force
+          Invoke-WebRequest -Uri "https://github.com/grame-cncm/faust/releases/download/$v/Faust-$v-win64.exe" -OutFile $exe
 
-            $faust = Get-ChildItem $dir -Recurse -Filter faust.exe | Select-Object -First 1
-            if (-not $faust) { throw "faust.exe not found in extracted archive" }
+          # Silent install (NSIS-style)
+          Start-Process -FilePath $exe -ArgumentList "/S" -Wait
 
-            (Split-Path $faust.FullName) | Out-File -FilePath $env:GITHUB_PATH -Append
-            faust -version
+          # Find faust.exe anywhere reasonable (install paths differ)
+          $faust = Get-ChildItem "C:\Program Files", "C:\Program Files (x86)" -Recurse -Filter faust.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $faust) { throw "faust.exe not found after install" }
+
+          (Split-Path $faust.FullName) | Out-File -FilePath $env:GITHUB_PATH -Append
+          faust -version
+
 
 
       - name: Build + package
