@@ -62,16 +62,20 @@ jobs:
           $exe = "$env:RUNNER_TEMP\faust.exe"
 
           Invoke-WebRequest -Uri "https://github.com/grame-cncm/faust/releases/download/$v/Faust-$v-win64.exe" -OutFile $exe
-
-          # Silent install (NSIS-style)
           Start-Process -FilePath $exe -ArgumentList "/S" -Wait
 
-          # Find faust.exe anywhere reasonable (install paths differ)
+          # Find faust.exe
           $faust = Get-ChildItem "C:\Program Files", "C:\Program Files (x86)" -Recurse -Filter faust.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $faust) { throw "faust.exe not found after install" }
 
-          (Split-Path $faust.FullName) | Out-File -FilePath $env:GITHUB_PATH -Append
+          $faustDir = Split-Path $faust.FullName
+
+          # Make it available NOW (this step) and ALSO for later steps
+          $env:Path = "$faustDir;$env:Path"
+          $faustDir | Out-File -FilePath $env:GITHUB_PATH -Append
+
           faust -version
+
 
 
 
