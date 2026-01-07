@@ -74,7 +74,7 @@ jobs:
           $env:Path = "$faustDir;$env:Path"
           $faustDir | Out-File -FilePath $env:GITHUB_PATH -Append
 
-          faust -version
+          faust --version
 
 
 
