@@ -1,3 +1,5 @@
+[![Build & Release](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/release.yml/badge.svg)](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/release.yml)
+
 # ZorakAudio Experimental Plugins
 
 This repository contains a collection of **experimental, open-source audio plugins** developed by **ZorakAudio**.
