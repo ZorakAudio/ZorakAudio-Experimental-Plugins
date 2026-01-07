@@ -99,6 +99,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
 
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -121,3 +124,4 @@ jobs:
           fi
 
           gh release upload "$TAG" "${files[@]}" --clobber
+
