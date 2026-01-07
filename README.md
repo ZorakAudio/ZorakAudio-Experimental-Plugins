@@ -1,6 +1,6 @@
 [![Build & Release](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/release.yml/badge.svg)](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/release.yml)
 
-**Note:** I am experimenting with CI for building Windows/Mac OS X/Linux VST3 + CLAP builds automatically - these plugins may differ from the codes seen ![in R0.1.1](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/releases/tag/R0.1.1)! If something is wrong with these plugins, i.e. they fail to build, please fall back to R0.1.1 for the meanwhile as this repository undergoes testing. New plugins are already written and are waiting to be converted to FAUST but that is only after this is all situated. Please be patient!
+**Note:** I am experimenting with CI for building Windows/Mac OS X/Linux VST3 + CLAP builds automatically - these plugins may differ from the codes seen [in R0.1.1](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/releases/tag/R0.1.1)! If something is wrong with these plugins, i.e. they fail to build, please fall back to R0.1.1 for the meanwhile as this repository undergoes testing. New plugins are already written and are waiting to be converted to FAUST but that is only after this is all situated. Please be patient!
 
 # ZorakAudio Experimental Plugins
 
