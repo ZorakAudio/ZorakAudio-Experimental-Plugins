@@ -1,8 +1,12 @@
 import("stdfaust.lib");
 
 declare name "Click-Be-Gone (SG)";
-declare version "1.1";
+declare version "1.2";
 declare description "Remove HF needle-clicks + small splats from wet granular without dulling texture. Modes are behavior presets (window ladder + gating + hold + max replace).";
+declare author "Zorak Audio";
+declare license "MIT License";
+declare latency_sec "0";
+
 
 amount = hslider("Amount [%]", 50, 0, 100, 1) / 100;
 sensitivity = hslider("Sensitivity [%]", 50, 0, 100, 1) / 100;
@@ -104,12 +108,9 @@ hpR = R : hpf_jsfx(a);
   outL = xC_L * (1 - mix) + pred_L * mix;
   outR = xC_R * (1 - mix) + pred_R * mix;
 
-  dL = xC_L - outL;
-  dR = xC_R - outR;
+  dL = outL - xC_L;
+  dR = outR - xC_R;
 
-  dg = min(1 + 12 * mix_base, 16);
-
-
-  left_out = ba.if(monitor, dL * dg, outL);
-  right_out = ba.if(monitor, dR * dg, outR);
+  left_out  = ba.if(monitor, dL, outL);
+  right_out = ba.if(monitor, dR, outR);
 };

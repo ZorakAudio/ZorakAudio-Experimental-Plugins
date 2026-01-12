@@ -1,6 +1,6 @@
 declare name        "Designed Panning Topology (DPT) — Headphone Psycho Panner (SAFE)";
 declare description "SAFE controls: Azimuth + Amount + Output. Internally: equal-power pan + far-ear ITD + far-ear shadow + conservative crossfeed.";
-
+declare latency_frames "0";
 import("stdfaust.lib");
 
 // -------------------------

@@ -2,6 +2,7 @@ import("stdfaust.lib");
 
 declare name "ModTilt (SAFE) - envelope tilt shaper";
 declare version "1.1";
+declare latency_frames "0";
 
 // ---------------- UI ----------------
 // ---------------- UI (ordered) ----------------

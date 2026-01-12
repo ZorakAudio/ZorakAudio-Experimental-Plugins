@@ -1,3 +1,4 @@
+#include <cmath>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
@@ -46,6 +47,31 @@ namespace
         return out;
     }
 
+    static inline bool isNearlyInteger (float v)
+    {
+        const float r = std::round (v);
+        return std::abs (v - r) <= 1.0e-6f;
+    }
+
+    // Derive a sensible fixed-decimal display from a FAUST step size.
+    // Example: 1 -> 0 decimals, 0.1 -> 1, 0.01 -> 2, 0.005 -> 3, etc.
+    static inline int decimalsFromStep (float step)
+    {
+        if (step <= 0.0f) return 3;
+
+        int d = 0;
+        float s = step;
+
+        while (d < 6 && s < 1.0f && ! isNearlyInteger (s))
+        {
+            s *= 10.0f;
+            ++d;
+        }
+
+        return juce::jlimit (0, 6, d);
+    }
+
+
     struct FaustParam
     {
         juce::String id;
@@ -58,6 +84,7 @@ namespace
         float step = 0.0f;
 
         bool isDiscrete01 = false;
+        bool isNumEntry   = false; // distinguish nentry vs slider for nicer text/format
         std::map<std::string, std::string> meta;
     };
 
@@ -65,6 +92,12 @@ namespace
     {
         std::vector<juce::String> groupStack;
         std::vector<FaustParam> params;
+
+        // Faust can attach metadata via UI::declare(zone, key, value).
+        // We collect it per-zone and merge it into the eventual parameter metadata.
+        std::map<FAUSTFLOAT*, std::map<std::string, std::string>> declaredMeta;
+        std::map<std::string, std::string> globalMeta;
+
 
         // Faust UI layout
         void openTabBox (const char* label) override         { pushGroup (label); }
@@ -98,7 +131,7 @@ namespace
         void addNumEntry (const char* label, FAUSTFLOAT* zone,
                           FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step) override
         {
-            addParam (label, zone, (float) init, (float) min, (float) max, (float) step, false);
+            addParam (label, zone, (float) init, (float) min, (float) max, (float) step, false, true);
         }
 
         // Passive widgets (ignored for parameters)
@@ -108,8 +141,25 @@ namespace
         // Soundfiles (ignored)
         // void addSoundfile (const char*, const char*, Soundfile**) override {}
 
-        // Metadata hook (optional; labels already carry most metadata)
-        void declare (FAUSTFLOAT*, const char*, const char*) override {}
+        // Metadata hook (FAUST uses this heavily; labels alone are not enough).
+        void declare (FAUSTFLOAT* zone, const char* key, const char* value) override
+        {
+            if (key == nullptr || value == nullptr) return;
+
+            const std::string k (key);
+            const std::string v (value);
+
+            if (zone == nullptr)
+            {
+                // Global metadata like declare latency_samples "N"
+                globalMeta[k] = v;
+                return;
+            }
+
+            // Per-zone metadata
+            declaredMeta[zone][k] = v;
+        }
+
 
     private:
         void pushGroup (const char* raw)
@@ -138,12 +188,23 @@ namespace
 
         void addParam (const char* rawLabel, FAUSTFLOAT* zone,
                        float init, float min, float max, float step,
-                       bool discrete01)
+                       bool discrete01,
+                       bool isNumEntry = false)
         {
             FaustParam p;
             p.meta.clear();
+            juce::String raw = juce::String::fromUTF8 (rawLabel);  // keeps σ, →, etc.
+            auto leaf = stripLabelAndCollectMeta (raw, &p.meta);
 
-            p.name = stripLabelAndCollectMeta (rawLabel, &p.meta);
+            juce::String path;
+            for (auto& g : groupStack)
+                if (g.isNotEmpty())
+                    path << g << "/";
+
+            path << leaf;
+
+            p.name = path;
+
             p.id   = makeId (p.name);
 
             p.zone = zone;
@@ -152,6 +213,18 @@ namespace
             p.max  = max;
             p.step = step;
             p.isDiscrete01 = discrete01;
+            p.isNumEntry   = isNumEntry;
+
+            // Merge FAUST UI::declare() metadata (if any)
+            if (zone != nullptr)
+            {
+                const auto it = declaredMeta.find (zone);
+                if (it != declaredMeta.end())
+                {
+                    for (const auto& kv : it->second)
+                        p.meta[kv.first] = kv.second;
+                }
+            }
 
             params.push_back (p);
         }
@@ -160,6 +233,8 @@ namespace
 
 class FaustJuceProcessor final : public juce::AudioProcessor
 {
+    using juce::AudioProcessor::processBlock;
+
 public:
     FaustJuceProcessor() : juce::AudioProcessor (makeBusesFromFaust())
     {
@@ -168,13 +243,74 @@ public:
         // Collect parameters from Faust UI
         dsp->buildUserInterface (&ui);
         faustParams = ui.params;
+        // Pull declared latency from FAUST metadata (declare latency_samples "N")
+        if (auto it = ui.globalMeta.find ("latency_samples"); it != ui.globalMeta.end())
+        {
+            faustLatencySamples = std::max (0, std::atoi (it->second.c_str()));
+            setLatencySamples (faustLatencySamples);
+            updateHostDisplay(); // helps some hosts refresh PDC immediately
+        }
+
 
         juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
         for (const auto& p : faustParams)
         {
+            // Unit: prefer UI::declare metadata, fall back to bracket metadata in label.
+            juce::String unit;
+            if (auto it = p.meta.find ("unit"); it != p.meta.end())
+                unit = juce::String (it->second);
+
+            // Discrete 0/1 becomes a proper boolean parameter (nicer host UI + automation).
+            if (p.isDiscrete01)
+            {
+                layout.add (std::make_unique<juce::AudioParameterBool> (p.id, p.name, (p.init >= 0.5f)));
+                continue;
+            }
+
+            // If this is an nentry that is effectively integer-stepped, expose it as an int.
+            const bool integerStepped = (p.step > 0.0f && isNearlyInteger (p.step)
+                                         && isNearlyInteger (p.min) && isNearlyInteger (p.max)
+                                         && isNearlyInteger (p.init));
+
+            if (p.isNumEntry && integerStepped)
+            {
+                layout.add (std::make_unique<juce::AudioParameterInt> (
+                    p.id,
+                    p.name,
+                    (int) std::llround (p.min),
+                    (int) std::llround (p.max),
+                    (int) std::llround (p.init)));
+                continue;
+            }
+
             const auto range = juce::NormalisableRange<float> (p.min, p.max, p.step);
-            layout.add (std::make_unique<juce::AudioParameterFloat> (p.id, p.name, range, p.init));
+            const int decimals = decimalsFromStep (p.step);
+
+            auto valueToText = [unit, decimals] (float v, int) -> juce::String
+            {
+                juce::String s (v, decimals);
+                if (unit.isNotEmpty()) s << " " << unit;
+                return s;
+            };
+
+            auto textToValue = [unit] (const juce::String& text) -> float
+            {
+                auto t = text.trim();
+                if (unit.isNotEmpty() && t.endsWithIgnoreCase (unit))
+                    t = t.dropLastCharacters (unit.length()).trim();
+                return (float) t.getDoubleValue();
+            };
+
+            layout.add (std::make_unique<juce::AudioParameterFloat> (
+                p.id,
+                p.name,
+                range,
+                p.init,
+                unit,
+                juce::AudioProcessorParameter::genericParameter,
+                valueToText,
+                textToValue));
         }
 
         apvts = std::make_unique<juce::AudioProcessorValueTreeState> (*this, nullptr, "PARAMS", std::move (layout));
@@ -191,10 +327,14 @@ public:
     void setCurrentProgram (int) override {}
     const juce::String getProgramName (int) override { return {}; }
     void changeProgramName (int, const juce::String&) override {}
+    void applyFaustLatency();
+
 
     void prepareToPlay (double sampleRate, int /*samplesPerBlock*/) override
     {
         dsp->init ((int) sampleRate);
+        setLatencySamples (faustLatencySamples);
+        updateHostDisplay();
 
         inputPtrs.resize ((size_t) dsp->getNumInputs());
         outputPtrs.resize ((size_t) dsp->getNumOutputs());
@@ -203,22 +343,22 @@ public:
     void releaseResources() override {}
 
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override
-{
-    const int ins  = dsp->getNumInputs();
-    const int outs = dsp->getNumOutputs();
+    {
+        const int ins  = dsp->getNumInputs();
+        const int outs = dsp->getNumOutputs();
 
-    const auto inSet  = layouts.getMainInputChannelSet();
-    const auto outSet = layouts.getMainOutputChannelSet();
+        const auto inSet  = layouts.getMainInputChannelSet();
+        const auto outSet = layouts.getMainOutputChannelSet();
 
-    if (ins > 0 && inSet.size() != ins)  return false;
-    if (outs > 0 && outSet.size() != outs) return false;
+        if (ins > 0 && inSet.size() != ins)  return false;
+        if (outs > 0 && outSet.size() != outs) return false;
 
-    // If you want “must match in/out” for typical effects, keep this:
-    if (ins > 0 && outs > 0 && inSet.size() != outSet.size())
-        return false;
+        // If you want “must match in/out” for typical effects, keep this:
+        if (ins > 0 && outs > 0 && inSet.size() != outSet.size())
+            return false;
 
-    return true;
-}
+        return true;
+    }
 
 
     void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
@@ -273,6 +413,8 @@ private:
 
     std::vector<FAUSTFLOAT*> inputPtrs;
     std::vector<FAUSTFLOAT*> outputPtrs;
+    int faustLatencySamples = 0;
+
 
     static BusesProperties makeBusesFromFaust()
     {
@@ -302,4 +444,10 @@ private:
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new FaustJuceProcessor();
+}
+
+void FaustJuceProcessor::applyFaustLatency()
+{
+    // If latency is fixed, just re-apply whatever we already read.
+    setLatencySamples (faustLatencySamples);
 }

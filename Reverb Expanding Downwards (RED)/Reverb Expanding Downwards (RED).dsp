@@ -1,7 +1,8 @@
 import("stdfaust.lib");
 
 declare name "Reverb Tail Tamer (Wet 1/2, Ref In 5/6)";
-declare version "3.0-norec";
+declare version "1.0";
+declare latency_frames "0";
 
 // ------------------------- UI -------------------------
 amount_dB = hslider("Amount (max duck dB)[unit:dB]", 12, 0, 24, 0.1);

@@ -4,14 +4,16 @@ import("stdfaust.lib");
 // Metadata
 // ------------------------------------------------------------
 declare name      "Gaussian Transient Shaper";
-declare author    "ZorakAudio";
+declare author    "Zorak Audio";
 declare version   "1.0";
+declare latency_frames "128";
 
 // ------------------------------------------------------------
 // Constants
 // ------------------------------------------------------------
 GAUSS_RADIUS = 128;                  // half kernel length
-GAUSS_LEN    = 2*GAUSS_RADIUS + 1;   // total taps (513)
+GAUSS_LEN    = 2*GAUSS_RADIUS + 1;   // total taps (257)
+
 
 // ------------------------------------------------------------
 // True Gaussian FIR kernel (time-domain)
