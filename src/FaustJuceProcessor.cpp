@@ -71,6 +71,76 @@ namespace
         return juce::jlimit (0, 6, d);
     }
 
+    static bool parseFaustMenuStyle (const std::map<std::string, std::string>& meta,
+                                     juce::StringArray& outChoices)
+    {
+        outChoices.clear();
+
+        auto it = meta.find ("style");
+        if (it == meta.end())
+            return false;
+
+        juce::String s = juce::String::fromUTF8 (it->second.c_str()).trim();
+
+        // Expect: menu{...}
+        if (! s.startsWithIgnoreCase ("menu"))
+            return false;
+
+        const int l = s.indexOfChar ('{');
+        const int r = s.lastIndexOfChar ('}');
+        if (l < 0 || r <= l)
+            return false;
+
+        juce::String body = s.substring (l + 1, r).trim();
+
+        // Split on ';' (FAUST common) else ','.
+        juce::StringArray items;
+        if (body.containsChar (';')) items.addTokens (body, ";", "");
+        else                         items.addTokens (body, ",", "");
+
+        std::vector<std::pair<int, juce::String>> indexed;
+        int implicitIndex = 0;
+
+        auto stripQuotes = [] (juce::String t)
+        {
+            t = t.trim();
+            if ((t.startsWithChar ('\'') && t.endsWithChar ('\'')) ||
+                (t.startsWithChar ('"')  && t.endsWithChar ('"')))
+                t = t.substring (1, t.length() - 1);
+            return t.trim();
+        };
+
+        for (auto item : items)
+        {
+            item = item.trim();
+            if (item.isEmpty()) continue;
+
+            const int colon = item.indexOfChar (':');
+            if (colon > 0)
+            {
+                auto name = stripQuotes (item.substring (0, colon));
+                auto idxS = item.substring (colon + 1).trim();
+                const int idx = idxS.getIntValue();
+                indexed.push_back ({ idx, name });
+            }
+            else
+            {
+                indexed.push_back ({ implicitIndex++, stripQuotes (item) });
+            }
+        }
+
+        if (indexed.empty())
+            return false;
+
+        std::sort (indexed.begin(), indexed.end(),
+                   [] (auto& a, auto& b) { return a.first < b.first; });
+
+        for (auto& kv : indexed)
+            outChoices.add (kv.second);
+
+        return outChoices.size() > 0;
+    }
+
 
     struct FaustParam
     {
@@ -91,12 +161,13 @@ namespace
     struct ParamCollectorUI : public UI
     {
         std::vector<juce::String> groupStack;
+        juce::String rootGroup; // first/top-level group (often plugin name)
         std::vector<FaustParam> params;
 
         // Faust can attach metadata via UI::declare(zone, key, value).
         // We collect it per-zone and merge it into the eventual parameter metadata.
         std::map<FAUSTFLOAT*, std::map<std::string, std::string>> declaredMeta;
-        std::map<std::string, std::string> globalMeta;
+        std::map<std::string, std::string> globalMeta; // zone=nullptr declarations (e.g. latency_samples)
 
 
         // Faust UI layout
@@ -166,6 +237,7 @@ namespace
         {
             std::map<std::string, std::string> meta;
             const auto clean = stripLabelAndCollectMeta (raw, &meta);
+            if (groupStack.empty()) rootGroup = clean;
             groupStack.push_back (clean);
         }
 
@@ -203,9 +275,14 @@ namespace
 
             path << leaf;
 
+            // Drop the top-level group (usually the plugin name) from the *display* label.
+            if (rootGroup.isNotEmpty() && path.startsWith (rootGroup + "/"))
+                path = path.substring (rootGroup.length() + 1);
+
             p.name = path;
 
-            p.id   = makeId (p.name);
+            // IDs stay stable and host-safe; use the leaf name + group stack (not the full display path).
+            p.id   = makeId (leaf);
 
             p.zone = zone;
             p.init = init;
@@ -260,6 +337,20 @@ public:
             juce::String unit;
             if (auto it = p.meta.find ("unit"); it != p.meta.end())
                 unit = juce::String (it->second);
+
+            // If FAUST declares a menu style (e.g. [style:menu{'Output':0;'Delta':1}]),
+            // expose it as a CHOICE so hosts show real labels instead of numbers.
+            juce::StringArray menuChoices;
+            if (p.isNumEntry && parseFaustMenuStyle (p.meta, menuChoices))
+            {
+                const int maxIndex = menuChoices.size() - 1;
+                const int defIndex = juce::jlimit (0, maxIndex, (int) std::llround (p.init));
+
+                layout.add (std::make_unique<juce::AudioParameterChoice> (
+                    p.id, p.name, menuChoices, defIndex));
+                continue;
+            }
+
 
             // Discrete 0/1 becomes a proper boolean parameter (nicer host UI + automation).
             if (p.isDiscrete01)
@@ -327,12 +418,11 @@ public:
     void setCurrentProgram (int) override {}
     const juce::String getProgramName (int) override { return {}; }
     void changeProgramName (int, const juce::String&) override {}
-    void applyFaustLatency();
-
 
     void prepareToPlay (double sampleRate, int /*samplesPerBlock*/) override
     {
         dsp->init ((int) sampleRate);
+        setLatencySamples (faustLatencySamples);
         setLatencySamples (faustLatencySamples);
         updateHostDisplay();
 
@@ -444,10 +534,4 @@ private:
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new FaustJuceProcessor();
-}
-
-void FaustJuceProcessor::applyFaustLatency()
-{
-    // If latency is fixed, just re-apply whatever we already read.
-    setLatencySamples (faustLatencySamples);
 }
