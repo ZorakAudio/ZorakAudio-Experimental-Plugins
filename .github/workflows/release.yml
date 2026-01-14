@@ -77,11 +77,102 @@ jobs:
           faust --version
 
 
-
+      - name: Configure macOS universal2
+        if: runner.os == 'macOS'
+        run: |
+          echo "CMAKE_OSX_ARCHITECTURES=arm64;x86_64" >> $GITHUB_ENV
+          echo "CMAKE_OSX_DEPLOYMENT_TARGET=11.0" >> $GITHUB_ENV
+          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> $GITHUB_ENV
 
       - name: Build + package
         run: |
           python scripts/build.py --config Release --tag "${{ github.ref_name }}" --out dist
+
+      - name: macOS post-build: ad-hoc sign + verify + rezip with ditto
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+
+          echo "== Find mac artifacts =="
+          mapfile -t VST3S < <(find dist -name "*.vst3" -maxdepth 10 -type d || true)
+          mapfile -t CLAPS < <(find dist -name "*.clap" -maxdepth 10 -type f || true)
+
+          echo "VST3 bundles found: ${#VST3S[@]}"
+          printf '%s\n' "${VST3S[@]:-}"
+
+          echo "CLAP binaries found: ${#CLAPS[@]}"
+          printf '%s\n' "${CLAPS[@]:-}"
+
+          if [ ${#VST3S[@]} -eq 0 ] && [ ${#CLAPS[@]} -eq 0 ]; then
+            echo "No mac plugin artifacts found under dist/"
+            exit 2
+          fi
+
+          echo "== Ad-hoc sign VST3 bundles (stabilizes nested code; still not trusted/notarized) =="
+          for b in "${VST3S[@]}"; do
+            echo "-- signing: $b"
+            codesign --force --deep --sign - "$b"
+          done
+
+          echo "== Verify signature structure (diagnostic; may still be rejected by Gatekeeper because not notarized) =="
+          for b in "${VST3S[@]}"; do
+            echo "-- verify: $b"
+            codesign --verify --deep --strict --verbose=4 "$b" || true
+            spctl --assess --type execute --verbose=4 "$b" || true
+          done
+
+          echo "== Arch check (VST3 inner binary + CLAP) =="
+          for b in "${VST3S[@]}"; do
+            BIN="$(ls -1 "$b/Contents/MacOS/"* 2>/dev/null | head -n 1 || true)"
+            echo "-- VST3 bin: $BIN"
+            if [ -n "${BIN:-}" ]; then
+              file "$BIN" || true
+              lipo -info "$BIN" || true
+            fi
+          done
+
+          for c in "${CLAPS[@]}"; do
+            echo "-- CLAP: $c"
+            file "$c" || true
+            lipo -info "$c" || true
+          done
+
+          echo "== Assert universal2 (fail if missing arch) =="
+          for b in "${VST3S[@]}"; do
+            BIN="$(ls -1 "$b/Contents/MacOS/"* 2>/dev/null | head -n 1 || true)"
+            if [ -n "${BIN:-}" ]; then
+              lipo -info "$BIN" | grep -q "x86_64" || { echo "Missing x86_64 in $BIN"; exit 3; }
+              lipo -info "$BIN" | grep -q "arm64"  || { echo "Missing arm64 in $BIN"; exit 3; }
+            fi
+          done
+
+          echo "== Assert universal2 for CLAP (fail if missing arch) =="
+          for c in "${CLAPS[@]}"; do
+            lipo -info "$c" | grep -q "x86_64" || { echo "Missing x86_64 in $c"; exit 4; }
+            lipo -info "$c" | grep -q "arm64"  || { echo "Missing arm64 in $c"; exit 4; }
+          done
+
+
+
+          echo "== Re-zip mac artifacts using ditto (preserves bundle metadata) =="
+          # Put zips next to artifacts so your existing release glob (dist/**/**/*.zip) picks them up.
+          for b in "${VST3S[@]}"; do
+            base="$(basename "$b")"
+            dir="$(dirname "$b")"
+            zip="$dir/${base%.vst3}-mac.zip"
+            echo "-- ditto zip: $zip"
+            rm -f "$zip"
+            ditto -c -k --sequesterRsrc --keepParent "$b" "$zip"
+          done
+
+          for c in "${CLAPS[@]}"; do
+            base="$(basename "$c")"
+            dir="$(dirname "$c")"
+            zip="$dir/${base%.clap}-mac.zip"
+            echo "-- ditto zip: $zip"
+            rm -f "$zip"
+            ditto -c -k --sequesterRsrc --keepParent "$c" "$zip"
+          done
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
