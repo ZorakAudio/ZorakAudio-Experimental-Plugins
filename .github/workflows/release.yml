@@ -197,25 +197,35 @@ jobs:
             lipo -info "$c" | grep -q "arm64"  || { echo "Missing arm64 in $c"; exit 4; }
           done < <(find dist -name "*.clap" -maxdepth 10 -type f -print 2>/dev/null || true)
 
-          echo "== Re-zip mac artifacts using ditto =="
-          while IFS= read -r b; do
-            [ -n "$b" ] || continue
-            base="$(basename "$b")"
-            dir="$(dirname "$b")"
-            zip="$dir/${base%.vst3}-mac.zip"
-            echo "-- ditto zip: $zip"
-            rm -f "$zip"
-            ditto -c -k --sequesterRsrc --keepParent "$b" "$zip"
-          done < <(find dist -name "*.vst3" -maxdepth 10 -type d -print 2>/dev/null || true)
+          echo "== Rebuild ONE packaged mac zip (ditto, versioned) =="
+          TAG="${GITHUB_REF_NAME:-unknown}"
+          MAC_ZIP="dist/ZorakAudio-Experimental-Plugins-${TAG}-macos.zip"
+          echo "Target zip: $MAC_ZIP"
 
-          while IFS= read -r c; do
-            [ -n "$c" ] || continue
-            base="$(basename "$c")"
-            dir="$(dirname "$c")"
-            zip="$dir/${base%.clap}-mac.zip"
-            echo "-- ditto zip: $zip"
-            rm -f "$zip"
-            ditto -c -k --sequesterRsrc --keepParent "$c" "$zip"
+          STAGE_DIR="dist/_macpkg"
+          rm -rf "$STAGE_DIR"
+          mkdir -p "$STAGE_DIR"
+
+          # Stage VST3 bundles
+          find dist -maxdepth 10 -type d -name "*.vst3" -print0 | while IFS= read -r -d '' b; do
+            cp -R "$b" "$STAGE_DIR/"
+          done
+
+          # Stage CLAP binaries
+          find dist -maxdepth 10 -type f -name "*.clap" -print0 | while IFS= read -r -d '' c; do
+            cp "$c" "$STAGE_DIR/"
+          done
+
+          if [ -z "$(ls -A "$STAGE_DIR" 2>/dev/null || true)" ]; then
+            echo "ERROR: staging folder is empty; no mac artifacts found"
+            exit 5
+          fi
+
+          rm -f "$MAC_ZIP"
+          ditto -c -k --sequesterRsrc --keepParent "$STAGE_DIR" "$MAC_ZIP"
+
+          echo "Packaged mac zip rebuilt: $MAC_ZIP"
+
           done < <(find dist -name "*.clap" -maxdepth 10 -type f -print 2>/dev/null || true)
 
 
