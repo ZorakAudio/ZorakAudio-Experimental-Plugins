@@ -23,6 +23,35 @@ jobs:
         os: [windows-latest, macos-latest, ubuntu-latest]
 
     steps:
+      # Quick check for required macOS tools
+      - name: macOS pre-build preflight
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "== macOS pre-build preflight =="
+
+          need() {
+            command -v "$1" >/dev/null 2>&1 || {
+              echo "ERROR: required command '$1' not found"
+              exit 127
+            }
+          }
+
+          # Commands we rely on later
+          need find
+          need grep
+          need sed
+          need file
+          need lipo
+          need codesign
+          need spctl
+          need ditto
+          need python3
+
+          echo "All required macOS tools present"
+
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
@@ -88,91 +117,107 @@ jobs:
         run: |
           python scripts/build.py --config Release --tag "${{ github.ref_name }}" --out dist
 
-      - name: macOS post-build - ad-hoc sign + verify + rezip with ditto
+      - name: macOS post-build - ad-hoc sign + verify + rezip with ditto (bash3-safe)
         if: runner.os == 'macOS'
+        shell: bash
         run: |
           set -euo pipefail
 
           echo "== Find mac artifacts =="
-          mapfile -t VST3S < <(find dist -name "*.vst3" -maxdepth 10 -type d || true)
-          mapfile -t CLAPS < <(find dist -name "*.clap" -maxdepth 10 -type f || true)
+          VST3_COUNT=0
+          CLAP_COUNT=0
 
-          echo "VST3 bundles found: ${#VST3S[@]}"
-          printf '%s\n' "${VST3S[@]:-}"
+          echo "VST3 bundles:"
+          find dist -name "*.vst3" -maxdepth 10 -type d -print || true
 
-          echo "CLAP binaries found: ${#CLAPS[@]}"
-          printf '%s\n' "${CLAPS[@]:-}"
+          echo "CLAP binaries:"
+          find dist -name "*.clap" -maxdepth 10 -type f -print || true
 
-          if [ ${#VST3S[@]} -eq 0 ] && [ ${#CLAPS[@]} -eq 0 ]; then
+          echo "== Ad-hoc sign VST3 bundles =="
+          while IFS= read -r b; do
+            [ -n "$b" ] || continue
+            VST3_COUNT=$((VST3_COUNT+1))
+            echo "-- signing: $b"
+            codesign --force --deep --sign - "$b" || true
+          done < <(find dist -name "*.vst3" -maxdepth 10 -type d -print 2>/dev/null || true)
+
+          echo "== Ad-hoc sign CLAP binaries =="
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            CLAP_COUNT=$((CLAP_COUNT+1))
+            echo "-- signing: $c"
+            codesign --force --sign - "$c" || true
+          done < <(find dist -name "*.clap" -maxdepth 10 -type f -print 2>/dev/null || true)
+
+          if [ "$VST3_COUNT" -eq 0 ] && [ "$CLAP_COUNT" -eq 0 ]; then
             echo "No mac plugin artifacts found under dist/"
             exit 2
           fi
 
-          echo "== Ad-hoc sign VST3 bundles (stabilizes nested code; still not trusted/notarized) =="
-          for b in "${VST3S[@]}"; do
-            echo "-- signing: $b"
-            codesign --force --deep --sign - "$b"
-          done
-
-          echo "== Verify signature structure (diagnostic; may still be rejected by Gatekeeper because not notarized) =="
-          for b in "${VST3S[@]}"; do
+          echo "== Verify + Gatekeeper assessment (diagnostic only) =="
+          while IFS= read -r b; do
+            [ -n "$b" ] || continue
             echo "-- verify: $b"
             codesign --verify --deep --strict --verbose=4 "$b" || true
             spctl --assess --type execute --verbose=4 "$b" || true
-          done
+          done < <(find dist -name "*.vst3" -maxdepth 10 -type d -print 2>/dev/null || true)
 
-          echo "== Arch check (VST3 inner binary + CLAP) =="
-          for b in "${VST3S[@]}"; do
+          echo "== Arch check =="
+          while IFS= read -r b; do
+            [ -n "$b" ] || continue
             BIN="$(ls -1 "$b/Contents/MacOS/"* 2>/dev/null | head -n 1 || true)"
             echo "-- VST3 bin: $BIN"
             if [ -n "${BIN:-}" ]; then
               file "$BIN" || true
               lipo -info "$BIN" || true
             fi
-          done
+          done < <(find dist -name "*.vst3" -maxdepth 10 -type d -print 2>/dev/null || true)
 
-          for c in "${CLAPS[@]}"; do
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
             echo "-- CLAP: $c"
             file "$c" || true
             lipo -info "$c" || true
-          done
+          done < <(find dist -name "*.clap" -maxdepth 10 -type f -print 2>/dev/null || true)
 
           echo "== Assert universal2 (fail if missing arch) =="
-          for b in "${VST3S[@]}"; do
+          # VST3 inner binary must contain both x86_64 and arm64
+          while IFS= read -r b; do
+            [ -n "$b" ] || continue
             BIN="$(ls -1 "$b/Contents/MacOS/"* 2>/dev/null | head -n 1 || true)"
-            if [ -n "${BIN:-}" ]; then
-              lipo -info "$BIN" | grep -q "x86_64" || { echo "Missing x86_64 in $BIN"; exit 3; }
-              lipo -info "$BIN" | grep -q "arm64"  || { echo "Missing arm64 in $BIN"; exit 3; }
-            fi
-          done
+            [ -n "${BIN:-}" ] || continue
+            lipo -info "$BIN" | grep -q "x86_64" || { echo "Missing x86_64 in $BIN"; exit 3; }
+            lipo -info "$BIN" | grep -q "arm64"  || { echo "Missing arm64 in $BIN"; exit 3; }
+          done < <(find dist -name "*.vst3" -maxdepth 10 -type d -print 2>/dev/null || true)
 
-          echo "== Assert universal2 for CLAP (fail if missing arch) =="
-          for c in "${CLAPS[@]}"; do
+          # CLAP must contain both x86_64 and arm64
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
             lipo -info "$c" | grep -q "x86_64" || { echo "Missing x86_64 in $c"; exit 4; }
             lipo -info "$c" | grep -q "arm64"  || { echo "Missing arm64 in $c"; exit 4; }
-          done
+          done < <(find dist -name "*.clap" -maxdepth 10 -type f -print 2>/dev/null || true)
 
-
-
-          echo "== Re-zip mac artifacts using ditto (preserves bundle metadata) =="
-          # Put zips next to artifacts so your existing release glob (dist/**/**/*.zip) picks them up.
-          for b in "${VST3S[@]}"; do
+          echo "== Re-zip mac artifacts using ditto =="
+          while IFS= read -r b; do
+            [ -n "$b" ] || continue
             base="$(basename "$b")"
             dir="$(dirname "$b")"
             zip="$dir/${base%.vst3}-mac.zip"
             echo "-- ditto zip: $zip"
             rm -f "$zip"
             ditto -c -k --sequesterRsrc --keepParent "$b" "$zip"
-          done
+          done < <(find dist -name "*.vst3" -maxdepth 10 -type d -print 2>/dev/null || true)
 
-          for c in "${CLAPS[@]}"; do
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
             base="$(basename "$c")"
             dir="$(dirname "$c")"
             zip="$dir/${base%.clap}-mac.zip"
             echo "-- ditto zip: $zip"
             rm -f "$zip"
             ditto -c -k --sequesterRsrc --keepParent "$c" "$zip"
-          done
+          done < <(find dist -name "*.clap" -maxdepth 10 -type f -print 2>/dev/null || true)
+
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
