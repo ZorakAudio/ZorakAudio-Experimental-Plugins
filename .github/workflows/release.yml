@@ -226,9 +226,6 @@ jobs:
 
           echo "Packaged mac zip rebuilt: $MAC_ZIP"
 
-          done < <(find dist -name "*.clap" -maxdepth 10 -type f -print 2>/dev/null || true)
-
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
