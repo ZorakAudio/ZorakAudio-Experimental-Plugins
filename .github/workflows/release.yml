@@ -117,115 +117,6 @@ jobs:
         run: |
           python scripts/build.py --config Release --tag "${{ github.ref_name }}" --out dist
 
-      - name: macOS post-build - ad-hoc sign + verify + rezip with ditto (bash3-safe)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "== Find mac artifacts =="
-          VST3_COUNT=0
-          CLAP_COUNT=0
-
-          echo "VST3 bundles:"
-          find dist -name "*.vst3" -maxdepth 10 -type d -print || true
-
-          echo "CLAP binaries:"
-          find dist -name "*.clap" -maxdepth 10 -type f -print || true
-
-          echo "== Ad-hoc sign VST3 bundles =="
-          while IFS= read -r b; do
-            [ -n "$b" ] || continue
-            VST3_COUNT=$((VST3_COUNT+1))
-            echo "-- signing: $b"
-            codesign --force --deep --sign - "$b" || true
-          done < <(find dist -name "*.vst3" -maxdepth 10 -type d -print 2>/dev/null || true)
-
-          echo "== Ad-hoc sign CLAP binaries =="
-          while IFS= read -r c; do
-            [ -n "$c" ] || continue
-            CLAP_COUNT=$((CLAP_COUNT+1))
-            echo "-- signing: $c"
-            codesign --force --sign - "$c" || true
-          done < <(find dist -name "*.clap" -maxdepth 10 -type f -print 2>/dev/null || true)
-
-          if [ "$VST3_COUNT" -eq 0 ] && [ "$CLAP_COUNT" -eq 0 ]; then
-            echo "No mac plugin artifacts found under dist/"
-            exit 2
-          fi
-
-          echo "== Verify + Gatekeeper assessment (diagnostic only) =="
-          while IFS= read -r b; do
-            [ -n "$b" ] || continue
-            echo "-- verify: $b"
-            codesign --verify --deep --strict --verbose=4 "$b" || true
-            spctl --assess --type execute --verbose=4 "$b" || true
-          done < <(find dist -name "*.vst3" -maxdepth 10 -type d -print 2>/dev/null || true)
-
-          echo "== Arch check =="
-          while IFS= read -r b; do
-            [ -n "$b" ] || continue
-            BIN="$(ls -1 "$b/Contents/MacOS/"* 2>/dev/null | head -n 1 || true)"
-            echo "-- VST3 bin: $BIN"
-            if [ -n "${BIN:-}" ]; then
-              file "$BIN" || true
-              lipo -info "$BIN" || true
-            fi
-          done < <(find dist -name "*.vst3" -maxdepth 10 -type d -print 2>/dev/null || true)
-
-          while IFS= read -r c; do
-            [ -n "$c" ] || continue
-            echo "-- CLAP: $c"
-            file "$c" || true
-            lipo -info "$c" || true
-          done < <(find dist -name "*.clap" -maxdepth 10 -type f -print 2>/dev/null || true)
-
-          echo "== Assert universal2 (fail if missing arch) =="
-          # VST3 inner binary must contain both x86_64 and arm64
-          while IFS= read -r b; do
-            [ -n "$b" ] || continue
-            BIN="$(ls -1 "$b/Contents/MacOS/"* 2>/dev/null | head -n 1 || true)"
-            [ -n "${BIN:-}" ] || continue
-            lipo -info "$BIN" | grep -q "x86_64" || { echo "Missing x86_64 in $BIN"; exit 3; }
-            lipo -info "$BIN" | grep -q "arm64"  || { echo "Missing arm64 in $BIN"; exit 3; }
-          done < <(find dist -name "*.vst3" -maxdepth 10 -type d -print 2>/dev/null || true)
-
-          # CLAP must contain both x86_64 and arm64
-          while IFS= read -r c; do
-            [ -n "$c" ] || continue
-            lipo -info "$c" | grep -q "x86_64" || { echo "Missing x86_64 in $c"; exit 4; }
-            lipo -info "$c" | grep -q "arm64"  || { echo "Missing arm64 in $c"; exit 4; }
-          done < <(find dist -name "*.clap" -maxdepth 10 -type f -print 2>/dev/null || true)
-
-          echo "== Rebuild ONE packaged mac zip (ditto, versioned) =="
-          TAG="${GITHUB_REF_NAME:-unknown}"
-          MAC_ZIP="dist/ZorakAudio-Experimental-Plugins-${TAG}-macos.zip"
-          echo "Target zip: $MAC_ZIP"
-
-          STAGE_DIR="dist/_macpkg"
-          rm -rf "$STAGE_DIR"
-          mkdir -p "$STAGE_DIR"
-
-          # Stage VST3 bundles
-          find dist -maxdepth 10 -type d -name "*.vst3" -print0 | while IFS= read -r -d '' b; do
-            cp -R "$b" "$STAGE_DIR/"
-          done
-
-          # Stage CLAP binaries
-          find dist -maxdepth 10 -type f -name "*.clap" -print0 | while IFS= read -r -d '' c; do
-            cp "$c" "$STAGE_DIR/"
-          done
-
-          if [ -z "$(ls -A "$STAGE_DIR" 2>/dev/null || true)" ]; then
-            echo "ERROR: staging folder is empty; no mac artifacts found"
-            exit 5
-          fi
-
-          rm -f "$MAC_ZIP"
-          ditto -c -k --sequesterRsrc --keepParent "$STAGE_DIR" "$MAC_ZIP"
-
-          echo "Packaged mac zip rebuilt: $MAC_ZIP"
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -263,11 +154,20 @@ jobs:
           fi
 
 
-          files=(dist/**/**/*.zip)
+          files=(dist/**/ZorakAudio-Experimental-Plugins-${TAG}-*.zip)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No zip files found to upload"
             exit 2
           fi
 
-          gh release upload "$TAG" "${files[@]}" --clobber
+          for attempt in 1 2 3; do
+            echo "Upload attempt $attempt..."
+            if gh release upload "$TAG" "${files[@]}" --clobber; then
+              printf 'Uploading:\n%s\n' "${files[@]}"
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
 

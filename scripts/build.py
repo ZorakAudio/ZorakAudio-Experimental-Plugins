@@ -8,6 +8,10 @@ import shutil
 import zipfile
 from pathlib import Path
 
+def is_macos() -> bool:
+    return sys.platform == "darwin"
+
+
 def copy_bundle(src: Path, dst_dir: Path) -> None:
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst = dst_dir / src.name
@@ -86,6 +90,7 @@ def main() -> None:
 
     os_id = host_os()
     out_dir = (repo_root / args.out / args.tag / os_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
     build_root = repo_root / "build" / os_id
 
     enable_clap = (os_id in ("windows", "linux"))  # matches your “time-optimal” plan
@@ -151,8 +156,24 @@ def main() -> None:
         for a in vst3s:
             copy_bundle(a, vst3_dir)
 
-        for a in claps:
-            copy_bundle(a, clap_dir)
+        if enable_clap:
+            for a in claps:
+                copy_bundle(a, clap_dir)
+
+
+    # --- macOS: ad-hoc sign bundles BEFORE packaging ---
+    if is_macos():
+        print("Ad-hoc signing macOS bundles")
+
+        if vst3_dir.exists():
+            for b in vst3_dir.iterdir():
+                if b.suffix == ".vst3":
+                    run(["codesign", "--force", "--deep", "--sign", "-", str(b)])
+
+        if clap_dir.exists():
+            for c in clap_dir.iterdir():
+                if c.suffix == ".clap":
+                    run(["codesign", "--force", "--sign", "-", str(c)])
 
     if clap_dir.exists() and not any(clap_dir.iterdir()):
         clap_dir.rmdir()
@@ -161,7 +182,22 @@ def main() -> None:
 
 
     zip_name = f"ZorakAudio-Experimental-Plugins-{args.tag}-{os_id}.zip"
-    zip_path(bundle_root, out_dir / zip_name)
+    zip_out = out_dir / zip_name
+
+    if is_macos():
+        print("Packaging macOS bundle with ditto")
+        run([
+            "ditto",
+            "-c",
+            "-k",
+            "--sequesterRsrc",
+            "--keepParent",
+            str(bundle_root),
+            str(zip_out),
+        ])
+    else:
+        zip_path(bundle_root, zip_out)
+
     print(f"Packed: {zip_name}")
 
 
