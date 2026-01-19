@@ -54,7 +54,12 @@ struct JsfxSliderDecl
     float min  = 0.0f;
     float max  = 1.0f;
     float step = 0.001f;
+
+    // Optional enum choices parsed from "step{A,B,C}" syntax
+    juce::StringArray choices;
+    bool isChoice = false;
 };
+
 
 static bool parseFloat (const std::string& s, float& out)
 {
@@ -129,8 +134,42 @@ static std::vector<JsfxSliderDecl> parseJsfxSliderDecls (const char* jsfxText)
             }
             if (parts.size() >= 3)
             {
-                if (!parseFloat (parts[2], vstep)) vstep = 0.001f;
+                // STEP token may be like "1{Eco,Moderate,High}".
+                // Extract optional {choices} and parse the numeric prefix.
+                std::string stepTok = parts[2];
+
+                auto bracePos = stepTok.find('{');
+                if (bracePos != std::string::npos)
+                {
+                    auto closePos = stepTok.find('}', bracePos + 1);
+                    if (closePos != std::string::npos)
+                    {
+                        // Parse labels inside braces
+                        auto inside = stepTok.substr(bracePos + 1, closePos - (bracePos + 1));
+                        juce::String sInside = juce::String::fromUTF8(inside.c_str());
+
+                        juce::StringArray labels;
+                        labels.addTokens(sInside, ",", "");
+                        labels.trim();
+                        labels.removeEmptyStrings();
+
+                        if (labels.size() > 0)
+                        {
+                            d.choices = labels;
+                            d.isChoice = true;
+                        }
+                    }
+
+                    // Strip "{...}" for numeric parsing
+                    stepTok = stepTok.substr(0, bracePos);
+                    // trim
+                    while (!stepTok.empty() && std::isspace((unsigned char)stepTok.front())) stepTok.erase(stepTok.begin());
+                    while (!stepTok.empty() && std::isspace((unsigned char)stepTok.back()))  stepTok.pop_back();
+                }
+
+                if (!parseFloat(stepTok, vstep)) vstep = 1.0f;
             }
+
 
             if (vmax < vmin) std::swap (vmax, vmin);
             d.min = vmin;
@@ -198,10 +237,25 @@ public:
         for (const auto& s : sliderDecls)
         {
             const auto pid = sanitizeId (s.id);
-            const auto range = juce::NormalisableRange<float> (s.min, s.max, s.step);
-            layout.add (std::make_unique<juce::AudioParameterFloat> (pid, s.name, range, s.def));
+
+            if (s.isChoice && s.choices.size() > 0)
+            {
+                // Map JSFX numeric range [min..max] to choice index [0..N-1]
+                const int base = (int) std::floor(s.min + 0.5f);
+                int defIdx = (int) std::floor((s.def - (float)base) + 0.5f);
+                defIdx = juce::jlimit(0, s.choices.size() - 1, defIdx);
+
+                layout.add (std::make_unique<juce::AudioParameterChoice>(pid, s.name, s.choices, defIdx));
+            }
+            else
+            {
+                const auto range = juce::NormalisableRange<float> (s.min, s.max, s.step);
+                layout.add (std::make_unique<juce::AudioParameterFloat> (pid, s.name, range, s.def));
+            }
+
             paramIdBySliderIndex[s.index0] = pid;
         }
+
 
         apvts = std::make_unique<juce::AudioProcessorValueTreeState> (*this, nullptr, "PARAMS", std::move (layout));
 
@@ -317,10 +371,31 @@ private:
         {
             const int idx0 = kv.first;
             const auto& pid = kv.second;
-            if (auto* v = apvts->getRawParameterValue (pid))
-                st.sliders[idx0] = (double) v->load();
+
+            auto it = std::find_if(sliderDecls.begin(), sliderDecls.end(),
+                                [idx0](const JsfxSliderDecl& d){ return d.index0 == idx0; });
+
+            const bool isChoice = (it != sliderDecls.end() && it->isChoice && it->choices.size() > 0);
+            const int base = isChoice ? (int) std::floor(it->min + 0.5f) : 0;
+
+            if (auto* p = apvts->getParameter(pid))
+            {
+                if (isChoice)
+                {
+                    // Convert normalized -> choice index
+                    auto* cp = dynamic_cast<juce::AudioParameterChoice*>(p);
+                    const int choiceIdx = cp ? cp->getIndex() : (int) std::floor(p->getValue() + 0.5f);
+                    st.sliders[idx0] = (double) (base + choiceIdx);
+                }
+                else
+                {
+                    if (auto* v = apvts->getRawParameterValue(pid))
+                        st.sliders[idx0] = (double) v->load();
+                }
+            }
         }
     }
+
 
 private:
     DSPJSFX_State st {};

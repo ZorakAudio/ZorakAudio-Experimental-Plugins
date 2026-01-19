@@ -1411,7 +1411,7 @@ def _aot_opt_and_emit(mod_ir: ir.Module,
     # llvmlite's tm.emit_object() is not reliably MSVC-linkable on Windows.
     # For Windows targets, we shell out to clang to produce a proper COFF .obj.
     if emit_obj:
-        if target_triple and ("windows" in target_triple.lower()):
+        if target_triple and (("windows" in target_triple.lower()) or ("apple" in target_triple.lower())):
             clang = shutil.which("clang")
             if not clang:
                 raise RuntimeError(

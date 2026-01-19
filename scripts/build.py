@@ -126,7 +126,45 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
     if os.name == "nt":
         cmd += ["--target", "x86_64-pc-windows-msvc"]
 
-    run(cmd)
+    # Build object
+    if sys.platform == "darwin":
+        # If the build is universal2, we must produce a universal2 JSFXDSP.o as well.
+        # Read arch intent from env (or default to universal2 in CI).
+        archs = os.environ.get("CMAKE_OSX_ARCHITECTURES", "arm64;x86_64")
+        arch_list = [a.strip() for a in archs.replace(",", ";").split(";") if a.strip()]
+
+        # Build per-arch objects and lipo them if needed.
+        objs = []
+        for a in arch_list:
+            if a == "arm64":
+                triple = "arm64-apple-macos11.0"
+                out_arch = cmake_build / "JSFXDSP_arm64.o"
+            elif a == "x86_64":
+                triple = "x86_64-apple-macos11.0"
+                out_arch = cmake_build / "JSFXDSP_x86_64.o"
+            else:
+                die(f"Unsupported macOS arch in CMAKE_OSX_ARCHITECTURES: {a}")
+
+            cmd_arch = cmd[:]  # clone
+            # Ensure target triple and per-arch output obj
+            cmd_arch += ["--target", triple]
+            # Replace the --out-obj argument value (last one in cmd is safe in our usage)
+            # Easiest: rebuild the arg list with correct out-obj.
+            # We'll just append a second --out-obj that overrides the first if your argparse uses last-wins.
+            cmd_arch += ["--out-obj", str(out_arch)]
+
+            run(cmd_arch)
+            objs.append(out_arch)
+
+        if len(objs) == 1:
+            # single-arch build
+            pass
+        else:
+            # universal2 build
+            run(["lipo", "-create", "-output", str(out_obj), *[str(p) for p in objs]])
+    else:
+        run(cmd)
+
 
 
     if not out_obj.exists():
