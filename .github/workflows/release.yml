@@ -62,6 +62,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install Python deps
+        run: python -m pip install --upgrade pip llvmlite
+
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
         run: |
