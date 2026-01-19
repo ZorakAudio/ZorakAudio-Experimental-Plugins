@@ -8,15 +8,31 @@ set(MANUFACTURER_CODE "" CACHE STRING "4-char manufacturer code")
 set(BUNDLE_ID "" CACHE STRING "macOS bundle identifier")
 set(PLUGIN_VERSION "0.0.0" CACHE STRING "Version string")
 set(PLUGIN_DSP "" CACHE FILEPATH "Path to .dsp file")
+set(PLUGIN_TYPE "faust" CACHE STRING "Plugin type: faust or jsfx")
+set(PLUGIN_JSFX_OBJ "" CACHE FILEPATH "Path to JSFX AOT object file (.o/.obj)")
+
 
 set(ZA_ROOT "" CACHE PATH "Repo root")
 set(ZA_ENABLE_CLAP OFF CACHE BOOL "Build CLAP target too")
 set(CLAP_ID "" CACHE STRING "Unique CLAP id")
 set(CLAP_FEATURES "audio-effect" CACHE STRING "Space-separated CLAP features")
 
-if(NOT PLUGIN_NAME OR NOT PLUGIN_SLUG OR NOT PLUGIN_CODE OR NOT MANUFACTURER_NAME OR NOT MANUFACTURER_CODE OR NOT PLUGIN_DSP)
-  message(FATAL_ERROR "Missing required args. Need PLUGIN_NAME, PLUGIN_SLUG, PLUGIN_CODE, MANUFACTURER_NAME, MANUFACTURER_CODE, PLUGIN_DSP.")
+if(NOT PLUGIN_NAME OR NOT PLUGIN_SLUG OR NOT PLUGIN_CODE OR NOT MANUFACTURER_NAME OR NOT MANUFACTURER_CODE)
+  message(FATAL_ERROR "Missing required args. Need PLUGIN_NAME, PLUGIN_SLUG, PLUGIN_CODE, MANUFACTURER_NAME, MANUFACTURER_CODE.")
 endif()
+
+if(PLUGIN_TYPE STREQUAL "faust")
+  if(NOT PLUGIN_DSP)
+    message(FATAL_ERROR "PLUGIN_TYPE=faust but PLUGIN_DSP is empty")
+  endif()
+elseif(PLUGIN_TYPE STREQUAL "jsfx")
+  if(NOT PLUGIN_JSFX_OBJ)
+    message(FATAL_ERROR "PLUGIN_TYPE=jsfx but PLUGIN_JSFX_OBJ is empty")
+  endif()
+else()
+  message(FATAL_ERROR "Invalid PLUGIN_TYPE. Expected 'faust' or 'jsfx'.")
+endif()
+
 
 project(${PLUGIN_SLUG} VERSION ${PLUGIN_VERSION} LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
@@ -44,22 +60,25 @@ if(ZA_ENABLE_CLAP)
   endif()
 endif()
 
-# ---- Faust tool ----
-find_program(FAUST_CMD faust REQUIRED)
-message(STATUS "Using FAUST_CMD=${FAUST_CMD}")
+if(PLUGIN_TYPE STREQUAL "faust")
+  # ---- Faust tool ----
+  find_program(FAUST_CMD faust REQUIRED)
+  message(STATUS "Using FAUST_CMD=${FAUST_CMD}")
 
-# ---- Faust codegen ----
-set(FAUST_OUT  "${CMAKE_CURRENT_BINARY_DIR}/FaustDSP.h")
+  # ---- Faust codegen ----
+  set(FAUST_OUT  "${CMAKE_CURRENT_BINARY_DIR}/FaustDSP.h")
 
-add_custom_command(
-  OUTPUT "${FAUST_OUT}"
-  COMMAND "${FAUST_CMD}" -lang cpp -i -cn mydsp -o "${FAUST_OUT}" "${PLUGIN_DSP}"
-  DEPENDS "${PLUGIN_DSP}"
-  COMMENT "Faust: generating ${FAUST_OUT}"
-  VERBATIM
-)
+  add_custom_command(
+    OUTPUT "${FAUST_OUT}"
+    COMMAND "${FAUST_CMD}" -lang cpp -i -cn mydsp -o "${FAUST_OUT}" "${PLUGIN_DSP}"
+    DEPENDS "${PLUGIN_DSP}"
+    COMMENT "Faust: generating ${FAUST_OUT}"
+    VERBATIM
+  )
 
-add_custom_target(${PLUGIN_SLUG}_faust DEPENDS "${FAUST_OUT}")
+  add_custom_target(${PLUGIN_SLUG}_faust DEPENDS "${FAUST_OUT}")
+endif()
+
 
 # ---- JUCE plugin ----
 juce_add_plugin(${PLUGIN_SLUG}
@@ -77,11 +96,20 @@ juce_add_plugin(${PLUGIN_SLUG}
   FORMATS VST3
 )
 
-target_sources(${PLUGIN_SLUG}
-  PRIVATE
-    "${ZA_ROOT}/src/FaustJuceProcessor.cpp"
-    "${FAUST_OUT}"
-)
+if(PLUGIN_TYPE STREQUAL "faust")
+  target_sources(${PLUGIN_SLUG}
+    PRIVATE
+      "${ZA_ROOT}/src/FaustJuceProcessor.cpp"
+      "${FAUST_OUT}"
+  )
+else()
+  target_sources(${PLUGIN_SLUG}
+    PRIVATE
+      "${ZA_ROOT}/src/JSFXJuceProcessor.cpp"
+      "${PLUGIN_JSFX_OBJ}"
+  )
+endif()
+
 
 target_include_directories(${PLUGIN_SLUG}
   PRIVATE
@@ -120,7 +148,10 @@ target_compile_definitions(${PLUGIN_SLUG}
 
 
 
-add_dependencies(${PLUGIN_SLUG} ${PLUGIN_SLUG}_faust)
+if(PLUGIN_TYPE STREQUAL "faust")
+  add_dependencies(${PLUGIN_SLUG} ${PLUGIN_SLUG}_faust)
+endif()
+
 
 # ---- CLAP target (creates <target>_CLAP) ----
 if(ZA_ENABLE_CLAP)

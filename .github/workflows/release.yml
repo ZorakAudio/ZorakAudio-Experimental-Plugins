@@ -85,7 +85,9 @@ jobs:
         shell: pwsh
         run: |
           choco install ninja --no-progress
+          choco install llvm -y
           $ErrorActionPreference = "Stop"
+
 
           $v = "${{ env.FAUST_VERSION }}"
           $exe = "$env:RUNNER_TEMP\faust.exe"

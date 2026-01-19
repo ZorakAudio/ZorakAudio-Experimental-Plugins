@@ -1,0 +1,29 @@
+desc: DSP-JSFX Test – Gain + Soft Clip
+
+slider1:1.0<0,2,0.01>Gain
+slider2:0.8<0,1,0.01>Clip Threshold
+
+@init
+// nothing fancy
+drive = 1.0;
+
+@slider
+// cache slider values
+drive = slider1;
+clip  = slider2;
+
+@sample
+// read input
+x = spl0;
+
+// apply gain
+x *= drive;
+
+// simple soft clip
+absx = abs(x);
+if (absx > clip)
+    x = clip * (x / absx);
+
+// write output (mono -> stereo)
+spl0 = x;
+spl1 = x;
