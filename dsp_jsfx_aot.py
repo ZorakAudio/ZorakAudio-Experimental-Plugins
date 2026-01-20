@@ -75,11 +75,14 @@ class Tok:
     span: Span
 
 _MULTI_OPS = [
-    "==", "!=", "<=", ">=",
-    "+=", "-=", "*=", "/=",
-    "&&", "||",
+    "==","!=","<=",">=",
+    "+=","-=","*=","/=",
+    "&&","||",
+    "<<", ">>",
 ]
-_SINGLE = set("()[]{},;:+-*/=<>&|!?:\n")
+
+_SINGLE = set("()[]{},;:+-*/=<>&|!?:^%~\n")
+
 
 class Lexer:
     def __init__(self, src: str, base_line: int = 1):
@@ -160,13 +163,14 @@ class Lexer:
                 return Tok("num", txt, sp)
 
             # identifier / keyword
-            if c.isalpha() or c == "_":
-                m = re.match(r"[A-Za-z_][A-Za-z0-9_]*", self.src[self.i:])
+            if c.isalpha() or c == "_" or c == "$":
+                m = re.match(r"[$A-Za-z_][$A-Za-z0-9_]*", self.src[self.i:])
                 assert m
                 txt = m.group(0)
                 self._adv(len(txt))
                 kind = "kw" if txt in ("if", "else", "while") else "ident"
                 return Tok(kind, txt, sp)
+
 
             # single char tokens/operators
             if c in _SINGLE:
@@ -175,8 +179,10 @@ class Lexer:
                     return Tok("semi", c, sp)
                 if c in "();,[]{}":
                     return Tok("punc", c, sp)
-                if c in "+-*/=<>&|!?:":
+                if c in "+-*/=<>&|!?:%~" or c == "^":
                     return Tok("op", c, sp)
+
+
                 raise SyntaxError(f"Lexer internal: unexpected single token {c!r}")
 
             raise SyntaxError(f"Unexpected character {c!r} at {sp.line}:{sp.col}")
@@ -275,6 +281,16 @@ class While(Node):
     cond: Node
     body: Node
 
+@dataclass
+class FunctionDef(Node):
+    id: int
+    span: Span
+    name: str
+    params: List[str]
+    locals: List[str]
+    body: Node
+
+
 
 # -----------------------------
 # Pratt parser
@@ -284,15 +300,25 @@ class While(Node):
 _PRECEDENCE: Dict[str, int] = {
     "=": 1, "+=": 1, "-=": 1, "*=": 1, "/=": 1,
     "?": 2,  # handled specially, but used as threshold
-    "||": 3,
+    "||": 3, "|": 3,
     "&&": 4,
     "==": 5, "!=": 5,
     "<": 6, "<=": 6, ">": 6, ">=": 6,
     "+": 7, "-": 7,
     "*": 8, "/": 8,
+    "^": 9,
 }
+_PRECEDENCE.update({
+    "|": 3,
+    "&": 5,
+    "<<": 6, ">>": 6,
+    "%": 8,
+})
+
 _TERNARY_PREC = 2
 _RIGHT_ASSOC = {"=", "+=", "-=", "*=", "/="}
+
+
 
 class Parser:
     def __init__(self, src: str, base_line: int = 1):
@@ -361,7 +387,10 @@ class Parser:
             return self.parse_if()
         if self.cur.kind == "kw" and self.cur.text == "while":
             return self.parse_while()
+        if self.cur.kind == "ident" and self.cur.text == "function":
+            return self.parse_function_def()
         return self.parse_expr(0)
+
 
     def parse_if(self) -> Node:
         kw = self._eat("kw", "if")
@@ -389,6 +418,78 @@ class Parser:
         self._skip_seps()
         body = self.parse_expr(0)
         return While(self._new_id(), kw.span, cond, body)
+    
+    def parse_function_def(self) -> Node:
+        # function name(a,b,c) local(x,y) ( body );
+        t_fun = self._eat("ident", "function")
+
+        if self.cur.kind != "ident":
+            raise SyntaxError(self._fmt_err("Expected function name after 'function'"))
+        t_name = self._eat("ident")
+        fn_name = t_name.text
+
+        # params
+        self._eat("punc", "(")
+        params: List[str] = []
+        if not (self.cur.kind == "punc" and self.cur.text == ")"):
+            while True:
+                if self.cur.kind != "ident":
+                    raise SyntaxError(self._fmt_err("Expected parameter name"))
+                params.append(self._eat("ident").text)
+                if self.cur.kind == "punc" and self.cur.text == ",":
+                    self._adv()
+                    continue
+                break
+        self._eat("punc", ")")
+
+        # optional local(...)
+        locals_: List[str] = []
+        self._skip_seps()
+
+        if self.cur.kind == "ident" and self.cur.text == "local":
+            self._adv()  # consume 'local'
+            self._eat("punc", "(")
+            self._skip_seps()
+
+            if not (self.cur.kind == "punc" and self.cur.text == ")"):
+                while True:
+                    self._skip_seps()
+
+                    # allow trailing comma/newlines before ')'
+                    if self.cur.kind == "punc" and self.cur.text == ")":
+                        break
+
+                    if self.cur.kind != "ident":
+                        raise SyntaxError(self._fmt_err("Expected local variable name"))
+                    locals_.append(self._eat("ident").text)
+
+                    self._skip_seps()
+                    if self.cur.kind == "punc" and self.cur.text == ",":
+                        self._adv()
+                        continue
+                    break
+
+            self._skip_seps()
+            self._eat("punc", ")")
+
+        self._skip_seps()
+
+
+
+        self._skip_seps()
+
+        # body must be a parenthesized expression/sequence
+        if not (self.cur.kind == "punc" and self.cur.text == "("):
+            raise SyntaxError(self._fmt_err("Expected '(' to start function body"))
+        body = self.parse_primary()  # parses (...) as expr or Seq
+
+        self._skip_seps()
+        # optional trailing semicolon
+        if self.cur.kind == "semi":
+            self._adv()
+
+        return FunctionDef(self._new_id(), t_fun.span, fn_name, params, locals_, body)
+
 
     def parse_expr(self, min_prec: int) -> Node:
         lhs = self.parse_prefix()
@@ -404,7 +505,7 @@ class Parser:
             if prec is None or prec < min_prec:
                 break
 
-            assoc_right = op in _RIGHT_ASSOC
+            assoc_right = (op in _RIGHT_ASSOC)
             self._adv()
             rhs = self.parse_expr(prec + (0 if assoc_right else 1))
 
@@ -415,17 +516,25 @@ class Parser:
             else:
                 lhs = Binary(self._new_id(), lhs.span, op, lhs, rhs)
 
-        # ternary (right associative)
+        # ternary (JSFX allows "cond ? then" with implicit else 0)
         if self.cur.kind == "op" and self.cur.text == "?" and _TERNARY_PREC >= min_prec:
             q = self.cur
             self._adv()  # consume '?'
             self._skip_seps()
+
             then = self.parse_expr(0)
             self._skip_seps()
-            self._eat("op", ":")
-            self._skip_seps()
-            els = self.parse_expr(_TERNARY_PREC)
+
+            if self.cur.kind == "op" and self.cur.text == ":":
+                self._adv()
+                self._skip_seps()
+                els = self.parse_expr(_TERNARY_PREC)
+            else:
+                # no ':' => else is 0.0
+                els = Num(self._new_id(), q.span, 0.0)
+
             lhs = Ternary(self._new_id(), q.span, lhs, then, els)
+
 
         return lhs
 
@@ -443,27 +552,68 @@ class Parser:
             # call
             if self.cur.kind == "punc" and self.cur.text == "(":
                 sp = self.cur.span
-                self._adv()
-                args: List[Node] = []
-                if not (self.cur.kind == "punc" and self.cur.text == ")"):
-                    while True:
-                        args.append(self.parse_expr(0))
-                        if self.cur.kind == "punc" and self.cur.text == ",":
-                            self._adv()
-                            continue
-                        break
-                self._eat("punc", ")")
+                self._adv()  # consume '('
 
                 if not isinstance(node, Var):
                     raise SyntaxError(self._fmt_err("Can only call a named function"))
                 fn = node.name
+
+                # ---- SPECIAL: loop(count, body) where body may be un-comma'd multiline sequence ----
                 if fn == "loop":
-                    if len(args) != 2:
-                        raise SyntaxError(self._fmt_err("loop(count, body) expects 2 args"))
-                    node = Loop(self._new_id(), sp, args[0], args[1])
-                else:
-                    node = Call(self._new_id(), sp, fn, args)
+                    self._skip_seps()
+
+                    # count expr
+                    count = self.parse_expr(0)
+                    self._skip_seps()
+
+                    # optional comma after count
+                    if self.cur.kind == "punc" and self.cur.text == ",":
+                        self._adv()
+                    self._skip_seps()
+
+                    # body: parse as sequence until ')'
+                    # Accept either a single expr or multiple separated by ;/newline.
+                    body_first = None
+                    items: List[Node] = []
+
+                    # empty body => 0
+                    if self.cur.kind == "punc" and self.cur.text == ")":
+                        self._adv()
+                        node = Loop(self._new_id(), sp, count, Num(self._new_id(), sp, 0.0))
+                        continue
+
+                    body_first = self.parse_stmt_or_expr_for_seq()
+                    items.append(body_first)
+
+                    while True:
+                        self._skip_seps()
+                        if self.cur.kind == "punc" and self.cur.text == ")":
+                            self._adv()
+                            break
+                        items.append(self.parse_stmt_or_expr_for_seq())
+
+                    body_node: Node = items[0] if len(items) == 1 else Seq(self._new_id(), sp, items)
+                    node = Loop(self._new_id(), sp, count, body_node)
+                    continue
+                # ---- end loop special ----
+
+                # generic call (your existing improved separator-skipping version)
+                args: List[Node] = []
+                self._skip_seps()
+                if not (self.cur.kind == "punc" and self.cur.text == ")"):
+                    while True:
+                        self._skip_seps()
+                        args.append(self.parse_expr(0))
+                        self._skip_seps()
+                        if self.cur.kind == "punc" and self.cur.text == ",":
+                            self._adv()
+                            continue
+                        break
+                self._skip_seps()
+                self._eat("punc", ")")
+                node = Call(self._new_id(), sp, fn, args)
                 continue
+
 
             # indexing
             if self.cur.kind == "punc" and self.cur.text == "[":
@@ -491,21 +641,32 @@ class Parser:
         if self.cur.kind == "punc" and self.cur.text == "(":
             sp = self.cur.span
             self._adv()
+            # allow leading newlines/semicolons inside paren-sequences
+            self._skip_seps()
+
+            # allow empty paren group: () or ( \n )
             if self.cur.kind == "punc" and self.cur.text == ")":
-                raise SyntaxError(self._fmt_err("Empty () not allowed"))
+                self._adv()
+                return Seq(self._new_id(), sp, [])
+
             first = self.parse_stmt_or_expr_for_seq()
             if self.cur.kind == "punc" and self.cur.text == ")":
                 self._adv()
                 return first
             items = [first]
             while True:
-                if self.cur.kind not in ("semi", "eol"):
-                    raise SyntaxError(self._fmt_err("Expected ';' or newline or ')' in sequence"))
+                # consume any number of separators between items
                 self._skip_seps()
+
+                # end of sequence
                 if self.cur.kind == "punc" and self.cur.text == ")":
                     self._adv()
                     break
+
+                # if we didn't hit ')', we must be at the start of another stmt/expr
                 items.append(self.parse_stmt_or_expr_for_seq())
+
+
             return Seq(self._new_id(), sp, items)
 
         raise SyntaxError(self._fmt_err("Expected number, identifier, or '('"))
@@ -572,7 +733,9 @@ class SymTable:
                 idx = int(suf)
                 if 0 <= idx < 64:
                     return SymRef("spl", idx)
-            raise ValueError(f"Invalid spl name: {name}")
+                raise ValueError(f"Invalid spl index: {name}")
+            # NOT spl<number> => it's a normal variable like "splitSamp"
+
 
         if name.startswith("slider"):
             suf = name[6:]
@@ -581,7 +744,9 @@ class SymTable:
                 idx = n - 1
                 if 0 <= idx < 64:
                     return SymRef("slider", idx)
-            raise ValueError(f"Invalid slider name: {name}")
+                raise ValueError(f"Invalid slider index: {name}")
+            # NOT slider<number> => normal var like "sliderGainThing"
+
 
         if name == "mem":
             # numeric base index of heap is always 0.0
@@ -598,50 +763,85 @@ class SymTable:
         return SymRef("var", self.vars[name])
 
 
-def collect_user_vars(programs: Dict[str, List[Node]]) -> Dict[str, int]:
+def collect_user_vars(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Dict[str, int]:
     names: Set[str] = set()
 
-    def rec(n: Node) -> None:
+    def rec(n: Node, locals: Set[str]) -> None:
         if isinstance(n, Var):
+            if n.name in locals:
+                return
             if n.name in BUILTIN_NAMES:
                 return
-            if n.name.startswith("spl") or n.name.startswith("slider"):
+            # skip only real spl registers spl0..spl63
+            if n.name.startswith("spl") and n.name[3:].isdigit():
+                return
+
+            # skip only real slider registers slider1..slider64
+            if n.name.startswith("slider") and n.name[6:].isdigit():
+                return
+
+            if n.name.startswith("$"):   # treat $... as special/const, not state vars
                 return
             names.add(n.name)
             return
+
         if isinstance(n, Num):
             return
         if isinstance(n, Index):
-            rec(n.base); rec(n.index); return
+            rec(n.base, locals); rec(n.index, locals); return
         if isinstance(n, Unary):
-            rec(n.a); return
+            rec(n.a, locals); return
         if isinstance(n, Binary):
-            rec(n.l); rec(n.r); return
+            rec(n.l, locals); rec(n.r, locals); return
         if isinstance(n, Assign):
-            rec(n.target); rec(n.value); return
+            rec(n.target, locals); rec(n.value, locals); return
         if isinstance(n, Call):
-            for a in n.args: rec(a)
+            for a in n.args: rec(a, locals)
             return
         if isinstance(n, Loop):
-            rec(n.count); rec(n.body); return
+            rec(n.count, locals); rec(n.body, locals); return
         if isinstance(n, Ternary):
-            rec(n.cond); rec(n.then); rec(n.els); return
+            rec(n.cond, locals); rec(n.then, locals); rec(n.els, locals); return
         if isinstance(n, Seq):
-            for it in n.items: rec(it)
+            for it in n.items: rec(it, locals)
             return
         if isinstance(n, If):
-            rec(n.cond); rec(n.then)
-            if n.els: rec(n.els)
+            rec(n.cond, locals); rec(n.then, locals)
+            if n.els: rec(n.els, locals)
             return
         if isinstance(n, While):
-            rec(n.cond); rec(n.body); return
+            rec(n.cond, locals); rec(n.body, locals); return
+
         raise TypeError(type(n))
 
+    # sections
     for prog in programs.values():
         for st in prog:
-            rec(st)
+            rec(st, set())
+
+    # function bodies (exclude params+locals)
+    for f in fn_defs.values():
+        localset = set(f.params) | set(f.locals)
+        rec(f.body, localset)
 
     return {name: i for i, name in enumerate(sorted(names))}
+
+
+def extract_function_defs(programs: Dict[str, List[Node]]) -> Tuple[Dict[str, FunctionDef], Dict[str, List[Node]]]:
+    fns: Dict[str, FunctionDef] = {}
+    out: Dict[str, List[Node]] = {}
+
+    for sec, prog in programs.items():
+        new_prog: List[Node] = []
+        for n in prog:
+            if isinstance(n, FunctionDef):
+                # last one wins (matches JSFX “redefine” behavior loosely; good enough for now)
+                fns[n.name] = n
+            else:
+                new_prog.append(n)
+        out[sec] = new_prog
+
+    return fns, out
 
 
 # -----------------------------
@@ -688,6 +888,10 @@ class LLVMModuleEmitter:
         )
 
         self._intrinsics: Dict[str, ir.Function] = {}
+        self.user_fn_defs: Dict[str, FunctionDef] = {}
+        self.user_fn_ir: Dict[str, ir.Function] = {}
+        self._local_slots_stack: List[Dict[str, ir.Value]] = []
+
 
         self._buildins: Dict[str, ir.Function] = {}
 
@@ -704,13 +908,16 @@ class LLVMModuleEmitter:
         if fn in self._intrinsics:
             return self._intrinsics[fn]
 
-        if fn in ("sin", "cos", "sqrt", "fabs"):
+        if fn in ("sin", "cos", "sqrt", "fabs", "floor", "ceil"):
             name = {
                 "sin": "llvm.sin.f64",
                 "cos": "llvm.cos.f64",
                 "sqrt": "llvm.sqrt.f64",
                 "fabs": "llvm.fabs.f64",
+                "floor": "llvm.floor.f64",
+                "ceil": "llvm.ceil.f64",
             }[fn]
+
             f = ir.Function(self.module, ir.FunctionType(self.double, [self.double]), name=name)
             self._intrinsics[fn] = f
             return f
@@ -723,6 +930,12 @@ class LLVMModuleEmitter:
         raise ValueError(f"Unknown builtin {fn}")
 
     def _get_slot_ptr(self, builder: ir.IRBuilder, st: ir.Value, name: str) -> ir.Value:
+        # Local variables (function params/locals) shadow globals
+        if self._local_slots_stack:
+            loc = self._local_slots_stack[-1].get(name)
+            if loc is not None:
+                return loc
+
         ref = self.sym.resolve(name)
         zero = ir.Constant(self.i32, 0)
 
@@ -790,6 +1003,54 @@ class LLVMModuleEmitter:
         mem_ptr = self._get_mem_ptr(builder, st)
         elem_ptr = builder.gep(mem_ptr, [addr0])
         return elem_ptr
+    
+    def _to_i32(self, builder, x):
+        return builder.fptosi(x, self.i32)
+
+    def _to_f64(self, builder, x_i32):
+        return builder.sitofp(x_i32, self.double)
+
+    
+    def declare_user_functions(self, fn_defs: Dict[str, FunctionDef]) -> None:
+        self.user_fn_defs = dict(fn_defs)
+        # Signature: double fn(DSPJSFX_State* st, double a0, double a1, ...)
+        for name, fdef in self.user_fn_defs.items():
+            arg_types = [self.state_ptr] + [self.double] * len(fdef.params)
+            fnty = ir.FunctionType(self.double, arg_types)
+            self.user_fn_ir[name] = ir.Function(self.module, fnty, name=f"jsfx_fn_{name}")
+
+    def emit_user_functions(self) -> None:
+        for name, fdef in self.user_fn_defs.items():
+            fn = self.user_fn_ir[name]
+            entry = fn.append_basic_block("entry")
+            b = ir.IRBuilder(entry)
+
+            st = fn.args[0]
+            st.name = "st"
+
+            # Create local slots for params+locals (alloca double)
+            locals_map: Dict[str, ir.Value] = {}
+
+            # params
+            for i, p in enumerate(fdef.params):
+                slot = b.alloca(self.double, name=f"p_{p}")
+                b.store(fn.args[i + 1], slot)
+                locals_map[p] = slot
+
+            # locals
+            for l in fdef.locals:
+                if l in locals_map:
+                    continue
+                slot = b.alloca(self.double, name=f"l_{l}")
+                b.store(self._const_f64(0.0), slot)
+                locals_map[l] = slot
+
+            self._local_slots_stack.append(locals_map)
+            retv = self.emit_expr(b, st, fdef.body)
+            self._local_slots_stack.pop()
+
+            b.ret(retv)
+
 
     def emit_section_fn(self, name: str, prog: List[Node]) -> ir.Function:
         fn = ir.Function(self.module, ir.FunctionType(ir.VoidType(), [self.state_ptr]), name=name)
@@ -870,15 +1131,16 @@ class LLVMModuleEmitter:
         if isinstance(n, Var):
             if n.name == "mem":
                 return self._const_f64(0.0)
-            ref = self.sym.resolve(n.name)
-            if ref.kind == "builtin":
-                if ref.index == 0:
-                    return self._const_f64(0.0)
-                ptr = self._get_slot_ptr(builder, st, n.name)
-                return builder.load(ptr)
 
-            ptr = self._get_slot_ptr(builder, st, n.name)
+            # common JSFX constants (expand if needed)
+            if n.name == "$pi":
+                return self._const_f64(math.pi)
+            if n.name == "$e":
+                return self._const_f64(math.e)
+
+            ptr = self._get_slot_ptr(builder, st, n.name)  # handles locals + globals + srate/samplesblock
             return builder.load(ptr)
+
 
         # indexing
         if isinstance(n, Index):
@@ -922,11 +1184,33 @@ class LLVMModuleEmitter:
                 return builder.fmul(l, r)
             if n.op == "/":
                 return builder.fdiv(l, r)
+            if n.op == "^":
+                fdecl = self._declare_math("pow")
+                return builder.call(fdecl, [l, r])
+
 
             if n.op in ("<", "<=", ">", ">=", "==", "!="):
                 opmap = {"<": "olt", "<=": "ole", ">": "ogt", ">=": "oge", "==": "oeq", "!=": "one"}
                 c = builder.fcmp_ordered(opmap[n.op], l, r)
                 return builder.select(c, self._const_f64(1.0), self._const_f64(0.0))
+
+            # bitwise / shifts (JSFX-style: int ops on truncated values, return double)
+            if n.op in ("|","&","<<",">>"):
+                li = self._to_i32(builder, l)
+                ri = self._to_i32(builder, r)
+
+                if n.op == "|":  oi = builder.or_(li, ri)
+                elif n.op == "&": oi = builder.and_(li, ri)
+                elif n.op == "<<": oi = builder.shl(li, ri)
+                else: oi = builder.ashr(li, ri)  # arithmetic shift right
+
+                return self._to_f64(builder, oi)
+
+            if n.op == "%":
+                li = self._to_i32(builder, l)
+                ri = self._to_i32(builder, r)
+                oi = builder.srem(li, ri)
+                return self._to_f64(builder, oi)
 
             raise ValueError(f"Unsupported binary op {n.op}")
 
@@ -938,10 +1222,8 @@ class LLVMModuleEmitter:
             if isinstance(n.target, Var):
                 if n.target.name == "mem":
                     raise ValueError("Cannot assign to mem")
-                ref = self.sym.resolve(n.target.name)
-                if ref.kind == "builtin" and ref.index == 0:
-                    raise ValueError("Cannot assign to mem")
-                ptr = self._get_slot_ptr(builder, st, n.target.name)
+                ptr = self._get_slot_ptr(builder, st, n.target.name)  # works for locals too
+
             elif isinstance(n.target, Index):
                 ptr = self._mem_elem_ptr(builder, st, n.target.base, n.target.index)
             else:
@@ -972,6 +1254,13 @@ class LLVMModuleEmitter:
             if fn == "abs":
                 fn = "fabs"
 
+            # User-defined function call
+            if n.fn in self.user_fn_ir:
+                callee = self.user_fn_ir[n.fn]
+                argv = [st] + [self.emit_expr(builder, st, a) for a in n.args]
+                return builder.call(callee, argv)
+
+
             if fn in ("min", "max"):
                 if len(n.args) != 2:
                     raise ValueError(f"{fn} expects 2 args")
@@ -983,7 +1272,7 @@ class LLVMModuleEmitter:
                 c = builder.fcmp_ordered("ogt", a, b)
                 return builder.select(c, a, b)
 
-            if fn in ("sin", "cos", "sqrt", "fabs"):
+            if fn in ("sin", "cos", "sqrt", "fabs", "floor", "ceil"):
                 if len(n.args) != 1:
                     raise ValueError(f"{fn} expects 1 arg")
                 fdecl = self._declare_math(fn)
@@ -1317,14 +1606,22 @@ def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
         else:
             programs[sec] = []
 
-    user_vars = collect_user_vars(programs)
+    fn_defs, programs = extract_function_defs(programs)
+    user_vars = collect_user_vars(programs, fn_defs)
+
+
     sym = SymTable(user_vars)
 
     emitter = LLVMModuleEmitter(sym)
+    emitter.declare_user_functions(fn_defs)
+
     fn_init = emitter.emit_section_fn("jsfx_init", programs["init"])
     fn_slider = emitter.emit_section_fn("jsfx_slider", programs["slider"])
     fn_block = emitter.emit_section_fn("jsfx_block", programs["block"])
     fn_sample = emitter.emit_section_fn("jsfx_sample", programs["sample"])
+
+    emitter.emit_user_functions()
+
     emit_process_block_fn(emitter, fn_init, fn_slider, fn_block, fn_sample)
 
     meta = {
