@@ -964,48 +964,56 @@ class LLVMModuleEmitter:
         nptr = builder.gep(st, [zero, fld], inbounds=True)
         return builder.load(nptr)
 
-    def _mem_elem_ptr(self, builder: ir.IRBuilder, st: ir.Value, base: Node, index: Node) -> ir.Value:
+    def _mem_elem_ptr(self, builder, st_ptr, base_expr, idx_expr):
         """
-        Returns double* pointer to mem[(int)base + (int)index], clamped >=0 and ensured < memN.
+        EEL2 bracket indexing semantics:
+
+            addr = trunc((base + idx) + 0.00001)
+
+        NOT trunc(base) + trunc(idx)
         """
-        base_v = self.emit_expr(builder, st, base)
-        idx_v = self.emit_expr(builder, st, index)
 
-        # int64 idx = (int64)base_v + (int64)idx_v
-        base_i = builder.fptosi(base_v, self.i64)
-        idx_i = builder.fptosi(idx_v, self.i64)
-        addr = builder.add(base_i, idx_i)
+        # Evaluate base and index as f64
+        base_v = self.emit_expr(builder, st_ptr, base_expr)  # f64
+        idx_v  = self.emit_expr(builder, st_ptr, idx_expr)   # f64
 
-        # clamp to >= 0
-        is_neg = builder.icmp_signed("<", addr, self._const_i64(0))
-        addr0 = builder.select(is_neg, self._const_i64(0), addr)
+        # EEL2 legacy rounding: add 1e-5 before trunc
+        summed = builder.fadd(base_v, idx_v)
+        summed = builder.fadd(summed, self._const_f64(1.0e-5))
+        
 
-        # if addr0 >= memN: ensure_mem(st, addr0+1)
-        memN = self._get_memN(builder, st)
-        need_grow = builder.icmp_signed(">=", addr0, memN)
+        # Memory indexing: truncate ONCE to i64 (do NOT wrap to 32-bit here)
+        addr_i64 = builder.fptosi(summed, self.i64)
 
-        # Create blocks
-        fn = builder.function
-        cur_bb = builder.block
-        grow_bb = fn.append_basic_block(f"mem_grow_{cur_bb.name}")
-        cont_bb = fn.append_basic_block(f"mem_cont_{cur_bb.name}")
 
-        builder.cbranch(need_grow, grow_bb, cont_bb)
+        # Clamp negative to 0 (JSFX behavior for negative mem indexes is effectively 0-safe)
+        zero_i64 = ir.Constant(self.i64, 0)
+        isneg = builder.icmp_signed("<", addr_i64, zero_i64)
+        addr_i64 = builder.select(isneg, zero_i64, addr_i64)
 
-        # grow block
-        builder.position_at_end(grow_bb)
-        needed = builder.add(addr0, self._const_i64(1))
-        builder.call(self.fn_ensure, [st, needed])
-        builder.branch(cont_bb)
+        # If addr >= memN, grow/ensure memory so mem[addr] is valid (JSFX semantics)
+        memN = self._get_memN(builder, st_ptr)  # i64
+        need_grow = builder.icmp_signed(">=", addr_i64, memN)
+        with builder.if_then(need_grow):
+            one_i64 = ir.Constant(self.i64, 1)
+            needN = builder.add(addr_i64, one_i64)
+            # Your runtime helper should resize/ensure at least needN doubles
+            builder.call(self.fn_ensure, [st_ptr, needN])
 
-        # cont
-        builder.position_at_end(cont_bb)
-        mem_ptr = self._get_mem_ptr(builder, st)
-        elem_ptr = builder.gep(mem_ptr, [addr0])
-        return elem_ptr
+
+        # Base pointer to mem (double*)
+        mem_base = self._get_mem_ptr(builder, st_ptr)
+
+        # Return &mem[addr]
+        return builder.gep(mem_base, [addr_i64], inbounds=False)
+
+
     
     def _to_i32(self, builder, x):
-        return builder.fptosi(x, self.i32)
+        # JSFX-style: truncate toward 0 to *some* integer, then wrap to 32-bit
+        xi64 = builder.fptosi(x, self.i64)        # safe for your magnitudes
+        return builder.trunc(xi64, self.i32)      # wraps mod 2^32
+
 
     def _to_f64(self, builder, x_i32):
         return builder.sitofp(x_i32, self.double)
@@ -1195,16 +1203,27 @@ class LLVMModuleEmitter:
                 return builder.select(c, self._const_f64(1.0), self._const_f64(0.0))
 
             # bitwise / shifts (JSFX-style: int ops on truncated values, return double)
-            if n.op in ("|","&","<<",">>"):
+            if n.op in ("|", "&", "<<", ">>"):
                 li = self._to_i32(builder, l)
                 ri = self._to_i32(builder, r)
 
-                if n.op == "|":  oi = builder.or_(li, ri)
-                elif n.op == "&": oi = builder.and_(li, ri)
-                elif n.op == "<<": oi = builder.shl(li, ri)
-                else: oi = builder.ashr(li, ri)  # arithmetic shift right
+                # IMPORTANT:
+                # Only mask the RHS for SHIFT operations (shift count).
+                # Do NOT mask the RHS for plain AND/OR, or you destroy bitmasks like 16383, 2147483647, etc.
+                if n.op in ("<<", ">>"):
+                    ri = builder.and_(ri, ir.Constant(self.i32, 31))
+
+                if n.op == "|":
+                    oi = builder.or_(li, ri)
+                elif n.op == "&":
+                    oi = builder.and_(li, ri)
+                elif n.op == "<<":
+                    oi = builder.shl(li, ri)
+                else:
+                    oi = builder.ashr(li, ri)  # arithmetic shift right (likely matches JSFX)
 
                 return self._to_f64(builder, oi)
+
 
             if n.op == "%":
                 li = self._to_i32(builder, l)
@@ -1496,8 +1515,7 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     sb_val = builder.sitofp(nSamp64, self.double)
     builder.store(sb_val, sb_ptr)
 
-    # Call slider + block (wrapper should update st->sliders before calling)
-    builder.call(fn_slider, [st])
+    # Call block 
     builder.call(fn_block, [st])
 
     # Outer sample loop blocks
