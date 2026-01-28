@@ -63,6 +63,43 @@ struct JsfxSliderDecl
     bool isChoice = false;
 };
 
+static inline std::string trimAscii (std::string s)
+{
+    while (!s.empty() && std::isspace ((unsigned char) s.front())) s.erase (s.begin());
+    while (!s.empty() && std::isspace ((unsigned char) s.back()))  s.pop_back();
+    return s;
+}
+
+// Split a JSFX "<min,max,step{...},skew>" range string on commas, but ignore commas inside { }.
+// This is required because the enum-list itself is comma-separated.
+static std::vector<std::string> splitTopLevelCommas (const std::string& s)
+{
+    std::vector<std::string> parts;
+    std::string cur;
+    int braceDepth = 0;
+
+    for (char c : s)
+    {
+        if (c == '{')
+            ++braceDepth;
+        else if (c == '}' && braceDepth > 0)
+            --braceDepth;
+
+        if (c == ',' && braceDepth == 0)
+        {
+            parts.push_back (trimAscii (cur));
+            cur.clear();
+        }
+        else
+        {
+            cur.push_back (c);
+        }
+    }
+
+    parts.push_back (trimAscii (cur));
+    return parts;
+}
+
 
 static bool parseFloat (const std::string& s, float& out)
 {
@@ -114,20 +151,9 @@ static std::vector<JsfxSliderDecl> parseJsfxSliderDecls (const char* jsfxText)
         if (m[3].matched)
         {
             std::string r = m[3].str();
-            std::vector<std::string> parts;
-            size_t p0 = 0;
-            while (p0 < r.size())
-            {
-                size_t p1 = r.find (',', p0);
-                if (p1 == std::string::npos) p1 = r.size();
-                auto token = r.substr (p0, p1 - p0);
-
-                while (!token.empty() && std::isspace ((unsigned char) token.front())) token.erase (token.begin());
-                while (!token.empty() && std::isspace ((unsigned char) token.back()))  token.pop_back();
-
-                parts.push_back (token);
-                p0 = p1 + 1;
-            }
+            // IMPORTANT: do NOT naively split on ',' here.
+            // JSFX enum syntax is step{A,B,C} which contains commas.
+            const std::vector<std::string> parts = splitTopLevelCommas (r);
 
             float vmin = 0.0f, vmax = 1.0f, vstep = 0.001f;
             if (parts.size() >= 2)
@@ -165,12 +191,12 @@ static std::vector<JsfxSliderDecl> parseJsfxSliderDecls (const char* jsfxText)
 
                     // Strip "{...}" for numeric parsing
                     stepTok = stepTok.substr(0, bracePos);
-                    // trim
-                    while (!stepTok.empty() && std::isspace((unsigned char)stepTok.front())) stepTok.erase(stepTok.begin());
-                    while (!stepTok.empty() && std::isspace((unsigned char)stepTok.back()))  stepTok.pop_back();
+                    stepTok = trimAscii (stepTok);
                 }
 
-                if (!parseFloat(stepTok, vstep)) vstep = 1.0f;
+                // If stepTok is empty (e.g. "{A,B,C}"), JSFX semantics are effectively integer steps.
+                if (stepTok.empty()) vstep = 1.0f;
+                else if (!parseFloat(stepTok, vstep)) vstep = 1.0f;
             }
 
 
@@ -229,6 +255,17 @@ extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed)
 class JSFXJuceProcessor final : public juce::AudioProcessor
 {
 public:
+    // Per-slider runtime metadata so we can map JUCE parameters back to the JSFX
+    // numeric slider values (especially important for step{A,B,C} enums).
+    struct SliderParamInfo
+    {
+        juce::String pid;
+        float min  = 0.0f;
+        float max  = 1.0f;
+        float step = 1.0f;   // used for choice-index -> raw mapping
+        bool isChoice = false;
+    };
+
     JSFXJuceProcessor()
         : juce::AudioProcessor (BusesProperties()
             .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
@@ -236,16 +273,37 @@ public:
     {
         sliderDecls = parseJsfxSliderDecls (kJsfxSourceText);
 
+        // Reset runtime mapping tables (we only create parameters for declared sliders)
+        sliderParamUsed.fill (false);
+
         juce::AudioProcessorValueTreeState::ParameterLayout layout;
         for (const auto& s : sliderDecls)
         {
             const auto pid = sanitizeId (s.id);
 
+            // Record how this slider maps back into JSFX runtime values.
+            // For AudioParameterChoice we store the original JSFX numeric min/max/step so we can
+            // convert a choice index -> (min + index*step) at runtime.
+            {
+                SliderParamInfo info;
+                info.pid      = pid;
+                info.min      = s.min;
+                info.max      = s.max;
+                info.step     = (s.step > 0.0f ? s.step : 1.0f);
+                info.isChoice = (s.isChoice && s.choices.size() > 0);
+                sliderParamInfo[(size_t) s.index0] = info;
+                sliderParamUsed[(size_t) s.index0] = true;
+            }
+
             if (s.isChoice && s.choices.size() > 0)
             {
-                // Map JSFX numeric range [min..max] to choice index [0..N-1]
-                const int base = (int) std::floor(s.min + 0.5f);
-                int defIdx = (int) std::floor((s.def - (float)base) + 0.5f);
+                // JSFX syntax: step{A,B,C} means *discrete* values, but the JSFX slider variable
+                // is still numeric in the original range.
+                //
+                // We expose it as a CHOICE so hosts show the textual options.
+                // Then at runtime we convert choice-index -> JSFX numeric value.
+                const float step = (s.step > 0.0f ? s.step : 1.0f);
+                int defIdx = (int) std::llround ((s.def - s.min) / step);
                 defIdx = juce::jlimit(0, s.choices.size() - 1, defIdx);
 
                 layout.add (std::make_unique<juce::AudioParameterChoice>(pid, s.name, s.choices, defIdx));
@@ -255,8 +313,6 @@ public:
                 const auto range = juce::NormalisableRange<float> (s.min, s.max, s.step);
                 layout.add (std::make_unique<juce::AudioParameterFloat> (pid, s.name, range, s.def));
             }
-
-            paramIdBySliderIndex[s.index0] = pid;
         }
 
 
@@ -380,43 +436,46 @@ private:
     {
         bool changed = false;
 
-        for (const auto& kv : paramIdBySliderIndex)
+        for (size_t i = 0; i < 64; ++i)
         {
-            const int idx0 = kv.first;
-            const auto& pid = kv.second;
+            if (! sliderParamUsed[i])
+                continue;
 
-            auto it = std::find_if(sliderDecls.begin(), sliderDecls.end(),
-                                [idx0](const JsfxSliderDecl& d){ return d.index0 == idx0; });
+            const auto& info = sliderParamInfo[i];
+            double newVal = st.sliders[i];
 
-            const bool isChoice = (it != sliderDecls.end() && it->isChoice && it->choices.size() > 0);
-            const int base = isChoice ? (int) std::floor(it->min + 0.5f) : 0;
-
-            double newVal = st.sliders[idx0];
-
-            if (auto* p = apvts->getParameter(pid))
+            // Robust value read:
+            // - RangedAudioParameter::getValue() is ALWAYS normalised 0..1
+            // - convertFrom0to1() ALWAYS returns the raw value in the parameter's declared range
+            // This avoids accidentally feeding JSFX normalised values when the original slider
+            // range was e.g. 0..100 or -24..+24.
+            if (auto* p = apvts->getParameter (info.pid))
             {
-                if (isChoice)
-                {
-                    auto* cp = dynamic_cast<juce::AudioParameterChoice*>(p);
-                    const int choiceIdx = cp ? cp->getIndex()
-                                            : (int) std::floor(p->getValue() + 0.5f);
-                    newVal = (double) (base + choiceIdx);
-                }
-                else
-                {
-                    if (auto* v = apvts->getRawParameterValue(pid))
-                        newVal = (double) v->load();
-                }
+                const float norm = p->getValue();
+                newVal = (double) p->convertFrom0to1 (norm);
             }
+            else if (auto* v = apvts->getRawParameterValue (info.pid))
+            {
+                // Fallback (should not normally happen)
+                newVal = (double) v->load();
+            }
+
+            // If the host-facing parameter is a CHOICE, its raw value is an index [0..N-1].
+            // JSFX expects the original numeric slider value (min + index*step).
+            if (info.isChoice)
+                newVal = (double) info.min + std::llround (newVal) * (double) info.step;
+
+            // Clamp to the declared JSFX range.
+            newVal = juce::jlimit<double> ((double) info.min, (double) info.max, newVal);
 
             // Detect actual value change
-            if (!lastSlidersValid || newVal != lastSliders[(size_t) idx0])
+            if (!lastSlidersValid || newVal != lastSliders[i])
             {
                 changed = true;
-                lastSliders[(size_t) idx0] = newVal;
+                lastSliders[i] = newVal;
             }
 
-            st.sliders[idx0] = newVal;
+            st.sliders[i] = newVal;
         }
 
         lastSlidersValid = true;
@@ -430,7 +489,9 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState> apvts;
 
     std::vector<JsfxSliderDecl> sliderDecls;
-    std::map<int, juce::String> paramIdBySliderIndex;
+
+    std::array<SliderParamInfo, 64> sliderParamInfo {};
+    std::array<bool, 64>           sliderParamUsed {};
 
     std::vector<const float*> inPtrs;
     std::vector<float*> outPtrs;

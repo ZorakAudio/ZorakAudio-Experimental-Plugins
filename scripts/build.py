@@ -8,6 +8,49 @@ import shutil
 import zipfile
 from pathlib import Path
 
+def _run_text(cmd: list[str]) -> str:
+    return subprocess.check_output(cmd, text=True, encoding="utf-8", errors="replace").strip()
+
+def find_vs_installation_path() -> str | None:
+    """Locate latest Visual Studio with VC tools using vswhere (Windows only)."""
+    if os.name != "nt":
+        return None
+
+    vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / \
+              "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+    if not vswhere.exists():
+        return None
+
+    try:
+        return _run_text([
+            str(vswhere),
+            "-latest",
+            "-products", "*",
+            "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property", "installationPath"
+        ])
+    except Exception:
+        return None
+
+def pick_cmake_vs_generator(vs_path: str | None) -> str:
+    """Pick a CMake Visual Studio generator name from an installation path.
+
+    VS 2022 -> 'Visual Studio 17 2022'
+    VS 2026 -> 'Visual Studio 18 2026' (requires CMake that knows this generator)
+    """
+    if not vs_path:
+        # Default to newest we intend to support.
+        return "Visual Studio 18 2026"
+
+    p = vs_path.lower().replace("/", "\\")
+    if "\\2026\\" in p:
+        return "Visual Studio 18 2026"
+    if "\\2022\\" in p:
+        return "Visual Studio 17 2022"
+
+    # Unknown layout/version; default to newest.
+    return "Visual Studio 18 2026"
+
 def is_macos() -> bool:
     return sys.platform == "darwin"
 
@@ -40,6 +83,21 @@ def host_os() -> str:
     if sys.platform == "darwin":
         return "macos"
     return "linux"
+
+def clean_build_dir(repo_root: Path, os_id: str) -> None:
+    """
+    Delete build/<os_id> entirely.
+
+    CMake caches generator/instance/toolset in the binary dir; partial deletes are unreliable.
+    """
+    build_root = repo_root / "build" / os_id
+    if build_root.exists():
+        print(f"[clean] removing {build_root}")
+        shutil.rmtree(build_root)
+    else:
+        print(f"[clean] nothing to remove ({build_root} does not exist)")
+
+
 
 def zip_path(src: Path, dst_zip: Path) -> None:
     dst_zip.parent.mkdir(parents=True, exist_ok=True)
@@ -190,6 +248,9 @@ def main() -> None:
     ap.add_argument("--tag", default="0.0.0")
     ap.add_argument("--out", default="dist")
     ap.add_argument("--only", default="", help="Build only one plugin (match slug OR name OR dir). Case-insensitive.")
+    ap.add_argument("--clean", action="store_true", help="Delete build directory for current platform before building")
+    ap.add_argument("--clean-only", action="store_true", help="Delete build directory for current platform and exit")
+
     args = ap.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -205,6 +266,12 @@ def main() -> None:
     out_dir = (repo_root / args.out / args.tag / os_id)
     out_dir.mkdir(parents=True, exist_ok=True)
     build_root = repo_root / "build" / os_id
+    # --clean / --clean-only: nuke build/<os_id> before generating DSP or running CMake.
+    if args.clean or args.clean_only:
+        clean_build_dir(repo_root, os_id)
+        if args.clean_only:
+            return
+
 
     enable_clap = (os_id in ("windows", "linux"))  # matches your “time-optimal” plan
 
@@ -275,7 +342,28 @@ def main() -> None:
             cmake_args += ["-DZA_ENABLE_CLAP=OFF"]
 
         if os_id == "windows":
-            cmake_args += ["-G", "Visual Studio 17 2022", "-A", "x64"]
+            # Visual Studio generator selection:
+            # - Allow override via env:
+            #     ZA_CMAKE_GENERATOR="Visual Studio 18 2026"
+            #     ZA_CMAKE_GENERATOR_INSTANCE="C:\\Path\\To\\VS"
+            # - Otherwise, locate VS via vswhere and pick a generator based on its version.
+            gen = os.environ.get("ZA_CMAKE_GENERATOR")
+            inst = os.environ.get("ZA_CMAKE_GENERATOR_INSTANCE")
+
+            if not gen:
+                vs_path = find_vs_installation_path()
+                gen = pick_cmake_vs_generator(vs_path)
+
+                # If we found an install path and no explicit override was given,
+                # point CMake at the correct instance so it doesn't try a hard-coded 2022 path.
+                if vs_path and not inst:
+                    inst = vs_path
+
+            cmake_args += ["-G", gen, "-A", "x64"]
+
+            # Only set instance if we actually have one. Never hardcode ".../2022/Community".
+            if inst:
+                cmake_args += [f"-DCMAKE_GENERATOR_INSTANCE={inst}"]
         else:
             cmake_args += ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release"]
 
