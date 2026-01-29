@@ -317,6 +317,14 @@ public:
 
 
         apvts = std::make_unique<juce::AudioProcessorValueTreeState> (*this, nullptr, "PARAMS", std::move (layout));
+        
+        paramAtomics.fill (nullptr);
+        for (size_t i = 0; i < 64; ++i)
+        {
+            if (! sliderParamUsed[i]) continue;
+            const auto& info = sliderParamInfo[i];
+            paramAtomics[i] = apvts->getRawParameterValue (info.pid);
+        }
 
         initStateMemory();
     }
@@ -379,8 +387,7 @@ public:
         {
             inPtrs[(size_t) ch]  = buffer.getReadPointer (ch);
             outPtrs[(size_t) ch] = buffer.getWritePointer (ch);
-        }
-
+        }        
         const bool slidersChanged = pushParamsToStateSliders();
         if (slidersChanged)
             jsfx_slider(&st);
@@ -449,15 +456,16 @@ private:
             // - convertFrom0to1() ALWAYS returns the raw value in the parameter's declared range
             // This avoids accidentally feeding JSFX normalised values when the original slider
             // range was e.g. 0..100 or -24..+24.
-            if (auto* p = apvts->getParameter (info.pid))
+            if (auto* v = paramAtomics[i])
+            {
+                // NOTE: For AudioParameterFloat, this returns the raw value in range.
+                // For AudioParameterChoice, this returns the raw choice index.
+                newVal = (double) v->load();
+            }
+            else if (auto* p = apvts->getParameter (info.pid))
             {
                 const float norm = p->getValue();
                 newVal = (double) p->convertFrom0to1 (norm);
-            }
-            else if (auto* v = apvts->getRawParameterValue (info.pid))
-            {
-                // Fallback (should not normally happen)
-                newVal = (double) v->load();
             }
 
             // If the host-facing parameter is a CHOICE, its raw value is an index [0..N-1].
@@ -468,6 +476,21 @@ private:
             // Clamp to the declared JSFX range.
             newVal = juce::jlimit<double> ((double) info.min, (double) info.max, newVal);
 
+            // If this slider is not a CHOICE, emulate JSFX slider stepping.
+            // This prevents host float jitter from triggering @slider rebuilds.
+            if (! info.isChoice)
+            {
+                const double step = (double) (info.step > 0.0f ? info.step : 0.0f);
+                if (step > 0.0)
+                {
+                    const double q = std::llround ((newVal - (double) info.min) / step);
+                    newVal = (double) info.min + q * step;
+
+                    // clamp again after quantize
+                    newVal = juce::jlimit<double> ((double) info.min, (double) info.max, newVal);
+                }
+            }
+
             // Detect actual value change
             if (!lastSlidersValid || newVal != lastSliders[i])
             {
@@ -476,6 +499,7 @@ private:
             }
 
             st.sliders[i] = newVal;
+
         }
 
         lastSlidersValid = true;
@@ -487,6 +511,7 @@ private:
 private:
     DSPJSFX_State st {};
     std::unique_ptr<juce::AudioProcessorValueTreeState> apvts;
+    std::array<std::atomic<float>*, 64> paramAtomics {};
 
     std::vector<JsfxSliderDecl> sliderDecls;
 

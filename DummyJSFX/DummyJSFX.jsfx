@@ -1,29 +1,294 @@
-desc: DSP-JSFX Test – Gain + Soft Clip
+desc:Designed Distance Topology (DDT) v2 — + Room Size
 
-slider1:1.0<0,2,0.01>Gain
-slider2:0.8<0,1,0.01>Clip Threshold
+slider1:30<0,100,1>Distance
+slider2:50<0,100,1>Spread
+slider3:40<0,100,1>Air Absorb
+slider4:55<0,100,1>Width
+slider5:2<0,4,1{Eco,Moderate,High,Very High,Extreme}>Quality
+slider6:100<0,100,1>Amount (Wet %)
+slider7:0<-12,12,0.1>Output (dB)
+slider8:0<0,3,1{Normal,Direct,Diffuse,Bypass}>Monitor
+slider9:50<0,100,1>Room Size
 
 @init
-// nothing fancy
-drive = 1.0;
+  EPS = 0.0000000000000000001;
+
+  BUF_LEN = 16384;
+  BUF_MASK = BUF_LEN - 1;
+
+  MAX_TAPS = 64;
+
+  bL = 0;
+  bR = bL + BUF_LEN;
+
+  bDL = bR + BUF_LEN;
+  bDR = bDL + MAX_TAPS;
+  bGL = bDR + MAX_TAPS;
+  bGR = bGL + MAX_TAPS;
+  bW  = bGR + MAX_TAPS;
+  bD0 = bW  + MAX_TAPS;
+
+  wofs = 0;
+
+  dirZL = 0; dirZR = 0;
+  eZL = 0;   eZR = 0;
+  lZL = 0;   lZR = 0;
+
+  tapN = 0;
+  splitSamp = 0;
+
+  a_dir = 0;
+  a_early = 0;
+  a_late = 0;
+
+  function clamp(x,a,b) ( x < a ? a : (x > b ? b : x) );
+  function db2lin(db) ( 10^(db/20) );
+  function smooth01(t) ( t = clamp(t,0,1); t*t*(3-2*t) );
+
+  function hash01(x) (
+    x = (x*1664525 + 1013904223)|0;
+    (x & 2147483647) / 2147483647
+  );
+
+  function alpha_lp(fc) local(a) (
+    fc = clamp(fc, 40, 0.49*srate);
+    a = exp(-2*$pi*fc/srate);
+    clamp(a, 0, 0.999999)
+  );
+
+  function reset_states() (
+    dirZL=0; dirZR=0;
+    eZL=0; eZR=0;
+    lZL=0; lZR=0;
+  );
+
+  function rebuild_taps() local(q,dist,sp,air,wid,room,wet,
+                                maxT,maxMsQ,minMs,maxMs,decayMs,powExp,
+                                directW,diffW,level_db,level,
+                                itdMaxS,seed,i,u,v,offMs,dS,
+                                w,sumW,sc,bal,gL,gR,fcD,fcE,fcL,splitMs,
+                                roomScaleT,roomScaleW) (
+
+    q = slider5|0;
+
+    dist = smooth01(slider1/100);
+    sp   = smooth01(slider2/100);
+    air  = smooth01(slider3/100);
+    wid  = smooth01(slider4/100);
+    room = smooth01(slider9/100);
+    wet  = smooth01(slider6/100);
+
+    // QUALITY: tap cap + base max window (ms)
+    q==0 ? (maxT=12; maxMsQ=12;) :
+    q==1 ? (maxT=20; maxMsQ=18;) :
+    q==2 ? (maxT=32; maxMsQ=28;) :
+    q==3 ? (maxT=48; maxMsQ=40;) :
+           (maxT=64; maxMsQ=60;);
+
+    // Room scaling:
+    // time scale (tiny..huge): 0.45..2.2
+    roomScaleT = 0.45 + 1.75*room;
+    // window scale (tiny..huge): 0.30..2.30
+    roomScaleW = 0.30 + 2.00*room;
+
+    // Tap count grows with distance + spread + (slightly) room size
+    tapN = (6 + floor(dist*dist*40) + floor(sp*12) + floor(room*8))|0;
+    tapN > maxT ? tapN = maxT;
+    tapN < 6 ? tapN = 6;
+
+    // Reflection window (ms)
+    // min: gets later in bigger rooms; also increases with distance
+    minMs = (0.15 + (0.25 + 2.50*dist) * roomScaleT);
+
+    // max: strongly room-dependent, also distance-dependent
+    maxMs = maxMsQ * roomScaleW * (0.25 + 0.75*dist);
+    maxMs < (minMs + 0.6) ? maxMs = minMs + 0.6;
+
+    // Diffuse envelope decay (ms): longer in bigger rooms
+    decayMs = (3 + 18*dist + 10*sp) * (0.60 + 1.40*room);
+    decayMs < 2 ? decayMs = 2;
+
+    // Distribution exponent:
+    // close => earlier, far => later. spread flattens distribution.
+    powExp = 2.4 - 1.8*dist + 0.6*(1-sp);
+    powExp = clamp(powExp, 0.5, 2.8);
+
+    // Direct vs diffuse weights
+    directW = 1 - 0.85*dist;
+    directW = clamp(directW, 0.12, 1.0);
+    diffW   = 1 - directW;
+
+    // Overall distance level drop (mild)
+    level_db = -12 * (dist^1.1);
+    level = db2lin(level_db);
+
+    directGain = directW * level;
+    diffGainTotal = diffW * level;
+
+    // ITD for decorrelation (diffuse only), clamped
+    itdMaxS = (0.00005 + 0.00040*dist) * srate * wid;
+    itdMaxS = floor(itdMaxS + 0.5);
+    itdMaxS > 24 ? itdMaxS = 24;
+
+    // Early/late split for time-dependent air absorption
+    splitMs = (1.2 + 6.0*dist) * (0.55 + 1.45*room);
+    splitSamp = floor(splitMs*srate/1000 + 0.5);
+
+    // Air absorption (direct mild, late diffuse strongest)
+    fcD = 20000 / (1 + 6*air*dist);
+    fcE = 20000 / (1 + 12*air*dist);
+    fcL = 18000 / (1 + 22*air*dist);
+
+    fcD = clamp(fcD, 1200, 20000);
+    fcE = clamp(fcE, 800,  20000);
+    fcL = clamp(fcL, 500,  20000);
+
+    a_dir   = alpha_lp(fcD);
+    a_early = alpha_lp(fcE);
+    a_late  = alpha_lp(fcL);
+
+    // Seed (stable)
+    seed = (floor(dist*1000) + floor(sp*2000)*17 + floor(air*3000)*31 + floor(wid*4000)*13 + floor(room*5000)*19 + q*911)|0;
+
+    // Raw weights
+    sumW = 0;
+    i=0;
+    loop(tapN,
+      u = hash01(seed + i*97);
+      v = hash01(seed + i*131 + 17);
+
+      offMs = minMs + (maxMs - minMs) * (u^powExp);
+      dS = floor(offMs*srate/1000 + 0.5);
+
+      m[bD0+i] = dS;
+
+      w = exp(-(offMs/max(0.5,decayMs)));
+      w *= (0.85 + 0.30*hash01(seed + i*251 + 3));
+      w = max(w, 0);
+
+      m[bW+i] = w;
+      sumW += w;
+
+      i+=1;
+    );
+
+    sumW < EPS ? sumW = 1;
+    sc = diffGainTotal / sumW;
+
+    // Finalize delays + gains
+    i=0;
+    loop(tapN,
+      baseD = m[bD0+i]|0;
+
+      itd = 0;
+      itdMaxS > 0 ? (
+        r = (hash01(seed + i*173 + 91)*2 - 1);
+        itd = floor(r*itdMaxS + (r>=0 ? 0.5 : -0.5));
+      );
+
+      dL = baseD;
+      dR = baseD + itd;
+
+      dL < 0 ? dL = 0;
+      dR < 0 ? dR = 0;
+      dL > (BUF_LEN-2) ? dL = BUF_LEN-2;
+      dR > (BUF_LEN-2) ? dR = BUF_LEN-2;
+
+      m[bDL+i] = dL;
+      m[bDR+i] = dR;
+
+      g = m[bW+i] * sc;
+
+      bal = 0;
+      itdMaxS > 0 ? bal = 0.15 * (itd / max(1,itdMaxS));
+
+      gL = g * (1 + bal);
+      gR = g * (1 - bal);
+
+      gL < 0 ? gL = 0;
+      gR < 0 ? gR = 0;
+
+      m[bGL+i] = gL;
+      m[bGR+i] = gR;
+
+      i+=1;
+    );
+
+    wetp = wet;
+    dryp = sqrt(1 - wet*wet);
+    out_gain = db2lin(clamp(slider7, -12, 12));
+
+    reset_states();
+  );
 
 @slider
-// cache slider values
-drive = slider1;
-clip  = slider2;
+  rebuild_taps();
 
 @sample
-// read input
-x = spl0;
+  m[bL + (wofs & BUF_MASK)] = spl0;
+  m[bR + (wofs & BUF_MASK)] = spl1;
 
-// apply gain
-x *= drive;
+  distN = smooth01(slider1/100);
+  mono = 0.5*(spl0 + spl1);
+  col = distN^0.8;
+  srcL = spl0*(1-col) + mono*col;
+  srcR = spl1*(1-col) + mono*col;
 
-// simple soft clip
-absx = abs(x);
-if (absx > clip)
-    x = clip * (x / absx);
+  dInL = directGain * srcL;
+  dInR = directGain * srcR;
 
-// write output (mono -> stereo)
-spl0 = x;
-spl1 = x;
+  dirZL = (1-a_dir)*dInL + a_dir*dirZL;
+  dirZR = (1-a_dir)*dInR + a_dir*dirZR;
+
+  sumEL = 0; sumER = 0;
+  sumLL = 0; sumLR = 0;
+
+  i=0;
+  loop(tapN,
+    dL = m[bDL+i]|0;
+    dR = m[bDR+i]|0;
+
+    idxL = (wofs - dL) & BUF_MASK;
+    idxR = (wofs - dR) & BUF_MASK;
+
+    xL = 0.5*(m[bL+idxL] + m[bR+idxL]);
+    xR = 0.5*(m[bL+idxR] + m[bR+idxR]);
+
+    gL = m[bGL+i];
+    gR = m[bGR+i];
+
+    baseD = m[bD0+i]|0;
+
+    baseD < splitSamp ? (
+      sumEL += gL * xL;
+      sumER += gR * xR;
+    ) : (
+      sumLL += gL * xL;
+      sumLR += gR * xR;
+    );
+
+    i+=1;
+  );
+
+  eZL = (1-a_early)*sumEL + a_early*eZL;
+  eZR = (1-a_early)*sumER + a_early*eZR;
+
+  lZL = (1-a_late)*sumLL + a_late*lZL;
+  lZR = (1-a_late)*sumLR + a_late*lZR;
+
+  yL = dirZL + eZL + lZL;
+  yR = dirZR + eZR + lZR;
+
+  mon = slider8|0;
+  mon==3 ? (oL=spl0; oR=spl1;) :
+  mon==1 ? (oL=dirZL; oR=dirZR;) :
+  mon==2 ? (oL=(eZL+lZL); oR=(eZR+lZR);) :
+           (oL=yL; oR=yR;);
+
+  spl0 = (dryp*spl0 + wetp*oL) * out_gain;
+  spl1 = (dryp*spl1 + wetp*oR) * out_gain;
+
+  spl0 > 8 ? spl0 = 8 : (spl0 < -8 ? spl0 = -8);
+  spl1 > 8 ? spl1 = 8 : (spl1 < -8 ? spl1 = -8);
+
+  wofs += 1;
