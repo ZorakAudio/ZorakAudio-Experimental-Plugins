@@ -15,6 +15,7 @@ jobs:
   jsfx-nulltests:
     runs-on: windows-latest
     timeout-minutes: 30
+
     steps:
       - uses: actions/checkout@v4
 
@@ -29,23 +30,48 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ci/reaper-portable
-          key: reaper-portable-${{ runner.os }}-v1
+          key: reaper-portable-${{ runner.os }}-v2
 
-      - name: Ensure portable REAPER exists
+      - name: Restore portable REAPER (cache or unzip)
         shell: pwsh
         run: |
-          if (!(Test-Path ".ci/reaper-portable\Reaper (Portable)\reaper.exe")) {
-            throw "Missing .ci/reaper-portable\Reaper (Portable)\reaper.exe (populate on cache miss)."
+          $root = ".ci\reaper-portable"
+
+          # Cache hit?
+          $exe = Get-ChildItem -Path $root -Recurse -Filter reaper.exe -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($exe) {
+            Write-Host "Found REAPER: $($exe.FullName)"
+            exit 0
           }
+
+          # Cache miss -> unzip from repo (place the zip here)
+          $zip = ".ci\Reaper (Portable).zip"
+          if (!(Test-Path $zip)) {
+            throw "No cached REAPER and missing $zip. Add the zip to repo (or download it here) to bootstrap."
+          }
+
+          Write-Host "Cache miss: extracting $zip -> $root"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          Expand-Archive -Path $zip -DestinationPath $root -Force
+
+          $exe = Get-ChildItem -Path $root -Recurse -Filter reaper.exe -File | Select-Object -First 1
+          if (-not $exe) { throw "Extraction completed but reaper.exe still not found under $root" }
+
+          Write-Host "Extracted REAPER: $($exe.FullName)"
 
       - name: Run JSFX null tests
         shell: pwsh
         env:
-          REAPER_PORTABLE_DIR: ${{ github.workspace }}\.ci\reaper-portable
           NULLTEST_TOL: "1e-6"
           NULLTEST_TIMEOUT_S: "900"
           NULLTEST_REPORT_DIR: ${{ github.workspace }}\.ci\out
         run: |
+          $exe = Get-ChildItem -Path ".ci\reaper-portable" -Recurse -Filter reaper.exe -File | Select-Object -First 1
+          if (-not $exe) { throw "reaper.exe not found after restore step" }
+
+          $env:REAPER_PORTABLE_DIR = Split-Path $exe.FullName -Parent
+          Write-Host "REAPER_PORTABLE_DIR=$env:REAPER_PORTABLE_DIR"
+
           python .ci\run_jsfx_nulltests.py
 
       - name: Upload report
