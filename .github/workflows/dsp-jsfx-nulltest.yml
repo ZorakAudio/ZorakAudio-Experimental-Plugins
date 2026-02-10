@@ -34,8 +34,8 @@ jobs:
       - name: Ensure portable REAPER exists
         shell: pwsh
         run: |
-          if (!(Test-Path ".ci/reaper-portable\reaper.exe")) {
-            throw "Missing .ci/reaper-portable\reaper.exe (populate on cache miss)."
+          if (!(Test-Path ".ci/reaper-portable\Reaper (Portable)\reaper.exe")) {
+            throw "Missing .ci/reaper-portable\Reaper (Portable)\reaper.exe (populate on cache miss)."
           }
 
       - name: Run JSFX null tests
