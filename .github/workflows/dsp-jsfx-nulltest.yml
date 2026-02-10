@@ -72,7 +72,8 @@ jobs:
           $env:REAPER_PORTABLE_DIR = Split-Path $exe.FullName -Parent
           Write-Host "REAPER_PORTABLE_DIR=$env:REAPER_PORTABLE_DIR"
 
-          python .ci\run_jsfx_nulltests.py
+          python scripts\run_dsp-jsfx_nulltests.py
+
 
       - name: Upload report
         if: always()
