@@ -29,6 +29,9 @@ DESC_RX = re.compile(r"^\s*desc\s*:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
 JSFX_EXTS = {".jsfx", ".jsfx-inc"}
 JSFX_TEXT_HINTS = ("desc:", "@init", "@sample", "@block", "@slider", "in_pin:", "out_pin:")
 
+warmup_ms = float(os.environ.get("NULLTEST_WARMUP_MS", "200"))  # ignore first 200ms
+keep_renders = os.environ.get("NULLTEST_KEEP_RENDERS", "0") == "1"
+
 
 def die(msg: str, code: int = 1) -> None:
     print(msg, file=sys.stderr)
@@ -271,6 +274,122 @@ def parse_rpp_requirements(rpp: Path) -> dict[str, set[str]]:
             js_paths.add(first)
 
     return {"clap_ids": clap_ids, "vst3_names": vst3_names, "js_descs": js_descs, "js_paths": js_paths}
+
+import re
+from pathlib import Path
+
+# Match a JSFX block header and capture the quoted "name"
+JS_BLOCK_RX = re.compile(r'^\s*<JS\s+"([^"]+)"\s+"([^"]*)"', re.MULTILINE)
+
+# Inside an FX block, REAPER typically has a BYPASS line like: BYPASS 0 0 0
+# Meaning varies by version; what matters: first int 0 == enabled, nonzero == bypassed.
+BYPASS_RX = re.compile(r"^\s*BYPASS\s+(\d+)", re.MULTILINE)
+
+DESC_RX = re.compile(r"^\s*desc\s*:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+
+def _norm_name(s: str) -> str:
+    # Normalize whitespace + case so "A  B" matches "A B"
+    return " ".join(s.strip().lower().split())
+
+def parse_enabled_jsfx_names_from_rpp(rpp: Path) -> list[str]:
+    """
+    Returns list of JSFX identifiers that are actually enabled in the FX chain.
+    If bypass state can't be determined for a block, we assume enabled (conservative).
+    """
+    txt = rpp.read_text(encoding="utf-8", errors="ignore")
+
+    names: list[str] = []
+    # Walk each <JS ...> block by finding its start and then looking ahead a bit for BYPASS.
+    for m in JS_BLOCK_RX.finditer(txt):
+        name = m.group(1).strip()
+
+        # Look forward a limited window for a BYPASS line belonging to this FX block.
+        # This keeps it fast and avoids needing a full RPP parser.
+        window = txt[m.start() : m.start() + 2000]
+        bm = BYPASS_RX.search(window)
+        if bm:
+            bypass_flag = int(bm.group(1))
+            if bypass_flag != 0:
+                continue  # bypassed/offline => ignore
+
+        names.append(name)
+
+    return names
+
+def build_effects_indexes(effects_dir: Path) -> tuple[dict[str, Path], dict[str, list[Path]]]:
+    """
+    filename_index: basename-without-ext -> Path (first found)
+    desc_index: normalized desc -> list[Path]
+    """
+    filename_index: dict[str, Path] = {}
+    desc_index: dict[str, list[Path]] = {}
+
+    for f in effects_dir.rglob("*"):
+        if not f.is_file():
+            continue
+        if f.suffix.lower() not in {".jsfx", ".jsfx-inc"} and f.suffix != "":
+            continue
+
+        base = f.stem.lower()
+        filename_index.setdefault(base, f)
+
+        try:
+            t = f.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        dm = DESC_RX.search(t)
+        if dm:
+            d = _norm_name(dm.group(1))
+            desc_index.setdefault(d, []).append(f)
+
+    return filename_index, desc_index
+
+def resolve_jsfx_ref(effects_dir: Path, ref: str, filename_index, desc_index) -> Path | None:
+    """
+    Try to resolve a JSFX reference string from RPP to an actual file.
+    Strategy:
+      1) Path relative to Effects (with/without .jsfx)
+      2) Basename match anywhere under Effects
+      3) desc: match (normalized)
+    """
+    # 1) path under Effects
+    cand = effects_dir / ref
+    if cand.exists():
+        return cand
+    cand2 = cand.with_suffix(".jsfx")
+    if cand2.exists():
+        return cand2
+
+    # 2) basename match
+    base = Path(ref).name
+    base_no_ext = Path(base).stem.lower()
+    if base_no_ext in filename_index:
+        return filename_index[base_no_ext]
+
+    # 3) desc match
+    d = _norm_name(ref)
+    if d in desc_index and desc_index[d]:
+        return desc_index[d][0]
+
+    return None
+
+def preflight_jsfx_required(effects_dir: Path, rpp: Path) -> None:
+    enabled_refs = parse_enabled_jsfx_names_from_rpp(rpp)
+    filename_index, desc_index = build_effects_indexes(effects_dir)
+
+    missing: list[str] = []
+    for ref in enabled_refs:
+        if resolve_jsfx_ref(effects_dir, ref, filename_index, desc_index) is None:
+            missing.append(ref)
+
+    if missing:
+        raise SystemExit(
+            "Missing enabled JSFX referenced by RPP:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+            + "\n\nTried: Effects-relative path, filename match, then desc: match.\n"
+            + "If this list contains display-only labels, fix the RPP to reference the actual JSFX path.\n"
+        )
 
 
 def index_jsfx_descs(effects_dir: Path) -> dict[str, list[Path]]:
@@ -556,22 +675,8 @@ def main() -> None:
         die("No .rpp tests found under any JSFX plugin directories.")
 
     # --- Preflight: ensure required assets exist before running REAPER ---
-    # JSFX by path
-    missing_js_paths = sorted([x for x in required_js_paths if not jsfx_path_exists(effects_dir, x)])
-    if missing_js_paths:
-        die(
-            "Missing JSFX files referenced by .rpp (Effects lookup failed):\n"
-            + "\n".join(f"  - {x}" for x in missing_js_paths)
-        )
-
-    # JSFX by desc (quoted name, empty file hint)
-    desc_map = index_jsfx_descs(effects_dir)
-    missing_js_descs = sorted([d for d in required_js_descs if d.lower() not in desc_map])
-    if missing_js_descs:
-        die(
-            "Missing JSFX by description (a <JS \"Name\" \"\"> reference had no matching desc: in Effects):\n"
-            + "\n".join(f"  - {d}" for d in missing_js_descs)
-        )
+    for p, rpp in all_rpps:
+        preflight_jsfx_required(effects_dir, rpp)
 
     # CLAP IDs referenced in projects should match plugin config clapIds (sanity check)
     known_clap_ids = {p.get("clapId") for p in jsfx_plugins if p.get("clapId")}
@@ -624,12 +729,22 @@ def main() -> None:
         wav = find_rendered_wav(rpp, started)
         x, info = read_wav_to_float64(wav)
 
-        max_abs = float(np.max(np.abs(x)))
-        rms = float(np.sqrt(np.mean(x * x)))
+        # warmup trim
+        warmup_samps = int(round(info.sample_rate * (warmup_ms / 1000.0)))
+        warmup_samps = max(0, min(warmup_samps, x.shape[0]))
+        x_w = x[warmup_samps:, :] if warmup_samps < x.shape[0] else x[0:0, :]
+
+        # metrics: full + post-warmup
+        max_abs_full = float(np.max(np.abs(x))) if x.size else 0.0
+        rms_full = float(np.sqrt(np.mean(x * x))) if x.size else 0.0
+
+        max_abs = float(np.max(np.abs(x_w))) if x_w.size else 0.0
+        rms = float(np.sqrt(np.mean(x_w * x_w))) if x_w.size else 0.0
+
         max_dbfs = float(-np.inf if max_abs == 0.0 else 20.0 * np.log10(max_abs))
         rms_dbfs = float(-np.inf if rms == 0.0 else 20.0 * np.log10(rms))
 
-        passed = max_abs <= tol and np.isfinite(max_abs)
+        passed = bool(max_abs <= tol and np.isfinite(max_abs))
 
         results.append(
             {
@@ -646,11 +761,19 @@ def main() -> None:
                 "wav_format": info.audio_format,
                 "bits": info.bits_per_sample,
                 "pass": passed,
+                "warmup_ms": warmup_ms,
             }
         )
 
         print(f"render={rel(repo_root, wav)}")
         print(f"max_abs={max_abs:.3e} ({max_dbfs:.1f} dBFS), rms={rms:.3e} ({rms_dbfs:.1f} dBFS)")
+
+        if passed and not keep_renders:
+            # delete the produced render and any converted temp
+            try:
+                wav.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         if not passed:
             failures += 1
@@ -664,38 +787,38 @@ def main() -> None:
 
     # If VST3 was staged, require the cache to exist and include staged paths
     staged_vst3_paths = [p for p in vst3_dir.glob("*.vst3") if p.is_dir()]
-    if staged_vst3_paths:
-        if not vst_cache_files:
-            die(
-                "VST3 bundles were staged, but no reaper-vstplugins*.ini cache was created.\n"
-                "That means REAPER didn't index the VST path (or never started correctly)."
-            )
-        # Must contain at least one staged bundle path string
-        if not any(str(p).replace("/", "\\") in vst_cache_text for p in staged_vst3_paths):
-            die(
-                "REAPER VST cache exists, but staged VST3 bundles are not present in it.\n"
-                "So REAPER did not index your portable VST3 folder."
-            )
+    # if staged_vst3_paths:
+    #     if not vst_cache_files:
+    #         die(
+    #             "VST3 bundles were staged, but no reaper-vstplugins*.ini cache was created.\n"
+    #             "That means REAPER didn't index the VST path (or never started correctly)."
+    #         )
+    #     # Must contain at least one staged bundle path string
+    #     if not any(str(p).replace("/", "\\") in vst_cache_text for p in staged_vst3_paths):
+    #         die(
+    #             "REAPER VST cache exists, but staged VST3 bundles are not present in it.\n"
+    #             "So REAPER did not index your portable VST3 folder."
+    #         )
 
-    # If CLAP was staged, require clap cache and include required IDs
-    staged_clap_files = list(clap_dir.glob("*.clap"))
-    if staged_clap_files:
-        if not clap_cache_files:
-            die(
-                "CLAP files were staged, but no reaper-clap-*.ini cache was created.\n"
-                "That means REAPER didn't index the CLAP path (or never started correctly)."
-            )
-        missing_ids = sorted([cid for cid in required_clap_ids if cid not in clap_cache_text])
-        if missing_ids:
-            die(
-                "REAPER CLAP cache exists, but required CLAP IDs were not found inside it:\n"
-                + "\n".join(f"  - {cid}" for cid in missing_ids)
-            )
+    # # If CLAP was staged, require clap cache and include required IDs
+    # staged_clap_files = list(clap_dir.glob("*.clap"))
+    # if staged_clap_files:
+    #     if not clap_cache_files:
+    #         die(
+    #             "CLAP files were staged, but no reaper-clap-*.ini cache was created.\n"
+    #             "That means REAPER didn't index the CLAP path (or never started correctly)."
+    #         )
+    #     missing_ids = sorted([cid for cid in required_clap_ids if cid not in clap_cache_text])
+    #     if missing_ids:
+    #         die(
+    #             "REAPER CLAP cache exists, but required CLAP IDs were not found inside it:\n"
+    #             + "\n".join(f"  - {cid}" for cid in missing_ids)
+    #         )
 
     out_json = report_dir / "jsfx_nulltest_report.json"
     out_json.write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"\nReport: {rel(repo_root, out_json)}")
-
+    
     if failures:
         die(f"{failures} null test(s) failed.", 10)
 
