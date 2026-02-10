@@ -1,0 +1,55 @@
+name: JSFX Null Tests
+
+"on":
+  workflow_call: {}
+  push:
+    paths:
+      - "**/*.jsfx"
+      - "**/*.rpp"
+      - "plugins.json"
+      - ".ci/**"
+  pull_request: {}
+
+jobs:
+  jsfx-nulltests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: python -m pip install --upgrade pip numpy
+
+      - name: Cache portable REAPER
+        uses: actions/cache@v4
+        with:
+          path: .ci/reaper-portable
+          key: reaper-portable-${{ runner.os }}-v1
+
+      - name: Ensure portable REAPER exists
+        shell: pwsh
+        run: |
+          if (!(Test-Path ".ci/reaper-portable\reaper.exe")) {
+            throw "Missing .ci/reaper-portable\reaper.exe (populate on cache miss)."
+          }
+
+      - name: Run JSFX null tests
+        shell: pwsh
+        env:
+          REAPER_PORTABLE_DIR: ${{ github.workspace }}\.ci\reaper-portable
+          NULLTEST_TOL: "1e-6"
+          NULLTEST_TIMEOUT_S: "900"
+          NULLTEST_REPORT_DIR: ${{ github.workspace }}\.ci\out
+        run: |
+          python .ci\run_jsfx_nulltests.py
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jsfx-nulltest-report
+          path: .ci/out
