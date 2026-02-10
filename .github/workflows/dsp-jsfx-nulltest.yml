@@ -24,7 +24,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: python -m pip install --upgrade pip numpy
+        run: python -m pip install --upgrade pip numpy llvmlite
 
       - name: Cache portable REAPER
         uses: actions/cache@v4

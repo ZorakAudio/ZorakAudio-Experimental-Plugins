@@ -32,6 +32,98 @@ JSFX_TEXT_HINTS = ("desc:", "@init", "@sample", "@block", "@slider", "in_pin:", 
 warmup_ms = float(os.environ.get("NULLTEST_WARMUP_MS", "200"))  # ignore first 200ms
 keep_renders = os.environ.get("NULLTEST_KEEP_RENDERS", "0") == "1"
 
+def host_os_id() -> str:
+    if sys.platform.startswith("win"):
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    return "linux"
+
+
+def clean_dir(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def build_all_jsfx_plugins(repo_root: Path, jsfx_plugins: list[dict]) -> tuple[str, str, str]:
+    """
+    Builds all pluginType=='jsfx' entries using scripts/build.py --only <slug>.
+
+    Returns (build_config, build_tag, build_out) used, so staging can be deterministic.
+    """
+    build_py = repo_root / "scripts" / "build.py"
+    if not build_py.exists():
+        die(f"Missing build script: {rel(repo_root, build_py)}")
+
+    build_config = os.environ.get("NULLTEST_BUILD_CONFIG", "Release")
+    build_tag = os.environ.get("NULLTEST_BUILD_TAG", "ci")
+    build_out = os.environ.get("NULLTEST_BUILD_OUT", "dist")
+
+    # Optional: clean build tree once (NOT per plugin)
+    if os.environ.get("NULLTEST_BUILD_CLEAN", "0") == "1":
+        clean_dir(repo_root / "build" / host_os_id())
+
+    if not jsfx_plugins:
+        return build_config, build_tag, build_out
+
+    for p in jsfx_plugins:
+        slug = p.get("slug")
+        if not slug:
+            die(f"JSFX plugin missing slug: {p}")
+
+        cmd = [
+            sys.executable,
+            str(build_py),
+            "--config", build_config,
+            "--tag", build_tag,
+            "--out", build_out,
+            "--only", slug,
+        ]
+        print("[build] " + " ".join(cmd))
+        cp = subprocess.run(cmd, cwd=str(repo_root))
+        if cp.returncode != 0:
+            die(f"Build failed for JSFX plugin: {slug}", 50)
+
+    return build_config, build_tag, build_out
+
+
+def stage_built_vst3_and_clap(
+    repo_root: Path,
+    slug: str,
+    build_config: str,
+    vst3_dir: Path,
+    clap_dir: Path,
+) -> tuple[int, int]:
+    """
+    Deterministic staging: use build.py artefacts layout:
+      build/<os_id>/<slug>/<slug>_artefacts/<config>/**.vst3
+      build/<os_id>/<slug>/<slug>_artefacts/<config>/**.clap
+    """
+    os_id = host_os_id()
+    artefacts = repo_root / "build" / os_id / slug / f"{slug}_artefacts" / build_config
+    if not artefacts.exists():
+        return 0, 0
+
+    vst3s = [p for p in artefacts.rglob("*.vst3") if p.is_dir()]
+    claps = [p for p in artefacts.rglob("*.clap") if p.is_file()]
+
+    vst3_copied = 0
+    clap_copied = 0
+
+    for src in vst3s:
+        dst = vst3_dir / src.name
+        if dst.exists():
+            shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(src, dst)
+        vst3_copied += 1
+
+    for src in claps:
+        dst = clap_dir / src.name
+        shutil.copy2(src, dst)
+        clap_copied += 1
+
+    return vst3_copied, clap_copied
+
 
 def die(msg: str, code: int = 1) -> None:
     print(msg, file=sys.stderr)
@@ -631,6 +723,14 @@ def main() -> None:
     if not jsfx_plugins:
         die("No JSFX plugins found in plugins.json (pluginType == 'jsfx').")
 
+    # Build all JSFX plugins (default ON). Disable with NULLTEST_BUILD=0
+    if os.environ.get("NULLTEST_BUILD", "1") != "0":
+        build_config, build_tag, build_out = build_all_jsfx_plugins(repo_root, jsfx_plugins)
+    else:
+        build_config = os.environ.get("NULLTEST_BUILD_CONFIG", "Release")
+        build_tag = os.environ.get("NULLTEST_BUILD_TAG", "ci")
+        build_out = os.environ.get("NULLTEST_BUILD_OUT", "dist")
+
     # --- Stage artifacts + discover tests + requirements ---
     all_rpps: list[tuple[dict, Path]] = []
     required_clap_ids: set[str] = set()
@@ -650,14 +750,23 @@ def main() -> None:
         # Stage JSFX sources into Effects
         staged_jsfx += copy_jsfx_sources(repo_root, plug_dir, effects_dir)
 
-        # Stage compiled binaries (VST3/CLAP) if present
-        v3, cl = copy_vst3_and_clap_artifacts(
-            repo_root=repo_root,
-            plugin_dir=plug_dir,
-            plugin_slug=p.get("slug", plug_dir.name),
-            vst3_dir=vst3_dir,
-            clap_dir=clap_dir,
-        )
+        slug = p.get("slug")
+        if not slug:
+            die(f"Missing slug for plugin entry: {p}")
+
+        # Deterministic: stage what we just built
+        v3, cl = stage_built_vst3_and_clap(repo_root, slug, build_config, vst3_dir, clap_dir)
+
+        # Fallback: old heuristic search (keeps local/manual builds working)
+        if v3 == 0 and cl == 0:
+            v3, cl = copy_vst3_and_clap_artifacts(
+                repo_root=repo_root,
+                plugin_dir=plug_dir,
+                plugin_slug=slug,
+                vst3_dir=vst3_dir,
+                clap_dir=clap_dir,
+            )
+
         staged_vst3 += v3
         staged_clap += cl
 
