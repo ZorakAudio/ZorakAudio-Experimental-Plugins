@@ -619,6 +619,7 @@ def parse_tol_from_name(stem: str, default_tol: float) -> float:
 def run_reaper_render(reaper_exe: Path, rpp: Path, timeout_s: int) -> subprocess.CompletedProcess[str]:
     # CLI flags documented: -renderproject, -ignoreerrors, -nosplash :contentReference[oaicite:5]{index=5}
     cmd = [str(reaper_exe), "-nosplash", "-ignoreerrors", "-renderproject", str(rpp)]
+    print("[reaper] " + " ".join(cmd))
     return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout_s)
 
 
@@ -827,8 +828,16 @@ def main() -> None:
 
         try:
             cp = run_reaper_render(reaper_exe, rpp, timeout_s=timeout_s)
-        except subprocess.TimeoutExpired:
-            die(f"TIMEOUT rendering {rel(repo_root, rpp)} after {timeout_s}s", 2)
+        except subprocess.TimeoutExpired as e:
+            # try to grab REAPER's in-portable log if present
+            log_candidates = list(reaper_root.glob("reaper*.log")) + list(reaper_root.glob("reaper_console*.txt"))
+            for lc in log_candidates:
+                try:
+                    shutil.copy2(lc, report_dir / lc.name)
+                except Exception:
+                    pass
+            die(f"TIMEOUT rendering {rpp} after {timeout_s}s", 2)
+
 
         if cp.returncode != 0:
             print(cp.stdout)
