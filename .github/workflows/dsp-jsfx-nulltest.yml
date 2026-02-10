@@ -29,6 +29,12 @@ jobs:
       - name: Install deps
         run: python -m pip install --upgrade pip numpy llvmlite
 
+      - name: Install LLVM (clang)
+        shell: pwsh
+        run: |
+          choco install llvm -y
+          refreshenv
+          clang --version
       - name: Cache portable REAPER
         uses: actions/cache@v4
         with:
