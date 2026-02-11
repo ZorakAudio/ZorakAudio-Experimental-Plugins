@@ -3,47 +3,39 @@
 SetTitleMatchMode 2
 DetectHiddenWindows false
 
-; Keep trying for up to 15 minutes (your CI timeout window)
-deadline := A_TickCount + 15*60*1000
+; Wait up to 5 minutes
+deadline := A_TickCount + 5*60*1000
 
 Loop {
     if (A_TickCount > deadline)
         ExitApp 0
 
-    ; --- Audio device prompt (modal) ---
-    ; Window title is usually "REAPER" for the dialog.
-    ; We avoid coordinates: click the "No" button by control name if possible, else tab+enter.
+    ; The blocking dialog is a separate window titled "REAPER" (modal).
+    ; We'll activate it and send Alt+N (the No button).
     if WinExist("REAPER") {
-        ; Try to detect the specific prompt text in the dialog
-        t := WinGetText("REAPER")
-        if InStr(t, "You have not yet selected an audio device") {
-            WinActivate("REAPER")
-            Sleep 100
-
-            ; Attempt direct ControlClick on the "No" button.
-            ; On most systems the buttons are Button1/Button2, with "No" often Button2.
-            try ControlClick("Button2", "REAPER")
-            catch {
-                ; Fallback: Tab to "No" then Enter
-                ; (Usually focus starts on Yes, so one tab goes to No)
-                Send "{Tab}{Enter}"
-            }
-            Sleep 250
+        hwnd := WinExist("REAPER")
+        ; Only act if it's a dialog-style window (often class #32770 for dialogs).
+        cls := WinGetClass("ahk_id " hwnd)
+        if (cls = "#32770") {
+            WinActivate("ahk_id " hwnd)
+            Sleep 80
+            Send "!n"        ; Alt+N => clicks "No" on that dialog
+            Sleep 200
         }
     }
 
-    ; --- Optional: evaluation nag dialog(s) ---
-    ; Some builds show a modal “Still evaluating” / “Purchase” dialog.
-    ; We just press Enter on any small modal window owned by REAPER.
-    ; (This is intentionally generic but low-risk.)
-    hwnd := WinExist("ahk_exe reaper.exe")
-    if (hwnd) {
-        ; If there is any active dialog-style window, Enter often dismisses default button.
-        ; We only do this when REAPER is active to avoid messing with other apps.
-        if WinActive("ahk_exe reaper.exe") {
+    ; Optional: evaluation nag windows sometimes are dialogs too; Enter is ok ONLY on dialogs.
+    ; This avoids affecting the main REAPER window.
+    ; If you see a different modal later, this dismisses default buttons safely.
+    for w in WinGetList("ahk_exe reaper.exe") {
+        cls2 := WinGetClass("ahk_id " w)
+        if (cls2 = "#32770") {
+            WinActivate("ahk_id " w)
+            Sleep 80
             Send "{Enter}"
+            Sleep 200
         }
     }
 
-    Sleep 200
+    Sleep 150
 }
