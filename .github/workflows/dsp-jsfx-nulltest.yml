@@ -40,7 +40,13 @@ jobs:
         shell: pwsh
         run: |
           choco install autohotkey -y
-          autohotkey --version
+          $ahk = "C:\Program Files\AutoHotkey\AutoHotkey64.exe"
+
+          if (!(Test-Path $ahk)) {
+            throw "AutoHotkey64.exe not found at $ahk"
+          }
+
+          & $ahk /ErrorStdOut /?
 
       - name: Cache portable REAPER
         uses: actions/cache@v4
