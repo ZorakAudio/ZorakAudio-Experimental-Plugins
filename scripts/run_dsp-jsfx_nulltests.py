@@ -616,11 +616,46 @@ def parse_tol_from_name(stem: str, default_tol: float) -> float:
         return default_tol
 
 
-def run_reaper_render(reaper_exe: Path, rpp: Path, timeout_s: int) -> subprocess.CompletedProcess[str]:
-    # CLI flags documented: -renderproject, -ignoreerrors, -nosplash :contentReference[oaicite:5]{index=5}
+def run_reaper_render(
+    reaper_exe: Path,
+    rpp: Path,
+    timeout_s: int,
+    report_dir: Path,
+) -> subprocess.CompletedProcess[str]:
+    """
+    Launch REAPER via Popen so a timeout does NOT kill REAPER.
+    This lets a later CI step screenshot the blocking dialog, then kill REAPER.
+    """
     cmd = [str(reaper_exe), "-nosplash", "-ignoreerrors", "-renderproject", str(rpp)]
     print("[reaper] " + " ".join(cmd))
-    return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout_s)
+
+    report_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path = report_dir / f"reaper_stdout_{rpp.stem}.txt"
+    stderr_path = report_dir / f"reaper_stderr_{rpp.stem}.txt"
+
+    # Write output to files to avoid PIPE buffer issues while REAPER stays alive on timeout.
+    with stdout_path.open("w", encoding="utf-8", errors="ignore") as out, \
+         stderr_path.open("w", encoding="utf-8", errors="ignore") as err:
+
+        p = subprocess.Popen(
+            cmd,
+            stdout=out,
+            stderr=err,
+            text=True,
+        )
+
+        try:
+            rc = p.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            # Leave REAPER running so the workflow can screenshot the dialog.
+            (report_dir / "reaper_timeout_pid.txt").write_text(str(p.pid), encoding="utf-8")
+            (report_dir / "reaper_timeout_cmd.txt").write_text(" ".join(cmd), encoding="utf-8")
+            raise
+
+    # Read captured output back into a CompletedProcess for your existing reporting logic.
+    stdout_text = stdout_path.read_text(encoding="utf-8", errors="ignore")
+    stderr_text = stderr_path.read_text(encoding="utf-8", errors="ignore")
+    return subprocess.CompletedProcess(cmd, rc, stdout_text, stderr_text)
 
 
 def find_rendered_wav(rpp: Path, started_at: float) -> Path:
@@ -827,16 +862,20 @@ def main() -> None:
         print(f"\n=== {p.get('slug', p['dir'])} :: {rel(repo_root, rpp)} (tol={tol})")
 
         try:
-            cp = run_reaper_render(reaper_exe, rpp, timeout_s=timeout_s)
-        except subprocess.TimeoutExpired as e:
-            # try to grab REAPER's in-portable log if present
+            cp = run_reaper_render(reaper_exe, rpp, timeout_s=timeout_s, report_dir=report_dir)
+        except subprocess.TimeoutExpired:
+            (report_dir / "TIMEOUT.txt").write_text(rel(repo_root, rpp), encoding="utf-8")
+
+            # Copy any REAPER log files that exist
             log_candidates = list(reaper_root.glob("reaper*.log")) + list(reaper_root.glob("reaper_console*.txt"))
             for lc in log_candidates:
                 try:
                     shutil.copy2(lc, report_dir / lc.name)
                 except Exception:
                     pass
+
             die(f"TIMEOUT rendering {rpp} after {timeout_s}s", 2)
+
 
 
         if cp.returncode != 0:

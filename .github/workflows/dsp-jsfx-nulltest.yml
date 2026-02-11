@@ -82,6 +82,48 @@ jobs:
           Write-Host "REAPER_PORTABLE_DIR=$env:REAPER_PORTABLE_DIR"
 
           python scripts\run_dsp-jsfx_nulltests.py
+      - name: Debug REAPER hang (screenshot + window titles + kill)
+        if: failure()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .ci\out | Out-Null
+
+          # Window titles
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public class WinEnum {
+            public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+            [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+          }
+          "@
+              $titles = New-Object System.Collections.Generic.List[string]
+              [WinEnum]::EnumWindows({ param($h,$l)
+                if([WinEnum]::IsWindowVisible($h)){
+                  $sb = New-Object System.Text.StringBuilder 512
+                  [void][WinEnum]::GetWindowText($h, $sb, $sb.Capacity)
+                  $t = $sb.ToString()
+                  if($t.Length -gt 0){ $titles.Add($t) }
+                }
+                return $true
+              }, [IntPtr]::Zero)
+              $titles | Sort-Object | Set-Content .ci\out\window_titles.txt
+
+              # Screenshot desktop
+              Add-Type -AssemblyName System.Windows.Forms
+              Add-Type -AssemblyName System.Drawing
+              $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+              $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+              $g = [System.Drawing.Graphics]::FromImage($bmp)
+              $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+              $bmp.Save(".ci\out\screenshot.png", [System.Drawing.Imaging.ImageFormat]::Png)
+              $g.Dispose(); $bmp.Dispose()
+
+              # Kill REAPER so the job doesn't linger
+              Get-Process reaper -ErrorAction SilentlyContinue | Stop-Process -Force
 
 
       - name: Upload report
