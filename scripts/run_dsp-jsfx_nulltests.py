@@ -191,8 +191,10 @@ def locate_reaper_zip(repo_root: Path) -> Path:
 
 def write_ci_reaper_ini(reaper_root: Path, dummy_sr: int = 48000, dummy_bs: int = 512) -> None:
     """
-    Force REAPER to only scan our portable plugin folders, and use Dummy Audio.
-    Keep it tiny to avoid PII + nondeterminism.
+    Force REAPER portable to:
+      - use Dummy Audio driver (no hardware)
+      - scan only portable VST3/CLAP
+      - close after render
     """
     ini = (
         "[REAPER]\n"
@@ -201,12 +203,26 @@ def write_ci_reaper_ini(reaper_root: Path, dummy_sr: int = 48000, dummy_bs: int 
         "clap_path_win64=<portable>\\CLAP\n"
         "\n"
         "[audioconfig]\n"
+        # Core: pick dummy driver
         "mode=4\n"
+        # Some builds still look at these to decide “device chosen”
+        "dummy_srate=48000\n"
+        "dummy_blocksize=512\n"
+        # Also set WASAPI to a valid state as a fallback
+        "wasapi_mode=0\n"
+        "wasapi_srate=48000\n"
+        "wasapi_bs=512\n"
         "allow_sr_override=1\n"
-        f"dummy_srate={dummy_sr}\n"
-        f"dummy_blocksize={dummy_bs}\n"
     )
+
+    # Apply requested values
+    ini = ini.replace("dummy_srate=48000", f"dummy_srate={dummy_sr}")
+    ini = ini.replace("dummy_blocksize=512", f"dummy_blocksize={dummy_bs}")
+    ini = ini.replace("wasapi_srate=48000", f"wasapi_srate={dummy_sr}")
+    ini = ini.replace("wasapi_bs=512", f"wasapi_bs={dummy_bs}")
+
     (reaper_root / "reaper.ini").write_text(ini, encoding="ascii")
+
 
 
 def purge_plugin_caches(reaper_root: Path) -> None:
