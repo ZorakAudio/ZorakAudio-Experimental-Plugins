@@ -189,10 +189,6 @@ def locate_reaper_zip(repo_root: Path) -> Path:
     raise RuntimeError  # unreachable
 
 def patch_ci_reaper_ini_only_paths(reaper_root: Path) -> None:
-    """
-    Do NOT touch [audioconfig]. Only set scan paths + close-after-render.
-    This preserves the already-working Dummy Audio config from your portable zip.
-    """
     p = reaper_root / "reaper.ini"
     if not p.exists():
         die("reaper.ini missing in portable REAPER folder")
@@ -207,14 +203,17 @@ def patch_ci_reaper_ini_only_paths(reaper_root: Path) -> None:
         end = text.find("\n[", start + 1)
         if end == -1:
             end = len(text)
+
         block = text[start:end]
         rx = re.compile(rf"(?m)^{re.escape(key)}=.*$")
+
         if rx.search(block):
-            block = rx.sub(f"{key}={value}", block)
+            block = rx.sub(lambda _m: f"{key}={value}", block)  # <-- avoids backslash escapes
         else:
             if not block.endswith("\n"):
                 block += "\n"
             block += f"{key}={value}\n"
+
         return text[:start] + block + text[end:]
 
     txt = set_in_section(txt, "REAPER", "renderclosewhendone", "4")
@@ -222,6 +221,7 @@ def patch_ci_reaper_ini_only_paths(reaper_root: Path) -> None:
     txt = set_in_section(txt, "REAPER", "clap_path_win64", r"<portable>\CLAP")
 
     p.write_text(txt, encoding="utf-8")
+
 
 
 
