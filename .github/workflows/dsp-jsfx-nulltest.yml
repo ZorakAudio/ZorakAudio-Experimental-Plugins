@@ -35,6 +35,13 @@ jobs:
           choco install llvm -y
           refreshenv
           clang --version
+
+      - name: Install AutoHotkey
+        shell: pwsh
+        run: |
+          choco install autohotkey -y
+          autohotkey --version
+
       - name: Cache portable REAPER
         uses: actions/cache@v4
         with:
@@ -68,6 +75,13 @@ jobs:
 
           Write-Host "Extracted REAPER: $($exe.FullName)"
 
+      - name: Start REAPER unblocker (AHK)
+        shell: pwsh
+        run: |
+          $ahk = (Get-Command autohotkey).Source
+          Start-Process -FilePath $ahk -ArgumentList ".ci\reaper_ci_unblock.ahk" -WindowStyle Hidden
+          Write-Host "AHK clicker started."
+
       - name: Run JSFX null tests
         shell: pwsh
         env:
@@ -77,11 +91,15 @@ jobs:
         run: |
           $exe = Get-ChildItem -Path ".ci\reaper-portable" -Recurse -Filter reaper.exe -File | Select-Object -First 1
           if (-not $exe) { throw "reaper.exe not found after restore step" }
-
           $env:REAPER_PORTABLE_DIR = Split-Path $exe.FullName -Parent
-          Write-Host "REAPER_PORTABLE_DIR=$env:REAPER_PORTABLE_DIR"
-
           python scripts\run_dsp-jsfx_nulltests.py
+
+      - name: Stop REAPER unblocker (AHK)
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process autohotkey -ErrorAction SilentlyContinue | Stop-Process -Force
+
       - name: Debug REAPER hang (screenshot + window titles + kill)
         if: failure()
         shell: pwsh
