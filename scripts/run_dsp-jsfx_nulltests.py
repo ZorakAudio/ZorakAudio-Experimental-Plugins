@@ -188,6 +188,39 @@ def locate_reaper_zip(repo_root: Path) -> Path:
     )
     raise RuntimeError  # unreachable
 
+def patch_ci_reaper_ini_only_paths(reaper_root: Path) -> None:
+    """
+    Do NOT touch [audioconfig]. Only set scan paths + close-after-render.
+    This preserves the already-working Dummy Audio config from your portable zip.
+    """
+    p = reaper_root / "reaper.ini"
+    if not p.exists():
+        die("reaper.ini missing in portable REAPER folder")
+
+    txt = p.read_text(encoding="utf-8", errors="ignore")
+
+    def set_in_section(text: str, section: str, key: str, value: str) -> str:
+        hdr = f"[{section}]"
+        if hdr not in text:
+            text += ("\n" if not text.endswith("\n") else "") + hdr + "\n"
+        start = text.index(hdr)
+        end = text.find("\n[", start + 1)
+        if end == -1:
+            end = len(text)
+        block = text[start:end]
+        rx = re.compile(rf"(?m)^{re.escape(key)}=.*$")
+        if rx.search(block):
+            block = rx.sub(f"{key}={value}", block)
+        else:
+            if not block.endswith("\n"):
+                block += "\n"
+            block += f"{key}={value}\n"
+        return text[:start] + block + text[end:]
+
+    txt = set_in_section(txt, "REAPER", "renderclosewhendone", "4")
+    txt = set_in_section(txt, "REAPER", "vstpath64", r"<portable>\VST3")
+    txt = set_in_section(txt
+
 
 def write_ci_reaper_ini(reaper_root: Path, dummy_sr: int = 48000, dummy_bs: int = 512) -> None:
     """
@@ -743,7 +776,9 @@ def main() -> None:
     # Force deterministic, non-PII config every run
     dummy_sr = int(os.environ.get("REAPER_DUMMY_SR", "48000"))
     dummy_bs = int(os.environ.get("REAPER_DUMMY_BS", "512"))
-    write_ci_reaper_ini(reaper_root, dummy_sr=dummy_sr, dummy_bs=dummy_bs)
+    # write_ci_reaper_ini(reaper_root, dummy_sr=dummy_sr, dummy_bs=dummy_bs)
+    patch_ci_reaper_ini_only_paths(reaper_root)
+
 
     effects_dir, vst3_dir, clap_dir = ensure_dirs(reaper_root)
 
