@@ -219,7 +219,10 @@ def patch_ci_reaper_ini_only_paths(reaper_root: Path) -> None:
 
     txt = set_in_section(txt, "REAPER", "renderclosewhendone", "4")
     txt = set_in_section(txt, "REAPER", "vstpath64", r"<portable>\VST3")
-    txt = set_in_section(txt
+    txt = set_in_section(txt, "REAPER", "clap_path_win64", r"<portable>\CLAP")
+
+    p.write_text(txt, encoding="utf-8")
+
 
 
 def write_ci_reaper_ini(reaper_root: Path, dummy_sr: int = 48000, dummy_bs: int = 512) -> None:
