@@ -36,17 +36,27 @@ jobs:
           refreshenv
           clang --version
 
-      - name: Install AutoHotkey
+      - name: Install AutoHotkey (find exe)
         shell: pwsh
         run: |
           choco install autohotkey -y
-          $ahk = "C:\Program Files\AutoHotkey\AutoHotkey64.exe"
 
-          if (!(Test-Path $ahk)) {
-            throw "AutoHotkey64.exe not found at $ahk"
+          $root = "C:\Program Files\AutoHotkey"
+          if (!(Test-Path $root)) { throw "AutoHotkey install dir missing: $root" }
+
+          $exe = Get-ChildItem -Path $root -Recurse -File -Filter "AutoHotkey*.exe" |
+                Sort-Object FullName |
+                Select-Object -First 1
+
+          if (-not $exe) {
+            throw "No AutoHotkey*.exe found under $root"
           }
 
-          & $ahk /ErrorStdOut /?
+          "AHK_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Found AHK: $($exe.FullName)"
+
+          & $exe.FullName /ErrorStdOut /?
+
 
       - name: Cache portable REAPER
         uses: actions/cache@v4
@@ -84,9 +94,9 @@ jobs:
       - name: Start REAPER unblocker (AHK)
         shell: pwsh
         run: |
-          $ahk = (Get-Command autohotkey).Source
-          Start-Process -FilePath $ahk -ArgumentList ".ci\reaper_ci_unblock.ahk" -WindowStyle Hidden
-          Write-Host "AHK clicker started."
+          if (-not $env:AHK_EXE) { throw "AHK_EXE not set" }
+          Start-Process -FilePath $env:AHK_EXE -ArgumentList ".ci\reaper_ci_unblock.ahk" -WindowStyle Hidden
+
 
       - name: Run JSFX null tests
         shell: pwsh
@@ -104,7 +114,8 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          Get-Process autohotkey -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process AutoHotkey* -ErrorAction SilentlyContinue | Stop-Process -Force
+
 
       - name: Debug REAPER hang (screenshot + window titles + kill)
         if: failure()
