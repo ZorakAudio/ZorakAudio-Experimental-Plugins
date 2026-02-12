@@ -1,5 +1,7 @@
 [![Build & Release](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/release.yml/badge.svg)](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/release.yml)
 
+[![DSP-JSFX Null Test vs. Reaper JSFX](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/dsp-jsfx-nulltest.yml/badge.svg)](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/dsp-jsfx-nulltest.yml)
+
 **Note:** Currently working on a JSFX-to-JUCE solution. JSFX -> AST/CFG -> LLVM IR -> JIT/AOT Compilation
 
 # ZorakAudio Experimental Plugins
