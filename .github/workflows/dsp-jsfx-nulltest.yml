@@ -36,7 +36,7 @@ jobs:
           refreshenv
           clang --version
 
-      - name: Install AutoHotkey (find exe)
+      - name: Install AutoHotkey (v2) and locate exe
         shell: pwsh
         run: |
           choco install autohotkey -y
@@ -44,18 +44,24 @@ jobs:
           $root = "C:\Program Files\AutoHotkey"
           if (!(Test-Path $root)) { throw "AutoHotkey install dir missing: $root" }
 
-          $exe = Get-ChildItem -Path $root -Recurse -File -Filter "AutoHotkey*.exe" |
-                Sort-Object FullName |
-                Select-Object -First 1
+          $candidates = @(
+            "$root\AutoHotkey64.exe",
+            "$root\v2\AutoHotkey64.exe",
+            "$root\AutoHotkey.exe"
+          ) | Where-Object { Test-Path $_ }
 
-          if (-not $exe) {
-            throw "No AutoHotkey*.exe found under $root"
+          if ($candidates.Count -eq 0) {
+            $candidates = Get-ChildItem -Path $root -Recurse -Filter "AutoHotkey*.exe" -File | % FullName
           }
 
-          "AHK_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Found AHK: $($exe.FullName)"
+          if ($candidates.Count -eq 0) { throw "No AutoHotkey exe found under $root" }
 
-          & $exe.FullName /ErrorStdOut /?
+          $exe = $candidates[0]
+          "AHK_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "AHK_EXE=$exe"
+
+          & $exe /ErrorStdOut /?
+
 
 
       - name: Cache portable REAPER
@@ -95,7 +101,18 @@ jobs:
         shell: pwsh
         run: |
           if (-not $env:AHK_EXE) { throw "AHK_EXE not set" }
-          Start-Process -FilePath $env:AHK_EXE -ArgumentList ".ci\reaper_ci_unblock.ahk" -WindowStyle Hidden
+
+          New-Item -ItemType Directory -Force -Path .ci\out | Out-Null
+          Remove-Item .ci\out\ahk_unblock.log -ErrorAction SilentlyContinue
+
+          $p = Start-Process -FilePath $env:AHK_EXE -ArgumentList ".ci\reaper_ci_unblock.ahk" -WindowStyle Hidden -PassThru
+          Write-Host "AHK PID=$($p.Id)"
+
+          Start-Sleep -Seconds 1
+          if (!(Test-Path ".ci\out\ahk_unblock.log")) {
+            throw "AHK did not create .ci/out/ahk_unblock.log (script likely not running / wrong interpreter)"
+          }
+
 
 
       - name: Run JSFX null tests
