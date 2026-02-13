@@ -1,26 +1,72 @@
+// #HELP: Designed Distance Topology (DDT) simulates perceived distance and room scale by reshaping direct-vs-diffuse balance, early reflection timing/density, stereo coherence (mono-collapse with distance + ITD decorrelation), and high-frequency air absorption. Start with Amount=100%, Quality=Moderate, then increase Distance to push sources back; use Room Size to scale reflection time window; use Air Absorb to darken farther/late energy; use Width for diffuse stereo spread. Monitor lets you audition Direct or Diffuse paths.
+
 desc:Designed Distance Topology (DDT) v2 — + Room Size
 
+// #TOOLTIP: Perceived source distance (0=close, 100=far). Increases reflection delay window/density, reduces direct dominance, adds mild distance attenuation, and collapses source toward mono for stable imaging.
 slider1:30<0,100,1>Distance
+
+// #TOOLTIP: Reflection “scatter” and density. Higher Spread flattens/extends the reflection distribution and increases tap count (within Quality cap) for a more diffuse, less “clustered” space.
 slider2:50<0,100,1>Spread
+
+// #TOOLTIP: Air / high-frequency absorption with distance. Higher values darken direct/early/late energy progressively (late strongest), reinforcing “farther” perception without EQing the dry path separately.
 slider3:40<0,100,1>Air Absorb
+
+// #TOOLTIP: Stereo width of the diffuse field. Adds small interaural time differences (ITD) across taps for decorrelation; higher values feel wider/more spacious but can reduce center focus.
 slider4:55<0,100,1>Width
+
+// #TOOLTIP: CPU vs smoothness. Higher quality allows more taps and a longer reflection window for a denser, more convincing space at higher cost.
 slider5:2<0,4,1{Eco,Moderate,High,Very High,Extreme}>Quality
+
+// #TOOLTIP: Wet amount (processed distance field) as a percent. 0% = dry only. 100% = pure DDT output (use Monitor to audition components).
 slider6:100<0,100,1>Amount (Wet %)
+
+// #TOOLTIP: Final output trim after wet/dry mix. Use to match loudness or prevent clipping in downstream plugins.
 slider7:0<-12,12,0.1>Output (dB)
+
+// #TOOLTIP: Audition routing. Normal=mixed output, Direct=only direct component, Diffuse=only reflections, Bypass=audition “input-as-output” when Amount=100%.
 slider8:0<0,3,1{Normal,Direct,Diffuse,Bypass}>Monitor
+
+// #TOOLTIP: Scales the virtual room. Higher values expand reflection time window and slow the “early→late” split, making the same Distance feel like a larger space.
 slider9:50<0,100,1>Room Size
 
-@init
-  EPS = 0.0000000000000000001;
 
-  BUF_LEN = 16384;
+@init
+  // ============================================================
+  // DESIGN CONSTRAINTS (WHY THESE LIMITS EXIST)
+  // ============================================================
+  // JSFX runs per-sample in a realtime thread. So:
+  // - We keep a fixed circular buffer (no dynamic allocation).
+  // - We cap taps (MAX_TAPS) and offer Quality tiers to trade CPU for density.
+  // - We clamp delays to the buffer to guarantee safety at any sample rate.
+  // - We keep the reflection topology deterministic (seeded hash) so automation
+  //   doesn’t “re-randomize” the room every block and cause zippery motion.
+  // - We hard-clamp final output as a last-resort “won’t explode” safety net.
+  //
+  // Buffer sizing note:
+  // BUF_LEN=16384 samples gives max delay of:
+  //   ~341 ms @ 48k, ~170 ms @ 96k, ~85 ms @ 192k.
+  // If user settings request longer delays at very high sample rates,
+  // delays are clamped (still stable, just bounded).
+
+  EPS = 1e-19; // avoid divide-by-zero when normalizing weights
+
+  // ============================================================
+  // MEMORY LAYOUT (m[] is JSFX shared memory)
+  // ============================================================
+  BUF_LEN  = 16384;
   BUF_MASK = BUF_LEN - 1;
 
   MAX_TAPS = 64;
 
+  // Two circular audio buffers (L/R)
   bL = 0;
   bR = bL + BUF_LEN;
 
+  // Tap parameter arrays (length MAX_TAPS each)
+  // - dL/dR: per-tap delay in samples for each ear
+  // - gL/gR: per-tap gain for each ear
+  // - w:     raw weight prior to normalization
+  // - d0:    base (center) delay used for early/late classification
   bDL = bR + BUF_LEN;
   bDR = bDL + MAX_TAPS;
   bGL = bDR + MAX_TAPS;
@@ -28,28 +74,60 @@ slider9:50<0,100,1>Room Size
   bW  = bGR + MAX_TAPS;
   bD0 = bW  + MAX_TAPS;
 
+  // write offset for circular buffer
   wofs = 0;
 
+  // ============================================================
+  // FILTER STATES (one-pole lowpass per component)
+  // ============================================================
+  // Direct path filter state
   dirZL = 0; dirZR = 0;
+
+  // Early diffuse smoothing state
   eZL = 0;   eZR = 0;
+
+  // Late diffuse smoothing state
   lZL = 0;   lZR = 0;
 
-  tapN = 0;
-  splitSamp = 0;
+  // ============================================================
+  // RUNTIME PARAMETERS (computed in rebuild_taps)
+  // ============================================================
+  tapN = 0;        // active tap count
+  splitSamp = 0;   // early vs late boundary in samples
 
-  a_dir = 0;
+  // one-pole coefficients (closer to 1 = smoother / darker)
+  a_dir   = 0;
   a_early = 0;
-  a_late = 0;
+  a_late  = 0;
 
+  // gains and mix (computed)
+  directGain = 1;
+  wetp = 1;
+  dryp = 0;
+  out_gain = 1;
+
+  // ============================================================
+  // SMALL UTILITIES
+  // ============================================================
   function clamp(x,a,b) ( x < a ? a : (x > b ? b : x) );
   function db2lin(db) ( 10^(db/20) );
-  function smooth01(t) ( t = clamp(t,0,1); t*t*(3-2*t) );
 
+  // Smoothstep mapping for “feels good” knob response.
+  // Keeps mid-range more controllable than raw linear 0..1.
+  function smooth01(t) (
+    t = clamp(t,0,1);
+    t*t*(3-2*t)
+  );
+
+  // Deterministic integer hash → 0..1.
+  // Used so the tap cloud is stable for a given control setting.
   function hash01(x) (
     x = (x*1664525 + 1013904223)|0;
     (x & 2147483647) / 2147483647
   );
 
+  // Convert cutoff frequency to one-pole lowpass coefficient.
+  // y[n] = (1-a)*x + a*y[n-1]
   function alpha_lp(fc) local(a) (
     fc = clamp(fc, 40, 0.49*srate);
     a = exp(-2*$pi*fc/srate);
@@ -62,14 +140,37 @@ slider9:50<0,100,1>Room Size
     lZL=0; lZR=0;
   );
 
-  function rebuild_taps() local(q,dist,sp,air,wid,room,wet,
-                                maxT,maxMsQ,minMs,maxMs,decayMs,powExp,
-                                directW,diffW,level_db,level,
-                                itdMaxS,seed,i,u,v,offMs,dS,
-                                w,sumW,sc,bal,gL,gR,fcD,fcE,fcL,splitMs,
-                                roomScaleT,roomScaleW) (
+  // ============================================================
+  // TOPOLOGY BUILDER
+  // ============================================================
+  // This function translates perceptual controls into:
+  // - tap count
+  // - reflection delay window
+  // - per-tap delays and gains (stereo decorrelated via ITD)
+  // - early/late split boundary
+  // - air absorption filters (direct / early / late)
+  // - wet/dry/output gains
+  //
+  // Design note:
+  // We do all heavy work here (on slider changes), not per-sample.
+  function rebuild_taps() local(
+      q, dist, sp, air, wid, room, wet,
+      maxT, maxMsQ,
+      roomScaleT, roomScaleW,
+      minMs, maxMs, decayMs, powExp,
+      directW, diffW, level_db, level,
+      itdMaxS, splitMs,
+      fcD, fcE, fcL,
+      seed,
+      i, u, offMs, dS,
+      w, sumW, sc,
+      baseD, itd, r,
+      dL, dR,
+      g, bal, gL, gR
+  ) (
 
-    q = slider5|0;
+    // --- Read knobs (0..1 with smooth response) ---
+    q    = slider5|0;
 
     dist = smooth01(slider1/100);
     sp   = smooth01(slider2/100);
@@ -78,63 +179,73 @@ slider9:50<0,100,1>Room Size
     room = smooth01(slider9/100);
     wet  = smooth01(slider6/100);
 
-    // QUALITY: tap cap + base max window (ms)
+    // --- QUALITY: cap taps + base reflection window ---
+    // Higher quality increases max taps and allows longer “maxMs”.
     q==0 ? (maxT=12; maxMsQ=12;) :
     q==1 ? (maxT=20; maxMsQ=18;) :
     q==2 ? (maxT=32; maxMsQ=28;) :
     q==3 ? (maxT=48; maxMsQ=40;) :
            (maxT=64; maxMsQ=60;);
 
-    // Room scaling:
-    // time scale (tiny..huge): 0.45..2.2
-    roomScaleT = 0.45 + 1.75*room;
-    // window scale (tiny..huge): 0.30..2.30
-    roomScaleW = 0.30 + 2.00*room;
+    // --- Room scaling ---
+    // Two independent scalers:
+    // - roomScaleT: shifts timing “feel” (early/late boundaries, minimums)
+    // - roomScaleW: expands the reflection window width
+    roomScaleT = 0.45 + 1.75*room;  // ~0.45..2.20
+    roomScaleW = 0.30 + 2.00*room;  // ~0.30..2.30
 
-    // Tap count grows with distance + spread + (slightly) room size
+    // --- Tap count heuristic ---
+    // More distance → more reflections, more spread → more taps,
+    // bigger rooms → slightly more taps (within the quality cap).
     tapN = (6 + floor(dist*dist*40) + floor(sp*12) + floor(room*8))|0;
     tapN > maxT ? tapN = maxT;
-    tapN < 6 ? tapN = 6;
+    tapN < 6    ? tapN = 6;
 
-    // Reflection window (ms)
-    // min: gets later in bigger rooms; also increases with distance
+    // --- Reflection timing window (ms) ---
+    // minMs: earliest reflection delay; grows with distance and room.
     minMs = (0.15 + (0.25 + 2.50*dist) * roomScaleT);
 
-    // max: strongly room-dependent, also distance-dependent
+    // maxMs: latest reflection delay; grows strongly with room and distance.
     maxMs = maxMsQ * roomScaleW * (0.25 + 0.75*dist);
     maxMs < (minMs + 0.6) ? maxMs = minMs + 0.6;
 
-    // Diffuse envelope decay (ms): longer in bigger rooms
+    // --- Diffuse decay shaping (ms) ---
+    // Longer decay in bigger rooms; spread also lengthens decay.
     decayMs = (3 + 18*dist + 10*sp) * (0.60 + 1.40*room);
     decayMs < 2 ? decayMs = 2;
 
-    // Distribution exponent:
-    // close => earlier, far => later. spread flattens distribution.
+    // --- Distribution exponent ---
+    // Close: cluster earlier, Far: shift later. Spread flattens it.
     powExp = 2.4 - 1.8*dist + 0.6*(1-sp);
     powExp = clamp(powExp, 0.5, 2.8);
 
-    // Direct vs diffuse weights
+    // --- Direct vs diffuse balance ---
+    // As distance increases, we reduce direct weight and increase diffuse.
     directW = 1 - 0.85*dist;
     directW = clamp(directW, 0.12, 1.0);
     diffW   = 1 - directW;
 
-    // Overall distance level drop (mild)
+    // --- Mild distance level drop ---
+    // Not “physics”; just enough to feel farther without needing a compressor.
     level_db = -12 * (dist^1.1);
     level = db2lin(level_db);
 
-    directGain = directW * level;
-    diffGainTotal = diffW * level;
+    directGain     = directW * level;
+    diffGainTotal  = diffW   * level;
 
-    // ITD for decorrelation (diffuse only), clamped
-    itdMaxS = (0.00005 + 0.00040*dist) * srate * wid;
+    // --- Stereo decorrelation via ITD (diffuse only) ---
+    // ITD is intentionally small and clamped (safe + plausible).
+    itdMaxS = (0.00005 + 0.00040*dist) * srate * wid; // samples
     itdMaxS = floor(itdMaxS + 0.5);
     itdMaxS > 24 ? itdMaxS = 24;
 
-    // Early/late split for time-dependent air absorption
-    splitMs = (1.2 + 6.0*dist) * (0.55 + 1.45*room);
+    // --- Early/late split (for time-dependent air absorption) ---
+    // Larger rooms push split later; larger distance pushes split later.
+    splitMs   = (1.2 + 6.0*dist) * (0.55 + 1.45*room);
     splitSamp = floor(splitMs*srate/1000 + 0.5);
 
-    // Air absorption (direct mild, late diffuse strongest)
+    // --- Air absorption (time-dependent) ---
+    // Direct: mild. Early: more. Late: strongest.
     fcD = 20000 / (1 + 6*air*dist);
     fcE = 20000 / (1 + 12*air*dist);
     fcL = 18000 / (1 + 22*air*dist);
@@ -147,21 +258,30 @@ slider9:50<0,100,1>Room Size
     a_early = alpha_lp(fcE);
     a_late  = alpha_lp(fcL);
 
-    // Seed (stable)
-    seed = (floor(dist*1000) + floor(sp*2000)*17 + floor(air*3000)*31 + floor(wid*4000)*13 + floor(room*5000)*19 + q*911)|0;
+    // --- Deterministic seed (stable topology) ---
+    // Quantizing via floor() prevents tiny float changes from reshuffling taps.
+    seed = (
+      floor(dist*1000)
+      + floor(sp*2000)*17
+      + floor(air*3000)*31
+      + floor(wid*4000)*13
+      + floor(room*5000)*19
+      + q*911
+    )|0;
 
-    // Raw weights
+    // --- Build raw tap set: delays + weights ---
     sumW = 0;
-    i=0;
+    i = 0;
     loop(tapN,
+      // u chooses time location, v could be used for additional variations
       u = hash01(seed + i*97);
-      v = hash01(seed + i*131 + 17);
 
+      // Delay in ms distributed between minMs..maxMs with exponent shaping
       offMs = minMs + (maxMs - minMs) * (u^powExp);
       dS = floor(offMs*srate/1000 + 0.5);
-
       m[bD0+i] = dS;
 
+      // Weight envelope: exponential decay + small deterministic jitter
       w = exp(-(offMs/max(0.5,decayMs)));
       w *= (0.85 + 0.30*hash01(seed + i*251 + 3));
       w = max(w, 0);
@@ -169,26 +289,29 @@ slider9:50<0,100,1>Room Size
       m[bW+i] = w;
       sumW += w;
 
-      i+=1;
+      i += 1;
     );
 
+    // Normalize diffuse energy so diffGainTotal maps consistently
     sumW < EPS ? sumW = 1;
     sc = diffGainTotal / sumW;
 
-    // Finalize delays + gains
-    i=0;
+    // --- Finalize: per-tap stereo delays + per-ear gains ---
+    i = 0;
     loop(tapN,
       baseD = m[bD0+i]|0;
 
+      // ITD: signed small offset for one ear to decorrelate
       itd = 0;
       itdMaxS > 0 ? (
-        r = (hash01(seed + i*173 + 91)*2 - 1);
+        r = (hash01(seed + i*173 + 91)*2 - 1); // -1..+1
         itd = floor(r*itdMaxS + (r>=0 ? 0.5 : -0.5));
       );
 
       dL = baseD;
       dR = baseD + itd;
 
+      // Clamp to our circular buffer capacity (guaranteed stable)
       dL < 0 ? dL = 0;
       dR < 0 ? dR = 0;
       dL > (BUF_LEN-2) ? dL = BUF_LEN-2;
@@ -197,8 +320,10 @@ slider9:50<0,100,1>Room Size
       m[bDL+i] = dL;
       m[bDR+i] = dR;
 
+      // Base gain from normalized weight
       g = m[bW+i] * sc;
 
+      // Slight per-ear balance correlated with ITD sign
       bal = 0;
       itdMaxS > 0 ? bal = 0.15 * (itd / max(1,itdMaxS));
 
@@ -211,39 +336,65 @@ slider9:50<0,100,1>Room Size
       m[bGL+i] = gL;
       m[bGR+i] = gR;
 
-      i+=1;
+      i += 1;
     );
 
+    // --- Wet/dry and output gain ---
     wetp = wet;
+    // Energy-ish dry compensation: keeps perceived loudness steadier than linear.
     dryp = sqrt(1 - wet*wet);
+
     out_gain = db2lin(clamp(slider7, -12, 12));
 
+    // Reset filter memories so topology changes don’t “drag” old room states
     reset_states();
   );
 
+
 @slider
+  // Slider changes rebuild the topology (heavy work happens here, not per-sample)
   rebuild_taps();
 
+
 @sample
+  // ============================================================
+  // PER-SAMPLE SIGNAL FLOW
+  // ============================================================
+  // 1) Write input into circular buffer
+  // 2) Distance mono-collapse of the source (imaging stability when “far”)
+  // 3) Direct path gain + air absorption (one-pole LP)
+  // 4) Diffuse reflections: sum taps, split into early vs late
+  // 5) Apply early/late air absorption smoothing
+  // 6) Monitor routing
+  // 7) Wet/dry mix + output trim
+  // 8) Final hard clamp (safety)
+  // ============================================================
+
+  // --- 1) write input into circular buffers ---
   m[bL + (wofs & BUF_MASK)] = spl0;
   m[bR + (wofs & BUF_MASK)] = spl1;
 
+  // --- 2) distance mono-collapse for the *source* ---
+  // Far sources tend to feel more coherent/centered; this avoids “wobble”
+  // when diffuse field gets wide.
   distN = smooth01(slider1/100);
   mono = 0.5*(spl0 + spl1);
-  col = distN^0.8;
+  col  = distN^0.8;                 // collapse amount
   srcL = spl0*(1-col) + mono*col;
   srcR = spl1*(1-col) + mono*col;
 
+  // --- 3) direct path (gain + air LP) ---
   dInL = directGain * srcL;
   dInR = directGain * srcR;
 
   dirZL = (1-a_dir)*dInL + a_dir*dirZL;
   dirZR = (1-a_dir)*dInR + a_dir*dirZR;
 
+  // --- 4) diffuse taps (early vs late split) ---
   sumEL = 0; sumER = 0;
   sumLL = 0; sumLR = 0;
 
-  i=0;
+  i = 0;
   loop(tapN,
     dL = m[bDL+i]|0;
     dR = m[bDR+i]|0;
@@ -251,6 +402,8 @@ slider9:50<0,100,1>Room Size
     idxL = (wofs - dL) & BUF_MASK;
     idxR = (wofs - dR) & BUF_MASK;
 
+    // Reflections are built from a mono-ish input (L+R)/2
+    // then delivered with decorrelated timing per ear.
     xL = 0.5*(m[bL+idxL] + m[bR+idxL]);
     xR = 0.5*(m[bL+idxR] + m[bR+idxR]);
 
@@ -267,27 +420,33 @@ slider9:50<0,100,1>Room Size
       sumLR += gR * xR;
     );
 
-    i+=1;
+    i += 1;
   );
 
+  // --- 5) early/late smoothing + air absorption ---
   eZL = (1-a_early)*sumEL + a_early*eZL;
   eZR = (1-a_early)*sumER + a_early*eZR;
 
   lZL = (1-a_late)*sumLL + a_late*lZL;
   lZR = (1-a_late)*sumLR + a_late*lZR;
 
+  // Final processed output (DDT field)
   yL = dirZL + eZL + lZL;
   yR = dirZR + eZR + lZR;
 
+  // --- 6) monitor routing ---
+  // Note: “Bypass” is most meaningful at Amount=100% (true audition bypass).
   mon = slider8|0;
-  mon==3 ? (oL=spl0; oR=spl1;) :
-  mon==1 ? (oL=dirZL; oR=dirZR;) :
-  mon==2 ? (oL=(eZL+lZL); oR=(eZR+lZR);) :
-           (oL=yL; oR=yR;);
+  mon==3 ? (oL=spl0;        oR=spl1;) :
+  mon==1 ? (oL=dirZL;       oR=dirZR;) :
+  mon==2 ? (oL=(eZL+lZL);   oR=(eZR+lZR);) :
+           (oL=yL;          oR=yR;);
 
+  // --- 7) wet/dry mix + output trim ---
   spl0 = (dryp*spl0 + wetp*oL) * out_gain;
   spl1 = (dryp*spl1 + wetp*oR) * out_gain;
 
+  // --- 8) hard safety clamp ---
   spl0 > 8 ? spl0 = 8 : (spl0 < -8 ? spl0 = -8);
   spl1 > 8 ? spl1 = 8 : (spl1 < -8 ? spl1 = -8);
 
