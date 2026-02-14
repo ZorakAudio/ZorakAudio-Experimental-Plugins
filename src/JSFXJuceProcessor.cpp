@@ -408,7 +408,14 @@ public:
             std::free (st.mem);
     }
 
-    const juce::String getName() const override { return JucePlugin_Name; }
+    const juce::String getName() const override
+    {
+    #if defined(ZA_PLUGIN_NAME)
+        return ZA_PLUGIN_NAME;   // human name (can contain spaces/parentheses)
+    #else
+        return JucePlugin_Name;  // fallback
+    #endif
+    }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
