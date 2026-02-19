@@ -611,7 +611,6 @@ private:
 // Custom editor: bounded HELP overlay + row-hover tooltips sourced from JSFX comments.
 // ============================================================
 class JSFXJuceEditor final : public juce::AudioProcessorEditor,
-                             private juce::MouseListener,
                              private juce::Timer
 {
 public:
