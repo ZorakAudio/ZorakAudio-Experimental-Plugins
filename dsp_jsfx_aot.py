@@ -1701,8 +1701,16 @@ def _aot_opt_and_emit(mod_ir: ir.Module,
                      emit_asm: Optional[str],
                      target_triple: Optional[str] = None) -> str:
     """Return optimized LLVM IR text. Optionally emits object and/or assembly."""
-    llvm.initialize_native_target()
-    llvm.initialize_native_asmprinter()
+    triple = target_triple or llvm.get_default_triple()
+    default_triple = llvm.get_default_triple()
+
+    if target_triple and target_triple != default_triple:
+        llvm.initialize_all_targets()
+        llvm.initialize_all_asmprinters()
+    else:
+        llvm.initialize_native_target()
+        llvm.initialize_native_asmprinter()
+
 
     triple = target_triple or llvm.get_default_triple()
     target = llvm.Target.from_triple(triple)
