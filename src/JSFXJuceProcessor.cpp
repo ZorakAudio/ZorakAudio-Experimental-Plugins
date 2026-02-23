@@ -5,6 +5,7 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <utility>
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
@@ -64,13 +65,16 @@ struct JsfxSliderDecl
     float min  = 0.0f;
     float max  = 1.0f;
     float step = 0.001f;
+    float shapeModifier = 0.0f; // for :log=mid or :sqr=exp
+
+    enum class Shape { Linear = 0, Log = 1, Sqr = 2 };
+    Shape shape = Shape::Linear;
 
     // Optional enum choices parsed from "step{A,B,C}" syntax
     juce::StringArray choices;
     bool isChoice = false;
 
     // Optional UI metadata parsed from JSFX comments
-    //   // #TOOLTIP: ... (immediately above a slider line)
     juce::String tooltip;
 };
 
@@ -194,9 +198,14 @@ static std::vector<JsfxSliderDecl> parseJsfxSliderDecls (const char* jsfxText, j
         d.index0 = sliderN - 1;
         d.id = "slider" + juce::String (sliderN);
 
+        std::string defTok = trimAscii (m[2].str());
+        if (const auto eq = defTok.rfind ('='); eq != std::string::npos)
+            defTok = trimAscii (defTok.substr (eq + 1));
+
         float def = 0.0f;
-        if (! parseFloat (m[2].str(), def))
+        if (! parseFloat (defTok, def))
             def = 0.0f;
+
         d.def = def;
 
         if (m[3].matched)
@@ -245,11 +254,42 @@ static std::vector<JsfxSliderDecl> parseJsfxSliderDecls (const char* jsfxText, j
                     stepTok = trimAscii (stepTok);
                 }
 
-                // If stepTok is empty (e.g. "{A,B,C}"), JSFX semantics are effectively integer steps.
-                if (stepTok.empty())
+                // STEP token may contain a curve tag, e.g. "0.001:sqr" or "1:log".
+                // Parse the numeric prefix + optional ":log"/":sqr".
+                JsfxSliderDecl::Shape shape = JsfxSliderDecl::Shape::Linear;
+                float shapeMod = 0.0f;
+
+                std::string curveTok = stepTok;
+
+                // split numeric part vs tag part
+                if (const auto colon = curveTok.find (':'); colon != std::string::npos)
+                {
+                    std::string tag = trimAscii (curveTok.substr (colon + 1));
+                    curveTok = trimAscii (curveTok.substr (0, colon));
+
+                    // tag can be "log" or "log=1000" or "sqr=2"
+                    std::string tagBase = tag;
+                    if (const auto eq = tag.find ('='); eq != std::string::npos)
+                    {
+                        tagBase = trimAscii (tag.substr (0, eq));
+
+                        float tmp = 0.0f;
+                        if (parseFloat (trimAscii (tag.substr (eq + 1)), tmp))
+                            shapeMod = tmp;
+                    }
+
+                    if (tagBase == "log") shape = JsfxSliderDecl::Shape::Log;
+                    else if (tagBase == "sqr") shape = JsfxSliderDecl::Shape::Sqr;
+                }
+
+                // numeric step
+                if (curveTok.empty())
                     vstep = 1.0f;
-                else if (! parseFloat (stepTok, vstep))
+                else if (! parseFloat (curveTok, vstep))
                     vstep = 1.0f;
+
+                d.shape = shape;
+                d.shapeModifier = shapeMod;
             }
 
             if (vmax < vmin)
@@ -285,6 +325,138 @@ static std::vector<JsfxSliderDecl> parseJsfxSliderDecls (const char* jsfxText, j
     return out;
 }
 } // namespace
+// ---- Minimal FFT runtime helpers for JSFX scripts (used by DOT, etc.)
+// These operate on st->mem as an interleaved complex buffer:
+//   mem[base + 2*i + 0] = real
+//   mem[base + 2*i + 1] = imag
+//
+// We intentionally implement fft()/ifft() to produce / consume NORMAL (in-order)
+// frequency bins. The JSFX permute helpers are therefore no-ops in this runtime.
+// This is sufficient for the scripts in this repo (they call permute/ipermute
+// around fft/ifft), and avoids extra bit-reversal shuffles.
+
+namespace
+{
+static inline bool isPowerOfTwo (int64_t n) noexcept
+{
+    return (n > 0) && ((n & (n - 1)) == 0);
+}
+
+static inline void swapComplex (double* base, int64_t a, int64_t b) noexcept
+{
+    const int64_t ia = 2 * a;
+    const int64_t ib = 2 * b;
+
+    std::swap (base[ia + 0], base[ib + 0]);
+    std::swap (base[ia + 1], base[ib + 1]);
+}
+
+static void fftInPlace (double* buf, int64_t N, bool inverse) noexcept
+{
+    // Bit-reversal reorder (in-place).
+    for (int64_t i = 1, j = 0; i < N; ++i)
+    {
+        int64_t bit = N >> 1;
+        for (; j & bit; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
+
+        if (i < j)
+            swapComplex (buf, i, j);
+    }
+
+    const double twoPi = 6.283185307179586476925286766559;
+    const double sign  = inverse ? +1.0 : -1.0;
+
+    for (int64_t len = 2; len <= N; len <<= 1)
+    {
+        const int64_t half = len >> 1;
+        const double angStep = sign * twoPi / (double) len;
+
+        for (int64_t i = 0; i < N; i += len)
+        {
+            for (int64_t k = 0; k < half; ++k)
+            {
+                const double ang = angStep * (double) k;
+                const double wr  = std::cos (ang);
+                const double wi  = std::sin (ang);
+
+                const int64_t a = i + k;
+                const int64_t b = a + half;
+
+                const double ar = buf[2 * a + 0];
+                const double ai = buf[2 * a + 1];
+                const double br = buf[2 * b + 0];
+                const double bi = buf[2 * b + 1];
+
+                // t = w * b
+                const double tr = wr * br - wi * bi;
+                const double ti = wr * bi + wi * br;
+
+                buf[2 * a + 0] = ar + tr;
+                buf[2 * a + 1] = ai + ti;
+                buf[2 * b + 0] = ar - tr;
+                buf[2 * b + 1] = ai - ti;
+            }
+        }
+    }
+}
+} // namespace
+
+extern "C" double jsfx_fft (DSPJSFX_State* st, double baseD, double sizeD)
+{
+    if (! st || ! st->mem)
+        return 0.0;
+
+    const int64_t N    = (int64_t) (sizeD + 1.0e-5);
+    int64_t base = (int64_t) (baseD + 1.0e-5);
+
+    if (N <= 1 || ! isPowerOfTwo (N))
+        return 0.0;
+
+    if (base < 0)
+        base = 0;
+
+    // Need 2*N doubles for interleaved complex values.
+    jsfx_ensure_mem (st, base + 2 * N);
+
+    fftInPlace (st->mem + base, N, false);
+    return 0.0;
+}
+
+extern "C" double jsfx_ifft (DSPJSFX_State* st, double baseD, double sizeD)
+{
+    if (! st || ! st->mem)
+        return 0.0;
+
+    const int64_t N    = (int64_t) (sizeD + 1.0e-5);
+    int64_t base = (int64_t) (baseD + 1.0e-5);
+
+    if (N <= 1 || ! isPowerOfTwo (N))
+        return 0.0;
+
+    if (base < 0)
+        base = 0;
+
+    jsfx_ensure_mem (st, base + 2 * N);
+
+    fftInPlace (st->mem + base, N, true);
+    return 0.0;
+}
+
+extern "C" double jsfx_fft_permute (DSPJSFX_State* /*st*/, double /*base*/, double /*size*/)
+{
+    // No-op: our fft()/ifft() are already in-order.
+    return 0.0;
+}
+
+extern "C" double jsfx_fft_ipermute (DSPJSFX_State* /*st*/, double /*base*/, double /*size*/)
+{
+    // No-op: our fft()/ifft() are already in-order.
+    return 0.0;
+}
+
+
 
 
 extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed)
@@ -330,8 +502,12 @@ public:
         juce::String pid;
         float min  = 0.0f;
         float max  = 1.0f;
-        float step = 1.0f;   // used for choice-index -> raw mapping
+        float step = 1.0f;
         bool isChoice = false;
+        float shapeModifier = 0.0f;
+        
+
+        JsfxSliderDecl::Shape shape = JsfxSliderDecl::Shape::Linear;
     };
 
     JSFXJuceProcessor()
@@ -362,6 +538,8 @@ public:
                 info.max      = s.max;
                 info.step     = (s.step > 0.0f ? s.step : 1.0f);
                 info.isChoice = (s.isChoice && s.choices.size() > 0);
+                info.shape = s.shape;
+                info.shapeModifier = s.shapeModifier;
                 sliderParamInfo[(size_t) s.index0] = info;
                 sliderParamUsed[(size_t) s.index0] = true;
             }
@@ -381,8 +559,78 @@ public:
             }
             else
             {
-                const auto range = juce::NormalisableRange<float> (s.min, s.max, s.step);
-                layout.add (std::make_unique<juce::AudioParameterFloat> (pid, s.name, range, s.def));
+                auto toValue = [sh = s.shape, mod = s.shapeModifier] (float start, float end, float t) -> float
+                {
+                    t = clamp01f (t);
+
+                    if (sh == JsfxSliderDecl::Shape::Sqr)
+                    {
+                        const float exp = (mod > 0.0f ? mod : 2.0f);
+                        return curveFrom01_sqr (t, start, end, exp);
+                    }
+
+                    if (sh == JsfxSliderDecl::Shape::Log)
+                        return curveFrom01_log (t, start, end, mod);
+
+                    return start + t * (end - start);
+                };
+
+                auto toNorm = [sh = s.shape, mod = s.shapeModifier] (float start, float end, float v) -> float
+                {
+                    if (sh == JsfxSliderDecl::Shape::Sqr)
+                    {
+                        const float exp = (mod > 0.0f ? mod : 2.0f);
+                        return curveTo01_sqr (v, start, end, exp);
+                    }
+
+                    if (sh == JsfxSliderDecl::Shape::Log)
+                        return curveTo01_log (v, start, end, mod);
+
+                    if (end == start) return 0.0f;
+                    return clamp01f ((v - start) / (end - start));
+                };
+
+                auto snap = [st = s.step] (float start, float end, float v) -> float
+                {
+                    if (st <= 0.0f) return juce::jlimit (start, end, v);
+
+                    const float q = std::round ((v - start) / st);
+                    const float snapped = start + q * st;
+                    return juce::jlimit (start, end, snapped);
+                };
+
+                juce::NormalisableRange<float> range (s.min, s.max, toValue, toNorm, snap);
+                auto stringFromValue = [st = s.step] (float v, int /*maxLen*/) -> juce::String
+                {
+                    // derive decimals from step: 1 -> 0 dp, 0.1 -> 1 dp, 0.01 -> 2 dp, etc
+                    int decimals = 0;
+                    if (st > 0.0f)
+                    {
+                        float t = st;
+                        // cap at 6 decimals to avoid insanity
+                        while (decimals < 6 && t < 1.0f)
+                        {
+                            t *= 10.0f;
+                            ++decimals;
+                            // stop early if step is now effectively integer
+                            if (std::abs(t - std::round(t)) < 1.0e-6f) break;
+                        }
+                    }
+
+                    // trim trailing zeros behavior is already good enough with fixed decimals
+                    return juce::String (v, decimals);
+                };
+
+                auto valueFromString = [] (const juce::String& text) -> float
+                {
+                    return text.getFloatValue();
+                };
+
+                layout.add (std::make_unique<juce::AudioParameterFloat>(
+                    pid, s.name, range, s.def, juce::String(),
+                    juce::AudioProcessorParameter::genericParameter,
+                    stringFromValue, valueFromString
+                ));
             }
         }
 
@@ -590,6 +838,123 @@ private:
         return changed;
     }
 
+    static inline float clamp01f (float x) noexcept
+    {
+        return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+    }
+
+    static inline float sgnf (float x) noexcept { return x >= 0.0f ? 1.0f : -1.0f; }
+
+    // YSFX-style sqr mapping generalized for bipolar/unipolar.
+    // We use modifier=2 for plain ":sqr".
+    static float curveFrom01_sqr (float t, float lo, float hi, float modifier = 2.0f) noexcept
+    {
+        t = clamp01f(t);
+        if (hi == lo) return lo;
+        if (modifier <= 0.0f) modifier = 2.0f;
+
+        const float inv = 1.0f / modifier;
+
+        const float imax = sgnf(hi) * std::pow(std::abs(hi), inv);
+        const float imin = sgnf(lo) * std::pow(std::abs(lo), inv);
+
+        const float interp = t * (imax - imin) + imin;
+        return sgnf(interp) * std::pow(std::abs(interp), modifier);
+    }
+
+    static float curveTo01_sqr (float v, float lo, float hi, float modifier = 2.0f) noexcept
+    {
+        if (hi == lo) return 0.0f;
+        if (modifier <= 0.0f) modifier = 2.0f;
+
+        // clamp v into range first
+        if (v < lo) v = lo;
+        if (v > hi) v = hi;
+
+        const float inv = 1.0f / modifier;
+
+        const float imax = sgnf(hi) * std::pow(std::abs(hi), inv);
+        const float imin = sgnf(lo) * std::pow(std::abs(lo), inv);
+
+        const float interp = sgnf(v) * std::pow(std::abs(v), inv);
+
+        const float denom = (imax - imin);
+        if (std::abs(denom) < 1.0e-20f) return 0.0f;
+
+        return clamp01f((interp - imin) / denom);
+    }
+
+    static float curveFrom01_log (float t, float lo, float hi, float modifier) noexcept
+    {
+        t = clamp01f (t);
+        if (hi == lo) return lo;
+
+        // modifier == 0 -> classic exp interpolation (needs >0 domain)
+        if (modifier == 0.0f)
+        {
+            if (lo <= 0.0001f || hi <= 0.0001f)
+                return lo + t * (hi - lo);
+
+            return lo * std::exp ((std::log (hi) - std::log (lo)) * t);
+        }
+
+        // modifier != 0 -> midpoint-based curve (works with lo==0)
+        const float diff = hi - lo;
+        if (std::abs (diff) < 1.0e-20f) return lo;
+        if (std::abs (modifier - lo) < 1.0e-20f) return lo + t * diff;
+
+        const float m = (modifier - lo) / diff;
+        if (std::abs (m) < 1.0e-20f) return lo + t * diff;
+
+        float mm1 = (m - 1.0f) / m;
+        mm1 *= mm1;
+
+        const float denom = (mm1 - 1.0f);
+        if (std::abs (denom) < 1.0e-20f) return lo + t * diff;
+
+        const float prefactor = diff / denom;
+        return prefactor * (std::pow (std::abs (mm1), t) - 1.0f) + lo;
+    }
+
+    static float curveTo01_log (float v, float lo, float hi, float modifier) noexcept
+    {
+        if (hi == lo) return 0.0f;
+
+        if (v < lo) v = lo;
+        if (v > hi) v = hi;
+
+        if (modifier == 0.0f)
+        {
+            if (lo <= 0.0001f || hi <= 0.0001f)
+                return clamp01f ((v - lo) / (hi - lo));
+
+            const float denom = (std::log (hi) - std::log (lo));
+            if (std::abs (denom) < 1.0e-20f) return 0.0f;
+
+            return clamp01f ((std::log (v) - std::log (lo)) / denom);
+        }
+
+        const float diff = hi - lo;
+        if (std::abs (diff) < 1.0e-20f) return 0.0f;
+        if (std::abs (modifier - lo) < 1.0e-20f) return clamp01f ((v - lo) / diff);
+
+        const float m = (modifier - lo) / diff;
+        if (std::abs (m) < 1.0e-20f) return clamp01f ((v - lo) / diff);
+
+        float mm1 = (m - 1.0f) / m;
+        mm1 *= mm1;
+
+        const float base = std::abs (mm1);
+        const float logBase = std::log (base);
+        if (base <= 0.0f || std::abs (logBase) < 1.0e-20f)
+            return clamp01f ((v - lo) / diff);
+
+        const float inv_prefactor = (mm1 - 1.0f) / diff;
+        const float inside = (v - lo) * inv_prefactor + 1.0f;
+        if (inside <= 0.0f) return 0.0f;
+
+        return clamp01f (std::log (std::abs (inside)) / logBase);
+    }
     DSPJSFX_State st {};
     std::unique_ptr<juce::AudioProcessorValueTreeState> apvts;
     std::array<std::atomic<float>*, 64> paramAtomics {};

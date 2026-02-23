@@ -351,6 +351,14 @@ class Parser:
         while self.cur.kind in ("eol", "semi"):
             self._adv()
 
+    def _skip_eol(self) -> None:
+        # Like _skip_seps(), but ONLY consumes newlines, not semicolons.
+        # This enables multi-line expressions without accidentally joining
+        # semicolon-separated statements.
+        while self.cur.kind == "eol":
+            self._adv()
+
+
     def _fmt_err(self, msg: str) -> str:
         line = getattr(self.cur.span, "line", 0) or 0
         col  = getattr(self.cur.span, "col", 0) or 0
@@ -516,6 +524,12 @@ class Parser:
             else:
                 lhs = Binary(self._new_id(), lhs.span, op, lhs, rhs)
 
+        # Allow multiline ternary where '?' starts on the next line.
+        # We ONLY skip newlines in this specific situation to avoid
+        # accidentally merging separate statements.
+        while self.cur.kind == "eol" and (self.nxt.kind == "eol" or (self.nxt.kind == "op" and self.nxt.text == "?")):
+            self._adv()
+
         # ternary (JSFX allows "cond ? then" with implicit else 0)
         if self.cur.kind == "op" and self.cur.text == "?" and _TERNARY_PREC >= min_prec:
             q = self.cur
@@ -528,7 +542,7 @@ class Parser:
             if self.cur.kind == "op" and self.cur.text == ":":
                 self._adv()
                 self._skip_seps()
-                els = self.parse_expr(_TERNARY_PREC)
+                els = self.parse_expr(0)
             else:
                 # no ':' => else is 0.0
                 els = Num(self._new_id(), q.span, 0.0)
@@ -539,6 +553,9 @@ class Parser:
         return lhs
 
     def parse_prefix(self) -> Node:
+        # Allow line breaks inside expressions (JSFX is newline-tolerant).
+        self._skip_eol()
+
         if self.cur.kind == "op" and self.cur.text in ("+", "-", "!"):
             t = self.cur
             self._adv()
@@ -683,7 +700,7 @@ class Parser:
 # JSFX section extraction
 # -----------------------------
 
-_SECTION_RE = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\s*$")
+_SECTION_RE = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b.*$")
 
 def extract_sections(jsfx_text: str) -> Dict[str, Tuple[str, int]]:
     """
@@ -922,7 +939,7 @@ class LLVMModuleEmitter:
             self._intrinsics[fn] = f
             return f
 
-        if fn in ("pow", "exp", "log"):
+        if fn in ("pow", "exp", "log", "tan", "log10"):
             f = ir.Function(self.module, ir.FunctionType(self.double, [self.double, self.double]) if fn == "pow" else ir.FunctionType(self.double, [self.double]), name=fn)
             self._intrinsics[fn] = f
             return f
@@ -1306,12 +1323,97 @@ class LLVMModuleEmitter:
                 a1 = self.emit_expr(builder, st, n.args[1])
                 return builder.call(fdecl, [a0, a1])
 
-            if fn in ("exp", "log"):
+            if fn in ("exp", "log", "tan", "log10"):
                 if len(n.args) != 1:
                     raise ValueError(f"{fn} expects 1 arg")
                 fdecl = self._declare_math(fn)
                 a0 = self.emit_expr(builder, st, n.args[0])
                 return builder.call(fdecl, [a0])
+
+
+            if fn == "memset":
+                # JSFX builtin: memset(dest, value, length)
+                # Sets mem[dest .. dest+length-1] = value. Returns dest (double).
+                if len(n.args) != 3:
+                    raise ValueError("memset expects 3 args")
+
+                dest_v  = self.emit_expr(builder, st, n.args[0])
+                value_v = self.emit_expr(builder, st, n.args[1])
+                len_v   = self.emit_expr(builder, st, n.args[2])
+
+                # JSFX-style address rounding: trunc(x + 1e-5)
+                dest_sum = builder.fadd(dest_v, self._const_f64(1.0e-5))
+                dest_i64 = builder.fptosi(dest_sum, self.i64)
+
+                zero_i64 = self._const_i64(0)
+                isneg = builder.icmp_signed("<", dest_i64, zero_i64)
+                dest_i64 = builder.select(isneg, zero_i64, dest_i64)
+
+                # length = max(0, trunc(length))
+                len_i64 = builder.fptosi(len_v, self.i64)
+                isnegL = builder.icmp_signed("<", len_i64, zero_i64)
+                len_i64 = builder.select(isnegL, zero_i64, len_i64)
+
+                # Ensure memory for dest + len
+                end_i64 = builder.add(dest_i64, len_i64)
+                memN = self._get_memN(builder, st)
+                need_grow = builder.icmp_signed(">", end_i64, memN)
+                with builder.if_then(need_grow):
+                    builder.call(self.fn_ensure, [st, end_i64])
+
+                # for (i=0; i<len; ++i) mem[dest+i] = value
+                fnc = builder.function
+                pre_bb = builder.block
+                cond_bb = fnc.append_basic_block(f"memset_cond_{n.id}")
+                body_bb = fnc.append_basic_block(f"memset_body_{n.id}")
+                after_bb = fnc.append_basic_block(f"memset_after_{n.id}")
+
+                builder.branch(cond_bb)
+
+                builder.position_at_end(cond_bb)
+                i_phi = builder.phi(self.i64, name=f"memset_i_{n.id}")
+                i_phi.add_incoming(zero_i64, pre_bb)
+                cond = builder.icmp_signed("<", i_phi, len_i64)
+                builder.cbranch(cond, body_bb, after_bb)
+
+                builder.position_at_end(body_bb)
+                mem_base = self._get_mem_ptr(builder, st)
+                idx_i64 = builder.add(dest_i64, i_phi)
+                ptr = builder.gep(mem_base, [idx_i64], inbounds=False)
+                builder.store(value_v, ptr)
+                i_next = builder.add(i_phi, self._const_i64(1))
+                body_end = builder.block
+                builder.branch(cond_bb)
+                i_phi.add_incoming(i_next, body_end)
+
+                builder.position_at_end(after_bb)
+                return dest_v
+
+
+            if fn in ("fft", "ifft", "fft_permute", "fft_ipermute"):
+                # JSFX FFT helpers (used by some scripts for spectral/topology work).
+                # We route these to small C++ runtime helpers that operate on st->mem
+                # as an interleaved complex buffer: base[2*i]=re, base[2*i+1]=im.
+                if len(n.args) != 2:
+                    raise ValueError(f"{fn} expects 2 args")
+
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+
+                rt_name = {
+                    "fft": "jsfx_fft",
+                    "ifft": "jsfx_ifft",
+                    "fft_permute": "jsfx_fft_permute",
+                    "fft_ipermute": "jsfx_fft_ipermute",
+                }[fn]
+
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+
+                return builder.call(fdecl, [st, a0, a1])
 
             raise ValueError(f"Unknown function call {n.fn}")
 
