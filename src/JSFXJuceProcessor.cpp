@@ -984,6 +984,8 @@ public:
         , processor (p)
         , genericEditor (p)
     {
+        setOpaque (true);
+        setColour (juce::ResizableWindow::backgroundColourId, juce::Colour (0xff2f3a41)); // pick your base
         addAndMakeVisible (genericEditor);
 
         // --- Help button (top-right) ---
@@ -1016,22 +1018,41 @@ public:
         // Timer drives idle-delay + show/hide
         startTimerHz (30);
 
+        // Enable host-resizable editor
+        setResizable (true, true);
+
+        // Pick limits that keep the GenericAudioProcessorEditor usable.
+        // (Tune these to taste.)
+        setResizeLimits (520, 320, 1600, 1200);
+
+        // Initial size (don’t lock to genericEditor’s initial width/height)
+        setSize (720, 520);
+
         // Match the generic editor size.
         setSize (genericEditor.getWidth(), genericEditor.getHeight());
     }
 
+        void paint (juce::Graphics& g) override
+    {
+        g.fillAll (findColour (juce::ResizableWindow::backgroundColourId));
+    }
+
+
     void resized() override
     {
-        genericEditor.setBounds (getLocalBounds());
+        const int topBarH = 40;
+
+        auto r = getLocalBounds();
+        auto top = r.removeFromTop (topBarH);
 
         const int btnSize = 24;
-        helpButton.setBounds (getWidth() - btnSize - 8, 8, btnSize, btnSize);
+        helpButton.setBounds (top.getRight() - btnSize - 8, (topBarH - btnSize) / 2, btnSize, btnSize);
         helpButton.toFront (false);
 
+        genericEditor.setBounds (r);     // fill remaining space
         helpOverlay.setBounds (getLocalBounds());
         tooltipBubble.toFront (false);
     }
-
 private:
     // -----------------------
     // HELP overlay component
@@ -1055,9 +1076,42 @@ private:
             body.setScrollbarsShown (true);
             body.setCaretVisible (false);
             body.setPopupMenuEnabled (true);
+            body.setFont (juce::Font (14.5f));
+            body.setLineSpacing (1.25f);
+            body.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+            body.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+            body.setColour (juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
             addAndMakeVisible (body);
 
             setWantsKeyboardFocus (true);
+        }
+
+        static juce::String formatHelp (juce::String h)
+        {
+            h = h.replace ("\r\n", "\n");
+
+            // If it already has blank lines, assume it's pre-formatted.
+            if (h.contains ("\n\n"))
+                return h.trim();
+
+            // Otherwise: treat each line as a bullet-ish paragraph.
+            juce::StringArray lines;
+            lines.addLines (h);
+
+            juce::String out;
+            for (auto s : lines)
+            {
+                s = s.trim();
+                if (s.isEmpty())
+                    continue;
+
+                // Turn "X. Y." into two lines for readability.
+                s = s.replace (". ", ".\n");
+
+                out << "• " << s << "\n\n";
+            }
+
+            return out.trimEnd();
         }
 
         void setHelpText (const juce::String& t)
@@ -1084,20 +1138,26 @@ private:
         {
             auto r = getLocalBounds();
 
-            // A panel that always stays within the editor bounds.
-            const int margin = 24;
-            const int minW   = 420;
-            const int minH   = 220;
-
+            // Panel scales with window size, but stays readable.
+            const int margin = juce::jlimit (16, 48, juce::jmin (getWidth(), getHeight()) / 14);
             auto panel = r.reduced (margin);
-            panel.setSize (juce::jmax (minW, panel.getWidth()), juce::jmax (minH, panel.getHeight()));
+
+            const int minW = 560;
+            const int minH = 300;
+
+            panel.setWidth  (juce::jmax (minW, panel.getWidth()));
+            panel.setHeight (juce::jmax (minH, panel.getHeight()));
             panel = panel.withCentre (r.getCentre());
+
             panelBounds = panel;
 
-            auto inner = panel.reduced (14);
-            auto top = inner.removeFromTop (24);
-            close.setBounds (top.removeFromRight (24));
-            title.setBounds (top);
+            auto inner = panel.reduced (16);
+
+            // Header row
+            auto header = inner.removeFromTop (30);
+            close.setBounds (header.removeFromRight (28));
+            title.setBounds (header);
+
             inner.removeFromTop (10);
             body.setBounds (inner);
         }
@@ -1357,7 +1417,7 @@ private:
         if (help.isEmpty())
             help = "No help text found. Add one or more lines like:\n\n// #HELP: Your description here";
 
-        helpOverlay.setHelpText (help);
+        helpOverlay.setHelpText (helpOverlay.formatHelp (help));
         helpOverlay.setVisible (true);
         helpOverlay.toFront (true);
         helpOverlay.grabKeyboardFocus();
@@ -1383,7 +1443,7 @@ private:
     juce::Component* currentRow = nullptr;
     juce::Point<int> lastMousePos { 0, 0 };
     uint32_t lastMoveMs = 0;
-    static constexpr uint32_t idleDelayMs = 3000;
+    static constexpr uint32_t idleDelayMs = 1000;
 };
 
 
