@@ -1407,11 +1407,11 @@ public:
         setOpaque (true);
         setInterceptsMouseClicks (true, true);
 
-        if (interp.hasGfx())
+        if (interp.hasGfxSection())
             startTimerHz (30);
     }
 
-    bool hasGfx() const noexcept { return interp.hasGfx(); }
+    bool hasGfx() const noexcept { return interp.hasGfxSection(); }
     int preferredHeight() const noexcept { return interp.preferredHeight(); }
     int preferredWidth()  const noexcept { return interp.preferredWidth(); }
 
@@ -1420,19 +1420,18 @@ public:
         // Clear (scripts typically draw their own bg, but a clean slate avoids trails).
         g.fillAll (juce::Colours::black);
 
-        if (! interp.hasGfx())
+        if (! interp.hasGfxSection())
         {
             g.setColour (juce::Colours::white.withAlpha (0.5f));
             g.drawText ("(no @gfx section)", getLocalBounds(), juce::Justification::centred);
             return;
         }
 
-        // Optional: show compile error if any.
-        const auto err = interp.getLastError();
-        if (err.isNotEmpty())
+        if (! interp.gfxCompiledOk())
         {
             g.setColour (juce::Colours::red.withAlpha (0.9f));
-            g.drawText ("@gfx compile error:\n" + err, getLocalBounds().reduced (6),
+            const auto err = interp.getLastError();
+            g.drawText ("@gfx compile error:\n" + (err.isNotEmpty() ? err : juce::String ("(unknown error)")), getLocalBounds().reduced (6),
                         juce::Justification::topLeft, true);
             return;
         }
@@ -1503,7 +1502,7 @@ private:
 
     void renderNow()
     {
-        if (! interp.hasGfx())
+        if (! interp.hasGfxSection() || ! interp.gfxCompiledOk())
             return;
 
         // Pull snapshot from processor

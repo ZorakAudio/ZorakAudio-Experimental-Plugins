@@ -408,19 +408,26 @@ public:
   // -------------------------------------------------------------------
   static void registerGfxBuiltins()
   {
+    // IMPORTANT:
+    //   - The 3rd parameter to NSEEL_addfunc_varparm_ex is a boolean "want_exact", NOT a max-arg count.
+    //     Passing nonzero here forces an exact-arity function, which breaks JSFX calls like
+    //     gfx_set(r,g,b,a) (4 params) or gfx_rect(x,y,w,h,fill) (5 params).
+    //   - We also must use NSEEL_PProc_THIS so the callback receives the per-VM "this" pointer
+    //     (set by eelScriptInst), which we use as our GfxVm instance.
+
     // Register into the global EEL function table.
-    // Use the _ex form directly to avoid NSEEL_addfunc_varparm macro signature drift across WDL versions.
-    // Required signature: EEL_F (__cdecl *)(void*, INT_PTR, EEL_F**)
-    NSEEL_addfunc_varparm_ex("gfx_set",        3, 4, nullptr, &eel_gfx_set,        nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_rect",       4, 5, nullptr, &eel_gfx_rect,       nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_rectto",     2, 3, nullptr, &eel_gfx_rectto,     nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_circle",     3, 4, nullptr, &eel_gfx_circle,     nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_line",       4, 4, nullptr, &eel_gfx_line,       nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_lineto",     2, 2, nullptr, &eel_gfx_lineto,     nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_drawstr",    1, 1, nullptr, &eel_gfx_drawstr,    nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_setfont",    1, 4, nullptr, &eel_gfx_setfont,    nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_measurestr", 1, 1, nullptr, &eel_gfx_measurestr, nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_getchar",    0, 0, nullptr, &eel_gfx_getchar,    nullptr);
+    // Signature required: EEL_F (NSEEL_CGEN_CALL *)(void* opaque, INT_PTR np, EEL_F** parms)
+    // want_exact=0 => varargs with minimum parameter count.
+    NSEEL_addfunc_varparm_ex("gfx_set",        3, 0, NSEEL_PProc_THIS, &eel_gfx_set,        nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_rect",       4, 0, NSEEL_PProc_THIS, &eel_gfx_rect,       nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_rectto",     2, 0, NSEEL_PProc_THIS, &eel_gfx_rectto,     nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_circle",     3, 0, NSEEL_PProc_THIS, &eel_gfx_circle,     nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_line",       4, 0, NSEEL_PProc_THIS, &eel_gfx_line,       nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_lineto",     2, 0, NSEEL_PProc_THIS, &eel_gfx_lineto,     nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_drawstr",    1, 0, NSEEL_PProc_THIS, &eel_gfx_drawstr,    nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_setfont",    1, 0, NSEEL_PProc_THIS, &eel_gfx_setfont,    nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_measurestr", 1, 0, NSEEL_PProc_THIS, &eel_gfx_measurestr, nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_getchar",    0, 0, NSEEL_PProc_THIS, &eel_gfx_getchar,    nullptr);
   }
 
   static EEL_F NSEEL_CGEN_CALL eel_gfx_set(void* opaque, INT_PTR np, EEL_F** parms)
@@ -709,20 +716,29 @@ public:
       code_init = vm->compile_code(sections.init.c_str(), &err);
 
     err = nullptr;
-    if (!sections.gfx.empty())
-      code_gfx = vm->compile_code(sections.gfx.c_str(), &err);
-
-    if (!code_gfx)
+    if (sections.hasGfx)
     {
-      const char* e = err ? err : NSEEL_code_getcodeerror(vm->m_vm);
-      lastError = e ? e : "Unknown EEL compile error";
+      // Some scripts specify "@gfx" with no body. Treat it as a no-op rather than a hard error.
+      const char* gfxCode = sections.gfx.empty() ? "0;" : sections.gfx.c_str();
+      code_gfx = vm->compile_code(gfxCode, &err);
+
+      if (!code_gfx)
+      {
+        const char* e = err ? err : NSEEL_code_getcodeerror(vm->m_vm);
+        lastError = e ? e : "Unknown EEL compile error";
+      }
     }
 
     // We execute @init ONCE (on first frame) so scripts that configure gfx state
     // there (gfx_clear, fonts, precomputed UI tables, etc) behave as expected.
   }
 
-  bool hasGfx() const { return sections.hasGfx && code_gfx != nullptr; }
+  // Does the JSFX source contain an @gfx section at all?
+  // (Independent of whether compilation succeeded.)
+  bool hasGfxSection() const { return sections.hasGfx; }
+
+  // Did @gfx compile successfully?
+  bool gfxCompiledOk() const { return code_gfx != nullptr; }
 
   int preferredWidth() const { return sections.gfxW; }
   int preferredHeight() const { return sections.gfxH; }
@@ -736,7 +752,7 @@ public:
 
   void renderFrame(int width, int height, const Snapshot& snap)
   {
-    if (!hasGfx()) return;
+    if (!hasGfxSection() || !gfxCompiledOk()) return;
 
     // One-time init, with current snapshot state applied first.
     if (!initRan && code_init)
