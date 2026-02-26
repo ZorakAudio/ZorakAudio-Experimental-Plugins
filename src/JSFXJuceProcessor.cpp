@@ -32,6 +32,16 @@ extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed);
   static const char* kJsfxSourceText = R"JSFX()JSFX";
 #endif
 
+// ------------------------------
+// Optional JSFX @gfx interpreter (WDL/YSFX EEL2)
+//
+// This is included as a single translation-unit chunk to keep the project
+// monolithic: you only need to add YSFXGfxInterpreter.h (+ WDL folder) next
+// to this file.
+// ------------------------------
+#include "YSFXGfxInterpreter.h"
+
+
 
 // Global registry so jsfx_ensure_mem can realloc the correct block
 namespace
@@ -646,6 +656,7 @@ public:
         }
 
         initStateMemory();
+        initGfxSnapshots();
     }
 
     ~JSFXJuceProcessor() override
@@ -680,12 +691,19 @@ public:
         resetStateStructOnly();
         st.srate = sampleRate;
 
+        gfxSnapPeriodSamples = (int64_t) juce::jmax (128.0, sampleRate / 30.0);
+        gfxSnapCountdown = 0;
+
         jsfx_init (&st);
 
         // Push params and run @slider once at startup
         lastSlidersValid = false;
         (void) pushParamsToStateSliders();
         jsfx_slider (&st);
+
+        // Seed initial GFX snapshot so the UI has something immediately.
+        gfxSnapCountdown = 0;
+        updateGfxSnapshotIfNeeded ((int) gfxSnapPeriodSamples);
     }
 
     void releaseResources() override {}
@@ -720,6 +738,8 @@ public:
             jsfx_slider (&st);
 
         jsfx_process_block (&st, inPtrs.data(), outPtrs.data(), numCh, numSamples);
+
+        updateGfxSnapshotIfNeeded (numSamples);
     }
 
     juce::AudioProcessorEditor* createEditor() override;
@@ -743,11 +763,46 @@ public:
     const std::vector<JsfxSliderDecl>& getJsfxSliderDecls() const noexcept { return sliderDecls; }
     const juce::String& getJsfxHelpText() const noexcept { return jsfxHelpText; }
 
+
+// ------------------------------------------------------------
+// GFX snapshot access (audio thread -> UI thread)
+//
+// We keep a small triple-buffered copy of the JSFX runtime state
+// (sliders / vars / mem) so the @gfx interpreter can render meters
+// without ever touching the realtime DSP state directly.
+// ------------------------------------------------------------
+struct GfxSnapshot
+{
+    std::array<double, 64> sliders {};
+    std::vector<double> vars;
+    std::vector<double> mem;
+    int varsCount = 0;
+    int memN = 0;
+    double srate = 0.0;
+    double samplesblock = 0.0;
+};
+
+// Returns a pointer valid until endGfxSnapshotRead().
+const GfxSnapshot* beginGfxSnapshotRead (int& outIndex) noexcept
+{
+    const int idx = gfxSnapFront.load (std::memory_order_acquire);
+    gfxSnapReading.store (idx, std::memory_order_release);
+    outIndex = idx;
+    return &gfxSnaps[(size_t) idx];
+}
+
+void endGfxSnapshotRead (int index) noexcept
+{
+    const int cur = gfxSnapReading.load (std::memory_order_relaxed);
+    if (cur == index)
+        gfxSnapReading.store (-1, std::memory_order_release);
+}
+
 private:
     void initStateMemory()
     {
         std::memset (&st, 0, sizeof (st));
-        const int64_t initialN = 2048;
+        const int64_t initialN = 65536;
         st.mem  = (double*) std::calloc ((size_t) initialN, sizeof (double));
         st.memN = (st.mem != nullptr ? initialN : 0);
 
@@ -957,6 +1012,80 @@ private:
     }
     DSPJSFX_State st {};
     std::unique_ptr<juce::AudioProcessorValueTreeState> apvts;
+
+// ---- GFX snapshot triple-buffer ----
+void initGfxSnapshots()
+{
+    const int varCount = (int) (sizeof (st.vars) / sizeof (st.vars[0]));
+    for (auto& b : gfxSnaps)
+    {
+        b.varsCount = varCount;
+        b.vars.resize ((size_t) varCount, 0.0);
+        b.memN = (int) st.memN;
+        b.mem.resize ((size_t) st.memN, 0.0);
+
+        // Pre-reserve to avoid reallocs on the audio thread for typical JSFX scripts
+        // (FFT/spectrum analyzers etc). 131072 doubles ~= 1MB per buffer.
+        b.mem.reserve (131072);
+    }
+}
+
+void updateGfxSnapshotIfNeeded (int numSamples)
+{
+    // No @gfx? Still harmless, but avoid the mem copy if the UI never uses it.
+    // (The UI will simply not call beginGfxSnapshotRead() if there's no @gfx.)
+    if (st.srate <= 0.0 || numSamples <= 0)
+        return;
+
+    if (gfxSnapPeriodSamples <= 0)
+        gfxSnapPeriodSamples = (int64_t) juce::jmax (128.0, st.srate / 30.0); // ~30 Hz snapshots
+
+    gfxSnapCountdown -= (int64_t) numSamples;
+    if (gfxSnapCountdown > 0)
+        return;
+
+    gfxSnapCountdown += gfxSnapPeriodSamples;
+
+    const int front = gfxSnapFront.load (std::memory_order_relaxed);
+    const int reading = gfxSnapReading.load (std::memory_order_relaxed);
+
+    int writeIdx = (front + 1) % 3;
+    if (writeIdx == reading) writeIdx = (writeIdx + 1) % 3;
+    if (writeIdx == front)   writeIdx = (writeIdx + 1) % 3;
+
+    auto& b = gfxSnaps[(size_t) writeIdx];
+
+    // Ensure buffers are large enough (rare; can allocate on audio thread).
+    const int varCount = (int) (sizeof (st.vars) / sizeof (st.vars[0]));
+    if ((int) b.vars.size() != varCount)
+        b.vars.resize ((size_t) varCount, 0.0);
+
+    if (b.mem.capacity() < (size_t) st.memN)
+        b.mem.reserve ((size_t) st.memN);
+
+    if ((int64_t) b.mem.size() != st.memN)
+        b.mem.resize ((size_t) st.memN, 0.0);
+
+    // Copy state
+    std::memcpy (b.sliders.data(), st.sliders, sizeof (double) * 64);
+    std::memcpy (b.vars.data(),    st.vars,    sizeof (double) * (size_t) varCount);
+    std::memcpy (b.mem.data(),     st.mem,     sizeof (double) * (size_t) st.memN);
+
+    b.varsCount = varCount;
+    b.memN = (int) st.memN;
+    b.srate = st.srate;
+    b.samplesblock = st.samplesblock;
+
+    gfxSnapFront.store (writeIdx, std::memory_order_release);
+}
+
+// Snapshot buffers
+std::array<GfxSnapshot, 3> gfxSnaps {};
+std::atomic<int> gfxSnapFront { 0 };
+std::atomic<int> gfxSnapReading { -1 };
+int64_t gfxSnapPeriodSamples = 0;
+int64_t gfxSnapCountdown = 0;
+
     std::array<std::atomic<float>*, 64> paramAtomics {};
 
     std::vector<JsfxSliderDecl> sliderDecls;
@@ -983,10 +1112,15 @@ public:
         : juce::AudioProcessorEditor (&p)
         , processor (p)
         , genericEditor (p)
+        , gfxView (p)
     {
         setOpaque (true);
         setColour (juce::ResizableWindow::backgroundColourId, juce::Colour (0xff2f3a41)); // pick your base
         addAndMakeVisible (genericEditor);
+
+        // --- JSFX @gfx view (always placed at the bottom) ---
+        addAndMakeVisible (gfxView);
+        gfxView.setVisible (gfxView.hasGfx());
 
         // --- Help button (top-right) ---
         helpButton.setButtonText ("?");
@@ -1023,13 +1157,22 @@ public:
 
         // Pick limits that keep the GenericAudioProcessorEditor usable.
         // (Tune these to taste.)
-        setResizeLimits (520, 320, 1600, 1200);
+        const int minH = 320 + (gfxView.isVisible() ? juce::jlimit (80, 600, gfxView.preferredHeight()) : 0);
+        setResizeLimits (520, minH, 1600, 1400);
 
-        // Initial size (don’t lock to genericEditor’s initial width/height)
-        setSize (720, 520);
 
-        // Match the generic editor size.
-        setSize (genericEditor.getWidth(), genericEditor.getHeight());
+// Initial size:
+// Use the generic editor’s size as the baseline, then add a fixed top bar and
+// (if present) the JSFX @gfx panel at the very bottom.
+const int topBarH = 40;
+const int gap = 6;
+
+const int gfxH = gfxView.isVisible() ? juce::jlimit (80, 600, gfxView.preferredHeight()) : 0;
+
+const int w = juce::jmax (720, genericEditor.getWidth());
+const int h = juce::jmax (520, genericEditor.getHeight() + topBarH + (gfxH > 0 ? (gfxH + gap) : 0));
+
+setSize (w, h);
     }
 
         void paint (juce::Graphics& g) override
@@ -1038,21 +1181,37 @@ public:
     }
 
 
-    void resized() override
+
+void resized() override
+{
+    const int topBarH = 40;
+    const int gap = 6;
+
+    auto r = getLocalBounds();
+    auto top = r.removeFromTop (topBarH);
+
+    const int btnSize = 24;
+    helpButton.setBounds (top.getRight() - btnSize - 8, (topBarH - btnSize) / 2, btnSize, btnSize);
+    helpButton.toFront (false);
+
+    // Reserve bottom area for @gfx (always at the bottom, never above sliders).
+    if (gfxView.isVisible())
     {
-        const int topBarH = 40;
+        const int gfxH = juce::jlimit (80, 600, gfxView.preferredHeight());
+        auto gfxArea = r.removeFromBottom (gfxH);
+        gfxView.setBounds (gfxArea);
 
-        auto r = getLocalBounds();
-        auto top = r.removeFromTop (topBarH);
-
-        const int btnSize = 24;
-        helpButton.setBounds (top.getRight() - btnSize - 8, (topBarH - btnSize) / 2, btnSize, btnSize);
-        helpButton.toFront (false);
-
-        genericEditor.setBounds (r);     // fill remaining space
-        helpOverlay.setBounds (getLocalBounds());
-        tooltipBubble.toFront (false);
+        r.removeFromBottom (gap);
     }
+    else
+    {
+        gfxView.setBounds (0, 0, 0, 0);
+    }
+
+    genericEditor.setBounds (r);     // fill remaining space above gfx
+    helpOverlay.setBounds (getLocalBounds());
+    tooltipBubble.toFront (false);
+}
 private:
     // -----------------------
     // HELP overlay component
@@ -1232,6 +1391,162 @@ private:
         juce::Point<int> bubbleSize { 0, 0 };
         static constexpr int padding = 10;
     };
+
+
+// -----------------------
+// JSFX @gfx view (rendered by YSFXGfxInterpreter)
+// -----------------------
+class GfxView final : public juce::Component,
+                      private juce::Timer
+{
+public:
+    explicit GfxView (JSFXJuceProcessor& p)
+        : processor (p)
+        , interp (kJsfxSourceText)
+    {
+        setOpaque (true);
+        setInterceptsMouseClicks (true, true);
+
+        if (interp.hasGfx())
+            startTimerHz (30);
+    }
+
+    bool hasGfx() const noexcept { return interp.hasGfx(); }
+    int preferredHeight() const noexcept { return interp.preferredHeight(); }
+    int preferredWidth()  const noexcept { return interp.preferredWidth(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        // Clear (scripts typically draw their own bg, but a clean slate avoids trails).
+        g.fillAll (juce::Colours::black);
+
+        if (! interp.hasGfx())
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.5f));
+            g.drawText ("(no @gfx section)", getLocalBounds(), juce::Justification::centred);
+            return;
+        }
+
+        // Optional: show compile error if any.
+        const auto err = interp.getLastError();
+        if (err.isNotEmpty())
+        {
+            g.setColour (juce::Colours::red.withAlpha (0.9f));
+            g.drawText ("@gfx compile error:\n" + err, getLocalBounds().reduced (6),
+                        juce::Justification::topLeft, true);
+            return;
+        }
+
+        jsfx_gfx::paintCommands (g, lastCmds);
+    }
+
+    void resized() override
+    {
+        // Force a refresh on resize so scripts that use gfx_w/gfx_h can redraw.
+        renderNow();
+        repaint();
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override { updateMouse (e); }
+    void mouseDrag (const juce::MouseEvent& e) override { updateMouse (e); }
+    void mouseDown (const juce::MouseEvent& e) override { updateMouse (e); }
+    void mouseUp   (const juce::MouseEvent& e) override { updateMouse (e); }
+
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& d) override
+    {
+        updateMouse (e);
+
+        // JSFX expects a "tick" value; REAPER uses +/- 1-ish steps. We approximate.
+        const float wheel = (float) (d.deltaY * 10.0);
+        const float hw    = (float) (d.deltaX * 10.0);
+
+        pendingWheel  += wheel;
+        pendingHWheel += hw;
+
+        renderNow();
+        repaint();
+    }
+
+private:
+    void timerCallback() override
+    {
+        renderNow();
+        repaint();
+    }
+
+    void updateMouse (const juce::MouseEvent& e)
+    {
+        auto p = e.getPosition();
+        mouseX = (float) p.x;
+        mouseY = (float) p.y;
+
+        int cap = 0;
+        if (e.mods.isLeftButtonDown())   cap |= 1;
+        if (e.mods.isRightButtonDown())  cap |= 2;
+        if (e.mods.isMiddleButtonDown()) cap |= 4;
+
+        if (e.mods.isShiftDown())   cap |= 8;
+        if (e.mods.isCtrlDown())    cap |= 16;
+        if (e.mods.isAltDown())     cap |= 32;
+        if (e.mods.isCommandDown()) cap |= 64;
+
+        mouseCap = cap;
+
+        // Render on mouse movement only when a button is down (dragging UI),
+        // otherwise the timer will handle periodic updates.
+        if (e.mods.isAnyMouseButtonDown())
+        {
+            renderNow();
+            repaint();
+        }
+    }
+
+    void renderNow()
+    {
+        if (! interp.hasGfx())
+            return;
+
+        // Pull snapshot from processor
+        int snapIdx = -1;
+        const auto* snap = processor.beginGfxSnapshotRead (snapIdx);
+        if (! snap)
+            return;
+
+        jsfx_gfx::Interpreter::Snapshot s;
+        s.sliders = snap->sliders.data();
+        s.slidersCount = 64;
+        s.vars = snap->vars.data();
+        s.varsCount = snap->varsCount;
+        s.mem = snap->mem.data();
+        s.memN = snap->memN;
+        s.srate = snap->srate;
+        s.samplesblock = snap->samplesblock;
+
+        // Apply current mouse state.
+        const float wheel  = pendingWheel;
+        const float hwheel = pendingHWheel;
+        pendingWheel = 0.0f;
+        pendingHWheel = 0.0f;
+
+        interp.setMouse (mouseX, mouseY, mouseCap, wheel, hwheel);
+        interp.renderFrame (getWidth(), getHeight(), s);
+
+        lastCmds = interp.getCommands();
+
+        processor.endGfxSnapshotRead (snapIdx);
+    }
+
+    JSFXJuceProcessor& processor;
+    jsfx_gfx::Interpreter interp;
+
+    std::vector<jsfx_gfx::DrawCmd> lastCmds;
+
+    float mouseX = 0.0f;
+    float mouseY = 0.0f;
+    int mouseCap = 0;
+    float pendingWheel = 0.0f;
+    float pendingHWheel = 0.0f;
+};
 
     // -----------------------
     // Tooltip behaviour
@@ -1432,6 +1747,8 @@ private:
     JSFXJuceProcessor& processor;
     juce::GenericAudioProcessorEditor genericEditor;
 
+    GfxView gfxView;
+
     juce::TextButton helpButton;
     HelpOverlay helpOverlay;
 
@@ -1443,7 +1760,7 @@ private:
     juce::Component* currentRow = nullptr;
     juce::Point<int> lastMousePos { 0, 0 };
     uint32_t lastMoveMs = 0;
-    static constexpr uint32_t idleDelayMs = 1000;
+    static constexpr uint32_t idleDelayMs = 3000;
 };
 
 

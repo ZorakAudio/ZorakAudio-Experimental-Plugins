@@ -1755,6 +1755,11 @@ def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
 
 def _emit_header(meta: Dict[str, Any]) -> str:
     var_cap = int(meta.get("var_cap", 1))
+    user_vars: Dict[str, int] = dict(meta.get("vars", {}) or {})
+
+    def _c_escape(s: str) -> str:
+        return s.replace('\\', r'\\').replace('"', r'\\"')
+
     lines = []
     lines.append("#pragma once")
     lines.append("#include <stdint.h>")
@@ -1773,6 +1778,26 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    double samplesblock;")
     lines.append("} DSPJSFX_State;")
     lines.append("")
+
+    # Export the AOT compiler's user-var symbol mapping so host code can bind EEL/JSFX
+    # variables by *name* to the correct vars[] index.
+    #
+    # NOTE: MSVC does not allow zero-sized arrays, so we emit a 1-element dummy when empty.
+    items_by_index = sorted(user_vars.items(), key=lambda kv: int(kv[1]))
+    count = len(items_by_index)
+    lines.append("/* User vars (name -> vars[] index) */")
+    lines.append("typedef struct DSPJSFX_VarDesc { const char* name; int32_t index; } DSPJSFX_VarDesc;")
+    lines.append(f"#define DSPJSFX_VARS_COUNT {count}")
+    arr_size = count if count > 0 else 1
+    lines.append(f"static const DSPJSFX_VarDesc DSPJSFX_VARS[{arr_size}] = {{")
+    if count == 0:
+        lines.append('    {"", -1},')
+    else:
+        for name, idx in items_by_index:
+            lines.append(f'    {{"{_c_escape(str(name))}", {int(idx)}}},')
+    lines.append("};")
+    lines.append("")
+
     lines.append("/* Sections */")
     lines.append("void jsfx_init(DSPJSFX_State* st);")
     lines.append("void jsfx_slider(DSPJSFX_State* st);")

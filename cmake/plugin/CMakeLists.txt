@@ -11,7 +11,6 @@ set(PLUGIN_DSP "" CACHE FILEPATH "Path to .dsp file")
 set(PLUGIN_TYPE "faust" CACHE STRING "Plugin type: faust or jsfx")
 set(PLUGIN_JSFX_OBJ "" CACHE FILEPATH "Path to JSFX AOT object file (.o/.obj)")
 
-
 set(ZA_ROOT "" CACHE PATH "Repo root")
 set(ZA_ENABLE_CLAP OFF CACHE BOOL "Build CLAP target too")
 set(CLAP_ID "" CACHE STRING "Unique CLAP id")
@@ -32,7 +31,6 @@ elseif(PLUGIN_TYPE STREQUAL "jsfx")
 else()
   message(FATAL_ERROR "Invalid PLUGIN_TYPE. Expected 'faust' or 'jsfx'.")
 endif()
-
 
 project(${PLUGIN_SLUG} VERSION ${PLUGIN_VERSION} LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
@@ -79,7 +77,6 @@ if(PLUGIN_TYPE STREQUAL "faust")
   add_custom_target(${PLUGIN_SLUG}_faust DEPENDS "${FAUST_OUT}")
 endif()
 
-
 # ---- JUCE plugin ----
 juce_add_plugin(${PLUGIN_SLUG}
   PRODUCT_NAME "${PLUGIN_SLUG}"
@@ -103,17 +100,62 @@ if(PLUGIN_TYPE STREQUAL "faust")
       "${FAUST_OUT}"
   )
 else()
+  # JSFX: JUCE processor + WDL/EEL2 (C) sources.
   target_sources(${PLUGIN_SLUG}
     PRIVATE
       "${ZA_ROOT}/src/JSFXJuceProcessor.cpp"
+      "${ZA_ROOT}/src/NSEELHostStubs.cpp"
       "${PLUGIN_JSFX_OBJ}"
   )
-endif()
 
+  # WDL/EEL2 C sources (must compile as C, not C++).
+  set(WDL_C_SOURCES
+    "${ZA_ROOT}/src/WDL/fft.c"
+    "${ZA_ROOT}/src/WDL/eel2/nseel-compiler.c"
+    "${ZA_ROOT}/src/WDL/eel2/nseel-eval.c"
+    "${ZA_ROOT}/src/WDL/eel2/nseel-ram.c"
+    "${ZA_ROOT}/src/WDL/eel2/nseel-cfunc.c"
+    "${ZA_ROOT}/src/WDL/eel2/nseel-lextab.c"
+    "${ZA_ROOT}/src/WDL/eel2/nseel-caltab.c"
+    "${ZA_ROOT}/src/WDL/eel2/nseel-yylex.c"
+  )
+
+  if (WIN32)
+    list(APPEND WDL_C_SOURCES
+      "${ZA_ROOT}/src/WDL/win32_utf8.c"
+    )
+  endif()
+
+  target_sources(${PLUGIN_SLUG} PRIVATE ${WDL_C_SOURCES})
+
+  # Force MSVC/VS generators to treat these as C.
+  set_source_files_properties(${WDL_C_SOURCES} PROPERTIES LANGUAGE C)
+
+  target_include_directories(${PLUGIN_SLUG}
+    PRIVATE
+      "${ZA_ROOT}/src"
+      "${CMAKE_CURRENT_BINARY_DIR}"
+  )
+
+  target_compile_definitions(${PLUGIN_SLUG}
+    PRIVATE
+      EEL_TARGET_PORTABLE=1
+      WDL_FFT_REALSIZE=8
+
+      EELSCRIPT_NO_FILE=1
+      EELSCRIPT_NO_NET=1
+      EELSCRIPT_NO_MDCT=1
+      EELSCRIPT_NO_PREPROC=1
+      EELSCRIPT_NO_LICE=1
+      # DO NOT define EELSCRIPT_NO_EVAL
+  )
+endif()
 
 target_include_directories(${PLUGIN_SLUG}
   PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"
+    # So includes like "WDL/eel2/ns-eel.h" resolve from "${ZA_ROOT}/src/WDL/..."
+    "${ZA_ROOT}/src"
 )
 
 target_compile_definitions(${PLUGIN_SLUG}
@@ -146,12 +188,9 @@ target_compile_definitions(${PLUGIN_SLUG}
     JUCE_VST3_NO_VST2_STEINBERG_ID_CONFLICT=1
 )
 
-
-
 if(PLUGIN_TYPE STREQUAL "faust")
   add_dependencies(${PLUGIN_SLUG} ${PLUGIN_SLUG}_faust)
 endif()
-
 
 # ---- CLAP target (creates <target>_CLAP) ----
 if(ZA_ENABLE_CLAP)
