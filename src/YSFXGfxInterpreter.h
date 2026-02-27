@@ -275,7 +275,7 @@ public:
     *gfx_g = 1.0;
     *gfx_b = 1.0;
     *gfx_a = 1.0;
-    *gfx_clear = -1.0; // disabled unless script sets it
+    *gfx_clear = 0.0; // default clear-to-black (JSFX-style). Set gfx_clear=-1 to disable.
 
     if (srate_var) *srate_var = 44100.0;
     if (samplesblock_var) *samplesblock_var = 0.0;
@@ -293,34 +293,53 @@ public:
   }
 
   // -------------------------------------------------------------------
+  // Lazily clear the framebuffer on the first draw call of a frame.
+  // This matches WDL/eel_lice behaviour: if the script doesn't draw anything
+  // (common when throttling UI), the previous frame remains visible.
+  // -------------------------------------------------------------------
+  void setImageDirty()
+  {
+    if (framebufferDirty)
+      return;
+
+    framebufferDirty = true;
+
+    if (gfx_clear && *gfx_clear > -1.0)
+    {
+      // JSFX packs RGB as: r + g*256 + b*65536  (see WDL eel_lice.h docs)
+      const int rgb = (int)(*gfx_clear + 0.5);
+      const int r = (rgb) & 0xff;
+      const int g = (rgb >> 8) & 0xff;
+      const int b = (rgb >> 16) & 0xff;
+
+      DrawCmd cmd;
+      cmd.type = DrawCmd::Type::Rect;
+      cmd.colour = juce::Colour::fromRGB((juce::uint8)r, (juce::uint8)g, (juce::uint8)b);
+      cmd.x = 0.0f;
+      cmd.y = 0.0f;
+      cmd.w = (float)frameW;
+      cmd.h = (float)frameH;
+      cmd.fill = true;
+      commands.push_back(std::move(cmd));
+    }
+  }
+
+
+  // -------------------------------------------------------------------
   // State set by host before executing @gfx
   // -------------------------------------------------------------------
   void beginFrame(int w, int h)
   {
     commands.clear();
 
+    frameW = w;
+    frameH = h;
+    framebufferDirty = false;
+
     *gfx_w = (double)w;
     *gfx_h = (double)h;
 
     if (gfx_frame) *gfx_frame = frameCounter++;
-
-    // Apply gfx_clear if set (JSFX convention: 0xRRGGBB)
-    if (*gfx_clear >= 0.0)
-    {
-      const int rgb = (int)(*gfx_clear + 0.5);
-      const int r = (rgb >> 16) & 0xff;
-      const int g = (rgb >> 8) & 0xff;
-      const int b = (rgb) & 0xff;
-      DrawCmd cmd;
-      cmd.type = DrawCmd::Type::Rect;
-      cmd.colour = juce::Colour::fromRGB((juce::uint8)r, (juce::uint8)g, (juce::uint8)b);
-      cmd.x = 0.0f;
-      cmd.y = 0.0f;
-      cmd.w = (float)w;
-      cmd.h = (float)h;
-      cmd.fill = true;
-      commands.push_back(std::move(cmd));
-    }
   }
 
   void setMouse(float x, float y, int cap, float wheel, float hwheel)
@@ -458,6 +477,8 @@ public:
     auto* self = (GfxVm*)opaque;
     if (!self || np < 4) return 0.0;
 
+    self->setImageDirty();
+
     DrawCmd cmd;
     cmd.type = DrawCmd::Type::Rect;
     cmd.colour = self->getCurrentColour();
@@ -475,6 +496,8 @@ public:
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 2) return 0.0;
+
+    self->setImageDirty();
 
     const float x1 = (float)(self->gfx_x ? *self->gfx_x : 0.0);
     const float y1 = (float)(self->gfx_y ? *self->gfx_y : 0.0);
@@ -499,6 +522,8 @@ public:
     auto* self = (GfxVm*)opaque;
     if (!self || np < 4) return 0.0;
 
+    self->setImageDirty();
+
     DrawCmd cmd;
     cmd.type = DrawCmd::Type::Line;
     cmd.colour = self->getCurrentColour();
@@ -520,6 +545,8 @@ public:
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 2) return 0.0;
+
+    self->setImageDirty();
 
     const float x1 = (float)(self->gfx_x ? *self->gfx_x : 0.0);
     const float y1 = (float)(self->gfx_y ? *self->gfx_y : 0.0);
@@ -584,6 +611,8 @@ public:
     auto* self = (GfxVm*)opaque;
     if (!self || np < 1) return 0.0;
 
+    self->setImageDirty();
+
     EEL_STRING_MUTEXLOCK_SCOPE;
     const char* str = EEL_STRING_GET_FOR_INDEX(*parms[0], nullptr);
 
@@ -610,6 +639,8 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_printf(void* opaque, INT_PTR np, EEL_F** pa
 {
   auto* self = (GfxVm*)opaque;
   if (!self || np < 1) return 0.0;
+
+    self->setImageDirty();
 
   juce::String textToDraw;
   {
@@ -768,6 +799,8 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     auto* self = (GfxVm*)opaque;
     if (!self || np < 3) return 0.0;
 
+    self->setImageDirty();
+
     DrawCmd cmd;
     cmd.type   = DrawCmd::Type::Circle;
     cmd.colour = self->getCurrentColour();
@@ -802,6 +835,10 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   EEL_F* gfx_mode = nullptr;
 
     double frameCounter = 0.0;
+
+  int frameW = 0;
+  int frameH = 0;
+  bool framebufferDirty = false;
 
   EEL_F* mouse_x = nullptr;
   EEL_F* mouse_y = nullptr;

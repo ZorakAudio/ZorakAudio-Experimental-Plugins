@@ -1628,7 +1628,11 @@ public:
         setInterceptsMouseClicks (true, true);
 
         if (interp.hasGfxSection())
+        {
+            // Render once immediately so the very first paint isn't empty/black due to timer scheduling.
+            renderNow();
             startTimerHz (30);
+        }
     }
 
     bool hasGfx() const noexcept { return interp.hasGfxSection(); }
@@ -1637,11 +1641,9 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        // Clear (scripts typically draw their own bg, but a clean slate avoids trails).
-        g.fillAll (juce::Colours::black);
-
         if (! interp.hasGfxSection())
         {
+            g.fillAll (juce::Colours::black);
             g.setColour (juce::Colours::white.withAlpha (0.5f));
             g.drawText ("(no @gfx section)", getLocalBounds(), juce::Justification::centred);
             return;
@@ -1649,19 +1651,30 @@ public:
 
         if (! interp.gfxCompiledOk())
         {
+            g.fillAll (juce::Colours::black);
             g.setColour (juce::Colours::red.withAlpha (0.9f));
             const auto err = interp.getLastError();
-            g.drawText ("@gfx compile error:\n" + (err.isNotEmpty() ? err : juce::String ("(unknown error)")), getLocalBounds().reduced (6),
+            g.drawText ("@gfx compile error:\n" + (err.isNotEmpty() ? err : juce::String ("(unknown error)")),
+                        getLocalBounds().reduced (6),
                         juce::Justification::topLeft, true);
             return;
         }
 
-        jsfx_gfx::paintCommands (g, lastCmds);
+        if (canvas.isNull())
+        {
+            g.fillAll (juce::Colours::black);
+            return;
+        }
+
+        // Persistent canvas: scripts that do partial / intermittent redraws (expecting REAPER's persistent surface,
+        // i.e. gfx_clear = -1) won't "blink" to black between updates.
+        g.drawImageAt (canvas, 0, 0);
     }
 
     void resized() override
     {
-        // Force a refresh on resize so scripts that use gfx_w/gfx_h can redraw.
+        // Resize invalidates our persistent canvas.
+        canvas = juce::Image();
         renderNow();
         repaint();
     }
@@ -1725,6 +1738,16 @@ private:
         if (! interp.hasGfxSection() || ! interp.gfxCompiledOk())
             return;
 
+        const int w = juce::jmax (1, getWidth());
+        const int h = juce::jmax (1, getHeight());
+
+        if (canvas.isNull() || canvas.getWidth() != w || canvas.getHeight() != h)
+        {
+            canvas = juce::Image (juce::Image::ARGB, w, h, true);
+            juce::Graphics cg (canvas);
+            cg.fillAll (juce::Colours::black);
+        }
+
         // Pull snapshot from processor
         int snapIdx = -1;
         const auto* snap = processor.beginGfxSnapshotRead (snapIdx);
@@ -1748,9 +1771,13 @@ private:
         pendingHWheel = 0.0f;
 
         interp.setMouse (mouseX, mouseY, mouseCap, wheel, hwheel);
-        interp.renderFrame (getWidth(), getHeight(), s);
+        interp.renderFrame (w, h, s);
 
-        lastCmds = interp.getCommands();
+        // Apply draw commands onto our persistent canvas.
+        {
+            juce::Graphics cg (canvas);
+            jsfx_gfx::paintCommands (cg, interp.getCommands());
+        }
 
         processor.endGfxSnapshotRead (snapIdx);
     }
@@ -1758,7 +1785,8 @@ private:
     JSFXJuceProcessor& processor;
     jsfx_gfx::Interpreter interp;
 
-    std::vector<jsfx_gfx::DrawCmd> lastCmds;
+    // Persistent backing store (JSFX semantics when gfx_clear = -1).
+    juce::Image canvas;
 
     float mouseX = 0.0f;
     float mouseY = 0.0f;
@@ -1768,6 +1796,7 @@ private:
 };
 
     // -----------------------
+
     // Tooltip behaviour
     // -----------------------
     void rebuildRowTooltipMap()
