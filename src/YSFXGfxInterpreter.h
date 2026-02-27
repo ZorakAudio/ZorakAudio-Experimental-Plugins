@@ -702,11 +702,11 @@ public:
 
     // Bind sliders and user vars.
     vm->bindSliderPtrs();
-#if defined(DSPJSFX_VARS) && defined(DSPJSFX_VARS_COUNT)
+
+    // DSPJSFX_VARS is a *symbol* emitted by dsp_jsfx_aot.py (static const array),
+    // not a preprocessor macro. So `defined(DSPJSFX_VARS)` is always false.
+    // The fallback table at the top of this file guarantees DSPJSFX_VARS exists anyway.
     vm->bindUserVars(DSPJSFX_VARS, (int)DSPJSFX_VARS_COUNT);
-#else
-    vm->bindUserVars(nullptr, 0);
-#endif
 
     // Compile relevant sections. We compile init + gfx so helper functions
     // defined in init are available to gfx.
