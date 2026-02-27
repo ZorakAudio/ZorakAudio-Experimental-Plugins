@@ -250,6 +250,8 @@ public:
     gfx_y     = get_var("gfx_y");
     gfx_w     = get_var("gfx_w");
     gfx_h     = get_var("gfx_h");
+    gfx_frame = get_var("gfx_frame");
+    if (gfx_frame) *gfx_frame = 0.0;
     gfx_r     = get_var("gfx_r");
     gfx_g     = get_var("gfx_g");
     gfx_b     = get_var("gfx_b");
@@ -299,6 +301,8 @@ public:
 
     *gfx_w = (double)w;
     *gfx_h = (double)h;
+
+    if (gfx_frame) *gfx_frame = frameCounter++;
 
     // Apply gfx_clear if set (JSFX convention: 0xRRGGBB)
     if (*gfx_clear >= 0.0)
@@ -425,6 +429,7 @@ public:
     NSEEL_addfunc_varparm_ex("gfx_line",       4, 0, NSEEL_PProc_THIS, &eel_gfx_line,       nullptr);
     NSEEL_addfunc_varparm_ex("gfx_lineto",     2, 0, NSEEL_PProc_THIS, &eel_gfx_lineto,     nullptr);
     NSEEL_addfunc_varparm_ex("gfx_drawstr",    1, 0, NSEEL_PProc_THIS, &eel_gfx_drawstr,    nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_printf",     1, 0, NSEEL_PProc_THIS, &eel_gfx_printf,     nullptr);
     NSEEL_addfunc_varparm_ex("gfx_setfont",    1, 0, NSEEL_PProc_THIS, &eel_gfx_setfont,    nullptr);
     NSEEL_addfunc_varparm_ex("gfx_measurestr", 1, 0, NSEEL_PProc_THIS, &eel_gfx_measurestr, nullptr);
     NSEEL_addfunc_varparm_ex("gfx_getchar",    0, 0, NSEEL_PProc_THIS, &eel_gfx_getchar,    nullptr);
@@ -599,7 +604,148 @@ public:
     return 0.0;
   }
 
-  static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F** parms)
+  
+
+static EEL_F NSEEL_CGEN_CALL eel_gfx_printf(void* opaque, INT_PTR np, EEL_F** parms)
+{
+  auto* self = (GfxVm*)opaque;
+  if (!self || np < 1) return 0.0;
+
+  juce::String textToDraw;
+  {
+    EEL_STRING_MUTEXLOCK_SCOPE;
+
+    const char* fmt = EEL_STRING_GET_FOR_INDEX(*parms[0], nullptr);
+    if (fmt == nullptr)
+      fmt = "";
+
+    std::string out;
+    out.reserve(std::strlen(fmt) + 32);
+
+    int argIndex = 1;
+
+    for (size_t i = 0; fmt[i] != '\0'; ++i)
+    {
+      if (fmt[i] != '%')
+      {
+        out.push_back(fmt[i]);
+        continue;
+      }
+
+      // %%
+      if (fmt[i + 1] == '%')
+      {
+        out.push_back('%');
+        ++i;
+        continue;
+      }
+
+      const size_t specStart = i;
+      size_t j = i + 1;
+
+      // flags
+      while (fmt[j] != '\0' && std::strchr("-+0 #", fmt[j]) != nullptr)
+        ++j;
+
+      // width
+      while (fmt[j] != '\0' && std::isdigit((unsigned char)fmt[j]))
+        ++j;
+
+      // precision
+      if (fmt[j] == '.')
+      {
+        ++j;
+        while (fmt[j] != '\0' && std::isdigit((unsigned char)fmt[j]))
+          ++j;
+      }
+
+      // length modifiers (ignored, but consumed so "%lld" etc doesn't break parsing)
+      if (fmt[j] == 'h' || fmt[j] == 'l' || fmt[j] == 'L')
+      {
+        const char first = fmt[j];
+        ++j;
+        if ((first == 'h' || first == 'l') && fmt[j] == first)
+          ++j;
+      }
+
+      const char spec = fmt[j];
+
+      if (spec == '\0')
+      {
+        // Unterminated format specifier: append the rest verbatim and stop.
+        out.append(fmt + specStart);
+        break;
+      }
+
+      // Include conversion letter
+      ++j;
+
+      const std::string oneFmt(fmt + specStart, fmt + j);
+
+      char buf[512];
+      buf[0] = '\0';
+
+      const double v = (argIndex < (int)np) ? (double)*parms[argIndex] : 0.0;
+
+      if (spec == 's')
+      {
+        const char* s = EEL_STRING_GET_FOR_INDEX(v, nullptr);
+        if (s == nullptr)
+          s = "";
+        ::snprintf(buf, sizeof(buf), oneFmt.c_str(), s);
+        ++argIndex;
+      }
+      else if (spec == 'd' || spec == 'i')
+      {
+        const int iv = (int)std::llround(v);
+        ::snprintf(buf, sizeof(buf), oneFmt.c_str(), iv);
+        ++argIndex;
+      }
+      else if (spec == 'u' || spec == 'x' || spec == 'X' || spec == 'o')
+      {
+        const unsigned int uv = (unsigned int)std::llround(v);
+        ::snprintf(buf, sizeof(buf), oneFmt.c_str(), uv);
+        ++argIndex;
+      }
+      else if (spec == 'c')
+      {
+        const int cv = (int)std::llround(v);
+        ::snprintf(buf, sizeof(buf), oneFmt.c_str(), cv);
+        ++argIndex;
+      }
+      else
+      {
+        // Treat everything else as floating-point
+        ::snprintf(buf, sizeof(buf), oneFmt.c_str(), v);
+        ++argIndex;
+      }
+
+      out.append(buf);
+
+      // Continue parsing at the end of this format specifier.
+      i = j - 1;
+    }
+
+    textToDraw = juce::String(out);
+  }
+
+  DrawCmd cmd;
+  cmd.type = DrawCmd::Type::Text;
+  cmd.colour = self->getCurrentColour();
+  cmd.font = self->currentFont;
+  cmd.text = textToDraw;
+  cmd.x = (float)(self->gfx_x ? *self->gfx_x : 0.0);
+  cmd.y = (float)(self->gfx_y ? *self->gfx_y : 0.0);
+
+  self->commands.push_back(cmd);
+
+  const float advance = cmd.font.getStringWidthFloat(cmd.text);
+  if (self->gfx_x) *self->gfx_x = (double)(cmd.x + advance);
+
+  return 0.0;
+}
+
+static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F** parms)
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 1) return 0.0;
@@ -647,12 +793,15 @@ public:
   EEL_F* gfx_y = nullptr;
   EEL_F* gfx_w = nullptr;
   EEL_F* gfx_h = nullptr;
+  EEL_F* gfx_frame = nullptr;
   EEL_F* gfx_r = nullptr;
   EEL_F* gfx_g = nullptr;
   EEL_F* gfx_b = nullptr;
   EEL_F* gfx_a = nullptr;
   EEL_F* gfx_clear = nullptr;
   EEL_F* gfx_mode = nullptr;
+
+    double frameCounter = 0.0;
 
   EEL_F* mouse_x = nullptr;
   EEL_F* mouse_y = nullptr;
@@ -843,6 +992,8 @@ static inline void paintCommands(juce::Graphics& g, const std::vector<DrawCmd>& 
     }
   }
 }
+
+
 
 } // namespace jsfx_gfx
 

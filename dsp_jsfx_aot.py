@@ -844,6 +844,139 @@ def collect_user_vars(programs: Dict[str, List[Node]], fn_defs: Dict[str, Functi
     return {name: i for i, name in enumerate(sorted(names))}
 
 
+
+# -----------------------------
+# spl[] I/O inference (for JUCE bus layout)
+# -----------------------------
+
+_SPL_RE = re.compile(r"^spl([0-9]+)$")
+
+def infer_spl_io(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Dict[str, int]:
+    """Infer minimum input/output channel counts from splN usage.
+
+    Heuristic:
+      - Any read of splN implies at least (N+1) input channels.
+      - Any write to splN (assignment target) implies at least (N+1) output channels.
+
+    Returned counts are clamped to 1..64.
+
+    NOTE:
+      In REAPER JSFX can see higher track channels even when a plugin only exposes fewer pins.
+      For CLAP/VST we must declare enough channels for those spl registers to exist.
+    """
+    reads: Set[int] = set()
+    writes: Set[int] = set()
+
+    def _record(name: str, is_write: bool) -> None:
+        m = _SPL_RE.match(name)
+        if not m:
+            return
+        try:
+            idx = int(m.group(1))
+        except ValueError:
+            return
+        if idx < 0 or idx >= 64:
+            return
+        (writes if is_write else reads).add(idx)
+
+    def rec(n: Node, locals: Set[str], write_ctx: bool = False) -> None:
+        if isinstance(n, Var):
+            if n.name in locals:
+                return
+            _record(n.name, write_ctx)
+            return
+
+        if isinstance(n, Num):
+            return
+        if isinstance(n, Index):
+            rec(n.base, locals, False)
+            rec(n.index, locals, False)
+            return
+        if isinstance(n, Unary):
+            rec(n.a, locals, False)
+            return
+        if isinstance(n, Binary):
+            rec(n.l, locals, False)
+            rec(n.r, locals, False)
+            return
+        if isinstance(n, Assign):
+            # Target is written
+            rec(n.target, locals, True)
+
+            # Compound assignment (+=, *=, ...) also reads the old target value
+            if n.op != "=":
+                rec(n.target, locals, False)
+
+            rec(n.value, locals, False)
+            return
+        if isinstance(n, Call):
+            for a in n.args:
+                rec(a, locals, False)
+            return
+        if isinstance(n, Loop):
+            rec(n.count, locals, False)
+            rec(n.body, locals, False)
+            return
+        if isinstance(n, Ternary):
+            rec(n.cond, locals, False)
+            rec(n.then, locals, False)
+            rec(n.els, locals, False)
+            return
+        if isinstance(n, Seq):
+            for it in n.items:
+                rec(it, locals, False)
+            return
+        if isinstance(n, If):
+            rec(n.cond, locals, False)
+            rec(n.then, locals, False)
+            if n.els:
+                rec(n.els, locals, False)
+            return
+        if isinstance(n, While):
+            rec(n.cond, locals, False)
+            rec(n.body, locals, False)
+            return
+
+        raise TypeError(type(n))
+
+    # sections
+    for prog in programs.values():
+        for st in prog:
+            rec(st, set(), False)
+
+    # function bodies (exclude params+locals)
+    for f in fn_defs.values():
+        localset = set(f.params) | set(f.locals)
+        rec(f.body, localset, False)
+
+    max_read = max(reads) if reads else -1
+    max_write = max(writes) if writes else -1
+
+    in_ch = (max_read + 1) if max_read >= 0 else 0
+    out_ch = (max_write + 1) if max_write >= 0 else 0
+
+    # If a script has no explicit I/O usage, fall back to a sensible minimum.
+    if in_ch == 0 and out_ch == 0:
+        in_ch = 2
+        out_ch = 2
+    elif in_ch == 0:
+        in_ch = out_ch
+    elif out_ch == 0:
+        out_ch = in_ch
+
+    in_ch = max(1, min(64, int(in_ch)))
+    out_ch = max(1, min(64, int(out_ch)))
+    process_ch = max(in_ch, out_ch)
+
+    return {
+        "inputs": in_ch,
+        "outputs": out_ch,
+        "process": process_ch,
+        "max_read": max_read,
+        "max_write": max_write,
+    }
+
+
 def extract_function_defs(programs: Dict[str, List[Node]]) -> Tuple[Dict[str, FunctionDef], Dict[str, List[Node]]]:
     fns: Dict[str, FunctionDef] = {}
     out: Dict[str, List[Node]] = {}
@@ -1729,6 +1862,8 @@ def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
     fn_defs, programs = extract_function_defs(programs)
     user_vars = collect_user_vars(programs, fn_defs)
 
+    io_channels = infer_spl_io(programs, fn_defs)
+
 
     sym = SymTable(user_vars)
 
@@ -1748,6 +1883,7 @@ def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
         "vars": user_vars,
         "var_cap": emitter.var_cap,
         "sections_present": {k: bool(v) for k, v in programs.items()},
+        "io_channels": io_channels,
     }
     return emitter.module, meta
 
@@ -1757,12 +1893,29 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     var_cap = int(meta.get("var_cap", 1))
     user_vars: Dict[str, int] = dict(meta.get("vars", {}) or {})
 
+    io_meta: Dict[str, Any] = dict(meta.get("io_channels", {}) or {})
+    in_ch = int(io_meta.get("inputs", 2) or 2)
+    out_ch = int(io_meta.get("outputs", 2) or 2)
+    proc_ch = int(io_meta.get("process", max(in_ch, out_ch)) or max(in_ch, out_ch))
+
+    in_ch = max(1, min(64, in_ch))
+    out_ch = max(1, min(64, out_ch))
+    proc_ch = max(1, min(64, proc_ch))
+
+
     def _c_escape(s: str) -> str:
         return s.replace('\\', r'\\').replace('"', r'\\"')
 
     lines = []
     lines.append("#pragma once")
     lines.append("#include <stdint.h>")
+
+    lines.append("")
+    lines.append("/* Inferred minimum I/O channel counts (from splN usage) */")
+    lines.append(f"#define DSPJSFX_INPUT_CHANNELS {in_ch}")
+    lines.append(f"#define DSPJSFX_OUTPUT_CHANNELS {out_ch}")
+    lines.append(f"#define DSPJSFX_PROCESS_CHANNELS {proc_ch}")
+    lines.append("")
     lines.append("")
     lines.append("#ifdef __cplusplus")
     lines.append('extern "C" {')

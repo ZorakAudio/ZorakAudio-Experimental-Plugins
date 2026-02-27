@@ -1,0 +1,553 @@
+desc:ATTACK!!! (Bipolar Derivative Salience Shaper) [BRUTAL / SAVAGE]
+author:ZorakAudio
+version:1.0
+
+// Bipolar: + boosts detected ATTACK; - attenuates detected ATTACK (transient duck).
+// (Detector/envelopes are attack-only; this is not symmetric sustain “defend”.)
+// Knobs:
+//  BODY  (-100..+100): 0th-order salience (arrival/presence)
+//  EDGE  (-100..+100): 1st-order salience (articulation)
+//  PUNCH (-100..+100): 2nd-order salience (force)
+//  CRACK (-100..+100): 3rd-order salience (snap/fracture)
+//  TIGHT (0..100): time scale + selectivity (higher = shorter/cleaner)
+//
+// FLAVOR:
+//  BRUTAL: unified detectors (cohesive “one object”)
+//  SAVAGE: per-band detectors (distributed “materials”)
+//
+// No clip protection.
+// Delta monitor: spl2/spl3 = (processed - dry) * boost
+// Set track to 4 channels to audition the delta.
+
+// #HELP: Transient + body shaper for drums and percussive sounds.
+// #HELP: Use PUNCH/CRACK for bite, BODY for weight, and TIGHT to reduce flab.
+// #HELP: EDGE is a brightness/edge emphasis (go easy on already-sharp material).
+// #HELP: This is not a limiter — watch your output level.
+
+// #TOOLTIP: Adds/removes the 'meat' of the hit (sustain/body).
+slider1:0<-100,100,1:sqr>BODY
+// #TOOLTIP: Emphasizes or softens the sharp high-frequency edge.
+slider2:0<-100,100,1:sqr>EDGE
+// #TOOLTIP: Adds punch (more impact without just turning up).
+slider3:0<-100,100,1:sqr>PUNCH
+// #TOOLTIP: Adds snap/crack in the upper transient.
+slider4:0<-100,100,1:sqr>CRACK
+// #TOOLTIP: Tightens the hit (less boom / shorter tail).
+slider5:55<0,100,1:log>TIGHT
+// #TOOLTIP: Extra character / seasoning (subtle vibe control).
+slider6:0<0,1,1{BRUTAL,SAVAGE}>FLAVOR
+
+@init
+pi = 3.141592653589793;
+eps = 0.00000000000000000001;
+db2lin = 0.115129254649702284; // ln(10)/20
+
+// 3-band ERB-ish proxy split points
+fc_low  = 250;
+fc_mid  = 4000;
+Q = 0.70710678;
+
+// LP250 coeffs/state
+b0a=b1a=b2a=a1a=a2a=0;
+z1aL=z2aL=0; z1aR=z2aR=0;
+
+// LP4k coeffs/state
+b0b=b1b=b2b=a1b=a2b=0;
+z1bL=z2bL=0; z1bR=z2bR=0;
+
+// Derivative states per band: 0=low, 1=mid, 2=high (per channel)
+sPrevL0=vSL0=aPrevL0=0;  sPrevR0=vSR0=aPrevR0=0;
+sPrevL1=vSL1=aPrevL1=0;  sPrevR1=vSR1=aPrevR1=0;
+sPrevL2=vSL2=aPrevL2=0;  sPrevR2=vSR2=aPrevR2=0;
+
+// Moving references per band/order (0..3)
+ref0_0=ref1_0=ref2_0=ref3_0=0;
+ref0_1=ref1_1=ref2_1=ref3_1=0;
+ref0_2=ref1_2=ref2_2=ref3_2=0;
+
+// BRUTAL global refs + envs (per stage)
+refG_body=refG_edge=refG_punch=refG_crack=0;
+envG_body=envG_edge=envG_punch=envG_crack=0;
+
+// SAVAGE envs
+envS_body=0;
+envS_edge_mid=envS_edge_high=0;
+envS_punch_low=envS_punch_mid=0;
+envS_crack_mid=envS_crack_high=0;
+
+@slider
+// Normalize knobs to [-1..+1]
+k_body  = slider1/100;
+k_edge  = slider2/100;
+k_punch = slider3/100;
+k_crack = slider4/100;
+
+tight = slider5/100;
+flavor = slider6|0; // 0 BRUTAL, 1 SAVAGE
+
+tPow = pow(tight, 1.35);
+
+// Amount mapping (dB max per dimension)
+// (kept in the range that feels huge but doesn’t instantly become unusable)
+max_body_db  = 12;
+max_edge_db  = 12;
+max_punch_db = 18;
+max_crack_db =  9;
+
+shp = 1.10; // knob curve
+body_db  = max_body_db  * (k_body  >= 0 ?  1 : -1) * pow(abs(k_body ), shp);
+edge_db  = max_edge_db  * (k_edge  >= 0 ?  1 : -1) * pow(abs(k_edge ), shp);
+punch_db = max_punch_db * (k_punch >= 0 ?  1 : -1) * pow(abs(k_punch), 1.05);
+crack_db = max_crack_db * (k_crack >= 0 ?  1 : -1) * pow(abs(k_crack), 1.25);
+
+// Delta monitor boost (+12..+30 dB by max knob magnitude)
+m = max(max(abs(k_body), abs(k_edge)), max(abs(k_punch), abs(k_crack)));
+delta_boost = exp((12 + 18*m) * db2lin);
+
+// Band application weights
+w_punch_mid = 0.40;
+w_crack_mid = 0.25;
+w_edge_high = 0.60;
+
+// Derivative smoothing time (ms): loose -> thicker, tight -> sharper
+smooth_ms = 6.0 + (0.25 - 6.0)*tPow; // 6..0.25
+tauL = max((smooth_ms*1.00)/1000, 0.00003);
+tauM = max((smooth_ms*1.25)/1000, 0.00003);
+tauH = max((smooth_ms*1.75)/1000, 0.00003);
+
+vcoef0 = 1 - exp(-1/(tauL*srate));
+vcoef1 = 1 - exp(-1/(tauM*srate));
+vcoef2 = 1 - exp(-1/(tauH*srate));
+
+// Attack-only envelope releases (ms): loose -> longer, tight -> shorter
+rel_body_ms  = 170 + (28  -170)*tPow;
+rel_edge_ms  =  90 + (12  - 90)*tPow;
+rel_punch_ms =  70 + (10  - 70)*tPow;
+rel_crack_ms =  45 + ( 5  - 45)*tPow;
+
+rel_body  = exp(-1/((rel_body_ms/1000)*srate));
+rel_edge  = exp(-1/((rel_edge_ms/1000)*srate));
+rel_punch = exp(-1/((rel_punch_ms/1000)*srate));
+rel_crack = exp(-1/((rel_crack_ms/1000)*srate));
+
+// Moving reference time constants (sec): tight -> faster
+ref0_base = 0.60 + (0.20 - 0.60)*tPow;
+ref1_base = 0.35 + (0.12 - 0.35)*tPow;
+ref2_base = 0.30 + (0.10 - 0.30)*tPow;
+ref3_base = 0.22 + (0.08 - 0.22)*tPow;
+
+// Band tau multipliers: high adapts faster to avoid fizz triggers
+tau_mul_low  = 1.20;
+tau_mul_mid  = 1.00;
+tau_mul_high = 0.80;
+
+refc0_0 = 1 - exp(-1/((ref0_base*tau_mul_low )*srate));
+refc0_1 = 1 - exp(-1/((ref0_base*tau_mul_mid )*srate));
+refc0_2 = 1 - exp(-1/((ref0_base*tau_mul_high)*srate));
+
+refc1_0 = 1 - exp(-1/((ref1_base*tau_mul_low )*srate));
+refc1_1 = 1 - exp(-1/((ref1_base*tau_mul_mid )*srate));
+refc1_2 = 1 - exp(-1/((ref1_base*tau_mul_high)*srate));
+
+refc2_0 = 1 - exp(-1/((ref2_base*tau_mul_low )*srate));
+refc2_1 = 1 - exp(-1/((ref2_base*tau_mul_mid )*srate));
+refc2_2 = 1 - exp(-1/((ref2_base*tau_mul_high)*srate));
+
+refc3_0 = 1 - exp(-1/((ref3_base*tau_mul_low )*srate));
+refc3_1 = 1 - exp(-1/((ref3_base*tau_mul_mid )*srate));
+refc3_2 = 1 - exp(-1/((ref3_base*tau_mul_high)*srate));
+
+// BRUTAL global refcoefs (mid-like)
+refcG_body  = 1 - exp(-1/((ref0_base)*srate));
+refcG_edge  = 1 - exp(-1/((ref1_base)*srate));
+refcG_punch = 1 - exp(-1/((ref2_base)*srate));
+refcG_crack = 1 - exp(-1/((ref3_base)*srate));
+
+// Thresholds (ratio in dB over moving ref)
+brutal_bonus = -0.8; // BRUTAL triggers slightly easier
+tight_adj = (tight - 0.5)*2.0;
+
+thr_body_db  = max(3,  6.0 + tight_adj + (flavor==0 ? brutal_bonus : 0));
+thr_edge_db  = max(3,  8.0 + tight_adj + (flavor==0 ? brutal_bonus : 0));
+thr_punch_db = max(3,  8.0 + tight_adj + (flavor==0 ? brutal_bonus : 0));
+thr_crack_db = max(3, 11.0 + tight_adj + (flavor==0 ? brutal_bonus : 0));
+
+thr_body  = exp(thr_body_db  * db2lin);
+thr_edge  = exp(thr_edge_db  * db2lin);
+thr_punch = exp(thr_punch_db * db2lin);
+thr_crack = exp(thr_crack_db * db2lin);
+
+// Extra strictness on “danger zones” in SAVAGE
+thr_edge_high_mul  = exp(2.0 * db2lin); // +2 dB
+thr_crack_mid_mul  = exp(2.0 * db2lin); // +2 dB
+thr_crack_high_mul = exp(1.0 * db2lin); // +1 dB
+
+// -------------------- Lowpass coefficient calc (RBJ) --------------------
+// LP250
+w = 2*pi*fc_low/srate;
+sw = sin(w); cw = cos(w);
+alpha = sw/(2*Q);
+bb0 = (1 - cw)/2; bb1 = 1 - cw; bb2 = (1 - cw)/2;
+aa0 = 1 + alpha;  aa1 = -2*cw;  aa2 = 1 - alpha;
+b0a = bb0/aa0; b1a = bb1/aa0; b2a = bb2/aa0;
+a1a = aa1/aa0; a2a = aa2/aa0;
+
+// LP4k
+w = 2*pi*fc_mid/srate;
+sw = sin(w); cw = cos(w);
+alpha = sw/(2*Q);
+bb0 = (1 - cw)/2; bb1 = 1 - cw; bb2 = (1 - cw)/2;
+aa0 = 1 + alpha;  aa1 = -2*cw;  aa2 = 1 - alpha;
+b0b = bb0/aa0; b1b = bb1/aa0; b2b = bb2/aa0;
+a1b = aa1/aa0; a2b = aa2/aa0;
+
+@sample
+xL = spl0;
+xR = spl1;
+
+// -------------------- 3-band split (perfect reconstruction) --------------------
+// LP250
+lp250L = b0a*xL + z1aL;  z1aL = b1a*xL - a1a*lp250L + z2aL;  z2aL = b2a*xL - a2a*lp250L;
+lp250R = b0a*xR + z1aR;  z1aR = b1a*xR - a1a*lp250R + z2aR;  z2aR = b2a*xR - a2a*lp250R;
+
+// LP4k
+lp4kL  = b0b*xL + z1bL;  z1bL = b1b*xL - a1b*lp4kL  + z2bL;  z2bL = b2b*xL - a2b*lp4kL;
+lp4kR  = b0b*xR + z1bR;  z1bR = b1b*xR - a1b*lp4kR  + z2bR;  z2bR = b2b*xR - a2b*lp4kR;
+
+lowL  = lp250L;           lowR  = lp250R;
+midL  = lp4kL - lp250L;   midR  = lp4kR - lp250R;
+highL = xL - lp4kL;       highR = xR - lp4kR;
+
+// -------------------- Derivatives per band --------------------
+// Band 0 (low)
+s = lowL;
+v = s - sPrevL0; sPrevL0 = s;
+oldvS = vSL0; vSL0 = oldvS + vcoef0*(v - oldvS);
+aL0 = vSL0 - oldvS;
+jL0 = aL0 - aPrevL0; aPrevL0 = aL0;
+
+s = lowR;
+v = s - sPrevR0; sPrevR0 = s;
+oldvS = vSR0; vSR0 = oldvS + vcoef0*(v - oldvS);
+aR0 = vSR0 - oldvS;
+jR0 = aR0 - aPrevR0; aPrevR0 = aR0;
+
+// Band 1 (mid)
+s = midL;
+v = s - sPrevL1; sPrevL1 = s;
+oldvS = vSL1; vSL1 = oldvS + vcoef1*(v - oldvS);
+aL1 = vSL1 - oldvS;
+jL1 = aL1 - aPrevL1; aPrevL1 = aL1;
+
+s = midR;
+v = s - sPrevR1; sPrevR1 = s;
+oldvS = vSR1; vSR1 = oldvS + vcoef1*(v - oldvS);
+aR1 = vSR1 - oldvS;
+jR1 = aR1 - aPrevR1; aPrevR1 = aR1;
+
+// Band 2 (high)
+s = highL;
+v = s - sPrevL2; sPrevL2 = s;
+oldvS = vSL2; vSL2 = oldvS + vcoef2*(v - oldvS);
+aL2 = vSL2 - oldvS;
+jL2 = aL2 - aPrevL2; aPrevL2 = aL2;
+
+s = highR;
+v = s - sPrevR2; sPrevR2 = s;
+oldvS = vSR2; vSR2 = oldvS + vcoef2*(v - oldvS);
+aR2 = vSR2 - oldvS;
+jR2 = aR2 - aPrevR2; aPrevR2 = aR2;
+
+// Magnitudes per band/order (linked stereo)
+mag0_0 = max(abs(lowL),  abs(lowR));
+mag1_0 = max(abs(vSL0),  abs(vSR0));
+mag2_0 = max(abs(aL0),   abs(aR0));
+mag3_0 = max(abs(jL0),   abs(jR0));
+
+mag0_1 = max(abs(midL),  abs(midR));
+mag1_1 = max(abs(vSL1),  abs(vSR1));
+mag2_1 = max(abs(aL1),   abs(aR1));
+mag3_1 = max(abs(jL1),   abs(jR1));
+
+mag0_2 = max(abs(highL), abs(highR));
+mag1_2 = max(abs(vSL2),  abs(vSR2));
+mag2_2 = max(abs(aL2),   abs(aR2));
+mag3_2 = max(abs(jL2),   abs(jR2));
+
+// Update moving references (per band/order)
+(ref0_0 < 0.000000000001) ? (ref0_0 = max(mag0_0,0.000000001)) : (ref0_0 += refc0_0*(mag0_0 - ref0_0));
+(ref1_0 < 0.000000000001) ? (ref1_0 = max(mag1_0,0.000000001)) : (ref1_0 += refc1_0*(mag1_0 - ref1_0));
+(ref2_0 < 0.000000000001) ? (ref2_0 = max(mag2_0,0.000000001)) : (ref2_0 += refc2_0*(mag2_0 - ref2_0));
+(ref3_0 < 0.000000000001) ? (ref3_0 = max(mag3_0,0.000000001)) : (ref3_0 += refc3_0*(mag3_0 - ref3_0));
+
+(ref0_1 < 0.000000000001) ? (ref0_1 = max(mag0_1,0.000000001)) : (ref0_1 += refc0_1*(mag0_1 - ref0_1));
+(ref1_1 < 0.000000000001) ? (ref1_1 = max(mag1_1,0.000000001)) : (ref1_1 += refc1_1*(mag1_1 - ref1_1));
+(ref2_1 < 0.000000000001) ? (ref2_1 = max(mag2_1,0.000000001)) : (ref2_1 += refc2_1*(mag2_1 - ref2_1));
+(ref3_1 < 0.000000000001) ? (ref3_1 = max(mag3_1,0.000000001)) : (ref3_1 += refc3_1*(mag3_1 - ref3_1));
+
+(ref0_2 < 0.000000000001) ? (ref0_2 = max(mag0_2,0.000000001)) : (ref0_2 += refc0_2*(mag0_2 - ref0_2));
+(ref1_2 < 0.000000000001) ? (ref1_2 = max(mag1_2,0.000000001)) : (ref1_2 += refc1_2*(mag1_2 - ref1_2));
+(ref2_2 < 0.000000000001) ? (ref2_2 = max(mag2_2,0.000000001)) : (ref2_2 += refc2_2*(mag2_2 - ref2_2));
+(ref3_2 < 0.000000000001) ? (ref3_2 = max(mag3_2,0.000000001)) : (ref3_2 += refc3_2*(mag3_2 - ref3_2));
+
+// Ratios (per band/order)
+r0_0 = mag0_0 / (ref0_0 + eps);
+r1_0 = mag1_0 / (ref1_0 + eps);
+r2_0 = mag2_0 / (ref2_0 + eps);
+r3_0 = mag3_0 / (ref3_0 + eps);
+
+r0_1 = mag0_1 / (ref0_1 + eps);
+r1_1 = mag1_1 / (ref1_1 + eps);
+r2_1 = mag2_1 / (ref2_1 + eps);
+r3_1 = mag3_1 / (ref3_1 + eps);
+
+r0_2 = mag0_2 / (ref0_2 + eps);
+r1_2 = mag1_2 / (ref1_2 + eps);
+r2_2 = mag2_2 / (ref2_2 + eps);
+r3_2 = mag3_2 / (ref3_2 + eps);
+
+// ===================== Envelope generation =====================
+flavor == 0 ? (
+  // -------- BRUTAL (unified detectors) --------
+  magG_body  = 0.55*mag0_0 + 0.45*mag0_1;              // ignore high
+  magG_edge  = 0.70*mag1_1 + 0.30*mag1_2;
+  magG_punch = 0.70*mag2_0 + 0.30*mag2_1;
+  magG_crack = 0.25*mag3_1 + 0.75*mag3_2;
+
+  (refG_body  < 0.000000000001) ? (refG_body  = max(magG_body ,0.000000001)) : (refG_body  += refcG_body *(magG_body  - refG_body ));
+  (refG_edge  < 0.000000000001) ? (refG_edge  = max(magG_edge ,0.000000001)) : (refG_edge  += refcG_edge *(magG_edge  - refG_edge ));
+  (refG_punch < 0.000000000001) ? (refG_punch = max(magG_punch,0.000000001)) : (refG_punch += refcG_punch*(magG_punch - refG_punch));
+  (refG_crack < 0.000000000001) ? (refG_crack = max(magG_crack,0.000000001)) : (refG_crack += refcG_crack*(magG_crack - refG_crack));
+
+  rg_body  = magG_body  / (refG_body  + eps);
+  rg_edge  = magG_edge  / (refG_edge  + eps);
+  rg_punch = magG_punch / (refG_punch + eps);
+  rg_crack = magG_crack / (refG_crack + eps);
+
+  graw = rg_body/thr_body - 1;   graw = max(graw,0);  gB = graw/(graw+1);
+  graw = rg_edge/thr_edge - 1;   graw = max(graw,0);  gE = graw/(graw+1);
+  graw = rg_punch/thr_punch - 1; graw = max(graw,0);  gP = graw/(graw+1);
+  graw = rg_crack/thr_crack - 1; graw = max(graw,0);  gC = graw/(graw+1);
+
+  envG_body  = max(gB, envG_body *rel_body);
+  envG_edge  = max(gE, envG_edge *rel_edge);
+  envG_punch = max(gP, envG_punch*rel_punch);
+  envG_crack = max(gC, envG_crack*rel_crack);
+
+  env_body_used = envG_body;
+  env_edge_mid  = envG_edge;
+  env_edge_high = envG_edge;
+  env_punch_low = envG_punch;
+  env_punch_mid = envG_punch;
+  env_crack_mid = envG_crack;
+  env_crack_high= envG_crack;
+) : (
+  // -------- SAVAGE (per-band detectors) --------
+  rs_body = 0.55*r0_0 + 0.45*r0_1;
+  graw = rs_body/thr_body - 1; graw = max(graw,0); gB = graw/(graw+1);
+  envS_body = max(gB, envS_body*rel_body);
+
+  graw = r1_1/thr_edge - 1; graw = max(graw,0); gEm = graw/(graw+1);
+  graw = r1_2/(thr_edge*thr_edge_high_mul) - 1; graw = max(graw,0); gEh = graw/(graw+1);
+  envS_edge_mid  = max(gEm, envS_edge_mid *rel_edge);
+  envS_edge_high = max(gEh, envS_edge_high*rel_edge);
+
+  graw = r2_0/thr_punch - 1; graw = max(graw,0); gPl = graw/(graw+1);
+  graw = r2_1/thr_punch - 1; graw = max(graw,0); gPm = graw/(graw+1);
+  envS_punch_low = max(gPl, envS_punch_low*rel_punch);
+  envS_punch_mid = max(gPm, envS_punch_mid*rel_punch);
+
+  graw = r3_1/(thr_crack*thr_crack_mid_mul) - 1; graw = max(graw,0); gCm = graw/(graw+1);
+  graw = r3_2/(thr_crack*thr_crack_high_mul) - 1; graw = max(graw,0); gCh = graw/(graw+1);
+  envS_crack_mid  = max(gCm, envS_crack_mid *rel_crack);
+  envS_crack_high = max(gCh, envS_crack_high*rel_crack);
+
+  env_body_used = envS_body;
+  env_edge_mid  = envS_edge_mid;
+  env_edge_high = envS_edge_high;
+  env_punch_low = envS_punch_low;
+  env_punch_mid = envS_punch_mid;
+  env_crack_mid = envS_crack_mid;
+  env_crack_high= envS_crack_high;
+);
+
+// -------------------- Band dB totals (bipolar, attack-only envelopes) --------------------
+db_low  = body_db*env_body_used + punch_db*env_punch_low;
+db_mid  = body_db*env_body_used + edge_db*env_edge_mid + punch_db*(w_punch_mid*env_punch_mid) + crack_db*(w_crack_mid*env_crack_mid);
+db_high = body_db*env_body_used + edge_db*(w_edge_high*env_edge_high) + crack_db*env_crack_high;
+
+// Numeric sanity clamps (NOT clip protection; just prevents absurd exp())
+cap = 30;
+db_low  = min(max(db_low , -cap), cap);
+db_mid  = min(max(db_mid , -cap), cap);
+db_high = min(max(db_high, -cap), cap);
+
+// Convert to linear gains
+gL = exp(db_low  * db2lin);
+gM = exp(db_mid  * db2lin);
+gH = exp(db_high * db2lin);
+
+// Process + reconstruct
+yL = lowL*gL + midL*gM + highL*gH;
+yR = lowR*gL + midR*gM + highR*gH;
+
+// Main out
+spl0 = yL;
+spl1 = yR;
+
+// Delta monitor
+spl2 = (yL - xL) * delta_boost;
+spl3 = (yR - xR) * delta_boost;
+
+
+@gfx 420 220
+// ---------- STANCE!!! / ATTACK!!! GFX (isolated) ----------
+// Expects these vars to exist (from your DSP):
+// k_body,k_edge,k_punch,k_crack  (STANCE: -1..+1)  OR body,edge,punch,crack (ATTACK: 0..1)
+// body_db, edge_db, punch_db, crack_db              (mapped signed/unsigned dB amounts)
+// env_body_used, env_edge_mid, env_edge_high, env_punch_low, env_punch_mid, env_crack_mid, env_crack_high
+// db_low, db_mid, db_high                           (final per-band dB totals after weighting/caps)
+// delta_boost                                       (linear boost for spl2/spl3 monitor)
+// flavor, tight                                     (optional; only for text)
+
+function clamp01(v) ( v < 0 ? 0 : (v > 1 ? 1 : v); );
+function clamp(v, lo, hi) ( v < lo ? lo : (v > hi ? hi : v); );
+
+// Background
+gfx_r=0.07; gfx_g=0.07; gfx_b=0.08; gfx_a=1;
+gfx_rect(0,0,gfx_w,gfx_h);
+
+// Layout
+pad = 10;
+W = gfx_w - pad*2;
+H = gfx_h - pad*2;
+
+rowH = 22;
+barH = 10;
+
+x0 = pad; y0 = pad;
+
+// Helper: draw label + 0..1 bar
+function draw_env_row(lbl, v, y, rr, gg, bb)
+(
+  v = clamp01(v);
+
+  // Label
+  gfx_r=0.85; gfx_g=0.85; gfx_b=0.88; gfx_a=1;
+  gfx_x = x0; gfx_y = y;
+  gfx_drawstr(lbl);
+
+  // Bar background
+  bx = x0 + 70;
+  by = y + 6;
+  bw = W - 70;
+  gfx_r=0.18; gfx_g=0.18; gfx_b=0.20; gfx_a=1;
+  gfx_rect(bx, by, bw, barH);
+
+  // Bar fill
+  gfx_r=rr; gfx_g=gg; gfx_b=bb; gfx_a=1;
+  gfx_rect(bx, by, bw*v, barH);
+
+  // Numeric
+  gfx_r=0.70; gfx_g=0.70; gfx_b=0.75; gfx_a=1;
+  gfx_x = bx + bw + 6; gfx_y = y;
+  gfx_printf("%.2f", v);
+);
+
+// Helper: bipolar dB bar centered (neg left, pos right)
+function draw_db_row(lbl, db, y)
+(
+  // scale: show up to +/- 24 dB clearly, clamp beyond
+  s = 24.0;
+  db = clamp(db, -48.0, 48.0);
+
+  gfx_r=0.85; gfx_g=0.85; gfx_b=0.88; gfx_a=1;
+  gfx_x = x0; gfx_y = y;
+  gfx_drawstr(lbl);
+
+  bx = x0 + 70;
+  by = y + 6;
+  bw = W - 70;
+  mid = bx + bw*0.5;
+
+  // Back
+  gfx_r=0.18; gfx_g=0.18; gfx_b=0.20; gfx_a=1;
+  gfx_rect(bx, by, bw, barH);
+
+  // Center line
+  gfx_r=0.35; gfx_g=0.35; gfx_b=0.40; gfx_a=1;
+  gfx_rect(mid, by, 1, barH);
+
+  // Fill
+  frac = abs(db)/s; frac = frac > 1 ? 1 : frac;
+  len = (bw*0.5) * frac;
+
+  db >= 0 ? (
+    gfx_r=0.25; gfx_g=0.80; gfx_b=0.35; gfx_a=1; // green boost
+    gfx_rect(mid, by, len, barH);
+  ) : (
+    gfx_r=0.90; gfx_g=0.35; gfx_b=0.30; gfx_a=1; // red cut
+    gfx_rect(mid - len, by, len, barH);
+  );
+
+  // Numeric
+  gfx_r=0.70; gfx_g=0.70; gfx_b=0.75; gfx_a=1;
+  gfx_x = bx + bw + 6; gfx_y = y;
+  gfx_printf("%+.1f dB", db);
+);
+
+// --------- Compute display-friendly aggregates ---------
+
+// Dimension env summaries (so you see “what’s firing”)
+env_body  = clamp01(env_body_used);
+env_edge  = clamp01(max(env_edge_mid, env_edge_high));
+env_punch = clamp01(max(env_punch_low, env_punch_mid));
+env_crack = clamp01(max(env_crack_mid, env_crack_high));
+
+// If STANCE has bipolar knobs, show them; if ATTACK, show 0..1
+// (If k_body doesn't exist, it will be 0; that's okay visually.)
+kb = k_body; ke = k_edge; kp = k_punch; kc = k_crack;
+
+// --------- Draw header ---------
+gfx_r=0.95; gfx_g=0.95; gfx_b=0.98; gfx_a=1;
+gfx_x=x0; gfx_y=y0;
+gfx_drawstr("STANCE/ATTACK Monitor");
+
+// Small info line
+gfx_r=0.65; gfx_g=0.65; gfx_b=0.72; gfx_a=1;
+gfx_x=x0; gfx_y=y0+14;
+gfx_printf("TIGHT=%.2f  FLAVOR=%d  DeltaBoost=%.1f", tight, flavor, delta_boost);
+
+// Separator
+gfx_r=0.22; gfx_g=0.22; gfx_b=0.26; gfx_a=1;
+gfx_rect(x0, y0+34, W, 1);
+
+// --------- Envelopes ---------
+yy = y0 + 42;
+draw_env_row("BODY",  env_body,  yy, 0.40,0.70,1.00); yy += rowH;
+draw_env_row("EDGE",  env_edge,  yy, 1.00,0.80,0.35); yy += rowH;
+draw_env_row("PUNCH", env_punch, yy, 0.45,1.00,0.55); yy += rowH;
+draw_env_row("CRACK", env_crack, yy, 1.00,0.45,0.95); yy += rowH;
+
+// Separator
+gfx_r=0.22; gfx_g=0.22; gfx_b=0.26; gfx_a=1;
+gfx_rect(x0, yy+6, W, 1);
+yy += 14;
+
+// --------- Per-band dB totals ---------
+draw_db_row("LOW",  db_low,  yy); yy += rowH;
+draw_db_row("MID",  db_mid,  yy); yy += rowH;
+draw_db_row("HIGH", db_high, yy); yy += rowH;
+
+// --------- Knob + mapped dB readout (bottom) ---------
+gfx_r=0.75; gfx_g=0.75; gfx_b=0.80; gfx_a=1;
+gfx_x=x0; gfx_y=gfx_h - pad - 42;
+gfx_printf("Knobs: B=%+.2f E=%+.2f P=%+.2f C=%+.2f", kb, ke, kp, kc);
+
+gfx_x=x0; gfx_y=gfx_h - pad - 26;
+gfx_printf("dB map: BODY=%+.1f EDGE=%+.1f PUNCH=%+.1f CRACK=%+.1f", body_db, edge_db, punch_db, crack_db);
+
+// Footer hint
+gfx_r=0.55; gfx_g=0.55; gfx_b=0.62; gfx_a=1;
+gfx_x=x0; gfx_y=gfx_h - pad - 12;
+gfx_drawstr("Delta monitor: set track to 4ch; ch3/4 = (proc-dry)*boost");
