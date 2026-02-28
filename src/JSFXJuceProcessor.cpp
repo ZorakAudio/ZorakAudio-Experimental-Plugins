@@ -761,6 +761,10 @@ public:
     }
 
     juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return *apvts; }
+    
+    // Called by the UI thread (@gfx) to push persistent VM state back to the DSP VM.
+    void enqueueGfxVarWrite (int index, double value) noexcept { enqueueGfxStateWrite (GfxStateWrite::Kind::Var, index, value); }
+    void enqueueGfxMemWrite (int index, double value) noexcept { enqueueGfxStateWrite (GfxStateWrite::Kind::Mem, index, value); }
 
     const juce::String getName() const override
     {
@@ -947,6 +951,8 @@ public:
         if (slidersChanged)
             jsfx_slider (&st);
 
+        applyQueuedGfxStateWrites();
+
         jsfx_process_block (&st, inPtrs.data(), outPtrs.data(), numCh, numSamples);
 
         updateGfxSnapshotIfNeeded (numSamples);
@@ -1101,39 +1107,39 @@ public:
 
 
 
-// ------------------------------------------------------------
-// GFX snapshot access (audio thread -> UI thread)
-//
-// We keep a small triple-buffered copy of the JSFX runtime state
-// (sliders / vars / mem) so the @gfx interpreter can render meters
-// without ever touching the realtime DSP state directly.
-// ------------------------------------------------------------
-struct GfxSnapshot
-{
-    std::array<double, 64> sliders {};
-    std::vector<double> vars;
-    std::vector<double> mem;
-    int varsCount = 0;
-    int memN = 0;
-    double srate = 0.0;
-    double samplesblock = 0.0;
-};
+    // ------------------------------------------------------------
+    // GFX snapshot access (audio thread -> UI thread)
+    //
+    // We keep a small triple-buffered copy of the JSFX runtime state
+    // (sliders / vars / mem) so the @gfx interpreter can render meters
+    // without ever touching the realtime DSP state directly.
+    // ------------------------------------------------------------
+    struct GfxSnapshot
+    {
+        std::array<double, 64> sliders {};
+        std::vector<double> vars;
+        std::vector<double> mem;
+        int varsCount = 0;
+        int memN = 0;
+        double srate = 0.0;
+        double samplesblock = 0.0;
+    };
 
-// Returns a pointer valid until endGfxSnapshotRead().
-const GfxSnapshot* beginGfxSnapshotRead (int& outIndex) noexcept
-{
-    const int idx = gfxSnapFront.load (std::memory_order_acquire);
-    gfxSnapReading.store (idx, std::memory_order_release);
-    outIndex = idx;
-    return &gfxSnaps[(size_t) idx];
-}
+    // Returns a pointer valid until endGfxSnapshotRead().
+    const GfxSnapshot* beginGfxSnapshotRead (int& outIndex) noexcept
+    {
+        const int idx = gfxSnapFront.load (std::memory_order_acquire);
+        gfxSnapReading.store (idx, std::memory_order_release);
+        outIndex = idx;
+        return &gfxSnaps[(size_t) idx];
+    }
 
-void endGfxSnapshotRead (int index) noexcept
-{
-    const int cur = gfxSnapReading.load (std::memory_order_acquire);
-    if (cur == index)
-        gfxSnapReading.store (-1, std::memory_order_release);
-}
+    void endGfxSnapshotRead (int index) noexcept
+    {
+        const int cur = gfxSnapReading.load (std::memory_order_acquire);
+        if (cur == index)
+            gfxSnapReading.store (-1, std::memory_order_release);
+    }
 
 private:
     void initStateMemory()
@@ -1234,6 +1240,67 @@ private:
 
         lastSlidersValid = true;
         return changed;
+    }
+
+    struct GfxStateWrite
+    {
+        enum class Kind : uint8_t { Var = 0, Mem = 1 };
+        Kind kind {};
+        int32_t index = 0;
+        double value = 0.0;
+    };
+
+    static constexpr uint32_t gfxWriteQueueSize = 8192u; // power of two
+    static constexpr uint32_t gfxWriteQueueMask = gfxWriteQueueSize - 1u;
+    static_assert ((gfxWriteQueueSize & (gfxWriteQueueSize - 1u)) == 0u, "gfxWriteQueueSize must be power of two");
+
+    std::array<GfxStateWrite, gfxWriteQueueSize> gfxWriteQueue {};
+    std::atomic<uint32_t> gfxWriteHead { 0 }; // UI thread producer
+    std::atomic<uint32_t> gfxWriteTail { 0 }; // audio thread consumer
+
+    bool enqueueGfxStateWrite (GfxStateWrite::Kind kind, int index, double value) noexcept
+    {
+        if (index < 0)
+            return false;
+
+        const uint32_t head = gfxWriteHead.load (std::memory_order_relaxed);
+        const uint32_t next = (head + 1u) & gfxWriteQueueMask;
+
+        if (next == gfxWriteTail.load (std::memory_order_acquire))
+            return false; // full, drop
+
+        gfxWriteQueue[head] = GfxStateWrite { kind, (int32_t) index, value };
+        gfxWriteHead.store (next, std::memory_order_release);
+        return true;
+    }
+
+    void applyQueuedGfxStateWrites() noexcept
+    {
+        uint32_t tail = gfxWriteTail.load (std::memory_order_relaxed);
+        const uint32_t head = gfxWriteHead.load (std::memory_order_acquire);
+
+        const int varsCap = (int) (sizeof (st.vars) / sizeof (st.vars[0]));
+
+        while (tail != head)
+        {
+            const auto w = gfxWriteQueue[tail];
+
+            if (w.kind == GfxStateWrite::Kind::Var)
+            {
+                if (w.index >= 0 && w.index < varsCap)
+                    st.vars[(size_t) w.index] = w.value;
+            }
+            else // Mem
+            {
+                const int64_t mi = (int64_t) w.index;
+                if (mi >= 0 && mi < st.memN && st.mem != nullptr)
+                    st.mem[(size_t) mi] = w.value;
+            }
+
+            tail = (tail + 1u) & gfxWriteQueueMask;
+        }
+
+        gfxWriteTail.store (tail, std::memory_order_release);
     }
 
     static inline float clamp01f (float x) noexcept
@@ -1501,6 +1568,16 @@ public:
         }
     }
 
+    int preferredHeight() const noexcept
+    {
+        const int rowH = 28;
+        const int gap  = 6;
+        const int pad  = 16; // top+bottom
+        return (int)rows.size() * rowH + juce::jmax(0, (int)rows.size() - 1) * gap + pad;
+    }
+
+    bool hasAnyVisibleControls() const noexcept { return !rows.empty(); }
+    
     void resized() override
     {
         auto r = getLocalBounds().reduced (8);
@@ -1588,26 +1665,43 @@ public:
         // Enable host-resizable editor
         setResizable (true, true);
 
-        // Cache the "natural" size of the generic editor so we can keep the
-        // sliders compact and give any extra vertical space to @gfx.
+        // Cache the "natural" size of the controls panel (exact visible rows).
         genericPrefW = juce::jmax (520, genericEditor.getWidth());
-        genericPrefH = juce::jmax (120, genericEditor.getHeight());
+        genericPrefH = genericEditor.hasAnyVisibleControls()
+            ? genericEditor.preferredHeight()
+            : 0;
 
         const int topBarH = 40;
         const int gap = 6;
 
-        const int gfxPrefH = gfxView.isVisible() ? juce::jlimit (80, 700, gfxView.preferredHeight()) : 0;
-        const int gfxPrefW = gfxView.isVisible() ? gfxView.preferredWidth() : 0;
+        const bool hasGfx      = gfxView.isVisible();
+        const bool hasControls = genericEditor.hasAnyVisibleControls();
 
-        // Minimum size: enough room for a few controls + a minimally usable gfx area.
+        const int gfxPrefH = hasGfx ? juce::jlimit (80, 700, gfxView.preferredHeight()) : 0;
+        const int gfxPrefW = hasGfx ? gfxView.preferredWidth() : 0;
+
+        // Only insert a gap between controls and gfx if BOTH exist.
+        const int gapControlsGfx = (hasGfx && hasControls) ? gap : 0;
+
         const int minW = juce::jmax (520, juce::jmax (genericPrefW, gfxPrefW));
-        const int minH = topBarH + juce::jmin (genericPrefH, 260) + (gfxView.isVisible() ? (gap + juce::jmin (gfxPrefH, 180)) : 0);
-        setResizeLimits (minW, minH, 2200, 1600);
 
-        // Initial size: fit the controls and the preferred gfx height with no dead space.
+        // Minimum height:
+        // - always top bar
+        // - + a bit of controls (if any)
+        // - + a bit of gfx (if any)
+        const int minControlsH = hasControls ? juce::jmin (genericPrefH, 260) : 0;
+        const int minGfxH      = hasGfx      ? juce::jmin (gfxPrefH, 180)      : 0;
+
+        const int minH = topBarH + minControlsH + (hasGfx ? (gapControlsGfx + minGfxH) : 0);
+        setResizeLimits (minW, juce::jmax (topBarH + 80, minH), 2200, 1600);
+
+        // Initial size: exact controls height (if any) + exact gfx height (if any).
         const int w = minW;
-        const int h = topBarH + genericPrefH + (gfxView.isVisible() ? (gap + gfxPrefH) : 0);
-        setSize (w, h);
+        const int h = topBarH
+                    + (hasControls ? genericPrefH : 0)
+                    + (hasGfx ? (gapControlsGfx + gfxPrefH) : 0);
+
+        setSize (w, juce::jmax (minH, h));
     }
 
         void paint (juce::Graphics& g) override
@@ -1617,43 +1711,71 @@ public:
 
 
 
-void resized() override
-{
-    const int topBarH = 40;
-    const int gap = 6;
-
-    auto r = getLocalBounds();
-    auto top = r.removeFromTop (topBarH);
-
-    const int btnSize = 24;
-    helpButton.setBounds (top.getRight() - btnSize - 8, (topBarH - btnSize) / 2, btnSize, btnSize);
-    helpButton.toFront (false);
-
-    // Keep the sliders compact at the top; give ALL remaining space to @gfx.
-    if (gfxView.isVisible())
+    void resized() override
     {
-        const int minGfxH = juce::jlimit (80, 700, gfxView.preferredHeight());
-        const int minControlsH = 100;
+        const int topBarH = 40;
+        const int gap = 6;
 
-        int controlsH = genericPrefH;
-        const int maxControlsH = juce::jmax (minControlsH, r.getHeight() - minGfxH - gap);
-        controlsH = juce::jlimit (minControlsH, maxControlsH, controlsH);
+        auto r = getLocalBounds();
+        auto top = r.removeFromTop (topBarH);
 
-        auto controlsArea = r.removeFromTop (controlsH);
-        genericEditor.setBounds (controlsArea);
+        const int btnSize = 24;
+        helpButton.setBounds (top.getRight() - btnSize - 8, (topBarH - btnSize) / 2, btnSize, btnSize);
+        helpButton.toFront (false);
 
-        r.removeFromTop (gap);
-        gfxView.setBounds (r); // fill the rest
+        const bool hasGfx      = gfxView.isVisible();
+        const bool hasControls = genericEditor.hasAnyVisibleControls();
+
+        // Always recompute, so it never reserves stale space.
+        genericPrefH = hasControls ? genericEditor.preferredHeight() : 0;
+
+        if (hasGfx)
+        {
+            if (hasControls)
+            {
+                const int minGfxH = juce::jlimit (80, 700, gfxView.preferredHeight());
+                const int availableForControls = juce::jmax (0, r.getHeight() - minGfxH - gap);
+
+                // Controls take only their natural height, capped by available space.
+                const int controlsH = juce::jmin (genericPrefH, availableForControls);
+
+                if (controlsH > 0)
+                {
+                    auto controlsArea = r.removeFromTop (controlsH);
+                    genericEditor.setVisible (true);
+                    genericEditor.setBounds (controlsArea);
+
+                    r.removeFromTop (gap);
+                }
+                else
+                {
+                    // Not enough room: hide controls completely, give everything to gfx.
+                    genericEditor.setVisible (false);
+                    genericEditor.setBounds (0, 0, 0, 0);
+                }
+
+                gfxView.setBounds (r);
+            }
+            else
+            {
+                // NO CONTROLS: show ONLY gfx (and top bar / '?' button)
+                genericEditor.setVisible (false);
+                genericEditor.setBounds (0, 0, 0, 0);
+
+                gfxView.setBounds (r);
+            }
+        }
+        else
+        {
+            // No gfx: controls fill all (if any)
+            genericEditor.setVisible (true);
+            genericEditor.setBounds (r);
+            gfxView.setBounds (0, 0, 0, 0);
+        }
+
+        helpOverlay.setBounds (getLocalBounds());
+        tooltipBubble.toFront (false);
     }
-    else
-    {
-        genericEditor.setBounds (r);
-        gfxView.setBounds (0, 0, 0, 0);
-    }
-
-    helpOverlay.setBounds (getLocalBounds());
-    tooltipBubble.toFront (false);
-}
 private:
     // -----------------------
     // HELP overlay component
@@ -1912,16 +2034,26 @@ public:
 
     void mouseMove (const juce::MouseEvent& e) override { updateMouse (e); }
     void mouseDrag (const juce::MouseEvent& e) override { updateMouse (e); }
+    
     void mouseDown (const juce::MouseEvent& e) override
     {
-        // Clicking the @gfx area should also focus it for keyboard input.
+        inputDirty = true;
         grabKeyboardFocus();
-        updateMouse (e);
+        updateMouse (e); // this will render because a button is down
     }
-    void mouseUp   (const juce::MouseEvent& e) override { updateMouse (e); }
 
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        inputDirty = true;
+        updateMouse (e);
+
+        // Many JSFX UIs toggle on release edge; don’t wait for the timer.
+        renderNow();
+        repaint();
+    }
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& d) override
     {
+        inputDirty = true;
         updateMouse (e);
 
         // JSFX expects wheel units roughly around +/-120 per mouse-wheel notch.
@@ -1940,7 +2072,8 @@ public:
     {
         if (! interp.hasGfxSection() || ! interp.gfxCompiledOk())
             return false;
-
+        
+        inputDirty = true;
         const int jsfxCode = juceKeyPressToJsfx (key);
         if (jsfxCode != 0)
         {
@@ -1962,6 +2095,7 @@ public:
         if (! interp.hasGfxSection() || ! interp.gfxCompiledOk())
             return false;
 
+        inputDirty = true;
         bool changed = false;
 
         // Update tracked key-down state.
@@ -2001,6 +2135,10 @@ public:
         processor.endAllGfxGestures();
     }
 
+    bool inputDirty = false;
+    std::vector<double> varsBefore;
+    std::vector<double> memBefore;
+    
 private:
     void timerCallback() override
     {
@@ -2020,6 +2158,7 @@ private:
         // otherwise the timer will handle periodic updates.
         if (e.mods.isAnyMouseButtonDown())
         {
+            inputDirty = true;
             renderNow();
             repaint();
         }
@@ -2167,8 +2306,60 @@ private:
         pendingWheel = 0.0f;
         pendingHWheel = 0.0f;
 
+
+        const bool captureStateWrites = inputDirty;
+        inputDirty = false;
+
+        if (captureStateWrites)
+        {
+            if ((int) varsBefore.size() != s.varsCount)
+                varsBefore.resize ((size_t) s.varsCount);
+
+            if ((int) memBefore.size() != s.memN)
+                memBefore.resize ((size_t) s.memN);
+
+            if (s.varsCount > 0)
+                std::memcpy (varsBefore.data(), s.vars, sizeof (double) * (size_t) s.varsCount);
+
+            if (s.memN > 0)
+                std::memcpy (memBefore.data(), s.mem, sizeof (double) * (size_t) s.memN);
+        }
+
         interp.setMouse (mouseX, mouseY, mouseCap, wheel, hwheel);
         interp.renderFrame (w, h, s);
+
+        if (captureStateWrites)
+        {
+            // Hard cap so a weird script can’t spam the audio thread.
+            constexpr int kMaxWritesPerFrame = 2048;
+            int pushed = 0;
+
+            // Vars first (usually where UI toggles live)
+            for (int i = 0; i < s.varsCount && pushed < kMaxWritesPerFrame; ++i)
+            {
+                const double a = varsBefore[(size_t) i];
+                const double b = s.vars[(size_t) i];
+
+                if (a == b) continue;
+                if (std::isnan (a) && std::isnan (b)) continue;
+
+                processor.enqueueGfxVarWrite (i, b);
+                ++pushed;
+            }
+
+            // Then mem (many JSFX UIs store toggle state here)
+            for (int i = 0; i < s.memN && pushed < kMaxWritesPerFrame; ++i)
+            {
+                const double a = memBefore[(size_t) i];
+                const double b = s.mem[(size_t) i];
+
+                if (a == b) continue;
+                if (std::isnan (a) && std::isnan (b)) continue;
+
+                processor.enqueueGfxMemWrite (i, b);
+                ++pushed;
+            }
+        }
 
         // --------------------------------------------------------
         // Push slider edits from @gfx back into the real parameters
