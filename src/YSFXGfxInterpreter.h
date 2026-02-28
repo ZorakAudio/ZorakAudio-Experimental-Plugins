@@ -474,6 +474,40 @@ public:
       std::memcpy(dst, mem + pos, (size_t)n * sizeof(EEL_F));
       pos += n;
     }
+
+    // Remember the effective RAM size so we can read it back later.
+    memSize = memN;
+  }
+
+  // Read back bound user vars into a JSFX-style vars[] array.
+  // Only variables that are actually bound into the EEL VM are written.
+  void readVars(double* dst, int count) const
+  {
+    if (!dst || count <= 0) return;
+    for (const auto& bv : boundVars)
+    {
+      if (bv.index >= 0 && bv.index < count && bv.ptr)
+        dst[bv.index] = *bv.ptr;
+    }
+  }
+
+  // Read back the EEL RAM (JSFX mem[]) into dst.
+  // This copies [0..min(count, memSize)) and leaves the rest unchanged.
+  void readMem(double* dst, int count) const
+  {
+    if (!dst || count <= 0 || memSize <= 0) return;
+
+    const int n = std::min(count, memSize);
+    int pos = 0;
+    while (pos < n)
+    {
+      int validCount = 0;
+      EEL_F* src = NSEEL_VM_getramptr(m_vm, (unsigned int)pos, &validCount);
+      if (!src || validCount <= 0) break;
+      const int m = std::min(validCount, n - pos);
+      std::memcpy(dst + pos, src, (size_t)m * sizeof(EEL_F));
+      pos += m;
+    }
   }
 
   // -------------------------------------------------------------------
@@ -992,6 +1026,9 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   EEL_F* srate_var = nullptr;
   EEL_F* samplesblock_var = nullptr;
 
+  // Current JSFX mem[] size (in doubles) synced into the EEL VM RAM.
+  int memSize = 0;
+
   // Drawing state
   std::unordered_map<int, juce::Font> fonts;
   int currentFontId = 0;
@@ -1108,6 +1145,16 @@ public:
   void readSliders(double* dst, int count) const
   {
     if (vm) vm->readSliders(dst, count);
+  }
+
+  void readVars(double* dst, int count) const
+  {
+    if (vm) vm->readVars(dst, count);
+  }
+
+  void readMem(double* dst, int count) const
+  {
+    if (vm) vm->readMem(dst, count);
   }
 
   uint64_t popSliderChangeMask()      { return vm ? vm->popSliderChangeMask()      : 0; }

@@ -2138,6 +2138,8 @@ public:
     bool inputDirty = false;
     std::vector<double> varsBefore;
     std::vector<double> memBefore;
+	std::vector<double> varsAfter;
+	std::vector<double> memAfter;
     
 private:
     void timerCallback() override
@@ -2334,11 +2336,22 @@ private:
             constexpr int kMaxWritesPerFrame = 2048;
             int pushed = 0;
 
+			// Read back post-frame VM state.
+			// IMPORTANT: Interpreter::Snapshot pointers are *inputs* (we copy them into the VM),
+			// so we must explicitly pull the VM state back out here.
+			varsAfter = varsBefore;
+			interp.readVars (varsAfter.data(), (int) varsAfter.size());
+
+			memAfter = memBefore;
+			// Avoid pathological cases (very large memN) from stalling the UI.
+			if ((int) memAfter.size() > 0 && (int) memAfter.size() <= 262144)
+				interp.readMem (memAfter.data(), (int) memAfter.size());
+
             // Vars first (usually where UI toggles live)
-            for (int i = 0; i < s.varsCount && pushed < kMaxWritesPerFrame; ++i)
+			for (int i = 0; i < (int) varsAfter.size() && pushed < kMaxWritesPerFrame; ++i)
             {
                 const double a = varsBefore[(size_t) i];
-                const double b = s.vars[(size_t) i];
+				const double b = varsAfter[(size_t) i];
 
                 if (a == b) continue;
                 if (std::isnan (a) && std::isnan (b)) continue;
@@ -2348,10 +2361,10 @@ private:
             }
 
             // Then mem (many JSFX UIs store toggle state here)
-            for (int i = 0; i < s.memN && pushed < kMaxWritesPerFrame; ++i)
+			for (int i = 0; i < (int) memAfter.size() && pushed < kMaxWritesPerFrame; ++i)
             {
                 const double a = memBefore[(size_t) i];
-                const double b = s.mem[(size_t) i];
+				const double b = memAfter[(size_t) i];
 
                 if (a == b) continue;
                 if (std::isnan (a) && std::isnan (b)) continue;

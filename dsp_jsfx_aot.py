@@ -472,8 +472,14 @@ class Parser:
                     locals_.append(self._eat("ident").text)
 
                     self._skip_seps()
+                    # JSFX allows local() names to be separated by commas OR whitespace.
+                    # Examples:
+                    #   local(a,b,c)
+                    #   local(a b c)
                     if self.cur.kind == "punc" and self.cur.text == ",":
                         self._adv()
+                        continue
+                    if self.cur.kind == "ident":
                         continue
                     break
 
