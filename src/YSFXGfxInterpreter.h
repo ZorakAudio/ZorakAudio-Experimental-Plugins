@@ -67,10 +67,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Windows headers (directly or via JUCE) can define min/max macros.
@@ -332,6 +334,12 @@ public:
   {
     commands.clear();
 
+    // Clear per-frame host interaction events.
+    sliderChangeMask = 0;
+    sliderAutomateMask = 0;
+    sliderAutomateEndMask = 0;
+    undoPointRequested = false;
+
     frameW = w;
     frameH = h;
     framebufferDirty = false;
@@ -350,6 +358,40 @@ public:
     *mouse_wheel = (double)wheel;
     *mouse_hwheel = (double)hwheel;
   }
+
+  // -------------------------------------------------------------------
+  // Host keyboard input (gfx_getchar)
+  // -------------------------------------------------------------------
+  void pushKey(int code)
+  {
+    if (code == 0)
+      return;
+    keyQueue.push_back(code);
+  }
+
+  void setKeyDown(int code, bool isDown)
+  {
+    if (code == 0)
+      return;
+    if (isDown)
+      keysDown.insert(code);
+    else
+      keysDown.erase(code);
+  }
+
+  void clearKeys()
+  {
+    keyQueue.clear();
+    keysDown.clear();
+  }
+
+  // -------------------------------------------------------------------
+  // Host slider interaction events (sliderchange/slider_automate)
+  // -------------------------------------------------------------------
+  uint64_t popSliderChangeMask()       { const auto m = sliderChangeMask;      sliderChangeMask = 0; return m; }
+  uint64_t popSliderAutomateMask()     { const auto m = sliderAutomateMask;    sliderAutomateMask = 0; return m; }
+  uint64_t popSliderAutomateEndMask()  { const auto m = sliderAutomateEndMask; sliderAutomateEndMask = 0; return m; }
+  bool popUndoPointRequested()         { const bool b = undoPointRequested;    undoPointRequested = false; return b; }
 
   void setTiming(double srate, double samplesblock)
   {
@@ -396,6 +438,14 @@ public:
     const int n = std::min(count, 64);
     for (int i = 0; i < n; ++i)
       if (sliderPtrs[(size_t)i]) *sliderPtrs[(size_t)i] = sliders[i];
+  }
+
+  void readSliders(double* dst, int count) const
+  {
+    if (!dst) return;
+    const int n = std::min(count, 64);
+    for (int i = 0; i < n; ++i)
+      dst[i] = sliderPtrs[(size_t)i] ? (double)*sliderPtrs[(size_t)i] : 0.0;
   }
 
   void syncVars(const double* vars, int count)
@@ -452,6 +502,32 @@ public:
     NSEEL_addfunc_varparm_ex("gfx_setfont",    1, 0, NSEEL_PProc_THIS, &eel_gfx_setfont,    nullptr);
     NSEEL_addfunc_varparm_ex("gfx_measurestr", 1, 0, NSEEL_PProc_THIS, &eel_gfx_measurestr, nullptr);
     NSEEL_addfunc_varparm_ex("gfx_getchar",    0, 0, NSEEL_PProc_THIS, &eel_gfx_getchar,    nullptr);
+
+    // Minimal host interaction helpers used by many JSFX UIs.
+    // See: https://www.reaper.fm/sdk/js/advfunc.php
+    NSEEL_addfunc_varparm_ex("sliderchange",   1, 0, NSEEL_PProc_THIS, &eel_sliderchange,   nullptr);
+    NSEEL_addfunc_varparm_ex("slider_automate",1, 0, NSEEL_PProc_THIS, &eel_slider_automate,nullptr);
+  }
+
+  static uint64_t sliderMaskFromArg(GfxVm* self, EEL_F* argPtr, double argValue)
+  {
+    if (self)
+    {
+      for (int i = 0; i < 64; ++i)
+      {
+        if (self->sliderPtrs[(size_t)i] == argPtr)
+          return (uint64_t)1u << (uint64_t)i;
+      }
+    }
+
+    // If not a direct slider var, treat as an integer bitmask.
+    if (argValue <= 0.0)
+      return 0;
+
+    const int64_t m = (int64_t)std::llround(argValue);
+    if (m <= 0)
+      return 0;
+    return (uint64_t)m;
   }
 
   static EEL_F NSEEL_CGEN_CALL eel_gfx_set(void* opaque, INT_PTR np, EEL_F** parms)
@@ -815,8 +891,75 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
 
   static EEL_F NSEEL_CGEN_CALL eel_gfx_getchar(void* opaque, INT_PTR np, EEL_F** parms)
   {
-    (void)opaque; (void)np; (void)parms;
-    return 0.0; // “no key”
+    auto* self = (GfxVm*)opaque;
+    if (!self)
+      return 0.0;
+
+    // gfx_getchar([char, unicodechar])
+    // - If no parameter or zero is passed: pop from keyboard queue.
+    // - If char is passed and nonzero: return whether that key is currently down.
+    // (Unicode support is not implemented; second parameter is ignored.)
+    if (np >= 1 && *parms[0] != 0.0)
+    {
+      const int code = (int)std::llround(*parms[0]);
+      return self->keysDown.count(code) ? 1.0 : 0.0;
+    }
+
+    if (self->keyQueue.empty())
+      return 0.0;
+
+    const int code = self->keyQueue.front();
+    self->keyQueue.pop_front();
+    return (EEL_F)code;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_sliderchange(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*)opaque;
+    if (!self || np < 1)
+      return 0.0;
+
+    const double v = (double)*parms[0];
+
+    // IMPORTANT:
+    // When called as sliderchange(slider3), the argument value can be negative
+    // (slider ranges are arbitrary). So we must resolve slider-vs-mask by *pointer*,
+    // not by numeric value.
+    const uint64_t mask = sliderMaskFromArg(self, parms[0], v);
+    if (mask != 0)
+    {
+      self->sliderChangeMask |= mask;
+      return 0.0;
+    }
+
+    // In REAPER, sliderchange(-1) from @gfx adds an undo point.
+    // In this standalone runtime, we just flag it so the host can choose what to do.
+    if (v < 0.0)
+      self->undoPointRequested = true;
+
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_slider_automate(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*)opaque;
+    if (!self || np < 1)
+      return 0.0;
+
+    const double v = (double)*parms[0];
+
+    // IMPORTANT: slider values may be negative; see comment in eel_sliderchange.
+    const uint64_t mask = sliderMaskFromArg(self, parms[0], v);
+    if (mask == 0)
+      return 0.0;
+
+    const bool endTouch = (np >= 2 && *parms[1] != 0.0);
+    if (endTouch)
+      self->sliderAutomateEndMask |= mask;
+    else
+      self->sliderAutomateMask |= mask;
+
+    return 0.0;
   }
 
   // -------------------------------------------------------------------
@@ -855,6 +998,16 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   juce::Font currentFont;
 
   std::vector<DrawCmd> commands;
+
+  // Host interaction event state
+  uint64_t sliderChangeMask = 0;
+  uint64_t sliderAutomateMask = 0;
+  uint64_t sliderAutomateEndMask = 0;
+  bool undoPointRequested = false;
+
+  // Keyboard input
+  std::deque<int> keyQueue;
+  std::unordered_set<int> keysDown;
 };
 
 // -------------------------
@@ -935,6 +1088,32 @@ public:
   {
     mouseX = x; mouseY = y; mouseCap = cap; mouseWheel = wheel; mouseHWheel = hwheel;
   }
+
+  // Keyboard input support for gfx_getchar().
+  void pushKey(int code)
+  {
+    if (vm) vm->pushKey(code);
+  }
+
+  void setKeyDown(int code, bool isDown)
+  {
+    if (vm) vm->setKeyDown(code, isDown);
+  }
+
+  void clearKeys()
+  {
+    if (vm) vm->clearKeys();
+  }
+
+  void readSliders(double* dst, int count) const
+  {
+    if (vm) vm->readSliders(dst, count);
+  }
+
+  uint64_t popSliderChangeMask()      { return vm ? vm->popSliderChangeMask()      : 0; }
+  uint64_t popSliderAutomateMask()    { return vm ? vm->popSliderAutomateMask()    : 0; }
+  uint64_t popSliderAutomateEndMask() { return vm ? vm->popSliderAutomateEndMask() : 0; }
+  bool popUndoPointRequested()        { return vm ? vm->popUndoPointRequested()    : false; }
 
   void renderFrame(int width, int height, const Snapshot& snap)
   {

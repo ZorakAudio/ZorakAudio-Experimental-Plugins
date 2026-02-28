@@ -113,6 +113,8 @@ struct JsfxSliderDecl
 
     // Optional UI metadata parsed from JSFX comments
     juce::String tooltip;
+
+    bool hidden = false;
 };
 
 static inline std::string trimAscii (std::string s)
@@ -351,6 +353,15 @@ static std::vector<JsfxSliderDecl> parseJsfxSliderDecls (const char* jsfxText, j
         auto label = juce::String::fromUTF8 (m[4].str().c_str()).trim();
         if (label.isEmpty())
             label = "Slider " + juce::String (sliderN);
+        
+            // Hide convention: label begins with '-' (optionally "- ").
+            if (label.startsWithChar ('-'))
+            {
+                d.hidden = true;
+                label = label.substring (1).trimStart(); // remove '-' and any following whitespace
+                if (label.isEmpty())
+                    label = "Slider " + juce::String (sliderN);
+            }
 
         d.name = label;
         d.tooltip = pendingTooltip;
@@ -749,6 +760,8 @@ public:
             std::free (st.mem);
     }
 
+    juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return *apvts; }
+
     const juce::String getName() const override
     {
     #if defined(ZA_PLUGIN_NAME)
@@ -959,6 +972,133 @@ public:
     // UI metadata accessors (used by the custom editor)
     const std::vector<JsfxSliderDecl>& getJsfxSliderDecls() const noexcept { return sliderDecls; }
     const juce::String& getJsfxHelpText() const noexcept { return jsfxHelpText; }
+
+    // ------------------------------------------------------------
+    // Host <- @gfx slider edits
+    //
+    // Some JSFX UIs (including the provided "Detail Extractor") modify slider
+    // variables inside @gfx and call sliderchange()/slider_automate() to notify
+    // the host. Our @gfx interpreter runs out-of-band, so we need an explicit
+    // bridge to push those edits back into the real parameter set.
+    // ------------------------------------------------------------
+    void applyGfxSliderChanges (const double* newSliders, int count,
+                                uint64_t changeMask,
+                                uint64_t automateMask,
+                                uint64_t automateEndMask)
+    {
+        if (newSliders == nullptr || apvts == nullptr)
+            return;
+
+        const int n = juce::jlimit (0, 64, count);
+
+        for (int i = 0; i < n; ++i)
+        {
+            const uint64_t bit = (uint64_t)1u << (uint64_t)i;
+            if ((changeMask & bit) == 0)
+                continue;
+
+            if (! sliderParamUsed[(size_t)i])
+                continue;
+
+            const auto& info = sliderParamInfo[(size_t)i];
+            auto* p = apvts->getParameter (info.pid);
+            if (p == nullptr)
+                continue;
+
+            // Convert JSFX numeric slider value -> parameter raw value.
+            // For CHOICE parameters, JSFX uses the original numeric min..max range,
+            // but the host parameter is the *choice index*.
+            float rawForParam = 0.0f;
+            if (info.isChoice)
+            {
+                const double step = (double) (info.step > 0.0f ? info.step : 1.0f);
+                int idx = (int) std::llround ((newSliders[i] - (double) info.min) / step);
+
+                // Clamp to valid choice index range.
+                if (auto* c = dynamic_cast<juce::AudioParameterChoice*> (p))
+                {
+                    const int maxIdx = juce::jmax (0, c->choices.size() - 1);
+                    idx = juce::jlimit (0, maxIdx, idx);
+                }
+                else
+                {
+                    // Fallback: clamp using the parameter's own normalisable range.
+                    const auto r = p->getNormalisableRange();
+                    idx = juce::jlimit ((int) std::llround (r.start), (int) std::llround (r.end), idx);
+                }
+
+                rawForParam = (float) idx;
+            }
+            else
+            {
+                // Clamp and snap to JSFX step.
+                double v = juce::jlimit<double> ((double) info.min, (double) info.max, newSliders[i]);
+
+                const double step = (double) (info.step > 0.0f ? info.step : 0.0f);
+                if (step > 0.0)
+                {
+                    const double q = std::llround ((v - (double) info.min) / step);
+                    v = (double) info.min + q * step;
+                    v = juce::jlimit<double> ((double) info.min, (double) info.max, v);
+                }
+
+                rawForParam = (float) v;
+            }
+
+            const float norm = p->convertTo0to1 (rawForParam);
+
+            // Start touch automation if requested.
+            if ((automateMask & bit) != 0)
+            {
+                if (! gfxGestureActive[(size_t)i])
+                {
+                    p->beginChangeGesture();
+                    gfxGestureActive[(size_t)i] = true;
+                }
+            }
+
+            // Push value to host.
+            p->setValueNotifyingHost (norm);
+
+            // End touch automation if requested.
+            if ((automateEndMask & bit) != 0)
+            {
+                if (gfxGestureActive[(size_t)i])
+                {
+                    p->endChangeGesture();
+                    gfxGestureActive[(size_t)i] = false;
+                }
+                else
+                {
+                    // Harmless: endChangeGesture() even if we didn't begin.
+                    p->endChangeGesture();
+                }
+            }
+        }
+    }
+
+    void endAllGfxGestures()
+    {
+        if (apvts == nullptr)
+            return;
+
+        for (int i = 0; i < 64; ++i)
+        {
+            if (! gfxGestureActive[(size_t)i])
+                continue;
+
+            if (! sliderParamUsed[(size_t)i])
+                continue;
+
+            const auto& info = sliderParamInfo[(size_t)i];
+            if (auto* p = apvts->getParameter (info.pid))
+                p->endChangeGesture();
+
+            gfxGestureActive[(size_t)i] = false;
+        }
+    }
+
+
 
 
 // ------------------------------------------------------------
@@ -1291,6 +1431,10 @@ int64_t gfxSnapCountdown = 0;
 
     std::array<std::atomic<float>*, 64> paramAtomics {};
 
+    // Tracks touch automation sessions initiated from @gfx (slider_automate).
+    // This state lives on the UI thread only.
+    std::array<bool, 64> gfxGestureActive {};
+
     std::vector<JsfxSliderDecl> sliderDecls;
     juce::String jsfxHelpText;
 
@@ -1311,6 +1455,84 @@ int64_t gfxSnapCountdown = 0;
     bool lastSlidersValid = false;
 };
 
+class FilteredPanel final : public juce::Component
+{
+public:
+    explicit FilteredPanel (JSFXJuceProcessor& p)
+        : proc (p)
+    {
+        auto& apvts = proc.getAPVTS();
+
+        for (const auto& s : proc.getJsfxSliderDecls())
+        {
+            if (s.hidden) continue;
+
+            const auto pid = sanitizeId (s.id);
+
+            auto* param = apvts.getParameter (pid);
+            if (! param) continue;
+
+            rows.emplace_back();
+            auto& row = rows.back();
+
+            row.label = std::make_unique<juce::Label>();
+            row.label->setText (s.name, juce::dontSendNotification);
+            addAndMakeVisible (*row.label);
+
+            if (auto* ch = dynamic_cast<juce::AudioParameterChoice*> (param))
+            {
+                row.combo = std::make_unique<juce::ComboBox>();
+                row.combo->addItemList (ch->choices, 1);
+                addAndMakeVisible (*row.combo);
+
+                row.comboAttach = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
+                    apvts, pid, *row.combo);
+            }
+            else
+            {
+                row.slider = std::make_unique<juce::Slider>();
+                row.slider->setSliderStyle (juce::Slider::LinearHorizontal);
+                row.slider->setTextBoxStyle (juce::Slider::TextBoxRight, false, 90, 20);
+                addAndMakeVisible (*row.slider);
+
+                row.sliderAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+                    apvts, pid, *row.slider);
+            }
+        }
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (8);
+        const int rowH = 28;
+        const int gap = 6;
+        const int labelW = juce::jlimit (140, 320, r.getWidth() / 3);
+
+        for (auto& row : rows)
+        {
+            auto rowR = r.removeFromTop (rowH);
+            r.removeFromTop (gap);
+
+            row.label->setBounds (rowR.removeFromLeft (labelW));
+            if (row.slider) row.slider->setBounds (rowR);
+            if (row.combo)  row.combo->setBounds  (rowR);
+        }
+    }
+
+private:
+    JSFXJuceProcessor& proc;
+
+    struct Row
+    {
+        std::unique_ptr<juce::Label> label;
+        std::unique_ptr<juce::Slider> slider;
+        std::unique_ptr<juce::ComboBox> combo;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sliderAttach;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> comboAttach;
+    };
+
+    std::vector<Row> rows;
+};
 
 // ============================================================
 // Custom editor: bounded HELP overlay + row-hover tooltips sourced from JSFX comments.
@@ -1627,12 +1849,21 @@ public:
         setOpaque (true);
         setInterceptsMouseClicks (true, true);
 
+        // Many JSFX @gfx UIs expect keyboard focus (gfx_getchar).
+        setWantsKeyboardFocus (true);
+        setMouseClickGrabsKeyboardFocus (true);
+
         if (interp.hasGfxSection())
         {
             // Render once immediately so the very first paint isn't empty/black due to timer scheduling.
             renderNow();
             startTimerHz (30);
         }
+    }
+
+    ~GfxView() override
+    {
+        processor.endAllGfxGestures();
     }
 
     bool hasGfx() const noexcept { return interp.hasGfxSection(); }
@@ -1681,22 +1912,93 @@ public:
 
     void mouseMove (const juce::MouseEvent& e) override { updateMouse (e); }
     void mouseDrag (const juce::MouseEvent& e) override { updateMouse (e); }
-    void mouseDown (const juce::MouseEvent& e) override { updateMouse (e); }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        // Clicking the @gfx area should also focus it for keyboard input.
+        grabKeyboardFocus();
+        updateMouse (e);
+    }
     void mouseUp   (const juce::MouseEvent& e) override { updateMouse (e); }
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& d) override
     {
         updateMouse (e);
 
-        // JSFX expects a "tick" value; REAPER uses +/- 1-ish steps. We approximate.
-        const float wheel = (float) (d.deltaY * 10.0);
-        const float hw    = (float) (d.deltaX * 10.0);
+        // JSFX expects wheel units roughly around +/-120 per mouse-wheel notch.
+        // JUCE reports fractional deltas, so scale accordingly.
+        const float wheel = (float) (d.deltaY * 120.0);
+        const float hw    = (float) (d.deltaX * 120.0);
 
         pendingWheel  += wheel;
         pendingHWheel += hw;
 
         renderNow();
         repaint();
+    }
+
+    bool keyPressed (const juce::KeyPress& key) override
+    {
+        if (! interp.hasGfxSection() || ! interp.gfxCompiledOk())
+            return false;
+
+        const int jsfxCode = juceKeyPressToJsfx (key);
+        if (jsfxCode != 0)
+        {
+            interp.pushKey (jsfxCode);
+            interp.setKeyDown (jsfxCode, true);
+            trackedKeys[(uint32_t) jsfxCode] = key.getKeyCode();
+        }
+
+        // Ensure modifier flags in mouse_cap can update even if the mouse isn't moving.
+        updateMouseCapFromModifiers (juce::ModifierKeys::getCurrentModifiers());
+
+        renderNow();
+        repaint();
+        return true;
+    }
+
+    bool keyStateChanged (bool /*isKeyDown*/) override
+    {
+        if (! interp.hasGfxSection() || ! interp.gfxCompiledOk())
+            return false;
+
+        bool changed = false;
+
+        // Update tracked key-down state.
+        for (auto it = trackedKeys.begin(); it != trackedKeys.end();)
+        {
+            const int jsfxCode = (int) it->first;
+            const int juceKeyCode = it->second;
+            const bool downNow = juce::KeyPress::isKeyCurrentlyDown (juceKeyCode);
+
+            interp.setKeyDown (jsfxCode, downNow);
+            changed = true;
+
+            if (! downNow)
+                it = trackedKeys.erase (it);
+            else
+                ++it;
+        }
+
+        // Keep mouse_cap modifier bits fresh.
+        updateMouseCapFromModifiers (juce::ModifierKeys::getCurrentModifiers());
+
+        if (changed)
+        {
+            renderNow();
+            repaint();
+        }
+
+        return true;
+    }
+
+    void focusLost (juce::Component::FocusChangeType) override
+    {
+        trackedKeys.clear();
+        interp.clearKeys();
+
+        // Safety: if the editor is closed mid-drag, end any pending automation gestures.
+        processor.endAllGfxGestures();
     }
 
 private:
@@ -1712,17 +2014,7 @@ private:
         mouseX = (float) p.x;
         mouseY = (float) p.y;
 
-        int cap = 0;
-        if (e.mods.isLeftButtonDown())   cap |= 1;
-        if (e.mods.isRightButtonDown())  cap |= 2;
-        if (e.mods.isMiddleButtonDown()) cap |= 4;
-
-        if (e.mods.isShiftDown())   cap |= 8;
-        if (e.mods.isCtrlDown())    cap |= 16;
-        if (e.mods.isAltDown())     cap |= 32;
-        if (e.mods.isCommandDown()) cap |= 64;
-
-        mouseCap = cap;
+        updateMouseCapFromModifiers (e.mods);
 
         // Render on mouse movement only when a button is down (dragging UI),
         // otherwise the timer will handle periodic updates.
@@ -1731,6 +2023,111 @@ private:
             renderNow();
             repaint();
         }
+    }
+
+    static int packCC(const char* s) noexcept
+    {
+        // Packs up to 4 ASCII chars into a 32-bit int, little-endian.
+        // This matches the multi-character constants used in JSFX docs (e.g. 'home', 'rght').
+        uint32_t v = 0;
+        for (int i = 0; i < 4 && s[i] != 0; ++i)
+            v |= (uint32_t) (uint8_t) s[i] << (8u * (uint32_t)i);
+        return (int) v;
+    }
+
+    static int juceKeyPressToJsfx (const juce::KeyPress& key)
+    {
+        const int kc = key.getKeyCode();
+
+        // --- Special keys ---
+        if (kc == juce::KeyPress::upKey)       return packCC ("up");
+        if (kc == juce::KeyPress::downKey)     return packCC ("down");
+        if (kc == juce::KeyPress::leftKey)     return packCC ("left");
+        if (kc == juce::KeyPress::rightKey)    return packCC ("rght");
+        if (kc == juce::KeyPress::homeKey)     return packCC ("home");
+        if (kc == juce::KeyPress::endKey)      return packCC ("end");
+        if (kc == juce::KeyPress::pageUpKey)   return packCC ("pgup");
+        if (kc == juce::KeyPress::pageDownKey) return packCC ("pgdn");
+        if (kc == juce::KeyPress::insertKey)   return packCC ("ins");
+        if (kc == juce::KeyPress::deleteKey)   return packCC ("del");
+
+        if (kc == juce::KeyPress::escapeKey)   return 27;
+        if (kc == juce::KeyPress::returnKey)   return 13;
+        if (kc == juce::KeyPress::spaceKey)    return 32;
+
+        // --- Function keys ---
+        if (kc >= juce::KeyPress::F1Key && kc <= juce::KeyPress::F12Key)
+        {
+            const int f = (kc - juce::KeyPress::F1Key) + 1;
+            if (f < 10)
+            {
+                const char s[3] = { 'f', (char) ('0' + f), 0 };
+                return packCC (s);
+            }
+            else
+            {
+                // f10, f11, f12
+                const char s[4] = { 'f', (char) ('0' + (f / 10)), (char) ('0' + (f % 10)), 0 };
+                return packCC (s);
+            }
+        }
+
+        // --- Text character ---
+        const auto ch = key.getTextCharacter();
+        if (ch > 0)
+        {
+            // Basic ASCII only (Unicode is ignored by gfx_getchar in this runtime).
+            if (ch >= 1 && ch <= 127)
+            {
+                const bool ctrlOrCmd = key.getModifiers().isCtrlDown() || key.getModifiers().isCommandDown();
+                const bool alt = key.getModifiers().isAltDown();
+
+                // REAPER behaviour (when full keyboard is enabled):
+                // Ctrl/Cmd+A..Z -> 1..26, Alt adds 256.
+                if (ctrlOrCmd)
+                {
+                    const auto up = juce::CharacterFunctions::toUpperCase (ch);
+                    if (up >= 'A' && up <= 'Z')
+                    {
+                        int v = (int) (up - 'A') + 1;
+                        if (alt) v += 256;
+                        return v;
+                    }
+                }
+
+                // Alt+key -> code + 256.
+                if (alt)
+                    return (int) ch + 256;
+
+                return (int) ch;
+            }
+        }
+
+        return 0;
+    }
+
+    void updateMouseCapFromModifiers (const juce::ModifierKeys& mods)
+    {
+        // JSFX mouse_cap bit mapping (REAPER docs):
+        // 1 left, 2 right, 4 ctrl/cmd, 8 shift, 16 alt/opt, 32 win key / ctrl on OSX, 64 middle.
+        int cap = 0;
+
+        if (mods.isLeftButtonDown())   cap |= 1;
+        if (mods.isRightButtonDown())  cap |= 2;
+        if (mods.isMiddleButtonDown()) cap |= 64;
+
+        if (mods.isShiftDown()) cap |= 8;
+        if (mods.isAltDown())   cap |= 16;
+
+       #if JUCE_MAC
+        if (mods.isCommandDown()) cap |= 4;   // cmd on mac
+        if (mods.isCtrlDown())    cap |= 32;  // ctrl on mac
+       #else
+        if (mods.isCtrlDown())    cap |= 4;   // ctrl on win/linux
+        if (mods.isCommandDown()) cap |= 32;  // win key on win (juce "command")
+       #endif
+
+        mouseCap = cap;
     }
 
     void renderNow()
@@ -1773,6 +2170,26 @@ private:
         interp.setMouse (mouseX, mouseY, mouseCap, wheel, hwheel);
         interp.renderFrame (w, h, s);
 
+        // --------------------------------------------------------
+        // Push slider edits from @gfx back into the real parameters
+        // --------------------------------------------------------
+        interp.readSliders (vmSliders.data(), 64);
+
+        uint64_t diffMask = 0;
+        for (int i = 0; i < 64; ++i)
+        {
+            if (vmSliders[(size_t)i] != snap->sliders[(size_t)i])
+                diffMask |= (uint64_t)1u << (uint64_t)i;
+        }
+
+        const uint64_t mChange    = interp.popSliderChangeMask();
+        const uint64_t mAuto      = interp.popSliderAutomateMask();
+        const uint64_t mAutoEnd   = interp.popSliderAutomateEndMask();
+
+        const uint64_t applyMask = diffMask | mChange | mAuto | mAutoEnd;
+        if (applyMask != 0)
+            processor.applyGfxSliderChanges (vmSliders.data(), 64, applyMask, mAuto, mAutoEnd);
+
         // Apply draw commands onto our persistent canvas.
         {
             juce::Graphics cg (canvas);
@@ -1793,6 +2210,9 @@ private:
     int mouseCap = 0;
     float pendingWheel = 0.0f;
     float pendingHWheel = 0.0f;
+
+    std::array<double, 64> vmSliders {};
+    std::unordered_map<uint32_t, int> trackedKeys;
 };
 
     // -----------------------
@@ -1993,7 +2413,7 @@ private:
     }
 
     JSFXJuceProcessor& processor;
-    juce::GenericAudioProcessorEditor genericEditor;
+    FilteredPanel genericEditor;
 
     int genericPrefW = 0;
     int genericPrefH = 0;

@@ -1464,6 +1464,44 @@ class LLVMModuleEmitter:
                 return builder.call(fdecl, [a0])
 
 
+
+            if fn == "freembuf":
+                # JSFX builtin: freembuf(top)
+                #
+                # This is a *hint* to the host memory manager that indices >= top
+                # may be freed. REAPER does not guarantee it will actually free or
+                # clear memory.
+                #
+                # Our AOT runtime heap is grow-only (jsfx_ensure_mem). Treat freembuf
+                # as a no-op so scripts that call it still compile and run correctly.
+                if len(n.args) != 1:
+                    raise ValueError("freembuf expects 1 arg")
+                _ = self.emit_expr(builder, st, n.args[0])
+                return self._const_f64(0.0)
+
+            if fn == "sliderchange":
+                # JSFX builtin: sliderchange(slider_index_or_var)
+                #
+                # In REAPER this marks sliders as changed / triggers @slider handling.
+                # For DSP-only AOT compilation we don't emulate UI-side slider change
+                # notifications; treat as a no-op.
+                if len(n.args) != 1:
+                    raise ValueError("sliderchange expects 1 arg")
+                _ = self.emit_expr(builder, st, n.args[0])
+                return self._const_f64(0.0)
+
+            if fn == "slider_automate":
+                # JSFX builtin: slider_automate(slider_index_or_var, [is_end_gesture])
+                #
+                # This is a host automation hint (begin/end gestures). For DSP-only
+                # AOT compilation, treat as a no-op.
+                if len(n.args) not in (1, 2):
+                    raise ValueError("slider_automate expects 1 or 2 args")
+                _ = self.emit_expr(builder, st, n.args[0])
+                if len(n.args) == 2:
+                    _ = self.emit_expr(builder, st, n.args[1])
+                return self._const_f64(0.0)
+
             if fn == "memset":
                 # JSFX builtin: memset(dest, value, length)
                 # Sets mem[dest .. dest+length-1] = value. Returns dest (double).
