@@ -1,0 +1,938 @@
+desc:Designed Occlusion Topology (DOT) — MinPhase + Leak Floor (Short FIR)
+
+// Adds two crucial behaviors to match typical "minimum-phase occlusion" kernels:
+// 1) HF Leak floor baked into magnitude (instead of relying on dry mix)
+// 2) Minimum-phase conversion (energy front-loaded, peak near sample 0)
+//
+// SAFE rules kept:
+// - Kernel length capped (MAX=257)
+// - DC gain normalized to 1
+// - Peak coefficient capped
+// - Wet mix bounded, output trim bounded
+//
+// Notes:
+// - Min-phase conversion uses FFT/cepstrum and runs only on slider changes.
+
+// #HELP: Perceptual occlusion tool: makes audio feel 'blocked / behind something'.
+// #HELP: Topology picks a material-style curve; Amount sets how occluded it gets.
+// #HELP: Brightness/Color fine‑tune the tone. Size/Stretch reshape the curve.
+// #HELP: Leak Floor keeps a minimum of high-end 'leak'. Output trims level.
+
+// #TOOLTIP: Occlusion 'material' curve (different blockage behaviors).
+slider1:0<0,3,1{Barrier,Enclosure,Vented,Layered}>Topology
+// #TOOLTIP: How strong the occlusion effect is.
+slider2:100<0,100,1>Amount (Wet %)
+// #TOOLTIP: Overall brightness compensation (dark ↔ bright).
+slider3:25<0,100,1>Brightness
+// #TOOLTIP: Tone color bias (warmer ↔ sharper).
+slider4:25<0,100,1>Color (Hard/Boxy)
+// #TOOLTIP: Occluder size (sets where the roll‑off lives).
+slider5:40<0,100,1>Size (Cavity)
+// #TOOLTIP: Stretches the curve (smaller ↔ larger frequency scale).
+slider6:100<50,200,1>Stretch (%)
+// #TOOLTIP: Final output trim.
+slider7:0<-12,12,0.1>Output (dB)
+// #TOOLTIP: Minimum brightness that always leaks through (prevents total muffling).
+slider8:-24<-60,-10,0.5>Leak Floor (dB)
+
+@init
+  MAX = 257; // max FIR length (odd)
+  bufmask = 8191; // ring buffer size = 8192
+  wofs = 0;
+
+  // ---- memory layout (JSFX arrays share global memory) ----
+  h_base  = 0;                      // h[0..MAX-1]
+  proto_base = h_base + MAX + 16;   // scratch for stretch, avoid overlap
+
+  bl_base = 4000;
+  br_base = 4000 + (bufmask+1);
+
+  // FFT workspace (must not cross 65536 boundary)
+  FFT_SIZE = 1024;                  // complex FFT size (power of 2)
+  fftbuf = 30000;                   // base offset for interleaved complex buffer (2*FFT_SIZE slots)
+
+  EPS = 0.0000000000000000001;
+
+  function clamp(x,a,b) ( x < a ? a : (x > b ? b : x) );
+  function db2lin(db) ( 10^(db/20) );
+
+  function smooth01(t) (
+    t = clamp(t,0,1);
+    t*t*(3 - 2*t)
+  );
+  
+  // Apply a broad peaking EQ cut to the kernel itself (cascades responses).
+  // gain_db should be <= 0 (cut only). Q is broad (0.4..1.6).
+  function apply_peaking_to_kernel(f0, Q, gain_db) local(A,w0,cs,sn,alpha,
+                                                        b0,b1,b2,a0,a1,a2,
+                                                        x,y,z1,z2,i) (
+    f0 = clamp(f0, 30, 0.45*srate);
+    Q  = clamp(Q, 0.4, 1.6);
+    gain_db > 0 ? gain_db = 0;
+  
+    A = 10^(gain_db/40);
+    w0 = 2*$pi*f0/srate;
+    cs = cos(w0);
+    sn = sin(w0);
+    alpha = sn/(2*Q);
+  
+    // Peaking EQ (RBJ) - stable, controllable depth
+    b0 = 1 + alpha*A;
+    b1 = -2*cs;
+    b2 = 1 - alpha*A;
+    a0 = 1 + alpha/A;
+    a1 = -2*cs;
+    a2 = 1 - alpha/A;
+  
+    // Normalize
+    b0 /= a0; b1 /= a0; b2 /= a0;
+    a1 /= a0; a2 /= a0;
+  
+    // Direct Form II Transposed
+    z1 = 0; z2 = 0;
+    i=0;
+    loop(kerN,
+      x = h[h_base+i];
+      y = b0*x + z1;
+      z1 = b1*x - a1*y + z2;
+      z2 = b2*x - a2*y;
+      h[h_base+i] = y;
+      i += 1;
+    );
+  );
+  
+
+  // deterministic 0..1
+  function hash01(x) (
+    x = (x*1664525 + 1013904223)|0;
+    (x & 2147483647) / 2147483647
+  );
+
+  // Add taps at delays (if within kernel length)
+  function addtap(delay_s, gain) local(k) (
+    k = (delay_s*srate + 0.5)|0;
+    (k >= 0 && k < kerN) ? h[h_base+k] += gain;
+  );
+
+  // Minimum-phase conversion from current h[] magnitude,
+  // with HF floor applied in magnitude domain:
+  // mag <- leak + (1-leak)*mag
+  function make_minphase(leak_lin) local(i,k,idx,re,im,mag,lnmag,scale,half,omleak,a,b,ea) (
+    // clear FFT buffer
+    i=0;
+    loop(FFT_SIZE,
+      fftbuf[2*i]   = 0;
+      fftbuf[2*i+1] = 0;
+      i+=1;
+    );
+
+    // copy current kernel into FFT real part (zero-pad)
+    i=0;
+    loop(kerN,
+      fftbuf[2*i] = h[h_base+i];
+      i+=1;
+    );
+
+    // FFT -> spectrum (in-order)
+    fft(fftbuf, FFT_SIZE);
+    fft_permute(fftbuf, FFT_SIZE);
+
+    // Apply HF floor in magnitude domain and take log magnitude
+    omleak = 1 - leak_lin;
+    omleak < 0 ? omleak = 0;
+    omleak > 1 ? omleak = 1;
+
+    k=0;
+    loop(FFT_SIZE,
+      idx = 2*k;
+      re = fftbuf[idx];
+      im = fftbuf[idx+1];
+      mag = sqrt(re*re + im*im);
+
+      // magnitude floor blend
+      mag = leak_lin + omleak*mag;
+      mag < EPS ? mag = EPS;
+
+      lnmag = log(mag); // natural log
+      fftbuf[idx] = lnmag;
+      fftbuf[idx+1] = 0;
+
+      k+=1;
+    );
+
+    // IFFT -> real cepstrum
+    fft_ipermute(fftbuf, FFT_SIZE);
+    ifft(fftbuf, FFT_SIZE);
+
+    // scale IFFT output
+    scale = 1/FFT_SIZE;
+    i=0;
+    loop(FFT_SIZE,
+      fftbuf[2*i]   *= scale;
+      fftbuf[2*i+1] *= scale;
+      i+=1;
+    );
+
+    // minimum-phase lifter in cepstrum domain
+    half = FFT_SIZE/2;
+
+    // n=0 keep
+    fftbuf[1] = 0;
+
+    // 1..half-1 multiply by 2
+    i=1;
+    loop(half-1,
+      fftbuf[2*i] *= 2;
+      fftbuf[2*i+1] = 0;
+      i+=1;
+    );
+
+    // n=half keep real, zero imag
+    fftbuf[2*half+1] = 0;
+
+    // n>half zero
+    i=half+1;
+    loop(FFT_SIZE-(half+1),
+      fftbuf[2*i] = 0;
+      fftbuf[2*i+1] = 0;
+      i+=1;
+    );
+
+    // FFT cepstrum -> complex log spectrum
+    fft(fftbuf, FFT_SIZE);
+    fft_permute(fftbuf, FFT_SIZE);
+
+    // exp(complex) to get min-phase spectrum
+    k=0;
+    loop(FFT_SIZE,
+      idx = 2*k;
+      a = fftbuf[idx];
+      b = fftbuf[idx+1];
+      ea = exp(a);
+      fftbuf[idx]   = ea*cos(b);
+      fftbuf[idx+1] = ea*sin(b);
+      k+=1;
+    );
+
+    // IFFT -> min-phase impulse response
+    fft_ipermute(fftbuf, FFT_SIZE);
+    ifft(fftbuf, FFT_SIZE);
+
+    // scale
+    i=0;
+    loop(FFT_SIZE,
+      fftbuf[2*i]   *= scale;
+      // fftbuf[2*i+1] ignored
+      i+=1;
+    );
+
+    // copy first kerN samples back into h[]
+    i=0;
+    loop(kerN,
+      h[h_base+i] = fftbuf[2*i];
+      i+=1;
+    );
+  );
+
+  function build_kernel() local(i,N,n0,f3db,sigma,sum,t,a,wetcol,sz,br,col,hard,cav,thick,
+                                tap_base,tapA,tapB,tapC,d0,d1,d2,topo,w_taps,w_modes,leak,
+                                seed,modeA,damp,tau,fbase,K,k,r,jit,fk,ak,acc,
+                                x,xi,xj,frac,b,peak,s) (
+
+    topo = slider1|0;
+
+    wetcol = smooth01(slider2/100);
+    br  = smooth01(slider3/100);
+    col = smooth01(slider4/100);
+    sz  = smooth01(slider5/100);
+
+    hard  = col;
+    cav   = sz;
+    thick = 1 - br;
+
+    // Brightness -> f3db (Hz). Lower = more muffled.
+    // Expanded low end to reach heavy occlusion behavior.
+    // Range: 80..12000 Hz
+    f3db = 80 + br*br*(12000-80);
+    f3db = clamp(f3db, 60, 20000);
+
+    // sigma in samples from Gaussian -3dB relation (approx)
+    sigma = srate * sqrt(log(2)) / (2*$pi*f3db);
+    sigma = clamp(sigma, 1.2, 120); // allow lower f3db-ish behavior without insane values
+
+    // Kernel length around ±3σ, odd, capped
+    N = (ceil(6*sigma)+1)|0;
+    N < 33 ? N = 33;
+    N > MAX ? N = MAX;
+    (N & 1) == 0 ? N += 1;
+    N > MAX ? N = MAX;
+
+    kerN = N;
+    n0 = (N-1)/2;
+
+    // Clear kernel
+    i=0;
+    loop(MAX,
+      h[h_base+i] = 0;
+      i+=1;
+    );
+
+    // Base Gaussian (centered)
+    sum = 0;
+    i=0;
+    loop(N,
+      a = exp(-0.5 * ((i-n0)/sigma)*((i-n0)/sigma));
+      h[h_base+i] = a;
+      sum += a;
+      i+=1;
+    );
+    
+    // ---- Broad mid notch (panel/cavity coincidence-ish dip) ----
+    // Only for transmission-style topologies (not "Enclosure").
+    // Depth scales with hardness * thickness; frequency follows brightness.
+    // No new slider: it rides existing controls.
+    
+    //notch_on = (topo != 1); // disable for Enclosure
+    notch_on = 0;
+    notch_on ? (
+      // thickness proxy: low brightness => thicker barrier behavior
+      thick2 = clamp(1 - br_raw, 0, 1);
+    
+      // topology weight: strongest for Barrier, moderate for Layered/Vented
+      topo == 0 ? nw = 1.00 : (topo == 3 ? nw = 0.75 : nw = 0.60);
+    
+      // notch center in Hz: ~800..2400 following brightness
+      notch_f = 800 + 1600*br_raw;
+    
+      // slight shift with cavity: smaller cavity -> a bit higher
+      notch_f *= (0.85 + 0.30*(1 - cav));
+      notch_f = clamp(notch_f, 300, 3500);
+    
+      // broad Q, harder materials get a bit sharper
+      notch_Q = 0.55 + 0.85*hard;
+      notch_Q = clamp(notch_Q, 0.4, 1.6);
+    
+      // depth: 0..~12 dB cut (attenuation-only)
+      notch_depth = (2 + 10*hard*thick2) * nw;
+      notch_depth = clamp(notch_depth, 0, 12);
+    
+      // apply only if it matters
+      notch_depth > 0.2 ? apply_peaking_to_kernel(notch_f, notch_Q, -notch_depth);
+    );
+    
+
+    // Normalize sum to 1
+    sum = sum > 0.000000000001 ? sum : 1;
+    i=0;
+    loop(N,
+      h[h_base+i] /= sum;
+      i+=1;
+    );
+
+    // ---- topology weights ----
+    topo == 0 ? (w_taps=0.35; w_modes=0.20; leak=0.00;) :
+    topo == 1 ? (w_taps=1.00; w_modes=1.00; leak=0.00;) :
+    topo == 2 ? (w_taps=0.80; w_modes=0.55; leak=0.35;) :
+                (w_taps=0.70; w_modes=0.35; leak=0.10;);
+
+    // ---- tap delays (seconds), cavity-dependent ----
+    d0 = (0.0002 + 0.0020*cav);
+    d1 = (0.0007 + 0.0040*cav);
+    d2 = (0.0015 + 0.0060*cav);
+
+    // ---- taps (comb texture) ----
+    tap_base = (0.01 + 0.22*hard*hard*cav) * w_taps;
+    tap_base = clamp(tap_base, 0, 0.25);
+
+    tapA =  +tap_base * (0.85 + 0.30*hard);
+    tapB =  -tap_base * (0.55 + 0.35*cav);
+    tapC =  +tap_base * (0.35 + 0.45*cav);
+
+    addtap(d0, tapA);
+    addtap(d1, tapB);
+    addtap(d2, tapC);
+
+    // ---- procedural modal bank (no fixed modes) ----
+    seed = (floor(br*97) + floor(col*193)*131 + floor(sz*251)*17 + (topo*911))|0;
+
+    modeA = 0.26 * w_modes * (hard*hard) * cav;
+    modeA = clamp(modeA, 0, 0.18);
+
+    damp = clamp( (1-hard)*0.55 + thick*0.35 + leak*0.45, 0, 1);
+    tau  = 0.010 + 0.050 * (1 - damp);
+    tau  = clamp(tau, 0.008, 0.060);
+
+    // IMPORTANT: Stretch will time-resample the kernel later.
+    // Do NOT also scale these frequencies by Stretch (avoid double-scaling).
+    vol = 0.30 + 0.70*cav;
+    fbase = (240 + 1400*br) / vol;
+    fbase = clamp(fbase, 120, 2200);
+
+    topo == 1 ? K=4 : (topo == 2 ? K=3 : (topo == 3 ? K=3 : K=2));
+
+    i=0;
+    loop(N,
+      t = i/srate;
+      a = exp(-t/tau);
+
+      acc = 0;
+      k=0;
+      loop(K,
+        r = 1 + k*0.72;
+        jit = (hash01(seed + k*97) - 0.5) * 0.18;
+        fk = fbase * (r + jit);
+
+        ak = 1 / (1 + 0.55*k);
+        ak *= (1 - 0.35*leak) * (1 - 0.20*(topo==3));
+        ak = clamp(ak, 0, 1);
+
+        acc += ak * cos(2*$pi*fk*t);
+        k += 1;
+      );
+
+      acc *= (1 / max(1, K));
+      h[h_base+i] += modeA * a * acc;
+
+      i += 1;
+    );
+
+    // ---- STRETCH: resample kernel in time (50%..200%) ----
+    s = clamp(slider6/100, 0.5, 2.0);
+
+    // Copy h -> proto
+    i=0; loop(N, proto[proto_base+i] = h[h_base+i]; i+=1; );
+
+    // Resample proto -> h (linear interp)
+    i=0;
+    loop(N,
+      x = i / s;
+      xi = floor(x);
+      frac = x - xi;
+
+      xi < 0 ? xi = 0;
+      xi > (N-1) ? xi = (N-1);
+      xj = xi + 1;
+      xj > (N-1) ? xj = (N-1);
+
+      a = proto[proto_base+xi];
+      b = proto[proto_base+xj];
+      h[h_base+i] = a + (b - a)*frac;
+
+      i+=1;
+    );
+
+    // Renormalize sum to 1 after stretch
+    sum = 0; i=0; loop(N, sum += h[h_base+i]; i+=1; );
+    abs(sum) < 0.000001 ? sum = (sum >= 0 ? 0.000001 : -0.000001);
+    i=0; loop(N, h[h_base+i] /= sum; i+=1; );
+
+    // ---- MIN-PHASE + LEAK FLOOR ----
+    // Leak Floor slider is HF magnitude floor in dB (e.g. -33..-14 typical).
+    leak_lin = db2lin(clamp(slider8, -60, 0));
+
+    // Convert current kernel magnitude -> min-phase kernel.
+    // Leak floor applied in magnitude domain during conversion.
+    make_minphase(leak_lin);
+
+    // Normalize sum to 1 (DC gain)
+    sum = 0; i=0; loop(N, sum += h[h_base+i]; i+=1; );
+    abs(sum) < 0.000001 ? sum = (sum >= 0 ? 0.000001 : -0.000001);
+    i=0; loop(N, h[h_base+i] /= sum; i+=1; );
+
+    // Peak coefficient cap
+    peak = 0;
+    i=0;
+    loop(N,
+      a = abs(h[h_base+i]);
+      a > peak ? peak = a;
+      i+=1;
+    );
+
+    peak > 0.35 ? (
+      s = 0.35/peak;
+      i=0; loop(N, h[h_base+i] *= s; i+=1; );
+
+      // restore sum to 1
+      sum = 0; i=0; loop(N, sum += h[h_base+i]; i+=1; );
+      abs(sum) < 0.000001 ? sum = (sum >= 0 ? 0.000001 : -0.000001);
+      i=0; loop(N, h[h_base+i] /= sum; i+=1; );
+    );
+
+    // Store wet factor globally
+    wet = wetcol;
+    dry = sqrt(1 - wet*wet);
+    wetp = wet;
+
+    out_gain = db2lin(clamp(slider7, -12, 12));
+    kernel_dirty = 1;
+  );
+  
+// ------------------------------
+// Spectrum analyzer (UI)
+// ------------------------------
+sp = 0;                 // pointer (JSFX memory base = 0)
+
+SPEC_N    = 2048;        // power-of-two
+SPEC_H    = SPEC_N/2;
+SPEC_MASK = SPEC_N-1;
+
+spec_in_base      = 42000;                  // SPEC_N
+spec_out_base     = spec_in_base + SPEC_N;  // SPEC_N
+spec_win_base     = spec_out_base + SPEC_N; // SPEC_N
+spec_fft_base     = spec_win_base + SPEC_N; // 2*SPEC_N complex interleaved
+spec_in_db_base   = spec_fft_base + 2*SPEC_N;   // SPEC_H
+spec_out_db_base  = spec_in_db_base + SPEC_H;   // SPEC_H
+spec_tr_db_base   = spec_out_db_base + SPEC_H;  // SPEC_H
+
+SPEC_EPS   = 0.000000000001;
+LOG10      = log(10);
+INV_LOG10  = 1/LOG10;
+
+spec_pos   = 0;
+spec_tick  = 0;
+spec_period = max(256, floor(srate*0.10));  // ~10 Hz snapshots
+spec_win_sum = 0;
+spec_norm = 1;
+
+kernel_dirty = 1;
+last_srate = srate;
+
+// Hann window + normalization for ~0 dBFS on 1.0 sine at-bin
+i = 0;
+spec_win_sum = 0;
+loop(SPEC_N,
+  w = 0.5 - 0.5*cos(2*$pi*i/(SPEC_N-1));
+  sp[spec_win_base+i] = w;
+  spec_win_sum += w;
+  i += 1;
+);
+spec_norm = 2 / max(spec_win_sum, SPEC_EPS);
+
+// init rings + dB arrays
+i = 0;
+loop(SPEC_N,
+  sp[spec_in_base+i] = 0;
+  sp[spec_out_base+i] = 0;
+  i += 1;
+);
+
+i = 0;
+loop(SPEC_H,
+  sp[spec_in_db_base+i]  = -120;
+  sp[spec_out_db_base+i] = -120;
+  sp[spec_tr_db_base+i]  = 0;
+  i += 1;
+);
+
+// UI refresh rate
+gfx_update = 20;
+
+
+// ------------------------------
+// Spectrum helper functions
+// ------------------------------
+function spec_db_at(db_base, bin)
+local(i0, frac, a, b)
+(
+  i0 = floor(bin);
+  frac = bin - i0;
+
+  i0 < 0 ? i0 = 0;
+  i0 > (SPEC_H - 2) ? i0 = (SPEC_H - 2);
+
+  a = sp[db_base + i0];
+  b = sp[db_base + i0 + 1];
+  a + (b - a)*frac;
+);
+
+function db_to_y(db, y0, h, db_min, db_max)
+local(t, den)
+(
+  db < db_min ? db = db_min;
+  db > db_max ? db = db_max;
+
+  den = max(SPEC_EPS, (db_max - db_min));
+  t = (db_max - db) / den;
+  y0 + t*h;
+);
+
+function x_from_freq(freq, x0, w, fmin, fmax, ln_fmin, ln_fr)
+local(t)
+(
+  freq < fmin ? freq = fmin;
+  freq > fmax ? freq = fmax;
+
+  t = (log(freq) - ln_fmin) / max(SPEC_EPS, ln_fr);
+  x0 + t*w;
+);
+
+function spec_prepare_fft_from_ring(ring_base)
+local(i, idx, x, w)
+(
+  i = 0;
+  loop(SPEC_N,
+    idx = (spec_pos + i) & SPEC_MASK;
+    x = sp[ring_base + idx];
+    w = sp[spec_win_base + i];
+    sp[spec_fft_base + 2*i]   = x*w;
+    sp[spec_fft_base + 2*i+1] = 0;
+    i += 1;
+  );
+);
+
+function spec_update_db(ring_base, db_base, smooth)
+local(i, re, im, mag, db, old)
+(
+  spec_prepare_fft_from_ring(ring_base);
+
+  fft(spec_fft_base, SPEC_N);
+  fft_permute(spec_fft_base, SPEC_N);
+
+  i = 0;
+  loop(SPEC_H,
+    re = sp[spec_fft_base + 2*i];
+    im = sp[spec_fft_base + 2*i + 1];
+
+    mag = sqrt(re*re + im*im) * spec_norm;
+    mag < SPEC_EPS ? mag = SPEC_EPS;
+
+    db = 20*log(mag)*INV_LOG10;
+
+    old = sp[db_base + i];
+    sp[db_base + i] = old*smooth + db*(1 - smooth);
+
+    i += 1;
+  );
+);
+
+function spec_update_transfer(smooth)
+local(i, re, im, tre, tim, mag, db, old)
+(
+  // clear FFT buffer
+  i = 0;
+  loop(SPEC_N,
+    sp[spec_fft_base + 2*i]   = 0;
+    sp[spec_fft_base + 2*i+1] = 0;
+    i += 1;
+  );
+
+  // load kernel taps (real)
+  i = 0;
+  loop(kerN,
+    sp[spec_fft_base + 2*i] = h[h_base + i];
+    i += 1;
+  );
+
+  fft(spec_fft_base, SPEC_N);
+  fft_permute(spec_fft_base, SPEC_N);
+
+  i = 0;
+  loop(SPEC_H,
+    re = sp[spec_fft_base + 2*i];
+    im = sp[spec_fft_base + 2*i + 1];
+
+    // Transfer = out_gain * (dry + wetp * H)
+    tre = dry + wetp*re;
+    tim = wetp*im;
+
+    tre *= out_gain;
+    tim *= out_gain;
+
+    mag = sqrt(tre*tre + tim*tim);
+    mag < SPEC_EPS ? mag = SPEC_EPS;
+
+    db = 20*log(mag)*INV_LOG10;
+
+    old = sp[spec_tr_db_base + i];
+    sp[spec_tr_db_base + i] = old*smooth + db*(1 - smooth);
+
+    i += 1;
+  );
+);
+
+@slider
+  build_kernel();
+
+@block
+
+
+// handle SR changes (rare, but keeps analyzer sane)
+(srate != last_srate) ? (
+  last_srate = srate;
+  spec_period = max(256, floor(srate*0.10));
+  spec_tick = 0;
+  kernel_dirty = 1;
+);
+
+// periodic spectrum snapshots
+spec_tick -= samplesblock;
+(spec_tick <= 0) ? (
+  spec_tick += spec_period;
+
+  // input/output spectra
+  spec_update_db(spec_in_base,  spec_in_db_base,  0.65);
+  spec_update_db(spec_out_base, spec_out_db_base, 0.65);
+
+  // transfer curve only when kernel changed
+  kernel_dirty ? (
+    spec_update_transfer(0.15);
+    kernel_dirty = 0;
+  );
+);
+
+@sample
+  
+  spec_idx = spec_pos;
+  sp[spec_in_base + spec_idx] = 0.5*(spl0 + spl1);
+  // push input into ring buffers
+  bl[bl_base + (wofs & bufmask)] = spl0;
+  br[br_base + (wofs & bufmask)] = spl1;
+
+  // FIR convolution (causal)
+  yl = 0;
+  yr = 0;
+  i = 0;
+  loop(kerN,
+    idx = (wofs - i) & bufmask;
+    c = h[h_base+i];
+    yl += c * bl[bl_base + idx];
+    yr += c * br[br_base + idx];
+    i += 1;
+  );
+
+  // dry/wet mix + output gain
+  spl0 = (dry*spl0 + wetp*yl) * out_gain;
+  spl1 = (dry*spl1 + wetp*yr) * out_gain;
+  sp[spec_out_base + spec_idx] = 0.5*(spl0 + spl1);
+  spec_pos = (spec_pos + 1) & SPEC_MASK;
+  wofs += 1;
+@gfx 1000 360
+// ------------------------------
+// GFX: Input (top) / Output+Transfer (bottom)
+// ------------------------------
+pad = 12;
+gap = 10;
+hdr_h = 54;
+
+w = gfx_w - pad*2;
+h_total = gfx_h - pad*2 - hdr_h - gap;
+h_plot = floor((h_total - gap) * 0.5);
+
+x0 = pad;
+y_hdr = pad;
+y1 = pad + hdr_h;
+y2 = y1 + h_plot + gap;
+
+db_min = -90;
+db_max = 6;
+
+fmin = 20;
+fmax = min(20000, srate*0.49);
+ln_fmin = log(fmin);
+ln_fr   = log(fmax) - ln_fmin;
+
+// background
+gfx_set(0.06,0.06,0.07,1);
+gfx_rect(0,0,gfx_w,gfx_h,1);
+
+// header
+gfx_set(0.92,0.92,0.92,1);
+gfx_setfont(1, "Arial", 16);
+gfx_x = x0; gfx_y = y_hdr;
+gfx_drawstr("DOT — Designed Occlusion Topology   (Spectrum)");
+
+gfx_setfont(1, "Arial", 12);
+
+// topology name
+topo = slider1|0;
+topo == 0 ? sprintf(#t,"Barrier");
+topo == 1 ? sprintf(#t,"Enclosure");
+topo == 2 ? sprintf(#t,"Vented");
+topo == 3 ? sprintf(#t,"Layered");
+
+// line 2
+sprintf(#msg,
+  "Topology: %s   kerN: %d   Stretch: %.0f%%   Wet: %.0f%%   Leak floor: %.1f dB   Out: %.1f dB",
+  #t, kerN, slider6, slider2, slider8, slider7
+);
+gfx_x = x0; gfx_y = y_hdr + 22;
+gfx_drawstr(#msg);
+
+// plot frames
+gfx_set(0.12,0.12,0.14,1);
+gfx_rect(x0, y1, w, h_plot, 1);
+gfx_rect(x0, y2, w, h_plot, 1);
+
+gfx_set(0.35,0.35,0.38,1);
+gfx_rect(x0, y1, w, h_plot, 0);
+gfx_rect(x0, y2, w, h_plot, 0);
+
+// grid helper: vertical lines at specific freqs (draw if <= fmax)
+function draw_vgrid(freq, y, hh)
+local(xx)
+(
+  freq <= fmax ? (
+    xx = x_from_freq(freq, x0, w, fmin, fmax, ln_fmin, ln_fr);
+    gfx_line(xx, y, xx, y+hh, 1);
+  );
+);
+
+function draw_hgrid(db, y, hh)
+local(yy)
+(
+  yy = db_to_y(db, y, hh, db_min, db_max);
+  gfx_line(x0, yy, x0+w, yy, 1);
+);
+
+// TOP grid
+gfx_set(0.20,0.20,0.22,1);
+draw_vgrid(20,   y1, h_plot);
+draw_vgrid(50,   y1, h_plot);
+draw_vgrid(100,  y1, h_plot);
+draw_vgrid(200,  y1, h_plot);
+draw_vgrid(500,  y1, h_plot);
+draw_vgrid(1000, y1, h_plot);
+draw_vgrid(2000, y1, h_plot);
+draw_vgrid(5000, y1, h_plot);
+draw_vgrid(10000,y1, h_plot);
+draw_vgrid(20000,y1, h_plot);
+
+draw_hgrid(0,    y1, h_plot);
+draw_hgrid(-20,  y1, h_plot);
+draw_hgrid(-40,  y1, h_plot);
+draw_hgrid(-60,  y1, h_plot);
+draw_hgrid(-80,  y1, h_plot);
+
+
+
+// BOTTOM grid
+gfx_set(0.20,0.20,0.22,1);
+draw_vgrid(20,   y2, h_plot);
+draw_vgrid(50,   y2, h_plot);
+draw_vgrid(100,  y2, h_plot);
+draw_vgrid(200,  y2, h_plot);
+draw_vgrid(500,  y2, h_plot);
+draw_vgrid(1000, y2, h_plot);
+draw_vgrid(2000, y2, h_plot);
+draw_vgrid(5000, y2, h_plot);
+draw_vgrid(10000,y2, h_plot);
+draw_vgrid(20000,y2, h_plot);
+
+draw_hgrid(0,    y2, h_plot);
+draw_hgrid(-20,  y2, h_plot);
+draw_hgrid(-40,  y2, h_plot);
+draw_hgrid(-60,  y2, h_plot);
+draw_hgrid(-80,  y2, h_plot);
+
+// ---- axis labels ----
+gfx_setfont(1, "Arial", 11);
+gfx_set(0.72,0.72,0.75,1);
+
+// dB labels (left) for BOTH panes
+function draw_db_label(db, y, hh)
+local(yy)
+(
+  yy = db_to_y(db, y, hh, db_min, db_max);
+  gfx_x = x0 + 4;
+  gfx_y = yy - 6;
+  sprintf(#lb, "%d", db);
+  gfx_drawstr(#lb);
+);
+
+draw_db_label(0,   y1, h_plot);
+draw_db_label(-20, y1, h_plot);
+draw_db_label(-40, y1, h_plot);
+draw_db_label(-60, y1, h_plot);
+draw_db_label(-80, y1, h_plot);
+
+draw_db_label(0,   y2, h_plot);
+draw_db_label(-20, y2, h_plot);
+draw_db_label(-40, y2, h_plot);
+draw_db_label(-60, y2, h_plot);
+draw_db_label(-80, y2, h_plot);
+
+// frequency labels (BOTTOM pane)
+function draw_freq_label(freq)
+local(xx, k)
+(
+  freq <= fmax ? (
+    xx = x_from_freq(freq, x0, w, fmin, fmax, ln_fmin, ln_fr);
+
+    // keep text on-screen
+    xx < (x0+10) ? xx = x0+10;
+    xx > (x0+w-18) ? xx = x0+w-18;
+
+    gfx_y = y2 + h_plot - 14;
+
+    freq >= 1000 ? (
+      k = floor(freq/1000 + 0.5);
+      sprintf(#lf, "%dk", k);
+      gfx_x = xx - 10;
+    ) : (
+      sprintf(#lf, "%d", freq);
+      gfx_x = xx - 8;
+    );
+
+    gfx_drawstr(#lf);
+  );
+);
+
+draw_freq_label(20);
+draw_freq_label(50);
+draw_freq_label(100);
+draw_freq_label(200);
+draw_freq_label(500);
+draw_freq_label(1000);
+draw_freq_label(2000);
+draw_freq_label(5000);
+draw_freq_label(10000);
+draw_freq_label(20000);
+
+// labels
+gfx_set(0.90,0.90,0.90,1);
+gfx_setfont(1, "Arial", 13);
+gfx_x = x0 + 8; gfx_y = y1 + 6;
+gfx_drawstr("Input spectrum (pre)");
+
+gfx_x = x0 + 8; gfx_y = y2 + 6;
+gfx_drawstr("Output spectrum (post)  +  Transfer (dry + wet*H)");
+
+// leak floor line (transfer reference) on bottom plot
+gfx_set(0.85,0.60,0.20,0.85);
+yy_leak = db_to_y(slider8, y2, h_plot, db_min, db_max);
+gfx_line(x0, yy_leak, x0+w, yy_leak, 1);
+gfx_x = x0 + w - 120; gfx_y = yy_leak - 14;
+gfx_drawstr("Leak floor");
+
+// draw spectrum lines
+function draw_spec_line(db_base, y, hh, r,g,b,a)
+local(px,py,first,xx,t,freq,bin,db,yy)
+(
+  gfx_set(r,g,b,a);
+
+  first = 1;
+  xx = 0;
+  while (xx < w) (
+    t = xx / max(1, (w-1));
+    freq = exp(ln_fmin + ln_fr*t);
+    bin = freq * SPEC_N / srate;
+    db  = spec_db_at(db_base, bin);
+
+    yy = db_to_y(db, y, hh, db_min, db_max);
+    px = x0 + xx;
+
+    first ? (py = yy; first = 0) : gfx_line(x0 + (xx-2), py, px, yy, 1);
+    py = yy;
+
+    xx += 2;
+  );
+);
+
+// Top: input
+draw_spec_line(spec_in_db_base, y1, h_plot, 0.55,0.85,0.55,1.0);
+
+// Bottom: output
+draw_spec_line(spec_out_db_base, y2, h_plot, 0.55,0.75,0.95,1.0);
+
+// Bottom overlay: transfer
+draw_spec_line(spec_tr_db_base, y2, h_plot, 0.95,0.55,0.25,0.85);
