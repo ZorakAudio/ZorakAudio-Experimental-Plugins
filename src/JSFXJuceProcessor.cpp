@@ -1544,6 +1544,8 @@ public:
 
             row.label = std::make_unique<juce::Label>();
             row.label->setText (s.name, juce::dontSendNotification);
+            if (s.tooltip.isNotEmpty())
+                row.label->setTooltip (s.tooltip);
             addAndMakeVisible (*row.label);
 
             if (auto* ch = dynamic_cast<juce::AudioParameterChoice*> (param))
@@ -1551,6 +1553,9 @@ public:
                 row.combo = std::make_unique<juce::ComboBox>();
                 row.combo->addItemList (ch->choices, 1);
                 addAndMakeVisible (*row.combo);
+
+                if (s.tooltip.isNotEmpty())
+                    row.combo->setTooltip (s.tooltip);
 
                 row.comboAttach = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
                     apvts, pid, *row.combo);
@@ -1560,6 +1565,8 @@ public:
                 row.slider = std::make_unique<juce::Slider>();
                 row.slider->setSliderStyle (juce::Slider::LinearHorizontal);
                 row.slider->setTextBoxStyle (juce::Slider::TextBoxRight, false, 90, 20);
+                if (s.tooltip.isNotEmpty())
+                    row.slider->setTooltip (s.tooltip);
                 addAndMakeVisible (*row.slider);
 
                 row.sliderAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
@@ -1614,8 +1621,7 @@ private:
 // ============================================================
 // Custom editor: bounded HELP overlay + row-hover tooltips sourced from JSFX comments.
 // ============================================================
-class JSFXJuceEditor final : public juce::AudioProcessorEditor,
-                             private juce::Timer
+class JSFXJuceEditor final : public juce::AudioProcessorEditor
 {
 public:
     explicit JSFXJuceEditor (JSFXJuceProcessor& p)
@@ -1623,6 +1629,7 @@ public:
         , processor (p)
         , genericEditor (p)
         , gfxView (p)
+        , tooltipWindow (*this, kTooltipDelayMs)
     {
         setOpaque (true);
         setColour (juce::ResizableWindow::backgroundColourId, juce::Colour (0xff2f3a41)); // pick your base
@@ -1648,20 +1655,7 @@ public:
         addChildComponent (helpOverlay);
         helpOverlay.setVisible (false);
 
-        // --- Tooltip bubble ---
-        addChildComponent (tooltipBubble);
-        tooltipBubble.setVisible (false);
-        tooltipBubble.setInterceptsMouseClicks (false, false);
-
-        // Build row tooltip map from label texts
-        rebuildRowTooltipMap();
-
-        // Mouse tracking for row-hover tooltip behaviour
-        genericEditor.addMouseListener (this, true);
-
-        // Timer drives idle-delay + show/hide
-        startTimerHz (30);
-
+        
         // Enable host-resizable editor
         setResizable (true, true);
 
@@ -1774,7 +1768,6 @@ public:
         }
 
         helpOverlay.setBounds (getLocalBounds());
-        tooltipBubble.toFront (false);
     }
 private:
     // -----------------------
@@ -1900,64 +1893,32 @@ private:
     };
 
     // -----------------------
-    // Tooltip bubble component
+    // Tooltip handling (JUCE TooltipWindow)
     // -----------------------
-    class TooltipBubble final : public juce::Component
+    class SmartTooltipWindow final : public juce::TooltipWindow
     {
     public:
-        void setText (const juce::String& newText)
+        explicit SmartTooltipWindow (JSFXJuceEditor& owner, int delayMs)
+            : juce::TooltipWindow (&owner, delayMs), editor (owner)
         {
-            if (text == newText)
-                return;
-            text = newText;
-            rebuildLayout();
-        }
-
-        juce::Point<int> getBubbleSize() const noexcept
-        {
-            return bubbleSize;
-        }
-
-        void paint (juce::Graphics& g) override
-        {
-            auto r = getLocalBounds().toFloat();
-            g.setColour (juce::Colours::black.withAlpha (0.85f));
-            g.fillRoundedRectangle (r, 8.0f);
-            g.setColour (juce::Colours::white.withAlpha (0.25f));
-            g.drawRoundedRectangle (r, 8.0f, 1.2f);
-
-            g.setColour (juce::Colours::white);
-
-            auto textArea = getLocalBounds().reduced (padding);
-            layout.draw (g, textArea.toFloat());
         }
 
     private:
-        void rebuildLayout()
+        juce::String getTipFor (juce::Component& c) override
         {
-            const int maxTextWidth = 360;
-            const auto font = juce::Font (14.0f);
+            // Hide tooltips while the HELP overlay is open or while dragging.
+            if (editor.helpOverlay.isVisible())
+                return {};
 
-            juce::AttributedString as;
-            as.setJustification (juce::Justification::topLeft);
-            as.append (text, font, juce::Colours::white);
+            if (juce::ModifierKeys::getCurrentModifiers().isAnyMouseButtonDown())
+                return {};
 
-            layout = juce::TextLayout();
-            layout.createLayout (as, (float) maxTextWidth);
-
-            const int h = (int) std::ceil (layout.getHeight());
-            bubbleSize = { maxTextWidth + padding * 2, h + padding * 2 };
-            setSize (bubbleSize.x, bubbleSize.y);
+            return juce::TooltipWindow::getTipFor (c);
         }
 
-        juce::String text;
-        juce::TextLayout layout;
-        juce::Point<int> bubbleSize { 0, 0 };
-        static constexpr int padding = 10;
+        JSFXJuceEditor& editor;
     };
 
-
-// -----------------------
 // JSFX @gfx view (rendered by YSFXGfxInterpreter)
 // -----------------------
 class GfxView final : public juce::Component,
@@ -2426,186 +2387,10 @@ private:
     std::unordered_map<uint32_t, int> trackedKeys;
 };
 
-    // -----------------------
-
-    // Tooltip behaviour
-    // -----------------------
-    void rebuildRowTooltipMap()
-    {
-        tooltipByLabel.clear();
-        rowTooltipByRow.clear();
-
-        for (const auto& s : processor.getJsfxSliderDecls())
-        {
-            if (! s.tooltip.isEmpty())
-                tooltipByLabel[s.name.trim()] = s.tooltip.trim();
-        }
-
-        // Recursively scan labels in the generic editor; map label->parent row component.
-        scanForRows (genericEditor);
-    }
-
-    void scanForRows (juce::Component& c)
-    {
-        if (auto* label = dynamic_cast<juce::Label*> (&c))
-        {
-            const auto key = label->getText().trim();
-            auto it = tooltipByLabel.find (key);
-            if (it != tooltipByLabel.end())
-            {
-                if (auto* row = label->getParentComponent())
-                    rowTooltipByRow[row] = it->second;
-            }
-        }
-
-        for (int i = 0; i < c.getNumChildComponents(); ++i)
-            scanForRows (*c.getChildComponent (i));
-    }
-
-    juce::Component* findRowForComponent (juce::Component* c) const
-    {
-        // Walk up parents until we find a row component we've registered.
-        while (c != nullptr && c != &genericEditor)
-        {
-            auto it = rowTooltipByRow.find (c);
-            if (it != rowTooltipByRow.end())
-                return c;
-            c = c->getParentComponent();
-        }
-        return nullptr;
-    }
-
-    void showTooltipForCurrentRow()
-    {
-        if (currentRow == nullptr)
-            return;
-
-        auto it = rowTooltipByRow.find (currentRow);
-        if (it == rowTooltipByRow.end())
-            return;
-
-        const auto text = it->second;
-        if (text.isEmpty())
-            return;
-
-        tooltipBubble.setText (text);
-        tooltipBubble.setVisible (true);
-        tooltipBubble.toFront (false);
-        positionTooltipAt (lastMousePos);
-    }
-
-    void hideTooltip()
-    {
-        tooltipBubble.setVisible (false);
-    }
-
-    void positionTooltipAt (juce::Point<int> mousePos)
-    {
-        auto size = tooltipBubble.getBubbleSize();
-        if (size.x <= 0 || size.y <= 0)
-            return;
-
-        // "Constantly centered at the mouse" (as requested)
-        int x = mousePos.x - size.x / 2;
-        int y = mousePos.y - size.y / 2;
-
-        // Keep within editor bounds so it never renders outside.
-        x = juce::jlimit (0, getWidth()  - size.x, x);
-        y = juce::jlimit (0, getHeight() - size.y, y);
-
-        tooltipBubble.setBounds (x, y, size.x, size.y);
-    }
-
-    // -----------------------
-    // MouseListener / Timer
-    // -----------------------
-    void mouseMove (const juce::MouseEvent& e) override
-    {
-        if (helpOverlay.isVisible())
-            return;
-
-        // Suppress tooltip logic while dragging/holding mouse buttons.
-        if (e.mods.isAnyMouseButtonDown())
-        {
-            hideTooltip();
-            return;
-        }
-
-        const auto now = juce::Time::getMillisecondCounter();
-        lastMoveMs = now;
-        lastMousePos = e.getEventRelativeTo (this).getPosition();
-
-        auto* row = findRowForComponent (e.eventComponent);
-        if (row != currentRow)
-        {
-            currentRow = row;
-            hideTooltip();
-        }
-
-        // If tooltip is already visible, make it follow the mouse.
-        if (tooltipBubble.isVisible())
-            positionTooltipAt (lastMousePos);
-    }
-
-    void mouseDrag (const juce::MouseEvent&) override
-    {
-        // While dragging a control, tooltips are more annoying than helpful.
-        hideTooltip();
-    }
-
-    void timerCallback() override
-    {
-        // Hide tooltip if help is open.
-        if (helpOverlay.isVisible())
-        {
-            hideTooltip();
-            return;
-        }
-
-        // Hide while any mouse button is down.
-        if (juce::ModifierKeys::getCurrentModifiers().isAnyMouseButtonDown())
-        {
-            hideTooltip();
-            return;
-        }
-
-        // If the mouse is no longer inside the generic editor, clear row.
-        const auto mp = getMouseXYRelative();
-        if (! genericEditor.getBounds().contains (mp))
-        {
-            currentRow = nullptr;
-            hideTooltip();
-            return;
-        }
-
-        if (currentRow == nullptr)
-        {
-            hideTooltip();
-            return;
-        }
-
-        const auto now = juce::Time::getMillisecondCounter();
-        const auto elapsed = (uint32_t) (now - lastMoveMs);
-
-        // Show only after 3 seconds of mouse-idle (requested behaviour).
-        if (! tooltipBubble.isVisible())
-        {
-            if (elapsed >= idleDelayMs)
-                showTooltipForCurrentRow();
-        }
-        else
-        {
-            // Keep it centered at last known mouse pos.
-            positionTooltipAt (lastMousePos);
-        }
-    }
-
-    // -----------------------
-    // HELP show/hide
+// HELP show/hide
     // -----------------------
     void showHelp()
     {
-        hideTooltip();
 
         auto help = processor.getJsfxHelpText();
         if (help.isEmpty())
@@ -2633,16 +2418,8 @@ private:
 
     juce::TextButton helpButton;
     HelpOverlay helpOverlay;
-
-    TooltipBubble tooltipBubble;
-
-    std::map<juce::String, juce::String> tooltipByLabel;
-    std::map<juce::Component*, juce::String> rowTooltipByRow;
-
-    juce::Component* currentRow = nullptr;
-    juce::Point<int> lastMousePos { 0, 0 };
-    uint32_t lastMoveMs = 0;
-    static constexpr uint32_t idleDelayMs = 1000;
+    static constexpr int kTooltipDelayMs = 1000;
+    SmartTooltipWindow tooltipWindow;
 };
 
 
