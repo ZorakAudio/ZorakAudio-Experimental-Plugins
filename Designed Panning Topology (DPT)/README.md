@@ -1,197 +1,93 @@
-# Designed Panning Topology (DPT)
+# DPT Lite — Natural Psychoacoustic Panner (Headphones/Speakers)
 
-**SAFE Headphone Psychoacoustic Panner**
+DPT Lite is a minimal panner designed to feel “normal” in both speakers and headphones.
 
-DPT is a **minimal, mix-safe headphone panner** that improves left/right localization using only the binaural cues humans actually rely on—without HRTFs, rooms, or spatial gimmicks.
+- **Speakers mode**: clean, predictable **equal-power panning**.
+- **Headphones mode**: adds a small set of psychoacoustic cues so hard pans don’t feel like a sound is stapled to one ear.
 
-It is designed to be **immediately usable**: drop it on a track, turn one knob, move on.
-
----
-
-## What DPT Is
-
-DPT is a **headphone-only psychoacoustic panner** that combines:
-
-* Equal-power panning (stable loudness)
-* Interaural Time Difference (ITD) on the *far ear only*
-* Head shadow (high-frequency loss) on the *far ear only*
-* A small, conservative crossfeed from near → far ear
-
-All cues are:
-
-* **Angle-aware**
-* **Amount-controlled**
-* **Human-scale**
-* **Hard-bounded for safety**
-
-There are no modes, no debug features, and no ways to misconfigure it badly.
+This plugin is intentionally small: one Position knob, one “Natural” macro, one Mode switch, and Output trim.
 
 ---
 
-## What DPT Is Not
+## What it does
 
-* ❌ Not a spatializer
-* ❌ Not a binaural renderer
-* ❌ Not an HRTF plugin
-* ❌ Not a room or distance simulator
-* ❌ Not a width enhancer
-* ❌ Not intended for speakers
+### Speakers Mode (clean pan)
+- Uses an equal-power law to maintain stable perceived loudness while panning.
+- No timing or coloration tricks.
 
-If you want elevation, distance, or “sound around your head,” this is the wrong tool.
+### Headphones Mode (binaural-ish pan)
+Adds three cues that commonly help headphone panning feel less artificial:
 
-DPT is about **clean, believable horizontal placement** on headphones.
+1. **Far-ear floor (balance fix)**
+   - Prevents the far ear from going unnaturally silent on hard pans.
+   - Increases with **Natural** and with pan amount.
 
----
+2. **Interaural Time Delay (ITD)**
+   - Delays the far ear slightly to mimic arrival time differences around the head.
+   - Max delay ≈ **0.66 ms** at hard pan, scaled by **Natural**.
 
-## Controls (SAFE Set)
+3. **Head shadow (spectral darkening)**
+   - Low-passes the far ear more as pan increases, imitating high-frequency shadowing by the head.
+   - The cutoff drops as pan increases and as **Natural** increases.
 
-### **Azimuth**
+4. **Micro-diffuse far-ear fill**
+   - Adds a tiny “spread” component to the far ear using short taps (~1–3 ms) that are also low-passed.
+   - This helps reduce razor-sharp ear isolation without turning into reverb.
 
-Left/right position.
-
-* `-100` = hard left
-* `+100` = hard right
-
-### **Amount**
-
-Overall strength of psychoacoustic cues.
-
-* `0%` → behaves close to a centered, gentle pan
-* `100%` → full pan with maximum (but still bounded) ITD, shadow, and crossfeed
-
-This is the main control you’ll touch.
-
-### **Output (dB)**
-
-Final trim only.
-
-* No internal gain staging depends on this.
-* Included for workflow convenience.
-
-That’s it. No hidden modes.
+All headphone processing is designed to stay **stable** and **monophonic-predictable** (it derives from a mono sum internally), so it behaves consistently across sources.
 
 ---
 
-## Quick Start (30 seconds)
+## Controls
 
-1. **Insert DPT on a track**
+### Position (L/R)
+Moves the source left/right.
+- -100 = hard left
+- +100 = hard right
 
-   * Mono or stereo is fine (DPT pans the mono mid internally for stability).
+In Headphones mode, this also drives the strength of the psychoacoustic cues (more pan = more cues, depending on Natural).
 
-2. **Wear headphones**
+### Natural
+Macro amount for “real-world” headphone cues.
+- 0%: mostly a clean pan with minimal coloration
+- Higher: more ITD, more head shadow, more far-ear fill, more diffuse support
 
-   * DPT is intentionally headphone-only.
+Rule of thumb:
+- **Low** for surgical placement and minimal tonal shift
+- **High** when hard pans feel too synthetic or fatiguing on headphones
 
-3. **Set Azimuth**
+### Mode
+- **Speakers**: equal-power pan only
+- **Headphones**: adds ITD + shadow + diffuse far-ear fill
 
-   * Place the sound where you want it horizontally.
-
-4. **Adjust Amount**
-
-   * Start around **50–70%** for natural placement.
-   * Push higher only if you want stronger separation.
-
-5. **Trim Output if needed**
-
-You are done.
-
----
-
-## What’s Happening Under the Hood (Brief)
-
-DPT follows a **strict, minimal topology**:
-
-1. **Mid extraction**
-
-   * Uses mono mid as the panning source for predictable behavior.
-
-2. **Equal-power pan law**
-
-   * Prevents level drop across the stereo field.
-
-3. **Far-ear ITD**
-
-   * Up to ~0.63 ms delay, clamped to human anatomy.
-
-4. **Far-ear head shadow**
-
-   * Gentle low-pass filter; never fully muffled.
-
-5. **Conservative crossfeed**
-
-   * Fixed, low-level, angle-aware.
-   * Reduces headphone fatigue without collapsing the image.
-
-6. **Hard safety**
-
-   * Bounded delays
-   * No feedback paths
-   * No boosts
-   * Output hard-clipped to ±8
-   * No NaNs, no idle noise
-
-Every choice favors **mix translation and stability** over impressiveness.
+### Output (dB)
+Final level trim after processing (±12 dB).
 
 ---
 
-## Why Only Headphones?
+## Practical starting points
 
-Because:
-
-* ITD and crossfeed are **physically wrong on speakers**
-* Speaker playback already has acoustic crosstalk
-* Applying headphone cues on speakers causes comb filtering and image smear
-
-Rather than expose a mode switch, DPT removes the possibility entirely.
-
-This avoids misuse and keeps the plugin honest.
+- **General headphone panning**: Natural 40–70%
+- **Super-clean / technical placement**: Natural 0–25%
+- **Wide stereo illusion without “one-ear stapling”**: Natural 70–100%, then adjust Output to match loudness
 
 ---
 
-## Recommended Uses
+## Notes / Design intent
 
-* Dialogue placement
-* Foley and SFX positioning
-* Animation and film mixing
-* Game audio (non-HRTF pipelines)
-* Headphone-first music production
-* Any situation where stereo placement must remain mix-safe
+- **Automation smoothing (~20 ms)** is used for Position and Natural to prevent zipper noise and clicks.
+- Output is safety-clamped to prevent runaway peaks (this is a panner, not a loudness generator).
+- This is not a full HRTF binaural renderer—just the small set of cues that reliably improves headphone pans in a minimal CPU footprint.
 
 ---
 
-## When Not to Use DPT
+## When not to use it
 
-* Mixing for speakers only
-* Needing distance or depth cues
-* Wanting elevation or “3D space”
-* Already using a full binaural renderer
-
-DPT is deliberately boring in isolation.
-That’s why it works in a mix.
+- If you need **true externalization** (front/back, elevation, room interaction), you want a full binaural/HRTF solution.
+- If your mix already has strong spatial cues from early reflections/room mics, keep Natural lower to avoid over-coloring.
 
 ---
 
-## Design Philosophy
+## Version / License
 
-DPT is built on three rules:
-
-1. **Only implement cues humans actually use**
-2. **Only apply them where they are physically valid**
-3. **Never let the user break the mix**
-
-Minimal controls are not a limitation.
-They are the product.
-
----
-
-## Summary
-
-DPT is a **SAFE psychoacoustic panner**:
-
-* Drop-in
-* Headphone-correct
-* Mix-reliable
-* Impossible to “overdo” accidentally
-
-It does less than most spatial tools.
-That restraint is the feature.
+Include your preferred version tag and license statement here.

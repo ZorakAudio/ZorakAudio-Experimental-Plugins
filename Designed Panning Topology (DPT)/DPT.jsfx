@@ -1,0 +1,400 @@
+desc:Designed Panning Topology (DPT) — Natural Psychoacoustic Panner (Headphones/Speakers)
+
+// Minimal control surface:
+// 1) Position (L/R)
+// 2) Natural (macro: ITD+shadow+far-fill)
+// 3) Mode (Speakers/Headphones)
+// 4) Output
+
+// #HELP: Minimal psychoacoustic panner with two behaviors: clean equal-power pan for speakers, and binaural-ish pan for headphones.
+// #HELP: Headphones mode adds far-ear realism: a small time delay (ITD), frequency darkening (head shadow), and a controlled diffuse fill so the far ear doesn’t vanish.
+// #HELP: “Natural” is a macro amount knob for the added cues; keep it low for precision, raise it to make hard pans feel less synthetic.
+// #HELP: Automation-safe: Position and Natural are smoothed (~20 ms) to avoid clicks when sweeping across center.
+
+// #TOOLTIP: Pan direction and amount. -100 = hard left, +100 = hard right. In Headphones mode this also drives far-ear delay (ITD) and head-shadow behavior.
+slider1:0<-100,100,1>Position (L/R)
+// #TOOLTIP: 0% = clean, “mathy” pan. Higher values add more real-world cues: far-ear floor (prevents far ear going silent), interaural time delay, head shadow darkening, and a small diffuse far-ear fill.
+slider2:70<0,100,1>Natural
+// #TOOLTIP: Speakers = standard equal-power panning (no binaural cues). Headphones = binaural-ish panning using ITD + head shadow + diffuse fill to reduce “inside-the-head” hard pans.
+slider3:1<0,1,1{Speakers,Headphones}>Mode
+// #TOOLTIP: Final trim after panning/processing. Use to match loudness. Bounded to ±12 dB.
+slider4:0<-12,12,0.1>Output (dB)
+
+@init
+  EPS = 0.00000000000000001;
+
+  BUF_LEN  = 8192;
+  BUF_MASK = BUF_LEN - 1;
+
+  // mono delay buffer
+  bX = 0;
+
+  // per-ear states (avoid "state sharing" pops when crossing center)
+  st_shL = BUF_LEN + 0; // shadow LP state, left
+  st_shR = BUF_LEN + 1; // shadow LP state, right
+  st_dfL = BUF_LEN + 2; // diffuse LP state, left
+  st_dfR = BUF_LEN + 3; // diffuse LP state, right
+
+  wofs = 0;
+
+  pan_s = 0;
+  nat_s = 0;
+
+  function clamp(x,a,b) ( x<a ? a : (x>b ? b : x) );
+  function db2lin(db) ( 10^(db/20) );
+  function smooth01(t) ( t=clamp(t,0,1); t*t*(3-2*t) );
+
+  // 1-pole LP coefficient (cheap; no exp per sample)
+  function g_lp(fc) local(wc) (
+    fc = clamp(fc, 40, 0.49*srate);
+    wc = 2*$pi*fc;
+    wc / (wc + srate)
+  );
+  // ---------------- GFX helpers ----------------
+  function gfxu_lerp(a,b,t) ( a + (b-a)*t; );
+  function gfxu_sat01(x) ( x < 0 ? 0 : (x > 1 ? 1 : x); );
+@slider
+  pan_t = clamp(slider1/100, -1, 1);
+  nat_t = smooth01(slider2/100);
+  mode  = slider3|0;
+
+  out_gain = db2lin(clamp(slider4, -12, 12));
+
+  // ~20ms automation smoothing
+  slew_g = 1 - exp(-1/(0.02*srate));
+
+@sample
+  // smooth controls (automation-safe)
+  pan_s += (pan_t - pan_s) * slew_g;
+  nat_s += (nat_t - nat_s) * slew_g;
+
+  // mono panning source (predictable)
+  x = 0.5*(spl0 + spl1);
+
+  // write into mono delay buffer
+  mem[bX + (wofs & BUF_MASK)] = x;
+
+  absP = abs(pan_s);
+  p01  = smooth01(absP);
+
+  // equal-power base (fast, no trig)
+  gL0 = sqrt(0.5*(1 - pan_s));
+  gR0 = sqrt(0.5*(1 + pan_s));
+
+  mode == 0 ? (
+    // Speakers: clean equal-power pan
+    oL = gL0 * x;
+    oR = gR0 * x;
+  ) : (
+    // Headphones: binaural-ish + auto "natural" fill
+
+    // 1) Far-ear floor: stops far ear from going silent (major balance fix)
+    fill = 0.45 * nat_s * absP; // 0..~0.45
+
+    pan_s >= 0 ? (
+      // source to right => LEFT far, RIGHT near
+      gNear = gR0;
+      gFar  = gL0 + fill*(1 - gL0);
+      gL = gFar; gR = gNear;
+      farLeft = 1;
+    ) : (
+      // source to left => RIGHT far, LEFT near
+      gNear = gL0;
+      gFar  = gR0 + fill*(1 - gR0);
+      gL = gNear; gR = gFar;
+      farLeft = 0;
+    );
+
+    // normalize to keep loudness stable
+    nrm = sqrt(gL*gL + gR*gR) + EPS;
+    gL /= nrm; gR /= nrm;
+
+    // 2) ITD on far ear: max ~0.66 ms @ 90deg
+    itd_sec  = 0.00066 * p01 * nat_s;
+    itd_samp = floor(itd_sec*srate + 0.5);
+    itd_samp > 64 ? itd_samp = 64;
+
+    xd = mem[bX + ((wofs - itd_samp) & BUF_MASK)];
+
+    // 3) Head shadow LP on far ear: more pan => darker far ear
+    absP2 = absP*absP;
+    fc_sh = 18000 / (1 + 12*nat_s*absP2);
+    fc_sh < 700 ? fc_sh = 700;
+    gsh = g_lp(fc_sh);
+
+    // 4) Micro-diffuse far-ear fill: 1–3 ms spread, lowpassed
+    d1 = floor((0.0009 + 0.0007*absP)*srate + 0.5); // ~0.9..1.6 ms
+    d2 = floor((0.0019 + 0.0011*absP)*srate + 0.5); // ~1.9..3.0 ms
+    d1 > 256 ? d1 = 256;
+    d2 > 256 ? d2 = 256;
+
+    x1 = mem[bX + ((wofs - d1) & BUF_MASK)];
+    x2 = mem[bX + ((wofs - d2) & BUF_MASK)];
+    dfIn = 0.6*x1 + 0.4*x2;
+
+    fc_df = 1400 + 1600*(1-absP); // 1400..3000 Hz
+    gdf = g_lp(fc_df);
+
+    df_gain = 0.22 * nat_s * p01; // grows with pan
+
+    farLeft ? (
+      // LEFT far, RIGHT near
+      sh = mem[st_shL];
+      sh += gsh*(xd - sh);
+      mem[st_shL] = sh;
+
+      df = mem[st_dfL];
+      df += gdf*(dfIn - df);
+      mem[st_dfL] = df;
+
+      oR = gR * x;
+      oL = gL * sh + df_gain * df;
+    ) : (
+      // RIGHT far, LEFT near
+      sh = mem[st_shR];
+      sh += gsh*(xd - sh);
+      mem[st_shR] = sh;
+
+      df = mem[st_dfR];
+      df += gdf*(dfIn - df);
+      mem[st_dfR] = df;
+
+      oL = gL * x;
+      oR = gR * sh + df_gain * df;
+    );
+  );
+
+  // Output trim + safety clamp
+  spl0 = oL * out_gain;
+  spl1 = oR * out_gain;
+
+  spl0 > 8 ? spl0 = 8 : (spl0 < -8 ? spl0 = -8);
+  spl1 > 8 ? spl1 = 8 : (spl1 < -8 ? spl1 = -8);
+
+  wofs += 1;
+
+@gfx 360 220
+  g_w = gfx_w;
+  g_h = gfx_h;
+
+  // Read the same smoothed values the DSP uses.
+  // Audio code remains untouched.
+  g_pan  = clamp(pan_s, -1, 1);
+  g_nat  = clamp(nat_s, 0, 1);
+  g_mode = slider3|0;
+
+  g_absP = abs(g_pan);
+  g_p01  = smooth01(g_absP);
+
+  // Layout
+  g_cx = g_w*0.5;
+
+  g_listener_y = g_h*0.80;
+  g_listener_r = min(g_w,g_h)*0.082;
+
+  g_ear_dx = g_listener_r*0.86;
+  g_ear_r  = g_listener_r*0.20;
+
+  g_left_ear_x  = g_cx - g_ear_dx;
+  g_right_ear_x = g_cx + g_ear_dx;
+  g_ear_y       = g_listener_y;
+
+  // Source moves left/right directly, not on an arc
+  g_source_y = g_h*0.29;
+  g_source_x = gfxu_lerp(g_w*0.16, g_w*0.84, 0.5*(g_pan + 1));
+
+  // Mirror DSP math for display only
+  g_gL0 = sqrt(0.5*(1 - g_pan));
+  g_gR0 = sqrt(0.5*(1 + g_pan));
+
+  g_fill_amt = 0.45 * g_nat * g_absP;
+  g_itd_ms   = 0.66 * g_p01 * g_nat; // 0..0.66 ms
+  g_itd_n    = gfxu_sat01(g_itd_ms / 0.66);
+
+  g_fc_sh = 18000 / (1 + 12*g_nat*g_absP*g_absP);
+  g_fc_sh < 700 ? g_fc_sh = 700;
+
+  g_df_amt = 0.22 * g_nat * g_p01;
+
+  // Same side logic as DSP:
+  // source right => left ear is far
+  g_far_left = g_pan >= 0 ? 1 : 0;
+  g_near_x   = g_far_left ? g_right_ear_x : g_left_ear_x;
+  g_far_x    = g_far_left ? g_left_ear_x  : g_right_ear_x;
+
+  // Display gains
+  g_mode == 0 ? (
+    // Speakers: plain equal-power
+    g_visL = g_gL0;
+    g_visR = g_gR0;
+  ) : (
+    // Headphones: same near/far gain logic as DSP
+    g_pan >= 0 ? (
+      g_near = g_gR0;
+      g_far  = g_gL0 + g_fill_amt*(1 - g_gL0);
+      g_visL = g_far;
+      g_visR = g_near;
+    ) : (
+      g_near = g_gL0;
+      g_far  = g_gR0 + g_fill_amt*(1 - g_gR0);
+      g_visL = g_near;
+      g_visR = g_far;
+    );
+
+    g_nrm = sqrt(g_visL*g_visL + g_visR*g_visR) + EPS;
+    g_visL /= g_nrm;
+    g_visR /= g_nrm;
+  );
+
+  // ---------------- Background ----------------
+  gfx_set(0.06,0.06,0.07,1);
+  gfx_rect(0,0,g_w,g_h);
+
+  gfx_set(1,1,1,0.05);
+  gfx_rect(0,0,g_w,g_h*0.16);
+
+  // Center guide + source lane
+  gfx_set(1,1,1,0.06);
+  gfx_line(g_cx, g_h*0.15, g_cx, g_h*0.93, 1);
+  gfx_line(g_w*0.10, g_source_y, g_w*0.90, g_source_y, 1);
+
+  // L / C / R hints
+  gfx_set(1,1,1,0.18);
+  gfx_x = g_w*0.10 - 4; gfx_y = g_source_y - 16; gfx_printf("L");
+  gfx_x = g_cx - 4;     gfx_y = g_source_y - 16; gfx_printf("C");
+  gfx_x = g_w*0.90 - 4; gfx_y = g_source_y - 16; gfx_printf("R");
+
+  // ---------------- Natural rings around source ----------------
+  // These exist only to show "Natural" intensity visually.
+  g_ringN = floor(4*g_nat);
+  g_i = 0;
+  loop(g_ringN,
+    g_ring_r = g_listener_r*(0.46 + 0.22*g_i);
+    g_ring_a = 0.08 + 0.12*g_nat - 0.02*g_i;
+    gfx_set(1.0,0.72,0.28,g_ring_a);
+    gfx_circle(g_source_x, g_source_y, g_ring_r, 0, 1);
+    g_i += 1;
+  );
+
+  // ---------------- Base propagation lines ----------------
+  // Always show the basic L/R energy picture.
+  gfx_set(0.45,0.78,1.0, 0.12 + 0.62*g_visL);
+  gfx_line(g_source_x, g_source_y, g_left_ear_x, g_ear_y, 1);
+
+  gfx_set(0.45,0.78,1.0, 0.12 + 0.62*g_visR);
+  gfx_line(g_source_x, g_source_y, g_right_ear_x, g_ear_y, 1);
+
+  // ---------------- Headphones overlays ----------------
+  g_mode == 1 ? (
+    g_absP > 0.0001 ? (
+      // Near-ear accent (gets stronger with Natural)
+      gfx_set(1.0,0.72,0.30, 0.65*g_nat*(g_far_left ? g_visR : g_visL));
+      gfx_line(g_source_x, g_source_y, g_near_x, g_ear_y, 1);
+
+      // Far-ear altered path:
+      // delayed/offset + darker, grows with Natural and pan
+      g_itd_px = g_itd_n * (g_listener_r*0.95);
+      g_far_mid_x = gfxu_lerp(g_source_x, g_far_x, 0.58) + (g_far_left ? -g_itd_px : g_itd_px);
+      g_far_mid_y = gfxu_lerp(g_source_y, g_ear_y, 0.58);
+
+      gfx_set(0.48,0.62,0.78, 0.42*g_nat*g_absP);
+      gfx_line(g_source_x, g_source_y, g_far_mid_x, g_far_mid_y, 1);
+
+      gfx_set(0.28,0.34,0.40, 0.34*g_nat*g_absP);
+      gfx_line(g_far_mid_x, g_far_mid_y, g_far_x, g_ear_y, 1);
+
+      // Head shadow wedge on far side
+      g_wedge_len  = g_listener_r*(1.5 + 1.0*g_nat*g_absP);
+      g_wedge_half = g_listener_r*(0.70 + 0.40*g_nat);
+      g_wedge_tip_x = g_far_left ? (g_far_x - g_wedge_len) : (g_far_x + g_wedge_len);
+
+      gfx_set(0,0,0, 0.42*g_nat*g_absP);
+      gfx_triangle(g_far_x, g_ear_y,
+                   g_wedge_tip_x, g_ear_y - g_wedge_half,
+                   g_wedge_tip_x, g_ear_y + g_wedge_half);
+
+      // Diffuse far-ear halo
+      gfx_set(0.60,0.82,1.0, 0.06 + 1.00*g_df_amt);
+      gfx_circle(g_far_x, g_ear_y, g_ear_r + g_listener_r*(0.45 + 0.30*g_nat), 0, 1);
+
+      gfx_set(0.60,0.82,1.0, 0.04 + 0.70*g_df_amt);
+      gfx_circle(g_far_x, g_ear_y, g_ear_r + g_listener_r*(0.75 + 0.45*g_nat), 0, 1);
+
+      // Tiny ITD marker above the far ear
+      g_dot_x = g_far_left ? (g_far_x + g_itd_px) : (g_far_x - g_itd_px);
+      gfx_set(1,1,1, 0.15 + 0.70*g_itd_n);
+      gfx_circle(g_dot_x, g_ear_y - g_listener_r*0.60, g_ear_r*0.36, 1, 1);
+    );
+  );
+
+  // ---------------- Listener ----------------
+  gfx_set(0.86,0.86,0.88,0.95);
+  gfx_circle(g_cx, g_listener_y, g_listener_r, 1, 1);
+
+  gfx_set(0.11,0.11,0.12,1);
+  gfx_circle(g_cx, g_listener_y, g_listener_r*0.78, 1, 1);
+
+  // Ear markers
+  gfx_set(0.86,0.86,0.88,0.95);
+  gfx_circle(g_left_ear_x,  g_ear_y, g_ear_r, 1, 1);
+  gfx_circle(g_right_ear_x, g_ear_y, g_ear_r, 1, 1);
+
+  gfx_set(0.14,0.14,0.16,1);
+  gfx_circle(g_left_ear_x,  g_ear_y, g_ear_r*0.55, 1, 1);
+  gfx_circle(g_right_ear_x, g_ear_y, g_ear_r*0.55, 1, 1);
+
+  // Small forward marker
+  gfx_set(0.90,0.90,0.92,0.55);
+  gfx_line(g_cx, g_listener_y - g_listener_r*0.75,
+           g_cx, g_listener_y - g_listener_r*0.35, 1);
+
+  // ---------------- Source ----------------
+  gfx_set(1.00,0.48,0.22,0.98);
+  gfx_circle(g_source_x, g_source_y, g_listener_r*0.56, 1, 1);
+
+  gfx_set(0.12,0.12,0.13,1);
+  gfx_circle(g_source_x, g_source_y, g_listener_r*0.34, 1, 1);
+
+  // ---------------- Readouts ----------------
+  gfx_set(1,1,1,0.92);
+  gfx_x = 10; gfx_y = 8;
+  gfx_printf("DPT");
+
+  gfx_set(1,1,1,0.78);
+  gfx_x = 10; gfx_y = 24;
+  g_mode == 0 ? (
+    gfx_printf("Mode: Speakers");
+  ) : (
+    gfx_printf("Mode: Headphones");
+  );
+
+  gfx_set(1,1,1,0.88);
+  gfx_x = g_w*0.58; gfx_y = 8;
+  slider1 < 0 ? (
+    gfx_printf("Position: %.0f (L)", abs(slider1));
+  ) : slider1 > 0 ? (
+    gfx_printf("Position: %.0f (R)", slider1);
+  ) : (
+    gfx_printf("Position: 0 (C)");
+  );
+
+  gfx_x = g_w*0.58; gfx_y = 24;
+  gfx_printf("Natural: %.0f%%", slider2);
+
+  g_mode == 0 ? (
+    gfx_x = g_w*0.58; gfx_y = 40; gfx_printf("L gain: %.2f", g_visL);
+    gfx_x = g_w*0.58; gfx_y = 56; gfx_printf("R gain: %.2f", g_visR);
+  ) : (
+    gfx_x = g_w*0.58; gfx_y = 40; gfx_printf("ITD: %.2f ms", g_itd_ms);
+    gfx_x = g_w*0.58; gfx_y = 56; gfx_printf("Shadow LP: %.0f Hz", g_fc_sh);
+    gfx_x = g_w*0.58; gfx_y = 72; gfx_printf("Far fill: %.2f", g_fill_amt);
+    gfx_x = g_w*0.58; gfx_y = 88; gfx_printf("Diffuse: %.2f", g_df_amt);
+  );
+
+  gfx_set(1,1,1,0.22);
+  gfx_x = 10; gfx_y = g_h - 18;
+  g_mode == 0 ? (
+    gfx_printf("Speakers: equal-power left/right only");
+  ) : (
+    gfx_printf("Headphones: Natural adds ITD, shadow, and diffuse far-ear cues");
+  );

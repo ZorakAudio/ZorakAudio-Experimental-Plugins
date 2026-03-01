@@ -199,7 +199,7 @@ static JsfxSections extractJsfxSections(const char* jsfxText)
 // -------------------------
 struct DrawCmd
 {
-  enum class Type { Rect, Line, Text, Circle };
+  enum class Type { Rect, Line, Text, Circle, Triangle };
   Type type = Type::Rect;
 
   // Common
@@ -218,6 +218,9 @@ struct DrawCmd
   
   // Circle
   float radius = 0.0f;
+
+  // Triangle / convex polygon (gfx_triangle)
+  std::vector<juce::Point<float>> points;
 };
 
 // -------------------------
@@ -529,6 +532,7 @@ public:
     NSEEL_addfunc_varparm_ex("gfx_rect",       4, 0, NSEEL_PProc_THIS, &eel_gfx_rect,       nullptr);
     NSEEL_addfunc_varparm_ex("gfx_rectto",     2, 0, NSEEL_PProc_THIS, &eel_gfx_rectto,     nullptr);
     NSEEL_addfunc_varparm_ex("gfx_circle",     3, 0, NSEEL_PProc_THIS, &eel_gfx_circle,     nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_triangle",   6, 0, NSEEL_PProc_THIS, &eel_gfx_triangle,   nullptr);
     NSEEL_addfunc_varparm_ex("gfx_line",       4, 0, NSEEL_PProc_THIS, &eel_gfx_line,       nullptr);
     NSEEL_addfunc_varparm_ex("gfx_lineto",     2, 0, NSEEL_PProc_THIS, &eel_gfx_lineto,     nullptr);
     NSEEL_addfunc_varparm_ex("gfx_drawstr",    1, 0, NSEEL_PProc_THIS, &eel_gfx_drawstr,    nullptr);
@@ -923,6 +927,41 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     return 0.0;
   }
 
+  static EEL_F NSEEL_CGEN_CALL eel_gfx_triangle(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*)opaque;
+    if (!self || np < 6) return 0.0;
+
+    self->setImageDirty();
+
+    // gfx_triangle(x1,y1,x2,y2,x3,y3[,x4,y4...]) -- always filled.
+    const int pairs = (int)(np / 2);
+    if (pairs < 3) return 0.0;
+
+    DrawCmd cmd;
+    cmd.type   = DrawCmd::Type::Triangle;
+    cmd.colour = self->getCurrentColour();
+    cmd.fill   = true;
+
+    cmd.points.reserve((size_t)pairs);
+
+    for (INT_PTR i = 0; i + 1 < np; i += 2)
+    {
+      const double x = (double)*parms[i + 0];
+      const double y = (double)*parms[i + 1];
+
+      const float fx = std::isfinite(x) ? (float)x : 0.0f;
+      const float fy = std::isfinite(y) ? (float)y : 0.0f;
+      cmd.points.emplace_back(fx, fy);
+    }
+
+    if (cmd.points.size() >= 3)
+      self->commands.push_back(std::move(cmd));
+
+    return 0.0;
+  }
+
+
   static EEL_F NSEEL_CGEN_CALL eel_gfx_getchar(void* opaque, INT_PTR np, EEL_F** parms)
   {
     auto* self = (GfxVm*)opaque;
@@ -1250,6 +1289,19 @@ static inline void paintCommands(juce::Graphics& g, const std::vector<DrawCmd>& 
         const float y = cmd.y - cmd.radius;
         if (cmd.fill) g.fillEllipse(x, y, d, d);
         else          g.drawEllipse(x, y, d, d, 1.0f);
+        break;
+      }
+      case DrawCmd::Type::Triangle:
+      {
+        if (cmd.points.size() >= 3)
+        {
+          juce::Path p;
+          p.startNewSubPath(cmd.points[0]);
+          for (size_t i = 1; i < cmd.points.size(); ++i)
+            p.lineTo(cmd.points[i]);
+          p.closeSubPath();
+          g.fillPath(p);
+        }
         break;
       }
     }
