@@ -164,12 +164,51 @@ class Lexer:
 
             # identifier / keyword
             if c.isalpha() or c == "_" or c == "$":
-                m = re.match(r"[$A-Za-z_][$A-Za-z0-9_]*", self.src[self.i:])
+                # Allow dotted identifiers (e.g. u.next_bank) as a single symbol.
+                # This matches common JSFX style for pseudo-namespacing.
+                m = re.match(r"[$A-Za-z_][$A-Za-z0-9_]*(?:\.[\$A-Za-z_][\$A-Za-z0-9_]*)*", self.src[self.i:])
                 assert m
                 txt = m.group(0)
                 self._adv(len(txt))
                 kind = "kw" if txt in ("if", "else", "while") else "ident"
                 return Tok(kind, txt, sp)
+
+            # string literal
+            # JSFX/EEL2 supports double-quoted strings (commonly used for gfx_printf/sprintf).
+            # We keep this lexer intentionally small, but we *must* at least accept strings so
+            # scripts that define @gfx helpers inside @init/@slider can still compile.
+            if c == '"':
+                self._adv()  # consume opening quote
+                out = []
+                while True:
+                    ch = self._peek()
+                    if ch == "\0":
+                        raise SyntaxError(self._fmt_err("Unterminated string literal"))
+                    if ch in ("\n", "\r"):
+                        raise SyntaxError(self._fmt_err("Newline in string literal"))
+                    if ch == '"':
+                        self._adv()  # closing quote
+                        break
+                    if ch == "\\":
+                        self._adv()  # consume \\ 
+                        esc = self._peek()
+                        if esc == "\0":
+                            raise SyntaxError(self._fmt_err("Unterminated string escape"))
+                        self._adv()
+                        if esc == "n": out.append("\n")
+                        elif esc == "r": out.append("\r")
+                        elif esc == "t": out.append("\t")
+                        elif esc == '"': out.append('"')
+                        elif esc == "\\": out.append("\\")
+                        else:
+                            # Unknown escapes: keep the escaped character verbatim.
+                            out.append(esc)
+                        continue
+
+                    out.append(ch)
+                    self._adv()
+
+                return Tok("str", "".join(out), sp)
 
 
             # single char tokens/operators
@@ -201,6 +240,13 @@ class Num(Node):
     id: int
     span: Span
     value: float
+
+
+@dataclass
+class StrLit(Node):
+    id: int
+    span: Span
+    value: str
 
 @dataclass
 class Var(Node):
@@ -657,6 +703,10 @@ class Parser:
             t = self._eat("num")
             return Num(self._new_id(), t.span, float(t.text))
 
+        if self.cur.kind == "str":
+            t = self._eat("str")
+            return StrLit(self._new_id(), t.span, t.text)
+
         if self.cur.kind == "ident":
             t = self._eat("ident")
             return Var(self._new_id(), t.span, t.text)
@@ -808,7 +858,7 @@ def collect_user_vars(programs: Dict[str, List[Node]], fn_defs: Dict[str, Functi
             names.add(n.name)
             return
 
-        if isinstance(n, Num):
+        if isinstance(n, (Num, StrLit)):
             return
         if isinstance(n, Index):
             rec(n.base, locals); rec(n.index, locals); return
@@ -892,7 +942,7 @@ def infer_spl_io(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef
             _record(n.name, write_ctx)
             return
 
-        if isinstance(n, Num):
+        if isinstance(n, (Num, StrLit)):
             return
         if isinstance(n, Index):
             rec(n.base, locals, False)
@@ -1050,6 +1100,26 @@ class LLVMModuleEmitter:
 
 
         self._buildins: Dict[str, ir.Function] = {}
+
+        # String literal pool (DSP-only):
+        # We represent string literals as opaque numeric handles (doubles).
+        # This keeps parsing/compilation working for scripts that include string
+        # helpers (often used by @gfx) inside @init/@slider.
+        # Full EEL2 string semantics are NOT implemented in this DSP compiler.
+        self._str_lits: Dict[str, int] = {}
+        self._next_str_id: int = 0
+        self._str_handle_base: int = (1 << 40)
+
+    def _intern_string(self, s: str) -> int:
+        # Return a stable nonzero handle for this literal.
+        # We offset into a high range to reduce accidental collisions with typical
+        # mem() indices or small numeric constants.
+        if s in self._str_lits:
+            return self._str_lits[s]
+        hid = self._str_handle_base + self._next_str_id
+        self._next_str_id += 1
+        self._str_lits[s] = hid
+        return hid
 
     def _const_f64(self, v: float) -> ir.Constant:
         return ir.Constant(self.double, float(v))
@@ -1291,6 +1361,9 @@ class LLVMModuleEmitter:
         if isinstance(n, Num):
             return self._const_f64(n.value)
 
+        if isinstance(n, StrLit):
+            return self._const_f64(float(self._intern_string(n.value)))
+
         # variable
         if isinstance(n, Var):
             if n.name == "mem":
@@ -1426,6 +1499,35 @@ class LLVMModuleEmitter:
         # call
         if isinstance(n, Call):
             fn = n.fn
+
+            # ------------------------------------------------------------
+            # DSP-only compatibility stubs
+            #
+            # Many JSFX scripts define helpers inside @init/@slider that are
+            # only used by @gfx (formatting, drawing, UI glue). Those helpers
+            # often call gfx_* and/or string/file functions.
+            #
+            # This AOT compiler intentionally does not implement @gfx nor full
+            # string/file I/O semantics, but we still want such scripts to
+            # compile (and run DSP).
+            #
+            # Strategy: treat these calls as no-ops that evaluate their args
+            # (preserving side effects) and return 0.
+            # ------------------------------------------------------------
+            if fn.startswith("gfx_") or fn in (
+                # formatting / strings
+                "sprintf", "printf",
+                "strcpy", "strcat", "strcmp", "strlen",
+                "str_getchar", "str_setchar",
+                "str_insert", "str_delete", "str_mid", "strncpy",
+
+                # file I/O (unsupported in DSP runtime)
+                "file_open", "file_close", "file_var", "file_avail",
+                "file_text", "file_mem", "file_seek", "file_read", "file_write",
+            ):
+                for a in n.args:
+                    _ = self.emit_expr(builder, st, a)
+                return self._const_f64(0.0)
             if fn == "abs":
                 fn = "fabs"
 

@@ -2098,6 +2098,8 @@ public:
         inputDirty = true;
         bool changed = false;
 
+        const int capBefore = mouseCap;
+
         // Update tracked key-down state.
         for (auto it = trackedKeys.begin(); it != trackedKeys.end();)
         {
@@ -2117,7 +2119,12 @@ public:
         // Keep mouse_cap modifier bits fresh.
         updateMouseCapFromModifiers (juce::ModifierKeys::getCurrentModifiers());
 
-        if (changed)
+        // Modifier-only changes (Shift/Ctrl/Alt/Command) do not generate a JSFX key code,
+        // but they *do* change mouse_cap. Many JSFX UIs rely on seeing mouse_cap become
+        // exactly 0 between interactions to release capture/drag state.
+        const bool capChanged = (mouseCap != capBefore);
+
+        if (changed || capChanged)
         {
             renderNow();
             repaint();

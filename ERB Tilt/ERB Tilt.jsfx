@@ -1,0 +1,721 @@
+desc:ERB Tilt EQ (Perceptual) - tilt + loudness comp + roughness guard
+
+// Controls (4 knobs)
+// #HELP: ERB tilt EQ: applies a smooth bright↔dark tilt using an ERB-spaced filterbank so the change feels consistent across the spectrum.
+// #HELP: Pivot sets the “hinge” frequency; Tilt pushes lows and highs in opposite directions around that hinge (with a built-in safety clamp).
+// #HELP: Comp keeps loudness steady by matching A-weighted energy before vs after the tilt (smoothed to avoid pumping).
+// #HELP: Roughness Guard reduces harsh “fizz / grit” caused by high-band amplitude modulation by dynamically saturating only when roughness is detected.
+
+// #TOOLTIP: Perceptual tilt in ERB space. Positive = brighter, negative = darker. Uses per-band gain with safety clamp to prevent extreme curves.
+slider1:0<-18,18,0.1:log>Tilt (dB)
+// #TOOLTIP: Frequency that stays “anchored” while tilting. Bands below pivot move opposite of bands above pivot (in ERB distance, not linear Hz).
+slider2:1000<20,20000,1:log>Pivot (Hz)
+// #TOOLTIP: Global loudness compensation based on A-weighted ERB-band energy (pre vs post). 0% = no comp, 100% = fully match perceived loudness across tilts.
+slider3:100<0,100,1:sqr>Comp (Loudness) %
+// #TOOLTIP: Anti-harshness guard for upper bands (≈2 kHz+): detects fast-vs-slow envelope divergence (AM roughness proxy) and applies modulation-driven soft saturation to reduce rough AM salience without killing brightness.
+slider4:50<0,100,1:sqr>Roughness Guard %
+
+@init
+// ---------- constants ----------
+pi = 3.141592653589793;
+ln10 = 2.302585092994046;
+inv_ln10 = 0.4342944819032518;
+db2lin = 0.11512925464970229; // ln(10)/20
+
+// ---------- filterbank config ----------
+NB = 16;
+NBm1 = 15;
+rough_start_hz = 2000;
+
+// ---------- memory layout ----------
+mempos = 0;
+
+lpL   = mempos; mempos += NBm1;
+lpR   = mempos; mempos += NBm1;
+lpA   = mempos; mempos += NBm1;
+
+preE  = mempos; mempos += NB;
+postE = mempos; mempos += NB;
+
+envF  = mempos; mempos += NB;
+envS  = mempos; mempos += NB;
+
+gBand = mempos; mempos += NB;
+wBand = mempos; mempos += NB;
+fcBand = mempos; mempos += NB;
+erbBand = mempos; mempos += NB;
+
+memset(0, 0, mempos);
+
+// ---------- state ----------
+last_srate = 0;
+global_gain = 1;
+
+// ---------- functions ----------
+function clamp(x, lo, hi)
+(
+  x < lo ? lo : (x > hi ? hi : x);
+);
+
+function erb_from_hz(f)
+(
+  // ERB number: 21.4 * log10(0.00437*f + 1)
+  21.4 * log(0.00437*f + 1) * inv_ln10;
+);
+
+function hz_from_erb(e)
+(
+  // f = (10^(e/21.4) - 1) / 0.00437
+  (exp((e/21.4) * ln10) - 1) / 0.00437;
+);
+
+function a_weight_amp(f)
+(
+  // A-weight amplitude ratio (not dB), derived from standard A-weighting:
+  // A(f) = 20*log10(RA) + 2
+  // amp = 10^(A/20) = 10^(0.1) * RA = 1.2589254117941673 * RA
+  f2 = f*f;
+  num = (12200*12200) * (f2*f2);
+  den1 = f2 + (20.6*20.6);
+  den2 = sqrt( (f2 + (107.7*107.7)) * (f2 + (737.9*737.9)) );
+  den3 = f2 + (12200*12200);
+  ra = num / (den1 * den2 * den3);
+  ra * 1.2589254117941673;
+);
+
+
+function recalc_gains()
+(
+  tilt_db = slider1;
+  pivot_hz = clamp(slider2, 20, fmax);
+  erb_pivot = erb_from_hz(pivot_hz);
+
+  // dB per ERB so that with pivot centered, edges land near +/- tilt_db
+  slope = (2*tilt_db) / (erb_range + 0.000001);
+
+  i = 0;
+  while(i < NB)
+  (
+    gdB = slope * (erbBand[i] - erb_pivot);
+
+    // SAFE clamp (prevents extreme pivot + tilt from going feral)
+    gdB = clamp(gdB, -24, 24);
+
+    gBand[i] = exp(gdB * db2lin);
+
+    i += 1;
+  );
+);
+function build_filterbank()
+(
+  work_srate = srate;
+  work_srate < 1000 ? work_srate = last_good_srate;
+  work_srate < 1000 ? work_srate = 48000;
+
+  nyq = work_srate * 0.5;
+  fmax = 20000;
+  fmax > nyq*0.98 ? fmax = nyq*0.98;
+  fmax < 40 ? fmax = 40;
+
+  erb_min = erb_from_hz(20);
+  erb_max = erb_from_hz(fmax);
+  erb_range = erb_max - erb_min;
+  erb_step = erb_range / NB;
+
+  // per-band centers + weights
+  i = 0;
+  while(i < NB)
+  (
+    erb_c = erb_min + (i + 0.5) * erb_step;
+    erbBand[i] = erb_c;
+
+    fc = hz_from_erb(erb_c);
+    fc > fmax ? fc = fmax;
+    fcBand[i] = fc;
+
+    aw = a_weight_amp(fc);
+    wBand[i] = aw * aw;
+
+    i += 1;
+  );
+
+  // crossover boundaries
+  i = 0;
+  while(i < NBm1)
+  (
+    erb_b = erb_min + (i + 1) * erb_step;
+    f = hz_from_erb(erb_b);
+    f > nyq*0.98 ? f = nyq*0.98;
+    f < 10 ? f = 10;
+
+    a = exp(-2*pi*f/work_srate);
+    lpA[i] = a;
+
+    i += 1;
+  );
+
+  tauE = 0.300;
+  energy_smooth = 1 - exp(-1/(tauE*work_srate));
+
+  tauF = 0.008;
+  rough_fast = 1 - exp(-1/(tauF*work_srate));
+
+  tauS = 0.080;
+  rough_slow = 1 - exp(-1/(tauS*work_srate));
+
+  gain_tau = 0.120;
+);
+// ---------- build once ----------
+srate >= 1000 ? last_good_srate = srate;
+build_filterbank();
+recalc_gains();
+last_srate = srate;
+
+// GFX: ERB Tilt Visualizer (SAFE)
+// ==============================
+//
+// What it shows (perceptual, not FFT):
+//  - 16 ERB band centers on a log-frequency X axis
+//  - 0 dB baseline
+//  - Tilt curve (per-band gain in dB) as a polyline
+//  - Global loudness compensation as a vertical offset (dB) + readout
+//  - Pivot marker line
+//  - Roughness Guard activity bars on high bands (uses envF/envS -> mod proxy)
+//  - Optional faint pre/post energy bars (ERB energies), smoothed in UI
+//
+// ---------- state ----------
+last_srate = 0;
+last_good_srate = 48000;
+global_gain = 1;
+ext_noinit = 1;
+
+// ---------- GFX state ----------
+ui_bank = 0;
+
+// gfx-private smoothing state
+ui_pre  = mempos; mempos += NB;
+ui_post = mempos; mempos += NB;
+ui_mod  = mempos; mempos += NB;
+ui_gdb  = mempos; mempos += NB;
+ui_ggdb = mempos; mempos += 1;
+
+// double-buffered snapshots (written in @block, read in @gfx)
+snap_curve0 = mempos; mempos += NB;
+snap_curve1 = mempos; mempos += NB;
+
+snap_pre0   = mempos; mempos += NB;
+snap_pre1   = mempos; mempos += NB;
+
+snap_post0  = mempos; mempos += NB;
+snap_post1  = mempos; mempos += NB;
+
+snap_mod0   = mempos; mempos += NB;
+snap_mod1   = mempos; mempos += NB;
+
+snap_ggdb0  = mempos; mempos += 1;
+snap_ggdb1  = mempos; mempos += 1;
+
+// final clear AFTER all allocations
+memset(0, 0, mempos);
+
+// ---------- UI helper functions ----------
+function log10_(x) ( log(x) * inv_ln10; );
+
+function lin2db_(x)
+(
+  x <= 0.0000000001 ? -240 : (20 * log10_(x));
+);
+
+function sane_(x, fb)
+(
+  (x == x) && (abs(x) < 1000000000) ? x : fb;
+);
+
+function log10_(x)
+(
+  log(x) * inv_ln10;
+);
+
+function lin2db_(x)
+(
+  x <= 0.0000000001 ? -240 : (20 * log10_(x));
+);
+
+
+function hz_to_x_(f, x0, x1) local(f_hi l0 l1 t)
+(
+  f_hi = fmax;
+  f_hi < 40 ? f_hi = 20000;
+
+  f < 20 ? f = 20;
+  f > f_hi ? f = f_hi;
+
+  l0 = log(20);
+  l1 = log(f_hi);
+  t = (log(f) - l0) / (l1 - l0 + 0.000001);
+  x0 + t * (x1 - x0);
+);
+
+function db_to_y_(db, y0, y1, db_range) local(mid scale)
+(
+  db = sane_(db, 0);
+  mid = 0.5 * (y0 + y1);
+  scale = (y1 - y0) / (2*db_range + 0.000001);
+  mid - db * scale;
+);
+function draw_text_(x,y, str)
+(
+  gfx_x = x; gfx_y = y;
+  gfx_drawstr(str);
+);
+
+function draw_line_(x1,y1,x2,y2)
+(
+  gfx_line(x1,y1,x2,y2,1);
+);
+
+function draw_rect_fill_(x,y,w,h)
+(
+  gfx_rect(x,y,w,h,1);
+);
+
+// tiny number formatter (no sprintf in JSFX)
+function fmt_db_(v)
+(
+  // returns gfx_str by using gfx_printf if available; fallback: draw sign + integer-ish
+  // Most JSFX support gfx_printf.
+  gfx_printf("%.1f", v);
+);
+
+function draw_freq_tick_(f, label, x0, x1, y1)
+(
+  xx = hz_to_x_(f, x0, x1);
+  gfx_r = 0.22; gfx_g = 0.22; gfx_b = 0.24; gfx_a = 1;
+  gfx_line(xx, y1, xx, y1 + 4, 1);
+  gfx_r = 0.65; gfx_g = 0.65; gfx_b = 0.68; gfx_a = 1;
+  gfx_x = xx - 10; gfx_y = y1 + 8;
+  gfx_drawstr(label);
+);
+
+@slider
+comp_mix = slider3 / 100;
+guard = slider4 / 100;
+recalc_gains();
+
+@block
+srate >= 1000 ? last_good_srate = srate;
+
+// rebuild if sample rate changes
+srate != last_srate ?
+(
+  memset(0, 0, mempos);
+  build_filterbank();
+  recalc_gains();
+  last_srate = srate;
+);
+
+// loudness comp target (ERB-band energies, A-weighted)
+Lpre = 0;
+Lpost = 0;
+
+i = 0;
+while(i < NB)
+(
+  Lpre += wBand[i] * preE[i];
+  Lpost += wBand[i] * postE[i];
+  i += 1;
+);
+
+eps = 0.0000000001;
+target = sqrt( (Lpre + eps) / (Lpost + eps) );
+target = clamp(target, 0.25, 4);
+
+blend = 1 + comp_mix * (target - 1);
+
+// smooth global gain per block
+alpha = exp( -samplesblock / (gain_tau*srate + 0.000001) );
+global_gain = global_gain*alpha + blend*(1 - alpha);
+// ---------- snapshot UI data into inactive bank ----------
+u.next_bank = 1 - ui_bank;
+
+u.next_bank ? (
+  u.snap_curve = snap_curve1;
+  u.snap_pre   = snap_pre1;
+  u.snap_post  = snap_post1;
+  u.snap_mod   = snap_mod1;
+  u.snap_ggdb  = snap_ggdb1;
+) : (
+  u.snap_curve = snap_curve0;
+  u.snap_pre   = snap_pre0;
+  u.snap_post  = snap_post0;
+  u.snap_mod   = snap_mod0;
+  u.snap_ggdb  = snap_ggdb0;
+);
+
+u.gg_db = clamp(sane_(lin2db_(global_gain), 0), -24, 24);
+u.snap_ggdb[0] = u.gg_db;
+
+u.i = 0;
+while(u.i < NB)
+(
+  u.bdB = clamp(sane_(lin2db_(gBand[u.i]) + u.gg_db, 0), -36, 36);
+  u.snap_curve[u.i] = u.bdB;
+
+  u.snap_pre[u.i]  = sane_(log(preE[u.i]  + 0.000000001), -20);
+  u.snap_post[u.i] = sane_(log(postE[u.i] + 0.000000001), -20);
+
+  u.m = 0;
+  fcBand[u.i] > rough_start_hz ? (
+    u.m = (envF[u.i] - envS[u.i]) / (envS[u.i] + 0.000001);
+    u.m < 0 ? u.m = 0;
+    u.sat = guard * u.m * 6;
+    u.m = u.sat / (u.sat + 1);
+  );
+  u.snap_mod[u.i] = clamp(sane_(u.m, 0), 0, 1);
+
+  u.i += 1;
+);
+
+ui_bank = u.next_bank;
+
+@sample
+xL = spl0;
+xR = spl1;
+
+outL = 0;
+outR = 0;
+
+prevLpL = 0;
+prevLpR = 0;
+
+// bands 0..NB-2 from parallel LP telescoping differences
+i = 0;
+while(i < NBm1)
+(
+  a = lpA[i];
+
+  lpL_i = (1 - a)*xL + a*lpL[i];
+  lpR_i = (1 - a)*xR + a*lpR[i];
+
+  lpL[i] = lpL_i;
+  lpR[i] = lpR_i;
+
+  bandL = (i == 0) ? lpL_i : (lpL_i - prevLpL);
+  bandR = (i == 0) ? lpR_i : (lpR_i - prevLpR);
+
+  prevLpL = lpL_i;
+  prevLpR = lpR_i;
+
+  // pre energy
+  pre_pow = 0.5 * (bandL*bandL + bandR*bandR);
+  preE[i] += (pre_pow - preE[i]) * energy_smooth;
+
+  // apply tilt gain
+  g = gBand[i];
+  yL = bandL * g;
+  yR = bandR * g;
+
+  // roughness guard (high bands): modulation-driven saturation (reduces harsh AM salience)
+  fcBand[i] > rough_start_hz ?
+  (
+    amp = 0.5 * (abs(yL) + abs(yR));
+
+    envF[i] += (amp - envF[i]) * rough_fast;
+    envS[i] += (amp - envS[i]) * rough_slow;
+
+    mod = (envF[i] - envS[i]) / (envS[i] + 0.000001);
+    mod < 0 ? mod = 0;
+
+    sat = guard * mod * 6;
+    yL = yL / (1 + sat * abs(yL));
+    yR = yR / (1 + sat * abs(yR));
+  );
+
+  // post energy (after guard, before global comp)
+  post_pow = 0.5 * (yL*yL + yR*yR);
+  postE[i] += (post_pow - postE[i]) * energy_smooth;
+
+  outL += yL;
+  outR += yR;
+
+  i += 1;
+);
+
+// last band NB-1 = input - last LP
+bandL = xL - prevLpL;
+bandR = xR - prevLpR;
+idx = NB - 1;
+
+// pre energy
+pre_pow = 0.5 * (bandL*bandL + bandR*bandR);
+preE[idx] += (pre_pow - preE[idx]) * energy_smooth;
+
+// apply tilt gain
+g = gBand[idx];
+yL = bandL * g;
+yR = bandR * g;
+
+// roughness guard (almost always true in top band, but keep consistent)
+fcBand[idx] > rough_start_hz ?
+(
+  amp = 0.5 * (abs(yL) + abs(yR));
+
+  envF[idx] += (amp - envF[idx]) * rough_fast;
+  envS[idx] += (amp - envS[idx]) * rough_slow;
+
+  mod = (envF[idx] - envS[idx]) / (envS[idx] + 0.000001);
+  mod < 0 ? mod = 0;
+
+  sat = guard * mod * 6;
+  yL = yL / (1 + sat * abs(yL));
+  yR = yR / (1 + sat * abs(yR));
+);
+
+// post energy
+post_pow = 0.5 * (yL*yL + yR*yR);
+postE[idx] += (post_pow - postE[idx]) * energy_smooth;
+
+// sum + apply global loudness compensation
+spl0 = (outL + yL) * global_gain;
+spl1 = (outR + yR) * global_gain;
+
+@gfx 420 240
+g.w = gfx_w; 
+g.h = gfx_h;
+g.w < 120 ? g.w = 420;
+g.h < 120 ? g.h = 240;
+
+g.padL = 44;
+g.padR = 14;
+g.padT = 14;
+g.padB = 32;
+
+g.x0 = g.padL;
+g.x1 = g.w - g.padR;
+g.y0 = g.padT;
+g.y1 = g.h - g.padB;
+
+g.plot_w = g.x1 - g.x0;
+g.plot_h = g.y1 - g.y0;
+g.y_mid = 0.5 * (g.y0 + g.y1);
+g.db_range = 18;
+
+// background
+gfx_a = 1;
+gfx_r = 0.06; gfx_g = 0.06; gfx_b = 0.065;
+gfx_rect(0, 0, g.w, g.h, 1);
+
+gfx_r = 0.10; gfx_g = 0.10; gfx_b = 0.11;
+gfx_rect(g.x0, g.y0, g.plot_w, g.plot_h, 1);
+
+// choose completed snapshot bank
+g.bank = ui_bank;
+g.bank ? (
+  g.snap_curve = snap_curve1;
+  g.snap_pre   = snap_pre1;
+  g.snap_post  = snap_post1;
+  g.snap_mod   = snap_mod1;
+  g.snap_ggdb  = snap_ggdb1;
+) : (
+  g.snap_curve = snap_curve0;
+  g.snap_pre   = snap_pre0;
+  g.snap_post  = snap_post0;
+  g.snap_mod   = snap_mod0;
+  g.snap_ggdb  = snap_ggdb0;
+);
+
+// smooth snapshot into gfx-private state
+g.ui_alpha = 0.18;
+ui_ggdb[0] += (g.snap_ggdb[0] - ui_ggdb[0]) * 0.18;
+g.gg_db_s = clamp(sane_(ui_ggdb[0], 0), -24, 24);
+
+g.emin = 1000000;
+g.emax = -1000000;
+
+g.i = 0;
+while(g.i < NB)
+(
+  ui_pre[g.i]  += (g.snap_pre[g.i]  - ui_pre[g.i])  * g.ui_alpha;
+  ui_post[g.i] += (g.snap_post[g.i] - ui_post[g.i]) * g.ui_alpha;
+  ui_mod[g.i]  += (g.snap_mod[g.i]  - ui_mod[g.i])  * g.ui_alpha;
+
+  g.a = ui_pre[g.i];
+  g.b = ui_post[g.i];
+
+  g.a < g.emin ? g.emin = g.a;
+  g.b < g.emin ? g.emin = g.b;
+  g.a > g.emax ? g.emax = g.a;
+  g.b > g.emax ? g.emax = g.b;
+
+  g.i += 1;
+);
+
+g.er = g.emax - g.emin;
+g.er < 0.5 ? g.er = 0.5;
+
+// baseline + grid
+gfx_r = 0.35; gfx_g = 0.35; gfx_b = 0.38;
+gfx_line(g.x0, g.y_mid, g.x1, g.y_mid, 1);
+
+g.i = -3;
+while(g.i <= 3)
+(
+  g.i != 0 ? (
+    g.yy = db_to_y_(g.i * 6, g.y0, g.y1, g.db_range);
+    gfx_r = 0.18; gfx_g = 0.18; gfx_b = 0.20;
+    gfx_line(g.x0, g.yy, g.x1, g.yy, 1);
+  );
+  g.i += 1;
+);
+
+// pivot marker
+g.pivot_hz = clamp(slider2, 20, fmax);
+g.x_piv = hz_to_x_(g.pivot_hz, g.x0, g.x1);
+g.x_piv < g.x0 ? g.x_piv = g.x0;
+g.x_piv > g.x1 ? g.x_piv = g.x1;
+gfx_r = 0.22; gfx_g = 0.30; gfx_b = 0.46;
+gfx_line(g.x_piv, g.y0, g.x_piv, g.y1, 1);
+
+// guard zone marker
+g.x_rg = hz_to_x_(rough_start_hz, g.x0, g.x1);
+g.x_rg < g.x0 ? g.x_rg = g.x0;
+g.x_rg > g.x1 ? g.x_rg = g.x1;
+gfx_r = 0.20; gfx_g = 0.16; gfx_b = 0.16;
+gfx_line(g.x_rg, g.y0, g.x_rg, g.y1, 1);
+
+g.bar_base = g.y1;
+g.bar_top  = g.y1 - 0.30 * g.plot_h;
+g.rg_top   = g.y0 + 0.06 * g.plot_h;
+g.rg_bot   = g.y0 + 0.16 * g.plot_h;
+
+// band separators + bars
+g.i = 0;
+while(g.i < NB)
+(
+  g.xc = hz_to_x_(fcBand[g.i], g.x0, g.x1);
+  g.xc < g.x0 ? g.xc = g.x0;
+  g.xc > g.x1 ? g.xc = g.x1;
+
+  g.i == 0 ? (
+    g.xnext = hz_to_x_(fcBand[g.i+1], g.x0, g.x1);
+    g.xnext < g.x0 ? g.xnext = g.x0;
+    g.xnext > g.x1 ? g.xnext = g.x1;
+    g.xprev = g.xc - (g.xnext - g.xc);
+  ) : (
+    g.i == NB - 1 ? (
+      g.xprev = hz_to_x_(fcBand[g.i-1], g.x0, g.x1);
+      g.xprev < g.x0 ? g.xprev = g.x0;
+      g.xprev > g.x1 ? g.xprev = g.x1;
+      g.xnext = g.xc + (g.xc - g.xprev);
+    ) : (
+      g.xprev = hz_to_x_(fcBand[g.i-1], g.x0, g.x1);
+      g.xnext = hz_to_x_(fcBand[g.i+1], g.x0, g.x1);
+      g.xprev < g.x0 ? g.xprev = g.x0;
+      g.xprev > g.x1 ? g.xprev = g.x1;
+      g.xnext < g.x0 ? g.xnext = g.x0;
+      g.xnext > g.x1 ? g.xnext = g.x1;
+    );
+  );
+
+  g.bw = 0.6 * min(g.xnext - g.xc, g.xc - g.xprev);
+  g.bw < 2 ? g.bw = 2;
+  g.bx = g.xc - 0.5 * g.bw;
+  g.bx < g.x0 ? g.bx = g.x0;
+  g.bx + g.bw > g.x1 ? g.bw = g.x1 - g.bx;
+
+  gfx_r = 0.13; gfx_g = 0.13; gfx_b = 0.14;
+  gfx_line(g.xc, g.y0, g.xc, g.y1, 1);
+
+  g.hp = (ui_pre[g.i]  - g.emin) / (g.er + 0.000001);
+  g.hq = (ui_post[g.i] - g.emin) / (g.er + 0.000001);
+  g.hp = clamp(g.hp, 0, 1);
+  g.hq = clamp(g.hq, 0, 1);
+
+  g.hpre  = g.hp * (g.bar_base - g.bar_top);
+  g.hpost = g.hq * (g.bar_base - g.bar_top);
+
+  gfx_r = 0.20; gfx_g = 0.20; gfx_b = 0.22;
+  gfx_rect(g.bx, g.bar_base - g.hpre, g.bw, g.hpre, 1);
+
+  gfx_r = 0.28; gfx_g = 0.28; gfx_b = 0.32;
+  gfx_rect(g.bx + 0.15 * g.bw, g.bar_base - g.hpost, 0.70 * g.bw, g.hpost, 1);
+
+  g.rh = clamp(ui_mod[g.i], 0, 1) * (g.rg_bot - g.rg_top);
+  fcBand[g.i] > rough_start_hz ? (
+    gfx_r = 0.55; gfx_g = 0.20; gfx_b = 0.18;
+    gfx_rect(g.bx, g.rg_bot - g.rh, g.bw, g.rh, 1);
+  );
+
+  g.i += 1;
+);
+
+// curve
+gfx_r = 0.86; gfx_g = 0.86; gfx_b = 0.90;
+g.prev_valid = 0;
+
+g.i = 0;
+while(g.i < NB)
+(
+  g.bdB = clamp(sane_(g.snap_curve[g.i], 0), -36, 36);
+  ui_gdb[g.i] += (g.bdB - ui_gdb[g.i]) * 0.20;
+  g.bdB_s = clamp(sane_(ui_gdb[g.i], 0), -g.db_range, g.db_range);
+
+  g.xc = hz_to_x_(fcBand[g.i], g.x0, g.x1);
+  g.xc < g.x0 ? g.xc = g.x0;
+  g.xc > g.x1 ? g.xc = g.x1;
+
+  g.yy = db_to_y_(g.bdB_s, g.y0, g.y1, g.db_range);
+  g.yy < g.y0 ? g.yy = g.y0;
+  g.yy > g.y1 ? g.yy = g.y1;
+
+  g.prev_valid ? gfx_line(g.prevx, g.prevy, g.xc, g.yy, 1);
+  g.prevx = g.xc;
+  g.prevy = g.yy;
+  g.prev_valid = 1;
+
+  gfx_r = 0.95; gfx_g = 0.95; gfx_b = 0.98;
+  gfx_rect(g.xc - 1, g.yy - 1, 3, 3, 1);
+
+  g.i += 1;
+);
+
+// title
+gfx_r = 0.90; gfx_g = 0.90; gfx_b = 0.92;
+gfx_setfont(1, "Arial", 14);
+gfx_x = 8; gfx_y = 8;
+gfx_drawstr("ERB Tilt EQ (Perceptual)");
+
+// scale labels
+gfx_r = 0.70; gfx_g = 0.70; gfx_b = 0.74;
+gfx_setfont(1, "Arial", 12);
+gfx_x = 8; gfx_y = g.y_mid - 6; gfx_drawstr("0 dB");
+gfx_x = 8; gfx_y = db_to_y_(18, g.y0, g.y1, g.db_range) - 6; gfx_drawstr("+18");
+gfx_x = 8; gfx_y = db_to_y_(-18, g.y0, g.y1, g.db_range) - 6; gfx_drawstr("-18");
+
+// bottom freq labels
+gfx_r = 0.65; gfx_g = 0.65; gfx_b = 0.68;
+gfx_setfont(1, "Arial", 11);
+
+g.xx = hz_to_x_(50, g.x0, g.x1);    gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("50");
+g.xx = hz_to_x_(100, g.x0, g.x1);   gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("100");
+g.xx = hz_to_x_(200, g.x0, g.x1);   gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("200");
+g.xx = hz_to_x_(500, g.x0, g.x1);   gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("500");
+g.xx = hz_to_x_(1000, g.x0, g.x1);  gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("1k");
+g.xx = hz_to_x_(2000, g.x0, g.x1);  gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("2k");
+g.xx = hz_to_x_(5000, g.x0, g.x1);  gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("5k");
+g.xx = hz_to_x_(10000, g.x0, g.x1); gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 12; gfx_y = g.y1 + 8; gfx_drawstr("10k");
+
+// readouts
+gfx_r = 0.88; gfx_g = 0.88; gfx_b = 0.92;
+gfx_setfont(1, "Arial", 12);
+gfx_x = g.x1 - 190; gfx_y = 6;  gfx_printf("Tilt: %.1f dB", slider1);
+gfx_x = g.x1 - 190; gfx_y = 22; gfx_printf("Pivot: %.0f Hz", g.pivot_hz);
+gfx_x = g.x1 - 190; gfx_y = 38; gfx_printf("Comp: %.0f %%", slider3);
+gfx_x = g.x1 - 190; gfx_y = 54; gfx_printf("Guard: %.0f %%", slider4);
+gfx_x = g.x1 - 190; gfx_y = 70; gfx_printf("Global: %.1f dB", g.gg_db_s);
+
+// footer
+gfx_r = 0.62; gfx_g = 0.62; gfx_b = 0.66;
+gfx_setfont(1, "Arial", 11);
+gfx_x = g.x0; gfx_y = g.h - 18;
+gfx_drawstr("Bars: pre/post ERB energy. Red: roughness guard activity. Line: band gain + global comp.");
