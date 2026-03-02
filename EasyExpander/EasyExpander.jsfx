@@ -1,0 +1,406 @@
+desc:EasyExpander (ERB Detector) - Minimal Downward Expander (Threshold Based)
+
+// Option A:
+// ERB-ish multi-band detector -> single broadband gain (no per-band processing)
+// Detector-only HPF/LPF options (do NOT affect audio path)
+
+// #HELP: Perceptually weighted ERB detector driving a broadband downward expander.
+// #HELP: Audio path is untouched except for smooth gain reduction.
+// #HELP: Soft knee + hysteresis prevent chatter.
+// #HELP: Use Detector HPF/LPF to control what triggers expansion without altering tone.
+
+// #TOOLTIP: ERB loudness level where reduction begins. Higher values increase time spent in attenuation.
+slider1:thresh_db=-40<-80,0,0.1>Threshold (dB)
+// #TOOLTIP: Maximum attenuation applied when signal falls below threshold.
+slider2:depth_db=24<0,60,1>Depth (dB)
+// #TOOLTIP: Controls expansion ratio and envelope aggression (low = smooth floor shaping, high = tighter gating).
+slider3:contour=50<0,100,1>Contour (0=gentle, 100=hard)
+// #TOOLTIP: Removes low frequencies from the detector only (prevents rumble from opening the expander).
+slider4:det_hpf_hz=0<0,20000,1:log=1000>Detector HPF (Hz, 0=Off)
+// #TOOLTIP: Removes high frequencies from the detector only (prevents hiss from opening the expander).
+slider5:det_lpf_hz=20000<20,20000,1:log=1000>Detector LPF (Hz, 20k=Off)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+// ---------------------
+// Constants / helpers
+// ---------------------
+N = 8;                 // detector bands
+STRIDE = 8;            // memory stride per band
+knee_db = 6.0;         // soft knee width below threshold
+hys_db  = 2.0;         // hysteresis (exit above threshold by +hys_db)
+eps     = 0.000000000001;
+
+// dB helpers
+ln_per_db = 0.115129254649702; // ln(10)/20
+db_per_ln = 8.685889638065037; // 20/ln(10)
+ln10 = 2.302585092994046;
+
+// time constants (seconds)
+band_tau   = 0.030;    // per-band power smoothing (~30 ms)
+open_tau   = 0.008;    // opening time (gain returns toward 0 dB)
+close_fast = 0.060;    // fast closing time (more attenuation)
+close_slow = 0.250;    // slow closing time (more attenuation)
+slow_tau   = 0.200;    // slow detector follower for adaptive close choice
+
+function onepole_coeff(tau) local(c) (
+  tau <= 0.000001 ? c = 1.0 : c = 1.0 - exp(-1.0 / (tau * srate));
+  c;
+);
+
+band_c      = onepole_coeff(band_tau);
+open_c      = onepole_coeff(open_tau);
+close_fast_c= onepole_coeff(close_fast);
+close_slow_c= onepole_coeff(close_slow);
+slow_c      = onepole_coeff(slow_tau);
+
+function erbnum_from_f(f) local(e) (
+  // 21.4*log10(0.00437*f + 1)
+  e = 21.4 * (log(0.00437*f + 1.0) / ln10);
+  e;
+);
+
+function f_from_erbnum(e) local(f) (
+  // f = (10^(e/21.4) - 1)/0.00437
+  f = (pow(10.0, e / 21.4) - 1.0) / 0.00437;
+  f;
+);
+
+// TPT SVF bandpass, state in local memory at idx[]
+function svf_bp(x, idx) local(v0,v1,v2,g,k,den,ic1,ic2) (
+  v0 = x;
+
+  g  = idx[0];
+  k  = idx[1];
+  ic1= idx[2];
+  ic2= idx[3];
+
+  den = 1.0 + g*(g + k);
+  v1  = (g*(v0 - ic2) + ic1) / den;
+  v2  = ic2 + g*v1;
+
+  ic1 = 2.0*v1 - ic1;
+  ic2 = 2.0*v2 - ic2;
+
+  idx[2] = ic1;
+  idx[3] = ic2;
+
+  v1; // bandpass out
+);
+
+// ---------------------
+// Build ERB-ish band centers + weights
+// ---------------------
+fmin = 80.0;
+fmax = 8000.0;
+
+erb_min = erbnum_from_f(fmin);
+erb_max = erbnum_from_f(fmax);
+
+sumw = 0.0;
+
+b = 0;
+while (b < N) (
+  e  = erb_min + (erb_max - erb_min) * (b / (N - 1));
+  fc = f_from_erbnum(e);
+
+  Q  = 1.0;
+  k  = 1.0 / Q;
+
+  g  = tan($pi * fc / srate);
+
+  // perceptual-ish weights (mid emphasis)
+  w =
+    fc < 200.0  ? 0.50 :
+    fc < 800.0  ? 0.80 :
+    fc < 4000.0 ? 1.00 :
+                  0.70;
+
+  sumw += w;
+
+  base = b*STRIDE;
+
+  base[0] = g;    // g
+  base[1] = k;    // k
+  base[2] = 0.0;  // ic1
+  base[3] = 0.0;  // ic2
+  base[4] = 0.0;  // env(power)
+  base[5] = w;    // weight (normalized later)
+
+  b += 1;
+);
+
+// normalize weights
+b = 0;
+while (b < N) (
+  base = b*STRIDE;
+  base[5] = base[5] / max(sumw, eps);
+  b += 1;
+);
+
+// States
+expanding = 0;
+gain_db_s = 0.0;
+
+det_db_m = -120.0;
+gr_db_m  = 0.0;
+
+det_slow = 0.0;
+
+// Detector HPF/LPF states
+hpf_lp = 0.0;
+lpf_y  = 0.0;
+
+// defaults (computed in @slider too)
+hpf_c = 0.0;
+lpf_c = 0.0;
+
+@slider
+// Contour -> base ratio (1.5:1 .. 4:1)
+cont = contour / 100.0;
+ratio_base = 1.5 + 2.5*cont;
+ratio_base < 1.0 ? ratio_base = 1.0;
+
+// Detector filter coefficients (DETECTION ONLY)
+// HPF: implemented as x - onepoleLP(x) at cutoff
+hpf_on = det_hpf_hz > 0.0;
+hpf_c  = hpf_on ? (1.0 - exp(-2.0*$pi*det_hpf_hz/srate)) : 0.0;
+
+// LPF: one-pole LP at cutoff
+lpf_on = det_lpf_hz < 20000.0;
+lpf_c  = lpf_on ? (1.0 - exp(-2.0*$pi*det_lpf_hz/srate)) : 0.0;
+
+@sample
+// ---------------------
+// Detector input (mono) + detector-only HPF/LPF
+// ---------------------
+x = 0.5*(spl0 + spl1);
+x_det = x;
+
+// HPF (detector only)
+hpf_on ? (
+  hpf_lp += hpf_c * (x_det - hpf_lp);
+  x_det  -= hpf_lp;
+);
+
+// LPF (detector only)
+lpf_on ? (
+  lpf_y += lpf_c * (x_det - lpf_y);
+  x_det = lpf_y;
+);
+
+// ---------------------
+// ERB-ish detector bank -> single loudness estimate
+// ---------------------
+sum = 0.0;
+
+b = 0;
+while (b < N) (
+  base = b*STRIDE;
+
+  bp = svf_bp(x_det, base);
+
+  p = bp*bp;
+
+  env = base[4];
+  env += band_c * (p - env);
+  base[4] = env;
+
+  sum += base[5] * env;
+
+  b += 1;
+);
+
+det_lin = sqrt(max(sum, eps));
+det_db  = db_per_ln * log(max(det_lin, eps));
+
+det_db_m += 0.02*(det_db - det_db_m);
+
+// slow follower for adaptive closing choice
+det_slow += slow_c * (det_lin - det_slow);
+
+// ---------------------
+// Hysteresis state (prevents flutter)
+// Engage when below threshold, disengage when above threshold + hys_db
+// ---------------------
+expanding == 0 ? (
+  det_db < thresh_db ? expanding = 1;
+) : (
+  det_db > (thresh_db + hys_db) ? expanding = 0;
+);
+
+// ---------------------
+// Gain computer (downward expander below threshold)
+// ---------------------
+target_gr = 0.0;
+
+expanding ? (
+  d = thresh_db - det_db;
+  d < 0.0 ? d = 0.0;
+
+  // soft knee: ramp ratio in over knee_db
+  (d < knee_db) ? (
+    xk = d / knee_db;
+    s  = xk*xk*(3.0 - 2.0*xk); // smoothstep
+    ratio_eff = 1.0 + (ratio_base - 1.0)*s;
+  ) : (
+    ratio_eff = ratio_base;
+  );
+
+  target_gr = d * (ratio_eff - 1.0);
+  target_gr > depth_db ? target_gr = depth_db;
+) : (
+  target_gr = 0.0;
+);
+
+target_gain_db = -target_gr;
+gr_db_m += 0.05*(target_gr - gr_db_m);
+
+// ---------------------
+// Gain smoothing
+// opening: target_gain_db > current (toward 0 dB)
+// closing: target_gain_db < current (more attenuation)
+// adaptive closing: if fast detector < slow detector -> "transient ended" -> close faster
+// ---------------------
+close_c = (det_lin < det_slow*0.92) ? close_fast_c : close_slow_c;
+
+(target_gain_db > gain_db_s) ? (
+  gain_db_s += open_c * (target_gain_db - gain_db_s);
+) : (
+  gain_db_s += close_c * (target_gain_db - gain_db_s);
+);
+
+gain_lin = exp(gain_db_s * ln_per_db);
+
+// Apply broadband gain (audio path untouched except this gain)
+spl0 *= gain_lin;
+spl1 *= gain_lin;
+
+@gfx 560 200
+// ---------- EasyExpander GFX (high-contrast + useful) ----------
+// Uses existing vars:
+// det_db_m, gr_db_m, thresh_db, depth_db, ratio_base, knee_db, hys_db,
+// det_hpf_hz, det_lpf_hz, expanding, gain_db_s
+
+function clamp(x, lo, hi) ( x < lo ? lo : (x > hi ? hi : x); );
+
+// shadowed text helper
+function txt(x,y, str, r,g,b,a)
+(
+  gfx_set(0,0,0,0.80*a); gfx_x=x+1; gfx_y=y+1; gfx_drawstr(str);
+  gfx_set(r,g,b,a);      gfx_x=x;   gfx_y=y;   gfx_drawstr(str);
+);
+
+// map dB range -> 0..1
+function db01(db, lo, hi) ( clamp((db - lo) / (hi - lo), 0, 1); );
+
+// background
+gfx_set(0.06,0.06,0.07,1);
+gfx_rect(0,0,gfx_w,gfx_h,1);
+
+// HUD panel
+pad = 10;
+hud_h = 56;
+gfx_set(0,0,0,0.55);
+gfx_rect(pad,pad,gfx_w-pad*2,hud_h,1);
+gfx_set(1,1,1,0.10);
+gfx_rect(pad,pad,gfx_w-pad*2,1,1);
+gfx_rect(pad,pad+hud_h-1,gfx_w-pad*2,1,1);
+
+// Title
+gfx_setfont(1, "Arial", 16);
+txt(pad+10, pad+6, "EasyExpander (ERB Detector)", 0.95,0.95,0.98,1);
+
+// Status line
+gfx_setfont(1, "Arial", 13);
+expanding ? st="EXPANDING" : st="OPEN";
+sprintf(#s0, "State: %s   Ratio: %.2f:1   Knee: %.1f dB   Depth: %.0f dB",
+        st, ratio_base, knee_db, depth_db);
+txt(pad+10, pad+28, #s0, 0.80,0.80,0.86,1);
+
+sprintf(#s1, "Det HPF: %.0f Hz   Det LPF: %.0f Hz   Gain: %.1f dB",
+        det_hpf_hz, det_lpf_hz, gain_db_s);
+txt(pad+10, pad+44, #s1, 0.72,0.72,0.78,1);
+
+// ---------- meters ----------
+mx = pad;
+my = pad + hud_h + 16;
+mw = gfx_w - pad*2;
+mh = gfx_h - my - pad;
+
+// left meter: detector
+det_lo = -80;
+det_hi = 0;
+
+det01 = db01(det_db_m, det_lo, det_hi);
+thr01 = db01(thresh_db, det_lo, det_hi);
+hys01 = db01(thresh_db + hys_db, det_lo, det_hi);
+
+// detector box
+bx = mx;
+by = my;
+bw = mw;
+bh = 18;
+
+gfx_set(1,1,1,0.14); gfx_rect(bx,by,bw,bh,1);
+
+// fill
+gfx_set(0.35,0.85,1.00,0.85);
+gfx_rect(bx,by,bw*det01,bh,1);
+
+// threshold marker
+x_thr = bx + bw*thr01;
+gfx_set(1.00,0.85,0.30,0.95);
+gfx_rect(x_thr, by, 2, bh, 1);
+
+// hysteresis marker (+2 dB)
+x_hys = bx + bw*hys01;
+gfx_set(1.00,0.55,0.25,0.85);
+gfx_rect(x_hys, by, 2, bh, 1);
+
+// labels
+sprintf(#d0, "Detector: %.1f dB", det_db_m);
+txt(bx, by-16, #d0, 0.92,0.92,0.96,1);
+
+sprintf(#d1, "Thr %.1f dB   Hys+%.1f dB", thresh_db, hys_db);
+txt(bx+240, by-16, #d1, 0.80,0.80,0.86,1);
+
+// “below threshold” shaded region (visual intuition)
+gfx_set(0,0,0,0.18);
+gfx_rect(bx, by, x_thr-bx, bh, 1);
+
+// ---------- second meter: gain reduction ----------
+by2 = by + 42;
+bh2 = 18;
+
+// GR displayed 0..depth
+gr = max(0, gr_db_m);
+depth = max(0.001, depth_db);
+gr01 = clamp(gr / depth, 0, 1);
+
+gfx_set(1,1,1,0.14); gfx_rect(bx,by2,bw,bh2,1);
+
+// fill (orange)
+gfx_set(0.95,0.70,0.35,0.90);
+gfx_rect(bx,by2,bw*gr01,bh2,1);
+
+sprintf(#g0, "GR: %.2f dB (target-ish)", gr);
+txt(bx, by2-16, #g0, 0.92,0.92,0.96,1);
+
+// max marker (depth)
+gfx_set(1,1,1,0.12);
+gfx_rect(bx,by2+bh2+6,bw,1,1);
+txt(bx, by2+bh2+10, "0 dB", 0.70,0.70,0.76,1);
+txt(bx+bw-55, by2+bh2+10, "Depth", 0.70,0.70,0.76,1);
+
+// ---------- small “action lamp” ----------
+lamp = expanding ? 1 : 0;
+lamp_a = 0.25 + 0.75*lamp;
+gfx_set(0.25,1.00,0.45,lamp_a);
+gfx_circle(gfx_w-pad-12, pad+18, 6, 1);
+gfx_set(1,1,1,0.20);
+gfx_circle(gfx_w-pad-12, pad+18, 6, 0);
