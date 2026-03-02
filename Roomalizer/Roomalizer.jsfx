@@ -1,0 +1,919 @@
+desc:Roomalizer Mini (Safe ER Placement) [JSFX]
+
+// Minimal + safe ER placement.
+// Controls: Placement preset + Depth/Size/Width/Mix/Tone + Mono-safe.
+// Internals auto-map: predelay, diffusion, transient softening, distance EQ.
+// Includes output safety limiter.
+
+// #HELP: Roomalizer Mini is a minimal early-reflection placer: it adds a stable ER field to suggest distance, room size, and stereo width without a full reverb tail.
+// #HELP: Depth drives perceived distance (predelay + later ER timing + distance EQ). Size spreads and densifies the ER topology while staying below “obvious echo” timing.
+// #HELP: Width uses gentle decorrelation and controlled crossfeed for stereo image expansion; Mono-safe keeps bass centered by collapsing low-side energy only.
+// #HELP: Output is protected by a safety limiter with instant attack + smooth release to prevent spikes when presets/parameters change.
+
+// -------------------- SLIDERS --------------------
+// #TOOLTIP: Selects a safe “placement profile” that re-scales the internal room mapping (predelay, diffusion, EQ, and wet/dry behavior) for common sources (Neutral/Voice/Foley/SFX/BG).
+slider1:0<0,4,1{Neutral,Voice,Foley,SFX,BG}>Placement
+// #TOOLTIP: Depth = perceived distance. Increases predelay and pushes ERs later/stronger, adds more air-absorption (higher HPF, lower LPF), and slightly de-presences the wet tone.
+slider2:40<0,100,1>Depth
+// #TOOLTIP: Size = room scale. Spreads early reflections across a wider time window and increases diffusion density while staying inside a safe ER range (no obvious echo).
+slider3:40<0,100,1>Size
+// #TOOLTIP: Width = stereo spread of the early reflection field. Adds decorrelation delay and cross-channel energy for width without turning into a chorus.
+slider4:30<0,100,1>Width
+// #TOOLTIP: Mix = wet amount (constant-power). Blends dry + ER field while preserving perceived loudness and avoiding sudden level jumps.
+slider5:25<0,100,1>Mix
+// #TOOLTIP: Tone tilts the wet field around ~4 kHz. Positive = brighter/more present reflections; negative = darker/softer reflections. Depth slightly reduces presence automatically.
+slider6:0<-12,12,0.1>Tone (dB @ 4k tilt)
+// #TOOLTIP: Mono-safe centers the low end by reducing only low-frequency side energy (keeps width up top, prevents bass phase weirdness).
+slider7:1<0,1,1>Mono-safe (low-end centered)
+
+@init
+
+// -------------------- HELPERS --------------------
+pi = 3.141592653589793;
+
+function db2lin(db) ( 10^(db/20); );
+function clamp(x,a,b) ( x < a ? a : x > b ? b : x; );
+
+// RBJ-ish biquad coeff compute (writes globals b0,b1,b2,a1,a2)
+function biquad_lp(fc,Q) local(w0,cw,sw,alpha,a0)(
+  w0 = 2*pi*fc/srate;
+  cw = cos(w0); sw = sin(w0);
+  alpha = sw/(2*Q);
+
+  b0 = (1-cw)/2;
+  b1 = 1-cw;
+  b2 = (1-cw)/2;
+  a0 = 1+alpha;
+  a1 = -2*cw;
+  a2 = 1-alpha;
+
+  b0/=a0; b1/=a0; b2/=a0; a1/=a0; a2/=a0;
+);
+
+function biquad_hp(fc,Q) local(w0,cw,sw,alpha,a0)(
+  w0 = 2*pi*fc/srate;
+  cw = cos(w0); sw = sin(w0);
+  alpha = sw/(2*Q);
+
+  b0 = (1+cw)/2;
+  b1 = -(1+cw);
+  b2 = (1+cw)/2;
+  a0 = 1+alpha;
+  a1 = -2*cw;
+  a2 = 1-alpha;
+
+  b0/=a0; b1/=a0; b2/=a0; a1/=a0; a2/=a0;
+);
+
+// biquad process (z1,z2 updated by reference)
+function biquad_process(x,b0,b1,b2,a1,a2,z1,z2) local(y,z1n,z2n)(
+  y  = b0*x + z1;
+  z1n = b1*x - a1*y + z2;
+  z2n = b2*x - a2*y;
+  z1 = z1n; z2 = z2n;
+  y;
+);
+
+// allpass (z updated by reference)
+function allpass1(x,g,z) local(y)(
+  y = -g*x + z;
+  z = x + g*y;
+  y;
+);
+
+// circular buffer read
+function read_delay(base,del,idx) local(r)(
+  r = idx - del;
+  r < 0 ? r += max_samps;
+  mem[base + r];
+);
+
+// -------------------- INIT --------------------
+max_ms = 250;
+max_samps = ceil(srate * max_ms / 1000) + 4;
+
+memsize = max_samps*4;
+bufferL  = 0;
+bufferR  = max_samps;
+bufferDL = max_samps*2;
+bufferDR = max_samps*3;
+
+memset(0,0,memsize);
+wpos = 0;
+
+// transient follower
+env = 0;
+
+// limiter state
+lim_g = 1;
+
+// filter states
+lp_z1L = lp_z2L = lp_z1R = lp_z2R = 0;
+hp_z1L = hp_z2L = hp_z1R = hp_z2R = 0;
+
+// tilt + mono-safe low-side LP state
+tilt_z1L = tilt_z1R = 0;
+ms_side_lp = 0;
+
+// allpass diffuser states
+ap1L = ap2L = ap1R = ap2R = 0;
+
+// -------------------- SLIDER UPDATE --------------------
+@slider
+preset = slider1|0;
+
+depth = slider2/100;
+roomU = slider3/100;
+widthU = slider4/100;
+mixU = slider5/100;
+tone_db = slider6;
+monosafe = slider7;
+
+samps_per_ms = srate/1000;
+nyq_guard = srate*0.45;
+
+// ----- preset defaults (Neutral) -----
+room_scale = 1.00;
+diff_base  = 0.45;
+pred_base  = 2.0;     // ms
+tsoft_base = 0.12;
+
+mix_cap    = 0.60;
+width_cap  = 0.70;
+er_mul     = 1.00;
+
+hpf0=60;  hpf_span=90;
+lpf_max=16500; lpf_min=7500;
+
+wet_base_db = -5.0;  wet_depth_db = -7.0;
+dry_base_db =  0.0;  dry_depth_db = -4.0;
+
+// ----- preset overrides -----
+preset == 1 ? ( // Voice
+  room_scale=0.75; diff_base=0.35; pred_base=8.0; tsoft_base=0.18;
+  mix_cap=0.45; width_cap=0.55; er_mul=0.90;
+  hpf0=80; hpf_span=80; lpf_max=18000; lpf_min=9000;
+  wet_base_db=-6.0; wet_depth_db=-6.0;
+  dry_depth_db=-3.0;
+);
+preset == 2 ? ( // Foley
+  room_scale=0.85; diff_base=0.40; pred_base=4.0; tsoft_base=0.14;
+  mix_cap=0.55; width_cap=0.60; er_mul=1.00;
+  hpf0=60; hpf_span=80; lpf_max=17000; lpf_min=8500;
+  wet_base_db=-5.5; wet_depth_db=-6.5;
+  dry_depth_db=-3.5;
+);
+preset == 3 ? ( // SFX
+  room_scale=1.10; diff_base=0.55; pred_base=6.0; tsoft_base=0.08;
+  mix_cap=0.65; width_cap=0.80; er_mul=1.05;
+  hpf0=40; hpf_span=80; lpf_max=16000; lpf_min=7500;
+  wet_base_db=-5.0; wet_depth_db=-7.0;
+  dry_depth_db=-4.0;
+);
+preset == 4 ? ( // BG
+  room_scale=1.25; diff_base=0.65; pred_base=2.0; tsoft_base=0.16;
+  mix_cap=0.75; width_cap=0.70; er_mul=1.15;
+  hpf0=70; hpf_span=110; lpf_max=14000; lpf_min=6000;
+  wet_base_db=-4.5; wet_depth_db=-7.5;
+  dry_depth_db=-5.0;
+);
+
+// ----- clamp user knobs via preset caps -----
+room = clamp(roomU*room_scale, 0, 1);
+mix  = min(mixU, mix_cap);
+width = clamp(widthU*width_cap, 0, 1);
+
+// ----- auto internals (safe ranges) -----
+diff = clamp(diff_base + 0.25*room + 0.15*depth, 0, 1);
+ap_g = clamp(0.18 + 0.52*diff, 0.15, 0.70);
+
+pred_ms = clamp(pred_base + (10*depth*room), 0, 25);
+pred_samps = floor(pred_ms * samps_per_ms);
+
+tsoft = clamp(tsoft_base + 0.20*depth, 0, 0.50);
+atk = 0.01 + 0.08*tsoft;
+rel = 0.001 + 0.02*tsoft;
+
+// ER timing (precedence-window-ish)
+base_ms = clamp(6 + 14*room + 8*depth, 6, 26);
+
+// taps (computed once per slider move)
+tap1 = floor((base_ms + 0.0)              * samps_per_ms) + pred_samps;
+tap2 = floor((base_ms + 5.0  + 7*room)    * samps_per_ms) + pred_samps;
+tap3 = floor((base_ms + 10.0 + 12*room)   * samps_per_ms) + pred_samps;
+tap4 = floor((base_ms + 16.0 + 16*room)   * samps_per_ms) + pred_samps;
+tap5 = floor((base_ms + 23.0 + 20*room)   * samps_per_ms) + pred_samps;
+tap6 = floor((base_ms + 31.0 + 24*room)   * samps_per_ms) + pred_samps;
+tap7 = floor((base_ms + 42.0 + 28*room)   * samps_per_ms) + pred_samps;
+tap8 = floor((base_ms + 56.0 + 32*room)   * samps_per_ms) + pred_samps;
+
+tap1=clamp(tap1,1,max_samps-2); tap2=clamp(tap2,1,max_samps-2);
+tap3=clamp(tap3,1,max_samps-2); tap4=clamp(tap4,1,max_samps-2);
+tap5=clamp(tap5,1,max_samps-2); tap6=clamp(tap6,1,max_samps-2);
+tap7=clamp(tap7,1,max_samps-2); tap8=clamp(tap8,1,max_samps-2);
+
+// tap gains + crossfeed weights (fixed = predictable)
+g1=1.00; g2=0.70; g3=0.55; g4=0.45; g5=0.35; g6=0.28; g7=0.22; g8=0.18;
+x2=0.35; x4=0.25; x6=0.20; x8=0.15;
+
+// ER prominence
+er_level = clamp((0.06 + 0.34*depth) * er_mul, 0.04, 0.50);
+
+// decorrelation delays (kept below “obvious echo” zone)
+wd_ms_L = 6 + 10*width;    // ~6..16
+wd_ms_R = 9 + 10*width;    // ~9..19
+wd_sL = floor(wd_ms_L * samps_per_ms);
+wd_sR = floor(wd_ms_R * samps_per_ms);
+
+// width blend amount (mono-safe reduces)
+wamt = width * (monosafe ? 0.35 : 1.0);
+
+// distance EQ
+hpf = clamp(hpf0 + hpf_span*depth, 20, nyq_guard);
+
+lpf = lpf_max - (lpf_max - lpf_min)*depth - 1000*room;
+lpf = clamp(lpf, 1000, nyq_guard);
+
+// tilt (depth slightly de-presences)
+tilt_db  = tone_db - (1.5*depth);
+tilt_lin = db2lin(tilt_db);
+
+// stable one-pole coeffs
+tilt_fc = min(4000, nyq_guard);
+tilt_a  = 1 - exp(-2*pi*tilt_fc/srate);
+
+ms_fc = min(200, nyq_guard);
+ms_a  = 1 - exp(-2*pi*ms_fc/srate);
+
+// wet/dry depth mapping (safe, doesn’t explode)
+wet_db = wet_base_db + wet_depth_db*depth;
+dry_db = dry_base_db + dry_depth_db*depth;
+wet_gain = db2lin(wet_db);
+dry_gain = db2lin(dry_db);
+
+// constant power mix
+wet_cp = sin(mix*pi*0.5);
+dry_cp = cos(mix*pi*0.5);
+
+// build biquads
+biquad_hp(hpf, 0.707);
+hp_b0=b0; hp_b1=b1; hp_b2=b2; hp_a1=a1; hp_a2=a2;
+
+biquad_lp(lpf, 0.707);
+lp_b0=b0; lp_b1=b1; lp_b2=b2; lp_a1=a1; lp_a2=a2;
+
+// output limiter
+limit = 0.98; // ~ -0.17 dBFS
+lim_rel = 1 - exp(-1/(0.15*srate)); // ~150 ms release
+
+// -------------------- PROCESS --------------------
+@sample
+inL = spl0;
+inR = spl1;
+
+// transient softening (subtle, auto)
+absx = max(abs(inL), abs(inR));
+env += (absx - env) * (absx > env ? atk : rel);
+gr = 1.0 - (0.30 * tsoft * clamp(env*3, 0, 1));
+dL = inL * gr;
+dR = inR * gr;
+
+// write input to ER buffers
+idx = wpos;
+mem[bufferL + idx] = dL;
+mem[bufferR + idx] = dR;
+
+// early reflections
+erL =
+  read_delay(bufferL, tap1, idx)*g1 +
+  read_delay(bufferR, tap2, idx)*g2*x2 +
+  read_delay(bufferL, tap3, idx)*g3 +
+  read_delay(bufferR, tap4, idx)*g4*x4 +
+  read_delay(bufferL, tap5, idx)*g5 +
+  read_delay(bufferR, tap6, idx)*g6*x6 +
+  read_delay(bufferL, tap7, idx)*g7 +
+  read_delay(bufferR, tap8, idx)*g8*x8;
+
+erR =
+  read_delay(bufferR, tap1, idx)*g1 +
+  read_delay(bufferL, tap2, idx)*g2*x2 +
+  read_delay(bufferR, tap3, idx)*g3 +
+  read_delay(bufferL, tap4, idx)*g4*x4 +
+  read_delay(bufferR, tap5, idx)*g5 +
+  read_delay(bufferL, tap6, idx)*g6*x6 +
+  read_delay(bufferR, tap7, idx)*g7 +
+  read_delay(bufferL, tap8, idx)*g8*x8;
+
+erL *= er_level;
+erR *= er_level;
+
+// diffuse (2 allpasses per side)
+erL = allpass1(erL, ap_g,     ap1L);
+erL = allpass1(erL, ap_g*0.8, ap2L);
+erR = allpass1(erR, ap_g,     ap1R);
+erR = allpass1(erR, ap_g*0.8, ap2R);
+
+// decorrelation stage
+mem[bufferDL + idx] = erL;
+mem[bufferDR + idx] = erR;
+
+dcl = read_delay(bufferDL, wd_sL, idx);
+dcr = read_delay(bufferDR, wd_sR, idx);
+
+wetL = erL*(1-wamt) + dcl*wamt;
+wetR = erR*(1-wamt) + dcr*wamt;
+
+// wet EQ
+wetL = biquad_process(wetL, hp_b0,hp_b1,hp_b2,hp_a1,hp_a2, hp_z1L, hp_z2L);
+wetR = biquad_process(wetR, hp_b0,hp_b1,hp_b2,hp_a1,hp_a2, hp_z1R, hp_z2R);
+
+wetL = biquad_process(wetL, lp_b0,lp_b1,lp_b2,lp_a1,lp_a2, lp_z1L, lp_z2L);
+wetR = biquad_process(wetR, lp_b0,lp_b1,lp_b2,lp_a1,lp_a2, lp_z1R, lp_z2R);
+
+// tilt
+tilt_z1L += (wetL - tilt_z1L) * tilt_a;
+wetL = tilt_z1L + (wetL - tilt_z1L) * tilt_lin;
+
+tilt_z1R += (wetR - tilt_z1R) * tilt_a;
+wetR = tilt_z1R + (wetR - tilt_z1R) * tilt_lin;
+
+// mix
+outL = (dL * dry_gain) * dry_cp + (wetL * wet_gain) * wet_cp;
+outR = (dR * dry_gain) * dry_cp + (wetR * wet_gain) * wet_cp;
+
+// mono-safe: reduce ONLY low-frequency side energy
+m = (outL+outR)*0.5;
+s = (outL-outR)*0.5;
+
+ms_side_lp += (s - ms_side_lp) * ms_a;
+monosafe ? (
+  s = (s - ms_side_lp) + ms_side_lp*0.50; // low-side ≈ -6 dB
+);
+
+outL = m + s;
+outR = m - s;
+
+// output safety limiter (instant attack, smooth release)
+peak = max(abs(outL), abs(outR));
+need = peak > 0 ? (peak > limit ? limit/peak : 1) : 1;
+
+lim_g = need < lim_g ? need : (lim_g + (1 - lim_g)*lim_rel);
+
+spl0 = outL * lim_g;
+spl1 = outR * lim_g;
+
+// advance ring buffer
+wpos += 1;
+wpos >= max_samps ? wpos = 0;
+
+
+@gfx 760 260
+function clamp(x,a,b)(x<a?a:(x>b?b:x));
+function clamp01(x)(x<0?0:(x>1?1:x));
+function lerp(a,b,t)(a + (b-a)*t;);
+function frac(x) local(i)(i=floor(x); x-i;);
+
+function box(x,y,w,h,r,g,b,a)
+(
+  gfx_set(r,g,b,a);
+  gfx_rect(x,y,w,h);
+);
+
+function frame(x,y,w,h,r,g,b,a)
+(
+  gfx_set(r,g,b,a);
+  gfx_line(x,y,x+w,y);
+  gfx_line(x+w,y,x+w,y+h);
+  gfx_line(x+w,y+h,x,y+h);
+  gfx_line(x,y+h,x,y);
+);
+
+function dot(x,y,s,r,g,b,a)
+(
+  gfx_set(r,g,b,a);
+  gfx_rect(x-s,y-s,s*2,s*2);
+);
+
+function halo_box(x,y,rad,steps,r,g,b,a) local(i,rr,aa,k)
+(
+  i = steps;
+  loop(steps,
+    k = i/max(1,steps);
+    rr = rad * k;
+    aa = a * k*k * 0.42;
+    gfx_set(r,g,b,aa);
+    gfx_rect(x-rr,y-rr,rr*2,rr*2);
+    i -= 1;
+  );
+);
+
+function seg(x1,y1,x2,y2,r,g,b,a)
+(
+  gfx_set(r,g,b,a*0.16);
+  gfx_line(x1-1,y1,x2-1,y2);
+  gfx_line(x1+1,y1,x2+1,y2);
+  gfx_line(x1,y1-1,x2,y2-1);
+  gfx_line(x1,y1+1,x2,y2+1);
+
+  gfx_set(r,g,b,a);
+  gfx_line(x1,y1,x2,y2);
+);
+
+function strongseg(x1,y1,x2,y2,r,g,b,a)
+(
+  gfx_set(r,g,b,a*0.14);
+  gfx_line(x1-2,y1,x2-2,y2);
+  gfx_line(x1+2,y1,x2+2,y2);
+  gfx_line(x1,y1-2,x2,y2-2);
+  gfx_line(x1,y1+2,x2,y2+2);
+  gfx_line(x1-1,y1-1,x2-1,y2-1);
+  gfx_line(x1+1,y1+1,x2+1,y2+1);
+
+  gfx_set(r,g,b,a*0.45);
+  gfx_line(x1-1,y1,x2-1,y2);
+  gfx_line(x1+1,y1,x2+1,y2);
+  gfx_line(x1,y1-1,x2,y2-1);
+  gfx_line(x1,y1+1,x2,y2+1);
+
+  gfx_set(r,g,b,a);
+  gfx_line(x1,y1,x2,y2);
+);
+
+function meter(x,y,w,h,val,r,g,b,a) local(fillw)
+(
+  box(x,y,w,h, 0.10,0.12,0.18,1);
+  frame(x,y,w,h, 0.24,0.29,0.38,1);
+  fillw = (w-2)*clamp01(val);
+  fillw > 0 ? box(x+1,y+1,fillw,h-2, r,g,b,a);
+);
+
+function tapbar(ms, gain, r,g,b,a) local(tx,bh)
+(
+  tx = timeX + timeW*clamp01(ms/tMax);
+  bh = (timeH-8) * clamp(0.18 + 0.82*gain, 0, 1);
+  gfx_set(r,g,b,a);
+  gfx_rect(tx-2, timeY + timeH - 4 - bh, 4, bh);
+);
+
+function pathpos2(x1,y1,x2,y2,t)
+(
+  t = clamp01(t);
+  ptx = lerp(x1,x2,t);
+  pty = lerp(y1,y2,t);
+);
+
+function pathpos3(x1,y1,x2,y2,x3,y3,t) local(dx1,dy1,dx2,dy2,l1,l2,tt,total)
+(
+  dx1=x2-x1; dy1=y2-y1; l1=sqrt(dx1*dx1 + dy1*dy1);
+  dx2=x3-x2; dy2=y3-y2; l2=sqrt(dx2*dx2 + dy2*dy2);
+  total = max(0.0001,l1+l2);
+  tt = clamp01(t)*total;
+
+  tt <= l1 ? (
+    ptx = x1 + dx1*(tt/max(0.0001,l1));
+    pty = y1 + dy1*(tt/max(0.0001,l1));
+  ) : (
+    tt -= l1;
+    ptx = x2 + dx2*(tt/max(0.0001,l2));
+    pty = y2 + dy2*(tt/max(0.0001,l2));
+  );
+);
+
+function pathpos4(x1,y1,x2,y2,x3,y3,x4,y4,t) local(dx1,dy1,dx2,dy2,dx3,dy3,l1,l2,l3,tt,total)
+(
+  dx1=x2-x1; dy1=y2-y1; l1=sqrt(dx1*dx1 + dy1*dy1);
+  dx2=x3-x2; dy2=y3-y2; l2=sqrt(dx2*dx2 + dy2*dy2);
+  dx3=x4-x3; dy3=y4-y3; l3=sqrt(dx3*dx3 + dy3*dy3);
+  total = max(0.0001,l1+l2+l3);
+  tt = clamp01(t)*total;
+
+  tt <= l1 ? (
+    ptx = x1 + dx1*(tt/max(0.0001,l1));
+    pty = y1 + dy1*(tt/max(0.0001,l1));
+  ) : (
+    tt -= l1;
+    tt <= l2 ? (
+      ptx = x2 + dx2*(tt/max(0.0001,l2));
+      pty = y2 + dy2*(tt/max(0.0001,l2));
+    ) : (
+      tt -= l2;
+      ptx = x3 + dx3*(tt/max(0.0001,l3));
+      pty = y3 + dy3*(tt/max(0.0001,l3));
+    );
+  );
+);
+
+function drawpath2(x1,y1,x2,y2,r,g,b,a,t,ds)
+(
+  seg(x1,y1,x2,y2,r,g,b,a);
+  pathpos2(x1,y1,x2,y2,t);
+  dot(ptx,pty,ds,r,g,b,min(1,a+0.20));
+);
+
+function drawpath3(x1,y1,x2,y2,x3,y3,r,g,b,a,t,ds)
+(
+  seg(x1,y1,x2,y2,r,g,b,a);
+  seg(x2,y2,x3,y3,r,g,b,a);
+  pathpos3(x1,y1,x2,y2,x3,y3,t);
+  dot(ptx,pty,ds,r,g,b,min(1,a+0.20));
+);
+
+function drawpath4(x1,y1,x2,y2,x3,y3,x4,y4,r,g,b,a,t,ds)
+(
+  seg(x1,y1,x2,y2,r,g,b,a);
+  seg(x2,y2,x3,y3,r,g,b,a);
+  seg(x3,y3,x4,y4,r,g,b,a);
+  pathpos4(x1,y1,x2,y2,x3,y3,x4,y4,t);
+  dot(ptx,pty,ds,r,g,b,min(1,a+0.20));
+);
+
+gfx_clear = 0x0C0F15;
+
+// -------------------- DERIVED VIS --------------------
+t1 = tap1 / samps_per_ms;
+t2 = tap2 / samps_per_ms;
+t3 = tap3 / samps_per_ms;
+t4 = tap4 / samps_per_ms;
+t5 = tap5 / samps_per_ms;
+t6 = tap6 / samps_per_ms;
+t7 = tap7 / samps_per_ms;
+t8 = tap8 / samps_per_ms;
+tMax = max(1,t8);
+
+wdL_ms = wd_sL / samps_per_ms;
+wdR_ms = wd_sR / samps_per_ms;
+
+sumw = g1+g2+g3+g4+g5+g6+g7+g8;
+cent_ms = (t1*g1 + t2*g2 + t3*g3 + t4*g4 + t5*g5 + t6*g6 + t7*g7 + t8*g8) / max(0.0001,sumw);
+
+hf_vis     = clamp01((lpf - 3000) / 15000);
+tone_vis   = clamp01(0.5 + tilt_db / 24);
+bright_vis = clamp01(0.18 + 0.50*hf_vis + 0.32*tone_vis);
+
+dist_vis   = clamp01(0.56*depth + 0.14*room + 0.18*(pred_ms/25) + 0.12*(base_ms/26));
+spread_vis = clamp01((t8 - t1) / 90);
+dense_vis  = clamp01((0.95*er_level + 0.35*diff + 0.20*room) * 1.15);
+wet_vis    = clamp01((0.35 + 0.65*wet_cp) * dense_vis);
+gr_vis     = clamp01(1 - lim_g);
+
+refR = 0.30 + 0.18*bright_vis;
+refG = 0.72 + 0.18*bright_vis;
+refB = 1.00;
+
+ref2R = 0.66 + 0.10*bright_vis;
+ref2G = 0.44 + 0.06*bright_vis;
+ref2B = 1.00;
+
+dryR = 1.00;
+dryG = 0.88 + 0.08*tone_vis;
+dryB = 0.34 + 0.08*tone_vis;
+
+ray_base = clamp01((0.14 + 1.20*er_level) * (0.25 + 0.75*wet_cp));
+
+a1 = clamp01(ray_base * (0.95*g1 + 0.10));
+a2 = clamp01(ray_base * (0.95*g2 + 0.08));
+a3 = clamp01(ray_base * (0.95*g3 + 0.07));
+a4 = clamp01(ray_base * (0.95*g4 + 0.06));
+a5 = clamp01(ray_base * (0.95*g5 + 0.05));
+a6 = clamp01(ray_base * (0.95*g6 + 0.045));
+a7 = clamp01(ray_base * (0.95*g7 + 0.040));
+a8 = clamp01(ray_base * (0.95*g8 + 0.035));
+
+anim = gfx_frame * (0.005 + 0.004*depth + 0.0015*width);
+p1 = frac(anim + 0.00);
+p2 = frac(anim + 0.11);
+p3 = frac(anim + 0.22);
+p4 = frac(anim + 0.33);
+p5 = frac(anim + 0.44);
+p6 = frac(anim + 0.55);
+p7 = frac(anim + 0.66);
+p8 = frac(anim + 0.77);
+
+// -------------------- LAYOUT --------------------
+pad = 14;
+
+gfx_setfont(1,"Arial",16);
+gfx_set(0.90,0.94,1,1); gfx_x=pad; gfx_y=pad;
+gfx_printf("Roomalizer Mini - Wall Reflection View");
+
+gfx_setfont(1,"Arial",12);
+gfx_set(0.60,0.72,0.95,1); gfx_x=pad; gfx_y=pad+22;
+preset==0 ? gfx_printf("Placement: Neutral") :
+preset==1 ? gfx_printf("Placement: Voice")   :
+preset==2 ? gfx_printf("Placement: Foley")   :
+preset==3 ? gfx_printf("Placement: SFX")     :
+            gfx_printf("Placement: BG");
+
+x0 = pad;
+y0 = 56;
+W  = gfx_w - pad*2;
+H  = gfx_h - y0 - pad;
+
+leftW  = floor(W*0.64);
+rightW = W - leftW - 12;
+
+box(x0,y0,leftW,H, 0.055,0.065,0.095,1);
+frame(x0,y0,leftW,H, 0.17,0.21,0.29,1);
+
+box(x0+leftW+12,y0,rightW,H, 0.055,0.065,0.095,1);
+frame(x0+leftW+12,y0,rightW,H, 0.17,0.21,0.29,1);
+
+// -------------------- LEFT: ROOM VIEW --------------------
+lx = x0 + 12;
+ly = y0 + 10;
+
+gfx_set(0.78,0.87,1,1); gfx_x=lx; gfx_y=ly;
+gfx_printf("Wall Bounce View");
+
+vizX = lx;
+vizY = ly + 18;
+vizW = leftW - 24;
+vizH = floor(H*0.38);
+vizH < 72 ? vizH = 72;
+vizH > 128 ? vizH = 128;
+
+box(vizX,vizY,vizW,vizH, 0.07,0.09,0.14,1);
+frame(vizX,vizY,vizW,vizH, 0.18,0.23,0.32,1);
+
+// room box - use almost the whole panel width so SRC/LIS feel pinned to walls
+rmW = vizW * (0.90 + 0.05*room);
+rmW > vizW-10 ? rmW = vizW-10;
+rmH = vizH * (0.38 + 0.42*room);
+rmX = vizX + (vizW - rmW)*0.5;
+rmY = vizY + (vizH - rmH)*0.5;
+roomCY = rmY + rmH*0.5;
+
+// room interior
+box(rmX,rmY,rmW,rmH, 0.11,0.14,0.20,1);
+frame(rmX,rmY,rmW,rmH, 0.38,0.44,0.56,1);
+frame(rmX+1,rmY+1,rmW-2,rmH-2, 0.22,0.27,0.36,1);
+
+// reflection wall glow strips
+glowA = 0.03 + 0.12*wet_vis;
+box(rmX+2, rmY+2, rmW-4, 5, refR,refG,refB, glowA);
+box(rmX+2, rmY+rmH-7, rmW-4, 5, ref2R,ref2G,ref2B, glowA);
+
+// direct corridor tint
+dryH = 6 + 6*clamp01(dry_cp);
+box(rmX+2, roomCY-dryH*0.5, rmW-4, dryH, dryR,dryG,dryB, 0.04 + 0.08*dry_cp);
+
+// source/listener pinned against walls
+sx  = rmX + 4;
+sy  = roomCY;
+lxp = rmX + rmW - 4;
+lyp = roomCY;
+
+// subtle source halo
+halo_box(sx,sy, 5 + 10*clamp01(env*3), 5, refR,refG,refB, 0.05 + 0.08*clamp01(env*3));
+
+// wall pegs so it reads "mounted to wall"
+box(rmX+1,     roomCY-10, 5, 20, 0.82,0.90,1.00,0.30);
+box(rmX+rmW-6, roomCY-10, 5, 20, 1.00,0.86,0.44,0.30);
+
+// bounce anchors: TOP/BOTTOM ONLY. No behind-space nonsense.
+topY = rmY + 4;
+botY = rmY + rmH - 4;
+
+pushD = 0.10*depth;
+pushW = 0.06*width;
+
+// one-bounce
+b1x = rmX + rmW*clamp01(0.50);
+b1y = topY;
+
+b2x = rmX + rmW*clamp01(0.50);
+b2y = botY;
+
+b3x = rmX + rmW*clamp01(0.38 - pushD - 0.30*pushW);
+b3y = topY;
+
+b4x = rmX + rmW*clamp01(0.62 + pushD + 0.30*pushW);
+b4y = botY;
+
+// two-bounce
+b5ax = rmX + rmW*clamp01(0.28 - pushD);
+b5ay = topY;
+b5bx = rmX + rmW*clamp01(0.62 + 0.40*pushW);
+b5by = botY;
+
+b6ax = rmX + rmW*clamp01(0.38 - 0.30*pushW);
+b6ay = botY;
+b6bx = rmX + rmW*clamp01(0.72 + pushD);
+b6by = topY;
+
+b7ax = rmX + rmW*clamp01(0.22 - 0.70*pushD);
+b7ay = topY;
+b7bx = rmX + rmW*clamp01(0.54);
+b7by = botY;
+
+b8ax = rmX + rmW*clamp01(0.46);
+b8ay = botY;
+b8bx = rmX + rmW*clamp01(0.78 + 0.70*pushD);
+b8by = topY;
+
+// legend inside room panel
+gfx_setfont(1,"Arial",10);
+gfx_set(dryR,dryG,dryB,0.95); gfx_x=rmX+10; gfx_y=rmY-12; gfx_printf("DRY");
+gfx_set(refR,refG,refB,0.95); gfx_x=rmX+56; gfx_y=rmY-12; gfx_printf("REFL");
+
+// draw reflections first
+drawpath3(sx,sy,b1x,b1y,lxp,lyp, refR,refG,refB,a1,p1,2);
+drawpath3(sx,sy,b2x,b2y,lxp,lyp, ref2R,ref2G,ref2B,a2,p2,2);
+drawpath3(sx,sy,b3x,b3y,lxp,lyp, refR,refG,refB,a3,p3,2);
+drawpath3(sx,sy,b4x,b4y,lxp,lyp, ref2R,ref2G,ref2B,a4,p4,2);
+
+drawpath4(sx,sy,b5ax,b5ay,b5bx,b5by,lxp,lyp, refR*0.94,refG*0.98,refB,a5,p5,2);
+drawpath4(sx,sy,b6ax,b6ay,b6bx,b6by,lxp,lyp, ref2R*0.95,ref2G,ref2B,a6,p6,2);
+drawpath4(sx,sy,b7ax,b7ay,b7bx,b7by,lxp,lyp, refR*0.88,refG*0.94,refB,a7,p7,2);
+drawpath4(sx,sy,b8ax,b8ay,b8bx,b8by,lxp,lyp, ref2R*0.90,ref2G*0.96,ref2B,a8,p8,2);
+
+// draw dry last so it clearly wins
+strongseg(sx,sy,lxp,lyp, dryR,dryG,dryB, clamp01(0.34 + 0.58*dry_cp));
+drawpath2(sx,sy,lxp,lyp, dryR,dryG,dryB, clamp01(0.26 + 0.44*dry_cp), frac(anim*1.10), 2);
+
+// markers
+dot(sx,sy, 4, 0.96,0.98,1.00,1);
+dot(lxp,lyp, 3, 1.00,0.86,0.44,1);
+halo_box(lxp,lyp, 5, 4, 1.00,0.78,0.26, 0.05);
+
+gfx_set(1.00,0.88,0.56,0.75);
+gfx_line(lxp-7,lyp,lxp+7,lyp);
+gfx_line(lxp,lyp-7,lxp,lyp+7);
+
+gfx_setfont(1,"Arial",11);
+gfx_set(0.82,0.92,1,0.92);   gfx_x=rmX+10;       gfx_y=roomCY-18;  gfx_printf("SRC");
+gfx_set(1.00,0.88,0.56,0.92); gfx_x=rmX+rmW-30; gfx_y=roomCY-18;  gfx_printf("LIS");
+
+// -------------------- LEFT: TIMELINE --------------------
+tmTitleY = vizY + vizH + 10;
+gfx_set(0.78,0.87,1,1); gfx_x=lx; gfx_y=tmTitleY;
+gfx_printf("Reflection Timing");
+
+gfx_set(0.62,0.75,0.94,1); gfx_x=lx+108; gfx_y=tmTitleY;
+gfx_printf("pred %0.1f ms   ER %0.1f-%0.1f ms   cent %0.1f ms", pred_ms, t1, t8, cent_ms);
+
+timeX = lx;
+timeY = tmTitleY + 18;
+timeW = leftW - 24;
+timeH = H - (timeY - y0) - 12;
+timeH < 48 ? timeH = 48;
+
+box(timeX,timeY,timeW,timeH, 0.07,0.09,0.14,1);
+frame(timeX,timeY,timeW,timeH, 0.18,0.23,0.32,1);
+
+// perceptual zones
+fw_ms = min(35,tMax);
+fwX = timeX + timeW*clamp01(fw_ms/tMax);
+lateX = timeX + timeW*clamp01(35/tMax);
+
+box(timeX+1,timeY+1, fwX-timeX-1, timeH-2, 0.28,0.46,0.88,0.08);
+box(lateX,timeY+1, timeX+timeW-lateX-1, timeH-2, 0.56,0.30,0.78,0.05);
+
+// ER occupied span
+xA = timeX + timeW*clamp01(t1/tMax);
+xB = timeX + timeW*clamp01(t8/tMax);
+box(xA, timeY+1, xB-xA, timeH-2, refR,refG,refB, 0.08 + 0.05*wet_vis);
+
+// grid
+gfx_set(0.34,0.40,0.50,0.18);
+i=0; ticks=6;
+loop(ticks+1,
+  xx = timeX + timeW*(i/ticks);
+  gfx_line(xx,timeY,xx,timeY+timeH);
+  i += 1;
+);
+
+// pred marker
+px = timeX + timeW*clamp01(pred_ms/tMax);
+gfx_set(1,1,1,0.26);
+gfx_line(px,timeY,px,timeY+timeH);
+
+// centroid marker
+cxm = timeX + timeW*clamp01(cent_ms/tMax);
+gfx_set(1.00,0.84,0.38,0.78);
+gfx_line(cxm,timeY,cxm,timeY+timeH);
+
+// tap bars
+tapbar(t1,g1, refR,refG,refB,0.92);
+tapbar(t2,g2, ref2R,ref2G,ref2B,0.84);
+tapbar(t3,g3, refR,refG,refB,0.80);
+tapbar(t4,g4, ref2R,ref2G,ref2B,0.74);
+tapbar(t5,g5, refR,refG,refB,0.68);
+tapbar(t6,g6, ref2R,ref2G,ref2B,0.62);
+tapbar(t7,g7, refR,refG,refB,0.58);
+tapbar(t8,g8, ref2R,ref2G,ref2B,0.54);
+
+// labels
+gfx_setfont(1,"Arial",10);
+gfx_set(0.56,0.68,0.88,0.92);
+gfx_x=timeX+2; gfx_y=timeY+timeH+2; gfx_printf("0");
+gfx_x=timeX+6; gfx_y=timeY+2; gfx_printf("fuse");
+gfx_x=lateX+4; gfx_y=timeY+2; gfx_printf("late");
+gfx_x=px+3; gfx_y=timeY+14; gfx_printf("pred");
+gfx_x=cxm+3; gfx_y=timeY+26; gfx_printf("cent");
+gfx_x=timeX+timeW-20; gfx_y=timeY+timeH+2; gfx_printf("%d", floor(tMax+0.5));
+
+// -------------------- RIGHT: METERS --------------------
+rx = x0 + leftW + 24;
+ry = y0 + 10;
+barW = rightW - 24;
+barH = 10;
+
+gfx_setfont(1,"Arial",12);
+gfx_set(0.78,0.87,1,1); gfx_x=rx; gfx_y=ry;
+gfx_printf("Quick Read");
+
+gfx_set(0.65,0.78,0.95,1); gfx_x=rx; gfx_y=ry+18;
+gfx_printf("Depth %d   Size %d   Width %d   Mix %d", slider2|0, slider3|0, slider4|0, slider5|0);
+
+my = ry + 38;
+
+// distance
+gfx_set(0.72,0.82,1,1); gfx_x=rx; gfx_y=my; gfx_printf("Perceived distance");
+gfx_set(0.56,0.68,0.88,0.95); gfx_x=rx+barW-34; gfx_y=my;
+dist_vis < 0.33 ? gfx_printf("near") : dist_vis < 0.66 ? gfx_printf("mid") : gfx_printf("far");
+meter(rx, my+12, barW, barH, dist_vis, 0.35,0.85,1.0,0.90);
+
+my += 24;
+
+// spread
+gfx_set(0.72,0.82,1,1); gfx_x=rx; gfx_y=my; gfx_printf("Reflection spread");
+gfx_set(0.56,0.68,0.88,0.95); gfx_x=rx+barW-38; gfx_y=my;
+spread_vis < 0.33 ? gfx_printf("tight") : spread_vis < 0.66 ? gfx_printf("open") : gfx_printf("wide");
+meter(rx, my+12, barW, barH, spread_vis, 0.72,0.55,1.0,0.86);
+
+my += 24;
+
+// wet energy
+gfx_set(0.72,0.82,1,1); gfx_x=rx; gfx_y=my; gfx_printf("Wet energy");
+gfx_set(0.56,0.68,0.88,0.95); gfx_x=rx+barW-44; gfx_y=my;
+wet_vis < 0.33 ? gfx_printf("tucked") : wet_vis < 0.66 ? gfx_printf("even") : gfx_printf("present");
+meter(rx, my+12, barW, barH, wet_vis, 0.35,0.85,1.0,0.90);
+
+my += 24;
+
+// tone
+gfx_set(0.72,0.82,1,1); gfx_x=rx; gfx_y=my; gfx_printf("Tone / brightness");
+gfx_set(0.56,0.68,0.88,0.95); gfx_x=rx+barW-40; gfx_y=my;
+bright_vis < 0.33 ? gfx_printf("dark") : bright_vis < 0.66 ? gfx_printf("neutral") : gfx_printf("bright");
+meter(rx, my+12, barW, barH, bright_vis, 0.95,0.78,0.35,0.90);
+
+my += 24;
+
+// limiter GR
+gfx_set(0.72,0.82,1,1); gfx_x=rx; gfx_y=my; gfx_printf("Limiter GR");
+meter(rx, my+12, barW, 8, gr_vis, 0.96,0.55,0.28,0.90);
+
+// stereo field
+sfY = my + 24;
+gfx_set(0.78,0.87,1,1); gfx_x=rx; gfx_y=sfY;
+gfx_printf("Stereo field");
+
+sfBoxY = sfY + 14;
+sfH = 24;
+box(rx,sfBoxY,barW,sfH, 0.08,0.10,0.15,1);
+frame(rx,sfBoxY,barW,sfH, 0.18,0.23,0.32,1);
+
+cx = rx + barW*0.5;
+hfSpan = (barW*0.39) * clamp01(0.12 + 0.88*width);
+lfSpan = hfSpan * (monosafe ? 0.48 : 0.82);
+
+gfx_set(0.82,0.86,0.96,0.34);
+gfx_line(cx,sfBoxY+2,cx,sfBoxY+sfH-2);
+
+// HF
+gfx_set(0.72,0.55,1.0,0.92);
+gfx_line(cx-hfSpan, sfBoxY+7, cx+hfSpan, sfBoxY+7);
+
+// LF
+gfx_set(0.98,0.78,0.34,0.95);
+gfx_line(cx-lfSpan, sfBoxY+17, cx+lfSpan, sfBoxY+17);
+
+// shimmer
+phaseL = frac(gfx_frame*(0.010 + 0.0008*wdL_ms));
+phaseR = frac(gfx_frame*(0.010 + 0.0008*wdR_ms) + 0.37);
+
+dot(cx-hfSpan + hfSpan*phaseL, sfBoxY+7, 1, 0.80,0.70,1.00,0.95);
+dot(cx+hfSpan - hfSpan*phaseR, sfBoxY+7, 1, 0.80,0.70,1.00,0.95);
+
+dot(cx-lfSpan + lfSpan*phaseR, sfBoxY+17, 1, 1.00,0.82,0.46,0.95);
+dot(cx+lfSpan - lfSpan*phaseL, sfBoxY+17, 1, 1.00,0.82,0.46,0.95);
+
+gfx_setfont(1,"Arial",10);
+gfx_set(0.62,0.74,0.94,0.92);
+gfx_x=rx+4; gfx_y=sfBoxY-1; gfx_printf("HF");
+gfx_x=rx+4; gfx_y=sfBoxY+10; gfx_printf("LF");
+gfx_x=rx+barW-54; gfx_y=sfBoxY+4;
+monosafe ? gfx_printf("mono-safe") : gfx_printf("full-side");
+
+// info
+infoY = sfBoxY + sfH + 10;
+gfx_setfont(1,"Arial",11);
+gfx_set(0.64,0.77,0.95,1); gfx_x=rx; gfx_y=infoY;
+gfx_printf("HPF %d Hz   LPF %d Hz   Tilt %+0.1f dB", floor(hpf+0.5), floor(lpf+0.5), tilt_db);
+
+gfx_x=rx; gfx_y=infoY+16;
+gfx_printf("base %0.1f ms   pred %0.1f ms   cent %0.1f ms", base_ms, pred_ms, cent_ms);
+
+gfx_x=rx; gfx_y=infoY+32;
+gfx_printf("decorrel L %0.1f / R %0.1f ms   lim_g %0.3f", wdL_ms, wdR_ms, lim_g);
