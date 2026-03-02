@@ -87,7 +87,3 @@ Final level trim after processing (±12 dB).
 - If your mix already has strong spatial cues from early reflections/room mics, keep Natural lower to avoid over-coloring.
 
 ---
-
-## Version / License
-
-Include your preferred version tag and license statement here.
