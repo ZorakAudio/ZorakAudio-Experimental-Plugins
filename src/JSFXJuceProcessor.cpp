@@ -1635,13 +1635,63 @@ private:
 class JSFXJuceEditor final : public juce::AudioProcessorEditor
 {
 public:
-    explicit JSFXJuceEditor (JSFXJuceProcessor& p)
+    
+    // -----------------------
+    // Unicode-safe LookAndFeel
+    // -----------------------
+    class UnicodeLNF final : public juce::LookAndFeel_V4
+    {
+    public:
+        static juce::Font pickFont (float height)
+        {
+           #if JUCE_WINDOWS
+            // Good Unicode coverage on Windows.
+            juce::Font f ("Segoe UI", height, juce::Font::plain);
+            if (f.getTypefaceName().isNotEmpty())
+                return f;
+            return juce::Font (height);
+           #elif JUCE_MAC
+            // Let CoreText handle fallback; default font tends to be robust.
+            return juce::Font (height);
+           #else
+            // Linux distros vary wildly; default + fallback is usually best unless you embed fonts.
+            // If you ship Noto, swap this to that typeface.
+            return juce::Font (height);
+           #endif
+        }
+
+        juce::Font getLabelFont (juce::Label&) override
+        {
+            return pickFont (14.0f);
+        }
+
+        void drawTooltip (juce::Graphics& g, const juce::String& text, int width, int height) override
+        {
+            auto bounds = juce::Rectangle<int> (0, 0, width, height);
+
+            g.setColour (juce::Colours::black.withAlpha (0.82f));
+            g.fillRoundedRectangle (bounds.toFloat().reduced (1.0f), 6.0f);
+
+            g.setColour (juce::Colours::white.withAlpha (0.20f));
+            g.drawRoundedRectangle (bounds.toFloat().reduced (1.0f), 6.0f, 1.0f);
+
+            g.setColour (juce::Colours::white);
+            g.setFont (pickFont (13.5f));
+
+            auto textArea = bounds.reduced (8, 6);
+            g.drawFittedText (text, textArea, juce::Justification::centredLeft, 4);
+        }
+    };
+
+explicit JSFXJuceEditor (JSFXJuceProcessor& p)
         : juce::AudioProcessorEditor (&p)
         , processor (p)
         , genericEditor (p)
         , gfxView (p)
         , tooltipWindow (*this, kTooltipDelayMs)
     {
+        setLookAndFeel (&unicodeLnf);
+        tooltipWindow.setLookAndFeel (&unicodeLnf);
         setOpaque (true);
         setColour (juce::ResizableWindow::backgroundColourId, juce::Colour (0xff2f3a41)); // pick your base
         addAndMakeVisible (genericEditor);
@@ -1707,6 +1757,12 @@ public:
                     + (hasGfx ? (gapControlsGfx + gfxPrefH) : 0);
 
         setSize (w, juce::jmax (minH, h));
+    }
+
+    ~JSFXJuceEditor() override
+    {
+        tooltipWindow.setLookAndFeel (nullptr);
+        setLookAndFeel (nullptr);
     }
 
         void paint (juce::Graphics& g) override
@@ -1781,6 +1837,8 @@ public:
         helpOverlay.setBounds (getLocalBounds());
     }
 private:
+    UnicodeLNF unicodeLnf;
+
     // -----------------------
     // HELP overlay component
     // -----------------------
@@ -1791,7 +1849,7 @@ private:
         {
             title.setText ("HELP", juce::dontSendNotification);
             title.setJustificationType (juce::Justification::centredLeft);
-            title.setFont (juce::Font (16.0f, juce::Font::bold));
+            title.setFont (UnicodeLNF::pickFont (16.0f).boldened());
             addAndMakeVisible (title);
 
             close.setButtonText ("X");
@@ -1803,7 +1861,7 @@ private:
             body.setScrollbarsShown (true);
             body.setCaretVisible (false);
             body.setPopupMenuEnabled (true);
-            body.setFont (juce::Font (14.5f));
+            body.setFont (UnicodeLNF::pickFont (14.5f));
             body.setLineSpacing (1.25f);
             body.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
             body.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);

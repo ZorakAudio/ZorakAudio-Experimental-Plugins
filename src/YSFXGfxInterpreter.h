@@ -734,7 +734,7 @@ public:
     cmd.type = DrawCmd::Type::Text;
     cmd.colour = self->getCurrentColour();
     cmd.font = self->currentFont;
-    cmd.text = juce::String(str ? str : "");
+    cmd.text = juce::String::fromUTF8(str ? str : "");
     cmd.x = (float)(self->gfx_x ? *self->gfx_x : 0.0);
     cmd.y = (float)(self->gfx_y ? *self->gfx_y : 0.0);
 
@@ -871,7 +871,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_printf(void* opaque, INT_PTR np, EEL_F** pa
       i = j - 1;
     }
 
-    textToDraw = juce::String(out);
+    textToDraw = juce::String::fromUTF8(out.c_str(), (int)out.size());
   }
 
   DrawCmd cmd;
@@ -897,7 +897,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
 
     EEL_STRING_MUTEXLOCK_SCOPE;
     const char* str = EEL_STRING_GET_FOR_INDEX(*parms[0], nullptr);
-    const juce::String text(str ? str : "");
+    const juce::String text = juce::String::fromUTF8(str ? str : "");
 
     const float w = self->currentFont.getStringWidthFloat(text);
     const float h = self->currentFont.getHeight();
