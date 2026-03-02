@@ -1,0 +1,918 @@
+desc:Reverb Tail Tamer V3 (Wet 1/2, Vocals 5/6, Other 7/8) — Role-Aware + SAFE
+
+// Routing contract:
+// - Wet (post reverb) audio:   ch 1/2  (spl0/spl1)
+// - Vocals sidechain key:      ch 5/6  (spl4/spl5)
+// - Other/SFX sidechain key:   ch 7/8  (spl6/spl7)
+//
+// This is a "permission-based wet compressor":
+// It ducks wet when Wet is too loud relative to *justified* input,
+// where "justified" is role-aware (Vocals vs Other) and excitation-aware.
+
+// #HELP: Permission-based wet compressor for reverb returns. Ducks wet only when it exceeds role-aware justified energy.
+// #HELP: Vocals (5/6) and Other/SFX (7/8) independently authorize how much tail is allowed to exist.
+// #HELP: Includes anti-resurrection logic to prevent small SFX from re-opening old vocal tails.
+// #HELP: Tail grace and long-tail aging preserve musical decay while preventing runaway ambience buildup.
+
+// UI
+// #TOOLTIP: Maximum wet gain reduction in dB. Sets the absolute ceiling for how much the reverb return can be ducked, regardless of ratio or overage.
+slider1:12<0,24,0.1>Amount (max duck dB)
+// #TOOLTIP: Controls how easily the wet return is judged "too loud" relative to justified input. Higher values lower the effective threshold and increase compression ratio.
+slider2:50<0,100,1>Sensitivity (%)
+// #TOOLTIP: Release time (ms) for wet gain recovery after ducking. Also influences tail grace window and long-tail aging behavior.
+slider3:350<50,1200,1:sqr>Release (ms)
+// #TOOLTIP: Attack time (ms) for applying ducking once excess return is detected. Slower attack preserves early tail bloom.
+slider4:60<1,500,1:sqr>Attack (ms)
+// #TOOLTIP: Wet processing blend. 100% = fully controlled return. Lower values mix original wet back in parallel.
+slider5:100<0,100,1>Mix (%)
+// #TOOLTIP: Scales how much "Other/SFX" input is allowed to justify reverb. Reduced automatically while vocals are dominant.
+slider6:40<0,100,1>Other Authority (%)
+
+@init
+function db2lin(db) (10^(db/20));
+function lin2db(x) (20*log10(max(x, 0.00000000000000000001)));
+function clamp(x, lo, hi) (x<lo?lo:x>hi?hi:x);
+function smoothstep01(x)
+(
+  x = clamp(x, 0, 1);
+  x*x*(3-2*x);
+);
+
+eps = 0.000000000001;
+
+// SAFE timings (fixed)
+hold_ms   = 80;
+rms_ms    = 35;
+tgt_ms    = 25;
+rel_in_ms = 70;
+
+// activity thresholds
+v_on_db   = -50;
+o_on_db   = -50;
+off_db    = -60;
+
+// detector floor
+floor_db  = -120;
+floor_lin = db2lin(floor_db);
+
+// state: wet env
+wet_env2 = 0;
+
+// state: vocal env (RMS + fast/slow for excitation)
+v_env2 = 0;
+v_fast2 = 0;
+v_slow2 = 0;
+
+// state: other env (RMS + fast/slow)
+o_env2 = 0;
+o_fast2 = 0;
+o_slow2 = 0;
+
+// role memories (recent input level)
+v_mem = floor_lin;
+o_mem = floor_lin;
+
+// permissions + dominance guard
+v_perm = 0;     // 0..1
+o_perm = 0;     // 0..1
+v_guard = 0;    // 0..1 (slow release)
+
+// tail logic
+tail_samps = 0;
+hold_samps = 0;
+
+// tail aging
+age_samps = 0;
+
+// gain reduction
+gr_db = 0;
+tgt_db_sm = 0;
+
+@slider
+sens = slider2/100;
+maxduck_db = slider1;
+rel_ms = slider3;
+atk_ms = max(slider4, 0.1);
+mix = clamp(slider5/100, 0, 1);
+other_auth = clamp(slider6/100, 0, 1);
+
+// Core compressor mapping (ratio-of-return)
+thr_db  = 18 - sens*21;         // 18 .. -3 dB
+ratio   = 1.2 + sens*3.0;       // 1.2 .. 4.2
+knee_db = 10 - sens*6;          // ~10 .. ~4 dB
+
+// Tail ramp time: longer for longer releases (lets the pretty part breathe)
+grace_ms = clamp(rel_ms*2.0, 150, 6000);
+
+// Tail aging (how fast "very long tails" get nudged down)
+age_ms = clamp(rel_ms*6.0, 1200, 15000);
+age_strength_db = sens * 6.0;   // 0..6 dB extra over time (only in tail)
+
+// Vocal excitation detector (fast-slow delta)
+v_fast_ms = 12;
+v_slow_ms = 140;
+
+// Other excitation detector (kept milder; other also gets level-based permission)
+o_fast_ms = 8;
+o_slow_ms = 90;
+
+// Permission smoothing
+vperm_atk_ms = 20;
+vperm_rel_ms = clamp(250 + rel_ms*0.9, 300, 6000);
+
+operm_atk_ms = 15;
+operm_rel_ms = clamp(120 + rel_ms*0.35, 150, 2500);
+
+// Vocal dominance guard (anti-resurrection)
+guard_atk_ms = 25;
+guard_rel_ms = clamp(rel_ms*1.8, 450, 9000);
+
+// Ref memories:
+// - Vocals decay slower (speech continuity)
+// - Other decays faster (prevents "junk" propping tails)
+v_mem_ms = clamp(rel_ms * (0.8 + (1-sens)*3.0), 200, 12000);
+o_mem_ms = clamp(rel_ms * (0.35 + (1-sens)*1.2), 120, 6000);
+mem_atk_ms = 8;
+
+// Permission thresholds
+// Vocal excitation threshold: higher sens => trigger on smaller motion
+v_exc_thr_db = -18 - sens*18;   // -18 .. -36 dB (relative exc)
+v_exc_knee_db = 12;
+
+// Vocal sustain floor: prevents "too dry" during real sustained speech,
+// but shrinks as sensitivity rises.
+v_sustain_floor = 0.35 - sens*0.25;   // 0.35 .. 0.10
+v_sustain_on_db  = -35;
+v_sustain_off_db = -55;
+
+// Other permission from level (and mild excitation assist)
+o_lvl_on_db  = -45;
+o_lvl_off_db = -65;
+o_exc_thr_db = -16 - sens*16;
+o_exc_knee_db = 10;
+
+// Other suppression while vocals are active/recent (anti-resurrection)
+// Higher sensitivity => stronger suppression.
+other_suppress = clamp(0.2 + sens*0.6, 0, 0.8);
+
+// Activity thresholds
+v_on_lin  = db2lin(v_on_db);
+o_on_lin  = db2lin(o_on_db);
+off_lin   = db2lin(off_db);
+
+// Age floor: only count aging if wet is still audible
+age_wet_on_lin = db2lin(-70);
+
+// coefficients
+rms_a    = exp(-1/(srate*(rms_ms/1000)));
+atk_a    = exp(-1/(srate*(atk_ms/1000)));
+rel_a    = exp(-1/(srate*(rel_ms/1000)));
+rel_in_a = exp(-1/(srate*(rel_in_ms/1000)));
+tgt_a    = exp(-1/(srate*(tgt_ms/1000)));
+
+// fast/slow envelopes
+v_fast_a = exp(-1/(srate*(v_fast_ms/1000)));
+v_slow_a = exp(-1/(srate*(v_slow_ms/1000)));
+
+o_fast_a = exp(-1/(srate*(o_fast_ms/1000)));
+o_slow_a = exp(-1/(srate*(o_slow_ms/1000)));
+
+// permission smoothing
+vperm_atk_a = exp(-1/(srate*(vperm_atk_ms/1000)));
+vperm_rel_a = exp(-1/(srate*(vperm_rel_ms/1000)));
+
+operm_atk_a = exp(-1/(srate*(operm_atk_ms/1000)));
+operm_rel_a = exp(-1/(srate*(operm_rel_ms/1000)));
+
+// guard smoothing
+guard_atk_a = exp(-1/(srate*(guard_atk_ms/1000)));
+guard_rel_a = exp(-1/(srate*(guard_rel_ms/1000)));
+
+// memory smoothing
+mem_atk_a = exp(-1/(srate*(mem_atk_ms/1000)));
+v_mem_rel_a = exp(-1/(srate*(v_mem_ms/1000)));
+o_mem_rel_a = exp(-1/(srate*(o_mem_ms/1000)));
+
+// hold / grace / age
+hold_samps_set = max(1, floor(srate*(hold_ms/1000)));
+grace_samps    = max(1, floor(srate*(grace_ms/1000)));
+age_samps_max  = max(1, floor(srate*(age_ms/1000)));
+
+@sample
+// Wet (post reverb) on 1/2
+wetL = spl0; wetR = spl1;
+
+// Vocals reference on 5/6
+vL = spl4; vR = spl5;
+
+// Other reference on 7/8
+oL = spl6; oR = spl7;
+
+// powers
+wet_p = 0.5*(wetL*wetL + wetR*wetR);
+v_p   = 0.5*(vL*vL     + vR*vR);
+o_p   = 0.5*(oL*oL     + oR*oR);
+
+// RMS-ish (EMA of power)
+wet_env2 = wet_env2*rms_a + wet_p*(1-rms_a);
+v_env2   = v_env2*rms_a   + v_p*(1-rms_a);
+o_env2   = o_env2*rms_a   + o_p*(1-rms_a);
+
+// fast/slow for excitation
+v_fast2 = v_fast2*v_fast_a + v_p*(1-v_fast_a);
+v_slow2 = v_slow2*v_slow_a + v_p*(1-v_slow_a);
+
+o_fast2 = o_fast2*o_fast_a + o_p*(1-o_fast_a);
+o_slow2 = o_slow2*o_slow_a + o_p*(1-o_slow_a);
+
+// amplitudes
+Ey = sqrt(max(wet_env2, 0));
+Ev = sqrt(max(v_env2,   0));
+Eo = sqrt(max(o_env2,   0));
+
+Ev_fast = sqrt(max(v_fast2, 0));
+Ev_slow = sqrt(max(v_slow2, 0));
+
+Eo_fast = sqrt(max(o_fast2, 0));
+Eo_slow = sqrt(max(o_slow2, 0));
+
+// floors
+Ey = max(Ey, floor_lin);
+Ev = max(Ev, floor_lin);
+Eo = max(Eo, floor_lin);
+
+Ev_fast = max(Ev_fast, floor_lin);
+Ev_slow = max(Ev_slow, floor_lin);
+Eo_fast = max(Eo_fast, floor_lin);
+Eo_slow = max(Eo_slow, floor_lin);
+
+// activity
+v_active = (Ev > v_on_lin);
+o_active = (Eo > o_on_lin);
+ref_off  = (Ev <= off_lin) && (Eo <= off_lin);
+
+// === Vocal memory ===
+Ev > v_mem ? (
+  v_mem = v_mem*mem_atk_a + Ev*(1-mem_atk_a);
+) : (
+  v_mem = v_mem*v_mem_rel_a + Ev*(1-v_mem_rel_a);
+);
+
+// === Other memory ===
+Eo > o_mem ? (
+  o_mem = o_mem*mem_atk_a + Eo*(1-mem_atk_a);
+) : (
+  o_mem = o_mem*o_mem_rel_a + Eo*(1-o_mem_rel_a);
+);
+
+// === Vocal permission (excitation + sustain floor) ===
+v_exc = max(Ev_fast - Ev_slow, 0);
+v_exc_norm = v_exc / (Ev_slow + eps);
+v_exc_db = lin2db(v_exc_norm + eps);
+
+// map excitation to 0..1 with soft knee
+v_exc_over = v_exc_db - v_exc_thr_db;
+v_half = 0.5 * max(v_exc_knee_db, 0.001);
+
+v_exc_over <= -v_half ? (
+  v_exc_perm = 0;
+) : v_exc_over >= v_half ? (
+  v_exc_perm = 1;
+) : (
+  v_t = (v_exc_over + v_half) / max(v_exc_knee_db, 0.001);
+  v_exc_perm = smoothstep01(v_t);
+);
+
+// sustain mapping (prevents dryness on real sustained speech)
+Ev_slow_db = lin2db(Ev_slow);
+v_sus_t = (Ev_slow_db - v_sustain_off_db) / (v_sustain_on_db - v_sustain_off_db);
+v_sus = smoothstep01(v_sus_t);
+v_sus_perm = v_sus * v_sustain_floor;
+
+// target + smooth
+v_perm_tgt = max(v_exc_perm, v_sus_perm);
+
+v_perm_tgt > v_perm ? (
+  v_perm = v_perm*vperm_atk_a + v_perm_tgt*(1-vperm_atk_a);
+) : (
+  v_perm = v_perm*vperm_rel_a + v_perm_tgt*(1-vperm_rel_a);
+);
+
+v_perm = clamp(v_perm, 0, 1);
+
+// === Other permission (level + mild excitation assist) ===
+Eo_db = lin2db(Eo);
+o_lvl_t = (Eo_db - o_lvl_off_db) / (o_lvl_on_db - o_lvl_off_db);
+o_lvl_perm = smoothstep01(o_lvl_t);
+
+// mild excitation assist for sharp SFX
+o_exc = max(Eo_fast - Eo_slow, 0);
+o_exc_norm = o_exc / (Eo_slow + eps);
+o_exc_db = lin2db(o_exc_norm + eps);
+
+o_exc_over = o_exc_db - o_exc_thr_db;
+o_half = 0.5 * max(o_exc_knee_db, 0.001);
+
+o_exc_over <= -o_half ? (
+  o_exc_perm = 0;
+) : o_exc_over >= o_half ? (
+  o_exc_perm = 1;
+) : (
+  o_t = (o_exc_over + o_half) / max(o_exc_knee_db, 0.001);
+  o_exc_perm = smoothstep01(o_t);
+);
+
+// combine (level is primary, exc is a boost)
+o_perm_tgt = max(o_lvl_perm, o_exc_perm*0.8);
+
+o_perm_tgt > o_perm ? (
+  o_perm = o_perm*operm_atk_a + o_perm_tgt*(1-operm_atk_a);
+) : (
+  o_perm = o_perm*operm_rel_a + o_perm_tgt*(1-operm_rel_a);
+);
+
+o_perm = clamp(o_perm, 0, 1);
+
+// === Vocal guard (anti-resurrection) ===
+// When vocals are active/recent, other authority is suppressed.
+// This prevents small/random SFX from "re-opening" old vocal tails.
+guard_tgt = (v_active || (v_perm > 0.08)) ? 1 : 0;
+
+guard_tgt > v_guard ? (
+  v_guard = v_guard*guard_atk_a + guard_tgt*(1-guard_atk_a);
+) : (
+  v_guard = v_guard*guard_rel_a + guard_tgt*(1-guard_rel_a);
+);
+
+v_guard = clamp(v_guard, 0, 1);
+
+// === Build justified reference (role-aware) ===
+// live refs (with memory)
+v_ref = v_active ? Ev : v_mem;
+o_ref = o_active ? Eo : o_mem;
+
+// credit scaling
+// - Vocals: permission directly scales justification (excitation governs "earned tail")
+// - Other: permission mostly tracks level (sustained SFX still earn reverb)
+v_credit = v_ref * v_perm;
+o_credit = o_ref * o_perm;
+
+// anti-resurrection: suppress Other authority while v_guard is high
+other_auth_eff = other_auth * (1 - v_guard*other_suppress);
+
+// combine (power-sum)
+Ex_use = sqrt(v_credit*v_credit + (o_credit*other_auth_eff)*(o_credit*other_auth_eff));
+Ex_use = max(Ex_use, floor_lin);
+
+// === Tail ramp-in (prevents instant clamp right as refs go off) ===
+ref_off ? (
+  tail_samps = min(tail_samps + 1, grace_samps);
+  tail_w = smoothstep01(tail_samps / grace_samps);
+) : (
+  tail_samps = 0;
+  tail_w = 1;
+);
+
+// === Tail aging (very long tails get progressively nudged down) ===
+(ref_off && (Ey > age_wet_on_lin)) ? (
+  age_samps = min(age_samps + 1, age_samps_max);
+) : (
+  age_samps = 0;
+);
+
+age_w = age_samps / age_samps_max;
+
+// Ratio-of-return in dB
+rdB = lin2db((Ey+eps)/(Ex_use+eps));
+
+// === Soft-knee overage ===
+over = rdB - thr_db;
+half = 0.5 * max(knee_db, 0.001);
+
+over <= -half ? (
+  over_eff = 0;
+) : over >= half ? (
+  over_eff = over;
+) : (
+  t = (over + half);
+  over_eff = (t*t) / (2*max(knee_db,0.001));
+);
+
+// target GR
+tgt_db = 0;
+over_eff > 0 ? (
+  gr_per_db = 1 - (1/ratio);          // compressor-style mapping
+  tgt_db = min(maxduck_db, over_eff * gr_per_db);
+);
+
+// tail weighting AFTER computing target
+tgt_db *= tail_w;
+
+// add tail aging penalty (only matters in tail; clamps safely)
+age_strength_db > 0 ? (
+  tgt_db = min(maxduck_db, tgt_db + age_w*age_strength_db*tail_w);
+);
+
+// smooth target
+tgt_db_sm = tgt_db_sm*tgt_a + tgt_db*(1-tgt_a);
+tgt_db = tgt_db_sm;
+
+// Hold logic:
+// - hold only helps when refs are NOT active
+// - if refs return, cancel hold immediately
+tgt_db > 0 ? (
+  hold_samps = hold_samps_set;
+) : (
+  (v_active || o_active) ? (
+    hold_samps = 0;
+  ) : (
+    hold_samps > 0 ? hold_samps -= 1;
+    hold_samps > 0 ? tgt_db = max(tgt_db, gr_db);
+  );
+);
+
+// Smooth GR with separate attack/release
+tgt_db > gr_db ? (
+  gr_db = gr_db*atk_a + tgt_db*(1-atk_a);
+) : (
+  (v_active || o_active) ? (
+    gr_db = gr_db*rel_in_a + tgt_db*(1-rel_in_a);
+  ) : (
+    gr_db = gr_db*rel_a + tgt_db*(1-rel_a);
+  );
+);
+
+// Apply to wet only + Mix control
+g = db2lin(-gr_db);
+
+procL = wetL * g;
+procR = wetR * g;
+
+spl0 = wetL + (procL - wetL)*mix;
+spl1 = wetR + (procR - wetR)*mix;
+
+// leave other channels untouched
+
+@gfx 820 410
+// Reverb Tail Tamer V3 -- causality-first monitor
+// Responsive version: scales layout from gfx_w / gfx_h.
+// Full replacement for the existing @gfx block.
+
+function ui_clamp(x, lo, hi) ( x < lo ? lo : x > hi ? hi : x; );
+function ui_db(x) ( 20*log10(max(0.00000000000000000001, x)); );
+function ui_set(r,g,b,a) ( gfx_set(r,g,b,a); );
+function SX(v) ( v * sx; );
+function SY(v) ( v * sy; );
+
+function ui_norm_db(db) ( ui_clamp((db - db_lo) / max(0.0001, (db_hi - db_lo)), 0, 1); );
+
+function ui_shadow_text(x,y,str, r,g,b,a)
+(
+  ui_set(0,0,0,0.72*a); gfx_x = x+1; gfx_y = y+1; gfx_drawstr(str);
+  ui_set(r,g,b,a);      gfx_x = x;   gfx_y = y;   gfx_drawstr(str);
+);
+
+function ui_panel(x,y,w,h)
+(
+  ui_set(0.10,0.11,0.13,1); gfx_rect(x,y,w,h,1);
+  ui_set(1,1,1,0.06); gfx_rect(x,y,w,1,1);
+  ui_set(1,1,1,0.03); gfx_rect(x,y+h-1,w,1,1);
+);
+
+function ui_chip(x,y,w,h,label,on, r,g,b)
+local(t, tr,tg,tb)
+(
+  t = ui_clamp(on, 0, 1);
+  ui_set(r,g,b, 0.10 + 0.34*t); gfx_rect(x,y,w,h,1);
+  ui_set(r,g,b, 0.18 + 0.58*t); gfx_rect(x,y,w,h,0);
+
+  tr = 0.62 + 0.34*t;
+  tg = 0.62 + 0.34*t;
+  tb = 0.66 + 0.30*t;
+  ui_shadow_text(x+SX(6), y+SY(4), label, tr,tg,tb, 1);
+);
+
+function ui_meter(x,y,w,h,db, r,g,b,a)
+local(pos, fillw)
+(
+  ui_set(1,1,1,0.05); gfx_rect(x,y,w,h,1);
+  pos = x + w*ui_norm_db(db);
+  fillw = max(0, pos - x);
+  ui_set(r,g,b,a); gfx_rect(x,y,fillw,h,1);
+  ui_set(r,g,b,0.55); gfx_rect(x,y,w,h,0);
+);
+
+function ui_scope(base, x,y,w,h, vmin,vmax, r,g,b,a)
+local(i, idx, px, py, t, val)
+(
+  ui_set(r,g,b,a);
+  i = 0;
+  loop(hist_len,
+    idx = hist_i + i;
+    idx >= hist_len ? idx -= hist_len;
+
+    val = base[idx];
+    t = (val - vmin) / max(0.0001, (vmax - vmin));
+    t = ui_clamp(t, 0, 1);
+
+    px = x + (i*(w-1)) / max(1, hist_len-1);
+    py = y + (1-t)*(h-1);
+
+    i == 0 ? (
+      gfx_x = px; gfx_y = py;
+    ) : (
+      gfx_lineto(px, py, 1);
+    );
+
+    i += 1;
+  );
+);
+
+// ---------- scaling ----------
+sx = gfx_w / 520;
+sy = gfx_h / 260;
+sc = min(sx, sy);
+
+// ---------- fonts ----------
+font_title = ui_clamp(floor(15*sc), 12, 30);
+font_big   = ui_clamp(floor(22*sc), 17, 44);
+font_small = ui_clamp(floor(11*sc), 9, 22);
+font_mid   = ui_clamp(floor(13*sc), 11, 26);
+
+// ---------- lazy history init ----------
+hist_ready != 1 ? (
+  hist_ready = 1;
+
+  hist_len  = 200;
+  hist_i    = 0;
+
+  hist_gr   = 0;
+  hist_vp   = hist_gr   + hist_len;
+  hist_op   = hist_vp   + hist_len;
+  hist_mode = hist_op   + hist_len;
+
+  ui_gr = 0;
+  ui_vp = 0;
+  ui_op = 0;
+
+  i = 0;
+  loop(hist_len,
+    hist_gr[i]   = 0;
+    hist_vp[i]   = 0;
+    hist_op[i]   = 0;
+    hist_mode[i] = 0;
+    i += 1;
+  );
+);
+
+// ---------- colors ----------
+wet_r = 0.32; wet_g = 0.83; wet_b = 1.00; // cyan
+voc_r = 1.00; voc_g = 0.78; voc_b = 0.26; // amber
+oth_r = 0.35; oth_g = 1.00; oth_b = 0.60; // green
+vio_r = 0.92; vio_g = 0.38; vio_b = 1.00; // violet
+txt_r = 0.95; txt_g = 0.96; txt_b = 0.98;
+sub_r = 0.72; sub_g = 0.74; sub_b = 0.80;
+
+// ---------- derived state ----------
+db_lo = -72;
+db_hi = 0;
+
+Ey_db  = ui_db(Ey);
+Ex_db  = ui_db(Ex_use);
+
+vcr    = max(v_credit, 0.000000000001);
+ocr    = max(o_credit, 0.000000000001);
+oeff   = max(o_credit * other_auth_eff, 0.000000000001);
+
+vcr_db = ui_db(vcr);
+ocr_db = ui_db(ocr);
+oef_db = ui_db(oeff);
+
+gap_db     = rdB;
+over_db    = max(0, rdB - thr_db);
+allowed_db = min(0, Ex_db + thr_db);
+
+mode = 0; // 0 live, 1 grace, 2 tail, 3 aging
+ref_off ? (
+  mode = tail_w < 0.999 ? 1 : 2;
+  age_w > 0.001 ? mode = 3;
+);
+
+mode == 0 ? ( sprintf(#mode, "LIVE");  );
+mode == 1 ? ( sprintf(#mode, "GRACE"); );
+mode == 2 ? ( sprintf(#mode, "TAIL");  );
+mode == 3 ? ( sprintf(#mode, "AGING"); );
+
+// ---------- history push ----------
+ui_a = 0.80;
+
+ui_gr = ui_gr*ui_a + gr_db*(1-ui_a);
+ui_vp = ui_vp*ui_a + v_perm*(1-ui_a);
+ui_op = ui_op*ui_a + o_perm*(1-ui_a);
+
+hist_gr[hist_i]   = ui_gr;
+hist_vp[hist_i]   = ui_vp;
+hist_op[hist_i]   = ui_op;
+hist_mode[hist_i] = mode;
+
+hist_i += 1;
+hist_i >= hist_len ? hist_i = 0;
+
+// ---------- background ----------
+ui_set(0.06,0.07,0.08,1);
+gfx_rect(0,0,gfx_w,gfx_h,1);
+
+// ---------- layout ----------
+pad      = SX(10);
+gap      = SX(10);
+header_h = SY(38);
+mid_h    = SY(126);
+
+hx = pad;
+hy = pad;
+hw = gfx_w - pad*2;
+hh = header_h;
+
+lx = pad;
+ly = hy + hh + SY(8);
+lw = floor((gfx_w - pad*2 - gap) * 0.54);
+lh = mid_h;
+
+rx = lx + lw + gap;
+ry = ly;
+rw = gfx_w - pad - rx;
+rh = lh;
+
+bx = pad;
+by = ly + lh + SY(8);
+bw = gfx_w - pad*2;
+bh = gfx_h - by - pad;
+
+// keep bottom panel usable if host squashes height
+bh < SY(48) ? bh = SY(48);
+
+// ============================================================
+// HEADER
+// ============================================================
+ui_panel(hx,hy,hw,hh);
+
+gfx_setfont(1, "Arial", font_title);
+ui_shadow_text(hx+SX(8), hy+SY(6), "Reverb Tail Tamer V3", txt_r,txt_g,txt_b, 1);
+
+gfx_setfont(3, "Arial", font_small);
+sprintf(#hdr, "mode %s   gap %.1f dB   thr %.1f dB   over %.1f dB",
+  #mode, gap_db, thr_db, over_db);
+ui_shadow_text(hx+SX(8), hy+SY(23), #hdr, sub_r,sub_g,sub_b, 1);
+
+// right-side header cluster
+chip_y = hy + SY(13);
+chip_h = SY(16);
+chip_gap = SX(4);
+
+w_voc   = SX(34);
+w_oth   = SX(34);
+w_grace = SX(46);
+w_tail  = SX(38);
+w_age   = SX(44);
+gr_w    = SX(88);
+
+chips_total = w_voc + chip_gap + w_oth + chip_gap + w_grace + chip_gap + w_tail + chip_gap + w_age;
+chips_x = hx + hw - gr_w - SX(14) - chips_total - SX(10);
+gr_x    = hx + hw - gr_w - SX(12);
+
+ui_chip(chips_x, chip_y, w_voc, chip_h, "VOC",   max(v_active, v_perm*0.65), voc_r,voc_g,voc_b);
+chips_x += w_voc + chip_gap;
+ui_chip(chips_x, chip_y, w_oth, chip_h, "OTH",   max(o_active, o_perm*0.65), oth_r,oth_g,oth_b);
+chips_x += w_oth + chip_gap;
+ui_chip(chips_x, chip_y, w_grace, chip_h, "GRACE", mode == 1 ? 1 : 0, vio_r,vio_g,vio_b);
+chips_x += w_grace + chip_gap;
+ui_chip(chips_x, chip_y, w_tail, chip_h, "TAIL",  mode == 2 ? 1 : 0, wet_r,wet_g,wet_b);
+chips_x += w_tail + chip_gap;
+ui_chip(chips_x, chip_y, w_age, chip_h, "AGING", mode == 3 ? max(0.45, age_w) : 0, vio_r,vio_g,vio_b);
+
+gfx_setfont(2, "Arial", font_big);
+sprintf(#grtxt, "-%.1f dB", gr_db);
+ui_shadow_text(gr_x, hy+SY(2), #grtxt, 0.95,0.98,1.00, 1);
+
+gfx_setfont(3, "Arial", max(8, floor(font_small*0.92)));
+ui_shadow_text(gr_x+SX(36), hy+SY(23), "DUCK", sub_r,sub_g,sub_b, 1);
+
+// ============================================================
+// LEFT PANEL : WET VS JUSTIFIED
+// ============================================================
+ui_panel(lx,ly,lw,lh);
+
+gfx_setfont(1, "Arial", font_mid);
+ui_shadow_text(lx+SX(8), ly+SY(7), "Wet vs Justified", txt_r,txt_g,txt_b, 1);
+
+mx = lx + SX(44);
+mw = lw - SX(56);
+
+ey_y = ly + SY(36);
+ex_y = ly + SY(62);
+lane_h = SY(14);
+
+// shared scale lines + labels
+ui_set(1,1,1,0.06);
+ti = 0;
+loop(5,
+  tdb = db_lo + ti*(db_hi-db_lo)/4;
+  tx  = mx + mw*ui_norm_db(tdb);
+  gfx_line(tx, ly+SY(24), tx, ly+SY(94), 1);
+
+  sprintf(#tick, "%.0f", tdb);
+  ui_shadow_text(tx-SX(8), ly+SY(19), #tick, 0.48,0.50,0.56, 1);
+
+  ti += 1;
+);
+
+// labels
+gfx_setfont(3, "Arial", font_small);
+ui_shadow_text(lx+SX(8), ey_y+SY(2), "Ey", 0.80,0.90,0.98, 1);
+ui_shadow_text(lx+SX(8), ex_y+SY(2), "Ex", 0.80,0.90,0.98, 1);
+
+// bars
+ui_meter(mx, ey_y, mw, lane_h, Ey_db, wet_r,wet_g,wet_b, 0.92);
+ui_meter(mx, ex_y, mw, lane_h, Ex_db, wet_r,wet_g,wet_b, 0.55);
+
+// allowed Ey marker + excess overlay
+ey_x    = mx + mw*ui_norm_db(Ey_db);
+ex_x    = mx + mw*ui_norm_db(Ex_db);
+allow_x = mx + mw*ui_norm_db(allowed_db);
+
+ui_set(1,1,1,0.58);
+gfx_line(allow_x, ey_y-SY(2), allow_x, ey_y+lane_h+SY(2), 1);
+
+over_db > 0 ? (
+  ui_set(vio_r,vio_g,vio_b,0.42);
+  gfx_rect(min(allow_x, ey_x), ey_y, abs(ey_x - allow_x), lane_h, 1);
+
+  ui_set(vio_r,vio_g,vio_b,0.80);
+  gfx_line(allow_x, ey_y-SY(2), allow_x, ey_y+lane_h+SY(2), 1);
+);
+
+// threshold / over bracket strip
+br_y = ly + SY(92);
+br_h = SY(8);
+
+ui_set(1,1,1,0.06);
+gfx_rect(mx, br_y, mw, br_h, 1);
+
+ui_set(1,1,1,0.18);
+gfx_rect(min(ex_x, allow_x), br_y+SY(2), max(1, abs(allow_x - ex_x)), max(2, SY(4)), 1);
+
+ui_set(1,1,1,0.45);
+gfx_line(ex_x,    br_y, ex_x,    br_y+br_h, 1);
+gfx_line(allow_x, br_y, allow_x, br_y+br_h, 1);
+
+over_db > 0 ? (
+  ui_set(vio_r,vio_g,vio_b,0.60);
+  gfx_rect(min(allow_x, ey_x), br_y+SY(1), max(1, abs(ey_x - allow_x)), max(2, SY(6)), 1);
+);
+
+// micro readout
+gfx_setfont(3, "Arial", font_small);
+sprintf(#l1, "Gap %.1f dB   Thr %.1f dB   Over %.1f dB",
+  gap_db, thr_db, over_db);
+ui_shadow_text(lx+SX(8), ly+SY(106), #l1, sub_r,sub_g,sub_b, 1);
+
+sprintf(#l2, "Ey %+.1f dB   Ex %+.1f dB   allowed Ey %+.1f dB",
+  Ey_db, Ex_db, allowed_db);
+ui_shadow_text(lx+SX(8), ly+SY(118), #l2, 0.64,0.67,0.73, 1);
+
+// ============================================================
+// RIGHT PANEL : AUTHORITY / CONTRIBUTION
+// ============================================================
+ui_panel(rx,ry,rw,rh);
+
+gfx_setfont(1, "Arial", font_mid);
+ui_shadow_text(rx+SX(8), ry+SY(7), "Authority / Contribution", txt_r,txt_g,txt_b, 1);
+
+rmx = rx + SX(54);
+rmw = rw - SX(64);
+
+r1 = ry + SY(34);
+r2 = ry + SY(54);
+r3 = ry + SY(74);
+r4 = ry + SY(94);
+rh_lane = SY(10);
+
+// faint scale lines
+ui_set(1,1,1,0.04);
+ti = 0;
+loop(5,
+  tdb = db_lo + ti*(db_hi-db_lo)/4;
+  tx  = rmx + rmw*ui_norm_db(tdb);
+  gfx_line(tx, ry+SY(26), tx, ry+SY(108), 1);
+  ti += 1;
+);
+
+gfx_setfont(3, "Arial", font_small);
+ui_shadow_text(rx+SX(8), r1+SY(1), "V",     0.90,0.84,0.45, 1);
+ui_shadow_text(rx+SX(8), r2+SY(1), "O raw", 0.72,0.98,0.80, 1);
+ui_shadow_text(rx+SX(8), r3+SY(1), "O eff", 0.72,0.98,0.80, 1);
+ui_shadow_text(rx+SX(8), r4+SY(1), "Ex",    0.80,0.90,0.98, 1);
+
+// V credit
+ui_meter(rmx, r1, rmw, rh_lane, vcr_db, voc_r,voc_g,voc_b, 0.90);
+
+// O raw
+ui_meter(rmx, r2, rmw, rh_lane, ocr_db, oth_r,oth_g,oth_b, 0.28);
+
+// O effective + suppression mask
+ui_meter(rmx, r3, rmw, rh_lane, oef_db, oth_r,oth_g,oth_b, 0.86);
+o_raw_x = rmx + rmw*ui_norm_db(ocr_db);
+o_eff_x = rmx + rmw*ui_norm_db(oef_db);
+
+o_raw_x > o_eff_x ? (
+  ui_set(vio_r,vio_g,vio_b,0.35);
+  gfx_rect(o_eff_x, r3, max(1, o_raw_x - o_eff_x), rh_lane, 1);
+  ui_set(vio_r,vio_g,vio_b,0.68);
+  gfx_line(o_eff_x, r3-SY(1), o_eff_x, r3+rh_lane+SY(1), 1);
+);
+
+// Ex result (power-sum result)
+ui_meter(rmx, r4, rmw, rh_lane, Ex_db, wet_r,wet_g,wet_b, 0.92);
+
+// micro text
+sprintf(#r1txt, "Guard %.0f%%   Other auth eff %.0f%%",
+  v_guard*100, other_auth_eff*100);
+ui_shadow_text(rx+SX(8), ry+SY(109), #r1txt, sub_r,sub_g,sub_b, 1);
+
+sprintf(#r2txt, "V perm %.0f%%   O perm %.0f%%   ratio %.2f",
+  v_perm*100, o_perm*100, ratio);
+ui_shadow_text(rx+SX(8), ry+SY(121), #r2txt, 0.64,0.67,0.73, 1);
+
+// ============================================================
+// BOTTOM PANEL : HISTORY
+// ============================================================
+ui_panel(bx,by,bw,bh);
+
+gfx_setfont(1, "Arial", font_mid);
+ui_shadow_text(bx+SX(8), by+SY(6), "History", txt_r,txt_g,txt_b, 1);
+
+sx0 = bx + SX(54);
+sy0 = by + SY(18);
+sw0 = bw - SX(62);
+sh0 = bh - SY(26);
+
+sh0 < SY(20) ? sh0 = SY(20);
+
+// mode ribbons
+colw = max(1, sw0 / max(1, hist_len-1));
+i = 0;
+loop(hist_len,
+  idx = hist_i + i;
+  idx >= hist_len ? idx -= hist_len;
+
+  mx0 = sx0 + i*sw0 / max(1, hist_len-1);
+  m = hist_mode[idx];
+
+  m == 1 ? (
+    ui_set(vio_r,vio_g,vio_b,0.045); gfx_rect(mx0, sy0, colw+1, sh0, 1);
+  );
+
+  m == 2 ? (
+    ui_set(wet_r,wet_g,wet_b,0.028); gfx_rect(mx0, sy0, colw+1, sh0, 1);
+  );
+
+  m == 3 ? (
+    ui_set(vio_r,vio_g,vio_b,0.080); gfx_rect(mx0, sy0, colw+1, sh0, 1);
+  );
+
+  i += 1;
+);
+
+// grid
+ui_set(1,1,1,0.06); gfx_rect(sx0, sy0, sw0, sh0, 0);
+ui_set(1,1,1,0.04); gfx_line(sx0, sy0+sh0*0.5, sx0+sw0, sy0+sh0*0.5, 1);
+ui_set(1,1,1,0.03); gfx_line(sx0, sy0+sh0*0.25, sx0+sw0, sy0+sh0*0.25, 1);
+ui_set(1,1,1,0.03); gfx_line(sx0, sy0+sh0*0.75, sx0+sw0, sy0+sh0*0.75, 1);
+
+// traces
+gr_rng = max(6, maxduck_db);
+
+ui_scope(hist_gr, sx0, sy0, sw0, sh0, 0, gr_rng, wet_r,wet_g,wet_b, 0.96);
+ui_scope(hist_vp, sx0, sy0, sw0, sh0, 0, 1,      voc_r,voc_g,voc_b, 0.78);
+ui_scope(hist_op, sx0, sy0, sw0, sh0, 0, 1,      oth_r,oth_g,oth_b, 0.78);
+
+// legend
+gfx_setfont(3, "Arial", font_small);
+
+legend_y = by + bh - SY(16);
+
+ui_shadow_text(bx+SX(8),  legend_y, "GR", wet_r,wet_g,wet_b, 1);
+sprintf(#h1, "-%.1f", gr_db);
+ui_shadow_text(bx+SX(24), legend_y, #h1, sub_r,sub_g,sub_b, 1);
+
+ui_shadow_text(bx+SX(72), legend_y, "Vp", voc_r,voc_g,voc_b, 1);
+sprintf(#h2, "%.2f", v_perm);
+ui_shadow_text(bx+SX(92), legend_y, #h2, sub_r,sub_g,sub_b, 1);
+
+ui_shadow_text(bx+SX(138), legend_y, "Op", oth_r,oth_g,oth_b, 1);
+sprintf(#h3, "%.2f", o_perm);
+ui_shadow_text(bx+SX(158), legend_y, #h3, sub_r,sub_g,sub_b, 1);
+
+sprintf(#h4, "tail %.0f%%   age %.0f%%   mix %.0f%%",
+  tail_w*100, age_w*100, mix*100);
+ui_shadow_text(bx+SX(220), legend_y, #h4, 0.64,0.67,0.73, 1);
