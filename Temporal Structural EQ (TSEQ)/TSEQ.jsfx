@@ -1,4 +1,4 @@
-desc:Temporal Structural EQ (TSEQ)
+desc:TSEQ v5 - Per-Bucket Threshold/Knee
 in_pin:Input L
 in_pin:Input R
 in_pin:none
@@ -13,42 +13,90 @@ out_pin:CV Coarse
 // #HELP: Buckets are signed (%): positive adds that time-scale detail, negative removes it (smoothing/decluttering) without a traditional frequency EQ.
 // #HELP: Outputs: audio out is dry + shaped detail; CV Fine/Coarse are envelope followers of bucket activity (fine = fastest two buckets, coarse = slowest three) for modulation/sidechain use.
 
-// #TOOLTIP: Activity gate threshold for bucket extraction. Lower = more always-on detail; higher = only strong transients/motion trigger buckets. (Applies per bucket via RMS gate.)
-slider1:Threshold=-42<-96,0,1>-Threshold (dB)
-// #TOOLTIP: Final output trim after TSEQ processing. Use to level-match for honest A/B (and to compensate if you cut/boost lots of detail).
+
+slider1:Thr1=-42<-96,0,0.1>-Bucket 1 Threshold (dB)
 slider2:Output=0<-24,24,0.1>-Output Gain (dB)
-// #TOOLTIP: Ultra-fine micro-transients / edge grit. + adds bite/spark, − smooths micro-clicks and “sand”.
-slider3:Bucket1=0<-100,100,1>-Bucket 1 (%)
-// #TOOLTIP: Transient skin / snap / consonant edge. + adds definition, − softens spitty attack.
-slider4:Bucket2=0<-100,100,1>-Bucket 2 (%)
-// #TOOLTIP: Short detail / texture motion. + adds presence/texture, − reduces chatter/rasp.
-slider5:Bucket3=0<-100,100,1>-Bucket 3 (%)
-// #TOOLTIP: Mid-slow movement / articulation. + adds punchy motion and “shape,” − reduces wobble/over-modulated feel.
-slider6:Bucket4=0<-100,100,1>-Bucket 4 (%)
-// #TOOLTIP: Slow structure / macro contour. + adds heft/gestural motion, − flattens uneven swells and over-bloom.
-slider7:Bucket5=0<-100,100,1>-Bucket 5 (%)
+slider3:Bucket1=0<-100,100,1>-Bucket 1 Gain (%)
+slider4:Bucket2=0<-100,100,1>-Bucket 2 Gain (%)
+slider5:Bucket3=0<-100,100,1>-Bucket 3 Gain (%)
+slider6:Bucket4=0<-100,100,1>-Bucket 4 Gain (%)
+slider7:Bucket5=0<-100,100,1>-Bucket 5 Gain (%)
+slider8:Thr2=-42<-96,0,0.1>-Bucket 2 Threshold (dB)
+slider9:Thr3=-42<-96,0,0.1>-Bucket 3 Threshold (dB)
+slider10:Thr4=-42<-96,0,0.1>-Bucket 4 Threshold (dB)
+slider11:Thr5=-42<-96,0,0.1>-Bucket 5 Threshold (dB)
+slider12:Knee1=6<0,24,0.1>-Bucket 1 Knee (dB)
+slider13:Knee2=6<0,24,0.1>-Bucket 2 Knee (dB)
+slider14:Knee3=6<0,24,0.1>-Bucket 3 Knee (dB)
+slider15:Knee4=6<0,24,0.1>-Bucket 4 Knee (dB)
+slider16:Knee5=6<0,24,0.1>-Bucket 5 Knee (dB)
 
 @init
 ext_noinit = 1;
 gfx_ext_retina = 1;
 PI = 3.141592653589793;
+LOG10 = log(10);
 eps = 0.000000000001;
 
 K = 5;
 THR_DEFAULT = -42;
+KNEE_DEFAULT = 6;
 OUT_DEFAULT = 0;
 
-SLIDER1_MASK = 1;
-SLIDER2_MASK = 2;
-SLIDER3_MASK = 4;
-SLIDER4_MASK = 8;
-SLIDER5_MASK = 16;
-SLIDER6_MASK = 32;
-SLIDER7_MASK = 64;
+function update_consts()
+local(sr)
+(
+  sr = max(srate, 1);
+
+  out_target = 10^(slider2/20);
+
+  tgt0 = slider3 * 0.01;
+  tgt1 = slider4 * 0.01;
+  tgt2 = slider5 * 0.01;
+  tgt3 = slider6 * 0.01;
+  tgt4 = slider7 * 0.01;
+
+  rms_a   = 1 - exp(-1 / (sr * tau_rms_ms     * 0.001));
+  cv_att  = 1 - exp(-1 / (sr * cv_attack_ms   * 0.001));
+  cv_rel  = 1 - exp(-1 / (sr * cv_release_ms  * 0.001));
+  lim_att = 1 - exp(-1 / (sr * lim_attack_ms  * 0.001));
+  lim_rel = 1 - exp(-1 / (sr * lim_release_ms * 0.001));
+  viz_att = 1 - exp(-1 / (sr * viz_attack_ms  * 0.001));
+  viz_rel = 1 - exp(-1 / (sr * viz_release_ms * 0.001));
+  dc_r    = exp(-2 * PI * dc_fc / sr);
+  gain_a  = 1 - exp(-1 / (sr * gain_smooth_ms * 0.001));
+  out_a   = 1 - exp(-1 / (sr * out_smooth_ms  * 0.001));
+);
+
 
 function clamp(x, lo, hi)
 (
   x < lo ? lo : x > hi ? hi : x;
+);
+
+function slider_mask_from_index(slidx)
+(
+  2 ^ (slidx - 1);
+);
+
+function touch_slider_index(slidx)
+local(mask)
+(
+  mask = slider_mask_from_index(slidx);
+  sliderchange(mask);
+  slider_automate(mask);
+);
+
+function end_touch_slider(slidx)
+local(mask)
+(
+  mask = slider_mask_from_index(slidx);
+  slider_automate(mask, 1);
+);
+
+function add_ui_undo_point()
+(
+  sliderchange(-1.0);
 );
 
 function ms_to_n(ms)
@@ -59,6 +107,121 @@ local(n)
   (n & 1) ? n : n += 1;
   n > MAXN ? n = MAXN;
   n;
+);
+
+function bucket_gain_idx(idx)
+(
+  3 + idx;
+);
+
+function bucket_thr_idx(idx)
+(
+  idx == 0 ? 1 : 7 + idx;
+);
+
+function bucket_knee_idx(idx)
+(
+  12 + idx - 0;
+);
+
+function bucket_ms_value(idx)
+(
+  idx == 0 ? ms0
+  : idx == 1 ? ms1
+  : idx == 2 ? ms2
+  : idx == 3 ? ms3
+  : ms4;
+);
+
+function bucket_gain_pct_val(idx)
+(
+  slider(bucket_gain_idx(idx));
+);
+
+function bucket_gain_norm(idx)
+(
+  bucket_gain_pct_val(idx) * 0.01;
+);
+
+function bucket_thr_db_val(idx)
+(
+  slider(bucket_thr_idx(idx));
+);
+
+function bucket_knee_db_val(idx)
+(
+  slider(bucket_knee_idx(idx));
+);
+
+function set_output_db(db)
+(
+  db = clamp(db, -24, 24);
+  slider2 = db;
+  out_target = 10^(db/20);
+  touch_slider_index(2);
+  update_consts();
+);
+
+function set_output_from_pos(normv)
+local(v)
+(
+  v = clamp(normv, 0, 1);
+  set_output_db(-24 + 48*v);
+);
+
+function set_bucket_gain_pct(idx, pct)
+local(v, slidx, g)
+(
+  v = clamp(pct, -100, 100);
+  slidx = bucket_gain_idx(idx);
+  slider(slidx) = v;
+  g = v * 0.01;
+
+  idx == 0 ? tgt0 = g;
+  idx == 1 ? tgt1 = g;
+  idx == 2 ? tgt2 = g;
+  idx == 3 ? tgt3 = g;
+  idx == 4 ? tgt4 = g;
+
+  touch_slider_index(slidx);
+  update_consts();
+);
+
+function set_bucket_gain_from_norm(idx, normv)
+(
+  set_bucket_gain_pct(idx, clamp(normv, -1, 1) * 100);
+);
+
+function set_bucket_threshold_db(idx, db)
+local(v, slidx)
+(
+  v = clamp(db, -96, 0);
+  slidx = bucket_thr_idx(idx);
+  slider(slidx) = v;
+  touch_slider_index(slidx);
+);
+
+function set_bucket_threshold_from_pos(idx, normv)
+local(v)
+(
+  v = clamp(normv, 0, 1);
+  set_bucket_threshold_db(idx, -96 + 96*v);
+);
+
+function set_bucket_knee_db(idx, db)
+local(v, slidx)
+(
+  v = clamp(db, 0, 24);
+  slidx = bucket_knee_idx(idx);
+  slider(slidx) = v;
+  touch_slider_index(slidx);
+);
+
+function set_bucket_knee_from_pos(idx, normv)
+local(v)
+(
+  v = clamp(normv, 0, 1);
+  set_bucket_knee_db(idx, 24 * v);
 );
 
 function build_sg_deg2(base, N)
@@ -142,32 +305,6 @@ function rebuild_all()
   gcur0 = 0; gcur1 = 0; gcur2 = 0; gcur3 = 0; gcur4 = 0;
 );
 
-function update_consts()
-local(sr)
-(
-  sr = max(srate, 1);
-
-  th_lin = 10^(slider1/20);
-  out_target = 10^(slider2/20);
-
-  tgt0 = slider3 * 0.01;
-  tgt1 = slider4 * 0.01;
-  tgt2 = slider5 * 0.01;
-  tgt3 = slider6 * 0.01;
-  tgt4 = slider7 * 0.01;
-
-  rms_a   = 1 - exp(-1 / (sr * tau_rms_ms     * 0.001));
-  cv_att  = 1 - exp(-1 / (sr * cv_attack_ms   * 0.001));
-  cv_rel  = 1 - exp(-1 / (sr * cv_release_ms  * 0.001));
-  lim_att = 1 - exp(-1 / (sr * lim_attack_ms  * 0.001));
-  lim_rel = 1 - exp(-1 / (sr * lim_release_ms * 0.001));
-  viz_att = 1 - exp(-1 / (sr * viz_attack_ms  * 0.001));
-  viz_rel = 1 - exp(-1 / (sr * viz_release_ms * 0.001));
-  dc_r    = exp(-2 * PI * dc_fc / sr);
-  gain_a  = 1 - exp(-1 / (sr * gain_smooth_ms * 0.001));
-  out_a   = 1 - exp(-1 / (sr * out_smooth_ms  * 0.001));
-);
-
 function fetch(base, lag)
 local(idx)
 (
@@ -191,14 +328,24 @@ local(sum, i, t, lag)
 );
 
 function gate_band(xL, xR, band)
-local(pwr, rms, g, mag, vc)
+local(pwr, rms, rmsdb, thdb, kneedb, startd, endd, t, g, mag, vc, band_half)
 (
   pwr = 0.5 * (xL*xL + xR*xR);
   ema[band] += rms_a * (pwr - ema[band]);
   rms = sqrt(ema[band] + eps);
+  rmsdb = 20 * log(rms + eps) / LOG10;
 
-  g = (rms - th_lin) / (th_lin * 2 + eps);
-  g = clamp(g, 0, 1);
+  thdb = bucket_thr_db_val(band);
+  kneedb = bucket_knee_db_val(band);
+
+  kneedb <= 0.001 ? (
+    g = rmsdb >= thdb ? 1 : 0;
+  ) : (
+    startd = thdb - kneedb;
+    endd = thdb + kneedb;
+    t = clamp((rmsdb - startd) / (endd - startd + eps), 0, 1);
+    g = t * t * (3 - 2*t);
+  );
 
   nbL = xL * g;
   nbR = xR * g;
@@ -227,119 +374,6 @@ local(y)
   y;
 );
 
-function bucket_mask(idx)
-(
-  idx == 0 ? SLIDER3_MASK
-  : idx == 1 ? SLIDER4_MASK
-  : idx == 2 ? SLIDER5_MASK
-  : idx == 3 ? SLIDER6_MASK
-  : SLIDER7_MASK;
-);
-
-function bucket_slider_val(idx)
-(
-  idx == 0 ? slider3
-  : idx == 1 ? slider4
-  : idx == 2 ? slider5
-  : idx == 3 ? slider6
-  : slider7;
-);
-
-function set_bucket_pct(idx, pct)
-local(v, g)
-(
-  v = clamp(pct, -100, 100);
-  g = v * 0.01;
-
-  idx == 0 ? (
-    slider3 = v; tgt0 = g;
-    sliderchange(slider3);
-    slider_automate(slider3);
-  );
-  idx == 1 ? (
-    slider4 = v; tgt1 = g;
-    sliderchange(slider4);
-    slider_automate(slider4);
-  );
-  idx == 2 ? (
-    slider5 = v; tgt2 = g;
-    sliderchange(slider5);
-    slider_automate(slider5);
-  );
-  idx == 3 ? (
-    slider6 = v; tgt3 = g;
-    sliderchange(slider6);
-    slider_automate(slider6);
-  );
-  idx == 4 ? (
-    slider7 = v; tgt4 = g;
-    sliderchange(slider7);
-    slider_automate(slider7);
-  );
-
-  update_consts();
-);
-
-function set_bucket_from_norm(idx, normv)
-(
-  set_bucket_pct(idx, clamp(normv, -1, 1) * 100);
-);
-
-function bucket_norm(idx)
-(
-  bucket_slider_val(idx) * 0.01;
-);
-
-function end_touch_slider(idx)
-(
-  idx == 1 ? slider_automate(slider1, 1)
-  : idx == 2 ? slider_automate(slider2, 1)
-  : idx == 3 ? slider_automate(slider3, 1)
-  : idx == 4 ? slider_automate(slider4, 1)
-  : idx == 5 ? slider_automate(slider5, 1)
-  : idx == 6 ? slider_automate(slider6, 1)
-  : idx == 7 ? slider_automate(slider7, 1);
-);
-
-function add_ui_undo_point()
-(
-  sliderchange(-1.0);
-);
-
-function set_threshold_db(db)
-(
-  db = clamp(db, -96, 0);
-  slider1 = db;
-  th_lin = 10^(db/20);
-  sliderchange(slider1);
-  slider_automate(slider1);
-  update_consts();
-);
-
-function set_output_db(db)
-(
-  db = clamp(db, -24, 24);
-  slider2 = db;
-  out_target = 10^(db/20);
-  sliderchange(slider2);
-  slider_automate(slider2);
-  update_consts();
-);
-
-function set_threshold_from_pos(normv)
-local(v)
-(
-  v = clamp(normv, 0, 1);
-  set_threshold_db(-96 + 96*v);
-);
-
-function set_output_from_pos(normv)
-local(v)
-(
-  v = clamp(normv, 0, 1);
-  set_output_db(-24 + 48*v);
-);
-
 function over_rect(rx, ry, rw, rh)
 (
   mouse_x >= rx && mouse_x <= (rx + rw) && mouse_y >= ry && mouse_y <= (ry + rh);
@@ -353,6 +387,11 @@ function y_to_gain(my)
 function y_to_norm(my)
 (
   clamp((bot_m - my) / usable_h, 0, 1);
+);
+
+function knee_to_px(db)
+(
+  2 + (db / 24) * (0.12 * usable_h);
 );
 
 MAXN = 1023;
@@ -534,10 +573,10 @@ num_ch > 2 ? (
   spl3 = coarseEnv;
 );
 
-@gfx 670 235
+@gfx 760 250
 gfx_getchar();
 
-left_m = 34;
+left_m = 16;
 right_m = 34;
 top_m = 28;
 bot_m = gfx_h - 38;
@@ -546,10 +585,13 @@ center_y = 0.5 * (top_m + bot_m);
 half_h = 0.44 * usable_h;
 track_w = 18;
 panel_gap = 10;
-panel_x0 = left_m + track_w + 18;
+panel_x0 = left_m;
 panel_x1 = gfx_w - right_m - track_w - 18;
 panel_w = panel_x1 - panel_x0;
 bucket_w = (panel_w - (K - 1) * panel_gap) / K;
+knee_w = 12;
+main_pad = 4;
+main_w = bucket_w - knee_w - 8;
 
 mouse_l = mouse_cap & 1;
 left_press = mouse_l && !(prev_mouse_cap & 1);
@@ -557,37 +599,84 @@ right_press = (mouse_cap & 2) && !(prev_mouse_cap & 2);
 shift_held = mouse_cap & 8;
 ctrl_held = mouse_cap & 4;
 
+hover_type = 0;
+hover_idx = -1;
+tooltip_slot = 90;
+tooltip_on = 0;
+
+out_x = gfx_w - right_m - track_w;
+out_y = bot_m - ((slider2 + 24) / 48) * usable_h;
+over_rect(out_x, top_m, track_w, usable_h) ? (
+  hover_type = 1;
+  tooltip_on = 1;
+  sprintf(tooltip_slot, "Output gain: drag or wheel. Right-click resets to %0.1f dB.", OUT_DEFAULT);
+) : (
+  bx = panel_x0;
+  i = 0;
+  loop(K,
+    thdb = bucket_thr_db_val(i);
+    kndb = bucket_knee_db_val(i);
+    th_y = bot_m - ((thdb + 96) / 96) * usable_h;
+    knee_px = knee_to_px(kndb);
+    knee_x = bx + bucket_w - knee_w - 3;
+    knee_y = top_m;
+    th_hover_h = max(10, 2 * (knee_px + 2));
+
+    over_rect(knee_x, knee_y, knee_w, usable_h) ? (
+      hover_type = 300 + i;
+      hover_idx = i;
+      tooltip_on = 1;
+      sprintf(tooltip_slot, "Bucket %d knee: softer threshold transition. Lower = sharper, higher = smoother. Drag or wheel. Right-click resets.", i+1);
+      i = 1000;
+    ) : over_rect(bx + 2, th_y - 0.5 * th_hover_h, main_w, th_hover_h) ? (
+      hover_type = 200 + i;
+      hover_idx = i;
+      tooltip_on = 1;
+      sprintf(tooltip_slot, "Bucket %d threshold: higher values only pass stronger events. Drag or wheel. Right-click resets.", i+1);
+      i = 1000;
+    ) : over_rect(bx, top_m, main_w + 2, usable_h) ? (
+      hover_type = 100 + i;
+      hover_idx = i;
+      tooltip_on = 1;
+      sprintf(tooltip_slot, "Bucket %d gain: up boosts, down attenuates. Shift+click auditions. Right-click resets.", i+1);
+      i = 1000;
+    );
+
+    bx += bucket_w + panel_gap;
+    i += 1;
+  );
+);
+
 wheel = mouse_wheel;
 wheel != 0 ? (
   dir = wheel > 0 ? 1 : -1;
   steps = floor(abs(wheel) / 120 + 0.5);
   steps < 1 ? steps = 1;
 
-  thr_step = ctrl_held ? 0.25 : 1.0;
   out_step = ctrl_held ? 0.1 : 0.5;
   bucket_step = ctrl_held ? 1 : 2;
+  thr_step = ctrl_held ? 0.25 : 1.0;
+  knee_step = ctrl_held ? 0.1 : 0.5;
 
-  over_rect(left_m, top_m, track_w, usable_h) ? (
-    set_threshold_db(slider1 + dir * steps * thr_step);
-    end_touch_slider(1);
-    add_ui_undo_point();
-  ) : over_rect(gfx_w - right_m - track_w, top_m, track_w, usable_h) ? (
+  hover_type == 1 ? (
     set_output_db(slider2 + dir * steps * out_step);
     end_touch_slider(2);
     add_ui_undo_point();
-  ) : (
-    i = 0;
-    bx = panel_x0;
-    loop(K,
-      over_rect(bx, top_m, bucket_w, usable_h) ? (
-        set_bucket_pct(i, bucket_slider_val(i) + dir * steps * bucket_step);
-        end_touch_slider(3 + i);
-        add_ui_undo_point();
-        i = 1000;
-      );
-      bx += bucket_w + panel_gap;
-      i += 1;
-    );
+  ) : hover_type >= 100 && hover_type < 200 ? (
+    idx = hover_type - 100;
+    set_bucket_gain_pct(idx, bucket_gain_pct_val(idx) + dir * steps * bucket_step);
+    end_touch_slider(bucket_gain_idx(idx));
+    add_ui_undo_point();
+  ) : hover_type >= 200 && hover_type < 300 ? (
+    idx = hover_type - 200;
+    set_bucket_threshold_db(idx, bucket_thr_db_val(idx) + dir * steps * thr_step);
+    end_touch_slider(bucket_thr_idx(idx));
+    add_ui_undo_point();
+  ) : hover_type >= 300 && hover_type < 400 ? (
+    idx = hover_type - 300;
+    set_bucket_knee_db(idx, bucket_knee_db_val(idx) + dir * steps * knee_step);
+    end_touch_slider(bucket_knee_idx(idx));
+    add_ui_undo_point();
   );
 
   mouse_wheel = 0;
@@ -597,93 +686,78 @@ left_press ? (
   drag_id = 0;
   drag_slider = 0;
 
-  over_rect(left_m, top_m, track_w, usable_h) ? (
-    drag_id = 10;
-    drag_slider = 1;
-    set_threshold_from_pos(y_to_norm(mouse_y));
-    ui_dirty = 1;
-  ) : over_rect(gfx_w - right_m - track_w, top_m, track_w, usable_h) ? (
-    drag_id = 11;
+  hover_type == 1 ? (
+    drag_id = 1;
     drag_slider = 2;
     set_output_from_pos(y_to_norm(mouse_y));
     ui_dirty = 1;
-  ) : (
-    i = 0;
-    bx = panel_x0;
-    loop(K,
-      over_rect(bx, top_m, bucket_w, usable_h) ? (
-        shift_held ? (
-          soloBand = soloBand == i ? -1 : i;
-        ) : (
-          drag_id = 100 + i;
-          drag_slider = 3 + i;
-          set_bucket_from_norm(i, y_to_gain(mouse_y));
-          ui_dirty = 1;
-        );
-        i = 1000;
-      );
-      bx += bucket_w + panel_gap;
-      i += 1;
+  ) : hover_type >= 100 && hover_type < 200 ? (
+    idx = hover_type - 100;
+    shift_held ? (
+      soloBand = soloBand == idx ? -1 : idx;
+    ) : (
+      drag_id = hover_type;
+      drag_slider = bucket_gain_idx(idx);
+      set_bucket_gain_from_norm(idx, y_to_gain(mouse_y));
+      ui_dirty = 1;
     );
+  ) : hover_type >= 200 && hover_type < 300 ? (
+    idx = hover_type - 200;
+    drag_id = hover_type;
+    drag_slider = bucket_thr_idx(idx);
+    set_bucket_threshold_from_pos(idx, y_to_norm(mouse_y));
+    ui_dirty = 1;
+  ) : hover_type >= 300 && hover_type < 400 ? (
+    idx = hover_type - 300;
+    drag_id = hover_type;
+    drag_slider = bucket_knee_idx(idx);
+    set_bucket_knee_from_pos(idx, y_to_norm(mouse_y));
+    ui_dirty = 1;
   );
 );
 
 right_press ? (
-  over_rect(left_m, top_m, track_w, usable_h) ? (
-    set_threshold_db(THR_DEFAULT);
-    end_touch_slider(1);
-    add_ui_undo_point();
-  ) : over_rect(gfx_w - right_m - track_w, top_m, track_w, usable_h) ? (
+  hover_type == 1 ? (
     set_output_db(OUT_DEFAULT);
     end_touch_slider(2);
     add_ui_undo_point();
-  ) : (
-    i = 0;
-    bx = panel_x0;
-    loop(K,
-      over_rect(bx, top_m, bucket_w, usable_h) ? (
-        shift_held ? (
-          soloBand = -1;
-        ) : (
-          set_bucket_from_norm(i, 0);
-          end_touch_slider(3 + i);
-          add_ui_undo_point();
-        );
-        i = 1000;
-      );
-      bx += bucket_w + panel_gap;
-      i += 1;
+  ) : hover_type >= 100 && hover_type < 200 ? (
+    idx = hover_type - 100;
+    shift_held ? (
+      soloBand = -1;
+    ) : (
+      set_bucket_gain_from_norm(idx, 0);
+      end_touch_slider(bucket_gain_idx(idx));
+      add_ui_undo_point();
     );
+  ) : hover_type >= 200 && hover_type < 300 ? (
+    idx = hover_type - 200;
+    set_bucket_threshold_db(idx, THR_DEFAULT);
+    end_touch_slider(bucket_thr_idx(idx));
+    add_ui_undo_point();
+  ) : hover_type >= 300 && hover_type < 400 ? (
+    idx = hover_type - 300;
+    set_bucket_knee_db(idx, KNEE_DEFAULT);
+    end_touch_slider(bucket_knee_idx(idx));
+    add_ui_undo_point();
   );
 );
 
 mouse_l ? (
-  drag_id == 10 ? (
-    set_threshold_from_pos(y_to_norm(mouse_y));
-    ui_dirty = 1;
-  );
-  drag_id == 11 ? (
+  drag_id == 1 ? (
     set_output_from_pos(y_to_norm(mouse_y));
     ui_dirty = 1;
-  );
-  drag_id == 100 ? (
-    set_bucket_from_norm(0, y_to_gain(mouse_y));
+  ) : drag_id >= 100 && drag_id < 200 ? (
+    idx = drag_id - 100;
+    set_bucket_gain_from_norm(idx, y_to_gain(mouse_y));
     ui_dirty = 1;
-  );
-  drag_id == 101 ? (
-    set_bucket_from_norm(1, y_to_gain(mouse_y));
+  ) : drag_id >= 200 && drag_id < 300 ? (
+    idx = drag_id - 200;
+    set_bucket_threshold_from_pos(idx, y_to_norm(mouse_y));
     ui_dirty = 1;
-  );
-  drag_id == 102 ? (
-    set_bucket_from_norm(2, y_to_gain(mouse_y));
-    ui_dirty = 1;
-  );
-  drag_id == 103 ? (
-    set_bucket_from_norm(3, y_to_gain(mouse_y));
-    ui_dirty = 1;
-  );
-  drag_id == 104 ? (
-    set_bucket_from_norm(4, y_to_gain(mouse_y));
+  ) : drag_id >= 300 && drag_id < 400 ? (
+    idx = drag_id - 300;
+    set_bucket_knee_from_pos(idx, y_to_norm(mouse_y));
     ui_dirty = 1;
   );
 ) : (
@@ -704,25 +778,7 @@ gfx_rect(0, 0, gfx_w, gfx_h, 1);
 gfx_set(0.12, 0.13, 0.16, 1);
 gfx_rect(panel_x0 - 10, top_m - 10, panel_w + 20, usable_h + 20, 1);
 
-// threshold track
-th_x = left_m;
-th_y = bot_m - ((slider1 + 96) / 96) * usable_h;
-gfx_set(0.16, 0.16, 0.20, 1);
-gfx_rect(th_x, top_m, track_w, usable_h, 1);
-gfx_set(0.35, 0.70, 0.90, 0.22);
-gfx_rect(th_x + 2, th_y, track_w - 4, bot_m - th_y, 1);
-gfx_set(0.80, 0.90, 0.95, 1);
-gfx_line(th_x - 2, th_y, th_x + track_w + 2, th_y);
-gfx_x = th_x - 2;
-gfx_y = 6;
-gfx_drawstr("THR");
-gfx_x = th_x - 8;
-gfx_y = gfx_h - 20;
-gfx_printf("%0.0f", slider1);
-
 // output track
-out_x = gfx_w - right_m - track_w;
-out_y = bot_m - ((slider2 + 24) / 48) * usable_h;
 gfx_set(0.16, 0.16, 0.20, 1);
 gfx_rect(out_x, top_m, track_w, usable_h, 1);
 gfx_set(0.85, 0.70, 0.30, 0.20);
@@ -742,45 +798,76 @@ gfx_line(panel_x0, center_y, panel_x1, center_y);
 
 gfx_x = panel_x0;
 gfx_y = 6;
-soloBand >= 0 ? gfx_drawstr("BUCKET AUDITION") : gfx_drawstr("SIGNED DETAIL BUCKETS");
+soloBand >= 0 ? gfx_drawstr("TSEQ BUCKET AUDITION") : gfx_drawstr("TSEQ — SIGNED STRUCTURAL BUCKETS");
 
 gfx_x = panel_x0;
 gfx_y = gfx_h - 20;
-gfx_drawstr("Wheel edits hovered control   Shift+click audition   Drag down removes   Right-click resets hovered control");
+gfx_drawstr("Gain = main area   Threshold = cyan band   Knee = side strip   Shift+click = audition   Wheel edits hovered control");
 
 bx = panel_x0;
 i = 0;
 loop(K,
-  g = bucket_norm(i);
+  g = bucket_gain_norm(i);
   gy = center_y - g * half_h;
   eh = viz[i] * half_h;
 
+  thdb = bucket_thr_db_val(i);
+  kndb = bucket_knee_db_val(i);
+  th_y = bot_m - ((thdb + 96) / 96) * usable_h;
+  knee_px = knee_to_px(kndb);
+  knee_x = bx + bucket_w - knee_w - 3;
+
   gfx_set(0.10, 0.11, 0.13, 1);
-  gfx_rect(bx, top_m, bucket_w, usable_h, 1);
+  gfx_rect(bx, top_m, main_w + 2, usable_h, 1);
+  gfx_rect(knee_x, top_m, knee_w, usable_h, 1);
 
   soloBand == i ? (
     gfx_set(0.95, 0.86, 0.30, 1);
+  ) : hover_type == 100 + i ? (
+    gfx_set(0.62, 0.64, 0.72, 1);
+  ) : hover_type == 200 + i ? (
+    gfx_set(0.42, 0.74, 0.95, 1);
+  ) : hover_type == 300 + i ? (
+    gfx_set(0.88, 0.62, 0.95, 1);
   ) : (
     gfx_set(0.26, 0.27, 0.32, 1);
   );
-  gfx_rect(bx, top_m, bucket_w, usable_h, 0);
+  gfx_rect(bx, top_m, main_w + 2, usable_h, 0);
+  gfx_rect(knee_x, top_m, knee_w, usable_h, 0);
 
+  // bucket activity
   i < 2 ? gfx_set(0.25 + 0.10*i, 0.65 - 0.06*i, 0.52, 0.40)
         : i == 2 ? gfx_set(0.45, 0.60, 0.34, 0.40)
         : gfx_set(0.54 + 0.04*(i-3), 0.48 - 0.06*(i-3), 0.24, 0.40);
-  gfx_rect(bx + 3, center_y - eh, bucket_w - 6, 2 * eh, 1);
+  gfx_rect(bx + 3, center_y - eh, main_w - 4, 2 * eh, 1);
 
+  // threshold knee band
+  gfx_set(0.26, 0.72, 0.96, 0.18);
+  gfx_rect(bx + 3, th_y - knee_px, main_w - 4, 2 * knee_px, 1);
+  gfx_set(0.50, 0.84, 0.98, 1);
+  gfx_line(bx + 3, th_y, bx + main_w - 1, th_y);
+
+  // gain line
   g >= 0 ? gfx_set(0.45, 0.90, 0.58, 1) : gfx_set(0.95, 0.40, 0.35, 1);
-  gfx_line(bx + 4, gy, bx + bucket_w - 4, gy);
-  gfx_line(bx + 4, gy - 1, bx + bucket_w - 4, gy - 1);
-  gfx_rect(bx + bucket_w * 0.5 - 8, gy - 3, 16, 6, 1);
+  gfx_line(bx + 4, gy, bx + main_w - 2, gy);
+  gfx_line(bx + 4, gy - 1, bx + main_w - 2, gy - 1);
+  gfx_rect(bx + 0.5 * main_w - 8, gy - 3, 16, 6, 1);
 
+  // guide lines
   gfx_set(0.28, 0.29, 0.34, 0.7);
-  gfx_line(bx, top_m + 0.25*usable_h, bx + bucket_w, top_m + 0.25*usable_h);
-  gfx_line(bx, top_m + 0.75*usable_h, bx + bucket_w, top_m + 0.75*usable_h);
+  gfx_line(bx, top_m + 0.25*usable_h, bx + main_w + 2, top_m + 0.25*usable_h);
+  gfx_line(bx, top_m + 0.75*usable_h, bx + main_w + 2, top_m + 0.75*usable_h);
 
+  // knee strip fill
+  ky = bot_m - (kndb / 24) * usable_h;
+  gfx_set(0.82, 0.58, 0.94, 0.30);
+  gfx_rect(knee_x + 2, ky, knee_w - 4, bot_m - ky, 1);
+  gfx_set(0.95, 0.72, 0.98, 1);
+  gfx_line(knee_x + 1, ky, knee_x + knee_w - 1, ky);
+
+  // labels
   gfx_set(0.92, 0.92, 0.96, 1);
-  gfx_x = bx + 6;
+  gfx_x = bx + 5;
   gfx_y = top_m + 6;
   i == 0 ? gfx_drawstr("0.25 ms")
   : i == 1 ? gfx_drawstr("0.75 ms")
@@ -788,7 +875,18 @@ loop(K,
   : i == 3 ? gfx_drawstr("5.0 ms")
   : gfx_drawstr("10 ms");
 
-  gfx_x = bx + 8;
+  gfx_x = bx + 5;
+  gfx_y = top_m + 20;
+  gfx_printf("T%0.0f", thdb);
+
+  gfx_x = knee_x - 2;
+  gfx_y = top_m + 6;
+  gfx_drawstr("K");
+  gfx_x = knee_x - 7;
+  gfx_y = bot_m + 2;
+  gfx_printf("%0.1f", kndb);
+
+  gfx_x = bx + 5;
   gfx_y = bot_m - 16;
   gfx_printf("%+.0f%%", 100*g);
 
@@ -814,3 +912,18 @@ gfx_drawstr("fine CV");
 gfx_x = panel_x0 + half_meter_w + 8;
 gfx_y = meter_y - 14;
 gfx_drawstr("coarse CV");
+
+// tooltip
+tooltip_on ? (
+  gfx_set(0.04, 0.04, 0.06, 0.94);
+  gfx_measurestr(tooltip_slot, ttw, tth);
+  ttx = mouse_x + 14;
+  tty = mouse_y + 14;
+  ttx + ttw + 10 > gfx_w ? ttx = gfx_w - ttw - 10;
+  tty + tth + 8 > gfx_h ? tty = gfx_h - tth - 8;
+  gfx_rect(ttx - 4, tty - 3, ttw + 8, tth + 6, 1);
+  gfx_set(0.92, 0.92, 0.96, 1);
+  gfx_x = ttx;
+  gfx_y = tty;
+  gfx_drawstr(tooltip_slot);
+);

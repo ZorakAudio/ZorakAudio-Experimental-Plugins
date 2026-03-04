@@ -194,6 +194,224 @@ static JsfxSections extractJsfxSections(const char* jsfxText)
   return out;
 }
 
+
+// -------------------------
+// JSFX -> portable-EEL compatibility shim
+//
+// Some JSFX scripts use special lvalue forms like:
+//   slider(i) = v;
+//   spl(i)    = v;
+// REAPER's JSFX dialect supports these, but portable EEL2 does not.
+// We rewrite them into ordinary function calls:
+//   slider(i, v);
+//   spl(i, v);
+// and provide slider()/spl() builtins below.
+// This is a best-effort text transform (not a full parser), but it covers the
+// common UI patterns used by many JSFX scripts.
+// -------------------------
+static inline bool isIdentChar(char c)
+{
+  return std::isalnum((unsigned char)c) || c == '_';
+}
+
+static std::string preprocessJsfxForPortableEel(const std::string& in)
+{
+  std::string out;
+  out.reserve(in.size());
+
+  bool inLineComment = false;
+  bool inBlockComment = false;
+  bool inString = false;
+  char strQuote = 0;
+
+  auto tryRewriteAssign = [&](size_t& i, const char* name) -> bool
+  {
+    const size_t nlen = std::strlen(name);
+    if (i + nlen + 1 >= in.size()) return false;
+    if (in.compare(i, nlen, name) != 0) return false;
+
+    // Word boundary: avoid matching "myslider(...)" etc.
+    if (i > 0 && isIdentChar(in[i - 1])) return false;
+    if (i + nlen < in.size() && isIdentChar(in[i + nlen])) return false;
+
+    const size_t parenStart = i + nlen;
+    if (in[parenStart] != '(') return false;
+
+    // Find matching ')', respecting nested parens and strings.
+    size_t p = parenStart + 1;
+    int depth = 1;
+    bool s = false;
+    char q = 0;
+
+    while (p < in.size() && depth > 0)
+    {
+      const char c = in[p];
+
+      if (s)
+      {
+        if (c == '\\' && p + 1 < in.size()) { p += 2; continue; }
+        if (c == q) { s = false; ++p; continue; }
+        ++p;
+        continue;
+      }
+
+      if (c == '"' || c == '\'') { s = true; q = c; ++p; continue; }
+      if (c == '(') { ++depth; ++p; continue; }
+      if (c == ')') { --depth; ++p; continue; }
+      ++p;
+    }
+
+    if (depth != 0) return false;
+
+    const size_t parenEnd = p - 1; // index of ')'
+
+    // Look for assignment after ")"
+    size_t a = p;
+    while (a < in.size() && std::isspace((unsigned char)in[a])) ++a;
+
+    // Only rewrite plain "=", not "=="
+    if (a >= in.size() || in[a] != '=') return false;
+    if (a + 1 < in.size() && in[a + 1] == '=') return false;
+
+    // Parse RHS up to ';' at top level
+    size_t rhsStart = a + 1;
+    while (rhsStart < in.size() && std::isspace((unsigned char)in[rhsStart])) ++rhsStart;
+
+    size_t r = rhsStart;
+    int par = 0, br = 0, cr = 0;
+    bool rs = false;
+    char rq = 0;
+
+    while (r < in.size())
+    {
+      const char c = in[r];
+
+      if (rs)
+      {
+        if (c == '\\' && r + 1 < in.size()) { r += 2; continue; }
+        if (c == rq) { rs = false; ++r; continue; }
+        ++r;
+        continue;
+      }
+
+      // stop at end-of-statement
+      if (c == ';' && par == 0 && br == 0 && cr == 0)
+        break;
+
+      if (c == '"' || c == '\'') { rs = true; rq = c; ++r; continue; }
+      if (c == '(') { ++par; ++r; continue; }
+      if (c == ')' && par > 0) { --par; ++r; continue; }
+      if (c == '[') { ++br; ++r; continue; }
+      if (c == ']' && br > 0) { --br; ++r; continue; }
+      if (c == '{') { ++cr; ++r; continue; }
+      if (c == '}' && cr > 0) { --cr; ++r; continue; }
+
+      ++r;
+    }
+
+    const size_t rhsEnd = r;
+
+    // Emit rewritten call
+    out.append(name);
+    out.push_back('(');
+    out.append(in.substr(parenStart + 1, parenEnd - (parenStart + 1)));
+    out.append(", ");
+    out.append(in.substr(rhsStart, rhsEnd - rhsStart));
+    out.push_back(')');
+
+    // Preserve trailing ';' if present
+    if (r < in.size() && in[r] == ';')
+    {
+      out.push_back(';');
+      ++r;
+    }
+
+    i = r;
+    return true;
+  };
+
+  for (size_t i = 0; i < in.size(); )
+  {
+    const char c = in[i];
+
+    // Track comments/strings so we don't rewrite inside them.
+    if (inLineComment)
+    {
+      out.push_back(c);
+      ++i;
+      if (c == '\n') inLineComment = false;
+      continue;
+    }
+    if (inBlockComment)
+    {
+      out.push_back(c);
+      if (c == '*' && i + 1 < in.size() && in[i + 1] == '/')
+      {
+        out.push_back('/');
+        i += 2;
+        inBlockComment = false;
+      }
+      else
+      {
+        ++i;
+      }
+      continue;
+    }
+    if (inString)
+    {
+      out.push_back(c);
+      if (c == '\\' && i + 1 < in.size())
+      {
+        out.push_back(in[i + 1]);
+        i += 2;
+        continue;
+      }
+      if (c == strQuote) inString = false;
+      ++i;
+      continue;
+    }
+
+    // Enter comment/string states
+    if (c == '/' && i + 1 < in.size() && in[i + 1] == '/')
+    {
+      out.push_back('/');
+      out.push_back('/');
+      i += 2;
+      inLineComment = true;
+      continue;
+    }
+    if (c == '/' && i + 1 < in.size() && in[i + 1] == '*')
+    {
+      out.push_back('/');
+      out.push_back('*');
+      i += 2;
+      inBlockComment = true;
+      continue;
+    }
+    if (c == '"' || c == '\'')
+    {
+      out.push_back(c);
+      inString = true;
+      strQuote = c;
+      ++i;
+      continue;
+    }
+
+    // Rewrite slider()/spl() assignments
+    if (c == 's')
+    {
+      if (tryRewriteAssign(i, "slider")) continue;
+      if (tryRewriteAssign(i, "spl"))    continue;
+    }
+
+    out.push_back(c);
+    ++i;
+  }
+
+  return out;
+}
+
+
 // -------------------------
 // Draw command list (JUCE playback)
 // -------------------------
@@ -545,6 +763,14 @@ public:
     // See: https://www.reaper.fm/sdk/js/advfunc.php
     NSEEL_addfunc_varparm_ex("sliderchange",   1, 0, NSEEL_PProc_THIS, &eel_sliderchange,   nullptr);
     NSEEL_addfunc_varparm_ex("slider_automate",1, 0, NSEEL_PProc_THIS, &eel_slider_automate,nullptr);
+
+    // JSFX dynamic access helpers (REAPER dialect)
+    // Many scripts use slider(i) / slider(i)=v and spl(i) / spl(i)=v.
+    // We implement portable equivalents (see preprocessJsfxForPortableEel()).
+    NSEEL_addfunc_varparm_ex("slider",   1, 0, NSEEL_PProc_THIS, &eel_slider,   nullptr);
+    NSEEL_addfunc_varparm_ex("spl",      1, 0, NSEEL_PProc_THIS, &eel_spl,      nullptr);
+    NSEEL_addfunc_varparm_ex("freembuf", 1, 0, NSEEL_PProc_THIS, &eel_freembuf, nullptr);
+
   }
 
   static uint64_t sliderMaskFromArg(GfxVm* self, EEL_F* argPtr, double argValue)
@@ -905,6 +1131,10 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     if (self->gfx_x) *self->gfx_x = (double)w;
     if (self->gfx_y) *self->gfx_y = (double)h;
 
+    // JSFX compatibility: allow gfx_measurestr(str, w, h)
+    if (np >= 2 && parms[1]) *parms[1] = (EEL_F)w;
+    if (np >= 3 && parms[2]) *parms[2] = (EEL_F)h;
+
     return (EEL_F)w;
   }
 
@@ -1036,6 +1266,71 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   }
 
   // -------------------------------------------------------------------
+  // JSFX helpers: slider(i) / spl(i) dynamic access (portable implementation)
+  //
+  // Notes:
+  // - slider(i) is 1-based (slider(1) == slider1).
+  // - Many JSFX scripts also *assign* to slider(i) / spl(i). Portable EEL2 does
+  //   not support function-call lvalues, so we rewrite those assignments to
+  //   slider(i, v) / spl(i, v) in preprocessJsfxForPortableEel().
+  // -------------------------------------------------------------------
+  static EEL_F NSEEL_CGEN_CALL eel_slider(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*)opaque;
+    if (!self || np < 1) return 0.0;
+
+    const int idx = (int)std::llround((double)*parms[0]);
+    if (idx < 1 || idx > 64)
+    {
+      // Setter form still returns the value (mirrors assignment-as-expression).
+      return (np >= 2) ? *parms[1] : 0.0;
+    }
+
+    EEL_F* ptr = self->sliderPtrs[(size_t)(idx - 1)];
+    if (!ptr)
+      return (np >= 2) ? *parms[1] : 0.0;
+
+    if (np >= 2)
+    {
+      *ptr = *parms[1];
+      return *ptr;
+    }
+
+    return *ptr;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_spl(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+    if (np < 1) return 0.0;
+
+    // In REAPER, spl() accesses audio channel sample registers.
+    // This lightweight @gfx interpreter does not expose audio, so:
+    //   spl(i)    -> 0
+    //   spl(i, v) -> returns v (ignored write)
+    return (np >= 2) ? *parms[1] : 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_freembuf(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*)opaque;
+    if (!self || np < 1) return 0.0;
+
+    int64_t n = (int64_t)std::llround((double)*parms[0]);
+    if (n < 0) n = 0;
+    if (n > 0x7fffffffLL) n = 0x7fffffffLL;
+
+    // Shrink/grow EEL RAM (mem[]).
+    if (self->m_vm)
+      NSEEL_VM_setramsize(self->m_vm, (unsigned int)n);
+
+    self->memSize = (int)n;
+    return 0.0;
+  }
+
+
+
+  // -------------------------------------------------------------------
   // VM-bound variables
   // -------------------------------------------------------------------
   EEL_F* gfx_x = nullptr;
@@ -1127,24 +1422,38 @@ public:
     // defined in init are available to gfx.
     const char* err = nullptr;
 
+    // JSFX dialect compatibility: rewrite slider(i)=v / spl(i)=v into portable EEL.
+    juce::String initErr;
     if (!sections.init.empty())
-      code_init = vm->compile_code(sections.init.c_str(), &err);
+    {
+      const std::string initCode = preprocessJsfxForPortableEel(sections.init);
+      code_init = vm->compile_code(initCode.c_str(), &err);
+
+      if (!code_init)
+      {
+        const char* e = err ? err : NSEEL_code_getcodeerror(vm->m_vm);
+        initErr = e ? e : "Unknown EEL compile error";
+      }
+    }
 
     err = nullptr;
     if (sections.hasGfx)
     {
       // Some scripts specify "@gfx" with no body. Treat it as a no-op rather than a hard error.
-      const char* gfxCode = sections.gfx.empty() ? "0;" : sections.gfx.c_str();
-      code_gfx = vm->compile_code(gfxCode, &err);
+      const std::string gfxCode = preprocessJsfxForPortableEel(sections.gfx.empty() ? std::string("0;") : sections.gfx);
+      code_gfx = vm->compile_code(gfxCode.c_str(), &err);
 
       if (!code_gfx)
       {
         const char* e = err ? err : NSEEL_code_getcodeerror(vm->m_vm);
         lastError = e ? e : "Unknown EEL compile error";
+
+        if (initErr.isNotEmpty())
+          lastError = "@init compile error (also):\n" + initErr + "\n\n@gfx compile error:\n" + lastError;
       }
     }
 
-    // We execute @init ONCE (on first frame) so scripts that configure gfx state
+// We execute @init ONCE (on first frame) so scripts that configure gfx state
     // there (gfx_clear, fonts, precomputed UI tables, etc) behave as expected.
   }
 

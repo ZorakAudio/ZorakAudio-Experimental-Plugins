@@ -551,6 +551,18 @@ class Parser:
         return FunctionDef(self._new_id(), t_fun.span, fn_name, params, locals_, body)
 
 
+
+    def _is_assign_target(self, n: Node) -> bool:
+        # Valid assignment targets ("lvalues") in our JSFX subset:
+        #   - variables (x, slider1, spl0, ...)
+        #   - memory indexing (mem[...] or ptr[...] => Index nodes)
+        #   - dynamic slider/spl access: slider(i), spl(i)
+        if isinstance(n, (Var, Index)):
+            return True
+        if isinstance(n, Call) and n.fn in ("slider", "spl") and len(n.args) == 1:
+            return True
+        return False
+
     def parse_expr(self, min_prec: int) -> Node:
         lhs = self.parse_prefix()
 
@@ -570,8 +582,8 @@ class Parser:
             rhs = self.parse_expr(prec + (0 if assoc_right else 1))
 
             if op in _RIGHT_ASSOC:
-                if not isinstance(lhs, (Var, Index)):
-                    raise SyntaxError(self._fmt_err("Assignment target must be a variable or index"))
+                if not self._is_assign_target(lhs):
+                    raise SyntaxError(self._fmt_err("Assignment target must be a variable, index, or slider()/spl() reference"))
                 lhs = Assign(self._new_id(), lhs.span, op, lhs, rhs)
             else:
                 lhs = Binary(self._new_id(), lhs.span, op, lhs, rhs)
@@ -1178,6 +1190,57 @@ class LLVMModuleEmitter:
         idx = ir.Constant(self.i32, ref.index)
         return builder.gep(st, [zero, fld, idx], inbounds=True)
 
+
+    def _dyn_state_array_ptr(self, builder: ir.IRBuilder, st: ir.Value, which: str, idx_expr: Node) -> Tuple[ir.Value, ir.Value]:
+        """Return (ptr, in_range) for dynamic access to st->spl[] or st->sliders[].
+
+        JSFX/EEL2 idiom:
+          - spl(i) is 0-based (spl(0) == spl0)
+          - slider(i) is 1-based (slider(1) == slider1)
+
+        Out-of-range reads return 0, and out-of-range writes are ignored.
+        """
+        # Evaluate index expression as f64, then convert to integer with the same
+        # tiny bias used elsewhere (matches EEL2's common truncation behavior).
+        idx_v = self.emit_expr(builder, st, idx_expr)
+        idx_v = builder.fadd(idx_v, self._const_f64(1.0e-5))
+        idx_i64 = builder.fptosi(idx_v, self.i64)
+
+        if which == "slider":
+            # slider(1) -> slider1 -> index 0 in our array
+            idx0_i64 = builder.sub(idx_i64, self._const_i64(1))
+            field = 1  # sliders[64]
+        elif which == "spl":
+            # spl(0) -> spl0 -> index 0
+            idx0_i64 = idx_i64
+            field = 0  # spl[64]
+        else:
+            raise ValueError(f"Unknown dynamic state array {which!r}")
+
+        zero_i64 = self._const_i64(0)
+        sixty4_i64 = self._const_i64(64)
+
+        ge0 = builder.icmp_signed(">=", idx0_i64, zero_i64)
+        lt64 = builder.icmp_signed("<", idx0_i64, sixty4_i64)
+        in_range = builder.and_(ge0, lt64)
+
+        # Clamp to [0, 63] so GEP is always in-bounds even when out-of-range;
+        # we still use 'in_range' to return 0 / ignore writes.
+        idx_clamped = idx0_i64
+        isneg = builder.icmp_signed("<", idx_clamped, zero_i64)
+        idx_clamped = builder.select(isneg, zero_i64, idx_clamped)
+
+        max63_i64 = self._const_i64(63)
+        isgt = builder.icmp_signed(">", idx_clamped, max63_i64)
+        idx_clamped = builder.select(isgt, max63_i64, idx_clamped)
+
+        idx_i32 = builder.trunc(idx_clamped, self.i32)
+
+        z = ir.Constant(self.i32, 0)
+        fld = ir.Constant(self.i32, field)
+        ptr = builder.gep(st, [z, fld, idx_i32], inbounds=True)
+        return ptr, in_range
+
     def _get_mem_ptr(self, builder: ir.IRBuilder, st: ir.Value) -> ir.Value:
         zero = ir.Constant(self.i32, 0)
         fld = ir.Constant(self.i32, 3)
@@ -1462,26 +1525,44 @@ class LLVMModuleEmitter:
 
             raise ValueError(f"Unsupported binary op {n.op}")
 
-        # assignment
+                # assignment
         if isinstance(n, Assign):
             rhs = self.emit_expr(builder, st, n.value)
 
-            # resolve target pointer
+            guarded = False
+
+            # resolve target pointer (and, for dynamic refs, an in-range mask)
             if isinstance(n.target, Var):
                 if n.target.name == "mem":
                     raise ValueError("Cannot assign to mem")
                 ptr = self._get_slot_ptr(builder, st, n.target.name)  # works for locals too
+                in_range = ir.Constant(self.i1, 1)
 
             elif isinstance(n.target, Index):
                 ptr = self._mem_elem_ptr(builder, st, n.target.base, n.target.index)
+                in_range = ir.Constant(self.i1, 1)
+
+            elif isinstance(n.target, Call) and n.target.fn in ("slider", "spl") and len(n.target.args) == 1:
+                # Dynamic access: slider(i) / spl(i)
+                ptr, in_range = self._dyn_state_array_ptr(builder, st, n.target.fn, n.target.args[0])
+                guarded = True
+
             else:
                 raise ValueError("Invalid assignment target")
 
             if n.op == "=":
-                builder.store(rhs, ptr)
+                if guarded:
+                    with builder.if_then(in_range):
+                        builder.store(rhs, ptr)
+                else:
+                    builder.store(rhs, ptr)
                 return rhs
 
             cur = builder.load(ptr)
+            if guarded:
+                # JSFX behavior: out-of-range reads as 0
+                cur = builder.select(in_range, cur, self._const_f64(0.0))
+
             if n.op == "+=":
                 out = builder.fadd(cur, rhs)
             elif n.op == "-=":
@@ -1493,12 +1574,27 @@ class LLVMModuleEmitter:
             else:
                 raise ValueError(f"Unsupported assign op {n.op}")
 
-            builder.store(out, ptr)
+            if guarded:
+                # JSFX behavior: out-of-range writes are ignored
+                with builder.if_then(in_range):
+                    builder.store(out, ptr)
+            else:
+                builder.store(out, ptr)
+
             return out
 
-        # call
+# call
         if isinstance(n, Call):
             fn = n.fn
+
+            # Dynamic slider/spl access (JSFX idiom)
+            if fn in ("slider", "spl"):
+                if len(n.args) != 1:
+                    raise ValueError(f"{fn} expects 1 arg")
+                ptr, in_range = self._dyn_state_array_ptr(builder, st, fn, n.args[0])
+                val = builder.load(ptr)
+                return builder.select(in_range, val, self._const_f64(0.0))
+
 
             # ------------------------------------------------------------
             # DSP-only compatibility stubs
