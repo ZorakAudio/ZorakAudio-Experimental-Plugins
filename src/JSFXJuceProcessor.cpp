@@ -2349,19 +2349,64 @@ private:
         const bool captureStateWrites = inputDirty;
         inputDirty = false;
 
+        // IMPORTANT:
+        // When the @gfx VM preserves vars/mem during mouse drags (to avoid stomping UI
+        // interaction state like drag_id / prev_mouse_cap), the VM's mem[] can become
+        // stale relative to the audio-thread snapshot (which includes large DSP buffers).
+        //
+        // If we diff against the snapshot in that situation, we'd enqueue thousands of
+        // spurious mem/var writes back to the audio thread, corrupting DSP state and
+        // causing audible glitches/noise.
+        //
+        // So:
+        //  - If any mouse button is down: baseline vars/mem from the VM itself (pre-frame),
+        //    so we only push *actual* @gfx writes.
+        //  - Otherwise: baseline from the snapshot (VM is synced from it this frame).
+        const bool anyMouseButtonDown = (mouseCap & (1 | 2 | 64)) != 0;
+
         if (captureStateWrites)
         {
             if ((int) varsBefore.size() != s.varsCount)
                 varsBefore.resize ((size_t) s.varsCount);
 
-            if ((int) memBefore.size() != s.memN)
-                memBefore.resize ((size_t) s.memN);
+            if (anyMouseButtonDown)
+            {
+                if (s.varsCount > 0)
+                    interp.readVars (varsBefore.data(), (int) varsBefore.size());
+            }
+            else
+            {
+                if (s.varsCount > 0)
+                    std::memcpy (varsBefore.data(), s.vars, sizeof (double) * (size_t) s.varsCount);
+            }
 
-            if (s.varsCount > 0)
-                std::memcpy (varsBefore.data(), s.vars, sizeof (double) * (size_t) s.varsCount);
+            // Mem can be huge. Only track writes for "reasonable" sizes.
+            // (Most scripts that store UI toggles in mem[] use small ranges.)
+            constexpr int kMaxMemDiffDoubles = 262144;
 
-            if (s.memN > 0)
-                std::memcpy (memBefore.data(), s.mem, sizeof (double) * (size_t) s.memN);
+            if (anyMouseButtonDown)
+            {
+                if (s.memN > 0 && s.memN <= kMaxMemDiffDoubles)
+                {
+                    if ((int) memBefore.size() != s.memN)
+                        memBefore.resize ((size_t) s.memN);
+
+                    interp.readMem (memBefore.data(), (int) memBefore.size());
+                }
+                else
+                {
+                    // Skip mem diff/writeback entirely to avoid UI->DSP corruption.
+                    memBefore.clear();
+                }
+            }
+            else
+            {
+                if ((int) memBefore.size() != s.memN)
+                    memBefore.resize ((size_t) s.memN);
+
+                if (s.memN > 0)
+                    std::memcpy (memBefore.data(), s.mem, sizeof (double) * (size_t) s.memN);
+            }
         }
 
         interp.setMouse (mouseX, mouseY, mouseCap, wheel, hwheel);
