@@ -1,0 +1,800 @@
+desc:Hyperreal 3D Panner V2 (Headphones)
+
+// #HELP: Headphone-focused 3D panner that places a source in a stereo field using timing, head-shadow, distance, occlusion, and room cues.
+// #HELP: Azimuth sets left/right/front-back position; Distance pushes the source away and shifts the direct/room balance.
+// #HELP: Room adds early reflections for externalization; Externalize adds pinna-style cues that help placement feel more "out there."
+// #HELP: Occlusion muffles and partially hides the source behind material/obstacles; Width makes the source more point-like or more spread.
+// #HELP: Micro Motion adds tiny movement to keep static positions from collapsing inward on headphones. Use subtly.
+// #HELP: Drag the orange dot in the main field to set Azimuth + Distance visually.
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+// #TOOLTIP: Where the source sits around you. Left/right = obvious; front/back changes the character of the spatial cue.
+slider1:0<-180,180,0.1>Azimuth (deg)
+
+// #TOOLTIP: How far the source feels from you. Higher = quieter direct sound, more air loss, and more room dominance.
+slider2:0.25<0,1,0.001>Distance
+
+// #TOOLTIP: Amount of room cue and early reflections. Higher = more space/externalization; too much can wash out precision.
+slider3:0.35<0,1,0.001>Room
+
+// #TOOLTIP: How blocked or hidden the source is. Higher = more muffled/directly obscured, with reflections becoming more dominant.
+slider4:0<0,1,0.001>Occlusion
+
+// #TOOLTIP: Apparent source size. Lower = tighter point source; higher = wider/more diffuse source image.
+slider5:0.1<0,1,0.001>Width
+
+// #TOOLTIP: Final output trim after spatial processing. Use this to level-match bypass vs processed signal.
+slider6:0<-18,12,0.1>Output Trim (dB)
+
+// #TOOLTIP: Strength of the externalization cue. Higher = more pinna-style spectral shaping and stronger “coming from there” sensation.
+slider7:0.35<0,1,0.001>Externalize
+
+// #TOOLTIP: Tiny automatic motion added to stabilize the illusion on headphones. Keep low; too much sounds artificial.
+slider8:0<0,1,0.001>Micro Motion
+
+@init
+// --- delay buffers ---
+er_bufsize = 16384;
+er_mask = er_bufsize - 1;
+er_wpos = 0;
+
+itd_bufsize = 2048;
+itd_mask = itd_bufsize - 1;
+itd_wpos = 0;
+
+loop_cnt = 0;
+loop(er_bufsize,
+  erbuf[loop_cnt] = 0;
+  loop_cnt += 1;
+);
+
+loop_cnt = 0;
+loop(itd_bufsize,
+  itdbuf[loop_cnt] = 0;
+  loop_cnt += 1;
+);
+
+// --- smoothing ---
+smooth_k = 1 - exp(-1/(0.020*srate));
+coeff_k  = 1 - exp(-1/(0.040*srate));
+meter_k  = 1 - exp(-1/(0.050*srate));
+
+// --- splits ---
+split_fc = 950;
+split_a = exp(-2*$pi*split_fc/srate);
+
+occ_split_fc = 650;
+occ_split_a = exp(-2*$pi*occ_split_fc/srate);
+
+// --- reflection defaults (will be updated in @block) ---
+er_a1 = exp(-2*$pi*11000/srate);
+er_a2 = exp(-2*$pi*8500/srate);
+er_a3 = exp(-2*$pi*7000/srate);
+er_a4 = exp(-2*$pi*5200/srate);
+er_a5 = exp(-2*$pi*4200/srate);
+er_a6 = exp(-2*$pi*3400/srate);
+
+// --- smoothed params ---
+sm_az = 0;
+sm_depth = 0.25;
+sm_room = 0.35;
+sm_occ = 0;
+sm_width = 0.1;
+sm_trim = 1;
+sm_ext = 0.35;
+sm_motion = 0;
+
+// --- smoothed derived ---
+sm_direct_g = 1;
+sm_er_g = 0;
+sm_air_a = 0.2;
+sm_occ_a = 0.5;
+
+sm_er1_d = 300;
+sm_er2_d = 520;
+sm_er3_d = 780;
+sm_er4_d = 1120;
+sm_er5_d = 1500;
+sm_er6_d = 2100;
+
+// --- states ---
+air_state = 0;
+occ_lp = 0;
+occ_low_mem = 0;
+occ_ap_x1 = 0;
+occ_ap_y1 = 0;
+
+// head-shadow split states
+l_low = 0;
+r_low = 0;
+
+// ER filter states
+
+er_lp1 = 0;
+er_lp2 = 0;
+er_lp3 = 0;
+er_lp4 = 0;
+er_lp5 = 0;
+er_lp6 = 0;
+
+// ER decorrelation allpass (per channel)
+er_ap_x1_l = 0; er_ap_y1_l = 0;
+er_ap_x1_r = 0; er_ap_y1_r = 0;
+
+// Pinna (biquad) states
+pn_x1_l = 0; pn_x2_l = 0; pn_y1_l = 0; pn_y2_l = 0;
+pn_x1_r = 0; pn_x2_r = 0; pn_y1_r = 0; pn_y2_r = 0;
+
+// Pinna coeffs (smoothed)
+pn_b0_l = 1; pn_b1_l = 0; pn_b2_l = 0; pn_a1_l = 0; pn_a2_l = 0;
+pn_b0_r = 1; pn_b1_r = 0; pn_b2_r = 0; pn_a1_r = 0; pn_a2_r = 0;
+
+// Pinna coeff targets
+pn_t_b0_l = 1; pn_t_b1_l = 0; pn_t_b2_l = 0; pn_t_a1_l = 0; pn_t_a2_l = 0;
+pn_t_b0_r = 1; pn_t_b1_r = 0; pn_t_b2_r = 0; pn_t_a1_r = 0; pn_t_a2_r = 0;
+
+// Rear tint (very mild)
+rear_lp_l = 0;
+rear_lp_r = 0;
+rear_a = exp(-2*$pi*18000/srate);
+rear_t_a = rear_a;
+rear_mix = 0;
+rear_t_mix = 0;
+
+// Motion LFO
+t = 0;
+ph1 = 0;
+ph2 = 0;
+
+// meters / readouts
+meter_direct = 0;
+meter_er = 0;
+last_itd_ms = 0;
+last_air_fc = 18000;
+last_dist_m = 0.3;
+last_ext_db = 0;
+last_rear = 0;
+
+// UI interaction
+ui_drag = 0;
+ui_prev_down = 0;
+
+@block
+// Map sliders -> targets and derived values. Run every audio block so GFX-driven
+// slider edits propagate instantly.
+
+tgt_az = slider1;
+tgt_depth = slider2;
+tgt_room = slider3;
+tgt_occ = slider4;
+tgt_width = slider5;
+tgt_trim = 10^(slider6/20);
+tgt_ext = slider7;
+tgt_motion = slider8;
+
+// Distance mapping
+_depth2 = tgt_depth*tgt_depth;
+dist_m = 0.3 + 19.7*_depth2;
+last_dist_m = dist_m;
+
+// Direct gain vs distance/occlusion
+_direct_g = 1 / (1 + 0.23*dist_m);
+_direct_g *= 1 - 0.30*tgt_occ;
+_direct_g < 0.12 ? _direct_g = 0.12;
+tgt_direct_g = _direct_g;
+
+// Room gain vs distance + occlusion
+_er_g = tgt_room * (0.02 + 0.18*tgt_depth);
+_er_g *= 1 + 0.95*tgt_occ;
+tgt_er_g = _er_g;
+
+// Air absorption cutoff (distance + occlusion)
+air_fc = 18000 / (1 + 0.10*dist_m + 1.5*tgt_occ);
+air_fc < 1800 ? air_fc = 1800;
+air_fc > 18000 ? air_fc = 18000;
+last_air_fc = air_fc;
+tgt_air_a = exp(-2*$pi*air_fc/srate);
+
+// Occlusion cutoff (base lowpass)
+occ_fc = 12000 / (1 + 15*tgt_occ*tgt_occ);
+occ_fc < 500 ? occ_fc = 500;
+occ_fc > 12000 ? occ_fc = 12000;
+tgt_occ_a = exp(-2*$pi*occ_fc/srate);
+
+// Reflection delays (ms -> samples), scaled by distance + room
+// (a "shoebox-ish" cluster; not a full room model)
+er_scale = 1 + 0.65*tgt_depth + 0.35*tgt_room;
+
+tgt_er1_d = (6.2  * er_scale) * srate * 0.001;
+tgt_er2_d = (9.8  * er_scale) * srate * 0.001;
+tgt_er3_d = (14.9 * er_scale) * srate * 0.001;
+tgt_er4_d = (21.7 * er_scale) * srate * 0.001;
+tgt_er5_d = (30.5 * er_scale) * srate * 0.001;
+tgt_er6_d = (44.0 * er_scale) * srate * 0.001;
+
+// Reflection LPFs get darker with distance + occlusion
+hf_scale = 1 / (1 + 0.08*dist_m + 1.2*tgt_occ);
+
+c1 = 11000*hf_scale; c2 = 8500*hf_scale; c3 = 7000*hf_scale;
+c4 = 5200*hf_scale;  c5 = 4200*hf_scale; c6 = 3400*hf_scale;
+
+c1 < 1600 ? c1=1600; c2 < 1600 ? c2=1600; c3 < 1600 ? c3=1600;
+c4 < 1600 ? c4=1600; c5 < 1600 ? c5=1600; c6 < 1600 ? c6=1600;
+
+c1 > 18000 ? c1=18000; c2 > 18000 ? c2=18000; c3 > 18000 ? c3=18000;
+c4 > 18000 ? c4=18000; c5 > 18000 ? c5=18000; c6 > 18000 ? c6=18000;
+
+er_a1 = exp(-2*$pi*c1/srate);
+er_a2 = exp(-2*$pi*c2/srate);
+er_a3 = exp(-2*$pi*c3/srate);
+er_a4 = exp(-2*$pi*c4/srate);
+er_a5 = exp(-2*$pi*c5/srate);
+er_a6 = exp(-2*$pi*c6/srate);
+
+// --- Pinna externalize (biquad peaking EQ w/ negative gain = notch-like) ---
+az_rad = tgt_az * $pi / 180;
+az_s = sin(az_rad);
+az_c = cos(az_rad);
+az_abs = abs(az_s);
+rear = max(0, -az_c); // 0 front .. 1 back
+last_rear = rear;
+
+focus = 1 - 0.70*tgt_width;
+focus < 0.20 ? focus = 0.20;
+
+// notch depth in dB (negative). Behind sources get slightly deeper notch.
+notch_db = -6.0 * tgt_ext * (0.20 + 0.80*az_abs) * (1 + 0.70*rear);
+last_ext_db = notch_db;
+
+Q = 3.2 + 2.2*tgt_ext;
+
+base_fc = 6500 - 900*rear; // behind shifts down a bit
+span_fc = 1800 * focus;
+
+fc_l = base_fc - span_fc*az_s;
+fc_r = base_fc + span_fc*az_s;
+
+fc_l < 2200 ? fc_l = 2200; fc_l > 11000 ? fc_l = 11000;
+fc_r < 2200 ? fc_r = 2200; fc_r > 11000 ? fc_r = 11000;
+
+// helper: build peaking biquad coeffs into pn_t_* vars
+abs(notch_db) < 0.001 ? (
+  pn_t_b0_l = 1; pn_t_b1_l = 0; pn_t_b2_l = 0; pn_t_a1_l = 0; pn_t_a2_l = 0;
+  pn_t_b0_r = 1; pn_t_b1_r = 0; pn_t_b2_r = 0; pn_t_a1_r = 0; pn_t_a2_r = 0;
+) : (
+  // Left
+  A = 10^(notch_db/40);
+  w0 = 2*$pi*fc_l/srate;
+  cs = cos(w0);
+  sn = sin(w0);
+  alpha = sn/(2*Q);
+  b0 = 1 + alpha*A;
+  b1 = -2*cs;
+  b2 = 1 - alpha*A;
+  a0 = 1 + alpha/A;
+  a1 = -2*cs;
+  a2 = 1 - alpha/A;
+  b0 /= a0; b1 /= a0; b2 /= a0; a1 /= a0; a2 /= a0;
+  pn_t_b0_l = b0; pn_t_b1_l = b1; pn_t_b2_l = b2; pn_t_a1_l = a1; pn_t_a2_l = a2;
+
+  // Right
+  w0 = 2*$pi*fc_r/srate;
+  cs = cos(w0);
+  sn = sin(w0);
+  alpha = sn/(2*Q);
+  b0 = 1 + alpha*A;
+  b1 = -2*cs;
+  b2 = 1 - alpha*A;
+  a0 = 1 + alpha/A;
+  a1 = -2*cs;
+  a2 = 1 - alpha/A;
+  b0 /= a0; b1 /= a0; b2 /= a0; a1 /= a0; a2 /= a0;
+  pn_t_b0_r = b0; pn_t_b1_r = b1; pn_t_b2_r = b2; pn_t_a1_r = a1; pn_t_a2_r = a2;
+);
+
+// Rear tint targets (very gentle, only when externalize is up)
+rear_t_mix = 0.22 * rear * tgt_ext;
+rear_fc = 18000 / (1 + 2.2*rear*tgt_ext);
+rear_fc < 2500 ? rear_fc = 2500;
+rear_fc > 18000 ? rear_fc = 18000;
+rear_t_a = exp(-2*$pi*rear_fc/srate);
+
+@sample
+// --- input to mono ---
+mono_in = (spl0 + spl1) * 0.5;
+
+// --- smooth user params ---
+sm_az     += (tgt_az     - sm_az)     * smooth_k;
+sm_depth  += (tgt_depth  - sm_depth)  * smooth_k;
+sm_room   += (tgt_room   - sm_room)   * smooth_k;
+sm_occ    += (tgt_occ    - sm_occ)    * smooth_k;
+sm_width  += (tgt_width  - sm_width)  * smooth_k;
+sm_trim   += (tgt_trim   - sm_trim)   * smooth_k;
+sm_ext    += (tgt_ext    - sm_ext)    * smooth_k;
+sm_motion += (tgt_motion - sm_motion) * smooth_k;
+
+// --- smooth derived ---
+sm_direct_g += (tgt_direct_g - sm_direct_g) * smooth_k;
+sm_er_g     += (tgt_er_g     - sm_er_g)     * smooth_k;
+sm_air_a    += (tgt_air_a    - sm_air_a)    * coeff_k;
+sm_occ_a    += (tgt_occ_a    - sm_occ_a)    * coeff_k;
+
+sm_er1_d += (tgt_er1_d - sm_er1_d) * smooth_k;
+sm_er2_d += (tgt_er2_d - sm_er2_d) * smooth_k;
+sm_er3_d += (tgt_er3_d - sm_er3_d) * smooth_k;
+sm_er4_d += (tgt_er4_d - sm_er4_d) * smooth_k;
+sm_er5_d += (tgt_er5_d - sm_er5_d) * smooth_k;
+sm_er6_d += (tgt_er6_d - sm_er6_d) * smooth_k;
+
+// Smooth pinna biquad coefficients
+pn_b0_l += (pn_t_b0_l - pn_b0_l) * coeff_k;
+pn_b1_l += (pn_t_b1_l - pn_b1_l) * coeff_k;
+pn_b2_l += (pn_t_b2_l - pn_b2_l) * coeff_k;
+pn_a1_l += (pn_t_a1_l - pn_a1_l) * coeff_k;
+pn_a2_l += (pn_t_a2_l - pn_a2_l) * coeff_k;
+
+pn_b0_r += (pn_t_b0_r - pn_b0_r) * coeff_k;
+pn_b1_r += (pn_t_b1_r - pn_b1_r) * coeff_k;
+pn_b2_r += (pn_t_b2_r - pn_b2_r) * coeff_k;
+pn_a1_r += (pn_t_a1_r - pn_a1_r) * coeff_k;
+pn_a2_r += (pn_t_a2_r - pn_a2_r) * coeff_k;
+
+rear_a   += (rear_t_a   - rear_a)   * coeff_k;
+rear_mix += (rear_t_mix - rear_mix) * coeff_k;
+
+// --- optional micro motion (tiny yaw wobble) ---
+// This is intentionally subtle. It helps externalization for static sources.
+ph1 += (2*$pi*(0.13 + 0.07*sm_motion))/srate;
+ph2 += (2*$pi*(0.21 + 0.11*sm_motion))/srate;
+(ph1 > 2*$pi) ? ph1 -= 2*$pi;
+(ph2 > 2*$pi) ? ph2 -= 2*$pi;
+
+mot_deg = 2.0 * sm_motion;
+az_eff = sm_az + mot_deg*(sin(ph1) + 0.6*sin(ph2));
+az_eff > 180 ? az_eff = 180;
+az_eff < -180 ? az_eff = -180;
+
+// --- distance / air absorption ---
+air_state = (1-sm_air_a)*mono_in + sm_air_a*air_state;
+
+// --- improved occlusion (diffraction-ish) ---
+// base lowpass
+occ_lp = (1-sm_occ_a)*air_state + sm_occ_a*occ_lp;
+
+// keep lows more, kill highs harder
+occ_low_mem = (1-occ_split_a)*occ_lp + occ_split_a*occ_low_mem;
+occ_high = occ_lp - occ_low_mem;
+
+occ_low_g  = 1 + 0.25*sm_occ;
+occ_high_g = 1 - 0.88*sm_occ;
+occ_high_g < 0.10 ? occ_high_g = 0.10;
+occ_sig = occ_low_mem*occ_low_g + occ_high*occ_high_g;
+
+// phase smear (1st-order allpass) to avoid "blanket EQ" vibe
+ap_a = 0.58 + 0.28*sm_occ;
+ap_y = -ap_a*occ_sig + occ_ap_x1 + ap_a*occ_ap_y1;
+occ_ap_x1 = occ_sig;
+occ_ap_y1 = ap_y;
+occ_sig = ap_y;
+
+// direct path mixes around occlusion; reflections are less occluded
+direct_feed = air_state*(1-sm_occ) + occ_sig*sm_occ;
+er_feed = air_state*(1 - 0.35*sm_occ) + occ_sig*(0.35*sm_occ);
+
+// --- ITD delay line (direct only) ---
+itdbuf[itd_wpos] = direct_feed;
+
+az_rad = az_eff * $pi / 180;
+az_sin = sin(az_rad);
+az_cos = cos(az_rad);
+az_abs = abs(az_sin);
+az_sign = az_eff >= 0 ? 1 : -1;
+
+focus = 1 - 0.70*sm_width;
+focus < 0.20 ? focus = 0.20;
+
+itd_ms = 0.65 * az_sin * focus;
+last_itd_ms = itd_ms;
+itd_spl = abs(itd_ms) * 0.001 * srate;
+itd_i = floor(itd_spl);
+itd_f = itd_spl - itd_i;
+idx0 = (itd_wpos - itd_i) & itd_mask;
+idx1 = (itd_wpos - itd_i - 1) & itd_mask;
+far_sig = itdbuf[idx0]*(1-itd_f) + itdbuf[idx1]*itd_f;
+
+az_eff < 0 ? (
+  sig_l = direct_feed;
+  sig_r = far_sig;
+) : (
+  sig_l = far_sig;
+  sig_r = direct_feed;
+);
+
+itd_wpos = (itd_wpos + 1) & itd_mask;
+
+// --- head-shadow ILD (frequency-shaped) ---
+l_low = (1-split_a)*sig_l + split_a*l_low;
+r_low = (1-split_a)*sig_r + split_a*r_low;
+l_high = sig_l - l_low;
+r_high = sig_r - r_low;
+
+shadow_h = az_abs * focus;
+shadow_l = az_abs * focus * 0.28;
+
+near_low_g = 1 + 0.04*shadow_l;
+far_low_g  = 1 - 0.16*shadow_l;
+near_hi_g  = 1 + 0.12*shadow_h;
+far_hi_g   = 1 - 0.72*shadow_h;
+far_hi_g < 0.18 ? far_hi_g = 0.18;
+
+az_eff < 0 ? (
+  dir_l = l_low*near_low_g + l_high*near_hi_g;
+  dir_r = r_low*far_low_g  + r_high*far_hi_g;
+) : (
+  dir_l = l_low*far_low_g  + l_high*far_hi_g;
+  dir_r = r_low*near_low_g + r_high*near_hi_g;
+);
+
+// --- width (blur toward center) ---
+center_blend = sm_width * 0.30;
+dir_l = dir_l*(1-center_blend) + direct_feed*center_blend;
+dir_r = dir_r*(1-center_blend) + direct_feed*center_blend;
+
+// --- pinna externalize hint (biquad per ear) ---
+// (Gentle and optional; the heavy-lift is still ITD+ILD+ER)
+// Left
+pn_y = pn_b0_l*dir_l + pn_b1_l*pn_x1_l + pn_b2_l*pn_x2_l - pn_a1_l*pn_y1_l - pn_a2_l*pn_y2_l;
+pn_x2_l = pn_x1_l; pn_x1_l = dir_l;
+pn_y2_l = pn_y1_l; pn_y1_l = pn_y;
+dir_l = pn_y;
+
+// Right
+pn_y = pn_b0_r*dir_r + pn_b1_r*pn_x1_r + pn_b2_r*pn_x2_r - pn_a1_r*pn_y1_r - pn_a2_r*pn_y2_r;
+pn_x2_r = pn_x1_r; pn_x1_r = dir_r;
+pn_y2_r = pn_y1_r; pn_y1_r = pn_y;
+dir_r = pn_y;
+
+// --- rear tint (mild HF darkening if behind) ---
+rear_lp_l = (1-rear_a)*dir_l + rear_a*rear_lp_l;
+rear_lp_r = (1-rear_a)*dir_r + rear_a*rear_lp_r;
+dir_l = dir_l*(1-rear_mix) + rear_lp_l*rear_mix;
+dir_r = dir_r*(1-rear_mix) + rear_lp_r*rear_mix;
+
+// apply distance gain
+// (keep this after spectral cues)
+dir_l *= sm_direct_g;
+dir_r *= sm_direct_g;
+
+// --- Early reflections buffer ---
+erbuf[er_wpos] = er_feed;
+
+// helper macro: fractional tap read
+// (inline repeated for performance/compat)
+
+er_l = 0;
+er_r = 0;
+
+// Tap 1 (same-side wall)
+rd = sm_er1_d;
+rdi = floor(rd);
+rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask;
+idx1 = (er_wpos - rdi - 1) & er_mask;
+tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
+er_lp1 = (1-er_a1)*tap + er_a1*er_lp1;
+p = 0.85 * az_sign;
+gl = 1 - 0.30*p;
+gr = 1 + 0.30*p;
+er_l += er_lp1 * 0.50 * gl;
+er_r += er_lp1 * 0.50 * gr;
+
+// Tap 2 (opposite wall)
+rd = sm_er2_d;
+rdi = floor(rd);
+rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask;
+idx1 = (er_wpos - rdi - 1) & er_mask;
+tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
+er_lp2 = (1-er_a2)*tap + er_a2*er_lp2;
+p = -0.75 * az_sign;
+gl = 1 - 0.28*p;
+gr = 1 + 0.28*p;
+er_l += er_lp2 * 0.40 * gl;
+er_r += er_lp2 * 0.40 * gr;
+
+// Tap 3 (front-ish)
+rd = sm_er3_d;
+rdi = floor(rd);
+rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask;
+idx1 = (er_wpos - rdi - 1) & er_mask;
+tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
+er_lp3 = (1-er_a3)*tap + er_a3*er_lp3;
+p = 0.25 * az_sign;
+gl = 1 - 0.22*p;
+gr = 1 + 0.22*p;
+er_l += er_lp3 * 0.30 * gl;
+er_r += er_lp3 * 0.30 * gr;
+
+// Tap 4 (back-ish / wider)
+rd = sm_er4_d;
+rdi = floor(rd);
+rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask;
+idx1 = (er_wpos - rdi - 1) & er_mask;
+tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
+er_lp4 = (1-er_a4)*tap + er_a4*er_lp4;
+p = -0.35 * az_sign;
+gl = 1 - 0.20*p;
+gr = 1 + 0.20*p;
+er_l += er_lp4 * 0.24 * gl;
+er_r += er_lp4 * 0.24 * gr;
+
+// Tap 5 (diffuse)
+rd = sm_er5_d;
+rdi = floor(rd);
+rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask;
+idx1 = (er_wpos - rdi - 1) & er_mask;
+tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
+er_lp5 = (1-er_a5)*tap + er_a5*er_lp5;
+p = 0.55 * az_sign;
+gl = 1 - 0.18*p;
+gr = 1 + 0.18*p;
+er_l += er_lp5 * 0.18 * gl;
+er_r += er_lp5 * 0.18 * gr;
+
+// Tap 6 (late ER cluster)
+rd = sm_er6_d;
+rdi = floor(rd);
+rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask;
+idx1 = (er_wpos - rdi - 1) & er_mask;
+tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
+er_lp6 = (1-er_a6)*tap + er_a6*er_lp6;
+p = -0.60 * az_sign;
+gl = 1 - 0.16*p;
+gr = 1 + 0.16*p;
+er_l += er_lp6 * 0.14 * gl;
+er_r += er_lp6 * 0.14 * gr;
+
+// Reflections widen/decorrelate slightly (per-channel allpass)
+apL = 0.55;
+apR = 0.67;
+
+er_ap_y = -apL*er_l + er_ap_x1_l + apL*er_ap_y1_l;
+er_ap_x1_l = er_l;
+er_ap_y1_l = er_ap_y;
+er_l = er_ap_y;
+
+er_ap_y = -apR*er_r + er_ap_x1_r + apR*er_ap_y1_r;
+er_ap_x1_r = er_r;
+er_ap_y1_r = er_ap_y;
+er_r = er_ap_y;
+
+// Distance / occlusion push more energy into the room
+er_push = 0.75 + 0.70*sm_depth + 0.55*sm_occ;
+er_l *= sm_er_g * er_push;
+er_r *= sm_er_g * er_push;
+
+// Mix out
+out_l = (dir_l + er_l) * sm_trim;
+out_r = (dir_r + er_r) * sm_trim;
+
+spl0 = out_l;
+spl1 = out_r;
+
+// advance ER buffer
+er_wpos = (er_wpos + 1) & er_mask;
+
+// meters
+meter_direct += (max(abs(dir_l), abs(dir_r)) - meter_direct) * meter_k;
+meter_er     += (max(abs(er_l),  abs(er_r))  - meter_er)     * meter_k;
+
+@gfx 520 360
+// Responsive layout + draggable source dot.
+
+// --- layout scalars ---
+base_w = 520; base_h = 360;
+ui_s = min(gfx_w/base_w, gfx_h/base_h);
+ui_s < 0.60 ? ui_s = 0.60;
+
+pad = 14*ui_s;
+title_h = 40*ui_s;
+legend_h = 40*ui_s;
+
+left_w = gfx_w * 0.46;
+min_left = 210*ui_s;
+max_left = gfx_w - (220*ui_s);
+left_w < min_left ? left_w = min_left;
+left_w > max_left ? left_w = max_left;
+
+field_h = gfx_h - title_h - legend_h - pad*2;
+field_h < 120*ui_s ? field_h = 120*ui_s;
+
+cx = pad + left_w*0.50;
+cy = title_h + pad + field_h*0.52;
+rad = min(left_w, field_h) * 0.42;
+rad < 55*ui_s ? rad = 55*ui_s;
+
+rx = pad + left_w + pad;
+ry = title_h + pad;
+rw = gfx_w - rx - pad;
+
+// --- mouse interaction (drag inside field circle) ---
+mouse_down = mouse_cap & 1;
+
+// on press: start drag if clicked inside field
+(!ui_prev_down && mouse_down) ? (
+  dxm = mouse_x - cx;
+  dym = mouse_y - cy;
+  md = sqrt(dxm*dxm + dym*dym);
+  md <= rad ? ui_drag = 1 : ui_drag = 0;
+);
+
+// while dragging: update azimuth + distance
+(ui_drag && mouse_down) ? (
+  dxm = mouse_x - cx;
+  dym2 = cy - mouse_y; // invert y for angle
+  // Angle math: 0 = front (top), +90 = right, -90 = left, +/-180 = back.
+  // Use an atan-based manual quadrant fix to avoid any atan2 arg-order ambiguity.
+  eps = 0.00000000000000000001;
+  ang = atan(dxm / (abs(dym2) + eps)) * 180 / $pi;
+  (dym2 < 0) ? (
+    dxm >= 0 ? ang = 180 - ang : ang = -180 - ang;
+  );
+
+  // radius -> depth mapping (matches draw mapping)
+  dym = mouse_y - cy;
+  md = sqrt(dxm*dxm + dym*dym);
+  dep = md/rad;
+  dep < 0 ? dep = 0;
+  dep > 1 ? dep = 1;
+
+  slider1 = ang;
+  slider2 = dep;
+);
+
+// on release: stop drag
+(ui_drag && !mouse_down) ? ui_drag = 0;
+ui_prev_down = mouse_down;
+
+// --- UI uses slider values (immediate), audio uses smoothed values ---
+ui_az = slider1;
+ui_depth = slider2;
+
+ui_az_rad = ui_az * $pi/180;
+src_r = rad * ui_depth;
+sx = cx + sin(ui_az_rad) * src_r;
+sy = cy - cos(ui_az_rad) * src_r;
+
+// background
+gfx_set(0.08,0.09,0.11,1);
+gfx_rect(0,0,gfx_w,gfx_h,1);
+
+// font
+fs1 = floor(16*ui_s);
+fs2 = floor(12*ui_s);
+fs3 = floor(11*ui_s);
+fs1 < 12 ? fs1 = 12;
+fs2 < 10 ? fs2 = 10;
+fs3 < 9  ? fs3 = 9;
+gfx_setfont(1, "Arial", fs1);
+
+// title
+gfx_set(0.95,0.96,0.98,1);
+gfx_x = pad; gfx_y = pad*0.55;
+gfx_printf("Hyperreal 3D Panner V2");
+
+gfx_setfont(2, "Arial", fs2);
+gfx_set(0.45,0.48,0.54,1);
+gfx_x = pad; gfx_y = pad*0.55 + fs1 + 2*ui_s;
+gfx_printf("Stereo headphone output | Drag the dot | ITD + ILD + ER + externalize");
+
+// field / head
+gfx_set(0.20,0.22,0.27,1);
+gfx_circle(cx, cy, rad, 1, 1);
+gfx_set(0.30,0.33,0.40,1);
+gfx_circle(cx, cy, rad, 0, 1);
+gfx_line(cx-rad, cy, cx+rad, cy);
+gfx_line(cx, cy-rad, cx, cy+rad);
+
+// head icon
+head_r = 18*ui_s;
+
+gfx_set(0.55,0.60,0.70,1);
+gfx_circle(cx, cy, head_r, 0, 1);
+gfx_circle(cx-22*ui_s, cy, 6*ui_s, 0, 1);
+gfx_circle(cx+22*ui_s, cy, 6*ui_s, 0, 1);
+gfx_line(cx, cy-head_r, cx, cy-(head_r+10*ui_s));
+
+// front marker
+fx = cx;
+fy = cy - rad;
+gfx_set(0.60,0.64,0.72,1);
+gfx_circle(fx, fy, 3*ui_s, 1, 1);
+
+// source marker
+// line from head -> source
+gfx_set(0.97,0.68,0.18,1);
+gfx_line(cx, cy, sx, sy);
+
+dot_r = 7*ui_s;
+(gfx_w < 260) ? dot_r = 5*ui_s;
+
+gfx_circle(sx, sy, dot_r, 1, 1);
+gfx_set(0.15,0.15,0.15,1);
+gfx_circle(sx, sy, 2*ui_s, 1, 1);
+
+// right panel meters
+mx = rx;
+my = ry + 10*ui_s;
+mw = rw;
+mh = 16*ui_s;
+mg = 34*ui_s;
+
+mw < 120*ui_s ? mw = 120*ui_s;
+
+// meter backplates
+gfx_set(0.18,0.20,0.24,1);
+gfx_rect(mx, my, mw, mh, 1);
+gfx_rect(mx, my+mg, mw, mh, 1);
+gfx_rect(mx, my+2*mg, mw, mh, 1);
+
+// fills
+gfx_set(0.92,0.55,0.22,1);
+gfx_rect(mx, my, min(mw, mw*meter_direct*2.4), mh, 1);
+gfx_set(0.35,0.72,0.95,1);
+gfx_rect(mx, my+mg, min(mw, mw*meter_er*3.5), mh, 1);
+gfx_set(0.76,0.34,0.92,1);
+gfx_rect(mx, my+2*mg, mw*sm_occ, mh, 1);
+
+// labels
+gfx_set(0.95,0.96,0.98,1);
+gfx_x = mx; gfx_y = my - (fs3+4*ui_s); gfx_setfont(3, "Arial", fs3);
+gfx_printf("Direct");
+gfx_x = mx; gfx_y = my + mg - (fs3+4*ui_s);
+gfx_printf("Early Reflections");
+gfx_x = mx; gfx_y = my + 2*mg - (fs3+4*ui_s);
+gfx_printf("Occlusion");
+
+// readouts
+ry2 = my + 2*mg + mh + 14*ui_s;
+
+gfx_set(0.88,0.90,0.94,1);
+gfx_setfont(2, "Arial", fs2);
+
+gfx_x = mx; gfx_y = ry2;
+gfx_printf("Azimuth: %.1f deg", ui_az);
+
+gfx_x = mx; gfx_y = ry2 + (fs2+4*ui_s);
+gfx_printf("Distance: %.2f m", 0.3 + 19.7*ui_depth*ui_depth);
+
+gfx_x = mx; gfx_y = ry2 + 2*(fs2+4*ui_s);
+gfx_printf("ITD: %.3f ms", last_itd_ms);
+
+gfx_x = mx; gfx_y = ry2 + 3*(fs2+4*ui_s);
+gfx_printf("Air cutoff: %.0f Hz", last_air_fc);
+
+gfx_x = mx; gfx_y = ry2 + 4*(fs2+4*ui_s);
+gfx_printf("Externalize: %.2f  Motion: %.2f", sm_ext, sm_motion);
+
+gfx_x = mx; gfx_y = ry2 + 5*(fs2+4*ui_s);
+gfx_printf("Room: %.2f  Width: %.2f", sm_room, sm_width);
+
+gfx_x = mx; gfx_y = ry2 + 6*(fs2+4*ui_s);
+gfx_printf("Trim: %.1f dB", slider6);
+
+// legend
+gfx_set(0.46,0.50,0.56,1);
+gfx_setfont(3, "Arial", fs3);
+
+gfx_x = pad; gfx_y = gfx_h - legend_h + 8*ui_s;
+gfx_printf("0 deg = front (top), +/-90 = sides, +/-180 = back (bottom)");
+
+gfx_x = pad; gfx_y = gfx_h - legend_h + 8*ui_s + (fs3+4*ui_s);
+gfx_printf("Tip: keep Width low and automate azimuth slowly for strongest headphone lock");
