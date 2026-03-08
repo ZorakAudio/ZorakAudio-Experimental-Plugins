@@ -1597,6 +1597,167 @@ class LLVMModuleEmitter:
 
 
             # ------------------------------------------------------------
+            # File I/O (DSP-JSFX runtime)
+            #
+            # REAPER JSFX provides file_*() APIs. In DSP-JSFX we keep the API
+            # surface, but route it to host-provided non-blocking runtime
+            # helpers (disk I/O happens off the audio thread).
+            # ------------------------------------------------------------
+            if fn == "file_open":
+                if len(n.args) < 1 or len(n.args) > 2:
+                    raise ValueError("file_open expects 1 or 2 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1]) if len(n.args) == 2 else self._const_f64(0.0)
+
+                rt_name = "jsfx_file_open"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+                return builder.call(fdecl, [st, a0, a1])
+
+            if fn == "file_close":
+                if len(n.args) != 1:
+                    raise ValueError("file_close expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                rt_name = "jsfx_file_close"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+                return builder.call(fdecl, [st, a0])
+
+            if fn == "file_rewind":
+                if len(n.args) != 1:
+                    raise ValueError("file_rewind expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                rt_name = "jsfx_file_rewind"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+                return builder.call(fdecl, [st, a0])
+
+            if fn == "file_seek":
+                if len(n.args) != 2:
+                    raise ValueError("file_seek expects 2 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                rt_name = "jsfx_file_seek"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+                return builder.call(fdecl, [st, a0, a1])
+
+            if fn == "file_avail":
+                if len(n.args) != 1:
+                    raise ValueError("file_avail expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                rt_name = "jsfx_file_avail"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+                return builder.call(fdecl, [st, a0])
+
+            if fn == "file_text":
+                if len(n.args) != 1:
+                    raise ValueError("file_text expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                rt_name = "jsfx_file_text"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+                return builder.call(fdecl, [st, a0])
+
+            if fn == "file_mem":
+                if len(n.args) != 3:
+                    raise ValueError("file_mem expects 3 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                a2 = self.emit_expr(builder, st, n.args[2])
+                rt_name = "jsfx_file_mem"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+                return builder.call(fdecl, [st, a0, a1, a2])
+
+            if fn == "file_var":
+                if len(n.args) != 2:
+                    raise ValueError("file_var expects 2 args")
+
+                h = self.emit_expr(builder, st, n.args[0])
+
+                # Second arg should be an lvalue. If it is not, we still
+                # evaluate it for side-effects and pass NULL.
+                dst_ptr = None
+                if isinstance(n.args[1], Var) and n.args[1].name != "mem":
+                    dst_ptr = self._get_slot_ptr(builder, st, n.args[1].name)
+                elif isinstance(n.args[1], Index):
+                    dst_ptr = self._mem_elem_ptr(builder, st, n.args[1].base, n.args[1].index)
+                else:
+                    _ = self.emit_expr(builder, st, n.args[1])
+
+                if dst_ptr is None:
+                    dst_ptr = ir.Constant(self.double.as_pointer(), None)
+
+                rt_name = "jsfx_file_var"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double.as_pointer()])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+
+                return builder.call(fdecl, [st, h, dst_ptr])
+
+            if fn == "file_riff":
+                if len(n.args) != 3:
+                    raise ValueError("file_riff expects 3 args")
+
+                h = self.emit_expr(builder, st, n.args[0])
+
+                out1 = None
+                if isinstance(n.args[1], Var) and n.args[1].name != "mem":
+                    out1 = self._get_slot_ptr(builder, st, n.args[1].name)
+                elif isinstance(n.args[1], Index):
+                    out1 = self._mem_elem_ptr(builder, st, n.args[1].base, n.args[1].index)
+                else:
+                    _ = self.emit_expr(builder, st, n.args[1])
+
+                out2 = None
+                if isinstance(n.args[2], Var) and n.args[2].name != "mem":
+                    out2 = self._get_slot_ptr(builder, st, n.args[2].name)
+                elif isinstance(n.args[2], Index):
+                    out2 = self._mem_elem_ptr(builder, st, n.args[2].base, n.args[2].index)
+                else:
+                    _ = self.emit_expr(builder, st, n.args[2])
+
+                if out1 is None:
+                    out1 = ir.Constant(self.double.as_pointer(), None)
+                if out2 is None:
+                    out2 = ir.Constant(self.double.as_pointer(), None)
+
+                rt_name = "jsfx_file_riff"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double.as_pointer(), self.double.as_pointer()])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+
+                return builder.call(fdecl, [st, h, out1, out2])
+
+
+            # ------------------------------------------------------------
             # DSP-only compatibility stubs
             #
             # Many JSFX scripts define helpers inside @init/@slider that are
@@ -1617,9 +1778,8 @@ class LLVMModuleEmitter:
                 "str_getchar", "str_setchar",
                 "str_insert", "str_delete", "str_mid", "strncpy",
 
-                # file I/O (unsupported in DSP runtime)
-                "file_open", "file_close", "file_var", "file_avail",
-                "file_text", "file_mem", "file_seek", "file_read", "file_write",
+                # file I/O helpers that are still NOT implemented in the DSP runtime
+                "file_read", "file_write", "file_string",
             ):
                 for a in n.args:
                     _ = self.emit_expr(builder, st, a)
