@@ -417,25 +417,28 @@ static std::string preprocessJsfxForPortableEel(const std::string& in)
 // -------------------------
 struct DrawCmd
 {
-  enum class Type { Rect, Line, Text, Circle, Triangle };
+  enum class Type { Rect, Line, Text, Circle, RoundRect, Arc, Triangle };
   Type type = Type::Rect;
 
   // Common
   juce::Colour colour { 0xff000000 };
 
-  // Rect
+  // Rect / round-rect
   float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
   bool fill = true;
+  float cornerRadius = 0.0f;
 
-  // Line
+  // Line / arc endpoints / generic auxiliaries
   float x2 = 0.0f, y2 = 0.0f;
-    
+
   // Text
   juce::Font font;
   juce::String text;
-  
-  // Circle
+
+  // Circle / arc
   float radius = 0.0f;
+  float angle1 = 0.0f;
+  float angle2 = 0.0f;
 
   // Triangle / convex polygon (gfx_triangle)
   std::vector<juce::Point<float>> points;
@@ -750,6 +753,8 @@ public:
     NSEEL_addfunc_varparm_ex("gfx_rect",       4, 0, NSEEL_PProc_THIS, &eel_gfx_rect,       nullptr);
     NSEEL_addfunc_varparm_ex("gfx_rectto",     2, 0, NSEEL_PProc_THIS, &eel_gfx_rectto,     nullptr);
     NSEEL_addfunc_varparm_ex("gfx_circle",     3, 0, NSEEL_PProc_THIS, &eel_gfx_circle,     nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_roundrect",  5, 0, NSEEL_PProc_THIS, &eel_gfx_roundrect,  nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_arc",        5, 0, NSEEL_PProc_THIS, &eel_gfx_arc,        nullptr);
     NSEEL_addfunc_varparm_ex("gfx_triangle",   6, 0, NSEEL_PProc_THIS, &eel_gfx_triangle,   nullptr);
     NSEEL_addfunc_varparm_ex("gfx_line",       4, 0, NSEEL_PProc_THIS, &eel_gfx_line,       nullptr);
     NSEEL_addfunc_varparm_ex("gfx_lineto",     2, 0, NSEEL_PProc_THIS, &eel_gfx_lineto,     nullptr);
@@ -1152,6 +1157,63 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     cmd.y      = (float)*parms[1];
     cmd.radius = (float)*parms[2];
     cmd.fill   = (np >= 4) ? (*parms[3] != 0.0) : true;
+
+    self->commands.push_back(std::move(cmd));
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_gfx_roundrect(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*)opaque;
+    if (!self || np < 5) return 0.0;
+
+    self->setImageDirty();
+
+    const float w = (float)*parms[2];
+    const float h = (float)*parms[3];
+    if (!(w > 0.0f) || !(h > 0.0f))
+      return 0.0;
+
+    DrawCmd cmd;
+    cmd.type         = DrawCmd::Type::RoundRect;
+    cmd.colour       = self->getCurrentColour();
+    cmd.x            = (float)*parms[0];
+    cmd.y            = (float)*parms[1];
+    cmd.w            = w;
+    cmd.h            = h;
+    cmd.cornerRadius = std::max(0.0f, (float)*parms[4]);
+    cmd.fill         = false; // JSFX gfx_roundrect draws an outline.
+
+    self->commands.push_back(std::move(cmd));
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_gfx_arc(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*)opaque;
+    if (!self || np < 5) return 0.0;
+
+    self->setImageDirty();
+
+    const double cx = (double)*parms[0];
+    const double cy = (double)*parms[1];
+    const double r  = (double)*parms[2];
+    const double a1 = (double)*parms[3];
+    const double a2 = (double)*parms[4];
+
+    if (!std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(r) ||
+        !std::isfinite(a1) || !std::isfinite(a2) || r <= 0.0)
+      return 0.0;
+
+    DrawCmd cmd;
+    cmd.type   = DrawCmd::Type::Arc;
+    cmd.colour = self->getCurrentColour();
+    cmd.x      = (float)cx;
+    cmd.y      = (float)cy;
+    cmd.radius = (float)r;
+    cmd.angle1 = (float)a1;
+    cmd.angle2 = (float)a2;
+    cmd.fill   = false;
 
     self->commands.push_back(std::move(cmd));
     return 0.0;
@@ -1622,6 +1684,34 @@ static inline void paintCommands(juce::Graphics& g, const std::vector<DrawCmd>& 
         const float y = cmd.y - cmd.radius;
         if (cmd.fill) g.fillEllipse(x, y, d, d);
         else          g.drawEllipse(x, y, d, d, 1.0f);
+        break;
+      }
+      case DrawCmd::Type::RoundRect:
+      {
+        const juce::Rectangle<float> rc(cmd.x, cmd.y, cmd.w, cmd.h);
+        if (cmd.fill) g.fillRoundedRectangle(rc, cmd.cornerRadius);
+        else          g.drawRoundedRectangle(rc, cmd.cornerRadius, 1.0f);
+        break;
+      }
+      case DrawCmd::Type::Arc:
+      {
+        const float span = std::abs(cmd.angle2 - cmd.angle1);
+        if (cmd.radius > 0.0f && span > 0.0f)
+        {
+          const int segments = juce::jlimit(8, 512,
+                                            (int)std::ceil(span * std::max(8.0f, cmd.radius * 0.35f)));
+          juce::Path p;
+          for (int i = 0; i <= segments; ++i)
+          {
+            const float t = (float)i / (float)segments;
+            const float a = cmd.angle1 + (cmd.angle2 - cmd.angle1) * t;
+            const float px = cmd.x + std::cos(a) * cmd.radius;
+            const float py = cmd.y + std::sin(a) * cmd.radius;
+            if (i == 0) p.startNewSubPath(px, py);
+            else        p.lineTo(px, py);
+          }
+          g.strokePath(p, juce::PathStrokeType(1.0f));
+        }
         break;
       }
       case DrawCmd::Type::Triangle:
