@@ -1,48 +1,56 @@
-desc:Hyperreal 3D Panner V2 (Headphones)
+desc:Hyperreal 3D Panner V5 (Mouse-First Room Canvas)
 
-// #HELP: Headphone-focused 3D panner that places a source in a stereo field using timing, head-shadow, distance, occlusion, and room cues.
-// #HELP: Azimuth sets left/right/front-back position; Distance pushes the source away and shifts the direct/room balance.
-// #HELP: Room adds early reflections for externalization; Externalize adds pinna-style cues that help placement feel more "out there."
-// #HELP: Occlusion muffles and partially hides the source behind material/obstacles; Width makes the source more point-like or more spread.
-// #HELP: Micro Motion adds tiny movement to keep static positions from collapsing inward on headphones. Use subtly.
-// #HELP: Drag the orange dot in the main field to set Azimuth + Distance visually.
+// #HELP: Headphone-focused 3D panner using microdelay, head shadow, distance loss, occlusion, and room cues.
+// #HELP: Drag the orange source in the room to place it. Right-click the room to reset position.
+// #HELP: Shift-drag = fine control. Mouse wheel over the room changes Distance.
+// #HELP: Shift + wheel over room = Width. Ctrl/Cmd + wheel = Room. Alt/Option + wheel = Externalize.
+// #HELP: Cyan wall markers are EARLY BOUNCES: the first wall hits that help sounds leave your skull and exist in space.
+// #HELP: Every major control can also be dragged directly in the right-side control lanes.
+// #TOOLTIP: Where the source sits around you. Top = front wall, bottom = rear wall, sides = left / right walls.
+
+options:want_all_kb
+options:gfx_hz=60
 
 in_pin:left input
 in_pin:right input
 out_pin:left output
 out_pin:right output
 
-// #TOOLTIP: Where the source sits around you. Left/right = obvious; front/back changes the character of the spatial cue.
-slider1:0<-180,180,0.1>Azimuth (deg)
+slider1:0<-180,180,0.1>-Azimuth (deg)
+slider2:0.25<0,1,0.001>-Distance
+// #TOOLTIP: Apparent source size. Lower = tighter point source; higher = wider / more diffuse image.
+slider3:0.08<0,1,0.001>-Width
+// #TOOLTIP: Strength of spectral / directional cues that push the source outside the head.
+slider4:0.42<0,1,0.001>-Externalize
+// #TOOLTIP: Amount of room cue and early reflections. Higher = more externalization, less surgical precision.
+slider5:0.30<0,1,0.001>-Room
+// #TOOLTIP: Geometric room scale for the bounce model. Higher = larger room and longer early reflection timing.
+slider6:0.55<0,1,0.001>-Room Size
+// #TOOLTIP: How blocked or hidden the source is. Higher = more muffled direct sound and more reflection dominance.
+slider7:0<0,1,0.001>-Occlusion
+// #TOOLTIP: Tiny motion added to keep static sources from collapsing inward on headphones.
+slider8:0.05<0,1,0.001>-Micro Motion
+// #TOOLTIP: Final output trim after spatial processing.
+slider9:0<-18,12,0.1>-Output Trim (dB)
 
-// #TOOLTIP: How far the source feels from you. Higher = quieter direct sound, more air loss, and more room dominance.
-slider2:0.25<0,1,0.001>Distance
-
-// #TOOLTIP: Amount of room cue and early reflections. Higher = more space/externalization; too much can wash out precision.
-slider3:0.35<0,1,0.001>Room
-
-// #TOOLTIP: How blocked or hidden the source is. Higher = more muffled/directly obscured, with reflections becoming more dominant.
-slider4:0<0,1,0.001>Occlusion
-
-// #TOOLTIP: Apparent source size. Lower = tighter point source; higher = wider/more diffuse source image.
-slider5:0.1<0,1,0.001>Width
-
-// #TOOLTIP: Final output trim after spatial processing. Use this to level-match bypass vs processed signal.
-slider6:0<-18,12,0.1>Output Trim (dB)
-
-// #TOOLTIP: Strength of the externalization cue. Higher = more pinna-style spectral shaping and stronger “coming from there” sensation.
-slider7:0.35<0,1,0.001>Externalize
-
-// #TOOLTIP: Tiny automatic motion added to stabilize the illusion on headphones. Keep low; too much sounds artificial.
-slider8:0<0,1,0.001>Micro Motion
+// Slider guide:
+//   Azimuth     = where the source sits around you.
+//   Distance    = how far away it feels.
+//   Width       = point source vs spread source.
+//   Externalize = strength of out-of-head cues.
+//   Room        = early reflections / externalization amount.
+//   Room Size   = room scale / bounce timing.
+//   Occlusion   = blocked / muffled / hidden direct path.
+//   Micro Motion= tiny drift to stop static collapse.
+//   Output Trim = final level after processing.
 
 @init
 // --- delay buffers ---
-er_bufsize = 16384;
+er_bufsize = 32768;
 er_mask = er_bufsize - 1;
 er_wpos = 0;
 
-itd_bufsize = 2048;
+itd_bufsize = 4096;
 itd_mask = itd_bufsize - 1;
 itd_wpos = 0;
 
@@ -63,30 +71,38 @@ smooth_k = 1 - exp(-1/(0.020*srate));
 coeff_k  = 1 - exp(-1/(0.040*srate));
 meter_k  = 1 - exp(-1/(0.050*srate));
 
-// --- splits ---
-split_fc = 950;
+// --- filters / splits ---
+split_fc = 1000;
 split_a = exp(-2*$pi*split_fc/srate);
 
 occ_split_fc = 650;
 occ_split_a = exp(-2*$pi*occ_split_fc/srate);
 
-// --- reflection defaults (will be updated in @block) ---
-er_a1 = exp(-2*$pi*11000/srate);
-er_a2 = exp(-2*$pi*8500/srate);
-er_a3 = exp(-2*$pi*7000/srate);
-er_a4 = exp(-2*$pi*5200/srate);
-er_a5 = exp(-2*$pi*4200/srate);
-er_a6 = exp(-2*$pi*3400/srate);
+band1_fc = 320;
+band2_fc = 1800;
+band1_a = exp(-2*$pi*band1_fc/srate);
+band2_a = exp(-2*$pi*band2_fc/srate);
+
+// --- reflection defaults ---
+er_a1 = exp(-2*$pi*12500/srate);
+er_a2 = exp(-2*$pi*9800/srate);
+er_a3 = exp(-2*$pi*8000/srate);
+er_a4 = exp(-2*$pi*6400/srate);
+er_a5 = exp(-2*$pi*5200/srate);
+er_a6 = exp(-2*$pi*4200/srate);
+er_a7 = exp(-2*$pi*3200/srate);
+er_a8 = exp(-2*$pi*2600/srate);
 
 // --- smoothed params ---
 sm_az = 0;
 sm_depth = 0.25;
-sm_room = 0.35;
+sm_width = 0.08;
+sm_ext = 0.42;
+sm_room = 0.30;
+sm_rsize = 0.55;
 sm_occ = 0;
-sm_width = 0.1;
+sm_motion = 0.05;
 sm_trim = 1;
-sm_ext = 0.35;
-sm_motion = 0;
 
 // --- smoothed derived ---
 sm_direct_g = 1;
@@ -94,12 +110,14 @@ sm_er_g = 0;
 sm_air_a = 0.2;
 sm_occ_a = 0.5;
 
-sm_er1_d = 300;
-sm_er2_d = 520;
-sm_er3_d = 780;
-sm_er4_d = 1120;
-sm_er5_d = 1500;
-sm_er6_d = 2100;
+sm_er1_d = 250;
+sm_er2_d = 420;
+sm_er3_d = 620;
+sm_er4_d = 920;
+sm_er5_d = 1300;
+sm_er6_d = 1800;
+sm_er7_d = 2450;
+sm_er8_d = 3300;
 
 // --- states ---
 air_state = 0;
@@ -112,14 +130,21 @@ occ_ap_y1 = 0;
 l_low = 0;
 r_low = 0;
 
-// ER filter states
+// perceptual band split states
+l_band1 = 0;
+l_band2 = 0;
+r_band1 = 0;
+r_band2 = 0;
 
+// ER filter states
 er_lp1 = 0;
 er_lp2 = 0;
 er_lp3 = 0;
 er_lp4 = 0;
 er_lp5 = 0;
 er_lp6 = 0;
+er_lp7 = 0;
+er_lp8 = 0;
 
 // ER decorrelation allpass (per channel)
 er_ap_x1_l = 0; er_ap_y1_l = 0;
@@ -146,7 +171,6 @@ rear_mix = 0;
 rear_t_mix = 0;
 
 // Motion LFO
-t = 0;
 ph1 = 0;
 ph2 = 0;
 
@@ -158,75 +182,126 @@ last_air_fc = 18000;
 last_dist_m = 0.3;
 last_ext_db = 0;
 last_rear = 0;
+last_focus = 1;
+last_shadow = 0;
+last_front = 1;
+last_side = 0;
+last_back = 0;
+last_room_w = 4.8;
+last_room_d = 5.6;
 
 // UI interaction
-ui_drag = 0;
-ui_prev_down = 0;
+ui_mode = 0;
+ui_prev_l = 0;
+ui_prev_r = 0;
+ui_drag_start_x = 0;
+ui_drag_start_y = 0;
+ui_drag_start_v1 = 0;
+ui_drag_start_v2 = 0;
+ui_drag_bar = 0;
+
 
 @block
-// Map sliders -> targets and derived values. Run every audio block so GFX-driven
-// slider edits propagate instantly.
-
+// Run every audio block so GFX-driven slider edits propagate instantly.
 tgt_az = slider1;
 tgt_depth = slider2;
-tgt_room = slider3;
-tgt_occ = slider4;
-tgt_width = slider5;
-tgt_trim = 10^(slider6/20);
-tgt_ext = slider7;
+tgt_width = slider3;
+tgt_ext = slider4;
+tgt_room = slider5;
+tgt_rsize = slider6;
+tgt_occ = slider7;
 tgt_motion = slider8;
+tgt_trim = 10^(slider9/20);
 
-// Distance mapping
+// Distance mapping: more precision up close, longer throw at the far end
 _depth2 = tgt_depth*tgt_depth;
-dist_m = 0.3 + 19.7*_depth2;
+_depth3 = _depth2*tgt_depth;
+dist_m = 0.25 + 21.75*(0.78*_depth2 + 0.22*_depth3);
 last_dist_m = dist_m;
 
 // Direct gain vs distance/occlusion
-_direct_g = 1 / (1 + 0.23*dist_m);
-_direct_g *= 1 - 0.30*tgt_occ;
-_direct_g < 0.12 ? _direct_g = 0.12;
+_direct_g = 1 / (1 + 0.22*dist_m);
+_direct_g *= 1 - 0.28*tgt_occ;
+_direct_g < 0.11 ? _direct_g = 0.11;
 tgt_direct_g = _direct_g;
 
 // Room gain vs distance + occlusion
-_er_g = tgt_room * (0.02 + 0.18*tgt_depth);
-_er_g *= 1 + 0.95*tgt_occ;
+_er_g = tgt_room * (0.03 + 0.15*tgt_depth + 0.10*_depth2);
+_er_g *= 1 + 0.85*tgt_occ;
 tgt_er_g = _er_g;
 
 // Air absorption cutoff (distance + occlusion)
-air_fc = 18000 / (1 + 0.10*dist_m + 1.5*tgt_occ);
-air_fc < 1800 ? air_fc = 1800;
-air_fc > 18000 ? air_fc = 18000;
+air_fc = 19000 / (1 + 0.11*dist_m + 1.7*tgt_occ);
+air_fc < 1700 ? air_fc = 1700;
+air_fc > 19000 ? air_fc = 19000;
 last_air_fc = air_fc;
 tgt_air_a = exp(-2*$pi*air_fc/srate);
 
-// Occlusion cutoff (base lowpass)
-occ_fc = 12000 / (1 + 15*tgt_occ*tgt_occ);
-occ_fc < 500 ? occ_fc = 500;
-occ_fc > 12000 ? occ_fc = 12000;
+// Occlusion cutoff
+occ_fc = 13000 / (1 + 18*tgt_occ*tgt_occ);
+occ_fc < 450 ? occ_fc = 450;
+occ_fc > 13000 ? occ_fc = 13000;
 tgt_occ_a = exp(-2*$pi*occ_fc/srate);
 
-// Reflection delays (ms -> samples), scaled by distance + room
-// (a "shoebox-ish" cluster; not a full room model)
-er_scale = 1 + 0.65*tgt_depth + 0.35*tgt_room;
+// Room geometry (for early reflections + UI readout)
+room_curve = tgt_rsize*tgt_rsize*(0.72 + 0.28*tgt_rsize);
+room_w = 2.8 + 9.8*room_curve;
+room_d = 3.3 + 12.2*room_curve;
+last_room_w = room_w;
+last_room_d = room_d;
 
-tgt_er1_d = (6.2  * er_scale) * srate * 0.001;
-tgt_er2_d = (9.8  * er_scale) * srate * 0.001;
-tgt_er3_d = (14.9 * er_scale) * srate * 0.001;
-tgt_er4_d = (21.7 * er_scale) * srate * 0.001;
-tgt_er5_d = (30.5 * er_scale) * srate * 0.001;
-tgt_er6_d = (44.0 * er_scale) * srate * 0.001;
+// Reflection delays from a simple image-source style room
+az_rad = tgt_az * $pi / 180;
+src_nx = 0.74 * tgt_depth * sin(az_rad);
+src_ny = 0.74 * tgt_depth * cos(az_rad);
 
-// Reflection LPFs get darker with distance + occlusion
-hf_scale = 1 / (1 + 0.08*dist_m + 1.2*tgt_occ);
+hw = room_w * 0.5;
+hd = room_d * 0.5;
 
-c1 = 11000*hf_scale; c2 = 8500*hf_scale; c3 = 7000*hf_scale;
-c4 = 5200*hf_scale;  c5 = 4200*hf_scale; c6 = 3400*hf_scale;
+direct_geom = sqrt((src_nx*hw)*(src_nx*hw) + (src_ny*hd)*(src_ny*hd));
+direct_geom < 0.08 ? direct_geom = 0.08;
 
-c1 < 1600 ? c1=1600; c2 < 1600 ? c2=1600; c3 < 1600 ? c3=1600;
-c4 < 1600 ? c4=1600; c5 < 1600 ? c5=1600; c6 < 1600 ? c6=1600;
+len_l  = sqrt(((-2 - src_nx)*hw)*((-2 - src_nx)*hw) + ((src_ny)*hd)*((src_ny)*hd));
+len_r  = sqrt((( (2 - src_nx)*hw))*(((2 - src_nx)*hw)) + ((src_ny)*hd)*((src_ny)*hd));
+len_f  = sqrt(((src_nx*hw)*(src_nx*hw)) + (((2 - src_ny)*hd)*((2 - src_ny)*hd)));
+len_b  = sqrt(((src_nx*hw)*(src_nx*hw)) + (((-2 - src_ny)*hd)*((-2 - src_ny)*hd)));
+len_fl = sqrt(((-2 - src_nx)*hw)*((-2 - src_nx)*hw) + (((2 - src_ny)*hd)*((2 - src_ny)*hd)));
+len_fr = sqrt((((2 - src_nx)*hw))*(((2 - src_nx)*hw)) + (((2 - src_ny)*hd)*((2 - src_ny)*hd)));
+len_bl = sqrt(((-2 - src_nx)*hw)*((-2 - src_nx)*hw) + (((-2 - src_ny)*hd)*((-2 - src_ny)*hd)));
+len_br = sqrt((((2 - src_nx)*hw))*(((2 - src_nx)*hw)) + (((-2 - src_ny)*hd)*((-2 - src_ny)*hd)));
 
-c1 > 18000 ? c1=18000; c2 > 18000 ? c2=18000; c3 > 18000 ? c3=18000;
-c4 > 18000 ? c4=18000; c5 > 18000 ? c5=18000; c6 > 18000 ? c6=18000;
+ms_scale = 1000/343;
+base_ms = 0.8 + 1.8*tgt_depth + 0.6*tgt_room;
+
+d1 = base_ms + max(1.0, (len_l  - direct_geom) * ms_scale);
+d2 = base_ms + max(1.0, (len_r  - direct_geom) * ms_scale);
+d3 = base_ms + max(1.0, (len_f  - direct_geom) * ms_scale);
+d4 = base_ms + max(1.2, (len_b  - direct_geom) * ms_scale);
+d5 = base_ms + max(1.5, (len_fl - direct_geom) * ms_scale);
+d6 = base_ms + max(1.5, (len_fr - direct_geom) * ms_scale);
+d7 = base_ms + max(1.8, (len_bl - direct_geom) * ms_scale);
+d8 = base_ms + max(1.8, (len_br - direct_geom) * ms_scale);
+
+tgt_er1_d = d1 * srate * 0.001;
+tgt_er2_d = d2 * srate * 0.001;
+tgt_er3_d = d3 * srate * 0.001;
+tgt_er4_d = d4 * srate * 0.001;
+tgt_er5_d = d5 * srate * 0.001;
+tgt_er6_d = d6 * srate * 0.001;
+tgt_er7_d = d7 * srate * 0.001;
+tgt_er8_d = d8 * srate * 0.001;
+
+// Reflection LPFs get darker with distance + occlusion + rear bias
+hf_scale = 1 / (1 + 0.09*dist_m + 1.1*tgt_occ);
+
+c1 = 11800*hf_scale; c2 = 11800*hf_scale; c3 = 10200*hf_scale; c4 = 7200*hf_scale;
+c5 = 7600*hf_scale;  c6 = 7600*hf_scale;  c7 = 5200*hf_scale; c8 = 5200*hf_scale;
+
+c1 < 1500 ? c1=1500; c2 < 1500 ? c2=1500; c3 < 1500 ? c3=1500; c4 < 1500 ? c4=1500;
+c5 < 1500 ? c5=1500; c6 < 1500 ? c6=1500; c7 < 1500 ? c7=1500; c8 < 1500 ? c8=1500;
+
+c1 > 18000 ? c1=18000; c2 > 18000 ? c2=18000; c3 > 18000 ? c3=18000; c4 > 18000 ? c4=18000;
+c5 > 18000 ? c5=18000; c6 > 18000 ? c6=18000; c7 > 18000 ? c7=18000; c8 > 18000 ? c8=18000;
 
 er_a1 = exp(-2*$pi*c1/srate);
 er_a2 = exp(-2*$pi*c2/srate);
@@ -234,40 +309,53 @@ er_a3 = exp(-2*$pi*c3/srate);
 er_a4 = exp(-2*$pi*c4/srate);
 er_a5 = exp(-2*$pi*c5/srate);
 er_a6 = exp(-2*$pi*c6/srate);
+er_a7 = exp(-2*$pi*c7/srate);
+er_a8 = exp(-2*$pi*c8/srate);
 
-// --- Pinna externalize (biquad peaking EQ w/ negative gain = notch-like) ---
-az_rad = tgt_az * $pi / 180;
+// --- Pinna externalize biquad (negative peaking EQ = notch hint) ---
 az_s = sin(az_rad);
 az_c = cos(az_rad);
 az_abs = abs(az_s);
-rear = max(0, -az_c); // 0 front .. 1 back
+front = max(0, az_c);
+rear = max(0, -az_c);
+side = 1 - abs(az_c);
+side < 0 ? side = 0;
 last_rear = rear;
+last_front = front;
+last_side = side;
+last_back = rear;
 
-focus = 1 - 0.70*tgt_width;
-focus < 0.20 ? focus = 0.20;
+focus = 1 - 0.74*tgt_width;
+focus < 0.18 ? focus = 0.18;
+last_focus = focus;
+last_shadow = az_abs * focus;
 
-// notch depth in dB (negative). Behind sources get slightly deeper notch.
-notch_db = -6.0 * tgt_ext * (0.20 + 0.80*az_abs) * (1 + 0.70*rear);
+// semantic zone weighting:
+// front = cleaner / tighter
+// side  = stronger lateral lock
+// back  = darker / more notch / wider reflections
+zone_notch = 0.70 + 0.55*side + 0.85*rear;
+notch_db = -6.8 * tgt_ext * (0.18 + 0.82*az_abs) * zone_notch * focus;
 last_ext_db = notch_db;
 
-Q = 3.2 + 2.2*tgt_ext;
+Q = 3.0 + 2.6*tgt_ext;
 
-base_fc = 6500 - 900*rear; // behind shifts down a bit
-span_fc = 1800 * focus;
+base_fc = 7150 + 220*front - 650*side - 1250*rear;
+span_fc = (1700 + 450*side + 250*rear) * focus;
 
 fc_l = base_fc - span_fc*az_s;
 fc_r = base_fc + span_fc*az_s;
 
-fc_l < 2200 ? fc_l = 2200; fc_l > 11000 ? fc_l = 11000;
-fc_r < 2200 ? fc_r = 2200; fc_r > 11000 ? fc_r = 11000;
+fc_l < 2200 ? fc_l = 2200; fc_l > 11200 ? fc_l = 11200;
+fc_r < 2200 ? fc_r = 2200; fc_r > 11200 ? fc_r = 11200;
 
-// helper: build peaking biquad coeffs into pn_t_* vars
 abs(notch_db) < 0.001 ? (
   pn_t_b0_l = 1; pn_t_b1_l = 0; pn_t_b2_l = 0; pn_t_a1_l = 0; pn_t_a2_l = 0;
   pn_t_b0_r = 1; pn_t_b1_r = 0; pn_t_b2_r = 0; pn_t_a1_r = 0; pn_t_a2_r = 0;
 ) : (
-  // Left
   A = 10^(notch_db/40);
+
+  // Left
   w0 = 2*$pi*fc_l/srate;
   cs = cos(w0);
   sn = sin(w0);
@@ -297,9 +385,9 @@ abs(notch_db) < 0.001 ? (
 );
 
 // Rear tint targets (very gentle, only when externalize is up)
-rear_t_mix = 0.22 * rear * tgt_ext;
-rear_fc = 18000 / (1 + 2.2*rear*tgt_ext);
-rear_fc < 2500 ? rear_fc = 2500;
+rear_t_mix = (0.08*side + 0.34*rear) * tgt_ext;
+rear_fc = 18000 / (1 + 1.2*side*tgt_ext + 2.8*rear*tgt_ext);
+rear_fc < 2300 ? rear_fc = 2300;
 rear_fc > 18000 ? rear_fc = 18000;
 rear_t_a = exp(-2*$pi*rear_fc/srate);
 
@@ -310,12 +398,13 @@ mono_in = (spl0 + spl1) * 0.5;
 // --- smooth user params ---
 sm_az     += (tgt_az     - sm_az)     * smooth_k;
 sm_depth  += (tgt_depth  - sm_depth)  * smooth_k;
-sm_room   += (tgt_room   - sm_room)   * smooth_k;
-sm_occ    += (tgt_occ    - sm_occ)    * smooth_k;
 sm_width  += (tgt_width  - sm_width)  * smooth_k;
-sm_trim   += (tgt_trim   - sm_trim)   * smooth_k;
 sm_ext    += (tgt_ext    - sm_ext)    * smooth_k;
+sm_room   += (tgt_room   - sm_room)   * smooth_k;
+sm_rsize  += (tgt_rsize  - sm_rsize)  * smooth_k;
+sm_occ    += (tgt_occ    - sm_occ)    * smooth_k;
 sm_motion += (tgt_motion - sm_motion) * smooth_k;
+sm_trim   += (tgt_trim   - sm_trim)   * smooth_k;
 
 // --- smooth derived ---
 sm_direct_g += (tgt_direct_g - sm_direct_g) * smooth_k;
@@ -329,6 +418,8 @@ sm_er3_d += (tgt_er3_d - sm_er3_d) * smooth_k;
 sm_er4_d += (tgt_er4_d - sm_er4_d) * smooth_k;
 sm_er5_d += (tgt_er5_d - sm_er5_d) * smooth_k;
 sm_er6_d += (tgt_er6_d - sm_er6_d) * smooth_k;
+sm_er7_d += (tgt_er7_d - sm_er7_d) * smooth_k;
+sm_er8_d += (tgt_er8_d - sm_er8_d) * smooth_k;
 
 // Smooth pinna biquad coefficients
 pn_b0_l += (pn_t_b0_l - pn_b0_l) * coeff_k;
@@ -346,36 +437,32 @@ pn_a2_r += (pn_t_a2_r - pn_a2_r) * coeff_k;
 rear_a   += (rear_t_a   - rear_a)   * coeff_k;
 rear_mix += (rear_t_mix - rear_mix) * coeff_k;
 
-// --- optional micro motion (tiny yaw wobble) ---
-// This is intentionally subtle. It helps externalization for static sources.
-ph1 += (2*$pi*(0.13 + 0.07*sm_motion))/srate;
-ph2 += (2*$pi*(0.21 + 0.11*sm_motion))/srate;
+// --- optional micro motion ---
+ph1 += (2*$pi*(0.12 + 0.08*sm_motion))/srate;
+ph2 += (2*$pi*(0.20 + 0.10*sm_motion))/srate;
 (ph1 > 2*$pi) ? ph1 -= 2*$pi;
 (ph2 > 2*$pi) ? ph2 -= 2*$pi;
 
-mot_deg = 2.0 * sm_motion;
-az_eff = sm_az + mot_deg*(sin(ph1) + 0.6*sin(ph2));
+mot_deg = 2.3 * sm_motion;
+az_eff = sm_az + mot_deg*(sin(ph1) + 0.55*sin(ph2));
 az_eff > 180 ? az_eff = 180;
 az_eff < -180 ? az_eff = -180;
 
 // --- distance / air absorption ---
 air_state = (1-sm_air_a)*mono_in + sm_air_a*air_state;
 
-// --- improved occlusion (diffraction-ish) ---
-// base lowpass
+// --- improved occlusion ---
 occ_lp = (1-sm_occ_a)*air_state + sm_occ_a*occ_lp;
-
-// keep lows more, kill highs harder
 occ_low_mem = (1-occ_split_a)*occ_lp + occ_split_a*occ_low_mem;
 occ_high = occ_lp - occ_low_mem;
 
-occ_low_g  = 1 + 0.25*sm_occ;
-occ_high_g = 1 - 0.88*sm_occ;
-occ_high_g < 0.10 ? occ_high_g = 0.10;
+occ_low_g  = 1 + 0.30*sm_occ;
+occ_high_g = 1 - 0.90*sm_occ;
+occ_high_g < 0.08 ? occ_high_g = 0.08;
 occ_sig = occ_low_mem*occ_low_g + occ_high*occ_high_g;
 
-// phase smear (1st-order allpass) to avoid "blanket EQ" vibe
-ap_a = 0.58 + 0.28*sm_occ;
+// phase smear
+ap_a = 0.56 + 0.30*sm_occ;
 ap_y = -ap_a*occ_sig + occ_ap_x1 + ap_a*occ_ap_y1;
 occ_ap_x1 = occ_sig;
 occ_ap_y1 = ap_y;
@@ -383,9 +470,9 @@ occ_sig = ap_y;
 
 // direct path mixes around occlusion; reflections are less occluded
 direct_feed = air_state*(1-sm_occ) + occ_sig*sm_occ;
-er_feed = air_state*(1 - 0.35*sm_occ) + occ_sig*(0.35*sm_occ);
+er_feed = air_state*(1 - 0.32*sm_occ) + occ_sig*(0.32*sm_occ);
 
-// --- ITD delay line (direct only) ---
+// --- ITD delay line ---
 itdbuf[itd_wpos] = direct_feed;
 
 az_rad = az_eff * $pi / 180;
@@ -394,10 +481,10 @@ az_cos = cos(az_rad);
 az_abs = abs(az_sin);
 az_sign = az_eff >= 0 ? 1 : -1;
 
-focus = 1 - 0.70*sm_width;
-focus < 0.20 ? focus = 0.20;
+focus = 1 - 0.74*sm_width;
+focus < 0.18 ? focus = 0.18;
 
-itd_ms = 0.65 * az_sin * focus;
+itd_ms = 0.68 * az_sin * focus;
 last_itd_ms = itd_ms;
 itd_spl = abs(itd_ms) * 0.001 * srate;
 itd_i = floor(itd_spl);
@@ -416,20 +503,74 @@ az_eff < 0 ? (
 
 itd_wpos = (itd_wpos + 1) & itd_mask;
 
-// --- head-shadow ILD (frequency-shaped) ---
-l_low = (1-split_a)*sig_l + split_a*l_low;
-r_low = (1-split_a)*sig_r + split_a*r_low;
-l_high = sig_l - l_low;
-r_high = sig_r - r_low;
+// --- perceptual band split (rough critical-band inspired weighting) ---
+l_band1 = (1-band1_a)*sig_l + band1_a*l_band1;
+l_rem1 = sig_l - l_band1;
+l_band2 = (1-band2_a)*l_rem1 + band2_a*l_band2;
+l_lowb = l_band1;
+l_midb = l_band2;
+l_hib = l_rem1 - l_band2;
 
-shadow_h = az_abs * focus;
-shadow_l = az_abs * focus * 0.28;
+r_band1 = (1-band1_a)*sig_r + band1_a*r_band1;
+r_rem1 = sig_r - r_band1;
+r_band2 = (1-band2_a)*r_rem1 + band2_a*r_band2;
+r_lowb = r_band1;
+r_midb = r_band2;
+r_hib = r_rem1 - r_band2;
 
-near_low_g = 1 + 0.04*shadow_l;
-far_low_g  = 1 - 0.16*shadow_l;
-near_hi_g  = 1 + 0.12*shadow_h;
-far_hi_g   = 1 - 0.72*shadow_h;
-far_hi_g < 0.18 ? far_hi_g = 0.18;
+// --- frequency-shaped directional weighting ---
+front = max(0, az_cos);
+rear = max(0, -az_cos);
+side = 1 - abs(az_cos);
+side < 0 ? side = 0;
+shadow = az_abs * focus;
+nearfield = 1 - sm_depth;
+nearfield < 0 ? nearfield = 0;
+
+// semantic field zones
+front_tight = 1 + 0.12*front;
+side_lock   = 1 + 0.28*side;
+rear_diff   = 1 + 0.30*rear;
+
+// low band = mostly ITD, mild level asymmetry
+low_near_g = 1 + 0.03*shadow;
+low_far_g  = 1 - 0.10*shadow;
+low_far_g < 0.84 ? low_far_g = 0.84;
+
+// mid band = stronger direction + slight proximity push
+mid_shape = (1 + 0.10*sm_ext*front - 0.16*sm_ext*rear) * (1 + 0.10*side);
+mid_near_g = (1 + 0.10*shadow*side_lock + 0.05*nearfield) * mid_shape;
+mid_far_g  = (1 - 0.36*shadow*side_lock - 0.05*rear) * (1 - 0.05*sm_ext*rear);
+mid_far_g < 0.30 ? mid_far_g = 0.30;
+
+// high band = strongest head shadow + front/back character
+hi_shape = (1 + 0.08*sm_ext*front - 0.24*sm_ext*rear) * (1 + 0.08*side);
+hi_near_g = (1 + 0.18*shadow*side_lock + 0.05*nearfield + 0.05*sm_ext*front) * hi_shape;
+hi_far_g  = (1 - 0.92*shadow*side_lock - 0.22*sm_ext*rear);
+hi_far_g < 0.08 ? hi_far_g = 0.08;
+
+az_eff < 0 ? (
+  dir_l = l_lowb*low_near_g + l_midb*mid_near_g + l_hib*hi_near_g;
+  dir_r = r_lowb*low_far_g  + r_midb*mid_far_g  + r_hib*hi_far_g;
+) : (
+  dir_l = l_lowb*low_far_g  + l_midb*mid_far_g  + l_hib*hi_far_g;
+  dir_r = r_lowb*low_near_g + r_midb*mid_near_g + r_hib*hi_near_g;
+);
+
+// Additional broad-band split for a gentle low/high pan contour
+l_low = (1-split_a)*dir_l + split_a*l_low;
+r_low = (1-split_a)*dir_r + split_a*r_low;
+l_high = dir_l - l_low;
+r_high = dir_r - r_low;
+
+shadow_h = shadow;
+shadow_l = shadow * 0.25;
+
+near_low_g = 1 + 0.03*shadow_l;
+far_low_g  = 1 - 0.14*shadow_l;
+near_hi_g  = 1 + 0.06*shadow_h;
+far_hi_g   = 1 - 0.28*shadow_h;
+far_hi_g < 0.70 ? far_hi_g = 0.70;
 
 az_eff < 0 ? (
   dir_l = l_low*near_low_g + l_high*near_hi_g;
@@ -439,132 +580,122 @@ az_eff < 0 ? (
   dir_r = r_low*near_low_g + r_high*near_hi_g;
 );
 
-// --- width (blur toward center) ---
-center_blend = sm_width * 0.30;
+// Width = blur toward center, more at distance
+center_blend = sm_width * (0.22 + 0.10*sm_depth + 0.10*rear);
+center_blend > 0.45 ? center_blend = 0.45;
 dir_l = dir_l*(1-center_blend) + direct_feed*center_blend;
 dir_r = dir_r*(1-center_blend) + direct_feed*center_blend;
 
-// --- pinna externalize hint (biquad per ear) ---
-// (Gentle and optional; the heavy-lift is still ITD+ILD+ER)
-// Left
+// --- pinna externalize hint ---
 pn_y = pn_b0_l*dir_l + pn_b1_l*pn_x1_l + pn_b2_l*pn_x2_l - pn_a1_l*pn_y1_l - pn_a2_l*pn_y2_l;
 pn_x2_l = pn_x1_l; pn_x1_l = dir_l;
 pn_y2_l = pn_y1_l; pn_y1_l = pn_y;
 dir_l = pn_y;
 
-// Right
 pn_y = pn_b0_r*dir_r + pn_b1_r*pn_x1_r + pn_b2_r*pn_x2_r - pn_a1_r*pn_y1_r - pn_a2_r*pn_y2_r;
 pn_x2_r = pn_x1_r; pn_x1_r = dir_r;
 pn_y2_r = pn_y1_r; pn_y1_r = pn_y;
 dir_r = pn_y;
 
-// --- rear tint (mild HF darkening if behind) ---
+// --- rear tint ---
 rear_lp_l = (1-rear_a)*dir_l + rear_a*rear_lp_l;
 rear_lp_r = (1-rear_a)*dir_r + rear_a*rear_lp_r;
 dir_l = dir_l*(1-rear_mix) + rear_lp_l*rear_mix;
 dir_r = dir_r*(1-rear_mix) + rear_lp_r*rear_mix;
+dir_l *= front_tight;
+dir_r *= front_tight;
+rear_scale = 1 - 0.05*rear;
+dir_l *= rear_scale + 0.05*front;
+dir_r *= rear_scale + 0.05*front;
 
-// apply distance gain
-// (keep this after spectral cues)
+// apply distance gain after spectral cues
 dir_l *= sm_direct_g;
 dir_r *= sm_direct_g;
 
 // --- Early reflections buffer ---
 erbuf[er_wpos] = er_feed;
 
-// helper macro: fractional tap read
-// (inline repeated for performance/compat)
-
 er_l = 0;
 er_r = 0;
+rear_wide = 1 + 0.32*rear;
+front_focus = 1 - 0.20*front;
+side_wide = 1 + 0.18*side;
 
-// Tap 1 (same-side wall)
+// Tap 1: left wall
 rd = sm_er1_d;
-rdi = floor(rd);
-rdf = rd - rdi;
-idx0 = (er_wpos - rdi) & er_mask;
-idx1 = (er_wpos - rdi - 1) & er_mask;
+rdi = floor(rd); rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp1 = (1-er_a1)*tap + er_a1*er_lp1;
-p = 0.85 * az_sign;
-gl = 1 - 0.30*p;
-gr = 1 + 0.30*p;
-er_l += er_lp1 * 0.50 * gl;
-er_r += er_lp1 * 0.50 * gr;
+er_l += er_lp1 * 0.45 * 1.22 * front_focus;
+er_r += er_lp1 * 0.45 * 0.74 * front_focus;
 
-// Tap 2 (opposite wall)
+// Tap 2: right wall
 rd = sm_er2_d;
-rdi = floor(rd);
-rdf = rd - rdi;
-idx0 = (er_wpos - rdi) & er_mask;
-idx1 = (er_wpos - rdi - 1) & er_mask;
+rdi = floor(rd); rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp2 = (1-er_a2)*tap + er_a2*er_lp2;
-p = -0.75 * az_sign;
-gl = 1 - 0.28*p;
-gr = 1 + 0.28*p;
-er_l += er_lp2 * 0.40 * gl;
-er_r += er_lp2 * 0.40 * gr;
+er_l += er_lp2 * 0.45 * 0.74 * front_focus;
+er_r += er_lp2 * 0.45 * 1.22 * front_focus;
 
-// Tap 3 (front-ish)
+// Tap 3: front wall
 rd = sm_er3_d;
-rdi = floor(rd);
-rdf = rd - rdi;
-idx0 = (er_wpos - rdi) & er_mask;
-idx1 = (er_wpos - rdi - 1) & er_mask;
+rdi = floor(rd); rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp3 = (1-er_a3)*tap + er_a3*er_lp3;
-p = 0.25 * az_sign;
-gl = 1 - 0.22*p;
-gr = 1 + 0.22*p;
-er_l += er_lp3 * 0.30 * gl;
-er_r += er_lp3 * 0.30 * gr;
+er_l += er_lp3 * 0.34 * (0.98 + 0.05*side);
+er_r += er_lp3 * 0.34 * (0.98 + 0.05*side);
 
-// Tap 4 (back-ish / wider)
+// Tap 4: back wall
 rd = sm_er4_d;
-rdi = floor(rd);
-rdf = rd - rdi;
-idx0 = (er_wpos - rdi) & er_mask;
-idx1 = (er_wpos - rdi - 1) & er_mask;
+rdi = floor(rd); rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp4 = (1-er_a4)*tap + er_a4*er_lp4;
-p = -0.35 * az_sign;
-gl = 1 - 0.20*p;
-gr = 1 + 0.20*p;
-er_l += er_lp4 * 0.24 * gl;
-er_r += er_lp4 * 0.24 * gr;
+er_l += er_lp4 * 0.26 * rear_wide * 1.04;
+er_r += er_lp4 * 0.26 * rear_wide * 1.04;
 
-// Tap 5 (diffuse)
+// Tap 5: front-left corner
 rd = sm_er5_d;
-rdi = floor(rd);
-rdf = rd - rdi;
-idx0 = (er_wpos - rdi) & er_mask;
-idx1 = (er_wpos - rdi - 1) & er_mask;
+rdi = floor(rd); rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp5 = (1-er_a5)*tap + er_a5*er_lp5;
-p = 0.55 * az_sign;
-gl = 1 - 0.18*p;
-gr = 1 + 0.18*p;
-er_l += er_lp5 * 0.18 * gl;
-er_r += er_lp5 * 0.18 * gr;
+er_l += er_lp5 * 0.20 * 1.16;
+er_r += er_lp5 * 0.20 * 0.86;
 
-// Tap 6 (late ER cluster)
+// Tap 6: front-right corner
 rd = sm_er6_d;
-rdi = floor(rd);
-rdf = rd - rdi;
-idx0 = (er_wpos - rdi) & er_mask;
-idx1 = (er_wpos - rdi - 1) & er_mask;
+rdi = floor(rd); rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp6 = (1-er_a6)*tap + er_a6*er_lp6;
-p = -0.60 * az_sign;
-gl = 1 - 0.16*p;
-gr = 1 + 0.16*p;
-er_l += er_lp6 * 0.14 * gl;
-er_r += er_lp6 * 0.14 * gr;
+er_l += er_lp6 * 0.20 * 0.86;
+er_r += er_lp6 * 0.20 * 1.16;
 
-// Reflections widen/decorrelate slightly (per-channel allpass)
-apL = 0.55;
-apR = 0.67;
+// Tap 7: back-left corner
+rd = sm_er7_d;
+rdi = floor(rd); rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
+tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
+er_lp7 = (1-er_a7)*tap + er_a7*er_lp7;
+er_l += er_lp7 * 0.13 * 1.14 * rear_wide;
+er_r += er_lp7 * 0.13 * 0.82 * rear_wide;
+
+// Tap 8: back-right corner
+rd = sm_er8_d;
+rdi = floor(rd); rdf = rd - rdi;
+idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
+tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
+er_lp8 = (1-er_a8)*tap + er_a8*er_lp8;
+er_l += er_lp8 * 0.13 * 0.82 * rear_wide;
+er_r += er_lp8 * 0.13 * 1.14 * rear_wide;
+
+// ER decorrelation
+apL = 0.53;
+apR = 0.69;
 
 er_ap_y = -apL*er_l + er_ap_x1_l + apL*er_ap_y1_l;
 er_ap_x1_l = er_l;
@@ -577,7 +708,7 @@ er_ap_y1_r = er_ap_y;
 er_r = er_ap_y;
 
 // Distance / occlusion push more energy into the room
-er_push = 0.75 + 0.70*sm_depth + 0.55*sm_occ;
+er_push = 0.70 + 0.72*sm_depth + 0.55*sm_occ + 0.12*side + 0.18*rear;
 er_l *= sm_er_g * er_push;
 er_r *= sm_er_g * er_push;
 
@@ -587,7 +718,6 @@ out_r = (dir_r + er_r) * sm_trim;
 
 spl0 = out_l;
 spl1 = out_r;
-
 // advance ER buffer
 er_wpos = (er_wpos + 1) & er_mask;
 
@@ -595,206 +725,640 @@ er_wpos = (er_wpos + 1) & er_mask;
 meter_direct += (max(abs(dir_l), abs(dir_r)) - meter_direct) * meter_k;
 meter_er     += (max(abs(er_l),  abs(er_r))  - meter_er)     * meter_k;
 
-@gfx 520 360
-// Responsive layout + draggable source dot.
 
-// --- layout scalars ---
-base_w = 520; base_h = 360;
+@gfx 760 460
+// V5 room-canvas UI: mouse-first interaction, geometric bounce markers, scalable controls.
+
+winflags = gfx_getchar(65536);
+
+// --- layout ---
+base_w = 760; base_h = 460;
 ui_s = min(gfx_w/base_w, gfx_h/base_h);
-ui_s < 0.60 ? ui_s = 0.60;
+ui_s < 0.56 ? ui_s = 0.56;
+ui_s > 1.85 ? ui_s = 1.85;
 
-pad = 14*ui_s;
-title_h = 40*ui_s;
-legend_h = 40*ui_s;
+pad = 16*ui_s;
+pad < 10 ? pad = 10;
+title_h = 46*ui_s;
+title_h < 36 ? title_h = 36;
+foot_h = 52*ui_s;
+foot_h < 40 ? foot_h = 40;
 
-left_w = gfx_w * 0.46;
-min_left = 210*ui_s;
-max_left = gfx_w - (220*ui_s);
-left_w < min_left ? left_w = min_left;
-left_w > max_left ? left_w = max_left;
+right_w = gfx_w * 0.33;
+right_w < 232*ui_s ? right_w = 232*ui_s;
+right_w > gfx_w*0.40 ? right_w = gfx_w*0.40;
 
-field_h = gfx_h - title_h - legend_h - pad*2;
-field_h < 120*ui_s ? field_h = 120*ui_s;
+left_w = gfx_w - right_w - pad*3;
+left_w < 250*ui_s ? (
+  right_w = gfx_w*0.36;
+  left_w = gfx_w - right_w - pad*3;
+);
+left_w < 240*ui_s ? left_w = 240*ui_s;
 
-cx = pad + left_w*0.50;
-cy = title_h + pad + field_h*0.52;
-rad = min(left_w, field_h) * 0.42;
-rad < 55*ui_s ? rad = 55*ui_s;
+field_h = gfx_h - title_h - foot_h - pad*2;
+field_h < 208*ui_s ? field_h = 208*ui_s;
 
-rx = pad + left_w + pad;
-ry = title_h + pad;
+canvas_x = pad;
+canvas_y = title_h + pad;
+canvas_w = left_w;
+canvas_h = field_h;
+
+rx = canvas_x + canvas_w + pad;
+ry = canvas_y;
 rw = gfx_w - rx - pad;
+rw < 220*ui_s ? rw = 220*ui_s;
+rh = field_h;
 
-// --- mouse interaction (drag inside field circle) ---
-mouse_down = mouse_cap & 1;
+cx = canvas_x + canvas_w*0.50;
+cy = canvas_y + canvas_h*0.54;
 
-// on press: start drag if clicked inside field
-(!ui_prev_down && mouse_down) ? (
-  dxm = mouse_x - cx;
-  dym = mouse_y - cy;
-  md = sqrt(dxm*dxm + dym*dym);
-  md <= rad ? ui_drag = 1 : ui_drag = 0;
-);
+comp_r = min(canvas_w, canvas_h) * 0.39;
+room_hw = min(canvas_w*0.33, comp_r*0.88) * (0.78 + 0.18*slider6);
+room_hd = min(canvas_h*0.28, comp_r*0.78) * (0.74 + 0.22*slider6);
 
-// while dragging: update azimuth + distance
-(ui_drag && mouse_down) ? (
-  dxm = mouse_x - cx;
-  dym2 = cy - mouse_y; // invert y for angle
-  // Angle math: 0 = front (top), +90 = right, -90 = left, +/-180 = back.
-  // Use an atan-based manual quadrant fix to avoid any atan2 arg-order ambiguity.
-  eps = 0.00000000000000000001;
-  ang = atan(dxm / (abs(dym2) + eps)) * 180 / $pi;
-  (dym2 < 0) ? (
-    dxm >= 0 ? ang = 180 - ang : ang = -180 - ang;
-  );
+room_l = cx - room_hw;
+room_r = cx + room_hw;
+room_t = cy - room_hd;
+room_b = cy + room_hd;
 
-  // radius -> depth mapping (matches draw mapping)
-  dym = mouse_y - cy;
-  md = sqrt(dxm*dxm + dym*dym);
-  dep = md/rad;
-  dep < 0 ? dep = 0;
-  dep > 1 ? dep = 1;
-
-  slider1 = ang;
-  slider2 = dep;
-);
-
-// on release: stop drag
-(ui_drag && !mouse_down) ? ui_drag = 0;
-ui_prev_down = mouse_down;
-
-// --- UI uses slider values (immediate), audio uses smoothed values ---
 ui_az = slider1;
 ui_depth = slider2;
+ui_width = slider3;
+ui_ext = slider4;
+ui_room = slider5;
+ui_rsize = slider6;
+ui_occ = slider7;
+ui_motion = slider8;
+ui_trim = slider9;
 
 ui_az_rad = ui_az * $pi/180;
-src_r = rad * ui_depth;
-sx = cx + sin(ui_az_rad) * src_r;
-sy = cy - cos(ui_az_rad) * src_r;
+src_nx = sin(ui_az_rad) * ui_depth * 0.82;
+src_ny = cos(ui_az_rad) * ui_depth * 0.82;
+sx = cx + src_nx * room_hw;
+sy = cy - src_ny * room_hd;
 
-// background
-gfx_set(0.08,0.09,0.11,1);
-gfx_rect(0,0,gfx_w,gfx_h,1);
+dot_r = 9*ui_s + 5*ui_width;
 
-// font
-fs1 = floor(16*ui_s);
-fs2 = floor(12*ui_s);
-fs3 = floor(11*ui_s);
-fs1 < 12 ? fs1 = 12;
-fs2 < 10 ? fs2 = 10;
-fs3 < 9  ? fs3 = 9;
-gfx_setfont(1, "Arial", fs1);
+// --- cards / bars ---
+card_gap = 10*ui_s;
+card_gap < 6 ? card_gap = 6;
+
+card1_h = rh * 0.23;
+card2_h = rh * 0.47;
+
+min_c1 = 76*ui_s;
+min_c2 = 176*ui_s;
+min_c3 = 88*ui_s;
+
+card1_h < min_c1 ? card1_h = min_c1;
+card2_h < min_c2 ? card2_h = min_c2;
+card3_h = rh - card1_h - card2_h - card_gap*2;
+
+card3_h < min_c3 ? (
+  deficit = min_c3 - card3_h;
+  card2_h -= deficit;
+  card2_h < min_c2 ? (
+    deficit2 = min_c2 - card2_h;
+    card2_h = min_c2;
+    card1_h -= deficit2;
+    card1_h < min_c1 ? card1_h = min_c1;
+  );
+  card3_h = rh - card1_h - card2_h - card_gap*2;
+);
+
+card3_h < 60*ui_s ? card3_h = 60*ui_s;
+
+c1x = rx; c1y = ry; c1w = rw; c1h = card1_h;
+c2x = rx; c2y = c1y + c1h + card_gap; c2w = rw; c2h = card2_h;
+c3x = rx; c3y = c2y + c2h + card_gap; c3w = rw; c3h = card3_h;
+
+bar_pad_x = 14*ui_s;
+value_gutter = 58*ui_s;
+value_gutter < 44 ? value_gutter = 44;
+barx = c2x + bar_pad_x;
+barw = c2w - bar_pad_x*2 - value_gutter;
+barw < 96*ui_s ? barw = 96*ui_s;
+valx = barx + barw + 8*ui_s;
+
+bars_top = c2y + 40*ui_s;
+bars_bottom = c2y + c2h - 14*ui_s;
+row_h = (bars_bottom - bars_top) / 7;
+row_h < 18*ui_s ? row_h = 18*ui_s;
+barh = row_h * 0.50;
+barh > 16*ui_s ? barh = 16*ui_s;
+barh < 10*ui_s ? barh = 10*ui_s;
+label_lift = barh + 4*ui_s;
+b1y = bars_top + row_h*0.50 - barh*0.50;
+b2y = bars_top + row_h*1.50 - barh*0.50;
+b3y = bars_top + row_h*2.50 - barh*0.50;
+b4y = bars_top + row_h*3.50 - barh*0.50;
+b5y = bars_top + row_h*4.50 - barh*0.50;
+b6y = bars_top + row_h*5.50 - barh*0.50;
+b7y = bars_top + row_h*6.50 - barh*0.50;
+
+// help/detail density
+show_mouse_diag = c3h >= 112*ui_s;
+show_mouse_diag2 = c3h >= 130*ui_s;
+show_footer2 = gfx_h >= 360*ui_s;
+
+// --- mouse / hover ---
+mouse_l = mouse_cap & 1;
+mouse_r = mouse_cap & 2;
+mouse_shift = mouse_cap & 8;
+mouse_ctrl = mouse_cap & 4;
+mouse_alt = mouse_cap & 16;
+
+inside_canvas = mouse_x >= canvas_x && mouse_x <= canvas_x + canvas_w && mouse_y >= canvas_y && mouse_y <= canvas_y + canvas_h;
+near_src = ((mouse_x-sx)*(mouse_x-sx) + (mouse_y-sy)*(mouse_y-sy)) <= ((dot_r+7*ui_s)*(dot_r+7*ui_s));
+
+hover_bar = 0;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b1y && mouse_y <= b1y+barh) ? hover_bar = 1;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b2y && mouse_y <= b2y+barh) ? hover_bar = 2;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b3y && mouse_y <= b3y+barh) ? hover_bar = 3;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b4y && mouse_y <= b4y+barh) ? hover_bar = 4;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b5y && mouse_y <= b5y+barh) ? hover_bar = 5;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b6y && mouse_y <= b6y+barh) ? hover_bar = 6;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b7y && mouse_y <= b7y+barh) ? hover_bar = 7;
+
+// --- wheel controls ---
+mouse_wheel != 0 ? (
+  wstep = mouse_wheel / 120;
+  wheel_scale = mouse_shift ? 0.25 : 1.0;
+
+  hover_bar == 1 ? (
+    slider3 += wstep * 0.03 * wheel_scale;
+    slider3 < 0 ? slider3 = 0; slider3 > 1 ? slider3 = 1;
+    sliderchange(4);
+  ) :
+  hover_bar == 2 ? (
+    slider4 += wstep * 0.04 * wheel_scale;
+    slider4 < 0 ? slider4 = 0; slider4 > 1 ? slider4 = 1;
+    sliderchange(8);
+  ) :
+  hover_bar == 3 ? (
+    slider5 += wstep * 0.04 * wheel_scale;
+    slider5 < 0 ? slider5 = 0; slider5 > 1 ? slider5 = 1;
+    sliderchange(16);
+  ) :
+  hover_bar == 4 ? (
+    slider6 += wstep * 0.04 * wheel_scale;
+    slider6 < 0 ? slider6 = 0; slider6 > 1 ? slider6 = 1;
+    sliderchange(32);
+  ) :
+  hover_bar == 5 ? (
+    slider7 += wstep * 0.04 * wheel_scale;
+    slider7 < 0 ? slider7 = 0; slider7 > 1 ? slider7 = 1;
+    sliderchange(64);
+  ) :
+  hover_bar == 6 ? (
+    slider8 += wstep * 0.03 * wheel_scale;
+    slider8 < 0 ? slider8 = 0; slider8 > 1 ? slider8 = 1;
+    sliderchange(128);
+  ) :
+  hover_bar == 7 ? (
+    slider9 += wstep * 0.4 * wheel_scale;
+    slider9 < -18 ? slider9 = -18; slider9 > 12 ? slider9 = 12;
+    sliderchange(256);
+  ) :
+  inside_canvas ? (
+    mouse_shift ? (
+      slider3 += wstep * 0.03 * wheel_scale;
+      slider3 < 0 ? slider3 = 0; slider3 > 1 ? slider3 = 1;
+      sliderchange(4);
+    ) : mouse_ctrl ? (
+      slider5 += wstep * 0.04 * wheel_scale;
+      slider5 < 0 ? slider5 = 0; slider5 > 1 ? slider5 = 1;
+      sliderchange(16);
+    ) : mouse_alt ? (
+      slider4 += wstep * 0.04 * wheel_scale;
+      slider4 < 0 ? slider4 = 0; slider4 > 1 ? slider4 = 1;
+      sliderchange(8);
+    ) : (
+      slider2 += wstep * 0.035 * wheel_scale;
+      slider2 < 0 ? slider2 = 0; slider2 > 1 ? slider2 = 1;
+      sliderchange(2);
+    );
+  );
+  mouse_wheel = 0;
+);
+
+// --- press actions ---
+(!ui_prev_r && mouse_r) ? (
+  inside_canvas ? (
+    slider1 = 0;
+    slider2 = 0.25;
+    sliderchange(3);
+    sliderchange(-1.0);
+  ) :
+  hover_bar == 1 ? (slider3 = 0.08; sliderchange(4); sliderchange(-1.0);) :
+  hover_bar == 2 ? (slider4 = 0.42; sliderchange(8); sliderchange(-1.0);) :
+  hover_bar == 3 ? (slider5 = 0.30; sliderchange(16); sliderchange(-1.0);) :
+  hover_bar == 4 ? (slider6 = 0.55; sliderchange(32); sliderchange(-1.0);) :
+  hover_bar == 5 ? (slider7 = 0.00; sliderchange(64); sliderchange(-1.0);) :
+  hover_bar == 6 ? (slider8 = 0.05; sliderchange(128); sliderchange(-1.0);) :
+  hover_bar == 7 ? (slider9 = 0.0; sliderchange(256); sliderchange(-1.0););
+);
+
+(!ui_prev_l && mouse_l) ? (
+  mouse_ctrl && hover_bar == 1 ? (slider3 = 0.08; sliderchange(4); sliderchange(-1.0);) :
+  mouse_ctrl && hover_bar == 2 ? (slider4 = 0.42; sliderchange(8); sliderchange(-1.0);) :
+  mouse_ctrl && hover_bar == 3 ? (slider5 = 0.30; sliderchange(16); sliderchange(-1.0);) :
+  mouse_ctrl && hover_bar == 4 ? (slider6 = 0.55; sliderchange(32); sliderchange(-1.0);) :
+  mouse_ctrl && hover_bar == 5 ? (slider7 = 0.00; sliderchange(64); sliderchange(-1.0);) :
+  mouse_ctrl && hover_bar == 6 ? (slider8 = 0.05; sliderchange(128); sliderchange(-1.0);) :
+  mouse_ctrl && hover_bar == 7 ? (slider9 = 0.0; sliderchange(256); sliderchange(-1.0);) :
+  (near_src || inside_canvas) ? (
+    ui_mode = 1;
+    ui_drag_start_x = mouse_x;
+    ui_drag_start_y = mouse_y;
+    ui_drag_start_v1 = slider1;
+    ui_drag_start_v2 = slider2;
+  ) :
+  hover_bar > 0 ? (
+    ui_mode = 100 + hover_bar;
+    ui_drag_bar = hover_bar;
+    ui_drag_start_x = mouse_x;
+    ui_drag_start_y = mouse_y;
+    ui_drag_start_v1 =
+      hover_bar == 1 ? slider3 :
+      hover_bar == 2 ? slider4 :
+      hover_bar == 3 ? slider5 :
+      hover_bar == 4 ? slider6 :
+      hover_bar == 5 ? slider7 :
+      hover_bar == 6 ? slider8 : slider9;
+  );
+);
+
+// --- drag actions ---
+(mouse_l && ui_mode == 1) ? (
+  mouse_shift ? (
+    slider1 = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) * 0.28 / ui_s;
+    slider1 > 180 ? slider1 = 180;
+    slider1 < -180 ? slider1 = -180;
+    slider2 = ui_drag_start_v2 - (mouse_y - ui_drag_start_y) * 0.0024 / ui_s;
+    slider2 < 0 ? slider2 = 0;
+    slider2 > 1 ? slider2 = 1;
+  ) : mouse_alt ? (
+    slider2 = ui_drag_start_v2 - (mouse_y - ui_drag_start_y) * 0.0028 / ui_s;
+    slider2 < 0 ? slider2 = 0;
+    slider2 > 1 ? slider2 = 1;
+  ) : (
+    dxn = (mouse_x - cx) / room_hw;
+    dyn = (cy - mouse_y) / room_hd;
+    rr = sqrt(dxn*dxn + dyn*dyn);
+    rr > 0.98 ? (
+      dxn *= 0.98/rr;
+      dyn *= 0.98/rr;
+      rr = 0.98;
+    );
+    ang = atan(dxn / (abs(dyn) + 0.00000000000000000001)) * 180 / $pi;
+    (dyn < 0) ? (
+      dxn >= 0 ? ang = 180 - ang : ang = -180 - ang;
+    );
+    slider1 = ang;
+    slider2 = rr / 0.82;
+    slider2 > 1 ? slider2 = 1;
+    slider2 < 0 ? slider2 = 0;
+  );
+  sliderchange(3);
+);
+
+(mouse_l && ui_mode >= 101) ? (
+  sid = ui_mode - 100;
+  sid == 1 ? (mn=0; mx=1; mask=4;) :
+  sid == 2 ? (mn=0; mx=1; mask=8;) :
+  sid == 3 ? (mn=0; mx=1; mask=16;) :
+  sid == 4 ? (mn=0; mx=1; mask=32;) :
+  sid == 5 ? (mn=0; mx=1; mask=64;) :
+  sid == 6 ? (mn=0; mx=1; mask=128;) :
+             (mn=-18; mx=12; mask=256;);
+
+  mouse_shift ? (
+    v = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) / barw * (mx - mn) * 0.25;
+  ) : (
+    nrm = (mouse_x - barx) / barw;
+    nrm < 0 ? nrm = 0;
+    nrm > 1 ? nrm = 1;
+    v = mn + nrm * (mx - mn);
+  );
+
+  sid == 1 ? slider3 = v :
+  sid == 2 ? slider4 = v :
+  sid == 3 ? slider5 = v :
+  sid == 4 ? slider6 = v :
+  sid == 5 ? slider7 = v :
+  sid == 6 ? slider8 = v : slider9 = v;
+
+  sliderchange(mask);
+);
+
+// finalize drag
+(!mouse_l && ui_prev_l && ui_mode) ? (
+  ui_mode = 0;
+  ui_drag_bar = 0;
+  sliderchange(-1.0);
+);
+
+ui_prev_l = mouse_l;
+ui_prev_r = mouse_r;
+
+// refresh for drawing after interaction
+ui_az = slider1;
+ui_depth = slider2;
+ui_width = slider3;
+ui_ext = slider4;
+ui_room = slider5;
+ui_rsize = slider6;
+ui_occ = slider7;
+ui_motion = slider8;
+ui_trim = slider9;
+
+ui_az_rad = ui_az * $pi/180;
+src_nx = sin(ui_az_rad) * ui_depth * 0.82;
+src_ny = cos(ui_az_rad) * ui_depth * 0.82;
+sx = cx + src_nx * room_hw;
+sy = cy - src_ny * room_hd;
+
+frontness = max(0, cos(ui_az_rad));
+backness = max(0, -cos(ui_az_rad));
+sideness = 1 - abs(cos(ui_az_rad));
+sideness < 0 ? sideness = 0;
+
+// bounce points on room walls
+tL = (-1 - src_nx) / (-2 - src_nx + 0.00000000000000000001);
+bLx = -1;
+bLy = src_ny + tL * (0 - src_ny);
+
+tR = (1 - src_nx) / (2 - src_nx + 0.00000000000000000001);
+bRx = 1;
+bRy = src_ny + tR * (0 - src_ny);
+
+tF = (1 - src_ny) / (2 - src_ny + 0.00000000000000000001);
+bFx = src_nx + tF * (0 - src_nx);
+bFy = 1;
+
+tB = (-1 - src_ny) / (-2 - src_ny + 0.00000000000000000001);
+bBx = src_nx + tB * (0 - src_nx);
+bBy = -1;
+
+bpLx = cx + bLx * room_hw; bpLy = cy - bLy * room_hd;
+bpRx = cx + bRx * room_hw; bpRy = cy - bRy * room_hd;
+bpFx = cx + bFx * room_hw; bpFy = cy - bFy * room_hd;
+bpBx = cx + bBx * room_hw; bpBy = cy - bBy * room_hd;
+
+// --- colors ---
+bg_r=0.060; bg_g=0.068; bg_b=0.082;
+panel_r=0.105; panel_g=0.118; panel_b=0.145;
+card_r=0.128; card_g=0.142; card_b=0.176;
+line_r=0.235; line_g=0.260; line_b=0.320;
+txt_r=0.94; txt_g=0.95; txt_b=0.98;
+mut_r=0.56; mut_g=0.61; mut_b=0.69;
+src_cr=0.97; src_cg=0.67; src_cb=0.16;
+bounce_r=0.33; bounce_g=0.80; bounce_b=0.98;
+occ_cr=0.83; occ_cg=0.38; occ_cb=0.96;
+ok_r=0.58; ok_g=0.78; ok_b=0.51;
+
+// --- background ---
+gfx_set(bg_r,bg_g,bg_b,1); gfx_rect(0,0,gfx_w,gfx_h,1);
+
+// fonts
+fs1 = floor(18*ui_s); fs2 = floor(12*ui_s); fs3 = floor(10*ui_s); fs4 = floor(9*ui_s);
+fs1 < 12 ? fs1 = 12; fs2 < 10 ? fs2 = 10; fs3 < 9 ? fs3 = 9; fs4 < 8 ? fs4 = 8;
 
 // title
-gfx_set(0.95,0.96,0.98,1);
-gfx_x = pad; gfx_y = pad*0.55;
-gfx_printf("Hyperreal 3D Panner V2");
+gfx_setfont(1,"Arial",fs1,'b');
+gfx_set(txt_r,txt_g,txt_b,1);
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V5");
 
-gfx_setfont(2, "Arial", fs2);
-gfx_set(0.45,0.48,0.54,1);
-gfx_x = pad; gfx_y = pad*0.55 + fs1 + 2*ui_s;
-gfx_printf("Stereo headphone output | Drag the dot | ITD + ILD + ER + externalize");
+gfx_setfont(2,"Arial",fs2);
+gfx_set(mut_r,mut_g,mut_b,1);
+gfx_x = pad; gfx_y = pad*0.45 + fs1 + 1*ui_s;
+gfx_printf("Mouse-first room canvas | drag source | wall-bounce cues | scalable UI");
 
-// field / head
-gfx_set(0.20,0.22,0.27,1);
-gfx_circle(cx, cy, rad, 1, 1);
-gfx_set(0.30,0.33,0.40,1);
-gfx_circle(cx, cy, rad, 0, 1);
-gfx_line(cx-rad, cy, cx+rad, cy);
-gfx_line(cx, cy-rad, cx, cy+rad);
+// main surfaces
+gfx_set(panel_r,panel_g,panel_b,1);
+gfx_rect(canvas_x, canvas_y, canvas_w, canvas_h);
+gfx_roundrect(canvas_x, canvas_y, canvas_w, canvas_h, 14*ui_s, 1);
+gfx_rect(c1x, c1y, c1w, c1h);
+gfx_roundrect(c1x, c1y, c1w, c1h, 12*ui_s, 1);
+gfx_rect(c2x, c2y, c2w, c2h);
+gfx_roundrect(c2x, c2y, c2w, c2h, 12*ui_s, 1);
+gfx_rect(c3x, c3y, c3w, c3h);
+gfx_roundrect(c3x, c3y, c3w, c3h, 12*ui_s, 1);
 
-// head icon
-head_r = 18*ui_s;
+// canvas shading
+gfx_set(0.082,0.090,0.112,1);
+gfx_rect(canvas_x+8*ui_s, canvas_y+8*ui_s, canvas_w-16*ui_s, canvas_h-16*ui_s);
+gfx_roundrect(canvas_x+8*ui_s, canvas_y+8*ui_s, canvas_w-16*ui_s, canvas_h-16*ui_s, 12*ui_s, 1);
 
-gfx_set(0.55,0.60,0.70,1);
-gfx_circle(cx, cy, head_r, 0, 1);
-gfx_circle(cx-22*ui_s, cy, 6*ui_s, 0, 1);
-gfx_circle(cx+22*ui_s, cy, 6*ui_s, 0, 1);
-gfx_line(cx, cy-head_r, cx, cy-(head_r+10*ui_s));
+// compass
+gfx_set(0.19,0.22,0.28,0.92);
+i=1;
+loop(4,
+  rr = comp_r * i/4;
+  gfx_circle(cx, cy, rr, 0, 1);
+  i += 1;
+);
+gfx_line(cx-comp_r, cy, cx+comp_r, cy);
+gfx_line(cx, cy-comp_r, cx, cy+comp_r);
 
-// front marker
-fx = cx;
-fy = cy - rad;
-gfx_set(0.60,0.64,0.72,1);
-gfx_circle(fx, fy, 3*ui_s, 1, 1);
+// room
+gfx_set(0.12,0.13,0.17,1);
+gfx_rect(room_l, room_t, room_hw*2, room_hd*2);
+gfx_roundrect(room_l, room_t, room_hw*2, room_hd*2, 10*ui_s, 1);
+gfx_set(0.38,0.43,0.52,0.95);
+gfx_roundrect(room_l, room_t, room_hw*2, room_hd*2, 10*ui_s, 0);
 
-// source marker
-// line from head -> source
-gfx_set(0.97,0.68,0.18,1);
+// room labels
+gfx_setfont(3,"Arial",fs3,'b');
+gfx_set(0.73,0.79,0.87,0.95);
+gfx_x = cx - 32*ui_s; gfx_y = room_t - 16*ui_s; gfx_printf("FRONT WALL");
+gfx_x = room_l - 18*ui_s; gfx_y = cy - 5*ui_s; gfx_printf("L");
+gfx_x = room_r + 10*ui_s; gfx_y = cy - 5*ui_s; gfx_printf("R");
+gfx_set(0.70,0.58,0.85,0.95);
+gfx_x = cx - 30*ui_s; gfx_y = room_b + 6*ui_s; gfx_printf("REAR WALL");
+
+// direct path
+gfx_set(src_cr,src_cg,src_cb,0.85);
 gfx_line(cx, cy, sx, sy);
 
-dot_r = 7*ui_s;
-(gfx_w < 260) ? dot_r = 5*ui_s;
+// bounce paths
+bounce_a = 0.16 + 0.62*ui_room;
+gfx_set(bounce_r,bounce_g,bounce_b,bounce_a);
+gfx_line(sx, sy, bpLx, bpLy); gfx_line(bpLx, bpLy, cx, cy);
+gfx_line(sx, sy, bpRx, bpRy); gfx_line(bpRx, bpRy, cx, cy);
+gfx_line(sx, sy, bpFx, bpFy); gfx_line(bpFx, bpFy, cx, cy);
+gfx_line(sx, sy, bpBx, bpBy); gfx_line(bpBx, bpBy, cx, cy);
 
-gfx_circle(sx, sy, dot_r, 1, 1);
-gfx_set(0.15,0.15,0.15,1);
-gfx_circle(sx, sy, 2*ui_s, 1, 1);
+// bounce markers on walls
+bm_r = 4.0*ui_s + 3.2*ui_room;
+gfx_set(bounce_r,bounce_g,bounce_b,0.95);
+gfx_circle(bpLx, bpLy, bm_r, 1, 1);
+gfx_circle(bpRx, bpRy, bm_r, 1, 1);
+gfx_circle(bpFx, bpFy, bm_r, 1, 1);
+gfx_circle(bpBx, bpBy, bm_r, 1, 1);
 
-// right panel meters
-mx = rx;
-my = ry + 10*ui_s;
-mw = rw;
-mh = 16*ui_s;
-mg = 34*ui_s;
+// bounce legend
+gfx_setfont(2,"Arial",fs2);
+gfx_set(bounce_r,bounce_g,bounce_b,0.95);
+gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s; gfx_printf("EARLY BOUNCES");
+gfx_setfont(4,"Arial",fs4);
+gfx_set(mut_r,mut_g,mut_b,1);
+gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s + fs2 + 1*ui_s;
+gfx_printf("cyan wall hits = first reflections");
 
-mw < 120*ui_s ? mw = 120*ui_s;
+// occlusion wedge
+(ui_occ > 0.001) ? (
+  bx = cx + (sx-cx)*0.56;
+  by = cy + (sy-cy)*0.56;
+  wx = (sy-cy) * 0.09 * ui_occ;
+  wy = -(sx-cx) * 0.09 * ui_occ;
+  ax = cx + (sx-cx)*0.23;
+  ay = cy + (sy-cy)*0.23;
+  gfx_set(occ_cr,occ_cg,occ_cb,0.48 + 0.22*ui_occ);
+  gfx_triangle(ax,ay, bx+wx,by+wy, bx-wx,by-wy);
+  gfx_set(0.95,0.92,0.99,0.82);
+  gfx_x = bx + 7*ui_s; gfx_y = by - 8*ui_s; gfx_printf("BLOCKER");
+);
 
-// meter backplates
-gfx_set(0.18,0.20,0.24,1);
-gfx_rect(mx, my, mw, mh, 1);
-gfx_rect(mx, my+mg, mw, mh, 1);
-gfx_rect(mx, my+2*mg, mw, mh, 1);
+// width halo
+halo_r = dot_r + 12*ui_width;
+gfx_set(src_cr,src_cg,src_cb,0.16 + 0.20*ui_width);
+gfx_circle(sx, sy, halo_r, 0, 1);
 
-// fills
-gfx_set(0.92,0.55,0.22,1);
-gfx_rect(mx, my, min(mw, mw*meter_direct*2.4), mh, 1);
-gfx_set(0.35,0.72,0.95,1);
-gfx_rect(mx, my+mg, min(mw, mw*meter_er*3.5), mh, 1);
-gfx_set(0.76,0.34,0.92,1);
-gfx_rect(mx, my+2*mg, mw*sm_occ, mh, 1);
+// source orb
+gfx_set(src_cr,src_cg,src_cb,1); gfx_circle(sx, sy, dot_r, 1, 1);
+gfx_set(0.12,0.12,0.13,1); gfx_circle(sx, sy, 2.6*ui_s, 1, 1);
 
-// labels
-gfx_set(0.95,0.96,0.98,1);
-gfx_x = mx; gfx_y = my - (fs3+4*ui_s); gfx_setfont(3, "Arial", fs3);
-gfx_printf("Direct");
-gfx_x = mx; gfx_y = my + mg - (fs3+4*ui_s);
-gfx_printf("Early Reflections");
-gfx_x = mx; gfx_y = my + 2*mg - (fs3+4*ui_s);
-gfx_printf("Occlusion");
+// listener
+head_r = 17*ui_s;
+gfx_set(0.60,0.66,0.76,1);
+gfx_circle(cx, cy, head_r, 0, 1);
+gfx_circle(cx-21*ui_s, cy, 5.1*ui_s, 0, 1);
+gfx_circle(cx+21*ui_s, cy, 5.1*ui_s, 0, 1);
+gfx_line(cx, cy-head_r, cx, cy-(head_r+9*ui_s));
 
-// readouts
-ry2 = my + 2*mg + mh + 14*ui_s;
+// status chips on canvas
+gfx_setfont(2,"Arial",fs2,'b');
+gfx_set(card_r,card_g,card_b,0.92);
+chip_w = 86*ui_s; chip_h = 22*ui_s;
+gfx_rect(canvas_x + 14*ui_s, canvas_y + canvas_h - 34*ui_s, chip_w, chip_h);
+gfx_roundrect(canvas_x + 14*ui_s, canvas_y + canvas_h - 34*ui_s, chip_w, chip_h, 8*ui_s, 1);
+gfx_rect(canvas_x + 14*ui_s + chip_w + 8*ui_s, canvas_y + canvas_h - 34*ui_s, chip_w, chip_h);
+gfx_roundrect(canvas_x + 14*ui_s + chip_w + 8*ui_s, canvas_y + canvas_h - 34*ui_s, chip_w, chip_h, 8*ui_s, 1);
+gfx_set(txt_r,txt_g,txt_b,1);
+gfx_x = canvas_x + 26*ui_s; gfx_y = canvas_y + canvas_h - 29*ui_s; gfx_printf("Drag = place");
+gfx_x = canvas_x + 26*ui_s + chip_w + 8*ui_s; gfx_y = canvas_y + canvas_h - 29*ui_s; gfx_printf("Right click = reset");
 
-gfx_set(0.88,0.90,0.94,1);
-gfx_setfont(2, "Arial", fs2);
+// --- right card 1: summary ---
+gfx_setfont(2,"Arial",fs2,'b');
+gfx_set(txt_r,txt_g,txt_b,1);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 10*ui_s; gfx_printf("Grab Sound");
 
-gfx_x = mx; gfx_y = ry2;
-gfx_printf("Azimuth: %.1f deg", ui_az);
+gfx_setfont(3,"Arial",fs3);
+gfx_set(0.88,0.91,0.96,1);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 32*ui_s; gfx_printf("Azimuth  %.1f deg", ui_az);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 49*ui_s; gfx_printf("Distance %.2f m", last_dist_m);
+gfx_x = c1x + c1w*0.58; gfx_y = c1y + 32*ui_s; gfx_printf("Width %.2f", ui_width);
+gfx_x = c1x + c1w*0.58; gfx_y = c1y + 49*ui_s;
+frontness >= sideness && frontness >= backness ? gfx_printf("Zone FRONT") : sideness >= backness ? gfx_printf("Zone SIDE") : gfx_printf("Zone BACK");
 
-gfx_x = mx; gfx_y = ry2 + (fs2+4*ui_s);
-gfx_printf("Distance: %.2f m", 0.3 + 19.7*ui_depth*ui_depth);
+gfx_setfont(4,"Arial",fs4);
+gfx_set(mut_r,mut_g,mut_b,1);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 66*ui_s;
+gfx_printf("Shift-drag = fine | Alt-drag = distance only");
 
-gfx_x = mx; gfx_y = ry2 + 2*(fs2+4*ui_s);
-gfx_printf("ITD: %.3f ms", last_itd_ms);
+// --- right card 2: control lanes ---
+gfx_setfont(2,"Arial",fs2,'b');
+gfx_set(txt_r,txt_g,txt_b,1);
+gfx_x = c2x + 14*ui_s; gfx_y = c2y + 10*ui_s; gfx_printf("Control Lanes");
 
-gfx_x = mx; gfx_y = ry2 + 3*(fs2+4*ui_s);
-gfx_printf("Air cutoff: %.0f Hz", last_air_fc);
+// helper proc-ish by repetition
+// bar 1 width
+gfx_setfont(4,"Arial",fs4);
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b1y-11*ui_s; gfx_printf("Width");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b1y,barw,barh); gfx_roundrect(barx,b1y,barw,barh,6*ui_s,1);
+gfx_set(src_cr,src_cg,src_cb,1); gfx_rect(barx,b1y,barw*ui_width,barh);
+gfx_set(1,1,1, hover_bar==1 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_width, b1y + barh*0.5, 4.2*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b1y-1*ui_s; gfx_printf("%.2f", ui_width);
 
-gfx_x = mx; gfx_y = ry2 + 4*(fs2+4*ui_s);
-gfx_printf("Externalize: %.2f  Motion: %.2f", sm_ext, sm_motion);
+// bar 2 ext
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b2y-11*ui_s; gfx_printf("Externalize");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b2y,barw,barh); gfx_roundrect(barx,b2y,barw,barh,6*ui_s,1);
+gfx_set(src_cr,src_cg,src_cb,1); gfx_rect(barx,b2y,barw*ui_ext,barh);
+gfx_set(1,1,1, hover_bar==2 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_ext, b2y + barh*0.5, 4.2*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b2y-1*ui_s; gfx_printf("%.2f", ui_ext);
 
-gfx_x = mx; gfx_y = ry2 + 5*(fs2+4*ui_s);
-gfx_printf("Room: %.2f  Width: %.2f", sm_room, sm_width);
+// bar 3 room
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b3y-11*ui_s; gfx_printf("Room");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b3y,barw,barh); gfx_roundrect(barx,b3y,barw,barh,6*ui_s,1);
+gfx_set(bounce_r,bounce_g,bounce_b,1); gfx_rect(barx,b3y,barw*ui_room,barh);
+gfx_set(1,1,1, hover_bar==3 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_room, b3y + barh*0.5, 4.2*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b3y-1*ui_s; gfx_printf("%.2f", ui_room);
 
-gfx_x = mx; gfx_y = ry2 + 6*(fs2+4*ui_s);
-gfx_printf("Trim: %.1f dB", slider6);
+// bar 4 room size
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b4y-11*ui_s; gfx_printf("Room Size");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b4y,barw,barh); gfx_roundrect(barx,b4y,barw,barh,6*ui_s,1);
+gfx_set(0.64,0.76,0.95,1); gfx_rect(barx,b4y,barw*ui_rsize,barh);
+gfx_set(1,1,1, hover_bar==4 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_rsize, b4y + barh*0.5, 4.2*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b4y-1*ui_s; gfx_printf("%.2f", ui_rsize);
 
-// legend
-gfx_set(0.46,0.50,0.56,1);
-gfx_setfont(3, "Arial", fs3);
+// bar 5 occlusion
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b5y-11*ui_s; gfx_printf("Occlusion");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b5y,barw,barh); gfx_roundrect(barx,b5y,barw,barh,6*ui_s,1);
+gfx_set(occ_cr,occ_cg,occ_cb,1); gfx_rect(barx,b5y,barw*ui_occ,barh);
+gfx_set(1,1,1, hover_bar==5 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_occ, b5y + barh*0.5, 4.2*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b5y-1*ui_s; gfx_printf("%.2f", ui_occ);
 
-gfx_x = pad; gfx_y = gfx_h - legend_h + 8*ui_s;
-gfx_printf("0 deg = front (top), +/-90 = sides, +/-180 = back (bottom)");
+// bar 6 motion
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b6y-11*ui_s; gfx_printf("Micro Motion");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b6y,barw,barh); gfx_roundrect(barx,b6y,barw,barh,6*ui_s,1);
+gfx_set(ok_r,ok_g,ok_b,1); gfx_rect(barx,b6y,barw*ui_motion,barh);
+gfx_set(1,1,1, hover_bar==6 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_motion, b6y + barh*0.5, 4.2*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b6y-1*ui_s; gfx_printf("%.2f", ui_motion);
 
-gfx_x = pad; gfx_y = gfx_h - legend_h + 8*ui_s + (fs3+4*ui_s);
-gfx_printf("Tip: keep Width low and automate azimuth slowly for strongest headphone lock");
+// bar 7 trim
+trim_n = (ui_trim + 18) / 30;
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b7y-11*ui_s; gfx_printf("Output Trim");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b7y,barw,barh); gfx_roundrect(barx,b7y,barw,barh,6*ui_s,1);
+gfx_set(0.85,0.88,0.93,1); gfx_rect(barx,b7y,barw*trim_n,barh);
+zero_x = barx + barw*(18/30);
+gfx_set(0.10,0.10,0.12,0.85); gfx_line(zero_x, b7y, zero_x, b7y+barh);
+gfx_set(1,1,1, hover_bar==7 ? 0.95 : 0.70); gfx_circle(barx + barw*trim_n, b7y + barh*0.5, 4.2*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b7y-1*ui_s; gfx_printf("%.1f dB", ui_trim);
+
+// --- right card 3: help + diagnostics ---
+gfx_setfont(2,"Arial",fs2,'b');
+gfx_set(txt_r,txt_g,txt_b,1);
+gfx_x = c3x + 14*ui_s; gfx_y = c3y + 10*ui_s; gfx_printf("Mouse Map");
+
+gfx_setfont(4,"Arial",fs4);
+gfx_set(0.90,0.92,0.96,1);
+line_h = fs4 + 4*ui_s;
+c3tx = c3x + 14*ui_s;
+c3ty = c3y + 30*ui_s;
+gfx_x = c3tx; gfx_y = c3ty + 0*line_h; gfx_printf("Drag source = Azimuth + Distance");
+gfx_x = c3tx; gfx_y = c3ty + 1*line_h; gfx_printf("Shift-drag = Fine movement");
+gfx_x = c3tx; gfx_y = c3ty + 2*line_h; gfx_printf("Alt-drag = Distance only");
+gfx_x = c3tx; gfx_y = c3ty + 3*line_h; gfx_printf("Wheel = fast edits | Ctrl-click = reset");
+
+show_mouse_diag ? (
+  gfx_set(mut_r,mut_g,mut_b,1);
+  gfx_x = c3tx; gfx_y = c3ty + 5*line_h; gfx_printf("ITD %.3f ms   Air %.0f Hz   ER %.2f", last_itd_ms, last_air_fc, meter_er);
+);
+
+show_mouse_diag2 ? (
+  gfx_set(mut_r,mut_g,mut_b,1);
+  gfx_x = c3tx; gfx_y = c3ty + 6*line_h; gfx_printf("Room %.1f m x %.1f m   Shadow %.2f", last_room_w, last_room_d, last_shadow);
+);
+
+// footer
+gfx_setfont(4,"Arial",fs4);
+gfx_set(mut_r,mut_g,mut_b,1);
+gfx_x = pad; gfx_y = gfx_h - foot_h + 6*ui_s;
+gfx_printf("Cyan wall hits = EARLY BOUNCES: first reflections used for room size and out-of-head placement.");
+
+show_footer2 ? (
+  gfx_x = pad; gfx_y = gfx_h - foot_h + 6*ui_s + (fs4+4*ui_s);
+  gfx_printf("Mouse-first: drag the source, drag the lanes, Shift for fine, wheel for fast edits, right-click to reset.");
+);

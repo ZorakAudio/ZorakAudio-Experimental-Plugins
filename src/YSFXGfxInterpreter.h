@@ -68,6 +68,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -444,6 +445,14 @@ struct DrawCmd
   std::vector<juce::Point<float>> points;
 };
 
+// A sparse mem[] span mirrored into the @gfx VM.
+struct MemSpanView
+{
+  const double* data = nullptr;
+  int64_t base = 0;
+  int count = 0;
+};
+
 // -------------------------
 // EEL VM wrapper implementing gfx_* API by recording DrawCmds
 // -------------------------
@@ -681,26 +690,70 @@ public:
     }
   }
 
+  void syncMemRange(const double* mem, int64_t base, int count)
+  {
+    if (!mem || count <= 0 || base < 0) return;
+
+    int64_t pos64 = base;
+    int copied = 0;
+    while (copied < count)
+    {
+      if (pos64 > (int64_t) std::numeric_limits<unsigned int>::max())
+        break;
+
+      int validCount = 0;
+      EEL_F* dst = NSEEL_VM_getramptr(m_vm, (unsigned int) pos64, &validCount);
+      if (!dst || validCount <= 0) break;
+
+      const int n = std::min(validCount, count - copied);
+      std::memcpy(dst, mem + copied, (size_t) n * sizeof(EEL_F));
+      copied += n;
+      pos64 += (int64_t) n;
+    }
+  }
+
   void syncMem(const double* mem, int memN)
   {
     if (!mem || memN <= 0) return;
 
-    // Set RAM size and copy in chunks.
-    NSEEL_VM_setramsize(m_vm, (unsigned int)memN);
+    // Avoid redundant VM RAM resize calls on steady-state frames.
+    if (memN != memSize)
+      NSEEL_VM_setramsize(m_vm, (unsigned int)memN);
 
-    int pos = 0;
-    while (pos < memN)
-    {
-      int validCount = 0;
-      EEL_F* dst = NSEEL_VM_getramptr(m_vm, (unsigned int)pos, &validCount);
-      if (!dst || validCount <= 0) break;
-      const int n = std::min(validCount, memN - pos);
-      std::memcpy(dst, mem + pos, (size_t)n * sizeof(EEL_F));
-      pos += n;
-    }
+    syncMemRange(mem, 0, memN);
 
     // Remember the effective RAM size so we can read it back later.
     memSize = memN;
+  }
+
+  void syncMemSpans(const MemSpanView* spans, int spanCount, int64_t logicalMemN)
+  {
+    if (!spans || spanCount <= 0)
+      return;
+
+    int64_t requiredMem = std::max<int64_t>(0, logicalMemN);
+    for (int i = 0; i < spanCount; ++i)
+    {
+      const auto& span = spans[i];
+      if (!span.data || span.count <= 0 || span.base < 0)
+        continue;
+      requiredMem = std::max<int64_t>(requiredMem, span.base + (int64_t) span.count);
+    }
+
+    requiredMem = std::min<int64_t>(requiredMem, (int64_t) std::numeric_limits<unsigned int>::max());
+
+    if ((int) requiredMem != memSize)
+      NSEEL_VM_setramsize(m_vm, (unsigned int) requiredMem);
+
+    for (int i = 0; i < spanCount; ++i)
+    {
+      const auto& span = spans[i];
+      if (!span.data || span.count <= 0)
+        continue;
+      syncMemRange(span.data, span.base, span.count);
+    }
+
+    memSize = (int) requiredMem;
   }
 
   // Read back bound user vars into a JSFX-style vars[] array.
@@ -715,23 +768,35 @@ public:
     }
   }
 
+  void readMemRange(int64_t base, double* dst, int count) const
+  {
+    if (!dst || count <= 0 || memSize <= 0 || base < 0) return;
+    if (base >= (int64_t) memSize) return;
+
+    const int64_t available = (int64_t) memSize - base;
+    const int n = (int) std::min<int64_t>((int64_t) count, available);
+    int copied = 0;
+    int64_t pos64 = base;
+    while (copied < n)
+    {
+      if (pos64 > (int64_t) std::numeric_limits<unsigned int>::max())
+        break;
+
+      int validCount = 0;
+      EEL_F* src = NSEEL_VM_getramptr(m_vm, (unsigned int) pos64, &validCount);
+      if (!src || validCount <= 0) break;
+      const int m = std::min(validCount, n - copied);
+      std::memcpy(dst + copied, src, (size_t) m * sizeof(EEL_F));
+      copied += m;
+      pos64 += (int64_t) m;
+    }
+  }
+
   // Read back the EEL RAM (JSFX mem[]) into dst.
   // This copies [0..min(count, memSize)) and leaves the rest unchanged.
   void readMem(double* dst, int count) const
   {
-    if (!dst || count <= 0 || memSize <= 0) return;
-
-    const int n = std::min(count, memSize);
-    int pos = 0;
-    while (pos < n)
-    {
-      int validCount = 0;
-      EEL_F* src = NSEEL_VM_getramptr(m_vm, (unsigned int)pos, &validCount);
-      if (!src || validCount <= 0) break;
-      const int m = std::min(validCount, n - pos);
-      std::memcpy(dst + pos, src, (size_t)m * sizeof(EEL_F));
-      pos += m;
-    }
+    readMemRange(0, dst, count);
   }
 
   // -------------------------------------------------------------------
@@ -1457,8 +1522,14 @@ public:
     const double* vars = nullptr;
     int varsCount = 0;
 
+    // Back-compat contiguous low mem window.
     const double* mem = nullptr;
     int memN = 0;
+
+    // Sparse mirrored mem[] ranges. When present, these take precedence over mem/memN.
+    const MemSpanView* memSpans = nullptr;
+    int memSpanCount = 0;
+    int64_t logicalMemN = 0;
 
     double srate = 0.0;
     double samplesblock = 0.0;
@@ -1567,6 +1638,11 @@ public:
     if (vm) vm->readMem(dst, count);
   }
 
+  void readMemRange(int64_t base, double* dst, int count) const
+  {
+    if (vm) vm->readMemRange(base, dst, count);
+  }
+
   uint64_t popSliderChangeMask()      { return vm ? vm->popSliderChangeMask()      : 0; }
   uint64_t popSliderAutomateMask()    { return vm ? vm->popSliderAutomateMask()    : 0; }
   uint64_t popSliderAutomateEndMask() { return vm ? vm->popSliderAutomateEndMask() : 0; }
@@ -1581,7 +1657,8 @@ public:
     {
       if (snap.sliders) vm->syncSliders(snap.sliders, snap.slidersCount);
       if (snap.vars)    vm->syncVars(snap.vars, snap.varsCount);
-      if (snap.mem)     vm->syncMem(snap.mem, snap.memN);
+      if (snap.memSpans && snap.memSpanCount > 0) vm->syncMemSpans(snap.memSpans, snap.memSpanCount, snap.logicalMemN);
+      else if (snap.mem)                     vm->syncMem(snap.mem, snap.memN);
       vm->setTiming(snap.srate, snap.samplesblock);
       NSEEL_code_execute(code_init);
       initRan = true;
@@ -1613,7 +1690,8 @@ public:
     if (!anyMouseButtonDown)
     {
       if (snap.vars)    vm->syncVars(snap.vars, snap.varsCount);
-      if (snap.mem)     vm->syncMem(snap.mem, snap.memN);
+      if (snap.memSpans && snap.memSpanCount > 0) vm->syncMemSpans(snap.memSpans, snap.memSpanCount, snap.logicalMemN);
+      else if (snap.mem)                     vm->syncMem(snap.mem, snap.memN);
     }
 
     vm->setTiming(snap.srate, snap.samplesblock);

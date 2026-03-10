@@ -82,8 +82,160 @@ namespace
 {
 static std::map<DSPJSFX_State*, double*> gMemOwner;
 static std::map<DSPJSFX_State*, int64_t> gMemSize;
+static std::map<DSPJSFX_State*, int64_t> gMemUsed;
 static std::map<DSPJSFX_State*, JSFXJuceProcessor*> gFileOwner;
 
+// @gfx only needs a bounded shared-state view, not the entire DSP heap.
+//
+// A simple low-prefix cap fixed the soft-lock, but it regressed scripts that
+// intentionally keep UI-visible summaries at very high addresses (Texture keeps
+// its waveform summary far away from the raw sample buffer). To preserve that
+// usage pattern without reintroducing catastrophic whole-heap mirroring, we
+// snapshot two bounded windows:
+//   1) a low shared prefix, where most UI state lives
+//   2) a high shared suffix, which catches far-away summaries near the heap end
+//
+// That keeps copy cost constant while still making "summary-at-the-top" layouts
+// visible to @gfx.
+static constexpr int kGfxSharedPrefixDoubles = 262144; // ~= 2 MiB
+static constexpr int kGfxSharedSuffixDoubles = 262144; // ~= 2 MiB
+
+struct GfxMirrorRange
+{
+    int64_t base = 0;
+    int count = 0;
+};
+
+static inline int buildGfxMirrorRanges (int64_t memN, std::array<GfxMirrorRange, 2>& out) noexcept
+{
+    int n = 0;
+    if (memN <= 0)
+        return 0;
+
+    const int64_t prefixCount = std::min<int64_t> (memN, (int64_t) kGfxSharedPrefixDoubles);
+    if (prefixCount > 0)
+        out[(size_t) n++] = GfxMirrorRange { 0, (int) prefixCount };
+
+    if (memN > prefixCount)
+    {
+        const int64_t remaining = memN - prefixCount;
+        const int64_t suffixCount = std::min<int64_t> (remaining, (int64_t) kGfxSharedSuffixDoubles);
+        if (suffixCount > 0)
+        {
+            const int64_t suffixBase = memN - suffixCount;
+
+            if (n > 0)
+            {
+                auto& prev = out[(size_t) (n - 1)];
+                const int64_t prevEnd = prev.base + (int64_t) prev.count;
+                if (suffixBase <= prevEnd)
+                {
+                    const int64_t mergedEnd = std::max<int64_t> (prevEnd, suffixBase + suffixCount);
+                    prev.count = (int) (mergedEnd - prev.base);
+                    return n;
+                }
+            }
+
+            out[(size_t) n++] = GfxMirrorRange { suffixBase, (int) suffixCount };
+        }
+    }
+
+    return n;
+}
+
+static inline bool isGfxMirroredMemIndex (int64_t index, int64_t memN) noexcept
+{
+    if (index < 0 || index >= memN)
+        return false;
+
+    std::array<GfxMirrorRange, 2> ranges {};
+    const int count = buildGfxMirrorRanges (memN, ranges);
+    for (int i = 0; i < count; ++i)
+    {
+        const auto& r = ranges[(size_t) i];
+        if (index >= r.base && index < r.base + (int64_t) r.count)
+            return true;
+    }
+    return false;
+}
+
+static inline int64_t getTrackedJsfxMemUsed (DSPJSFX_State* st) noexcept
+{
+    if (st == nullptr)
+        return 0;
+
+    const auto it = gMemUsed.find (st);
+    const int64_t tracked = (it != gMemUsed.end() ? it->second : st->memN);
+    return std::max<int64_t> ((int64_t) 0, std::min<int64_t> (tracked, st->memN));
+}
+
+static inline void noteTrackedJsfxMemUsed (DSPJSFX_State* st, int64_t usedEndExclusive) noexcept
+{
+    if (st == nullptr)
+        return;
+
+    const int64_t clamped = std::max<int64_t> ((int64_t) 0,
+                                               std::min<int64_t> (usedEndExclusive, st->memN));
+
+    auto& tracked = gMemUsed[st];
+    if (clamped > tracked)
+        tracked = clamped;
+}
+
+static inline int64_t parseJsfxDeclaredMaxMem (const char* jsfxText) noexcept
+{
+    if (jsfxText == nullptr)
+        return 0;
+
+    std::string text (jsfxText);
+    size_t start = 0;
+
+    const std::regex reOptions (R"(^\s*options\s*:\s*(.*)$)", std::regex::ECMAScript | std::regex::icase);
+    const std::regex reMaxMem  (R"((?:^|[\s,])maxmem\s*=\s*([0-9]+(?:\.[0-9]+)?))", std::regex::ECMAScript | std::regex::icase);
+
+    while (start < text.size())
+    {
+        size_t end = text.find_first_of ("\r\n", start);
+        if (end == std::string::npos)
+            end = text.size();
+
+        std::string line = text.substr (start, end - start);
+
+        size_t next = end;
+        while (next < text.size() && (text[next] == '\r' || text[next] == '\n'))
+            ++next;
+        start = next;
+
+        std::smatch m;
+        if (! std::regex_match (line, m, reOptions))
+            continue;
+
+        const std::string options = m[1].str();
+        std::smatch mm;
+        if (! std::regex_search (options, mm, reMaxMem))
+            continue;
+
+        const double parsed = std::strtod (mm[1].str().c_str(), nullptr);
+        if (parsed <= 0.0)
+            return 0;
+
+        return (int64_t) std::floor (parsed + 1.0e-9);
+    }
+
+    return 0;
+}
+
+static inline int64_t getGfxLogicalJsfxMemN (DSPJSFX_State* st, int64_t declaredMaxMem) noexcept
+{
+    const int64_t tracked = getTrackedJsfxMemUsed (st);
+    if (st == nullptr)
+        return tracked;
+
+    if (declaredMaxMem > 0)
+        return std::max<int64_t> (tracked, std::min<int64_t> (declaredMaxMem, st->memN));
+
+    return tracked;
+}
 
 // -----------------------------------------------------------------------------
 // Bus inference
@@ -668,8 +820,12 @@ extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed)
 {
     if (! st)
         return;
+
     if (needed <= st->memN)
+    {
+        noteTrackedJsfxMemUsed (st, needed);
         return;
+    }
 
     int64_t newN = st->memN > 0 ? st->memN : 1024;
     while (newN < needed)
@@ -691,6 +847,7 @@ extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed)
 
     gMemOwner[st] = st->mem;
     gMemSize [st] = st->memN;
+    noteTrackedJsfxMemUsed (st, needed);
 }
 
 
@@ -1017,6 +1174,8 @@ public:
             paramAtomics[i] = apvts->getRawParameterValue (info.pid);
         }
 
+        jsfxDeclaredMaxMem = parseJsfxDeclaredMaxMem (kJsfxSourceText);
+
         initStateMemory();
         gFileOwner[&st] = this;
         initGfxSnapshots();
@@ -1031,6 +1190,7 @@ public:
 
         gMemOwner.erase (&st);
         gMemSize.erase (&st);
+        gMemUsed.erase (&st);
 
         if (st.mem)
             std::free (st.mem);
@@ -1043,6 +1203,19 @@ public:
     // Called by the UI thread (@gfx) to push persistent VM state back to the DSP VM.
     void enqueueGfxVarWrite (int index, double value) noexcept { enqueueGfxStateWrite (GfxStateWrite::Kind::Var, index, value); }
     void enqueueGfxMemWrite (int index, double value) noexcept { enqueueGfxStateWrite (GfxStateWrite::Kind::Mem, index, value); }
+
+    void registerGfxSnapshotClient() noexcept
+    {
+        gfxSnapshotUsers.fetch_add (1, std::memory_order_acq_rel);
+        gfxSnapshotForcePublish.store (true, std::memory_order_release);
+    }
+
+    void unregisterGfxSnapshotClient() noexcept
+    {
+        const int prev = gfxSnapshotUsers.fetch_sub (1, std::memory_order_acq_rel);
+        if (prev <= 1)
+            gfxSnapshotUsers.store (0, std::memory_order_release);
+    }
 
     const juce::String getName() const override
     {
@@ -1112,8 +1285,10 @@ public:
 
         jsfx_slider (&st);
 
-        // Seed initial GFX snapshot so the UI has something immediately.
+        // Seed an initial GFX snapshot so the UI has something immediately,
+        // even before any editor is opened.
         gfxSnapCountdown = 0;
+        gfxSnapshotForcePublish.store (true, std::memory_order_release);
         updateGfxSnapshotIfNeeded ((int) gfxSnapPeriodSamples);
     }
 
@@ -1730,6 +1905,7 @@ public:
         const double* src = data->items.data() + h.cursor;
 
         std::memcpy (mem + dst, src, (size_t) clamped * sizeof (double));
+        noteTrackedJsfxMemUsed (state, dst + clamped);
         h.cursor += clamped;
         return (double) clamped;
     }
@@ -1872,11 +2048,19 @@ public:
     // ------------------------------------------------------------
     struct GfxSnapshot
     {
+        struct MemSpan
+        {
+            int64_t base = 0;
+            int count = 0;
+            std::vector<double> data;
+        };
+
         std::array<double, 64> sliders {};
         std::vector<double> vars;
-        std::vector<double> mem;
+        std::array<MemSpan, 2> memSpans {};
+        int memSpanCount = 0;
+        int64_t logicalMemN = 0;
         int varsCount = 0;
-        int memN = 0;
         double srate = 0.0;
         double samplesblock = 0.0;
     };
@@ -2231,6 +2415,7 @@ private:
 
         gMemOwner[&st] = st.mem;
         gMemSize [&st] = st.memN;
+        gMemUsed [&st] = 0;
     }
 
     void resetStateStructOnly()
@@ -2245,6 +2430,7 @@ private:
 
         gMemOwner[&st] = st.mem;
         gMemSize [&st] = st.memN;
+        gMemUsed [&st] = 0;
     }
 
     bool pushParamsToStateSliders()
@@ -2373,7 +2559,8 @@ private:
             else // Mem
             {
                 const int64_t mi = (int64_t) w.index;
-                if (mi >= 0 && mi < st.memN && st.mem != nullptr)
+                const int64_t logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
+                if (st.mem != nullptr && isGfxMirroredMemIndex (mi, logicalMemN))
                     st.mem[(size_t) mi] = w.value;
             }
 
@@ -2507,34 +2694,43 @@ private:
 void initGfxSnapshots()
 {
     const int varCount = (int) (sizeof (st.vars) / sizeof (st.vars[0]));
+
     for (auto& b : gfxSnaps)
     {
         b.varsCount = varCount;
         b.vars.resize ((size_t) varCount, 0.0);
-        b.memN = (int) st.memN;
-        b.mem.resize ((size_t) st.memN, 0.0);
+        b.memSpanCount = 0;
+        b.logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
 
-        // Pre-reserve to avoid reallocs on the audio thread for typical JSFX scripts
-        // (FFT/spectrum analyzers etc). 131072 doubles ~= 1MB per buffer.
-        b.mem.reserve (131072);
+        b.memSpans[0].data.reserve ((size_t) kGfxSharedPrefixDoubles);
+        b.memSpans[1].data.reserve ((size_t) kGfxSharedSuffixDoubles);
     }
 }
 
 void updateGfxSnapshotIfNeeded (int numSamples)
 {
-    // No @gfx? Still harmless, but avoid the mem copy if the UI never uses it.
-    // (The UI will simply not call beginGfxSnapshotRead() if there's no @gfx.)
     if (st.srate <= 0.0 || numSamples <= 0)
+        return;
+
+    const bool forcePublish = gfxSnapshotForcePublish.exchange (false, std::memory_order_acq_rel);
+    if (! forcePublish && gfxSnapshotUsers.load (std::memory_order_acquire) <= 0)
         return;
 
     if (gfxSnapPeriodSamples <= 0)
         gfxSnapPeriodSamples = (int64_t) juce::jmax (128.0, st.srate / 30.0); // ~30 Hz snapshots
 
-    gfxSnapCountdown -= (int64_t) numSamples;
-    if (gfxSnapCountdown > 0)
-        return;
+    if (! forcePublish)
+    {
+        gfxSnapCountdown -= (int64_t) numSamples;
+        if (gfxSnapCountdown > 0)
+            return;
 
-    gfxSnapCountdown += gfxSnapPeriodSamples;
+        gfxSnapCountdown += gfxSnapPeriodSamples;
+    }
+    else
+    {
+        gfxSnapCountdown = gfxSnapPeriodSamples;
+    }
 
     const int front = gfxSnapFront.load (std::memory_order_acquire);
     const int reading = gfxSnapReading.load (std::memory_order_acquire);
@@ -2550,19 +2746,49 @@ void updateGfxSnapshotIfNeeded (int numSamples)
     if ((int) b.vars.size() != varCount)
         b.vars.resize ((size_t) varCount, 0.0);
 
-    if (b.mem.capacity() < (size_t) st.memN)
-        b.mem.reserve ((size_t) st.memN);
-
-    if ((int64_t) b.mem.size() != st.memN)
-        b.mem.resize ((size_t) st.memN, 0.0);
-
-    // Copy state
+    // Copy state. Sliders + vars are tiny; mem is mirrored as two bounded windows
+    // (prefix + suffix) so @gfx can still see far-away summaries without dragging
+    // the entire DSP heap through the UI bridge every frame.
     std::memcpy (b.sliders.data(), st.sliders, sizeof (double) * 64);
     std::memcpy (b.vars.data(),    st.vars,    sizeof (double) * (size_t) varCount);
-    std::memcpy (b.mem.data(),     st.mem,     sizeof (double) * (size_t) st.memN);
+
+    b.memSpanCount = 0;
+    b.logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
+
+    if (st.mem != nullptr && b.logicalMemN > 0)
+    {
+        std::array<GfxMirrorRange, 2> ranges {};
+        const int rangeCount = buildGfxMirrorRanges (b.logicalMemN, ranges);
+
+        for (int i = 0; i < rangeCount; ++i)
+        {
+            const auto& r = ranges[(size_t) i];
+            if (r.count <= 0)
+                continue;
+
+            auto& span = b.memSpans[(size_t) b.memSpanCount];
+            span.base = r.base;
+            span.count = r.count;
+
+            if (span.data.capacity() < (size_t) r.count)
+                span.data.reserve ((size_t) r.count);
+            if ((int) span.data.size() != r.count)
+                span.data.resize ((size_t) r.count, 0.0);
+
+            std::memcpy (span.data.data(), st.mem + r.base, sizeof (double) * (size_t) r.count);
+            ++b.memSpanCount;
+        }
+    }
+
+    for (int i = b.memSpanCount; i < (int) b.memSpans.size(); ++i)
+    {
+        auto& span = b.memSpans[(size_t) i];
+        span.base = 0;
+        span.count = 0;
+        span.data.clear();
+    }
 
     b.varsCount = varCount;
-    b.memN = (int) st.memN;
     b.srate = st.srate;
     b.samplesblock = st.samplesblock;
 
@@ -2573,8 +2799,11 @@ void updateGfxSnapshotIfNeeded (int numSamples)
 std::array<GfxSnapshot, 3> gfxSnaps {};
 std::atomic<int> gfxSnapFront { 0 };
 std::atomic<int> gfxSnapReading { -1 };
+std::atomic<int> gfxSnapshotUsers { 0 };
+std::atomic<bool> gfxSnapshotForcePublish { false };
 int64_t gfxSnapPeriodSamples = 0;
 int64_t gfxSnapCountdown = 0;
+int64_t jsfxDeclaredMaxMem = 0;
 
     std::array<std::atomic<float>*, 64> paramAtomics {};
 
@@ -3222,6 +3451,8 @@ public:
 
         if (interp.hasGfxSection())
         {
+            processor.registerGfxSnapshotClient();
+
             // Render once immediately so the very first paint isn't empty/black due to timer scheduling.
             renderNow();
             startTimerHz (30);
@@ -3230,6 +3461,9 @@ public:
 
     ~GfxView() override
     {
+        if (interp.hasGfxSection())
+            processor.unregisterGfxSnapshotClient();
+
         processor.endAllGfxGestures();
     }
 
@@ -3387,11 +3621,18 @@ public:
         processor.endAllGfxGestures();
     }
 
+    struct MemDiffSpan
+    {
+        int64_t base = 0;
+        std::vector<double> before;
+        std::vector<double> after;
+    };
+
     bool inputDirty = false;
     std::vector<double> varsBefore;
-    std::vector<double> memBefore;
 	std::vector<double> varsAfter;
-	std::vector<double> memAfter;
+    std::array<MemDiffSpan, 2> memDiffSpans {};
+    int memDiffSpanCount = 0;
     
 private:
     void timerCallback() override
@@ -3544,15 +3785,46 @@ private:
         if (! snap)
             return;
 
+        std::array<jsfx_gfx::MemSpanView, 2> snapMemSpans {};
+
         jsfx_gfx::Interpreter::Snapshot s;
         s.sliders = snap->sliders.data();
         s.slidersCount = 64;
         s.vars = snap->vars.data();
         s.varsCount = snap->varsCount;
-        s.mem = snap->mem.data();
-        s.memN = snap->memN;
+        s.logicalMemN = snap->logicalMemN;
         s.srate = snap->srate;
         s.samplesblock = snap->samplesblock;
+
+        s.memSpans = nullptr;
+        s.memSpanCount = 0;
+        s.mem = nullptr;
+        s.memN = 0;
+
+        for (int i = 0; i < snap->memSpanCount; ++i)
+        {
+            const auto& srcSpan = snap->memSpans[(size_t) i];
+            if (srcSpan.count <= 0 || srcSpan.data.empty())
+                continue;
+
+            auto& dstSpan = snapMemSpans[(size_t) s.memSpanCount];
+            dstSpan.base = srcSpan.base;
+            dstSpan.count = srcSpan.count;
+            dstSpan.data = srcSpan.data.data();
+            ++s.memSpanCount;
+        }
+
+        if (s.memSpanCount > 0)
+        {
+            s.memSpans = snapMemSpans.data();
+
+            // Back-compat: expose a contiguous low prefix when present.
+            if (snapMemSpans[0].base == 0)
+            {
+                s.mem = snapMemSpans[0].data;
+                s.memN = snapMemSpans[0].count;
+            }
+        }
 
         // Apply current mouse state.
         const float wheel  = pendingWheel;
@@ -3567,16 +3839,11 @@ private:
         // IMPORTANT:
         // When the @gfx VM preserves vars/mem during mouse drags (to avoid stomping UI
         // interaction state like drag_id / prev_mouse_cap), the VM's mem[] can become
-        // stale relative to the audio-thread snapshot (which includes large DSP buffers).
+        // stale relative to the audio-thread snapshot.
         //
-        // If we diff against the snapshot in that situation, we'd enqueue thousands of
-        // spurious mem/var writes back to the audio thread, corrupting DSP state and
-        // causing audible glitches/noise.
-        //
-        // So:
-        //  - If any mouse button is down: baseline vars/mem from the VM itself (pre-frame),
-        //    so we only push *actual* @gfx writes.
-        //  - Otherwise: baseline from the snapshot (VM is synced from it this frame).
+        // If we diff against the snapshot in that situation, we'd enqueue spurious
+        // mem/var writes back to the audio thread. So when any mouse button is down,
+        // baseline from the VM itself; otherwise baseline from the latest snapshot.
         const bool anyMouseButtonDown = (mouseCap & (1 | 2 | 64)) != 0;
 
         if (captureStateWrites)
@@ -3595,33 +3862,30 @@ private:
                     std::memcpy (varsBefore.data(), s.vars, sizeof (double) * (size_t) s.varsCount);
             }
 
-            // Mem can be huge. Only track writes for "reasonable" sizes.
-            // (Most scripts that store UI toggles in mem[] use small ranges.)
-            constexpr int kMaxMemDiffDoubles = 262144;
-
-            if (anyMouseButtonDown)
+            memDiffSpanCount = 0;
+            for (int i = 0; i < s.memSpanCount && i < (int) memDiffSpans.size(); ++i)
             {
-                if (s.memN > 0 && s.memN <= kMaxMemDiffDoubles)
-                {
-                    if ((int) memBefore.size() != s.memN)
-                        memBefore.resize ((size_t) s.memN);
+                const auto& span = snapMemSpans[(size_t) i];
+                if (span.count <= 0 || span.data == nullptr)
+                    continue;
 
-                    interp.readMem (memBefore.data(), (int) memBefore.size());
-                }
+                auto& diff = memDiffSpans[(size_t) memDiffSpanCount];
+                diff.base = span.base;
+
+                if ((int) diff.before.size() != span.count)
+                    diff.before.resize ((size_t) span.count);
+
+                if (anyMouseButtonDown)
+                    interp.readMemRange (diff.base, diff.before.data(), (int) diff.before.size());
                 else
-                {
-                    // Skip mem diff/writeback entirely to avoid UI->DSP corruption.
-                    memBefore.clear();
-                }
-            }
-            else
-            {
-                if ((int) memBefore.size() != s.memN)
-                    memBefore.resize ((size_t) s.memN);
+                    std::memcpy (diff.before.data(), span.data, sizeof (double) * (size_t) span.count);
 
-                if (s.memN > 0)
-                    std::memcpy (memBefore.data(), s.mem, sizeof (double) * (size_t) s.memN);
+                ++memDiffSpanCount;
             }
+        }
+        else
+        {
+            memDiffSpanCount = 0;
         }
 
         interp.setMouse (mouseX, mouseY, mouseCap, wheel, hwheel);
@@ -3633,22 +3897,17 @@ private:
             constexpr int kMaxWritesPerFrame = 2048;
             int pushed = 0;
 
-			// Read back post-frame VM state.
-			// IMPORTANT: Interpreter::Snapshot pointers are *inputs* (we copy them into the VM),
-			// so we must explicitly pull the VM state back out here.
-			varsAfter = varsBefore;
-			interp.readVars (varsAfter.data(), (int) varsAfter.size());
-
-			memAfter = memBefore;
-			// Avoid pathological cases (very large memN) from stalling the UI.
-			if ((int) memAfter.size() > 0 && (int) memAfter.size() <= 262144)
-				interp.readMem (memAfter.data(), (int) memAfter.size());
+            // Read back post-frame VM state.
+            // IMPORTANT: Interpreter::Snapshot pointers are *inputs* (we copy them into the VM),
+            // so we must explicitly pull the VM state back out here.
+            varsAfter = varsBefore;
+            interp.readVars (varsAfter.data(), (int) varsAfter.size());
 
             // Vars first (usually where UI toggles live)
-			for (int i = 0; i < (int) varsAfter.size() && pushed < kMaxWritesPerFrame; ++i)
+            for (int i = 0; i < (int) varsAfter.size() && pushed < kMaxWritesPerFrame; ++i)
             {
                 const double a = varsBefore[(size_t) i];
-				const double b = varsAfter[(size_t) i];
+                const double b = varsAfter[(size_t) i];
 
                 if (a == b) continue;
                 if (std::isnan (a) && std::isnan (b)) continue;
@@ -3657,17 +3916,31 @@ private:
                 ++pushed;
             }
 
-            // Then mem (many JSFX UIs store toggle state here)
-			for (int i = 0; i < (int) memAfter.size() && pushed < kMaxWritesPerFrame; ++i)
+            // Then mem across the mirrored ranges (prefix + optional suffix).
+            for (int si = 0; si < memDiffSpanCount && pushed < kMaxWritesPerFrame; ++si)
             {
-                const double a = memBefore[(size_t) i];
-				const double b = memAfter[(size_t) i];
+                auto& diff = memDiffSpans[(size_t) si];
+                if ((int) diff.after.size() != (int) diff.before.size())
+                    diff.after.resize (diff.before.size());
 
-                if (a == b) continue;
-                if (std::isnan (a) && std::isnan (b)) continue;
+                if (! diff.after.empty())
+                    interp.readMemRange (diff.base, diff.after.data(), (int) diff.after.size());
 
-                processor.enqueueGfxMemWrite (i, b);
-                ++pushed;
+                for (int i = 0; i < (int) diff.after.size() && pushed < kMaxWritesPerFrame; ++i)
+                {
+                    const double a = diff.before[(size_t) i];
+                    const double b = diff.after[(size_t) i];
+
+                    if (a == b) continue;
+                    if (std::isnan (a) && std::isnan (b)) continue;
+
+                    const int64_t absoluteIndex = diff.base + (int64_t) i;
+                    if (absoluteIndex < 0 || absoluteIndex > (int64_t) std::numeric_limits<int>::max())
+                        continue;
+
+                    processor.enqueueGfxMemWrite ((int) absoluteIndex, b);
+                    ++pushed;
+                }
             }
         }
 
