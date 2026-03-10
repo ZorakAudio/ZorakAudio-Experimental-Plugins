@@ -2964,10 +2964,19 @@ public:
             startTimerHz (10);
     }
 
+    int preferredWidth() const noexcept
+    {
+        const int labelW = getPreferredLabelWidth();
+        const int minControlW = hasFileRows ? 360 : 420;
+        return juce::jmax (560, labelW + minControlW + kOuterPadding * 2 + kColumnGap);
+    }
+
     int preferredHeight() const noexcept
     {
-        const int rowH = 30;
-        return rowH * (int) rows.size() + 8;
+        if (rows.empty())
+            return kOuterPadding * 2;
+
+        return kOuterPadding * 2 + (int) rows.size() * kRowPitch - kRowGap;
     }
 
     bool hasAnyVisibleControls() const noexcept { return ! rows.empty(); }
@@ -2979,37 +2988,36 @@ public:
 
     void resized() override
     {
-        const int rowH = 30;
-        auto r = getLocalBounds().reduced (6);
+        auto content = getLocalBounds().reduced (kOuterPadding, kOuterPadding);
+        const int maxContentW = juce::jmin (kMaxContentWidth, juce::jmax (preferredWidth(), content.getWidth()));
 
-        int labelW = 160;
+        if (content.getWidth() > maxContentW)
+            content = content.withSizeKeepingCentre (maxContentW, content.getHeight());
+
+        const int labelW = juce::jlimit (kMinLabelWidth,
+                                         juce::jmin (kMaxLabelWidth, juce::jmax (kMinLabelWidth, content.getWidth() / 3)),
+                                         getPreferredLabelWidth());
+
         for (auto& row : rows)
         {
-            if (row.label)
-                labelW = std::max (labelW, row.label->getFont().getStringWidth (row.label->getText()) + 20);
-        }
-        labelW = std::min (labelW, 260);
-
-        for (auto& row : rows)
-        {
-            auto rowR = r.removeFromTop (rowH);
-            rowR.removeFromBottom (2);
+            auto rowR = content.removeFromTop (kRowHeight);
+            content.removeFromTop (kRowGap);
 
             auto labR = rowR.removeFromLeft (labelW);
+            rowR.removeFromLeft (kColumnGap);
             row.label->setBounds (labR);
 
             if (row.isFile)
             {
-                const int clearW = 64;
-                const int chooseW = 90;
+                const int clearW = 68;
+                const int chooseW = 96;
 
-                auto clearR = rowR.removeFromRight (clearW).reduced (2);
-                auto chooseR = rowR.removeFromRight (chooseW).reduced (2);
+                auto clearR = rowR.removeFromRight (clearW).reduced (1);
+                auto chooseR = rowR.removeFromRight (chooseW).reduced (1);
 
                 row.clear->setBounds (clearR);
                 row.choose->setBounds (chooseR);
-
-                row.filePath->setBounds (rowR.reduced (2));
+                row.filePath->setBounds (rowR.reduced (1));
             }
             else if (row.slider)
             {
@@ -3017,12 +3025,34 @@ public:
             }
             else if (row.combo)
             {
-                row.combo->setBounds (rowR);
+                row.combo->setBounds (rowR.reduced (0, 1));
             }
         }
     }
 
 private:
+    static constexpr int kRowHeight = 30;
+    static constexpr int kRowGap = 6;
+    static constexpr int kRowPitch = kRowHeight + kRowGap;
+    static constexpr int kOuterPadding = 8;
+    static constexpr int kColumnGap = 12;
+    static constexpr int kMinLabelWidth = 170;
+    static constexpr int kMaxLabelWidth = 240;
+    static constexpr int kMaxContentWidth = 920;
+
+    int getPreferredLabelWidth() const noexcept
+    {
+        int labelW = kMinLabelWidth;
+
+        for (const auto& row : rows)
+        {
+            if (row.label)
+                labelW = std::max (labelW, row.label->getFont().getStringWidth (row.label->getText()) + 20);
+        }
+
+        return juce::jmin (labelW, kMaxLabelWidth);
+    }
+
     void timerCallback() override
     {
         for (auto& row : rows)
@@ -3137,8 +3167,12 @@ explicit JSFXJuceEditor (JSFXJuceProcessor& p)
         setLookAndFeel (&unicodeLnf);
         tooltipWindow.setLookAndFeel (&unicodeLnf);
         setOpaque (true);
-        setColour (juce::ResizableWindow::backgroundColourId, juce::Colour (0xff2f3a41)); // pick your base
-        addAndMakeVisible (genericEditor);
+        setColour (juce::ResizableWindow::backgroundColourId, juce::Colour (0xff2f3a41));
+
+        controlsViewport.setViewedComponent (&genericEditor, false);
+        controlsViewport.setScrollBarsShown (true, false, true, false);
+        controlsViewport.setSingleStepSizes (0, 32);
+        addAndMakeVisible (controlsViewport);
 
         // --- JSFX @gfx view (always placed at the bottom) ---
         addAndMakeVisible (gfxView);
@@ -3160,47 +3194,29 @@ explicit JSFXJuceEditor (JSFXJuceProcessor& p)
         addChildComponent (helpOverlay);
         helpOverlay.setVisible (false);
 
-        
-        // Enable host-resizable editor
         setResizable (true, true);
 
-        // Cache the "natural" size of the controls panel (exact visible rows).
-        genericPrefW = juce::jmax (520, genericEditor.getWidth());
-        genericPrefH = genericEditor.hasAnyVisibleControls()
-            ? genericEditor.preferredHeight()
-            : 0;
-
-        const int topBarH = 40;
-        const int gap = 6;
+        genericPrefW = juce::jmax (kMinEditorWidth, genericEditor.preferredWidth());
+        genericPrefH = genericEditor.hasAnyVisibleControls() ? genericEditor.preferredHeight() : 0;
 
         const bool hasGfx      = gfxView.isVisible();
         const bool hasControls = genericEditor.hasAnyVisibleControls();
+        const int gfxPrefH     = hasGfx ? getDeclaredGfxPreferredHeight() : 0;
+        const int gfxPrefW     = hasGfx ? getDeclaredGfxPreferredWidth()  : 0;
+        const int controlsMinH = hasControls ? getMinControlsViewportHeight()          : 0;
+        const int controlsDefH = hasControls ? getDefaultControlsViewportHeight (gfxPrefH) : 0;
+        const int gapControlsGfx = (hasGfx && hasControls) ? kSectionGap : 0;
 
-        const int gfxPrefH = hasGfx ? juce::jlimit (80, 700, gfxView.preferredHeight()) : 0;
-        const int gfxPrefW = hasGfx ? gfxView.preferredWidth() : 0;
+        const int minW = juce::jmax (kMinEditorWidth, juce::jmax (genericPrefW, gfxPrefW));
+        const int minH = kTopBarH + controlsMinH + (hasGfx ? gapControlsGfx + gfxPrefH : 0);
+        const int initialH = kTopBarH + controlsDefH + (hasGfx ? gapControlsGfx + gfxPrefH : 0);
 
-        // Only insert a gap between controls and gfx if BOTH exist.
-        const int gapControlsGfx = (hasGfx && hasControls) ? gap : 0;
+        setResizeLimits (minW,
+                         juce::jmax (kTopBarH + 80, minH),
+                         juce::jmax (kMaxEditorWidth, minW),
+                         juce::jmax (kMaxEditorHeight, minH));
 
-        const int minW = juce::jmax (520, juce::jmax (genericPrefW, gfxPrefW));
-
-        // Minimum height:
-        // - always top bar
-        // - + a bit of controls (if any)
-        // - + a bit of gfx (if any)
-        const int minControlsH = hasControls ? juce::jmin (genericPrefH, 260) : 0;
-        const int minGfxH      = hasGfx      ? juce::jmin (gfxPrefH, 180)      : 0;
-
-        const int minH = topBarH + minControlsH + (hasGfx ? (gapControlsGfx + minGfxH) : 0);
-        setResizeLimits (minW, juce::jmax (topBarH + 80, minH), 2200, 1600);
-
-        // Initial size: exact controls height (if any) + exact gfx height (if any).
-        const int w = minW;
-        const int h = topBarH
-                    + (hasControls ? genericPrefH : 0)
-                    + (hasGfx ? (gapControlsGfx + gfxPrefH) : 0);
-
-        setSize (w, juce::jmax (minH, h));
+        setSize (minW, juce::jmax (minH, initialH));
     }
 
     ~JSFXJuceEditor() override
@@ -3209,78 +3225,132 @@ explicit JSFXJuceEditor (JSFXJuceProcessor& p)
         setLookAndFeel (nullptr);
     }
 
-        void paint (juce::Graphics& g) override
+    void paint (juce::Graphics& g) override
     {
         g.fillAll (findColour (juce::ResizableWindow::backgroundColourId));
     }
 
-
-
     void resized() override
     {
-        const int topBarH = 40;
-        const int gap = 6;
-
         auto r = getLocalBounds();
-        auto top = r.removeFromTop (topBarH);
+        auto top = r.removeFromTop (kTopBarH);
 
         const int btnSize = 24;
-        helpButton.setBounds (top.getRight() - btnSize - 8, (topBarH - btnSize) / 2, btnSize, btnSize);
+        helpButton.setBounds (top.getRight() - btnSize - 8, (kTopBarH - btnSize) / 2, btnSize, btnSize);
         helpButton.toFront (false);
 
         const bool hasGfx      = gfxView.isVisible();
         const bool hasControls = genericEditor.hasAnyVisibleControls();
 
-        // Always recompute, so it never reserves stale space.
         genericPrefH = hasControls ? genericEditor.preferredHeight() : 0;
 
-        if (hasGfx)
+        const int gfxPrefH = hasGfx ? getDeclaredGfxPreferredHeight() : 0;
+        const int controlsMinH = hasControls ? getMinControlsViewportHeight() : 0;
+        const int controlsMaxH = hasControls ? getMaxControlsViewportHeight (gfxPrefH) : 0;
+        const int gapControlsGfx = (hasGfx && hasControls) ? kSectionGap : 0;
+
+        if (hasControls)
         {
-            if (hasControls)
+            int controlsH = r.getHeight();
+
+            if (hasGfx)
             {
-                const int minGfxH = juce::jlimit (80, 700, gfxView.preferredHeight());
-                const int availableForControls = juce::jmax (0, r.getHeight() - minGfxH - gap);
-
-                // Controls take only their natural height, capped by available space.
-                const int controlsH = juce::jmin (genericPrefH, availableForControls);
-
-                if (controlsH > 0)
-                {
-                    auto controlsArea = r.removeFromTop (controlsH);
-                    genericEditor.setVisible (true);
-                    genericEditor.setBounds (controlsArea);
-
-                    r.removeFromTop (gap);
-                }
-                else
-                {
-                    // Not enough room: hide controls completely, give everything to gfx.
-                    genericEditor.setVisible (false);
-                    genericEditor.setBounds (0, 0, 0, 0);
-                }
-
-                gfxView.setBounds (r);
+                const int extraForControls = r.getHeight() - gfxPrefH - gapControlsGfx;
+                controlsH = juce::jlimit (controlsMinH,
+                                          controlsMaxH,
+                                          juce::jmax (controlsMinH, extraForControls));
             }
-            else
-            {
-                // NO CONTROLS: show ONLY gfx (and top bar / '?' button)
-                genericEditor.setVisible (false);
-                genericEditor.setBounds (0, 0, 0, 0);
 
-                gfxView.setBounds (r);
-            }
+            auto controlsArea = r.removeFromTop (juce::jmax (0, controlsH));
+            controlsViewport.setVisible (true);
+            controlsViewport.setBounds (controlsArea);
+            updateControlsViewportContentSize();
+
+            if (hasGfx)
+                r.removeFromTop (kSectionGap);
         }
         else
         {
-            // No gfx: controls fill all (if any)
-            genericEditor.setVisible (true);
-            genericEditor.setBounds (r);
-            gfxView.setBounds (0, 0, 0, 0);
+            controlsViewport.setVisible (false);
+            controlsViewport.setBounds (0, 0, 0, 0);
+            genericEditor.setSize (0, 0);
         }
+
+        if (hasGfx)
+            gfxView.setBounds (r);
+        else
+            gfxView.setBounds (0, 0, 0, 0);
 
         helpOverlay.setBounds (getLocalBounds());
     }
 private:
+    static constexpr int kTopBarH = 40;
+    static constexpr int kSectionGap = 6;
+    static constexpr int kMinEditorWidth = 520;
+    static constexpr int kMaxEditorWidth = 2400;
+    static constexpr int kMaxEditorHeight = 2600;
+    static constexpr int kFallbackGfxWidth = 640;
+    static constexpr int kFallbackGfxHeight = 360;
+
+    int getDeclaredGfxPreferredWidth() const noexcept
+    {
+        const int pref = gfxView.preferredWidth();
+        return pref > 0 ? pref : kFallbackGfxWidth;
+    }
+
+    int getDeclaredGfxPreferredHeight() const noexcept
+    {
+        const int pref = gfxView.preferredHeight();
+        return pref > 0 ? pref : kFallbackGfxHeight;
+    }
+
+    int getMinControlsViewportHeight() const noexcept
+    {
+        if (genericPrefH <= 0)
+            return 0;
+
+        return juce::jmin (genericPrefH, 110);
+    }
+
+    int getDefaultControlsViewportHeight (int gfxPrefH) const noexcept
+    {
+        if (genericPrefH <= 0)
+            return 0;
+
+        if (! gfxView.isVisible())
+            return juce::jmin (genericPrefH, 360);
+
+        const int scaled = juce::roundToInt ((float) gfxPrefH * 0.28f);
+        return juce::jmin (genericPrefH,
+                           juce::jlimit (getMinControlsViewportHeight(), 240, scaled));
+    }
+
+    int getMaxControlsViewportHeight (int gfxPrefH) const noexcept
+    {
+        if (genericPrefH <= 0)
+            return 0;
+
+        if (! gfxView.isVisible())
+            return genericPrefH;
+
+        return juce::jmin (genericPrefH,
+                           juce::jmax (getDefaultControlsViewportHeight (gfxPrefH), 320));
+    }
+
+    void updateControlsViewportContentSize()
+    {
+        if (! controlsViewport.isVisible())
+            return;
+
+        const int contentH = juce::jmax (controlsViewport.getMaximumVisibleHeight(), genericPrefH);
+        const int pass1W = juce::jmax (1, controlsViewport.getMaximumVisibleWidth());
+        genericEditor.setSize (pass1W, contentH);
+
+        const int pass2W = juce::jmax (1, controlsViewport.getMaximumVisibleWidth());
+        if (pass2W != genericEditor.getWidth())
+            genericEditor.setSize (pass2W, contentH);
+    }
+
     UnicodeLNF unicodeLnf;
 
     // -----------------------
@@ -4012,6 +4082,7 @@ private:
 
     JSFXJuceProcessor& processor;
     FilteredPanel genericEditor;
+    juce::Viewport controlsViewport;
 
     int genericPrefW = 0;
     int genericPrefH = 0;

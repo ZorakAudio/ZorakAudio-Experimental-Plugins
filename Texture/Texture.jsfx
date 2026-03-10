@@ -60,6 +60,21 @@ src_sr = 0;
 src_items = 0;
 src_frames = 0;
 
+PI = 3.14159265358979323846;
+
+def_a = 10;
+def_d = 80;
+def_s = 0.35;
+def_r = 250;
+
+ui_lmb_last = 0;
+ui_rmb_last = 0;
+ui_knob_active = 0;
+ui_drag_start_y = 0;
+ui_drag_norm_start = 0;
+
+gate_peak = 0;
+
 file_state = 0; // 0=no file, 1=waiting, 2=ready, 3=copy fail
 load_generation = 0;
 
@@ -77,6 +92,7 @@ ui_force_reload = 0;
 
 // ADSR
 a_state = 0; // 0 idle, 1 atk, 2 dec, 3 sus, 4 rel
+gate_peak = 0;
 a_env = 0;
 atk_s = 1;
 dec_s = 1;
@@ -196,6 +212,7 @@ h > 0 ? (
           gate = 0;
           follow = 0;
           a_state = 0;
+          gate_peak = 0;
           a_env = 0;
           trig_v = 0;
 
@@ -316,6 +333,19 @@ in_abs > follow ? (
   follow = in_abs + f_rel_c * (follow - in_abs);
 );
 
+// trigger strength source:
+// use the larger of raw input and smoothed follower.
+// using only the smoothed follower at threshold crossing makes trig_v tiny.
+gate_src = in_abs;
+follow > gate_src ? gate_src = follow;
+
+denom = 1 - th_on;
+denom <= eps ? denom = eps;
+
+cur_v = (gate_src - th_on) / denom;
+cur_v < 0 ? cur_v = 0;
+cur_v > 1 ? cur_v = 1;
+
 // gate detect with hysteresis
 note_on = 0;
 note_off = 0;
@@ -332,19 +362,10 @@ gate <= 0 ? (
   );
 );
 
-// RNG helper
-seed = seed * 196314165 + 907633515;
-seed = seed & 2147483647;
-rnd01 = seed / 2147483648;
-
-// on gate-on: pick a new random slice
+// on gate-on: choose a random slice and seed trigger strength
 (note_on && tex_loaded && tex_frames > 0) ? (
-  denom = 1 - th_on;
-  denom <= eps ? denom = eps;
-
-  trig_v = (follow - th_on) / denom;
-  trig_v < 0 ? trig_v = 0;
-  trig_v > 1 ? trig_v = 1;
+  gate_peak = gate_src;
+  trig_v = cur_v;
 
   minF = max(1, floor(slider5 * 0.001 * tex_sr));
   maxF = max(1, floor(slider6 * 0.001 * tex_sr));
@@ -361,6 +382,10 @@ rnd01 = seed / 2147483648;
   start_max = tex_frames - sl_len;
   start_max < 0 ? start_max = 0;
 
+  seed = seed * 196314165 + 907633515;
+  seed = seed & 2147483647;
+  rnd01 = seed / 2147483648;
+
   sl_start = floor(rnd01 * (start_max + 1));
   sl_end = sl_start + sl_len;
   sl_posf = sl_start;
@@ -370,11 +395,24 @@ rnd01 = seed / 2147483648;
   trig_flash = 1;
 );
 
+// while gate is open, keep capturing the actual peak.
+// this prevents trig_v from being frozen near zero.
+gate > 0 ? (
+  gate_src > gate_peak ? gate_peak = gate_src;
+
+  peak_v = (gate_peak - th_on) / denom;
+  peak_v < 0 ? peak_v = 0;
+  peak_v > 1 ? peak_v = 1;
+
+  peak_v > trig_v ? trig_v = peak_v;
+);
+
 // on gate-off: enter release
 (note_off && a_state != 0 && a_state != 4) ? (
   a_state = 4;
   rel_step = a_env / rel_s;
   rel_step <= 0 ? rel_step = 1 / rel_s;
+  gate_peak = 0;
 );
 
 // ADSR update
@@ -582,11 +620,11 @@ local(fill_w, mx1, mx2) (
 
 function center_text(x, y, w, txt_r, txt_g, txt_b, s)
 local(tw, th) (
-  gfx_measurestr(#s, tw, th);
+  gfx_measurestr(s, tw, th);
   gfx_r = txt_r; gfx_g = txt_g; gfx_b = txt_b; gfx_a = 1;
   gfx_x = x + (w - tw) * 0.5;
   gfx_y = y;
-  gfx_drawstr(#s);
+  gfx_drawstr(s);
 );
 
 slider13 <= 0.5 ? (
@@ -1191,7 +1229,7 @@ slider13 > 0.5 ? (
   ) : (file_state == 3) ? (
     gfx_printf("Load failed. Reduce Max Load or use a smaller file.");
   ) : (a_env > 0) ? (
-    gfx_printf("Playing slice  •  trig %.3f  •  env %.3f", trig_v, a_env);
+    gfx_printf("Playing slice  •  trig %.4f  •  env %.3f", trig_v, a_env);
   ) : (
     gfx_printf("Ready. Feed input above threshold to trigger a slice.");
   );
@@ -1220,7 +1258,7 @@ slider13 > 0.5 ? (
   gfx_setfont(1, "Verdana", 10);
   gfx_r = 0.70; gfx_g = 0.76; gfx_b = 0.84; gfx_a = 1;
   gfx_x = st_x; gfx_y = row2_y + 34;
-  gfx_printf("out %.4f   gate %g   mode %s",
+  gfx_printf("out %.6f   gate %g   mode %s",
     meter_out,
     gate,
     slider16 > 0.5 ? "one-shot" : "loop"
