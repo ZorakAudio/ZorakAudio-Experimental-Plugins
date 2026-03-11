@@ -2559,9 +2559,17 @@ private:
             else // Mem
             {
                 const int64_t mi = (int64_t) w.index;
-                const int64_t logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
-                if (st.mem != nullptr && isGfxMirroredMemIndex (mi, logicalMemN))
-                    st.mem[(size_t) mi] = w.value;
+                if (mi >= 0)
+                {
+                    if (mi >= st.memN)
+                        jsfx_ensure_mem (&st, mi + 1);
+
+                    if (st.mem != nullptr && mi < st.memN)
+                    {
+                        st.mem[(size_t) mi] = w.value;
+                        noteTrackedJsfxMemUsed (&st, mi + 1);
+                    }
+                }
             }
 
             tail = (tail + 1u) & gfxWriteQueueMask;
@@ -3691,19 +3699,11 @@ public:
         processor.endAllGfxGestures();
     }
 
-    struct MemDiffSpan
-    {
-        int64_t base = 0;
-        std::vector<double> before;
-        std::vector<double> after;
-    };
-
     bool inputDirty = false;
-    std::vector<double> varsBefore;
-	std::vector<double> varsAfter;
-    std::array<MemDiffSpan, 2> memDiffSpans {};
-    int memDiffSpanCount = 0;
-    
+    std::vector<jsfx_gfx::DirtyVarWrite> dirtyVarWrites;
+    std::vector<jsfx_gfx::DirtyMemRange> dirtyMemRanges;
+    std::vector<double> dirtyMemValues;
+
 private:
     void timerCallback() override
     {
@@ -3946,111 +3946,63 @@ private:
         pendingWheel = 0.0f;
         pendingHWheel = 0.0f;
 
-        const bool captureStateWrites = inputDirty;
         inputDirty = false;
 
-        // IMPORTANT:
-        // If we are preserving local UI state, or a mouse button is down, baseline
-        // our before/after diff from the VM itself rather than from the snapshot.
-        const bool anyMouseButtonDown = (mouseCap & (1 | 2 | 64)) != 0;
-        const bool baselineFromVm = anyMouseButtonDown || preserveVmState;
-
         bool wrotePersistentVmState = false;
-
-        if (captureStateWrites)
-        {
-            if ((int) varsBefore.size() != snap->varsCount)
-                varsBefore.resize ((size_t) snap->varsCount);
-
-            if (baselineFromVm)
-            {
-                if (! varsBefore.empty())
-                    interp.readVars (varsBefore.data(), (int) varsBefore.size());
-            }
-            else
-            {
-                if (! varsBefore.empty())
-                    std::memcpy (varsBefore.data(), snap->vars.data(),
-                                sizeof (double) * varsBefore.size());
-            }
-
-            memDiffSpanCount = 0;
-            for (int i = 0; i < s.memSpanCount && i < (int) memDiffSpans.size(); ++i)
-            {
-                const auto& span = snapMemSpans[(size_t) i];
-                if (span.count <= 0 || span.data == nullptr)
-                    continue;
-
-                auto& diff = memDiffSpans[(size_t) memDiffSpanCount];
-                diff.base = span.base;
-
-                if ((int) diff.before.size() != span.count)
-                    diff.before.resize ((size_t) span.count);
-
-                if (baselineFromVm)
-                    interp.readMemRange (diff.base, diff.before.data(), (int) diff.before.size());
-                else
-                    std::memcpy (diff.before.data(), span.data,
-                                sizeof (double) * (size_t) span.count);
-
-                ++memDiffSpanCount;
-            }
-        }
-        else
-        {
-            memDiffSpanCount = 0;
-        }
 
         interp.setMouse (mouseX, mouseY, mouseCap, wheel, hwheel);
         interp.renderFrame (w, h, s);
 
-        if (captureStateWrites)
+        // @gfx writes are instrumented inside the portable EEL VM, so we can
+        // consume the exact dirty vars/mem ranges rather than diffing mirrored
+        // heap windows on interactive frames.
+        constexpr int kMaxWritesPerFrame = 8192;
+        int pushed = 0;
+
+        dirtyVarWrites.clear();
+        interp.consumeDirtyVarWrites (dirtyVarWrites);
+        for (const auto& write : dirtyVarWrites)
         {
-            constexpr int kMaxWritesPerFrame = 2048;
-            int pushed = 0;
+            if (pushed >= kMaxWritesPerFrame)
+                break;
 
-            varsAfter = varsBefore;
-            if (! varsAfter.empty())
-                interp.readVars (varsAfter.data(), (int) varsAfter.size());
+            if (write.index < 0)
+                continue;
 
-            for (int i = 0; i < (int) varsAfter.size() && pushed < kMaxWritesPerFrame; ++i)
+            wrotePersistentVmState = true;
+            processor.enqueueGfxVarWrite (write.index, write.value);
+            ++pushed;
+        }
+
+        dirtyMemRanges.clear();
+        interp.consumeDirtyMemRanges (dirtyMemRanges);
+        for (const auto& range : dirtyMemRanges)
+        {
+            if (pushed >= kMaxWritesPerFrame)
+                break;
+
+            if (range.base < 0 || range.count <= 0)
+                continue;
+
+            if ((int64_t) range.base > (int64_t) std::numeric_limits<int>::max())
+                continue;
+
+            const int maxReadable = (int) std::min<int64_t> ((int64_t) range.count,
+                                                              (int64_t) std::numeric_limits<int>::max() - range.base + 1);
+            if (maxReadable <= 0)
+                continue;
+
+            if ((int) dirtyMemValues.size() < maxReadable)
+                dirtyMemValues.resize ((size_t) maxReadable);
+
+            interp.readMemRange (range.base, dirtyMemValues.data(), maxReadable);
+
+            for (int i = 0; i < maxReadable && pushed < kMaxWritesPerFrame; ++i)
             {
-                const double a = varsBefore[(size_t) i];
-                const double b = varsAfter[(size_t) i];
-
-                if (a == b) continue;
-                if (std::isnan (a) && std::isnan (b)) continue;
-
+                const int absoluteIndex = (int) (range.base + (int64_t) i);
                 wrotePersistentVmState = true;
-                processor.enqueueGfxVarWrite (i, b);
+                processor.enqueueGfxMemWrite (absoluteIndex, dirtyMemValues[(size_t) i]);
                 ++pushed;
-            }
-
-            for (int si = 0; si < memDiffSpanCount && pushed < kMaxWritesPerFrame; ++si)
-            {
-                auto& diff = memDiffSpans[(size_t) si];
-                if ((int) diff.after.size() != (int) diff.before.size())
-                    diff.after.resize (diff.before.size());
-
-                if (! diff.after.empty())
-                    interp.readMemRange (diff.base, diff.after.data(), (int) diff.after.size());
-
-                for (int i = 0; i < (int) diff.after.size() && pushed < kMaxWritesPerFrame; ++i)
-                {
-                    const double a = diff.before[(size_t) i];
-                    const double b = diff.after[(size_t) i];
-
-                    if (a == b) continue;
-                    if (std::isnan (a) && std::isnan (b)) continue;
-
-                    const int64_t absoluteIndex = diff.base + (int64_t) i;
-                    if (absoluteIndex < 0 || absoluteIndex > (int64_t) std::numeric_limits<int>::max())
-                        continue;
-
-                    wrotePersistentVmState = true;
-                    processor.enqueueGfxMemWrite ((int) absoluteIndex, b);
-                    ++pushed;
-                }
             }
         }
 

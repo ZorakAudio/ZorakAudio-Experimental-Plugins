@@ -74,6 +74,30 @@ FILE *g_eel_dump_fp, *g_eel_dump_fp2;
   #define NSEEL_ATOF atof
 #endif
 
+#if defined(_MSC_VER)
+  #define NSEEL_WRITE_TRACE_TLS __declspec(thread)
+#elif defined(__cplusplus)
+  #define NSEEL_WRITE_TRACE_TLS thread_local
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+  #define NSEEL_WRITE_TRACE_TLS _Thread_local
+#else
+  #define NSEEL_WRITE_TRACE_TLS __thread
+#endif
+
+static NSEEL_WRITE_TRACE_TLS compileContext *g_nseel_current_execute_ctx = NULL;
+
+compileContext *nseel_int_GetCurrentExecuteCtx(void)
+{
+  return g_nseel_current_execute_ctx;
+}
+
+void nseel_int_TraceWrite(EEL_F *addr, unsigned int count)
+{
+  compileContext *ctx = g_nseel_current_execute_ctx;
+  if (!ctx || !ctx->write_trace_func || !addr || !count) return;
+  ctx->write_trace_func(ctx->write_trace_userctx, addr, count);
+}
+
 
 /*
   P1 is rightmost parameter
@@ -5164,6 +5188,7 @@ had_error:
   {
     handle->compile_flags = compile_flags;
     handle->ramPtr = ctx->ram_state->blocks;
+    handle->owner_ctx = ctx;
     memcpy(handle->code_stats,ctx->l_stats,sizeof(ctx->l_stats));
     nseel_evallib_stats[0]+=ctx->l_stats[0];
     nseel_evallib_stats[1]+=ctx->l_stats[1];
@@ -5213,7 +5238,12 @@ void NSEEL_code_execute(NSEEL_CODEHANDLE code)
   tabptr=(INT_PTR)h->workTable;
 #endif
   //printf("calling code!\n");
-  GLUE_CALL_CODE(tabptr,codeptr,(INT_PTR)h->ramPtr);
+  {
+    compileContext *prev_ctx = g_nseel_current_execute_ctx;
+    g_nseel_current_execute_ctx = (compileContext *)h->owner_ctx;
+    GLUE_CALL_CODE(tabptr,codeptr,(INT_PTR)h->ramPtr);
+    g_nseel_current_execute_ctx = prev_ctx;
+  }
 
 }
 
@@ -5425,6 +5455,16 @@ void NSEEL_VM_SetCustomFuncThis(NSEEL_VMCTX ctx, void *thisptr)
   {
     compileContext *c=(compileContext*)ctx;
     c->caller_this=thisptr;
+  }
+}
+
+void NSEEL_VM_SetWriteTrace(NSEEL_VMCTX ctx, NSEEL_VM_write_trace_func func, void *userctx)
+{
+  if (ctx)
+  {
+    compileContext *c=(compileContext*)ctx;
+    c->write_trace_func = func;
+    c->write_trace_userctx = userctx;
   }
 }
 

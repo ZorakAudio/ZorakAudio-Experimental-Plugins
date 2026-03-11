@@ -453,6 +453,18 @@ struct MemSpanView
   int count = 0;
 };
 
+struct DirtyVarWrite
+{
+  int index = 0;
+  double value = 0.0;
+};
+
+struct DirtyMemRange
+{
+  int64_t base = 0;
+  int count = 0;
+};
+
 // -------------------------
 // EEL VM wrapper implementing gfx_* API by recording DrawCmds
 // -------------------------
@@ -516,6 +528,9 @@ public:
     if (samplesblock_var) *samplesblock_var = 0.0;
 
     currentFont = juce::Font(juce::Font::getDefaultSansSerifFontName(), 12.0f, juce::Font::plain);
+
+    if (m_vm)
+      NSEEL_VM_SetWriteTrace(m_vm, &GfxVm::eel_write_trace, this);
   }
 
   juce::Colour getCurrentColour() const
@@ -566,6 +581,7 @@ public:
   void beginFrame(int w, int h)
   {
     commands.clear();
+    clearDirtyWrites();
 
     // Clear per-frame host interaction events.
     sliderChangeMask = 0;
@@ -655,7 +671,10 @@ public:
   void bindUserVars(const DSPJSFX_VarDesc* vars, int count)
   {
     boundVars.clear();
+    boundVarIndexByPtr.clear();
     boundVars.reserve((size_t)count);
+
+    int maxIndex = -1;
     for (int i = 0; i < count; ++i)
     {
       const char* name = vars[i].name;
@@ -663,7 +682,140 @@ public:
       if (!name) continue;
       BoundVar bv { name, idx, get_var(name) };
       boundVars.push_back(bv);
+      if (bv.ptr && idx >= 0)
+      {
+        boundVarIndexByPtr[bv.ptr] = idx;
+        maxIndex = std::max(maxIndex, idx);
+      }
     }
+
+    if (maxIndex >= 0)
+    {
+      boundVarPtrsByIndex.assign((size_t)(maxIndex + 1), nullptr);
+      dirtyVarFlags.assign((size_t)(maxIndex + 1), 0);
+      for (const auto& bv : boundVars)
+        if (bv.ptr && bv.index >= 0 && bv.index < (int) boundVarPtrsByIndex.size())
+          boundVarPtrsByIndex[(size_t) bv.index] = bv.ptr;
+    }
+    else
+    {
+      boundVarPtrsByIndex.clear();
+      dirtyVarFlags.clear();
+    }
+  }
+
+  void clearDirtyWrites()
+  {
+    if (!dirtyVarFlags.empty())
+      std::fill(dirtyVarFlags.begin(), dirtyVarFlags.end(), (uint8_t) 0);
+    dirtyMemRanges.clear();
+  }
+
+  void consumeDirtyVarWrites(std::vector<DirtyVarWrite>& out)
+  {
+    out.clear();
+    for (size_t i = 0; i < dirtyVarFlags.size(); ++i)
+    {
+      if (!dirtyVarFlags[i])
+        continue;
+
+      dirtyVarFlags[i] = 0;
+      EEL_F* ptr = boundVarPtrsByIndex[i];
+      if (!ptr)
+        continue;
+
+      DirtyVarWrite w;
+      w.index = (int) i;
+      w.value = (double) *ptr;
+      out.push_back(w);
+    }
+  }
+
+  void consumeDirtyMemRanges(std::vector<DirtyMemRange>& out)
+  {
+    out.clear();
+    if (dirtyMemRanges.empty())
+      return;
+
+    out = dirtyMemRanges;
+    dirtyMemRanges.clear();
+
+    std::sort(out.begin(), out.end(), [] (const DirtyMemRange& a, const DirtyMemRange& b) {
+      if (a.base != b.base)
+        return a.base < b.base;
+      return a.count < b.count;
+    });
+
+    size_t write = 0;
+    for (size_t i = 0; i < out.size(); ++i)
+    {
+      const DirtyMemRange cur = out[i];
+      if (cur.count <= 0)
+        continue;
+
+      if (write == 0)
+      {
+        out[write++] = cur;
+        continue;
+      }
+
+      auto& prev = out[write - 1];
+      const int64_t prevEnd = prev.base + (int64_t) prev.count;
+      const int64_t curEnd = cur.base + (int64_t) cur.count;
+      if (cur.base <= prevEnd)
+      {
+        prev.count = (int) (std::max(prevEnd, curEnd) - prev.base);
+      }
+      else
+      {
+        out[write++] = cur;
+      }
+    }
+
+    out.resize(write);
+  }
+
+  void noteDirtyWrite(EEL_F* addr, unsigned int count)
+  {
+    if (!addr || count == 0)
+      return;
+
+    const auto varIt = boundVarIndexByPtr.find(addr);
+    if (varIt != boundVarIndexByPtr.end())
+    {
+      const int idx = varIt->second;
+      if (idx >= 0 && idx < (int) dirtyVarFlags.size())
+        dirtyVarFlags[(size_t) idx] = 1;
+      return;
+    }
+
+    unsigned int base = 0;
+    int validCount = 0;
+    if (m_vm && NSEEL_VM_GetRAMIndexForPtr(m_vm, addr, &base, &validCount))
+    {
+      const int n = std::max(1, std::min<int>((int) count, validCount > 0 ? validCount : (int) count));
+      if (!dirtyMemRanges.empty())
+      {
+        auto& last = dirtyMemRanges.back();
+        const int64_t lastEnd = last.base + (int64_t) last.count;
+        const int64_t curEnd = (int64_t) base + (int64_t) n;
+        if ((int64_t) base <= lastEnd)
+        {
+          last.base = std::min<int64_t>(last.base, (int64_t) base);
+          last.count = (int) (std::max<int64_t>(lastEnd, curEnd) - last.base);
+          return;
+        }
+      }
+
+      dirtyMemRanges.push_back(DirtyMemRange { (int64_t) base, n });
+    }
+  }
+
+  static void eel_write_trace(void* opaque, EEL_F* addr, unsigned int count)
+  {
+    auto* self = (GfxVm*)opaque;
+    if (self)
+      self->noteDirtyWrite(addr, count);
   }
 
   void syncSliders(const double* sliders, int count)
@@ -1490,6 +1642,11 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   // Current JSFX mem[] size (in doubles) synced into the EEL VM RAM.
   int memSize = 0;
 
+  std::unordered_map<EEL_F*, int> boundVarIndexByPtr;
+  std::vector<EEL_F*> boundVarPtrsByIndex;
+  std::vector<uint8_t> dirtyVarFlags;
+  std::vector<DirtyMemRange> dirtyMemRanges;
+
   // Drawing state
   std::unordered_map<int, juce::Font> fonts;
   int currentFontId = 0;
@@ -1641,6 +1798,18 @@ public:
   void readMemRange(int64_t base, double* dst, int count) const
   {
     if (vm) vm->readMemRange(base, dst, count);
+  }
+
+  void consumeDirtyVarWrites(std::vector<DirtyVarWrite>& out)
+  {
+    if (vm) vm->consumeDirtyVarWrites(out);
+    else out.clear();
+  }
+
+  void consumeDirtyMemRanges(std::vector<DirtyMemRange>& out)
+  {
+    if (vm) vm->consumeDirtyMemRanges(out);
+    else out.clear();
   }
 
   uint64_t popSliderChangeMask()      { return vm ? vm->popSliderChangeMask()      : 0; }

@@ -215,11 +215,16 @@ EEL_F NSEEL_CGEN_CALL __NSEEL_RAM_MemInsertShuffle(EEL_F **blocks,EEL_F *buf, EE
 
     len-=copy_len;
     srcptr += src_offs;
-    while (copy_len-- > 0)
     {
-      EEL_F v = *srcptr;
-      *srcptr++ = ret;
-      ret = v;
+      const int traced_count = copy_len;
+      EEL_F *trace_ptr = srcptr;
+      while (copy_len-- > 0)
+      {
+        EEL_F v = *srcptr;
+        *srcptr++ = ret;
+        ret = v;
+      }
+      nseel_int_TraceWrite(trace_ptr, (unsigned int)traced_count);
     }
     if (!len) break;
 
@@ -354,6 +359,7 @@ EEL_F * NSEEL_CGEN_CALL __NSEEL_RAM_MemCpy(EEL_F **blocks,EEL_F *dest, EEL_F *sr
 
       if (want_mmove) memmove(destptr,srcptr,sizeof(EEL_F)*copy_len);
       else memcpy(destptr,srcptr,sizeof(EEL_F)*copy_len);
+      nseel_int_TraceWrite(destptr, (unsigned int)copy_len);
       src_offs-=copy_len;
       dest_offs-=copy_len;
       len-=copy_len;
@@ -383,6 +389,7 @@ EEL_F * NSEEL_CGEN_CALL __NSEEL_RAM_MemCpy(EEL_F **blocks,EEL_F *dest, EEL_F *sr
 
     if (want_mmove) memmove(destptr,srcptr,sizeof(EEL_F)*copy_len);
     else memcpy(destptr,srcptr,sizeof(EEL_F)*copy_len);
+    nseel_int_TraceWrite(destptr, (unsigned int)copy_len);
     src_offs+=copy_len;
     dest_offs+=copy_len;
     len-=copy_len;
@@ -422,10 +429,15 @@ EEL_F * NSEEL_CGEN_CALL __NSEEL_RAM_MemSet(EEL_F **blocks,EEL_F *dest, EEL_F *v,
     len -= lcnt;
     offs += lcnt;
 
-    while (lcnt--)
     {
-      *ptr++=t;
-    }       
+      const int traced_count = lcnt;
+      EEL_F *trace_ptr = ptr;
+      while (lcnt--)
+      {
+        *ptr++=t;
+      }
+      nseel_int_TraceWrite(trace_ptr, (unsigned int)traced_count);
+    }
   }
   return dest;
 }
@@ -471,7 +483,13 @@ static inline int __getset_values(EEL_F **blocks, int isset, int len, EEL_F **pa
     { 
       // this page satisfies the request (normal behavior)
       lout += len;
-      if (isset) while (len--) *ptr++=parms++[0][0];
+      if (isset)
+      {
+        const int traced_count = len;
+        EEL_F *trace_ptr = ptr;
+        while (len--) *ptr++=parms++[0][0];
+        nseel_int_TraceWrite(trace_ptr, (unsigned int)traced_count);
+      }
       else while (len--) parms++[0][0] = *ptr++;
       return lout;
     }
@@ -479,7 +497,13 @@ static inline int __getset_values(EEL_F **blocks, int isset, int len, EEL_F **pa
     // crossing a page boundary
     len -= lcnt;
     lout += lcnt;
-    if (isset) while (lcnt--) *ptr++=parms++[0][0];
+    if (isset)
+    {
+      const int traced_count = lcnt;
+      EEL_F *trace_ptr = ptr;
+      while (lcnt--) *ptr++=parms++[0][0];
+      nseel_int_TraceWrite(trace_ptr, (unsigned int)traced_count);
+    }
     else while (lcnt--) parms++[0][0] = *ptr++;
 
     if (len <= 0 || ++pageidx >= NSEEL_RAM_BLOCKS) return lout;
@@ -577,4 +601,32 @@ EEL_F *NSEEL_VM_getramptr_noalloc(NSEEL_VMCTX ctx, unsigned int offs, int *valid
   offs %= NSEEL_RAM_ITEMSPERBLOCK;
   if (validCount) *validCount = NSEEL_RAM_ITEMSPERBLOCK - offs;
   return d + offs;
+}
+
+int NSEEL_VM_GetRAMIndexForPtr(NSEEL_VMCTX ctx, const EEL_F *ptr, unsigned int *indexOut, int *validCount)
+{
+  compileContext *cc = (compileContext *)ctx;
+  unsigned int pageidx;
+
+  if (!cc || !ptr)
+  {
+    if (validCount) *validCount = 0;
+    return 0;
+  }
+
+  for (pageidx = 0; pageidx < (unsigned int)cc->ram_state->maxblocks && pageidx < NSEEL_RAM_BLOCKS; ++pageidx)
+  {
+    EEL_F *block = cc->ram_state->blocks[pageidx];
+    if (!block) continue;
+    if (ptr >= block && ptr < block + NSEEL_RAM_ITEMSPERBLOCK)
+    {
+      const unsigned int sub_offs = (unsigned int)(ptr - block);
+      if (indexOut) *indexOut = pageidx * NSEEL_RAM_ITEMSPERBLOCK + sub_offs;
+      if (validCount) *validCount = NSEEL_RAM_ITEMSPERBLOCK - (int)sub_offs;
+      return 1;
+    }
+  }
+
+  if (validCount) *validCount = 0;
+  return 0;
 }

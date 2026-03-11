@@ -155,6 +155,7 @@ typedef struct {
   void *stack;  // references a chunk in blocks_data, somewhere within the complete NSEEL_STACK_SIZE aligned at NSEEL_STACK_SIZE
 
   void *ramPtr;
+  void *owner_ctx;
 
   int workTable_size; // size (minus padding/extra space) of workTable -- only used if EEL_VALIDATE_WORKTABLE_USE set, but might be handy to have around too
   int compile_flags;
@@ -244,6 +245,9 @@ typedef struct _compileContext
 
   void *gram_blocks;
 
+  NSEEL_VM_write_trace_func write_trace_func;
+  void *write_trace_userctx;
+
   void *caller_this;
 }
 compileContext;
@@ -257,7 +261,10 @@ typedef struct functionType {
       NSEEL_PPPROC pProc;
 } functionType;
 
+
 functionType *nseel_getFunctionByName(compileContext *ctx, const char *name, int *mchk); // sets mchk (if non-NULL) to how far allowed to scan forward for duplicate names
+void nseel_int_TraceWrite(EEL_F *addr, unsigned int count);
+compileContext *nseel_int_GetCurrentExecuteCtx(void);
 functionType *nseel_enumFunctions(compileContext *ctx, int idx);
 
 opcodeRec *nseel_createCompiledValue(compileContext *ctx, EEL_F value);

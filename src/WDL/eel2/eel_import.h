@@ -13,6 +13,7 @@ void (*NSEEL_VM_SetFunctionTable)(NSEEL_VMCTX, eel_function_table *tab); // use 
 EEL_F *(*NSEEL_VM_regvar)(NSEEL_VMCTX ctx, const char *name); // register a variable (before compilation)
 
 void (*NSEEL_VM_SetCustomFuncThis)(NSEEL_VMCTX ctx, void *thisptr);
+void (*NSEEL_VM_SetWriteTrace)(NSEEL_VMCTX ctx, NSEEL_VM_write_trace_func func, void *userctx);
 NSEEL_CODEHANDLE (*NSEEL_code_compile_ex)(NSEEL_VMCTX ctx, const char *code, int lineoffs, int flags);
 void (*NSEEL_VM_set_var_resolver)(NSEEL_VMCTX ctx, EEL_F *(*res)(void *userctx, const char *name), void *userctx); 
 char *(*NSEEL_code_getcodeerror)(NSEEL_VMCTX ctx);
@@ -21,6 +22,7 @@ void (*NSEEL_code_free)(NSEEL_CODEHANDLE code);
 EEL_F *(*nseel_int_register_var)(compileContext *ctx, const char *name, int isReg, const char **namePtrOut);
 void (*NSEEL_VM_enumallvars)(NSEEL_VMCTX ctx, int (*func)(const char *name, EEL_F *val, void *ctx), void *userctx); 
 EEL_F *(*NSEEL_VM_getramptr)(NSEEL_VMCTX ctx, unsigned int offs, int *validAmt);
+int (*NSEEL_VM_GetRAMIndexForPtr)(NSEEL_VMCTX ctx, const EEL_F *ptr, unsigned int *indexOut, int *validAmt);
 void ** (*eel_gmem_attach)(const char *nm, bool is_alloc);
 void (*eel_fft_register)(eel_function_table*);
 
@@ -78,6 +80,7 @@ class eel_string_context_state;
     IMPORT_FUNC(NSEEL_VM_SetFunctionTable) \
     IMPORT_FUNC(NSEEL_VM_regvar) \
     IMPORT_FUNC(NSEEL_VM_SetCustomFuncThis) \
+    IMPORT_FUNC(NSEEL_VM_SetWriteTrace) \
     IMPORT_FUNC(NSEEL_code_compile_ex) \
     IMPORT_FUNC(NSEEL_code_getcodeerror) \
     IMPORT_FUNC(NSEEL_code_execute) \
@@ -87,6 +90,7 @@ class eel_string_context_state;
     IMPORT_FUNC(NSEEL_VM_SetStringFunc) \
     IMPORT_FUNC(NSEEL_VM_enumallvars) \
     IMPORT_FUNC(NSEEL_VM_getramptr) \
+    IMPORT_FUNC(NSEEL_VM_GetRAMIndexForPtr) \
     IMPORT_FUNC(NSEEL_VM_SetGRAM) \
     IMPORT_FUNC(eel_gmem_attach) \
     IMPORT_FUNC(eel_fft_register) \

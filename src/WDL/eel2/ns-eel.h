@@ -149,8 +149,12 @@ void NSEEL_VM_SetGRAM(NSEEL_VMCTX ctx, void **gram);
 void NSEEL_VM_FreeGRAM(void **ufd); // frees a gmem context.
 void NSEEL_VM_SetCustomFuncThis(NSEEL_VMCTX ctx, void *thisptr);
 
+typedef void (*NSEEL_VM_write_trace_func)(void *userctx, EEL_F *addr, unsigned int count);
+void NSEEL_VM_SetWriteTrace(NSEEL_VMCTX ctx, NSEEL_VM_write_trace_func func, void *userctx);
+
 EEL_F *NSEEL_VM_getramptr(NSEEL_VMCTX ctx, unsigned int offs, int *validCount);
 EEL_F *NSEEL_VM_getramptr_noalloc(NSEEL_VMCTX ctx, unsigned int offs, int *validCount);
+int NSEEL_VM_GetRAMIndexForPtr(NSEEL_VMCTX ctx, const EEL_F *ptr, unsigned int *indexOut, int *validCount);
 
 
 // set 0 to query. returns actual value used (limits, granularity apply -- see NSEEL_RAM_BLOCKS)

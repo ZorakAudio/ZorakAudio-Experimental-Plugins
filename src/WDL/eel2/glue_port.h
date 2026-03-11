@@ -541,7 +541,11 @@ static void GLUE_CALL_CODE(INT_PTR bp, INT_PTR cp, INT_PTR rt)
         EEL_BC_STACK_POP();
       break;
       case EEL_BC_POP_VALUE_TO_ADDR:
-        **(EEL_F**)iptr = *(EEL_F *)stackptr;
+        {
+          EEL_F *dest = *(EEL_F**)iptr;
+          *dest = *(EEL_F *)stackptr;
+          nseel_int_TraceWrite(dest, 1);
+        }
         EEL_BC_STACK_POP();
         iptr += sizeof(void*);
       break;
@@ -569,7 +573,11 @@ static void GLUE_CALL_CODE(INT_PTR bp, INT_PTR cp, INT_PTR rt)
         p3=p1;
       break;
       case EEL_BC_COPY_VALUE_AT_P1_TO_ADDR:
-        **(EEL_F **)iptr = *p1;
+        {
+          EEL_F *dest = *(EEL_F **)iptr;
+          *dest = *p1;
+          nseel_int_TraceWrite(dest, 1);
+        }
         iptr += sizeof(void*);
       break;
       case EEL_BC_SET_P1_FROM_WTP:
@@ -582,7 +590,11 @@ static void GLUE_CALL_CODE(INT_PTR bp, INT_PTR cp, INT_PTR rt)
         p3 = wtp;
       break;
       case EEL_BC_POP_FPSTACK_TO_PTR:
-        **((EEL_F **)iptr) = fp_pop();
+        {
+          EEL_F *dest = *((EEL_F **)iptr);
+          *dest = fp_pop();
+          nseel_int_TraceWrite(dest, 1);
+        }
         iptr += sizeof(void *);
       break;
       case EEL_BC_POP_FPSTACK_TOSTACK:
@@ -735,39 +747,50 @@ static void GLUE_CALL_CODE(INT_PTR bp, INT_PTR cp, INT_PTR rt)
 
       case EEL_BC_ADD_OP:
         *(p1 = p2) = denormal_filter_double2(*p2 + fp_pop());
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_SUB_OP:
         *(p1 = p2) = denormal_filter_double2(*p2 - fp_pop());
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_ADD_OP_FAST:
         *(p1 = p2) += fp_pop();        
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_SUB_OP_FAST:
         *(p1 = p2) -= fp_pop();
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_MUL_OP:
         *(p1 = p2) = denormal_filter_double2(*p2 * fp_pop());
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_DIV_OP:
         *(p1 = p2) = denormal_filter_double2(*p2 / fp_pop());
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_MUL_OP_FAST:
         *(p1 = p2) *= fp_pop();
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_DIV_OP_FAST:
         *(p1 = p2) /= fp_pop();
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_AND_OP:
         p1 = p2;
         *p2 = (EEL_F) (((WDL_INT64)*p2) & (WDL_INT64)fp_pop());
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_OR_OP:
         p1 = p2;
         *p2 = (EEL_F) (((WDL_INT64)*p2) | (WDL_INT64)fp_pop());
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_XOR_OP:
         p1 = p2;
         *p2 = (EEL_F) (((WDL_INT64)*p2) ^ (WDL_INT64)fp_pop());
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_UMINUS:
         fp_top = -fp_top;
@@ -775,18 +798,22 @@ static void GLUE_CALL_CODE(INT_PTR bp, INT_PTR cp, INT_PTR rt)
       case EEL_BC_ASSIGN:
         *p2 = denormal_filter_double2(*p1);
         p1 = p2;
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_ASSIGN_FAST:
         *p2 = *p1;
         p1 = p2;
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_ASSIGN_FAST_FROMFP:
         *p2 = fp_pop();
         p1 = p2;
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_ASSIGN_FROMFP:
         *p2 = denormal_filter_double2(fp_pop());
         p1 = p2;
+        nseel_int_TraceWrite(p2, 1);
       break;
       case EEL_BC_MOD:
         {
@@ -799,6 +826,7 @@ static void GLUE_CALL_CODE(INT_PTR bp, INT_PTR cp, INT_PTR rt)
           int a = (int) fabs(fp_pop());
           *p2 = a ? (EEL_F) (((WDL_INT64)fabs(*p2)) % a) : 0.0;
           p1=p2;
+          nseel_int_TraceWrite(p2, 1);
 
         }
       break;
@@ -886,6 +914,7 @@ static void GLUE_CALL_CODE(INT_PTR bp, INT_PTR cp, INT_PTR rt)
           double (*f)(double,double) = *(double (**)(double,double))iptr;
           *p2 = f(*p2,fp_pop());
           p1 = p2;
+          nseel_int_TraceWrite(p2, 1);
           iptr += sizeof(void *);
         }
       break;
@@ -962,6 +991,7 @@ static void GLUE_CALL_CODE(INT_PTR bp, INT_PTR cp, INT_PTR rt)
           (*sptr) &= *(UINT_PTR*)(iptr+sizeof(void *));
           (*sptr) |= *(UINT_PTR*)(iptr+2*sizeof(void *));
           *(EEL_F *)*sptr = *p1;
+          nseel_int_TraceWrite((EEL_F *)*sptr, 1);
         }
         iptr += sizeof(void*)*3;
       break;
@@ -969,6 +999,7 @@ static void GLUE_CALL_CODE(INT_PTR bp, INT_PTR cp, INT_PTR rt)
         {
           UINT_PTR *sptr = *(UINT_PTR **)iptr;
           *p1 = *(EEL_F *)*sptr;
+          nseel_int_TraceWrite(p1, 1);
           (*sptr) -= 8;
           (*sptr) &= *(UINT_PTR*)(iptr+sizeof(void *));
           (*sptr) |= *(UINT_PTR*)(iptr+2*sizeof(void *));
@@ -1014,7 +1045,9 @@ static void GLUE_CALL_CODE(INT_PTR bp, INT_PTR cp, INT_PTR rt)
           EEL_F *p=**(EEL_F ***)iptr;
           EEL_F a=*p;
           *p=*p1;
+          nseel_int_TraceWrite(p, 1);
           *p1=a;
+          nseel_int_TraceWrite(p1, 1);
         }
         iptr += sizeof(void*);
       break;
