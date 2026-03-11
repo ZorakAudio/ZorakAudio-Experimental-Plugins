@@ -98,7 +98,7 @@ static std::map<DSPJSFX_State*, JSFXJuceProcessor*> gFileOwner;
 // That keeps copy cost constant while still making "summary-at-the-top" layouts
 // visible to @gfx.
 static constexpr int kGfxSharedPrefixDoubles = 262144; // ~= 2 MiB
-static constexpr int kGfxSharedSuffixDoubles = 262144; // ~= 2 MiB
+static constexpr int kGfxSharedSuffixDoubles = 262144 * 8; // ~= 16 MiB
 
 struct GfxMirrorRange
 {
@@ -3855,10 +3855,43 @@ private:
         if (! snap)
             return;
 
+        const auto sameDouble = [] (double a, double b) noexcept
+        {
+            if (a == b)
+                return true;
+            if (std::isnan (a) && std::isnan (b))
+                return true;
+            return std::abs (a - b) <= 1.0e-12;
+        };
+
+        // Once the audio thread publishes a fresh snapshot, we can stop preserving
+        // local UI state and trust the DSP snapshot again.
+        if (preserveVmStateUntilNewSnapshot && snapIdx != preserveVmStateSnapshotIndex)
+        {
+            preserveVmStateUntilNewSnapshot = false;
+            preserveVmStateSnapshotIndex = -1;
+        }
+
+        // Start from the audio-thread snapshot, then layer any pending UI-side
+        // slider overrides on top until the DSP snapshot catches up.
+        std::memcpy (effectiveSliders.data(), snap->sliders.data(), sizeof (double) * 64);
+
+        for (int i = 0; i < 64; ++i)
+        {
+            const uint64_t bit = (uint64_t) 1u << (uint64_t) i;
+            if ((uiSliderOverrideMask & bit) == 0)
+                continue;
+
+            if (sameDouble (snap->sliders[(size_t) i], uiSliderOverrideValues[(size_t) i]))
+                uiSliderOverrideMask &= ~bit;
+            else
+                effectiveSliders[(size_t) i] = uiSliderOverrideValues[(size_t) i];
+        }
+
         std::array<jsfx_gfx::MemSpanView, 2> snapMemSpans {};
 
         jsfx_gfx::Interpreter::Snapshot s;
-        s.sliders = snap->sliders.data();
+        s.sliders = effectiveSliders.data();
         s.slidersCount = 64;
         s.vars = snap->vars.data();
         s.varsCount = snap->varsCount;
@@ -3896,40 +3929,49 @@ private:
             }
         }
 
+        // If the UI has written vars/mem/sliders that the DSP snapshot has not yet
+        // absorbed, do not stomp the VM from a stale snapshot on the next frame.
+        const bool preserveVmState = preserveVmStateUntilNewSnapshot;
+        if (preserveVmState)
+        {
+            s.vars = nullptr;
+            s.memSpans = nullptr;
+            s.mem = nullptr;
+            s.memN = 0;
+        }
+
         // Apply current mouse state.
         const float wheel  = pendingWheel;
         const float hwheel = pendingHWheel;
         pendingWheel = 0.0f;
         pendingHWheel = 0.0f;
 
-
         const bool captureStateWrites = inputDirty;
         inputDirty = false;
 
         // IMPORTANT:
-        // When the @gfx VM preserves vars/mem during mouse drags (to avoid stomping UI
-        // interaction state like drag_id / prev_mouse_cap), the VM's mem[] can become
-        // stale relative to the audio-thread snapshot.
-        //
-        // If we diff against the snapshot in that situation, we'd enqueue spurious
-        // mem/var writes back to the audio thread. So when any mouse button is down,
-        // baseline from the VM itself; otherwise baseline from the latest snapshot.
+        // If we are preserving local UI state, or a mouse button is down, baseline
+        // our before/after diff from the VM itself rather than from the snapshot.
         const bool anyMouseButtonDown = (mouseCap & (1 | 2 | 64)) != 0;
+        const bool baselineFromVm = anyMouseButtonDown || preserveVmState;
+
+        bool wrotePersistentVmState = false;
 
         if (captureStateWrites)
         {
-            if ((int) varsBefore.size() != s.varsCount)
-                varsBefore.resize ((size_t) s.varsCount);
+            if ((int) varsBefore.size() != snap->varsCount)
+                varsBefore.resize ((size_t) snap->varsCount);
 
-            if (anyMouseButtonDown)
+            if (baselineFromVm)
             {
-                if (s.varsCount > 0)
+                if (! varsBefore.empty())
                     interp.readVars (varsBefore.data(), (int) varsBefore.size());
             }
             else
             {
-                if (s.varsCount > 0)
-                    std::memcpy (varsBefore.data(), s.vars, sizeof (double) * (size_t) s.varsCount);
+                if (! varsBefore.empty())
+                    std::memcpy (varsBefore.data(), snap->vars.data(),
+                                sizeof (double) * varsBefore.size());
             }
 
             memDiffSpanCount = 0;
@@ -3945,10 +3987,11 @@ private:
                 if ((int) diff.before.size() != span.count)
                     diff.before.resize ((size_t) span.count);
 
-                if (anyMouseButtonDown)
+                if (baselineFromVm)
                     interp.readMemRange (diff.base, diff.before.data(), (int) diff.before.size());
                 else
-                    std::memcpy (diff.before.data(), span.data, sizeof (double) * (size_t) span.count);
+                    std::memcpy (diff.before.data(), span.data,
+                                sizeof (double) * (size_t) span.count);
 
                 ++memDiffSpanCount;
             }
@@ -3963,17 +4006,13 @@ private:
 
         if (captureStateWrites)
         {
-            // Hard cap so a weird script can’t spam the audio thread.
             constexpr int kMaxWritesPerFrame = 2048;
             int pushed = 0;
 
-            // Read back post-frame VM state.
-            // IMPORTANT: Interpreter::Snapshot pointers are *inputs* (we copy them into the VM),
-            // so we must explicitly pull the VM state back out here.
             varsAfter = varsBefore;
-            interp.readVars (varsAfter.data(), (int) varsAfter.size());
+            if (! varsAfter.empty())
+                interp.readVars (varsAfter.data(), (int) varsAfter.size());
 
-            // Vars first (usually where UI toggles live)
             for (int i = 0; i < (int) varsAfter.size() && pushed < kMaxWritesPerFrame; ++i)
             {
                 const double a = varsBefore[(size_t) i];
@@ -3982,11 +4021,11 @@ private:
                 if (a == b) continue;
                 if (std::isnan (a) && std::isnan (b)) continue;
 
+                wrotePersistentVmState = true;
                 processor.enqueueGfxVarWrite (i, b);
                 ++pushed;
             }
 
-            // Then mem across the mirrored ranges (prefix + optional suffix).
             for (int si = 0; si < memDiffSpanCount && pushed < kMaxWritesPerFrame; ++si)
             {
                 auto& diff = memDiffSpans[(size_t) si];
@@ -4008,6 +4047,7 @@ private:
                     if (absoluteIndex < 0 || absoluteIndex > (int64_t) std::numeric_limits<int>::max())
                         continue;
 
+                    wrotePersistentVmState = true;
                     processor.enqueueGfxMemWrite ((int) absoluteIndex, b);
                     ++pushed;
                 }
@@ -4022,17 +4062,36 @@ private:
         uint64_t diffMask = 0;
         for (int i = 0; i < 64; ++i)
         {
-            if (vmSliders[(size_t)i] != snap->sliders[(size_t)i])
-                diffMask |= (uint64_t)1u << (uint64_t)i;
+            if (! sameDouble (vmSliders[(size_t) i], effectiveSliders[(size_t) i]))
+                diffMask |= (uint64_t) 1u << (uint64_t) i;
         }
 
-        const uint64_t mChange    = interp.popSliderChangeMask();
-        const uint64_t mAuto      = interp.popSliderAutomateMask();
-        const uint64_t mAutoEnd   = interp.popSliderAutomateEndMask();
+        const uint64_t mChange  = interp.popSliderChangeMask();
+        const uint64_t mAuto    = interp.popSliderAutomateMask();
+        const uint64_t mAutoEnd = interp.popSliderAutomateEndMask();
 
         const uint64_t applyMask = diffMask | mChange | mAuto | mAutoEnd;
         if (applyMask != 0)
+        {
+            for (int i = 0; i < 64; ++i)
+            {
+                const uint64_t bit = (uint64_t) 1u << (uint64_t) i;
+                if ((applyMask & bit) == 0)
+                    continue;
+
+                uiSliderOverrideValues[(size_t) i] = vmSliders[(size_t) i];
+                uiSliderOverrideMask |= bit;
+            }
+
+            wrotePersistentVmState = true;
             processor.applyGfxSliderChanges (vmSliders.data(), 64, applyMask, mAuto, mAutoEnd);
+        }
+
+        if (wrotePersistentVmState)
+        {
+            preserveVmStateUntilNewSnapshot = true;
+            preserveVmStateSnapshotIndex = snapIdx;
+        }
 
         // Apply draw commands onto our persistent canvas.
         {
@@ -4056,6 +4115,12 @@ private:
     float pendingHWheel = 0.0f;
 
     std::array<double, 64> vmSliders {};
+    std::array<double, 64> effectiveSliders {};
+    std::array<double, 64> uiSliderOverrideValues {};
+    uint64_t uiSliderOverrideMask = 0;
+    bool preserveVmStateUntilNewSnapshot = false;
+    int preserveVmStateSnapshotIndex = -1;
+
     std::unordered_map<uint32_t, int> trackedKeys;
 };
 
