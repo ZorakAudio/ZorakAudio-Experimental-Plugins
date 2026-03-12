@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <functional>
+#include <chrono>
 
 #include <atomic>
 #include <condition_variable>
@@ -2559,17 +2561,9 @@ private:
             else // Mem
             {
                 const int64_t mi = (int64_t) w.index;
-                if (mi >= 0)
-                {
-                    if (mi >= st.memN)
-                        jsfx_ensure_mem (&st, mi + 1);
-
-                    if (st.mem != nullptr && mi < st.memN)
-                    {
-                        st.mem[(size_t) mi] = w.value;
-                        noteTrackedJsfxMemUsed (&st, mi + 1);
-                    }
-                }
+                const int64_t logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
+                if (st.mem != nullptr && isGfxMirroredMemIndex (mi, logicalMemN))
+                    st.mem[(size_t) mi] = w.value;
             }
 
             tail = (tail + 1u) & gfxWriteQueueMask;
@@ -3512,179 +3506,252 @@ private:
 
 // JSFX @gfx view (rendered by YSFXGfxInterpreter)
 // -----------------------
-class GfxView final : public juce::Component,
-                      private juce::Timer
+class GfxMenuOverlay final : public juce::Component
 {
 public:
-    explicit GfxView (JSFXJuceProcessor& p)
-        : processor (p)
-        , interp (kJsfxSourceText)
+    struct Item
     {
-        setOpaque (true);
-        setInterceptsMouseClicks (true, true);
+        juce::String text;
+        int resultId = 0;
+        bool separator = false;
+        bool disabled = false;
+        bool checked = false;
+        std::vector<Item> children;
+    };
 
-        // Many JSFX @gfx UIs expect keyboard focus (gfx_getchar).
+    std::function<void (int)> onFinished;
+
+    GfxMenuOverlay()
+    {
+        setVisible (false);
+        setOpaque (false);
+        setInterceptsMouseClicks (true, true);
         setWantsKeyboardFocus (true);
         setMouseClickGrabsKeyboardFocus (true);
-
-        if (interp.hasGfxSection())
-        {
-            processor.registerGfxSnapshotClient();
-
-            // Render once immediately so the very first paint isn't empty/black due to timer scheduling.
-            renderNow();
-            startTimerHz (30);
-        }
     }
 
-    ~GfxView() override
+    bool isMenuShowing() const noexcept { return menuOpen; }
+
+    void openMenu (const juce::String& desc, juce::Point<int> anchorPos)
     {
-        if (interp.hasGfxSection())
-            processor.unregisterGfxSnapshotClient();
+        std::vector<Item> parsed;
+        int nextId = 1;
+        const auto utf8 = desc.toStdString();
+        const char* cursor = utf8.c_str();
+        parseRecursive (cursor, 0, nextId, parsed);
 
-        processor.endAllGfxGestures();
+        rootItems = std::move (parsed);
+        if (rootItems.empty())
+        {
+            finish (0, false);
+            return;
+        }
+
+        anchor = anchorPos;
+        menuOpen = true;
+        openPath.clear();
+        highlightIndices.clear();
+        highlightIndices.push_back (firstSelectableIndex (rootItems));
+
+        if (auto* parent = getParentComponent())
+            setBounds (parent->getLocalBounds());
+        else
+            setBounds (getBounds());
+
+        rebuildLayout();
+        setVisible (true);
+        toFront (false);
+        grabKeyboardFocus();
+        repaint();
     }
 
-    bool hasGfx() const noexcept { return interp.hasGfxSection(); }
-    int preferredHeight() const noexcept { return interp.preferredHeight(); }
-    int preferredWidth()  const noexcept { return interp.preferredWidth(); }
+    void forceCloseSilently()
+    {
+        finish (0, false);
+    }
 
     void paint (juce::Graphics& g) override
     {
-        if (! interp.hasGfxSection())
-        {
-            g.fillAll (juce::Colours::black);
-            g.setColour (juce::Colours::white.withAlpha (0.5f));
-            g.drawText ("(no @gfx section)", getLocalBounds(), juce::Justification::centred);
+        if (! menuOpen)
             return;
-        }
 
-        if (! interp.gfxCompiledOk())
+        static constexpr int kShadowRadius = 6;
+        const auto bg = juce::Colour::fromRGBA (28, 30, 34, 240);
+        const auto border = juce::Colour::fromRGBA (180, 188, 198, 230);
+        const auto textColour = juce::Colour::fromRGB (235, 238, 242);
+        const auto disabledColour = juce::Colour::fromRGB (118, 124, 132);
+        const auto highlight = juce::Colour::fromRGB (70, 92, 132);
+
+        for (size_t level = 0; level < layoutCache.size(); ++level)
         {
-            g.fillAll (juce::Colours::black);
-            g.setColour (juce::Colours::red.withAlpha (0.9f));
-            const auto err = interp.getLastError();
-            g.drawText ("@gfx compile error:\n" + (err.isNotEmpty() ? err : juce::String ("(unknown error)")),
-                        getLocalBounds().reduced (6),
-                        juce::Justification::topLeft, true);
-            return;
-        }
+            const auto& panel = layoutCache[level];
 
-        if (canvas.isNull())
-        {
-            g.fillAll (juce::Colours::black);
-            return;
-        }
+            juce::DropShadow (juce::Colours::black.withAlpha (0.45f), kShadowRadius, { 0, 2 })
+                .drawForRectangle (g, panel.bounds);
 
-        // Persistent canvas: scripts that do partial / intermittent redraws (expecting REAPER's persistent surface,
-        // i.e. gfx_clear = -1) won't "blink" to black between updates.
-        g.drawImageAt (canvas, 0, 0);
+            g.setColour (bg);
+            g.fillRect (panel.bounds);
+
+            g.setColour (border);
+            g.drawRect (panel.bounds, 1);
+
+            const auto* items = getItemsForLevel ((int) level);
+            if (items == nullptr)
+                continue;
+
+            for (int i = 0; i < (int) items->size() && i < (int) panel.itemBounds.size(); ++i)
+            {
+                const auto& item = (*items)[(size_t) i];
+                const auto row = panel.itemBounds[(size_t) i];
+
+                if (item.separator)
+                {
+                    g.setColour (juce::Colours::white.withAlpha (0.14f));
+                    g.drawLine ((float) row.getX() + 8.0f,
+                                (float) row.getCentreY(),
+                                (float) row.getRight() - 8.0f,
+                                (float) row.getCentreY(),
+                                1.0f);
+                    continue;
+                }
+
+                const bool highlighted = isHighlighted ((int) level, i);
+                if (highlighted && ! item.disabled)
+                {
+                    g.setColour (highlight);
+                    g.fillRect (row.reduced (2, 1));
+                }
+
+                const int checkLeft = row.getX() + 8;
+                const int textLeft  = row.getX() + 26;
+                const int arrowRight = row.getRight() - 10;
+
+                if (item.checked)
+                {
+                    g.setColour (item.disabled ? disabledColour : textColour);
+                    juce::Path tick;
+                    tick.startNewSubPath ((float) checkLeft,       (float) row.getCentreY());
+                    tick.lineTo          ((float) checkLeft + 4.0f, (float) row.getCentreY() + 4.0f);
+                    tick.lineTo          ((float) checkLeft + 10.0f,(float) row.getCentreY() - 4.0f);
+                    g.strokePath (tick, juce::PathStrokeType (2.0f));
+                }
+
+                g.setColour (item.disabled ? disabledColour : textColour);
+                g.setFont (menuFont);
+                g.drawText (item.text,
+                            juce::Rectangle<int> (textLeft, row.getY(), row.getWidth() - 40, row.getHeight()),
+                            juce::Justification::centredLeft,
+                            true);
+
+                if (! item.children.empty())
+                {
+                    juce::Path arrow;
+                    const float cx = (float) arrowRight;
+                    const float cy = (float) row.getCentreY();
+                    arrow.startNewSubPath (cx - 3.0f, cy - 5.0f);
+                    arrow.lineTo          (cx + 3.0f, cy);
+                    arrow.lineTo          (cx - 3.0f, cy + 5.0f);
+                    arrow.closeSubPath();
+                    g.fillPath (arrow);
+                }
+            }
+        }
     }
 
     void resized() override
     {
-        // Resize invalidates our persistent canvas.
-        canvas = juce::Image();
-        renderNow();
-        repaint();
+        if (menuOpen)
+            rebuildLayout();
     }
 
-    void mouseMove (const juce::MouseEvent& e) override { updateMouse (e); }
-    void mouseDrag (const juce::MouseEvent& e) override { updateMouse (e); }
-    
+    void mouseMove (const juce::MouseEvent& e) override   { updateHover (e.getPosition()); }
+    void mouseDrag (const juce::MouseEvent& e) override   { updateHover (e.getPosition()); }
+
     void mouseDown (const juce::MouseEvent& e) override
     {
-        inputDirty = true;
-        grabKeyboardFocus();
-        updateMouse (e); // this will render because a button is down
-    }
+        if (! menuOpen)
+            return;
 
-    void mouseUp (const juce::MouseEvent& e) override
-    {
-        inputDirty = true;
-        updateMouse (e);
+        const auto pos = e.getPosition();
 
-        // Many JSFX UIs toggle on release edge; don’t wait for the timer.
-        renderNow();
-        repaint();
-    }
-    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& d) override
-    {
-        inputDirty = true;
-        updateMouse (e);
+        int level = -1, index = -1;
+        if (! hitTestPanels (pos, level, index))
+        {
+            finish (0, true);
+            return;
+        }
 
-        // JSFX expects wheel units roughly around +/-120 per mouse-wheel notch.
-        // JUCE reports fractional deltas, so scale accordingly.
-        const float wheel = (float) (d.deltaY * 120.0);
-        const float hw    = (float) (d.deltaX * 120.0);
-
-        pendingWheel  += wheel;
-        pendingHWheel += hw;
-
-        renderNow();
-        repaint();
+        activateItem (level, index);
     }
 
     bool keyPressed (const juce::KeyPress& key) override
     {
-        if (! interp.hasGfxSection() || ! interp.gfxCompiledOk())
+        if (! menuOpen)
             return false;
-        
-        inputDirty = true;
-        const int jsfxCode = juceKeyPressToJsfx (key);
-        if (jsfxCode != 0)
+
+        const int currentLevel = juce::jmax (0, (int) layoutCache.size() - 1);
+        const auto* items = getItemsForLevel (currentLevel);
+        if (items == nullptr || items->empty())
+            return true;
+
+        if (key == juce::KeyPress::escapeKey)
         {
-            interp.pushKey (jsfxCode);
-            interp.setKeyDown (jsfxCode, true);
-            trackedKeys[(uint32_t) jsfxCode] = key.getKeyCode();
+            finish (0, true);
+            return true;
         }
 
-        // Ensure modifier flags in mouse_cap can update even if the mouse isn't moving.
-        updateMouseCapFromModifiers (juce::ModifierKeys::getCurrentModifiers());
-
-        renderNow();
-        repaint();
-        return true;
-    }
-
-    bool keyStateChanged (bool /*isKeyDown*/) override
-    {
-        if (! interp.hasGfxSection() || ! interp.gfxCompiledOk())
-            return false;
-
-        inputDirty = true;
-        bool changed = false;
-
-        const int capBefore = mouseCap;
-
-        // Update tracked key-down state.
-        for (auto it = trackedKeys.begin(); it != trackedKeys.end();)
+        if (key == juce::KeyPress::upKey || key == juce::KeyPress::downKey)
         {
-            const int jsfxCode = (int) it->first;
-            const int juceKeyCode = it->second;
-            const bool downNow = juce::KeyPress::isKeyCurrentlyDown (juceKeyCode);
+            const int dir = (key == juce::KeyPress::upKey ? -1 : 1);
+            ensureHighlightSize (currentLevel + 1);
 
-            interp.setKeyDown (jsfxCode, downNow);
-            changed = true;
+            int idx = highlightIndices[(size_t) currentLevel];
+            idx = nextSelectableIndex (*items, idx, dir);
+            highlightIndices[(size_t) currentLevel] = idx;
 
-            if (! downNow)
-                it = trackedKeys.erase (it);
+            if (idx >= 0 && idx < (int) items->size() && ! (*items)[(size_t) idx].children.empty())
+            {
+                ensureOpenPathSize (currentLevel + 1);
+                openPath[(size_t) currentLevel] = idx;
+                const auto* childItems = getItemsForLevel (currentLevel + 1);
+                ensureHighlightSize (currentLevel + 2);
+                highlightIndices[(size_t) (currentLevel + 1)] = childItems ? firstSelectableIndex (*childItems) : -1;
+            }
             else
-                ++it;
+            {
+                if ((int) openPath.size() > currentLevel)
+                    openPath.resize ((size_t) currentLevel);
+                if ((int) highlightIndices.size() > currentLevel + 1)
+                    highlightIndices.resize ((size_t) currentLevel + 1);
+            }
+
+            rebuildLayout();
+            repaint();
+            return true;
         }
 
-        // Keep mouse_cap modifier bits fresh.
-        updateMouseCapFromModifiers (juce::ModifierKeys::getCurrentModifiers());
-
-        // Modifier-only changes (Shift/Ctrl/Alt/Command) do not generate a JSFX key code,
-        // but they *do* change mouse_cap. Many JSFX UIs rely on seeing mouse_cap become
-        // exactly 0 between interactions to release capture/drag state.
-        const bool capChanged = (mouseCap != capBefore);
-
-        if (changed || capChanged)
+        if (key == juce::KeyPress::leftKey)
         {
-            renderNow();
-            repaint();
+            if ((int) openPath.size() > 0)
+            {
+                openPath.resize ((size_t) juce::jmax (0, currentLevel - 1));
+                if ((int) highlightIndices.size() > juce::jmax (1, currentLevel))
+                    highlightIndices.resize ((size_t) juce::jmax (1, currentLevel));
+                rebuildLayout();
+                repaint();
+            }
+            else
+            {
+                finish (0, true);
+            }
+            return true;
+        }
+
+        if (key == juce::KeyPress::rightKey || key == juce::KeyPress::returnKey || key == juce::KeyPress::spaceKey)
+        {
+            const int idx = currentHighlight (currentLevel);
+            activateItem (currentLevel, idx);
+            return true;
         }
 
         return true;
@@ -3692,167 +3759,928 @@ public:
 
     void focusLost (juce::Component::FocusChangeType) override
     {
-        trackedKeys.clear();
-        interp.clearKeys();
-
-        // Safety: if the editor is closed mid-drag, end any pending automation gestures.
-        processor.endAllGfxGestures();
+        if (menuOpen)
+            finish (0, true);
     }
 
-    bool inputDirty = false;
-    std::vector<jsfx_gfx::DirtyVarWrite> dirtyVarWrites;
-    std::vector<jsfx_gfx::DirtyMemRange> dirtyMemRanges;
-    std::vector<double> dirtyMemValues;
-
 private:
-    void timerCallback() override
+    struct PanelLayout
     {
-        renderNow();
+        juce::Rectangle<int> bounds;
+        std::vector<juce::Rectangle<int>> itemBounds;
+    };
+
+    static bool parseRecursive (const char*& cursor, int depth, int& nextId, std::vector<Item>& out)
+    {
+        if (cursor == nullptr || depth >= 8)
+            return false;
+
+        bool any = false;
+
+        while (true)
+        {
+            const char* sep = std::strchr (cursor, '|');
+            const size_t len = (sep != nullptr) ? (size_t) (sep - cursor) : std::strlen (cursor);
+
+            std::string token (cursor, len);
+            cursor += len;
+            if (sep != nullptr)
+                ++cursor;
+
+            const char* q = token.c_str();
+            bool done = false;
+            bool disabled = false;
+            bool checked = false;
+            bool hasSubmenu = false;
+            std::vector<Item> children;
+
+            while (*q != '\0' && std::strchr (">#!<", *q) != nullptr)
+            {
+                if (*q == '>')
+                    hasSubmenu = true;
+                else if (*q == '#')
+                    disabled = true;
+                else if (*q == '!')
+                    checked = true;
+                else if (*q == '<')
+                    done = true;
+                ++q;
+            }
+
+            if (hasSubmenu)
+                parseRecursive (cursor, depth + 1, nextId, children);
+
+            if (*q != '\0')
+            {
+                Item item;
+                item.text = juce::String::fromUTF8 (q).trim();
+                item.disabled = disabled;
+                item.checked = checked;
+                item.children = std::move (children);
+                item.resultId = item.children.empty() ? nextId++ : 0;
+
+                if (! item.text.isEmpty())
+                {
+                    out.push_back (std::move (item));
+                    any = true;
+                }
+            }
+            else if (! hasSubmenu && ! done)
+            {
+                Item separator;
+                separator.separator = true;
+                out.push_back (std::move (separator));
+                any = true;
+            }
+
+            if (sep == nullptr || done)
+                break;
+        }
+
+        return any;
+    }
+
+    static int firstSelectableIndex (const std::vector<Item>& items)
+    {
+        for (int i = 0; i < (int) items.size(); ++i)
+        {
+            if (! items[(size_t) i].separator && ! items[(size_t) i].disabled)
+                return i;
+        }
+        return -1;
+    }
+
+    static int nextSelectableIndex (const std::vector<Item>& items, int start, int dir)
+    {
+        if (items.empty())
+            return -1;
+
+        int idx = start;
+        if (idx < 0 || idx >= (int) items.size())
+            idx = (dir >= 0 ? -1 : (int) items.size());
+
+        for (int count = 0; count < (int) items.size(); ++count)
+        {
+            idx += dir;
+            if (idx < 0)
+                idx = (int) items.size() - 1;
+            if (idx >= (int) items.size())
+                idx = 0;
+
+            const auto& item = items[(size_t) idx];
+            if (! item.separator && ! item.disabled)
+                return idx;
+        }
+
+        return start;
+    }
+
+    const std::vector<Item>* getItemsForLevel (int level) const
+    {
+        if (level < 0)
+            return nullptr;
+
+        const std::vector<Item>* items = &rootItems;
+        for (int l = 0; l < level; ++l)
+        {
+            if (l >= (int) openPath.size())
+                return nullptr;
+
+            const int idx = openPath[(size_t) l];
+            if (idx < 0 || idx >= (int) items->size())
+                return nullptr;
+
+            items = &(*items)[(size_t) idx].children;
+        }
+        return items;
+    }
+
+    void ensureOpenPathSize (int size)
+    {
+        if ((int) openPath.size() < size)
+            openPath.resize ((size_t) size, -1);
+    }
+
+    void ensureHighlightSize (int size)
+    {
+        if ((int) highlightIndices.size() < size)
+            highlightIndices.resize ((size_t) size, -1);
+    }
+
+    int currentHighlight (int level) const
+    {
+        if (level < 0 || level >= (int) highlightIndices.size())
+            return -1;
+        return highlightIndices[(size_t) level];
+    }
+
+    bool isHighlighted (int level, int index) const
+    {
+        return currentHighlight (level) == index;
+    }
+
+    void rebuildLayout()
+    {
+        layoutCache.clear();
+        if (! menuOpen)
+            return;
+
+        static constexpr int kBorder = 1;
+        static constexpr int kRowHeight = 22;
+        static constexpr int kSeparatorHeight = 8;
+        static constexpr int kMinWidth = 120;
+        static constexpr int kCheckWidth = 16;
+        static constexpr int kArrowWidth = 14;
+        static constexpr int kHorizPad = 12;
+
+        const auto bounds = getLocalBounds();
+
+        for (int level = 0;; ++level)
+        {
+            const auto* items = getItemsForLevel (level);
+            if (items == nullptr || items->empty())
+                break;
+
+            float maxTextWidth = 0.0f;
+            int panelHeight = kBorder * 2;
+
+            for (const auto& item : *items)
+            {
+                if (! item.separator)
+                    maxTextWidth = std::max (maxTextWidth, menuFont.getStringWidthFloat (item.text));
+                panelHeight += item.separator ? kSeparatorHeight : kRowHeight;
+            }
+
+            const int panelWidth = juce::jmax (kMinWidth,
+                                               (int) std::ceil (maxTextWidth) + kHorizPad * 2 + kCheckWidth + kArrowWidth);
+
+            int x = anchor.x;
+            int y = anchor.y;
+
+            if (level > 0 && level - 1 < (int) layoutCache.size())
+            {
+                const auto& prev = layoutCache[(size_t) (level - 1)];
+                const int parentIdx = openPath[(size_t) (level - 1)];
+                const auto parentRow = (parentIdx >= 0 && parentIdx < (int) prev.itemBounds.size())
+                                     ? prev.itemBounds[(size_t) parentIdx]
+                                     : prev.bounds;
+
+                x = prev.bounds.getRight() - 1;
+                y = parentRow.getY();
+
+                if (x + panelWidth > bounds.getRight())
+                    x = juce::jmax (bounds.getX(), prev.bounds.getX() - panelWidth + 1);
+            }
+
+            if (x + panelWidth > bounds.getRight())
+                x = juce::jmax (bounds.getX(), bounds.getRight() - panelWidth);
+            if (y + panelHeight > bounds.getBottom())
+                y = juce::jmax (bounds.getY(), bounds.getBottom() - panelHeight);
+
+            PanelLayout panel;
+            panel.bounds = juce::Rectangle<int> (x, y, panelWidth, panelHeight);
+            panel.itemBounds.reserve (items->size());
+
+            int cy = y + kBorder;
+            for (const auto& item : *items)
+            {
+                const int h = item.separator ? kSeparatorHeight : kRowHeight;
+                panel.itemBounds.push_back (juce::Rectangle<int> (x + kBorder, cy, panelWidth - kBorder * 2, h));
+                cy += h;
+            }
+
+            layoutCache.push_back (std::move (panel));
+
+            if (level >= (int) openPath.size())
+                break;
+
+            const int parentIdx = openPath[(size_t) level];
+            if (parentIdx < 0 || parentIdx >= (int) items->size() || (*items)[(size_t) parentIdx].children.empty())
+                break;
+        }
+    }
+
+    bool hitTestPanels (juce::Point<int> pos, int& outLevel, int& outIndex) const
+    {
+        outLevel = -1;
+        outIndex = -1;
+
+        for (int level = (int) layoutCache.size() - 1; level >= 0; --level)
+        {
+            const auto& panel = layoutCache[(size_t) level];
+            if (! panel.bounds.contains (pos))
+                continue;
+
+            outLevel = level;
+            for (int i = 0; i < (int) panel.itemBounds.size(); ++i)
+            {
+                if (panel.itemBounds[(size_t) i].contains (pos))
+                {
+                    outIndex = i;
+                    return true;
+                }
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    void updateHover (juce::Point<int> pos)
+    {
+        int level = -1, index = -1;
+        if (! hitTestPanels (pos, level, index))
+            return;
+
+        const auto* items = getItemsForLevel (level);
+        if (items == nullptr || index < 0 || index >= (int) items->size())
+            return;
+
+        ensureHighlightSize (level + 1);
+        highlightIndices[(size_t) level] = index;
+
+        const auto& item = (*items)[(size_t) index];
+        if (! item.children.empty() && ! item.disabled && ! item.separator)
+        {
+            ensureOpenPathSize (level + 1);
+            openPath[(size_t) level] = index;
+
+            const auto* childItems = getItemsForLevel (level + 1);
+            ensureHighlightSize (level + 2);
+            highlightIndices[(size_t) (level + 1)] = childItems ? firstSelectableIndex (*childItems) : -1;
+        }
+        else
+        {
+            if ((int) openPath.size() > level)
+                openPath.resize ((size_t) level);
+            if ((int) highlightIndices.size() > level + 1)
+                highlightIndices.resize ((size_t) level + 1);
+        }
+
+        rebuildLayout();
         repaint();
     }
 
-    void updateMouse (const juce::MouseEvent& e)
+    void activateItem (int level, int index)
     {
-        auto p = e.getPosition();
-        mouseX = (float) p.x;
-        mouseY = (float) p.y;
+        const auto* items = getItemsForLevel (level);
+        if (items == nullptr || index < 0 || index >= (int) items->size())
+            return;
+
+        const auto& item = (*items)[(size_t) index];
+        if (item.separator || item.disabled)
+            return;
+
+        ensureHighlightSize (level + 1);
+        highlightIndices[(size_t) level] = index;
+
+        if (! item.children.empty())
+        {
+            ensureOpenPathSize (level + 1);
+            openPath[(size_t) level] = index;
+
+            const auto* childItems = getItemsForLevel (level + 1);
+            ensureHighlightSize (level + 2);
+            highlightIndices[(size_t) (level + 1)] = childItems ? firstSelectableIndex (*childItems) : -1;
+
+            rebuildLayout();
+            repaint();
+            return;
+        }
+
+        finish (item.resultId, true);
+    }
+
+    void finish (int result, bool notify)
+    {
+        menuOpen = false;
+        rootItems.clear();
+        openPath.clear();
+        highlightIndices.clear();
+        layoutCache.clear();
+        setVisible (false);
+
+        if (notify && onFinished)
+            onFinished (result);
+    }
+
+    std::vector<Item> rootItems;
+    std::vector<int> openPath;
+    std::vector<int> highlightIndices;
+    std::vector<PanelLayout> layoutCache;
+    juce::Point<int> anchor;
+    juce::Font menuFont { juce::Font::getDefaultSansSerifFontName(), 13.0f, juce::Font::plain };
+    bool menuOpen = false;
+};
+
+class GfxView final : public juce::Component,
+                      private juce::AsyncUpdater
+{
+public:
+    explicit GfxView (JSFXJuceProcessor& p)
+        : processor (p)
+    {
+        setOpaque (true);
+        setInterceptsMouseClicks (true, true);
+
+        setWantsKeyboardFocus (true);
+        setMouseClickGrabsKeyboardFocus (true);
+
+        menuBridge.setCallbacks (
+            [this]() { triggerAsyncUpdate(); },
+            [this]() { quietInputForMenu(); },
+            [this]() { notifyWorker(); });
+
+        menuOverlay.onFinished = [this] (int result)
+        {
+            menuBridge.completeMenu (result);
+            grabKeyboardFocus();
+            repaint();
+        };
+
+        addAndMakeVisible (menuOverlay);
+        menuOverlay.setVisible (false);
+
+        interp = std::make_unique<jsfx_gfx::Interpreter> (kJsfxSourceText);
+
+        if (interp != nullptr)
+        {
+            hasGfxFlag = interp->hasGfxSection();
+            gfxCompiledOkFlag = interp->gfxCompiledOk();
+            gfxLastError = interp->getLastError();
+            gfxPrefW = interp->preferredWidth();
+            gfxPrefH = interp->preferredHeight();
+        }
+
+        if (hasGfxFlag && gfxCompiledOkFlag)
+        {
+            interp->setMenuPort (&menuBridge);
+            processor.registerGfxSnapshotClient();
+            targetWidth.store (juce::jmax (1, getWidth()), std::memory_order_release);
+            targetHeight.store (juce::jmax (1, getHeight()), std::memory_order_release);
+            startWorker();
+        }
+    }
+
+    ~GfxView() override
+    {
+        stopWorker();
+        cancelPendingUpdate();
+        menuBridge.cancelAll();
+        menuOverlay.forceCloseSilently();
+
+        if (hasGfxFlag && gfxCompiledOkFlag)
+            processor.unregisterGfxSnapshotClient();
+
+        processor.endAllGfxGestures();
+    }
+
+    bool hasGfx() const noexcept { return hasGfxFlag; }
+    int preferredHeight() const noexcept { return gfxPrefH; }
+    int preferredWidth()  const noexcept { return gfxPrefW; }
+
+    void paint (juce::Graphics& g) override
+    {
+        if (! hasGfxFlag)
+        {
+            g.fillAll (juce::Colours::black);
+            g.setColour (juce::Colours::white.withAlpha (0.5f));
+            g.drawText ("(no @gfx section)", getLocalBounds(), juce::Justification::centred);
+            return;
+        }
+
+        if (! gfxCompiledOkFlag)
+        {
+            g.fillAll (juce::Colours::black);
+            g.setColour (juce::Colours::red.withAlpha (0.9f));
+            g.drawText ("@gfx compile error:\n" + (gfxLastError.isNotEmpty() ? gfxLastError : juce::String ("(unknown error)")),
+                        getLocalBounds().reduced (6),
+                        juce::Justification::topLeft, true);
+            return;
+        }
+
+        juce::Image frame;
+        {
+            const std::lock_guard<std::mutex> lock (publishedImageMutex);
+            frame = publishedImage;
+        }
+
+        if (frame.isNull())
+        {
+            g.fillAll (juce::Colours::black);
+            return;
+        }
+
+        g.drawImageAt (frame, 0, 0);
+    }
+
+    void resized() override
+    {
+        menuOverlay.setBounds (getLocalBounds());
+
+        targetWidth.store (juce::jmax (1, getWidth()), std::memory_order_release);
+        targetHeight.store (juce::jmax (1, getHeight()), std::memory_order_release);
+        canvasResetRequested.store (true, std::memory_order_release);
+
+        notifyWorker();
+        repaint();
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override { updateMouse (e, false); }
+    void mouseDrag (const juce::MouseEvent& e) override { updateMouse (e, true); }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        grabKeyboardFocus();
+        updateMouse (e, true);
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        updateMouse (e, true);
+    }
+
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& d) override
+    {
+        if (! hasGfxFlag || ! gfxCompiledOkFlag)
+            return;
 
         updateMouseCapFromModifiers (e.mods);
 
-        // Render on mouse movement only when a button is down (dragging UI),
-        // otherwise the timer will handle periodic updates.
-        if (e.mods.isAnyMouseButtonDown())
         {
-            inputDirty = true;
-            renderNow();
-            repaint();
-        }
-    }
-
-    static int packCC(const char* s) noexcept
-    {
-        // Packs up to 4 ASCII chars into a 32-bit int, little-endian.
-        // This matches the multi-character constants used in JSFX docs (e.g. 'home', 'rght').
-        uint32_t v = 0;
-        for (int i = 0; i < 4 && s[i] != 0; ++i)
-            v |= (uint32_t) (uint8_t) s[i] << (8u * (uint32_t)i);
-        return (int) v;
-    }
-
-    static int juceKeyPressToJsfx (const juce::KeyPress& key)
-    {
-        const int kc = key.getKeyCode();
-
-        // --- Special keys ---
-        if (kc == juce::KeyPress::upKey)       return packCC ("up");
-        if (kc == juce::KeyPress::downKey)     return packCC ("down");
-        if (kc == juce::KeyPress::leftKey)     return packCC ("left");
-        if (kc == juce::KeyPress::rightKey)    return packCC ("rght");
-        if (kc == juce::KeyPress::homeKey)     return packCC ("home");
-        if (kc == juce::KeyPress::endKey)      return packCC ("end");
-        if (kc == juce::KeyPress::pageUpKey)   return packCC ("pgup");
-        if (kc == juce::KeyPress::pageDownKey) return packCC ("pgdn");
-        if (kc == juce::KeyPress::insertKey)   return packCC ("ins");
-        if (kc == juce::KeyPress::deleteKey)   return packCC ("del");
-
-        if (kc == juce::KeyPress::escapeKey)   return 27;
-        if (kc == juce::KeyPress::returnKey)   return 13;
-        if (kc == juce::KeyPress::spaceKey)    return 32;
-
-        // --- Function keys ---
-        if (kc >= juce::KeyPress::F1Key && kc <= juce::KeyPress::F12Key)
-        {
-            const int f = (kc - juce::KeyPress::F1Key) + 1;
-            if (f < 10)
-            {
-                const char s[3] = { 'f', (char) ('0' + f), 0 };
-                return packCC (s);
-            }
-            else
-            {
-                // f10, f11, f12
-                const char s[4] = { 'f', (char) ('0' + (f / 10)), (char) ('0' + (f % 10)), 0 };
-                return packCC (s);
-            }
+            const std::lock_guard<std::mutex> lock (inputMutex);
+            sharedInput.mouseX = (float) e.position.x;
+            sharedInput.mouseY = (float) e.position.y;
+            sharedInput.mouseCap = mouseCap;
+            sharedInput.pendingWheel += (float) (d.deltaY * 120.0);
+            sharedInput.pendingHWheel += (float) (d.deltaX * 120.0);
+            sharedInput.captureStateWrites = true;
         }
 
-        // --- Text character ---
-        const auto ch = key.getTextCharacter();
-        if (ch > 0)
-        {
-            // Basic ASCII only (Unicode is ignored by gfx_getchar in this runtime).
-            if (ch >= 1 && ch <= 127)
-            {
-                const bool ctrlOrCmd = key.getModifiers().isCtrlDown() || key.getModifiers().isCommandDown();
-                const bool alt = key.getModifiers().isAltDown();
+        notifyWorker();
+    }
 
-                // REAPER behaviour (when full keyboard is enabled):
-                // Ctrl/Cmd+A..Z -> 1..26, Alt adds 256.
-                if (ctrlOrCmd)
+    bool keyPressed (const juce::KeyPress& key) override
+    {
+        if (! hasGfxFlag || ! gfxCompiledOkFlag)
+            return false;
+
+        const int jsfxCode = juceKeyPressToJsfx (key);
+        if (jsfxCode == 0)
+            return false;
+
+        updateMouseCapFromModifiers (juce::ModifierKeys::getCurrentModifiers());
+
+        {
+            const std::lock_guard<std::mutex> lock (inputMutex);
+            sharedInput.mouseCap = mouseCap;
+            sharedInput.captureStateWrites = true;
+            sharedInput.keyEvents.push_back (KeyEvent { jsfxCode, true, true });
+        }
+
+        trackedKeys[(uint32_t) jsfxCode] = key.getKeyCode();
+        notifyWorker();
+        return true;
+    }
+
+    bool keyStateChanged (bool /*isKeyDown*/) override
+    {
+        if (! hasGfxFlag || ! gfxCompiledOkFlag)
+            return false;
+
+        updateMouseCapFromModifiers (juce::ModifierKeys::getCurrentModifiers());
+
+        bool changed = false;
+        int previousMouseCap = 0;
+        {
+            const std::lock_guard<std::mutex> lock (inputMutex);
+            previousMouseCap = sharedInput.mouseCap;
+            sharedInput.mouseCap = mouseCap;
+
+            for (auto it = trackedKeys.begin(); it != trackedKeys.end();)
+            {
+                const int jsfxCode = (int) it->first;
+                const int juceKeyCode = it->second;
+                const bool downNow = juce::KeyPress::isKeyCurrentlyDown (juceKeyCode);
+
+                if (! downNow)
                 {
-                    const auto up = juce::CharacterFunctions::toUpperCase (ch);
-                    if (up >= 'A' && up <= 'Z')
-                    {
-                        int v = (int) (up - 'A') + 1;
-                        if (alt) v += 256;
-                        return v;
-                    }
+                    sharedInput.keyEvents.push_back (KeyEvent { jsfxCode, false, false });
+                    it = trackedKeys.erase (it);
+                    changed = true;
                 }
-
-                // Alt+key -> code + 256.
-                if (alt)
-                    return (int) ch + 256;
-
-                return (int) ch;
+                else
+                {
+                    ++it;
+                }
             }
+
+            if (changed || previousMouseCap != mouseCap)
+                sharedInput.captureStateWrites = true;
         }
 
-        return 0;
+        if (changed || previousMouseCap != mouseCap)
+            notifyWorker();
+
+        return changed || previousMouseCap != mouseCap;
     }
 
-    void updateMouseCapFromModifiers (const juce::ModifierKeys& mods)
+    void focusLost (juce::Component::FocusChangeType) override
     {
-        // JSFX mouse_cap bit mapping (REAPER docs):
-        // 1 left, 2 right, 4 ctrl/cmd, 8 shift, 16 alt/opt, 32 win key / ctrl on OSX, 64 middle.
-        int cap = 0;
+        trackedKeys.clear();
 
-        if (mods.isLeftButtonDown())   cap |= 1;
-        if (mods.isRightButtonDown())  cap |= 2;
-        if (mods.isMiddleButtonDown()) cap |= 64;
+        {
+            const std::lock_guard<std::mutex> lock (inputMutex);
+            sharedInput.clearKeys = true;
+            sharedInput.captureStateWrites = false;
+            sharedInput.mouseCap = 0;
+            sharedInput.pendingWheel = 0.0f;
+            sharedInput.pendingHWheel = 0.0f;
+        }
 
-        if (mods.isShiftDown()) cap |= 8;
-        if (mods.isAltDown())   cap |= 16;
-
-       #if JUCE_MAC
-        if (mods.isCommandDown()) cap |= 4;   // cmd on mac
-        if (mods.isCtrlDown())    cap |= 32;  // ctrl on mac
-       #else
-        if (mods.isCtrlDown())    cap |= 4;   // ctrl on win/linux
-        if (mods.isCommandDown()) cap |= 32;  // win key on win (juce "command")
-       #endif
-
-        mouseCap = cap;
+        notifyWorker();
+        processor.endAllGfxGestures();
     }
 
-    void renderNow()
+private:
+    struct MemDiffSpan
     {
-        if (! interp.hasGfxSection() || ! interp.gfxCompiledOk())
+        int64_t base = 0;
+        std::vector<double> before;
+        std::vector<double> after;
+    };
+
+    struct KeyEvent
+    {
+        int jsfxCode = 0;
+        bool keyDown = false;
+        bool enqueueChar = false;
+    };
+
+    struct SharedInputState
+    {
+        float mouseX = 0.0f;
+        float mouseY = 0.0f;
+        int mouseCap = 0;
+        float pendingWheel = 0.0f;
+        float pendingHWheel = 0.0f;
+        bool captureStateWrites = false;
+        bool clearKeys = false;
+        std::deque<KeyEvent> keyEvents;
+    };
+
+    struct PendingSliderApply
+    {
+        std::array<double, 64> sliders {};
+        uint64_t changeMask = 0;
+        uint64_t automateMask = 0;
+        uint64_t automateEndMask = 0;
+        bool pending = false;
+    };
+
+    struct MenuBridge final : public jsfx_gfx::AsyncMenuPort
+    {
+        void setCallbacks (std::function<void()> asyncWakeFn,
+                           std::function<void()> quiesceInputFn,
+                           std::function<void()> workerWakeFn)
+        {
+            asyncWake = std::move (asyncWakeFn);
+            quiesceInput = std::move (quiesceInputFn);
+            workerWake = std::move (workerWakeFn);
+        }
+
+        bool consumeCompletedMenuResult (int& result) override
+        {
+            const std::lock_guard<std::mutex> lock (mutex);
+            if (! hasCompletedResult)
+                return false;
+
+            result = completedResult;
+            completedResult = 0;
+            hasCompletedResult = false;
+            return true;
+        }
+
+        bool isMenuOpen() const override
+        {
+            return openOrPending.load (std::memory_order_acquire);
+        }
+
+        void requestOpenMenu (const juce::String& description, int x, int y) override
+        {
+            {
+                const std::lock_guard<std::mutex> lock (mutex);
+                if (openOrPending.load (std::memory_order_acquire))
+                    return;
+
+                pendingDescription = description;
+                pendingX = x;
+                pendingY = y;
+                hasPendingOpen = true;
+                hasCompletedResult = false;
+                completedResult = 0;
+                openOrPending.store (true, std::memory_order_release);
+            }
+
+            if (quiesceInput)
+                quiesceInput();
+
+            if (asyncWake)
+                asyncWake();
+        }
+
+        bool takePendingOpen (juce::String& description, int& x, int& y)
+        {
+            const std::lock_guard<std::mutex> lock (mutex);
+            if (! hasPendingOpen)
+                return false;
+
+            description = pendingDescription;
+            x = pendingX;
+            y = pendingY;
+            hasPendingOpen = false;
+            return true;
+        }
+
+        void completeMenu (int result)
+        {
+            {
+                const std::lock_guard<std::mutex> lock (mutex);
+                completedResult = result;
+                hasCompletedResult = true;
+                openOrPending.store (false, std::memory_order_release);
+            }
+
+            if (workerWake)
+                workerWake();
+
+            if (asyncWake)
+                asyncWake();
+        }
+
+        void cancelAll()
+        {
+            const std::lock_guard<std::mutex> lock (mutex);
+            pendingDescription.clear();
+            pendingX = 0;
+            pendingY = 0;
+            completedResult = 0;
+            hasCompletedResult = false;
+            hasPendingOpen = false;
+            openOrPending.store (false, std::memory_order_release);
+        }
+
+        mutable std::mutex mutex;
+        juce::String pendingDescription;
+        int pendingX = 0;
+        int pendingY = 0;
+        int completedResult = 0;
+        bool hasCompletedResult = false;
+        bool hasPendingOpen = false;
+        std::atomic<bool> openOrPending { false };
+
+        std::function<void()> asyncWake;
+        std::function<void()> quiesceInput;
+        std::function<void()> workerWake;
+    };
+
+    void handleAsyncUpdate() override
+    {
+        bool repaintNeeded = repaintPending.exchange (false, std::memory_order_acq_rel);
+
+        juce::String menuDesc;
+        int menuX = 0;
+        int menuY = 0;
+        if (menuBridge.takePendingOpen (menuDesc, menuX, menuY))
+        {
+            menuOverlay.openMenu (menuDesc, { menuX, menuY });
+            if (! menuOverlay.isMenuShowing())
+                menuBridge.completeMenu (0);
+            repaintNeeded = true;
+        }
+
+        PendingSliderApply sliderApply;
+        {
+            const std::lock_guard<std::mutex> lock (pendingSliderMutex);
+            sliderApply = pendingSliderApply;
+            pendingSliderApply.pending = false;
+            pendingSliderApply.changeMask = 0;
+            pendingSliderApply.automateMask = 0;
+            pendingSliderApply.automateEndMask = 0;
+        }
+
+        if (sliderApply.pending)
+        {
+            processor.applyGfxSliderChanges (sliderApply.sliders.data(), 64,
+                                             sliderApply.changeMask,
+                                             sliderApply.automateMask,
+                                             sliderApply.automateEndMask);
+        }
+
+        if (repaintNeeded || sliderApply.pending)
+            repaint();
+    }
+
+    void startWorker()
+    {
+        stopWorkerFlag.store (false, std::memory_order_release);
+        workerWakeFlag.store (true, std::memory_order_release);
+        workerThread = std::thread ([this] { workerLoop(); });
+        workerCv.notify_one();
+    }
+
+    void stopWorker()
+    {
+        stopWorkerFlag.store (true, std::memory_order_release);
+        workerWakeFlag.store (true, std::memory_order_release);
+        workerCv.notify_all();
+
+        if (workerThread.joinable())
+            workerThread.join();
+    }
+
+    void notifyWorker()
+    {
+        workerWakeFlag.store (true, std::memory_order_release);
+        workerCv.notify_one();
+    }
+
+    void quietInputForMenu()
+    {
+        const std::lock_guard<std::mutex> lock (inputMutex);
+        sharedInput.mouseCap = 0;
+        sharedInput.pendingWheel = 0.0f;
+        sharedInput.pendingHWheel = 0.0f;
+        sharedInput.captureStateWrites = false;
+    }
+
+    void updateMouse (const juce::MouseEvent& e, bool markDirty)
+    {
+        if (! hasGfxFlag || ! gfxCompiledOkFlag)
             return;
 
-        const int w = juce::jmax (1, getWidth());
-        const int h = juce::jmax (1, getHeight());
+        updateMouseCapFromModifiers (e.mods);
 
-        if (canvas.isNull() || canvas.getWidth() != w || canvas.getHeight() != h)
         {
-            canvas = juce::Image (juce::Image::ARGB, w, h, true);
-            juce::Graphics cg (canvas);
+            const std::lock_guard<std::mutex> lock (inputMutex);
+            sharedInput.mouseX = (float) e.position.x;
+            sharedInput.mouseY = (float) e.position.y;
+            sharedInput.mouseCap = mouseCap;
+            if (markDirty)
+                sharedInput.captureStateWrites = true;
+        }
+
+        notifyWorker();
+    }
+
+    void queueSliderApply (const std::array<double, 64>& newSliders,
+                           uint64_t changeMask,
+                           uint64_t automateMask,
+                           uint64_t automateEndMask)
+    {
+        if ((changeMask | automateMask | automateEndMask) == 0)
+            return;
+
+        const uint64_t applyMask = changeMask | automateMask | automateEndMask;
+
+        {
+            const std::lock_guard<std::mutex> lock (pendingSliderMutex);
+            for (int i = 0; i < 64; ++i)
+            {
+                const uint64_t bit = (uint64_t) 1u << (uint64_t) i;
+                if ((applyMask & bit) == 0)
+                    continue;
+                pendingSliderApply.sliders[(size_t) i] = newSliders[(size_t) i];
+            }
+
+            pendingSliderApply.changeMask |= changeMask;
+            pendingSliderApply.automateMask |= automateMask;
+            pendingSliderApply.automateEndMask |= automateEndMask;
+            pendingSliderApply.pending = true;
+        }
+
+        triggerAsyncUpdate();
+    }
+
+    void publishCanvas()
+    {
+        {
+            const std::lock_guard<std::mutex> lock (publishedImageMutex);
+            publishedImage = workerCanvas.createCopy();
+        }
+
+        repaintPending.store (true, std::memory_order_release);
+        triggerAsyncUpdate();
+    }
+
+    void workerLoop()
+    {
+        while (! stopWorkerFlag.load (std::memory_order_acquire))
+        {
+            {
+                std::unique_lock<std::mutex> lock (workerWaitMutex);
+                workerCv.wait_for (lock, std::chrono::milliseconds (33), [this] {
+                    return stopWorkerFlag.load (std::memory_order_acquire)
+                        || workerWakeFlag.exchange (false, std::memory_order_acq_rel);
+                });
+            }
+
+            if (stopWorkerFlag.load (std::memory_order_acquire))
+                break;
+
+            renderWorkerFrame();
+        }
+    }
+
+    void renderWorkerFrame()
+    {
+        if (! hasGfxFlag || ! gfxCompiledOkFlag || interp == nullptr)
+            return;
+
+        const int w = juce::jmax (1, targetWidth.load (std::memory_order_acquire));
+        const int h = juce::jmax (1, targetHeight.load (std::memory_order_acquire));
+
+        if (canvasResetRequested.exchange (false, std::memory_order_acq_rel)
+            || workerCanvas.isNull()
+            || workerCanvas.getWidth() != w
+            || workerCanvas.getHeight() != h)
+        {
+            workerCanvas = juce::Image (juce::Image::ARGB, w, h, true);
+            juce::Graphics cg (workerCanvas);
             cg.fillAll (juce::Colours::black);
         }
 
-        // Pull snapshot from processor
+        SharedInputState inputCopy;
+        {
+            const std::lock_guard<std::mutex> lock (inputMutex);
+            inputCopy.mouseX = sharedInput.mouseX;
+            inputCopy.mouseY = sharedInput.mouseY;
+            inputCopy.mouseCap = sharedInput.mouseCap;
+            inputCopy.pendingWheel = sharedInput.pendingWheel;
+            inputCopy.pendingHWheel = sharedInput.pendingHWheel;
+            inputCopy.captureStateWrites = sharedInput.captureStateWrites;
+            inputCopy.clearKeys = sharedInput.clearKeys;
+            inputCopy.keyEvents.swap (sharedInput.keyEvents);
+
+            sharedInput.pendingWheel = 0.0f;
+            sharedInput.pendingHWheel = 0.0f;
+            sharedInput.captureStateWrites = false;
+            sharedInput.clearKeys = false;
+        }
+
+        if (inputCopy.clearKeys)
+            interp->clearKeys();
+
+        for (const auto& evt : inputCopy.keyEvents)
+        {
+            if (evt.enqueueChar)
+                interp->pushKey (evt.jsfxCode);
+            interp->setKeyDown (evt.jsfxCode, evt.keyDown);
+        }
+
         int snapIdx = -1;
         const auto* snap = processor.beginGfxSnapshotRead (snapIdx);
-        if (! snap)
+        if (snap == nullptr)
             return;
 
         const auto sameDouble = [] (double a, double b) noexcept
@@ -3864,16 +4692,12 @@ private:
             return std::abs (a - b) <= 1.0e-12;
         };
 
-        // Once the audio thread publishes a fresh snapshot, we can stop preserving
-        // local UI state and trust the DSP snapshot again.
         if (preserveVmStateUntilNewSnapshot && snapIdx != preserveVmStateSnapshotIndex)
         {
             preserveVmStateUntilNewSnapshot = false;
             preserveVmStateSnapshotIndex = -1;
         }
 
-        // Start from the audio-thread snapshot, then layer any pending UI-side
-        // slider overrides on top until the DSP snapshot catches up.
         std::memcpy (effectiveSliders.data(), snap->sliders.data(), sizeof (double) * 64);
 
         for (int i = 0; i < 64; ++i)
@@ -3898,7 +4722,6 @@ private:
         s.logicalMemN = snap->logicalMemN;
         s.srate = snap->srate;
         s.samplesblock = snap->samplesblock;
-
         s.memSpans = nullptr;
         s.memSpanCount = 0;
         s.mem = nullptr;
@@ -3921,7 +4744,6 @@ private:
         {
             s.memSpans = snapMemSpans.data();
 
-            // Back-compat: expose a contiguous low prefix when present.
             if (snapMemSpans[0].base == 0)
             {
                 s.mem = snapMemSpans[0].data;
@@ -3929,8 +4751,6 @@ private:
             }
         }
 
-        // If the UI has written vars/mem/sliders that the DSP snapshot has not yet
-        // absorbed, do not stomp the VM from a stale snapshot on the next frame.
         const bool preserveVmState = preserveVmStateUntilNewSnapshot;
         if (preserveVmState)
         {
@@ -3940,76 +4760,111 @@ private:
             s.memN = 0;
         }
 
-        // Apply current mouse state.
-        const float wheel  = pendingWheel;
-        const float hwheel = pendingHWheel;
-        pendingWheel = 0.0f;
-        pendingHWheel = 0.0f;
-
-        inputDirty = false;
+        const bool captureStateWrites = inputCopy.captureStateWrites;
+        const bool anyMouseButtonDown = (inputCopy.mouseCap & (1 | 2 | 64)) != 0;
+        const bool baselineFromVm = anyMouseButtonDown || preserveVmState;
 
         bool wrotePersistentVmState = false;
 
-        interp.setMouse (mouseX, mouseY, mouseCap, wheel, hwheel);
-        interp.renderFrame (w, h, s);
-
-        // @gfx writes are instrumented inside the portable EEL VM, so we can
-        // consume the exact dirty vars/mem ranges rather than diffing mirrored
-        // heap windows on interactive frames.
-        constexpr int kMaxWritesPerFrame = 8192;
-        int pushed = 0;
-
-        dirtyVarWrites.clear();
-        interp.consumeDirtyVarWrites (dirtyVarWrites);
-        for (const auto& write : dirtyVarWrites)
+        if (captureStateWrites)
         {
-            if (pushed >= kMaxWritesPerFrame)
-                break;
+            if ((int) varsBefore.size() != snap->varsCount)
+                varsBefore.resize ((size_t) snap->varsCount);
 
-            if (write.index < 0)
-                continue;
+            if (baselineFromVm)
+            {
+                if (! varsBefore.empty())
+                    interp->readVars (varsBefore.data(), (int) varsBefore.size());
+            }
+            else
+            {
+                if (! varsBefore.empty())
+                    std::memcpy (varsBefore.data(), snap->vars.data(),
+                                 sizeof (double) * varsBefore.size());
+            }
 
-            wrotePersistentVmState = true;
-            processor.enqueueGfxVarWrite (write.index, write.value);
-            ++pushed;
+            memDiffSpanCount = 0;
+            for (int i = 0; i < s.memSpanCount && i < (int) memDiffSpans.size(); ++i)
+            {
+                const auto& span = snapMemSpans[(size_t) i];
+                if (span.count <= 0 || span.data == nullptr)
+                    continue;
+
+                auto& diff = memDiffSpans[(size_t) memDiffSpanCount];
+                diff.base = span.base;
+
+                if ((int) diff.before.size() != span.count)
+                    diff.before.resize ((size_t) span.count);
+
+                if (baselineFromVm)
+                    interp->readMemRange (diff.base, diff.before.data(), (int) diff.before.size());
+                else
+                    std::memcpy (diff.before.data(), span.data,
+                                 sizeof (double) * (size_t) span.count);
+
+                ++memDiffSpanCount;
+            }
+        }
+        else
+        {
+            memDiffSpanCount = 0;
         }
 
-        dirtyMemRanges.clear();
-        interp.consumeDirtyMemRanges (dirtyMemRanges);
-        for (const auto& range : dirtyMemRanges)
+        interp->setMouse (inputCopy.mouseX, inputCopy.mouseY, inputCopy.mouseCap,
+                          inputCopy.pendingWheel, inputCopy.pendingHWheel);
+        interp->renderFrame (w, h, s);
+
+        if (captureStateWrites)
         {
-            if (pushed >= kMaxWritesPerFrame)
-                break;
+            constexpr int kMaxWritesPerFrame = 2048;
+            int pushed = 0;
 
-            if (range.base < 0 || range.count <= 0)
-                continue;
+            varsAfter = varsBefore;
+            if (! varsAfter.empty())
+                interp->readVars (varsAfter.data(), (int) varsAfter.size());
 
-            if ((int64_t) range.base > (int64_t) std::numeric_limits<int>::max())
-                continue;
-
-            const int maxReadable = (int) std::min<int64_t> ((int64_t) range.count,
-                                                              (int64_t) std::numeric_limits<int>::max() - range.base + 1);
-            if (maxReadable <= 0)
-                continue;
-
-            if ((int) dirtyMemValues.size() < maxReadable)
-                dirtyMemValues.resize ((size_t) maxReadable);
-
-            interp.readMemRange (range.base, dirtyMemValues.data(), maxReadable);
-
-            for (int i = 0; i < maxReadable && pushed < kMaxWritesPerFrame; ++i)
+            for (int i = 0; i < (int) varsAfter.size() && pushed < kMaxWritesPerFrame; ++i)
             {
-                const int absoluteIndex = (int) (range.base + (int64_t) i);
+                const double a = varsBefore[(size_t) i];
+                const double b = varsAfter[(size_t) i];
+
+                if (a == b) continue;
+                if (std::isnan (a) && std::isnan (b)) continue;
+
                 wrotePersistentVmState = true;
-                processor.enqueueGfxMemWrite (absoluteIndex, dirtyMemValues[(size_t) i]);
+                processor.enqueueGfxVarWrite (i, b);
                 ++pushed;
+            }
+
+            for (int si = 0; si < memDiffSpanCount && pushed < kMaxWritesPerFrame; ++si)
+            {
+                auto& diff = memDiffSpans[(size_t) si];
+                if ((int) diff.after.size() != (int) diff.before.size())
+                    diff.after.resize (diff.before.size());
+
+                if (! diff.after.empty())
+                    interp->readMemRange (diff.base, diff.after.data(), (int) diff.after.size());
+
+                for (int i = 0; i < (int) diff.after.size() && pushed < kMaxWritesPerFrame; ++i)
+                {
+                    const double a = diff.before[(size_t) i];
+                    const double b = diff.after[(size_t) i];
+
+                    if (a == b) continue;
+                    if (std::isnan (a) && std::isnan (b)) continue;
+
+                    const int64_t absoluteIndex = diff.base + (int64_t) i;
+                    if (absoluteIndex < 0 || absoluteIndex > (int64_t) std::numeric_limits<int>::max())
+                        continue;
+
+                    wrotePersistentVmState = true;
+                    processor.enqueueGfxMemWrite ((int) absoluteIndex, b);
+                    ++pushed;
+                }
             }
         }
 
-        // --------------------------------------------------------
-        // Push slider edits from @gfx back into the real parameters
-        // --------------------------------------------------------
-        interp.readSliders (vmSliders.data(), 64);
+        interp->readSliders (vmSliders.data(), 64);
 
         uint64_t diffMask = 0;
         for (int i = 0; i < 64; ++i)
@@ -4018,9 +4873,9 @@ private:
                 diffMask |= (uint64_t) 1u << (uint64_t) i;
         }
 
-        const uint64_t mChange  = interp.popSliderChangeMask();
-        const uint64_t mAuto    = interp.popSliderAutomateMask();
-        const uint64_t mAutoEnd = interp.popSliderAutomateEndMask();
+        const uint64_t mChange  = interp->popSliderChangeMask();
+        const uint64_t mAuto    = interp->popSliderAutomateMask();
+        const uint64_t mAutoEnd = interp->popSliderAutomateEndMask();
 
         const uint64_t applyMask = diffMask | mChange | mAuto | mAutoEnd;
         if (applyMask != 0)
@@ -4036,7 +4891,7 @@ private:
             }
 
             wrotePersistentVmState = true;
-            processor.applyGfxSliderChanges (vmSliders.data(), 64, applyMask, mAuto, mAutoEnd);
+            queueSliderApply (vmSliders, applyMask, mAuto, mAutoEnd);
         }
 
         if (wrotePersistentVmState)
@@ -4045,26 +4900,141 @@ private:
             preserveVmStateSnapshotIndex = snapIdx;
         }
 
-        // Apply draw commands onto our persistent canvas.
         {
-            juce::Graphics cg (canvas);
-            jsfx_gfx::paintCommands (cg, interp.getCommands());
+            juce::Graphics cg (workerCanvas);
+            jsfx_gfx::paintCommands (cg, interp->getCommands());
         }
 
         processor.endGfxSnapshotRead (snapIdx);
+        publishCanvas();
+    }
+
+    static int packCC(const char* s) noexcept
+    {
+        uint32_t v = 0;
+        for (int i = 0; i < 4 && s[i] != 0; ++i)
+            v |= (uint32_t) (uint8_t) s[i] << (8u * (uint32_t)i);
+        return (int) v;
+    }
+
+    static int juceKeyPressToJsfx (const juce::KeyPress& key)
+    {
+        const int kc = key.getKeyCode();
+
+        if (kc == juce::KeyPress::upKey)       return packCC ("up");
+        if (kc == juce::KeyPress::downKey)     return packCC ("down");
+        if (kc == juce::KeyPress::leftKey)     return packCC ("left");
+        if (kc == juce::KeyPress::rightKey)    return packCC ("rght");
+        if (kc == juce::KeyPress::homeKey)     return packCC ("home");
+        if (kc == juce::KeyPress::endKey)      return packCC ("end");
+        if (kc == juce::KeyPress::pageUpKey)   return packCC ("pgup");
+        if (kc == juce::KeyPress::pageDownKey) return packCC ("pgdn");
+        if (kc == juce::KeyPress::insertKey)   return packCC ("ins");
+        if (kc == juce::KeyPress::deleteKey)   return packCC ("del");
+
+        if (kc == juce::KeyPress::escapeKey)   return 27;
+        if (kc == juce::KeyPress::returnKey)   return 13;
+        if (kc == juce::KeyPress::spaceKey)    return 32;
+
+        if (kc >= juce::KeyPress::F1Key && kc <= juce::KeyPress::F12Key)
+        {
+            const int f = (kc - juce::KeyPress::F1Key) + 1;
+            if (f < 10)
+            {
+                const char s[3] = { 'f', (char) ('0' + f), 0 };
+                return packCC (s);
+            }
+
+            const char s[4] = { 'f', (char) ('0' + (f / 10)), (char) ('0' + (f % 10)), 0 };
+            return packCC (s);
+        }
+
+        const auto ch = key.getTextCharacter();
+        if (ch > 0 && ch <= 127)
+        {
+            const bool ctrlOrCmd = key.getModifiers().isCtrlDown() || key.getModifiers().isCommandDown();
+            const bool alt = key.getModifiers().isAltDown();
+
+            if (ctrlOrCmd)
+            {
+                const auto up = juce::CharacterFunctions::toUpperCase (ch);
+                if (up >= 'A' && up <= 'Z')
+                {
+                    int v = (int) (up - 'A') + 1;
+                    if (alt) v += 256;
+                    return v;
+                }
+            }
+
+            if (alt)
+                return (int) ch + 256;
+
+            return (int) ch;
+        }
+
+        return 0;
+    }
+
+    void updateMouseCapFromModifiers (const juce::ModifierKeys& mods)
+    {
+        int cap = 0;
+
+        if (mods.isLeftButtonDown())   cap |= 1;
+        if (mods.isRightButtonDown())  cap |= 2;
+        if (mods.isMiddleButtonDown()) cap |= 64;
+
+        if (mods.isShiftDown()) cap |= 8;
+        if (mods.isAltDown())   cap |= 16;
+
+       #if JUCE_MAC
+        if (mods.isCommandDown()) cap |= 4;
+        if (mods.isCtrlDown())    cap |= 32;
+       #else
+        if (mods.isCtrlDown())    cap |= 4;
+        if (mods.isCommandDown()) cap |= 32;
+       #endif
+
+        mouseCap = cap;
     }
 
     JSFXJuceProcessor& processor;
-    jsfx_gfx::Interpreter interp;
 
-    // Persistent backing store (JSFX semantics when gfx_clear = -1).
-    juce::Image canvas;
+    std::unique_ptr<jsfx_gfx::Interpreter> interp;
+    bool hasGfxFlag = false;
+    bool gfxCompiledOkFlag = false;
+    juce::String gfxLastError;
+    int gfxPrefW = 0;
+    int gfxPrefH = 0;
 
-    float mouseX = 0.0f;
-    float mouseY = 0.0f;
+    GfxMenuOverlay menuOverlay;
+    MenuBridge menuBridge;
+
+    std::thread workerThread;
+    std::mutex workerWaitMutex;
+    std::condition_variable workerCv;
+    std::atomic<bool> stopWorkerFlag { false };
+    std::atomic<bool> workerWakeFlag { false };
+
+    std::mutex inputMutex;
+    SharedInputState sharedInput;
+    std::unordered_map<uint32_t, int> trackedKeys;
     int mouseCap = 0;
-    float pendingWheel = 0.0f;
-    float pendingHWheel = 0.0f;
+
+    std::mutex publishedImageMutex;
+    juce::Image publishedImage;
+    std::atomic<bool> repaintPending { false };
+    std::atomic<int> targetWidth { 1 };
+    std::atomic<int> targetHeight { 1 };
+    std::atomic<bool> canvasResetRequested { false };
+
+    std::mutex pendingSliderMutex;
+    PendingSliderApply pendingSliderApply;
+
+    juce::Image workerCanvas;
+    std::vector<double> varsBefore;
+    std::vector<double> varsAfter;
+    std::array<MemDiffSpan, 2> memDiffSpans {};
+    int memDiffSpanCount = 0;
 
     std::array<double, 64> vmSliders {};
     std::array<double, 64> effectiveSliders {};
@@ -4072,8 +5042,6 @@ private:
     uint64_t uiSliderOverrideMask = 0;
     bool preserveVmStateUntilNewSnapshot = false;
     int preserveVmStateSnapshotIndex = -1;
-
-    std::unordered_map<uint32_t, int> trackedKeys;
 };
 
 // HELP show/hide
