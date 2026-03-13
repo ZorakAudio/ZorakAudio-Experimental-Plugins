@@ -30,9 +30,9 @@ slider21:0<-1,1,0.001>-Release Curve
 slider22:4<0.1,200,0.1>-Follower Attack (ms)
 slider23:120<1,4000,1>-Follower Release (ms)
 slider24:0.70<0.05,0.99,0.001>-Gate Hysteresis
-slider25:0<0,1,0.001>-Reserved
-slider26:0<0,1,0.001>-Reserved
-slider27:0<0,1,0.001>-Reserved
+slider25:1<0,1,0.001>-Support
+slider26:0<0,2,1{Free,Tight,Clamp}>-Gate Release Mode
+slider27:0<0,1,1{Fixed,Auto}>-Auto Slice
 slider28:0<0,1,0.001>-Reserved
 slider29:0<0,1,0.001>-Reserved
 slider30:0<0,1,0.001>-Reserved
@@ -54,16 +54,18 @@ wf_scan_cap = 64;
 
 cand_base = wf_base + wf_max_bins * 2 + 4096;
 cand_max = 2048;
-cand_stride = 7; // start,rms,peak,flux,zc,contrast,score
+cand_stride = 9; // start,rms,peak,flux,zc,contrast,score,rank,edge
 
 heat_base = cand_base + cand_max * cand_stride + 4096;
+hist_base = heat_base + wf_max_bins + 1024;
+hist_bins = 32;
 
 recent_base = heat_base + wf_max_bins + 4096;
 recent_max = 24;
 
 voice_base = recent_base + recent_max + 4096;
 max_voices = 24;
-v_stride = 13; // active,start,src_pos,src_len,rate,amp,spread,cand,mode,pan,polarity,age,env_len
+v_stride = 13; // active,start,src_pos,src_len,rate,amp,phaseofs,cand,mode,reserved,polarity,age,env_len
 
 freembuf(voice_base + max_voices * v_stride + 4096);
 
@@ -87,6 +89,8 @@ wf_absmax = 1;
 wf_ready = 0;
 
 cand_count = 0;
+cand_live_count = 0;
+cand_reject_score = 0.001;
 analysis_ready = 0;
 ana_win = 0;
 ana_hop = 0;
@@ -106,6 +110,7 @@ gate_peak = 0;
 trig_v = 0;
 
 meter_out = 0;
+support_gain = 1;
 trig_flash = 0;
 last_spawn_flash = 0;
 last_spawn_start = 0;
@@ -130,7 +135,7 @@ def_rc = 0;
 ui_lmb_last = 0;
 ui_rmb_last = 0;
 ui_mmb_last = 0;
-ui_active_kind = 0; // 0 none, 1 control, 2 env point
+ui_active_kind = 0; // 0 none, 1 macro, 2 env point, 3 knob, 4 curve, 5 follow bar
 ui_active_id = 0;
 ui_drag_start_x = 0;
 ui_drag_start_y = 0;
@@ -165,13 +170,9 @@ tex_gain = exp((slider2 / 20) * ln10);
 
 sensitivity = slider3;
 
-// slider4 is interpreted as RAW input threshold (0..1),
-// not the internally amplified threshold.
-th_raw = slider4;
-th_off_raw = th_raw * slider24;
-
-th_on = th_raw * sensitivity;
-th_off = th_off_raw * sensitivity;
+// threshold lives directly in detector space and is edited on the FOLLOW bar.
+th_on = slider4;
+th_off = slider4 * slider24;
 th_off < 0 ? th_off = 0;
 
 mode = floor(slider10 + 0.5);
@@ -196,6 +197,10 @@ pos_wander = 0.03 + flow_sq * 0.97;
 pitch_jit = pow(jitter, 1.15) * 72;
 amp_jit_db = jitter * 4.5;
 phase_jit_deg = pow(jitter, 0.95) * 180;
+
+support = slider25;
+gate_rel_mode = floor(slider26 + 0.5);
+auto_slice = slider27 > 0.5;
 
 input_link =
   mode == 0 ? 0.88 :
@@ -301,6 +306,7 @@ h > 0 ? (
           texture_running = 0;
           spawn_countdown = 0;
           meter_out = 0;
+          support_gain = 1;
           trig_flash = 0;
           last_spawn_flash = 0;
           voices_last_count = 0;
@@ -388,6 +394,8 @@ h > 0 ? (
           // analysis pass: candidate grains
           analysis_ready = 0;
           cand_count = 0;
+          cand_live_count = 0;
+          cand_reject_score = 0.001;
           score_peak = 1;
           best_cand = 0;
           best_start = 0;
@@ -413,6 +421,7 @@ h > 0 ? (
           max_peak = 0.000001;
           max_flux = 0.000001;
           max_zc = 0.000001;
+          max_edge = 0.000001;
 
           f0 = 0;
           ci = 0;
@@ -453,6 +462,23 @@ h > 0 ? (
             fluxn = flux / max(1, ana_win);
             zcn = zc / max(1, ana_win);
 
+            fm1 = f0 > 0 ? (f0 - 1) : f0;
+            fp1 = f0 < tex_frames - 1 ? (f0 + 1) : f0;
+
+            idxm = tex_base + fm1 * tex_ch;
+            idx0 = tex_base + f0  * tex_ch;
+            idxp = tex_base + fp1 * tex_ch;
+
+            vm = mem[idxm];
+            v0 = mem[idx0];
+            vp = mem[idxp];
+            tex_ch > 1 ? (
+              vm = 0.5 * (vm + mem[idxm + 1]);
+              v0 = 0.5 * (v0 + mem[idx0 + 1]);
+              vp = 0.5 * (vp + mem[idxp + 1]);
+            );
+            edge0 = abs(v0) + 0.5 * abs(vp - vm);
+
             base = cand_base + ci * cand_stride;
             mem[base    ] = f0;
             mem[base + 1] = rms;
@@ -461,11 +487,14 @@ h > 0 ? (
             mem[base + 4] = zcn;
             mem[base + 5] = 0;
             mem[base + 6] = 0;
+            mem[base + 7] = 0;
+            mem[base + 8] = edge0;
 
             rms > max_rms ? max_rms = rms;
             peak > max_peak ? max_peak = peak;
             fluxn > max_flux ? max_flux = fluxn;
             zcn > max_zc ? max_zc = zcn;
+            edge0 > max_edge ? max_edge = edge0;
 
             f0 += ana_hop;
             ci += 1;
@@ -496,6 +525,9 @@ h > 0 ? (
           score_peak = 0.000001;
           best_score = -1;
           total_score = 0;
+          hard_valid_count = 0;
+          cand_live_count = 0;
+          cand_reject_score = 0.001;
 
           ci = 0;
           loop(cand_count,
@@ -506,6 +538,7 @@ h > 0 ? (
             nflux = mem[base + 3] / max_flux;
             nzc   = mem[base + 4] / max_zc;
             nctr  = mem[base + 5] / max_ctr;
+            nedge = mem[base + 8] / max_edge;
 
             quiet_gate = nrms < 0.025 ? (nrms / 0.025) : 1;
             quiet_gate < 0 ? quiet_gate = 0;
@@ -520,27 +553,192 @@ h > 0 ? (
               0.22 * nctr  +
               0.16 * npeak +
               0.14 * sqrt(nrms) +
-              0.10 * zc_shape
+              0.06 * zc_shape +
+              0.04 * (1 - min(1, nedge))
             );
 
             score < 0.001 ? score = 0.001;
             mem[base + 6] = score;
+            mem[base + 7] = 0;
 
-            total_score += score;
-            score > score_peak ? score_peak = score;
+            hard_valid =
+              (nrms > 0.020) &&
+              (npeak > 0.018) &&
+              ((nflux > 0.030) || (nctr > 0.028)) &&
+              (score > 0.035);
 
-            score > best_score ? (
-              best_score = score;
-              best_cand = ci;
-              best_start = mem[base];
+            (nzc > 0.92) && (nflux < 0.08) && (nctr < 0.05) ? hard_valid = 0;
+            nedge > 0.92 ? hard_valid = 0;
+
+            hard_valid ? (
+              hard_valid_count += 1;
+              score > score_peak ? score_peak = score;
             );
 
-            hb = floor((mem[base] / max(1, tex_frames - 1)) * (wf_bins - 1));
-            hb < 0 ? hb = 0;
-            hb >= wf_bins ? hb = wf_bins - 1;
-            score > mem[heat_base + hb] ? mem[heat_base + hb] = score;
+            ci += 1;
+          );
+
+          scan_score_peak = score_peak;
+          scan_score_peak < 0.000001 ? scan_score_peak = 0.000001;
+
+          hb = 0;
+          loop(hist_bins,
+            mem[hist_base + hb] = 0;
+            hb += 1;
+          );
+
+          use_percentile = hard_valid_count > 16;
+          use_percentile ? (
+            ci = 0;
+            loop(cand_count,
+              base = cand_base + ci * cand_stride;
+              score = mem[base + 6];
+
+              nrms  = mem[base + 1] / max_rms;
+              npeak = mem[base + 2] / max_peak;
+              nflux = mem[base + 3] / max_flux;
+              nzc   = mem[base + 4] / max_zc;
+              nctr  = mem[base + 5] / max_ctr;
+              nedge = mem[base + 8] / max_edge;
+
+              hard_valid =
+                (nrms > 0.020) &&
+                (npeak > 0.018) &&
+                ((nflux > 0.030) || (nctr > 0.028)) &&
+                (score > 0.035);
+              (nzc > 0.92) && (nflux < 0.08) && (nctr < 0.05) ? hard_valid = 0;
+              nedge > 0.92 ? hard_valid = 0;
+
+              hard_valid ? (
+                hb = floor((score / max(scan_score_peak, 0.000001)) * (hist_bins - 1));
+                hb < 0 ? hb = 0;
+                hb >= hist_bins ? hb = hist_bins - 1;
+                mem[hist_base + hb] += 1;
+              );
+
+              ci += 1;
+            );
+
+            reject_frac = 0.40;
+            reject_target = floor(hard_valid_count * reject_frac);
+            reject_target < 0 ? reject_target = 0;
+            reject_target > hard_valid_count - 1 ? reject_target = hard_valid_count - 1;
+
+            accum_reject = 0;
+            reject_bin = 0;
+            done = 0;
+            hb = 0;
+            loop(hist_bins,
+              done <= 0 ? (
+                accum_reject += mem[hist_base + hb];
+                accum_reject > reject_target ? (
+                  reject_bin = hb;
+                  done = 1;
+                );
+              );
+              hb += 1;
+            );
+
+            cand_reject_score = scan_score_peak * (reject_bin / max(1, hist_bins - 1));
+          ) : (
+            cand_reject_score = 0.001;
+          );
+
+          hb = 0;
+          loop(wf_bins,
+            mem[heat_base + hb] = 0;
+            hb += 1;
+          );
+
+          score_peak = 0.000001;
+          best_score = -1;
+          total_score = 0;
+          cand_live_count = 0;
+
+          ci = 0;
+          loop(cand_count,
+            base = cand_base + ci * cand_stride;
+            score = mem[base + 6];
+
+            nrms  = mem[base + 1] / max_rms;
+            npeak = mem[base + 2] / max_peak;
+            nflux = mem[base + 3] / max_flux;
+            nzc   = mem[base + 4] / max_zc;
+            nctr  = mem[base + 5] / max_ctr;
+            nedge = mem[base + 8] / max_edge;
+
+            hard_valid =
+              (nrms > 0.020) &&
+              (npeak > 0.018) &&
+              ((nflux > 0.030) || (nctr > 0.028)) &&
+              (score > 0.035);
+            (nzc > 0.92) && (nflux < 0.08) && (nctr < 0.05) ? hard_valid = 0;
+            nedge > 0.92 ? hard_valid = 0;
+
+            valid = hard_valid;
+            use_percentile && (score <= cand_reject_score) ? valid = 0;
+
+            valid ? (
+              rankn = (score - cand_reject_score) / max(0.000001, scan_score_peak - cand_reject_score);
+              rankn < 0 ? rankn = 0;
+              rankn > 1 ? rankn = 1;
+              mem[base + 7] = rankn;
+
+              cand_live_count += 1;
+              total_score += score;
+              score > score_peak ? score_peak = score;
+
+              score > best_score ? (
+                best_score = score;
+                best_cand = ci;
+                best_start = mem[base];
+              );
+
+              hb = floor((mem[base] / max(1, tex_frames - 1)) * (wf_bins - 1));
+              hb < 0 ? hb = 0;
+              hb >= wf_bins ? hb = wf_bins - 1;
+              score > mem[heat_base + hb] ? mem[heat_base + hb] = score;
+            ) : (
+              mem[base + 7] = 0;
+            );
 
             ci += 1;
+          );
+
+          cand_live_count <= 0 ? (
+            hb = 0;
+            loop(wf_bins,
+              mem[heat_base + hb] = 0;
+              hb += 1;
+            );
+
+            score_peak = scan_score_peak;
+            best_score = -1;
+            cand_live_count = 0;
+
+            ci = 0;
+            loop(cand_count,
+              base = cand_base + ci * cand_stride;
+              score = mem[base + 6];
+              rankn = score / max(0.000001, scan_score_peak);
+              rankn < 0 ? rankn = 0;
+              rankn > 1 ? rankn = 1;
+              mem[base + 7] = rankn;
+              cand_live_count += 1;
+
+              score > best_score ? (
+                best_score = score;
+                best_cand = ci;
+                best_start = mem[base];
+              );
+
+              hb = floor((mem[base] / max(1, tex_frames - 1)) * (wf_bins - 1));
+              hb < 0 ? hb = 0;
+              hb >= wf_bins ? hb = wf_bins - 1;
+              score > mem[heat_base + hb] ? mem[heat_base + hb] = score;
+
+              ci += 1;
+            );
           );
 
           hb = 0;
@@ -551,7 +749,7 @@ h > 0 ? (
 
           cloud_center = best_start;
           cloud_radius_frames = max(128, floor(0.12 * tex_sr));
-          analysis_ready = cand_count > 0;
+          analysis_ready = cand_live_count > 0;
           file_state = 2;
         ) : (
           tex_loaded = 0;
@@ -560,6 +758,7 @@ h > 0 ? (
           tex_rate = 1;
           wf_ready = 0;
           cand_count = 0;
+          cand_live_count = 0;
           analysis_ready = 0;
           file_state = 3;
         );
@@ -591,6 +790,7 @@ h > 0 ? (
 
   wf_ready = 0;
   cand_count = 0;
+  cand_live_count = 0;
   analysis_ready = 0;
   file_state = 0;
 );
@@ -666,17 +866,66 @@ function recent_weight(ci) local(j, ri, idx, agew, w) (
   w;
 );
 
-function pick_candidate(mode_local) local(i, base, score, start, rep, cloud_w, dist, weight, total, rr, accum, chosen, done) (
-  total = 0;
-  i = 0;
-  loop(cand_count,
-    base = cand_base + i * cand_stride;
-    score = mem[base + 6];
+function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms, npeak, nflux, nzc, nctr, nedge, zc_shape, mode_shape, rep, start, dist, cloud_w, prev_ci, prev_slot, pbase, drms, dflux, dzc, dctr, dedge, compat_amt, compat, prevs, nexts, peakish, gran_flux_fit) (
+  base = cand_base + ci * cand_stride;
+  score = mem[base + 6];
+  rank = mem[base + 7];
 
-    weight = (1 - interesting) + interesting * (0.12 + 2.75 * score * score);
+  rank <= 0 ? (
+    weight = 0;
+  ) : (
+    nrms  = mem[base + 1] / max(0.000001, max_rms);
+    npeak = mem[base + 2] / max(0.000001, max_peak);
+    nflux = mem[base + 3] / max(0.000001, max_flux);
+    nzc   = mem[base + 4] / max(0.000001, max_zc);
+    nctr  = mem[base + 5] / max(0.000001, max_ctr);
+    nedge = mem[base + 8] / max(0.000001, max_edge);
 
-    rep = 1 - repeat_avoid + repeat_avoid * recent_weight(i);
+    zc_shape = 1 - abs(nzc - 0.35) / 0.35;
+    zc_shape < 0 ? zc_shape = 0;
+    zc_shape > 1 ? zc_shape = 1;
+
+    weight = (1 - interesting) + interesting * (0.10 + 3.00 * score * score);
+    weight *= (0.15 + 0.85 * rank);
+
+    auto_slice ? (
+      prevs = ci > 0 ? (mem[cand_base + (ci - 1) * cand_stride + 6] * mem[cand_base + (ci - 1) * cand_stride + 7]) : (score * rank);
+      nexts = ci < cand_count - 1 ? (mem[cand_base + (ci + 1) * cand_stride + 6] * mem[cand_base + (ci + 1) * cand_stride + 7]) : (score * rank);
+      peakish = ((score * rank >= prevs) && (score * rank >= nexts)) ? 1 : 0.20;
+      weight *= peakish;
+    );
+
+    mode_local == 0 ? (
+      mode_shape = 0.18 + 1.15 * nflux * nflux + 0.80 * nctr + 0.42 * npeak + 0.12 * zc_shape;
+    ) : mode_local == 1 ? (
+      mode_shape = 0.22 + 0.52 * rank + 0.36 * nflux + 0.26 * nctr + 0.18 * sqrt(nrms) + 0.10 * zc_shape;
+    ) : (
+      gran_flux_fit = 1 - abs(nflux - 0.38) / 0.38;
+      gran_flux_fit < 0 ? gran_flux_fit = 0;
+      gran_flux_fit > 1 ? gran_flux_fit = 1;
+      mode_shape = 0.20 + 0.42 * rank + 0.26 * sqrt(nrms) + 0.18 * zc_shape + 0.14 * gran_flux_fit + 0.10 * (1 - min(1, nedge));
+    );
+    weight *= mode_shape;
+
+    rep = 1 - repeat_avoid + repeat_avoid * recent_weight(ci);
     weight *= rep;
+
+    prev_slot = recent_head - 1;
+    prev_slot < 0 ? prev_slot += recent_max;
+    prev_ci = floor(mem[recent_base + prev_slot]);
+
+    prev_ci >= 0 ? (
+      pbase = cand_base + prev_ci * cand_stride;
+      drms  = abs(mem[base + 1] - mem[pbase + 1]) / max(0.000001, max_rms);
+      dflux = abs(mem[base + 3] - mem[pbase + 3]) / max(0.000001, max_flux);
+      dzc   = abs(mem[base + 4] - mem[pbase + 4]) / max(0.000001, max_zc);
+      dctr  = abs(mem[base + 5] - mem[pbase + 5]) / max(0.000001, max_ctr);
+      dedge = abs(mem[base + 8] - mem[pbase + 8]) / max(0.000001, max_edge);
+
+      compat = exp(-(2.6 * drms + 2.3 * dflux + 1.6 * dzc + 1.9 * dctr + 1.2 * dedge));
+      compat_amt = mode_local == 0 ? 0.18 : mode_local == 1 ? 0.46 : 0.82;
+      weight *= (1 - compat_amt) + compat_amt * compat;
+    );
 
     mode_local == 2 ? (
       start = mem[base];
@@ -685,36 +934,31 @@ function pick_candidate(mode_local) local(i, base, score, start, rep, cloud_w, d
       cloud_w = 0.12 + 0.88 * cloud_w * cloud_w;
       weight *= cloud_w;
     );
+  );
 
+  weight;
+);
+
+function pick_candidate(mode_local) local(i, weight, total, rr, accum, chosen, done) (
+  total = 0;
+  i = 0;
+  loop(cand_count,
+    weight = candidate_weight(i, mode_local);
     total += weight;
     i += 1;
   );
 
   total <= 0 ? (
-    chosen = 0;
+    chosen = best_cand;
   ) : (
     rr = rand01() * total;
     accum = 0;
-    chosen = 0;
+    chosen = best_cand;
     done = 0;
     i = 0;
     loop(cand_count,
       done <= 0 ? (
-        base = cand_base + i * cand_stride;
-        score = mem[base + 6];
-
-        weight = (1 - interesting) + interesting * (0.12 + 2.75 * score * score);
-        rep = 1 - repeat_avoid + repeat_avoid * recent_weight(i);
-        weight *= rep;
-
-        mode_local == 2 ? (
-          start = mem[base];
-          dist = abs(start - cloud_center);
-          cloud_w = 1 - min(1, dist / max(1, cloud_radius_frames));
-          cloud_w = 0.12 + 0.88 * cloud_w * cloud_w;
-          weight *= cloud_w;
-        );
-
+        weight = candidate_weight(i, mode_local);
         accum += weight;
         accum >= rr ? (
           chosen = i;
@@ -726,6 +970,58 @@ function pick_candidate(mode_local) local(i, base, score, start, rep, cloud_w, d
   );
 
   chosen;
+);
+
+function refine_spawn_start(start, region_len, mode_local) local(search_back, search_fwd, lo, hi, fr, best_f, best_cost, vm, v0, vp, edge, future, cost, zc) (
+  mode_local == 0 ? (
+    search_back = min(floor(ana_win * 0.10), 64);
+    search_fwd  = min(max(floor(region_len * 0.30), floor(ana_win * 0.35)), 512);
+  ) : (
+    search_back = min(floor(ana_win * 0.18), 96);
+    search_fwd  = min(max(floor(region_len * 0.18), floor(ana_win * 0.20)), 256);
+  );
+
+  lo = start - search_back;
+  hi = start + search_fwd;
+  lo < 1 ? lo = 1;
+  hi > tex_frames - 3 ? hi = tex_frames - 3;
+
+  best_f = start;
+  best_cost = 1000000;
+  fr = lo;
+  loop(max(1, hi - lo + 1),
+    vm = tex_read(fr - 1, 0);
+    v0 = tex_read(fr, 0);
+    vp = tex_read(fr + 1, 0);
+    tex_ch > 1 ? (
+      vm = 0.5 * (vm + tex_read(fr - 1, 1));
+      v0 = 0.5 * (v0 + tex_read(fr, 1));
+      vp = 0.5 * (vp + tex_read(fr + 1, 1));
+    );
+
+    edge = abs(v0) + 0.55 * abs(vp - vm);
+    zc = ((v0 >= 0) != (vm >= 0)) ? 1 : 0;
+
+    mode_local == 0 ? (
+      future = abs(tex_read(fr + 4, 0)) + abs(tex_read(fr + 8, 0));
+      tex_ch > 1 ? future = 0.5 * (future + abs(tex_read(fr + 4, 1)) + abs(tex_read(fr + 8, 1)));
+      cost = edge - 0.20 * future;
+    ) : (
+      future = abs(tex_read(fr + 2, 0));
+      tex_ch > 1 ? future = 0.5 * (future + abs(tex_read(fr + 2, 1)));
+      cost = edge - 0.06 * future;
+    );
+
+    zc > 0 ? cost *= 0.82;
+    cost < best_cost ? (
+      best_cost = cost;
+      best_f = fr;
+    );
+
+    fr += 1;
+  );
+
+  best_f;
 );
 
 function claim_voice() local(i, base, free_idx, steal_idx, best_prog, prog) (
@@ -749,6 +1045,59 @@ function claim_voice() local(i, base, free_idx, steal_idx, best_prog, prog) (
   free_idx >= 0 ? free_idx : steal_idx;
 );
 
+function compute_event_bounds(ci) local(base, peak_s, bound_low, left, right, cont, j, sc, max_bins, ev_end, cap_frames) (
+  base = cand_base + ci * cand_stride;
+  peak_s = mem[base + 6] * max(0.25, mem[base + 7]);
+  peak_s < 0.001 ? peak_s = 0.001;
+
+  cap_frames = floor(dur_ms * 0.001 * tex_sr);
+  cap_frames < ana_win ? cap_frames = ana_win;
+  max_bins = floor(cap_frames / max(1, ana_hop));
+  max_bins < 1 ? max_bins = 1;
+  max_bins > cand_count ? max_bins = cand_count;
+
+  // Higher focus hugs the most salient core more tightly.
+  bound_low = peak_s * (0.18 + 0.30 * focus);
+  bound_low < 0.001 ? bound_low = 0.001;
+
+  left = ci;
+  cont = 1;
+  j = 0;
+  loop(max_bins,
+    cont ? (
+      left > 0 ? (
+        sc = mem[cand_base + (left - 1) * cand_stride + 6] * mem[cand_base + (left - 1) * cand_stride + 7];
+        sc >= bound_low ? left -= 1 : cont = 0;
+      ) : (
+        cont = 0;
+      );
+    );
+    j += 1;
+  );
+
+  right = ci;
+  cont = 1;
+  j = 0;
+  loop(max_bins,
+    cont ? (
+      right < cand_count - 1 ? (
+        sc = mem[cand_base + (right + 1) * cand_stride + 6] * mem[cand_base + (right + 1) * cand_stride + 7];
+        sc >= bound_low ? right += 1 : cont = 0;
+      ) : (
+        cont = 0;
+      );
+    );
+    j += 1;
+  );
+
+  auto_ev_start = mem[cand_base + left * cand_stride];
+  ev_end = mem[cand_base + right * cand_stride];
+  auto_ev_len = ev_end - auto_ev_start + ana_win;
+
+  auto_ev_len < ana_win ? auto_ev_len = ana_win;
+  auto_ev_len > cap_frames ? auto_ev_len = cap_frames;
+);
+
 function env_eval(age, env_len, is_gran) local(a_s, d_s, r_s, hold_s, tot, scale, t, out, gw) (
   a_s = env_a_s_base;
   d_s = env_d_s_base;
@@ -764,7 +1113,6 @@ function env_eval(age, env_len, is_gran) local(a_s, d_s, r_s, hold_s, tot, scale
     hold_s = 0;
   ) : (
     hold_s = env_len - tot;
-    hold_s > floor(env_len * 0.06) ? hold_s = floor(env_len * 0.06);
     hold_s < 0 ? hold_s = 0;
   );
 
@@ -792,17 +1140,28 @@ function env_eval(age, env_len, is_gran) local(a_s, d_s, r_s, hold_s, tot, scale
   out;
 );
 
-function spawn_voice(mode_local) local(ci, base, start, src_len, req_src_len, req_env_len, env_nom_len, rndf, wanderf, cents, rate, ampj, rms, peak, corr, maxsafe, trig_amp, strength, off, zcn, halfcyc_samp, phase_deg, slot, vb, sign, gran_mult, src_need) (
+function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len, env_nom_len, rndf, wanderf, cents, rate, ampj, rms, peak, corr, maxsafe, trig_amp, strength, off, zcn, halfcyc_samp, phase_deg, slot, vb, sign, gran_mult, src_need, cap_src_len, score, local_support, start_region) (
   (tex_loaded > 0) && (analysis_ready > 0) && (cand_count > 0) ? (
     ci = pick_candidate(mode_local);
     base = cand_base + ci * cand_stride;
 
+    score = mem[base + 6];
     start = mem[base];
     rndf = 1 + dur_var * randSym();
     rndf < 0.18 ? rndf = 0.18;
 
-    req_src_len = floor(dur_ms * 0.001 * tex_sr * rndf);
-    req_env_len = floor(dur_ms * 0.001 * srate * rndf);
+    cents = pitch_jit * randSym();
+    rate = tex_sr / srate * exp((cents / 1200) * ln2);
+
+    auto_slice ? (
+      compute_event_bounds(ci);
+      start = auto_ev_start;
+      req_src_len = floor(auto_ev_len * (0.92 + 0.16 * rand01()));
+      req_env_len = floor(req_src_len / max(rate, 0.000001));
+    ) : (
+      req_src_len = floor(dur_ms * 0.001 * tex_sr * rndf);
+      req_env_len = floor(dur_ms * 0.001 * srate * rndf);
+    );
 
     mode_local == 2 ? (
       gran_mult = 0.78 + 0.28 * rand01();
@@ -813,12 +1172,14 @@ function spawn_voice(mode_local) local(ci, base, start, src_len, req_src_len, re
     req_src_len < 16 ? req_src_len = 16;
     req_env_len < 8 ? req_env_len = 8;
 
-    cents = pitch_jit * randSym();
-    rate = tex_sr / srate * exp((cents / 1200) * ln2);
-
     env_nom_len = env_a_s_base + env_d_s_base + env_r_s_base;
     env_nom_len < 8 ? env_nom_len = 8;
-    req_env_len > env_nom_len ? req_env_len = env_nom_len;
+
+    auto_slice ? (
+      req_env_len < env_nom_len ? req_env_len = env_nom_len;
+    ) : (
+      req_env_len > env_nom_len ? req_env_len = env_nom_len;
+    );
 
     src_need = floor(req_env_len * rate) + 8;
     req_src_len < src_need ? req_src_len = src_need;
@@ -832,7 +1193,15 @@ function spawn_voice(mode_local) local(ci, base, start, src_len, req_src_len, re
     );
 
     start < 0 ? start = 0;
-    start > tex_frames - req_src_len - 2 ? start = tex_frames - req_src_len - 2;
+    cap_src_len = tex_frames - req_src_len - 2;
+    start > cap_src_len ? start = cap_src_len;
+    start < 0 ? start = 0;
+
+    start_region = req_src_len;
+    start_region > ana_win * 2 ? start_region = ana_win * 2;
+    start_region < ana_win ? start_region = ana_win;
+    start = refine_spawn_start(start, start_region, mode_local);
+    start > cap_src_len ? start = cap_src_len;
     start < 0 ? start = 0;
 
     ampj = exp((amp_jit_db * randSym() / 20) * ln10);
@@ -854,17 +1223,21 @@ function spawn_voice(mode_local) local(ci, base, start, src_len, req_src_len, re
     mode_local == 1 ? strength *= 0.92;
     mode_local == 2 ? strength *= 0.80;
 
+    // Pre-budget highly salient grains so low Support behaves like backing texture, not foreground theft.
+    local_support = support + (1 - support) * (1 - 0.75 * max(score, mem[base + 7]));
+    local_support < 0.22 ? local_support = 0.22;
+    strength *= local_support;
+
     // phase jitter in actual sample-offset terms:
     // mem[base + 4] is zero-crossing density in crossings/sample.
-    // 1 / zc ~= half-cycle in samples, so ±180° = ±half-cycle.
+    // 1 / zc ~= half-cycle in samples, so ±180° ~= ±half-cycle.
     zcn = mem[base + 4];
     halfcyc_samp = 1 / max(0.005, zcn);
     halfcyc_samp > 128 ? halfcyc_samp = 128;
-    
+
     phase_deg = phase_jit_deg * randSym();
     off = halfcyc_samp * (phase_deg / 180);
-    
-    // width/pan jitter is intentionally removed.
+
     sign = 1;
 
     slot = claim_voice();
@@ -879,8 +1252,8 @@ function spawn_voice(mode_local) local(ci, base, start, src_len, req_src_len, re
     mem[vb + 6 ] = off;
     mem[vb + 7 ] = ci;
     mem[vb + 8 ] = mode_local;
-    mem[vb + 9 ] = 0;    // width/pan no longer used
-    mem[vb + 10] = sign; // stays 1
+    mem[vb + 9 ] = 0;
+    mem[vb + 10] = sign;
     mem[vb + 11] = 0;
     mem[vb + 12] = req_env_len;
 
@@ -905,26 +1278,25 @@ function spawn_voice(mode_local) local(ci, base, start, src_len, req_src_len, re
 // follower / detector
 in_abs = abs(spl0);
 abs(spl1) > in_abs ? in_abs = abs(spl1);
-in_abs *= sensitivity;
+raw_in_abs = in_abs;
 
-in_abs > follow ? (
-  follow = in_abs + f_atk_c * (follow - in_abs);
+// detector drive
+det_in = raw_in_abs * sensitivity;
+
+det_in > follow ? (
+  follow = det_in + f_atk_c * (follow - det_in);
 ) : (
-  follow = in_abs + f_rel_c * (follow - in_abs);
+  follow = det_in + f_rel_c * (follow - det_in);
 );
 
 follow > follow_ui_peak ? follow_ui_peak = follow;
 
-gate_src = in_abs;
+gate_src = det_in;
 follow > gate_src ? gate_src = follow;
 
-// trigger strength is evaluated in RAW input space
-// so threshold semantics stay intuitive.
-gate_src_raw = gate_src / max(sensitivity, 0.000001);
-
-denom = 1 - th_raw;
+denom = 1 - th_on;
 denom <= eps ? denom = eps;
-cur_v = clamp1((gate_src_raw - th_raw) / denom, 0, 1);
+cur_v = clamp1((gate_src - th_on) / denom, 0, 1);
 
 note_on = 0;
 note_off = 0;
@@ -945,7 +1317,7 @@ gate <= 0 ? (
 
 gate > 0 ? (
   gate_src > gate_peak ? gate_peak = gate_src;
-  peak_v = clamp1((gate_peak / max(sensitivity, 0.000001) - th_raw) / denom, 0, 1);
+  peak_v = clamp1((gate_peak - th_on) / denom, 0, 1);
   peak_v > trig_v ? trig_v = peak_v;
 );
 
@@ -962,7 +1334,26 @@ note_on && tex_loaded && analysis_ready ? (
   );
 );
 
-note_off ? texture_running = 0;
+note_off ? (
+  texture_running = 0;
+
+  gate_rel_mode > 0 ? (
+    gate_tail_s =
+      gate_rel_mode == 1 ? max(8, min(env_r_s_base, floor(0.035 * srate))) :
+      max(4, min(env_r_s_base, floor(0.012 * srate)));
+
+    vi = 0;
+    loop(max_voices,
+      vb = voice_base + vi * v_stride;
+      mem[vb] > 0 ? (
+        agev = mem[vb + 11];
+        new_end = agev + gate_tail_s;
+        mem[vb + 12] > new_end ? mem[vb + 12] = new_end;
+      );
+      vi += 1;
+    );
+  );
+);
 
 (texture_running > 0) && tex_loaded && analysis_ready && (mode > 0) ? (
   spawn_countdown -= 1;
@@ -998,9 +1389,16 @@ active_ct = 0;
         envv < 0 ? envv = 0;
 
         src = mem[vb + 1] + srcpos + mem[vb + 6];
-        gain = mem[vb + 5] * envv;
+        gate_rel_mode == 2 ? (
+          motion_env = clamp1(follow / max(th_on, 0.000001), 0, 1);
+          motion_env = sqrt(motion_env);
+        ) : (
+          motion_env = 1;
+        );
+
+        gain = mem[vb + 5] * envv * motion_env;
         pol = mem[vb + 10];
-        
+
         envv > 0 ? (
           tex_ch > 1 ? (
             sL = tex_read(src, 0);
@@ -1012,7 +1410,7 @@ active_ct = 0;
             texL += sM * gain * pol;
             texR += sM * gain * pol;
           );
-        
+
           active_ct += 1;
         );
 
@@ -1038,6 +1436,32 @@ voices_last_count = active_ct;
 
 out_abs = abs(texL);
 abs(texR) > out_abs ? out_abs = abs(texR);
+
+// salience budget: keep texture from leaping ahead of the input.
+input_sal = raw_in_abs;
+raw_follow = follow / max(sensitivity, 0.000001);
+raw_follow > input_sal ? input_sal = raw_follow;
+input_sal > 1 ? input_sal = 1;
+input_sal < 0 ? input_sal = 0;
+
+support_ceiling = input_sal + support * (1 - input_sal);
+support_ceiling < 0 ? support_ceiling = 0;
+support_ceiling > 1 ? support_ceiling = 1;
+
+target_support_gain = out_abs > eps ? min(1, support_ceiling / out_abs) : 1;
+target_support_gain < support_gain ? (
+  support_gain = target_support_gain + 0.20 * (support_gain - target_support_gain);
+) : (
+  support_gain = target_support_gain + 0.96 * (support_gain - target_support_gain);
+);
+
+support_gain < 0 ? support_gain = 0;
+support_gain > 1 ? support_gain = 1;
+
+texL *= support_gain;
+texR *= support_gain;
+out_abs *= support_gain;
+
 out_abs > meter_out ? meter_out = out_abs;
 
 wet_only ? (
@@ -1048,12 +1472,16 @@ wet_only ? (
   spl1 += texR;
 );
 
-@gfx 1240 760
+@gfx 1120 700
 
 function clampg(v, lo, hi) (
   v < lo ? v = lo;
   v > hi ? v = hi;
   v;
+);
+
+function spx(v) (
+  max(1, floor(v * ui_s + 0.5));
 );
 
 function hit(mx, my, x, y, w, h) (
@@ -1124,8 +1552,8 @@ function draw_button(x, y, w, h, onv, hov, rr, gg, bb, txt) (
   gfx_a = 1;
   gfx_rect(x, y, w, h, 1);
   gfx_r = 0.16; gfx_g = 0.18; gfx_b = 0.23; gfx_a = 1;
-  gfx_roundrect(x, y, w, h, 6, 1);
-  center_text(x, y + 5, w, 0.95, 0.97, 0.99, txt);
+  gfx_roundrect(x, y, w, h, spx(6), 1);
+  center_text(x, y + spx(5), w, 0.95, 0.97, 0.99, txt);
 );
 
 function draw_meter(x, y, w, h, val, rr, gg, bb, m1, m2) local(fillw, mx1, mx2) (
@@ -1137,17 +1565,17 @@ function draw_meter(x, y, w, h, val, rr, gg, bb, m1, m2) local(fillw, mx1, mx2) 
   gfx_rect(x, y, fillw, h, 1);
 
   gfx_r = 0.16; gfx_g = 0.18; gfx_b = 0.23; gfx_a = 1;
-  gfx_roundrect(x, y, w, h, 4, 1);
+  gfx_roundrect(x, y, w, h, spx(4), 1);
 
   m1 >= 0 ? (
     mx1 = x + w * clampg(m1, 0, 1);
     gfx_r = 0.98; gfx_g = 0.92; gfx_b = 0.30; gfx_a = 1;
-    gfx_line(mx1, y - 2, mx1, y + h + 2, 1);
+    gfx_line(mx1, y - spx(2), mx1, y + h + spx(2), 1);
   );
   m2 >= 0 ? (
     mx2 = x + w * clampg(m2, 0, 1);
     gfx_r = 0.86; gfx_g = 0.58; gfx_b = 0.22; gfx_a = 1;
-    gfx_line(mx2, y - 2, mx2, y + h + 2, 1);
+    gfx_line(mx2, y - spx(2), mx2, y + h + spx(2), 1);
   );
 );
 
@@ -1227,14 +1655,14 @@ function draw_slope_pill(x, y, w, h, val, hovered, active, lbl) local(nx, mxp) (
   gfx_rect(x + 1, y + 1, floor(nx * (w - 2)), h - 2, 1);
 
   gfx_r = 0.20; gfx_g = 0.22; gfx_b = 0.28; gfx_a = 1;
-  gfx_roundrect(x, y, w, h, 6, 1);
+  gfx_roundrect(x, y, w, h, spx(6), 1);
 
   gfx_r = 0.72; gfx_g = 0.78; gfx_b = 0.88; gfx_a = 1;
-  gfx_line(x + w * 0.5, y - 1, x + w * 0.5, y + h + 1, 1);
+  gfx_line(x + w * 0.5, y - spx(1), x + w * 0.5, y + h + spx(1), 1);
 
   mxp = x + nx * w;
   gfx_r = 0.98; gfx_g = 0.98; gfx_b = 0.99; gfx_a = 1;
-  gfx_line(mxp, y - 2, mxp, y + h + 2, 1);
+  gfx_line(mxp, y - spx(2), mxp, y + h + spx(2), 1);
 
   active ? (
     gfx_r = 0.98; gfx_g = 0.99; gfx_b = 1.00;
@@ -1242,7 +1670,7 @@ function draw_slope_pill(x, y, w, h, val, hovered, active, lbl) local(nx, mxp) (
     gfx_r = 0.76; gfx_g = 0.80; gfx_b = 0.88;
   );
   gfx_a = 1;
-  center_text(x, y + h + 3, w, gfx_r, gfx_g, gfx_b, lbl);
+  center_text(x, y + h + spx(3), w, gfx_r, gfx_g, gfx_b, lbl);
 );
 
 function macro_norm(id) (
@@ -1252,7 +1680,7 @@ function macro_norm(id) (
   id == 4 ? norm_lin(slider7, 0, 1) :
   id == 5 ? norm_lin(slider8, 0, 1) :
   id == 6 ? norm_log(slider3, 0.1, 8) :
-  id == 7 ? norm_lin(slider4, 0, 1) :
+  id == 7 ? norm_lin(slider25, 0, 1) :
   id == 8 ? norm_lin(slider1, 0, 1) :
   0;
 );
@@ -1264,13 +1692,13 @@ function macro_set(id, t) (
   id == 4 ? (slider7 = denorm_lin(t, 0, 1); sliderchange(slider7););
   id == 5 ? (slider8 = denorm_lin(t, 0, 1); sliderchange(slider8););
   id == 6 ? (slider3 = denorm_log(t, 0.1, 8); sliderchange(slider3););
-  id == 7 ? (slider4 = denorm_lin(t, 0, 1); sliderchange(slider4););
+  id == 7 ? (slider25 = denorm_lin(t, 0, 1); sliderchange(slider25););
   id == 8 ? (slider1 = denorm_lin(t, 0, 1); sliderchange(slider1););
 );
 
 function macro_strings(id) (
   id == 1 ? (
-    sprintf(#mlab, "Slice");
+    sprintf(#mlab, auto_slice ? "Slice Cap" : "Slice");
     sprintf(#mval, "%.0f ms", slider9);
   ) : id == 2 ? (
     sprintf(#mlab, "Flow");
@@ -1288,8 +1716,8 @@ function macro_strings(id) (
     sprintf(#mlab, "Sensitivity");
     sprintf(#mval, "%.2f x", slider3);
   ) : id == 7 ? (
-    sprintf(#mlab, "Threshold");
-    sprintf(#mval, "%.1f%%", slider4 * 100);
+    sprintf(#mlab, "Support");
+    sprintf(#mval, "%.0f%%", slider25 * 100);
   ) : id == 8 ? (
     sprintf(#mlab, "Mix");
     sprintf(#mval, "%.0f%%", slider1 * 100);
@@ -1346,6 +1774,20 @@ mmb = mouse_cap & 64;
 wheel = mouse_wheel;
 mouse_wheel = 0;
 
+base_w = 1120;
+base_h = 700;
+ui_s = min(gfx_w / base_w, gfx_h / base_h);
+ui_s > 1 ? ui_s = 1;
+ui_s < 0.55 ? ui_s = 0.55;
+
+ft_title = max(11, spx(16));
+ft_panel = max(10, spx(14));
+ft_body  = max(10, spx(12));
+ft_small = max(9,  spx(11));
+ft_meta  = max(8,  spx(10));
+ft_knob  = max(9,  spx(13));
+ft_tiny  = max(7,  spx(9));
+
 click = lmb && !ui_lmb_last;
 rclick = rmb && !ui_rmb_last;
 release = !lmb && ui_lmb_last;
@@ -1362,53 +1804,58 @@ time_drag_scale = (mouse_cap & 8) ? 0.004 : ((mouse_cap & 4) ? 0.018 : 0.0095);
 
 ui_add_undo = 0;
 
-pad = 16;
-top_h = 32;
+pad = spx(16);
+top_h = spx(32);
 
 wf_x = pad;
-wf_y = pad + top_h + 12;
+wf_y = pad + top_h + spx(12);
 wf_w = gfx_w - pad * 2;
-wf_h = floor(gfx_h * 0.38);
-wf_h < 220 ? wf_h = 220;
+wf_h = floor(gfx_h * 0.36);
+wf_h < spx(150) ? wf_h = spx(150);
 
-footer_y = wf_y + wf_h + 8;
-lower_y = footer_y + 18;
+footer_y = wf_y + wf_h + spx(8);
+lower_y = footer_y + spx(18);
 
 env_x = pad;
 env_y = lower_y;
 env_w = floor((gfx_w - pad * 3) * 0.56);
 env_h = gfx_h - env_y - pad;
-env_h < 300 ? env_h = 300;
+env_h < spx(240) ? env_h = spx(240);
 
 side_x = env_x + env_w + pad;
 side_y = env_y;
 side_w = gfx_w - side_x - pad;
 side_h = env_h;
 
-btn_h = 24;
-btn_gap = 8;
-mode_w = 164;
-util_w = 92;
-reload_w = 84;
+btn_h = spx(24);
+btn_gap = spx(8);
+mode_w = spx(164);
+slice_w = spx(96);
+gate_w = spx(132);
+out_w = spx(112);
+util_w = spx(92);
+reload_w = spx(84);
 
 reload_x = gfx_w - pad - reload_w;
 auto_x   = reload_x - util_w - btn_gap;
-out_x    = auto_x - 112 - btn_gap;
-mode_x   = out_x - mode_w - btn_gap;
-top_y    = 10;
+out_x    = auto_x - out_w - btn_gap;
+gate_x   = out_x - gate_w - btn_gap;
+slice_x  = gate_x - slice_w - btn_gap;
+mode_x   = slice_x - mode_w - btn_gap;
+top_y    = spx(10);
 
 gfx_r = 0.055; gfx_g = 0.060; gfx_b = 0.078; gfx_a = 1;
 gfx_rect(0, 0, gfx_w, gfx_h, 1);
 
 // header
-gfx_setfont(1, "Verdana", 16);
+gfx_setfont(1, "Verdana", ft_title);
 gfx_r = 0.98; gfx_g = 0.91; gfx_b = 0.55; gfx_a = 1;
-gfx_x = pad; gfx_y = 10;
+gfx_x = pad; gfx_y = spx(10);
 gfx_printf("PTE");
 
-gfx_setfont(1, "Verdana", 12);
+gfx_setfont(1, "Verdana", ft_body);
 gfx_r = 0.80; gfx_g = 0.84; gfx_b = 0.90; gfx_a = 1;
-gfx_x = pad + 52; gfx_y = 12;
+gfx_x = pad + spx(52); gfx_y = spx(12);
 file_state == 0 ? (
   gfx_printf("No texture assigned");
 ) : (file_state == 1) ? (
@@ -1420,9 +1867,9 @@ file_state == 0 ? (
   source_sec = src_sr > 0 ? src_frames / src_sr : 0;
 
   tex_truncated > 0 ? (
-    gfx_printf("Loaded %.2fs of %.2fs  •  %g ch  •  %.1fkHz  •  %d grains", loaded_sec, source_sec, tex_ch, tex_sr / 1000, cand_count);
+    gfx_printf("Loaded %.2fs of %.2fs  •  %g ch  •  %.1fkHz  •  %d/%d live", loaded_sec, source_sec, tex_ch, tex_sr / 1000, cand_live_count, cand_count);
   ) : (
-    gfx_printf("Loaded %.2fs  •  %g ch  •  %.1fkHz  •  %d grains", loaded_sec, tex_ch, tex_sr / 1000, cand_count);
+    gfx_printf("Loaded %.2fs  •  %g ch  •  %.1fkHz  •  %d/%d live", loaded_sec, tex_ch, tex_sr / 1000, cand_live_count, cand_count);
   );
 );
 
@@ -1444,14 +1891,37 @@ click && hov ? (
 );
 draw_button(mode_x, top_y, mode_w, btn_h, 1, hov, mode_r, mode_g, mode_b, mode_label);
 
-hov = hit(mx, my, out_x, top_y, 112, btn_h);
+hov = hit(mx, my, slice_x, top_y, slice_w, btn_h);
+click && hov ? (
+  slider27 = slider27 > 0.5 ? 0 : 1;
+  sliderchange(slider27);
+  ui_add_undo = 1;
+);
+slider27 > 0.5 ? sprintf(#btn, "AUTO SLICE") : sprintf(#btn, "FIXED SLICE");
+draw_button(slice_x, top_y, slice_w, btn_h, slider27 > 0.5, hov, 0.30, 0.60, 0.88, #btn);
+
+hov = hit(mx, my, gate_x, top_y, gate_w, btn_h);
+click && hov ? (
+  next_gate = floor(slider26 + 0.5) + 1;
+  next_gate > 2 ? next_gate = 0;
+  slider26 = next_gate;
+  sliderchange(slider26);
+  ui_add_undo = 1;
+);
+gate_label =
+  slider26 < 0.5 ? "REL: FREE" :
+  slider26 < 1.5 ? "REL: TIGHT" :
+  "REL: CLAMP";
+draw_button(gate_x, top_y, gate_w, btn_h, slider26 > 0.5, hov, 0.78, 0.46, 0.22, gate_label);
+
+hov = hit(mx, my, out_x, top_y, out_w, btn_h);
 click && hov ? (
   slider11 = slider11 > 0.5 ? 0 : 1;
   sliderchange(slider11);
   ui_add_undo = 1;
 );
 slider11 > 0.5 ? sprintf(#btn, "WET ONLY") : sprintf(#btn, "DRY+WET");
-draw_button(out_x, top_y, 112, btn_h, slider11 > 0.5, hov, 0.20, 0.48, 0.70, #btn);
+draw_button(out_x, top_y, out_w, btn_h, slider11 > 0.5, hov, 0.20, 0.48, 0.70, #btn);
 
 hov = hit(mx, my, auto_x, top_y, util_w, btn_h);
 click && hov ? (
@@ -1473,10 +1943,11 @@ sprintf(#btn, "RELOAD");
 draw_button(reload_x, top_y, reload_w, btn_h, 1, hov, 0.54, 0.32, 0.18, #btn);
 
 // waveform panel
+// waveform panel
 gfx_r = 0.085; gfx_g = 0.095; gfx_b = 0.122; gfx_a = 1;
 gfx_rect(wf_x, wf_y, wf_w, wf_h, 1);
 gfx_r = 0.16; gfx_g = 0.18; gfx_b = 0.24; gfx_a = 1;
-gfx_roundrect(wf_x, wf_y, wf_w, wf_h, 8, 1);
+gfx_roundrect(wf_x, wf_y, wf_w, wf_h, spx(8), 1);
 
 mid_y = wf_y + wf_h * 0.5;
 gfx_r = 0.13; gfx_g = 0.17; gfx_b = 0.22; gfx_a = 1;
@@ -1488,7 +1959,6 @@ gfx_line(wf_x, mid_y, wf_x + wf_w, mid_y, 1);
   draw_ref = wf_draw_ref;
   draw_ref < 0.000001 ? draw_ref = wf_absmax;
   draw_ref < 0.000001 ? draw_ref = 1;
-
   scale = (wf_h * 0.44) / draw_ref;
 
   i = 0;
@@ -1505,7 +1975,7 @@ gfx_line(wf_x, mid_y, wf_x + wf_w, mid_y, 1);
     gfx_g = 0.44 * hv;
     gfx_b = 0.16 * hv;
     gfx_a = 0.10 + 0.14 * hv;
-    gfx_rect(x, wf_y + wf_h - 18, max(1, xstep + 1), 18, 1);
+    gfx_rect(x, wf_y + wf_h - spx(18), max(1, xstep + 1), spx(18), 1);
 
     gfx_r = 0.66; gfx_g = 0.84; gfx_b = 0.94; gfx_a = 0.90;
     gfx_line(x, y1, x, y2, 1);
@@ -1513,14 +1983,14 @@ gfx_line(wf_x, mid_y, wf_x + wf_w, mid_y, 1);
     i += 1;
   );
 ) : (
-  gfx_setfont(1, "Verdana", 11);
+  gfx_setfont(1, "Verdana", ft_small);
   file_state == 0 ? sprintf(#wavebuf, "Assign a file to the Texture slot.") :
   file_state == 1 ? sprintf(#wavebuf, "Texture file is present but not ready yet.") :
   file_state == 3 ? sprintf(#wavebuf, "Texture copy failed. Reduce Max Load or file length.") :
   sprintf(#wavebuf, "Waveform summary not ready.");
 
   gfx_r = 0.76; gfx_g = 0.79; gfx_b = 0.86; gfx_a = 1;
-  gfx_x = wf_x + 18; gfx_y = wf_y + 18;
+  gfx_x = wf_x + spx(18); gfx_y = wf_y + spx(18);
   gfx_drawstr(#wavebuf);
 );
 
@@ -1582,9 +2052,9 @@ over_wf && (tex_loaded > 0) ? (
   gfx_line(hover_x, wf_y, hover_x, wf_y + wf_h, 1);
 
   sprintf(#hoverbuf, "%.3fs", hover_sec);
-  gfx_setfont(1, "Verdana", 11);
+  gfx_setfont(1, "Verdana", ft_small);
   gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.98; gfx_a = 1;
-  gfx_x = hover_x + 8; gfx_y = wf_y + 8;
+  gfx_x = hover_x + spx(8); gfx_y = wf_y + spx(8);
   gfx_drawstr(#hoverbuf);
 
   click ? (
@@ -1592,9 +2062,9 @@ over_wf && (tex_loaded > 0) ? (
   );
 );
 
-gfx_setfont(1, "Verdana", 11);
+gfx_setfont(1, "Verdana", ft_small);
 gfx_r = 0.82; gfx_g = 0.86; gfx_b = 0.92; gfx_a = 1;
-gfx_x = wf_x + 2; gfx_y = footer_y;
+gfx_x = wf_x + spx(2); gfx_y = footer_y;
 last_spawn_len > 0 ? (
   spawn_sec = tex_sr > 0 ? last_spawn_start / tex_sr : 0;
   spawn_len_ms = tex_sr > 0 ? 1000 * last_spawn_len / tex_sr : 0;
@@ -1612,23 +2082,23 @@ last_spawn_len > 0 ? (
 gfx_r = 0.085; gfx_g = 0.095; gfx_b = 0.122; gfx_a = 1;
 gfx_rect(env_x, env_y, env_w, env_h, 1);
 gfx_r = 0.16; gfx_g = 0.18; gfx_b = 0.24; gfx_a = 1;
-gfx_roundrect(env_x, env_y, env_w, env_h, 8, 1);
+gfx_roundrect(env_x, env_y, env_w, env_h, spx(8), 1);
 
-gfx_setfont(1, "Verdana", 14);
+gfx_setfont(1, "Verdana", ft_panel);
 gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.98; gfx_a = 1;
-gfx_x = env_x + 14; gfx_y = env_y + 12;
+gfx_x = env_x + spx(14); gfx_y = env_y + spx(12);
 gfx_printf("Envelope");
 
-gfx_setfont(1, "Verdana", 10);
+gfx_setfont(1, "Verdana", ft_meta);
 gfx_r = 0.72; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
-gfx_x = env_x + 86; gfx_y = env_y + 15;
+gfx_x = env_x + spx(86); gfx_y = env_y + spx(15);
 gfx_printf("Drag graph or knobs  •  wheel curve strips or graph segments");
 
-e_pad = 18;
+e_pad = spx(18);
 graph_x = env_x + e_pad;
-graph_y = env_y + 42;
+graph_y = env_y + spx(42);
 graph_w = env_w - e_pad * 2;
-graph_h = 136;
+graph_h = spx(136);
 
 gfx_r = 0.11; gfx_g = 0.14; gfx_b = 0.18; gfx_a = 1;
 gfx_rect(graph_x, graph_y, graph_w, graph_h, 1);
@@ -1707,20 +2177,20 @@ gfx_circle(p1x, p1y, hover_env_pt == 1 ? 6 : 4, 1, 1);
 gfx_circle(p2x, p2y, hover_env_pt == 2 ? 6 : 4, 1, 1);
 gfx_circle(p3x, p3y, hover_env_pt == 3 ? 6 : 4, 1, 1);
 
-gfx_setfont(1, "Verdana", 10);
+gfx_setfont(1, "Verdana", ft_meta);
 gfx_r = 0.72; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
-gfx_x = p0x + 6; gfx_y = graph_y + graph_h + 4; gfx_printf("A");
-gfx_x = p1x + 6; gfx_y = graph_y + graph_h + 4; gfx_printf("D");
-gfx_x = p2x + 6; gfx_y = graph_y + graph_h + 4; gfx_printf("S");
-gfx_x = p3x + 6; gfx_y = graph_y + graph_h + 4; gfx_printf("R");
+gfx_x = p0x + spx(6); gfx_y = graph_y + graph_h + spx(4); gfx_printf("A");
+gfx_x = p1x + spx(6); gfx_y = graph_y + graph_h + spx(4); gfx_printf("D");
+gfx_x = p2x + spx(6); gfx_y = graph_y + graph_h + spx(4); gfx_printf("S");
+gfx_x = p3x + spx(6); gfx_y = graph_y + graph_h + spx(4); gfx_printf("R");
 
 // knob band
-knob_band_y = graph_y + graph_h + 56;
+knob_band_y = graph_y + graph_h + spx(56);
 slot_w = env_w / 4;
-k_r = 42;
-slot_w < 160 ? k_r = min(k_r, 38);
+k_r = spx(42);
+slot_w < spx(160) ? k_r = min(k_r, spx(38));
 
-k_y = knob_band_y + 52;
+k_y = knob_band_y + spx(52);
 k1_x = env_x + slot_w * 0.5;
 k2_x = env_x + slot_w * 1.5;
 k3_x = env_x + slot_w * 2.5;
@@ -1747,28 +2217,28 @@ slider16 < 100 ? sprintf(#vD, "%.1f", slider16) : sprintf(#vD, "%.0f", slider16)
 sprintf(#vS, "%.3f", slider17);
 slider18 < 100 ? sprintf(#vR, "%.1f", slider18) : sprintf(#vR, "%.0f", slider18);
 
-gfx_setfont(1, "Verdana", 13);
+gfx_setfont(1, "Verdana", ft_knob);
 center_text(k1_x - k_r, k_y - 12, k_r * 2, 0.98, 0.99, 1.00, #vA);
 center_text(k2_x - k_r, k_y - 12, k_r * 2, 0.98, 0.99, 1.00, #vD);
 center_text(k3_x - k_r, k_y - 12, k_r * 2, 0.98, 0.99, 1.00, #vS);
 center_text(k4_x - k_r, k_y - 12, k_r * 2, 0.98, 0.99, 1.00, #vR);
 
-gfx_setfont(1, "Verdana", 9);
+gfx_setfont(1, "Verdana", ft_tiny);
 center_text(k1_x - k_r, k_y + 4, k_r * 2, 0.75, 0.80, 0.86, "ms");
 center_text(k2_x - k_r, k_y + 4, k_r * 2, 0.75, 0.80, 0.86, "ms");
 center_text(k3_x - k_r, k_y + 4, k_r * 2, 0.75, 0.80, 0.86, "");
 center_text(k4_x - k_r, k_y + 4, k_r * 2, 0.75, 0.80, 0.86, "ms");
 
-gfx_setfont(1, "Verdana", 11);
+gfx_setfont(1, "Verdana", ft_small);
 center_text(k1_x - 64, k_y + k_r + 18, 128, 0.82, 0.86, 0.92, "ATTACK");
 center_text(k2_x - 64, k_y + k_r + 18, 128, 0.82, 0.86, 0.92, "DECAY");
 center_text(k3_x - 64, k_y + k_r + 18, 128, 0.82, 0.86, 0.92, "SUSTAIN");
 center_text(k4_x - 64, k_y + k_r + 18, 128, 0.82, 0.86, 0.92, "RELEASE");
 
 // slope strips
-s_w = 92;
-s_h = 12;
-s_y = k_y + k_r + 42;
+s_w = spx(92);
+s_h = spx(12);
+s_y = k_y + k_r + spx(42);
 s1_x = k1_x - s_w * 0.5;
 s2_x = k2_x - s_w * 0.5;
 s3_x = k4_x - s_w * 0.5;
@@ -1786,61 +2256,69 @@ draw_slope_pill(s3_x, s_y, s_w, s_h, slider21, hover_slope == 3, (ui_active_kind
 gfx_r = 0.085; gfx_g = 0.095; gfx_b = 0.122; gfx_a = 1;
 gfx_rect(side_x, side_y, side_w, side_h, 1);
 gfx_r = 0.16; gfx_g = 0.18; gfx_b = 0.24; gfx_a = 1;
-gfx_roundrect(side_x, side_y, side_w, side_h, 8, 1);
+gfx_roundrect(side_x, side_y, side_w, side_h, spx(8), 1);
 
-sp = 16;
+sp = spx(16);
 sx = side_x + sp;
-sy = side_y + 14;
+sy = side_y + spx(14);
 sw = side_w - sp * 2;
 
-gfx_setfont(1, "Verdana", 14);
+gfx_setfont(1, "Verdana", ft_panel);
 gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.98; gfx_a = 1;
 gfx_x = sx; gfx_y = sy;
 gfx_printf("Playback");
 
-gfx_setfont(1, "Verdana", 11);
+gfx_setfont(1, "Verdana", ft_small);
 gfx_r = 0.74; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
-gfx_x = sx; gfx_y = sy + 22;
+gfx_x = sx; gfx_y = sy + spx(22);
 slider10 < 0.5 ? sprintf(#modebuf, "One-Shot") :
 slider10 < 1.5 ? sprintf(#modebuf, "Random") :
 sprintf(#modebuf, "Granular");
 gfx_printf("%s  •  active %d  •  cloud %.3fs", #modebuf, voices_last_count, tex_sr > 0 ? cloud_center / tex_sr : 0);
 
 // follower meter
-follow_raw = follow / max(sensitivity, 0.000001);
-ref_follow = follow_ui_peak / max(sensitivity, 0.000001);
-ref_follow < th_raw * 1.20 ? ref_follow = th_raw * 1.20;
-ref_follow < 0.05 ? ref_follow = 0.05;
+follow_warp = 0.35;
+follow_inv_warp = 1 / follow_warp;
 
-follow_disp = sqrt(clampg(follow_raw / ref_follow, 0, 1));
-thr_on_disp  = sqrt(clampg(th_raw / ref_follow, 0, 1));
-thr_off_disp = sqrt(clampg(th_off_raw / ref_follow, 0, 1));
+follow_det = clampg(follow, 0, 1);
+follow_disp = pow(follow_det, follow_warp);
+thr_on_disp  = pow(clampg(slider4, 0, 1), follow_warp);
+thr_off_disp = pow(clampg(slider4 * slider24, 0, 1), follow_warp);
 
-gfx_setfont(1, "Verdana", 10);
+follow_bar_x = sx;
+follow_bar_y = sy + spx(70);
+follow_bar_w = sw;
+follow_bar_h = spx(14);
+hover_follow_bar = hit(mx, my, follow_bar_x, follow_bar_y - spx(4), follow_bar_w, follow_bar_h + spx(10));
+
+gfx_setfont(1, "Verdana", ft_meta);
 gfx_r = 0.82; gfx_g = 0.86; gfx_b = 0.92; gfx_a = 1;
-gfx_x = sx; gfx_y = sy + 54;
+gfx_x = sx; gfx_y = sy + spx(54);
 gfx_printf("FOLLOW");
-draw_meter(sx, sy + 70, sw, 14, follow_disp, 0.24, 0.72, 0.92, thr_on_disp, thr_off_disp);
+draw_meter(follow_bar_x, follow_bar_y, follow_bar_w, follow_bar_h, follow_disp, 0.24, 0.72, 0.92, thr_on_disp, thr_off_disp);
 
 gfx_r = 0.70; gfx_g = 0.76; gfx_b = 0.84; gfx_a = 1;
-gfx_x = sx; gfx_y = sy + 88;
-gfx_printf("raw %.4f  ref %.4f  on %.4f  off %.4f", follow_raw, ref_follow, th_raw, th_off_raw);
+gfx_x = sx; gfx_y = sy + spx(88);
+gfx_printf("det %.4f  thr %.4f  off %.4f  hyst %.0f%%", follow, slider4, slider4 * slider24, slider24 * 100);
+
+gfx_x = sx; gfx_y = sy + spx(102);
+gfx_printf("drag bar = threshold  •  wheel = hysteresis");
 
 out_disp = 1 - exp(-2.4 * meter_out);
 gfx_r = 0.82; gfx_g = 0.86; gfx_b = 0.92; gfx_a = 1;
-gfx_x = sx; gfx_y = sy + 118;
+gfx_x = sx; gfx_y = sy + spx(132);
 gfx_printf("TEXTURE OUT");
-draw_meter(sx, sy + 134, sw, 14, out_disp, 0.32, 0.94, 0.44, -1, -1);
+draw_meter(sx, sy + spx(148), sw, spx(14), out_disp, 0.32, 0.94, 0.44, -1, -1);
 
 gfx_r = 0.70; gfx_g = 0.76; gfx_b = 0.84; gfx_a = 1;
-gfx_x = sx; gfx_y = sy + 152;
+gfx_x = sx; gfx_y = sy + spx(166);
 gfx_printf("peak %.5f  gate %g  trig %.3f", meter_out, gate, trig_v);
 
 // macro controls
-macro_y0 = sy + 184;
-row_h = 30;
-row_gap = 4;
-col_gap = 14;
+macro_y0 = sy + spx(198);
+row_h = spx(30);
+row_gap = spx(4);
+col_gap = spx(14);
 col_w = floor((sw - col_gap) * 0.5);
 c1x = sx;
 c2x = sx + col_w + col_gap;
@@ -1869,15 +2347,15 @@ loop(8,
   gfx_rect(cx + 1, cy + 1, fill_w, row_h - 2, 1);
 
   gfx_r = 0.17; gfx_g = 0.19; gfx_b = 0.24; gfx_a = 1;
-  gfx_roundrect(cx, cy, col_w, row_h, 5, 1);
+  gfx_roundrect(cx, cy, col_w, row_h, spx(5), 1);
 
-  gfx_setfont(1, "Verdana", 10);
+  gfx_setfont(1, "Verdana", ft_meta);
   gfx_r = 0.94; gfx_g = 0.96; gfx_b = 0.98; gfx_a = 1;
-  gfx_x = cx + 8; gfx_y = cy + 5;
+  gfx_x = cx + spx(8); gfx_y = cy + spx(5);
   gfx_drawstr(#mlab);
 
   gfx_measurestr(#mval, tw, th);
-  gfx_x = cx + col_w - tw - 8; gfx_y = cy + 5;
+  gfx_x = cx + col_w - tw - spx(8); gfx_y = cy + spx(5);
   gfx_drawstr(#mval);
 
   i += 1;
@@ -1893,16 +2371,61 @@ repeat_pct = (0.20 + 0.80 * slider6) * 100;
 pitch_disp = pow(slider8, 1.15) * 72;
 amp_disp = slider8 * 4.5;
 phase_disp = pow(slider8, 0.95) * 180;
+gate_rel_mode < 0.5 ? sprintf(#gatebuf, "free") :
+gate_rel_mode < 1.5 ? sprintf(#gatebuf, "tight") :
+sprintf(#gatebuf, "clamp");
+slider27 > 0.5 ? sprintf(#slicebuf, "auto") : sprintf(#slicebuf, "fixed");
 
-info_y = macro_y0 + 4 * (row_h + row_gap) + 18;
-gfx_setfont(1, "Verdana", 10);
+info_y = macro_y0 + 4 * (row_h + row_gap) + spx(18);
+gfx_setfont(1, "Verdana", ft_meta);
 gfx_r = 0.72; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
 gfx_x = sx; gfx_y = info_y;
 gfx_printf("Flow drives density %.2f/s and wander %.0f%%.", flow_density, wander_pct);
-gfx_x = sx; gfx_y = info_y + 18;
+gfx_x = sx; gfx_y = info_y + spx(18);
 gfx_printf("Focus biases salience and repeat-avoid %.0f%%.", repeat_pct);
-gfx_x = sx; gfx_y = info_y + 36;
+gfx_x = sx; gfx_y = info_y + spx(36);
 gfx_printf("Jitter bundles ±%.1f ct, ±%.1f dB, phase ±%.0f°.", pitch_disp, amp_disp, phase_disp);
+gfx_x = sx; gfx_y = info_y + spx(54);
+gfx_printf("Support %.0f%%  •  release %s  •  slice %s.", slider25 * 100, #gatebuf, #slicebuf);
+gfx_x = sx; gfx_y = info_y + spx(72);
+gfx_printf("Candidate gate keeps %d of %d grains live.", cand_live_count, cand_count);
+
+// follow bar interaction
+rclick && hover_follow_bar ? (
+  slider4 = 0.08;
+  slider24 = 0.70;
+  sliderchange(slider4);
+  sliderchange(slider24);
+  ui_add_undo = 1;
+  ui_active_kind = 0;
+  ui_active_id = 0;
+);
+
+click && (ui_active_kind == 0) && hover_follow_bar ? (
+  ui_active_kind = 5;
+  ui_active_id = 1;
+);
+
+(ui_active_kind == 5) && lmb ? (
+  nx = clampg((mx - follow_bar_x) / max(1, follow_bar_w), 0, 1);
+  slider4 = pow(nx, follow_inv_warp);
+  slider4 < 0 ? slider4 = 0;
+  slider4 > 1 ? slider4 = 1;
+  sliderchange(slider4);
+);
+
+wheel != 0 && hover_follow_bar ? (
+  slider24 += (wheel / 120.0) * 0.020 * fine_mult * coarse_mult;
+  slider24 = clampg(slider24, 0.05, 0.99);
+  sliderchange(slider24);
+  ui_add_undo = 1;
+);
+
+(ui_active_kind == 5) && release ? (
+  ui_active_kind = 0;
+  ui_active_id = 0;
+  ui_add_undo = 1;
+);
 
 // macro interaction
 click && (ui_active_kind == 0) && (hover_macro > 0) ? (
