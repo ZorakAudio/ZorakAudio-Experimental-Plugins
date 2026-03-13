@@ -54,13 +54,18 @@ wf_scan_cap = 64;
 
 cand_base = wf_base + wf_max_bins * 2 + 4096;
 cand_max = 2048;
-cand_stride = 9; // start,rms,peak,flux,zc,contrast,score,rank,edge
+cand_stride = 15; // start,rms,peak,flux,zc,contrast,score,rank,edge,slope,hf,motion,onset,phase,family
 
 heat_base = cand_base + cand_max * cand_stride + 4096;
 hist_base = heat_base + wf_max_bins + 1024;
 hist_bins = 32;
 
-recent_base = heat_base + wf_max_bins + 4096;
+attack_pool_base  = hist_base + hist_bins + 1024;
+body_pool_base    = attack_pool_base + cand_max + 1024;
+release_pool_base = body_pool_base + cand_max + 1024;
+debris_pool_base  = release_pool_base + cand_max + 1024;
+
+recent_base = debris_pool_base + cand_max + 4096;
 recent_max = 24;
 
 voice_base = recent_base + recent_max + 4096;
@@ -91,6 +96,10 @@ wf_ready = 0;
 cand_count = 0;
 cand_live_count = 0;
 cand_reject_score = 0.001;
+attack_pool_count = 0;
+body_pool_count = 0;
+release_pool_count = 0;
+debris_pool_count = 0;
 analysis_ready = 0;
 ana_win = 0;
 ana_hop = 0;
@@ -115,6 +124,7 @@ support_drive = 0;
 support_mix = 0;
 support_prev = 0;
 support_rise = 0;
+support_fall = 0;
 wake_force = 0;
 gate = 0;
 gate_peak = 0;
@@ -134,6 +144,15 @@ last_reload = 0;
 ui_force_reload = 0;
 
 seed = 123456789;
+
+phase_att = 1;
+phase_body = 2;
+phase_rel = 3;
+phase_deb = 4;
+last_phase = 0;
+last_family = 0;
+desired_phase = 2;
+desired_phase2 = 4;
 
 def_a = 8;
 def_d = 70;
@@ -340,7 +359,12 @@ h > 0 ? (
           support_mix = 0;
           support_prev = 0;
           support_rise = 0;
+          support_fall = 0;
           wake_force = 0;
+          last_phase = 0;
+          last_family = 0;
+          desired_phase = phase_body;
+          desired_phase2 = phase_deb;
           gate = 0;
           gate_peak = 0;
           trig_v = 0;
@@ -437,6 +461,10 @@ h > 0 ? (
           cand_count = 0;
           cand_live_count = 0;
           cand_reject_score = 0.001;
+          attack_pool_count = 0;
+          body_pool_count = 0;
+          release_pool_count = 0;
+          debris_pool_count = 0;
           score_peak = 1;
           best_cand = 0;
           best_start = 0;
@@ -463,6 +491,11 @@ h > 0 ? (
           max_flux = 0.000001;
           max_zc = 0.000001;
           max_edge = 0.000001;
+          max_hf = 0.000001;
+          max_motion = 0.000001;
+          max_onset = 0.000001;
+          max_slope_pos = 0.000001;
+          max_slope_neg = 0.000001;
 
           f0 = 0;
           ci = 0;
@@ -471,10 +504,28 @@ h > 0 ? (
             peak = 0;
             flux = 0;
             zc = 0;
+            hf_proxy = 0;
             prevv = 0;
             preva = 0;
             first = 1;
             n = 0;
+
+            third_n = floor(ana_win / 3);
+            third_n < 1 ? third_n = 1;
+            q1n = floor(ana_win * 0.25);
+            q2n = floor(ana_win * 0.50);
+            q3n = floor(ana_win * 0.75);
+            q1n < 1 ? q1n = 1;
+            q2n <= q1n ? q2n = q1n + 1;
+            q3n <= q2n ? q3n = q2n + 1;
+            q3n >= ana_win ? q3n = ana_win - 1;
+
+            front_sumsq = 0;
+            back_sumsq = 0;
+            q0sq = 0;
+            q1sq = 0;
+            q2sq = 0;
+            q3sq = 0;
 
             loop(ana_win,
               idx = tex_base + (f0 + n) * tex_ch;
@@ -485,12 +536,26 @@ h > 0 ? (
               sumsq += v * v;
               av > peak ? peak = av;
 
+              n < third_n ? front_sumsq += v * v;
+              n >= ana_win - third_n ? back_sumsq += v * v;
+
+              n < q1n ? (
+                q0sq += v * v;
+              ) : n < q2n ? (
+                q1sq += v * v;
+              ) : n < q3n ? (
+                q2sq += v * v;
+              ) : (
+                q3sq += v * v;
+              );
+
               first ? (
                 prevv = v;
                 preva = av;
                 first = 0;
               ) : (
                 flux += abs(av - preva);
+                hf_proxy += abs(v - prevv);
                 ((v >= 0) != (prevv >= 0)) ? zc += 1;
                 prevv = v;
                 preva = av;
@@ -502,6 +567,34 @@ h > 0 ? (
             rms = sqrt(sumsq / max(1, ana_win));
             fluxn = flux / max(1, ana_win);
             zcn = zc / max(1, ana_win);
+            hfn = hf_proxy / max(1, ana_win);
+
+            front_rms = sqrt(front_sumsq / max(1, third_n));
+            back_rms = sqrt(back_sumsq / max(1, third_n));
+            slope = back_rms - front_rms;
+
+            rms0 = sqrt(q0sq / max(1, q1n));
+            rms1 = sqrt(q1sq / max(1, q2n - q1n));
+            rms2 = sqrt(q2sq / max(1, q3n - q2n));
+            rms3 = sqrt(q3sq / max(1, ana_win - q3n));
+            motion = (abs(rms1 - rms0) + abs(rms2 - rms1) + abs(rms3 - rms2)) / 3;
+
+            ctx_len = third_n;
+            pre_start = f0 - ctx_len;
+            pre_start < 0 ? pre_start = 0;
+            pre_len = f0 - pre_start;
+            pre_sumsq = 0;
+            m = 0;
+            loop(pre_len,
+              idx = tex_base + (pre_start + m) * tex_ch;
+              pv = mem[idx];
+              tex_ch > 1 ? pv = 0.5 * (pv + mem[idx + 1]);
+              pre_sumsq += pv * pv;
+              m += 1;
+            );
+            prev_ctx_rms = pre_len > 0 ? sqrt(pre_sumsq / max(1, pre_len)) : 0;
+            onset = front_rms - prev_ctx_rms;
+            onset < 0 ? onset = 0;
 
             fm1 = f0 > 0 ? (f0 - 1) : f0;
             fp1 = f0 < tex_frames - 1 ? (f0 + 1) : f0;
@@ -521,21 +614,32 @@ h > 0 ? (
             edge0 = abs(v0) + 0.5 * abs(vp - vm);
 
             base = cand_base + ci * cand_stride;
-            mem[base    ] = f0;
-            mem[base + 1] = rms;
-            mem[base + 2] = peak;
-            mem[base + 3] = fluxn;
-            mem[base + 4] = zcn;
-            mem[base + 5] = 0;
-            mem[base + 6] = 0;
-            mem[base + 7] = 0;
-            mem[base + 8] = edge0;
+            mem[base     ] = f0;
+            mem[base + 1 ] = rms;
+            mem[base + 2 ] = peak;
+            mem[base + 3 ] = fluxn;
+            mem[base + 4 ] = zcn;
+            mem[base + 5 ] = 0;
+            mem[base + 6 ] = 0;
+            mem[base + 7 ] = 0;
+            mem[base + 8 ] = edge0;
+            mem[base + 9 ] = slope;
+            mem[base + 10] = hfn;
+            mem[base + 11] = motion;
+            mem[base + 12] = onset;
+            mem[base + 13] = 0;
+            mem[base + 14] = 0;
 
             rms > max_rms ? max_rms = rms;
             peak > max_peak ? max_peak = peak;
             fluxn > max_flux ? max_flux = fluxn;
             zcn > max_zc ? max_zc = zcn;
             edge0 > max_edge ? max_edge = edge0;
+            hfn > max_hf ? max_hf = hfn;
+            motion > max_motion ? max_motion = motion;
+            onset > max_onset ? max_onset = onset;
+            slope > max_slope_pos ? max_slope_pos = slope;
+            (-slope) > max_slope_neg ? max_slope_neg = -slope;
 
             f0 += ana_hop;
             ci += 1;
@@ -580,6 +684,11 @@ h > 0 ? (
             nzc   = mem[base + 4] / max_zc;
             nctr  = mem[base + 5] / max_ctr;
             nedge = mem[base + 8] / max_edge;
+            nslope_p = max(0, mem[base + 9]) / max_slope_pos;
+            nslope_n = max(0, -mem[base + 9]) / max_slope_neg;
+            nhf = mem[base + 10] / max_hf;
+            nmotion = mem[base + 11] / max_motion;
+            nonset = mem[base + 12] / max_onset;
 
             quiet_gate = nrms < 0.025 ? (nrms / 0.025) : 1;
             quiet_gate < 0 ? quiet_gate = 0;
@@ -590,11 +699,15 @@ h > 0 ? (
             zc_shape > 1 ? zc_shape = 1;
 
             score = quiet_gate * (
-              0.38 * nflux +
-              0.22 * nctr  +
-              0.16 * npeak +
-              0.14 * sqrt(nrms) +
-              0.06 * zc_shape +
+              0.24 * nflux +
+              0.18 * nctr  +
+              0.10 * npeak +
+              0.10 * sqrt(nrms) +
+              0.08 * zc_shape +
+              0.10 * nmotion +
+              0.08 * nonset +
+              0.04 * nslope_p +
+              0.04 * nhf +
               0.04 * (1 - min(1, nedge))
             );
 
@@ -605,11 +718,12 @@ h > 0 ? (
             hard_valid =
               (nrms > 0.020) &&
               (npeak > 0.018) &&
-              ((nflux > 0.030) || (nctr > 0.028)) &&
+              ((nflux > 0.030) || (nctr > 0.028) || (nmotion > 0.040) || (nonset > 0.050)) &&
               (score > 0.035);
 
             (nzc > 0.92) && (nflux < 0.08) && (nctr < 0.05) ? hard_valid = 0;
             nedge > 0.92 ? hard_valid = 0;
+            (nhf > 0.96) && (nmotion < 0.04) && (nonset < 0.03) ? hard_valid = 0;
 
             hard_valid ? (
               hard_valid_count += 1;
@@ -641,14 +755,18 @@ h > 0 ? (
               nzc   = mem[base + 4] / max_zc;
               nctr  = mem[base + 5] / max_ctr;
               nedge = mem[base + 8] / max_edge;
+              nmotion = mem[base + 11] / max_motion;
+              nonset = mem[base + 12] / max_onset;
+              nhf = mem[base + 10] / max_hf;
 
               hard_valid =
                 (nrms > 0.020) &&
                 (npeak > 0.018) &&
-                ((nflux > 0.030) || (nctr > 0.028)) &&
+                ((nflux > 0.030) || (nctr > 0.028) || (nmotion > 0.040) || (nonset > 0.050)) &&
                 (score > 0.035);
               (nzc > 0.92) && (nflux < 0.08) && (nctr < 0.05) ? hard_valid = 0;
               nedge > 0.92 ? hard_valid = 0;
+              (nhf > 0.96) && (nmotion < 0.04) && (nonset < 0.03) ? hard_valid = 0;
 
               hard_valid ? (
                 hb = floor((score / max(scan_score_peak, 0.000001)) * (hist_bins - 1));
@@ -707,14 +825,18 @@ h > 0 ? (
             nzc   = mem[base + 4] / max_zc;
             nctr  = mem[base + 5] / max_ctr;
             nedge = mem[base + 8] / max_edge;
+            nmotion = mem[base + 11] / max_motion;
+            nonset = mem[base + 12] / max_onset;
+            nhf = mem[base + 10] / max_hf;
 
             hard_valid =
               (nrms > 0.020) &&
               (npeak > 0.018) &&
-              ((nflux > 0.030) || (nctr > 0.028)) &&
+              ((nflux > 0.030) || (nctr > 0.028) || (nmotion > 0.040) || (nonset > 0.050)) &&
               (score > 0.035);
             (nzc > 0.92) && (nflux < 0.08) && (nctr < 0.05) ? hard_valid = 0;
             nedge > 0.92 ? hard_valid = 0;
+            (nhf > 0.96) && (nmotion < 0.04) && (nonset < 0.03) ? hard_valid = 0;
 
             valid = hard_valid;
             use_percentile && (score <= cand_reject_score) ? valid = 0;
@@ -788,6 +910,84 @@ h > 0 ? (
             hb += 1;
           );
 
+          attack_pool_count = 0;
+          body_pool_count = 0;
+          release_pool_count = 0;
+          debris_pool_count = 0;
+
+          ci = 0;
+          loop(cand_count,
+            base = cand_base + ci * cand_stride;
+            rankn = mem[base + 7];
+
+            rankn > 0 ? (
+              nrms  = mem[base + 1] / max_rms;
+              npeak = mem[base + 2] / max_peak;
+              nflux = mem[base + 3] / max_flux;
+              nzc   = mem[base + 4] / max_zc;
+              nctr  = mem[base + 5] / max_ctr;
+              nedge = mem[base + 8] / max_edge;
+              slope = mem[base + 9];
+              nslope_p = max(0, slope) / max_slope_pos;
+              nslope_n = max(0, -slope) / max_slope_neg;
+              slope_abs = abs(slope) / max(max_slope_pos, max_slope_neg);
+              slope_abs > 1 ? slope_abs = 1;
+              slope_neutral = 1 - slope_abs;
+              nhf = mem[base + 10] / max_hf;
+              nmotion = mem[base + 11] / max_motion;
+              nonset = mem[base + 12] / max_onset;
+              zc_shape = 1 - abs(nzc - 0.35) / 0.35;
+              zc_shape < 0 ? zc_shape = 0;
+              zc_shape > 1 ? zc_shape = 1;
+
+              attack_sc = 0.42 * nonset + 0.22 * nslope_p + 0.16 * nflux + 0.12 * nctr + 0.08 * npeak;
+              body_sc = 0.30 * nmotion + 0.22 * slope_neutral + 0.14 * sqrt(nrms) + 0.12 * nctr + 0.12 * rankn + 0.10 * (1 - min(1, nedge));
+              release_sc = 0.38 * nslope_n + 0.22 * (1 - nonset) + 0.16 * nmotion + 0.14 * (1 - min(1, nedge)) + 0.10 * rankn;
+              debris_sc = 0.40 * nhf + 0.18 * nzc + 0.16 * nflux + 0.12 * (1 - sqrt(nrms)) + 0.14 * (1 - min(1, nedge));
+
+              phase = phase_att;
+              pbest = attack_sc;
+              body_sc > pbest ? (
+                phase = phase_body;
+                pbest = body_sc;
+              );
+              release_sc > pbest ? (
+                phase = phase_rel;
+                pbest = release_sc;
+              );
+              debris_sc > pbest ? (
+                phase = phase_deb;
+                pbest = debris_sc;
+              );
+
+              family = 1;
+              nhf > 0.55 ? family += 1;
+              nmotion > 0.45 ? family += 2;
+
+              mem[base + 13] = phase;
+              mem[base + 14] = family;
+
+              phase == phase_att ? (
+                mem[attack_pool_base + attack_pool_count] = ci;
+                attack_pool_count += 1;
+              ) : phase == phase_body ? (
+                mem[body_pool_base + body_pool_count] = ci;
+                body_pool_count += 1;
+              ) : phase == phase_rel ? (
+                mem[release_pool_base + release_pool_count] = ci;
+                release_pool_count += 1;
+              ) : (
+                mem[debris_pool_base + debris_pool_count] = ci;
+                debris_pool_count += 1;
+              );
+            ) : (
+              mem[base + 13] = 0;
+              mem[base + 14] = 0;
+            );
+
+            ci += 1;
+          );
+
           cloud_center = best_start;
           cloud_radius_frames = max(128, floor(0.12 * tex_sr));
           analysis_ready = cand_live_count > 0;
@@ -832,7 +1032,15 @@ h > 0 ? (
   wf_ready = 0;
   cand_count = 0;
   cand_live_count = 0;
+  attack_pool_count = 0;
+  body_pool_count = 0;
+  release_pool_count = 0;
+  debris_pool_count = 0;
   analysis_ready = 0;
+  last_phase = 0;
+  last_family = 0;
+  desired_phase = phase_body;
+  desired_phase2 = phase_deb;
   file_state = 0;
 );
 
@@ -912,7 +1120,106 @@ function recent_weight(ci) local(j, ri, idx, agew, w) (
   w;
 );
 
-function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms, npeak, nflux, nzc, nctr, nedge, zc_shape, mode_shape, rep, start, dist, cloud_w, prev_ci, prev_slot, pbase, drms, dflux, dzc, dctr, dedge, compat_amt, compat, prevs, nexts, peakish, gran_flux_fit) (
+function phase_pool_base(ph) (
+  ph == phase_att ? attack_pool_base :
+  ph == phase_body ? body_pool_base :
+  ph == phase_rel ? release_pool_base :
+  debris_pool_base;
+);
+
+function phase_pool_count(ph) (
+  ph == phase_att ? attack_pool_count :
+  ph == phase_body ? body_pool_count :
+  ph == phase_rel ? release_pool_count :
+  debris_pool_count;
+);
+
+function phase_transition_weight(prev_phase, cur_phase, mode_local) local(w) (
+  w = 1;
+
+  prev_phase == phase_att ? (
+    cur_phase == phase_att ? w = 0.45 :
+    cur_phase == phase_body ? w = 1.28 :
+    cur_phase == phase_rel ? w = 0.62 :
+    w = 0.86;
+  ) : prev_phase == phase_body ? (
+    cur_phase == phase_att ? w = 0.34 :
+    cur_phase == phase_body ? w = 1.10 :
+    cur_phase == phase_rel ? w = 0.88 :
+    w = 0.74;
+  ) : prev_phase == phase_rel ? (
+    cur_phase == phase_att ? w = 0.22 :
+    cur_phase == phase_body ? w = 0.78 :
+    cur_phase == phase_rel ? w = 0.96 :
+    w = 1.12;
+  ) : prev_phase == phase_deb ? (
+    cur_phase == phase_att ? w = 0.58 :
+    cur_phase == phase_body ? w = 1.04 :
+    cur_phase == phase_rel ? w = 0.82 :
+    w = 0.46;
+  );
+
+  mode_local == 0 ? (
+    cur_phase == phase_att ? w *= 1.08;
+    cur_phase == phase_deb ? w *= 0.92;
+  ) : mode_local == 2 ? (
+    cur_phase == phase_body ? w *= 1.18;
+    cur_phase == phase_att ? w *= 0.72;
+    cur_phase == phase_deb ? w *= 0.84;
+  );
+
+  w;
+);
+
+function phase_desire_weight(cur_phase, want_phase, mode_local) local(w) (
+  w = 1;
+
+  want_phase == phase_att ? (
+    cur_phase == phase_att ? (
+      w = mode_local == 0 ? 1.65 : mode_local == 1 ? 1.45 : 0.62;
+    ) : cur_phase == phase_body ? (
+      w = mode_local == 0 ? 0.88 : mode_local == 1 ? 0.98 : 1.12;
+    ) : cur_phase == phase_rel ? (
+      w = mode_local == 0 ? 0.30 : mode_local == 1 ? 0.42 : 0.38;
+    ) : (
+      w = mode_local == 0 ? 0.64 : mode_local == 1 ? 0.82 : 0.72;
+    );
+  ) : want_phase == phase_body ? (
+    cur_phase == phase_att ? (
+      w = mode_local == 0 ? 0.82 : mode_local == 1 ? 0.88 : 0.56;
+    ) : cur_phase == phase_body ? (
+      w = mode_local == 0 ? 1.34 : mode_local == 1 ? 1.24 : 1.46;
+    ) : cur_phase == phase_rel ? (
+      w = mode_local == 0 ? 0.72 : mode_local == 1 ? 0.78 : 0.86;
+    ) : (
+      w = mode_local == 0 ? 0.62 : mode_local == 1 ? 0.72 : 0.68;
+    );
+  ) : want_phase == phase_rel ? (
+    cur_phase == phase_att ? (
+      w = mode_local == 0 ? 0.24 : mode_local == 1 ? 0.34 : 0.28;
+    ) : cur_phase == phase_body ? (
+      w = mode_local == 0 ? 0.84 : mode_local == 1 ? 0.76 : 0.92;
+    ) : cur_phase == phase_rel ? (
+      w = mode_local == 0 ? 1.42 : mode_local == 1 ? 1.30 : 1.08;
+    ) : (
+      w = mode_local == 0 ? 0.96 : mode_local == 1 ? 1.08 : 0.92;
+    );
+  ) : (
+    cur_phase == phase_att ? (
+      w = mode_local == 0 ? 0.54 : mode_local == 1 ? 0.70 : 0.46;
+    ) : cur_phase == phase_body ? (
+      w = mode_local == 0 ? 0.82 : mode_local == 1 ? 0.92 : 0.86;
+    ) : cur_phase == phase_rel ? (
+      w = mode_local == 0 ? 0.76 : mode_local == 1 ? 0.82 : 0.72;
+    ) : (
+      w = mode_local == 0 ? 1.24 : mode_local == 1 ? 1.24 : 1.04;
+    );
+  );
+
+  w;
+);
+
+function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms, npeak, nflux, nzc, nctr, nedge, zc_shape, mode_shape, rep, start, dist, cloud_w, prev_ci, prev_slot, pbase, drms, dflux, dzc, dctr, dedge, compat_amt, compat, prevs, nexts, peakish, gran_flux_fit, slope, nslope_p, nslope_n, slope_abs, slope_neutral, nhf, nmotion, nonset, cand_phase, phase_w, family, lastfam_w) (
   base = cand_base + ci * cand_stride;
   score = mem[base + 6];
   rank = mem[base + 7];
@@ -926,6 +1233,17 @@ function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms,
     nzc   = mem[base + 4] / max(0.000001, max_zc);
     nctr  = mem[base + 5] / max(0.000001, max_ctr);
     nedge = mem[base + 8] / max(0.000001, max_edge);
+    slope = mem[base + 9];
+    nslope_p = max(0, slope) / max(0.000001, max_slope_pos);
+    nslope_n = max(0, -slope) / max(0.000001, max_slope_neg);
+    slope_abs = abs(slope) / max(0.000001, max(max_slope_pos, max_slope_neg));
+    slope_abs > 1 ? slope_abs = 1;
+    slope_neutral = 1 - slope_abs;
+    nhf = mem[base + 10] / max(0.000001, max_hf);
+    nmotion = mem[base + 11] / max(0.000001, max_motion);
+    nonset = mem[base + 12] / max(0.000001, max_onset);
+    cand_phase = floor(mem[base + 13] + 0.5);
+    family = floor(mem[base + 14] + 0.5);
 
     zc_shape = 1 - abs(nzc - 0.35) / 0.35;
     zc_shape < 0 ? zc_shape = 0;
@@ -942,19 +1260,23 @@ function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms,
     );
 
     mode_local == 0 ? (
-      mode_shape = 0.18 + 1.15 * nflux * nflux + 0.80 * nctr + 0.42 * npeak + 0.12 * zc_shape;
+      mode_shape = 0.22 + 0.92 * nonset + 0.56 * nslope_p + 0.28 * nflux + 0.20 * nctr + 0.10 * npeak;
     ) : mode_local == 1 ? (
-      mode_shape = 0.22 + 0.52 * rank + 0.36 * nflux + 0.26 * nctr + 0.18 * sqrt(nrms) + 0.10 * zc_shape;
+      mode_shape = 0.24 + 0.42 * rank + 0.24 * nmotion + 0.22 * nflux + 0.18 * nctr + 0.12 * nhf + 0.10 * sqrt(nrms);
     ) : (
       gran_flux_fit = 1 - abs(nflux - 0.38) / 0.38;
       gran_flux_fit < 0 ? gran_flux_fit = 0;
       gran_flux_fit > 1 ? gran_flux_fit = 1;
-      mode_shape = 0.20 + 0.42 * rank + 0.26 * sqrt(nrms) + 0.18 * zc_shape + 0.14 * gran_flux_fit + 0.10 * (1 - min(1, nedge));
+      mode_shape = 0.28 + 0.42 * rank + 0.34 * nmotion + 0.18 * sqrt(nrms) + 0.16 * slope_neutral + 0.10 * gran_flux_fit + 0.10 * (1 - min(1, nedge));
     );
     weight *= mode_shape;
 
     rep = 1 - repeat_avoid + repeat_avoid * recent_weight(ci);
     weight *= rep;
+
+    phase_w = phase_desire_weight(cand_phase, desired_phase, mode_local);
+    last_phase > 0 ? phase_w *= phase_transition_weight(last_phase, cand_phase, mode_local);
+    weight *= phase_w;
 
     prev_slot = recent_head - 1;
     prev_slot < 0 ? prev_slot += recent_max;
@@ -973,6 +1295,17 @@ function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms,
       weight *= (1 - compat_amt) + compat_amt * compat;
     );
 
+    (cand_phase == last_phase) && (family > 0) && (last_family > 0) ? (
+      family == last_family ? (
+        lastfam_w = 1.08;
+      ) : abs(family - last_family) == 1 ? (
+        lastfam_w = 1.03;
+      ) : (
+        lastfam_w = 0.94;
+      );
+      weight *= lastfam_w;
+    );
+
     mode_local == 2 ? (
       start = mem[base];
       dist = abs(start - cloud_center);
@@ -985,13 +1318,39 @@ function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms,
   weight;
 );
 
-function pick_candidate(mode_local) local(i, weight, total, rr, accum, chosen, done) (
+function pick_candidate(mode_local) local(primary_phase, secondary_phase, total, rr, accum, chosen, done, i, idx, weight, pbase, pcount, pbase2, pcount2, use_pools) (
+  primary_phase = desired_phase;
+  secondary_phase = desired_phase2;
   total = 0;
-  i = 0;
-  loop(cand_count,
-    weight = candidate_weight(i, mode_local);
-    total += weight;
-    i += 1;
+
+  pcount = phase_pool_count(primary_phase);
+  pcount2 = (secondary_phase != primary_phase) ? phase_pool_count(secondary_phase) : 0;
+  use_pools = (pcount + pcount2) > 0;
+
+  use_pools ? (
+    pbase = phase_pool_base(primary_phase);
+    i = 0;
+    loop(pcount,
+      idx = floor(mem[pbase + i]);
+      total += candidate_weight(idx, mode_local);
+      i += 1;
+    );
+
+    pcount2 > 0 ? (
+      pbase2 = phase_pool_base(secondary_phase);
+      i = 0;
+      loop(pcount2,
+        idx = floor(mem[pbase2 + i]);
+        total += candidate_weight(idx, mode_local);
+        i += 1;
+      );
+    );
+  ) : (
+    i = 0;
+    loop(cand_count,
+      total += candidate_weight(i, mode_local);
+      i += 1;
+    );
   );
 
   total <= 0 ? (
@@ -1001,17 +1360,52 @@ function pick_candidate(mode_local) local(i, weight, total, rr, accum, chosen, d
     accum = 0;
     chosen = best_cand;
     done = 0;
-    i = 0;
-    loop(cand_count,
-      done <= 0 ? (
-        weight = candidate_weight(i, mode_local);
-        accum += weight;
-        accum >= rr ? (
-          chosen = i;
-          done = 1;
+
+    use_pools ? (
+      pbase = phase_pool_base(primary_phase);
+      i = 0;
+      loop(pcount,
+        done <= 0 ? (
+          idx = floor(mem[pbase + i]);
+          weight = candidate_weight(idx, mode_local);
+          accum += weight;
+          accum >= rr ? (
+            chosen = idx;
+            done = 1;
+          );
+        );
+        i += 1;
+      );
+
+      (done <= 0) && (pcount2 > 0) ? (
+        pbase2 = phase_pool_base(secondary_phase);
+        i = 0;
+        loop(pcount2,
+          done <= 0 ? (
+            idx = floor(mem[pbase2 + i]);
+            weight = candidate_weight(idx, mode_local);
+            accum += weight;
+            accum >= rr ? (
+              chosen = idx;
+              done = 1;
+            );
+          );
+          i += 1;
         );
       );
-      i += 1;
+    ) : (
+      i = 0;
+      loop(cand_count,
+        done <= 0 ? (
+          weight = candidate_weight(i, mode_local);
+          accum += weight;
+          accum >= rr ? (
+            chosen = i;
+            done = 1;
+          );
+        );
+        i += 1;
+      );
     );
   );
 
@@ -1160,19 +1554,31 @@ function claim_voice() local(i, base, free_idx, steal_idx, best_prog, prog) (
   free_idx >= 0 ? free_idx : steal_idx;
 );
 
-function compute_event_bounds(ci) local(base, peak_s, bound_low, left, right, cont, j, sc, max_bins, ev_end, cap_frames) (
+function compute_event_bounds(ci) local(base, peak_s, bound_low, left, right, cont, j, sc, max_bins, ev_end, cap_frames, cand_phase, phase_cap_mul, phase_bound_mul) (
   base = cand_base + ci * cand_stride;
+  cand_phase = floor(mem[base + 13] + 0.5);
   peak_s = mem[base + 6] * max(0.25, mem[base + 7]);
   peak_s < 0.001 ? peak_s = 0.001;
 
-  cap_frames = floor(dur_ms * 0.001 * tex_sr);
+  phase_cap_mul =
+    cand_phase == phase_att ? 0.72 :
+    cand_phase == phase_body ? 1.18 :
+    cand_phase == phase_rel ? 0.90 :
+    0.55;
+
+  cap_frames = floor(dur_ms * 0.001 * tex_sr * phase_cap_mul);
   cap_frames < ana_win ? cap_frames = ana_win;
   max_bins = floor(cap_frames / max(1, ana_hop));
   max_bins < 1 ? max_bins = 1;
   max_bins > cand_count ? max_bins = cand_count;
 
-  // Higher focus hugs the most salient core more tightly.
-  bound_low = peak_s * (0.18 + 0.30 * focus);
+  phase_bound_mul =
+    cand_phase == phase_att ? (0.26 + 0.32 * focus) :
+    cand_phase == phase_body ? (0.16 + 0.22 * focus) :
+    cand_phase == phase_rel ? (0.22 + 0.28 * focus) :
+    (0.30 + 0.34 * focus);
+
+  bound_low = peak_s * phase_bound_mul;
   bound_low < 0.001 ? bound_low = 0.001;
 
   left = ci;
@@ -1255,12 +1661,14 @@ function env_eval(age, env_len, is_gran) local(a_s, d_s, r_s, hold_s, tot, scale
   out;
 );
 
-function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len, env_nom_len, rndf, wanderf, cents, rate, ampj, rms, peak, corr, maxsafe, trig_amp, strength, off, zcn, halfcyc_samp, phase_deg, slot, vb, sign, gran_mult, src_need, cap_src_len, score, local_support, start_region) (
+function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len, env_nom_len, rndf, wanderf, cents, rate, ampj, rms, peak, corr, maxsafe, trig_amp, strength, off, zcn, halfcyc_samp, phase_deg, slot, vb, sign, gran_mult, src_need, cap_src_len, score, local_support, start_region, cand_phase, phase_family, phase_len_mul) (
   (tex_loaded > 0) && (analysis_ready > 0) && (cand_count > 0) ? (
     ci = pick_candidate(mode_local);
     base = cand_base + ci * cand_stride;
 
     score = mem[base + 6];
+    cand_phase = floor(mem[base + 13] + 0.5);
+    phase_family = floor(mem[base + 14] + 0.5);
     start = mem[base];
     rndf = 1 + dur_var * randSym();
     rndf < 0.18 ? rndf = 0.18;
@@ -1277,6 +1685,14 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
       req_src_len = floor(dur_ms * 0.001 * tex_sr * rndf);
       req_env_len = floor(dur_ms * 0.001 * srate * rndf);
     );
+
+    phase_len_mul =
+      cand_phase == phase_att ? (mode_local == 0 ? 0.72 : 0.82) :
+      cand_phase == phase_body ? (mode_local == 2 ? 1.18 : 1.05) :
+      cand_phase == phase_rel ? 0.90 :
+      0.55;
+    req_src_len *= phase_len_mul;
+    req_env_len *= (cand_phase == phase_deb ? 0.78 : cand_phase == phase_body ? 1.05 : 0.92);
 
     mode_local == 2 ? (
       gran_mult = 0.78 + 0.28 * rand01();
@@ -1376,6 +1792,9 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
     recent_head += 1;
     recent_head >= recent_max ? recent_head = 0;
 
+    last_phase = cand_phase;
+    last_family = phase_family;
+
     mode_local == 2 ? (
       cloud_center = cloud_center * 0.82 + start * 0.18 + randSym() * cloud_radius_frames * 0.05;
     ) : (
@@ -1458,6 +1877,8 @@ support_drive > 1 ? support_drive = 1;
 
 support_rise = support_drive - support_prev;
 support_rise < 0 ? support_rise = 0;
+support_fall = support_prev - support_drive;
+support_fall < 0 ? support_fall = 0;
 
 wake_force = 0;
 ((support_prev < 0.025) && (support_drive > 0.055)) ? (
@@ -1506,6 +1927,37 @@ gate > 0 ? (
   support_sig > gate_peak ? gate_peak = support_sig;
   peak_v = support_drive;
   peak_v > trig_v ? trig_v = peak_v;
+);
+
+note_on ? (
+  desired_phase = phase_att;
+  desired_phase2 = phase_body;
+) : support_fall > 0.018 ? (
+  desired_phase = phase_rel;
+  desired_phase2 = phase_deb;
+) : support_rise > 0.022 ? (
+  desired_phase = phase_att;
+  desired_phase2 = phase_body;
+) : support_drive < 0.10 ? (
+  desired_phase = phase_deb;
+  desired_phase2 = phase_body;
+) : (
+  desired_phase = phase_body;
+  desired_phase2 = support_drive > 0.65 ? phase_deb : phase_att;
+);
+
+mode == 0 ? (
+  desired_phase == phase_deb ? desired_phase = phase_att;
+  desired_phase2 = desired_phase == phase_att ? phase_body : phase_att;
+) : mode == 2 ? (
+  desired_phase == phase_att ? desired_phase = phase_body;
+  support_fall > 0.020 ? (
+    desired_phase = phase_rel;
+    desired_phase2 = phase_deb;
+  ) : support_drive > 0.18 ? (
+    desired_phase = phase_body;
+    desired_phase2 = phase_deb;
+  );
 );
 
 cloud_radius_frames = max(128, floor((dur_ms * 0.001 * tex_sr) * (0.90 + pos_wander * 3.20) + tex_sr * 0.02));
@@ -2086,9 +2538,9 @@ file_state == 0 ? (
   source_sec = src_sr > 0 ? src_frames / src_sr : 0;
 
   tex_truncated > 0 ? (
-    gfx_printf("Loaded %.2fs of %.2fs  •  %g ch  •  %.1fkHz  •  %d/%d live", loaded_sec, source_sec, tex_ch, tex_sr / 1000, cand_live_count, cand_count);
+    gfx_printf("Loaded %.2fs of %.2fs  •  %g ch  •  %.1fkHz  •  %d/%d live  •  A%d B%d R%d D%d", loaded_sec, source_sec, tex_ch, tex_sr / 1000, cand_live_count, cand_count, attack_pool_count, body_pool_count, release_pool_count, debris_pool_count);
   ) : (
-    gfx_printf("Loaded %.2fs  •  %g ch  •  %.1fkHz  •  %d/%d live", loaded_sec, tex_ch, tex_sr / 1000, cand_live_count, cand_count);
+    gfx_printf("Loaded %.2fs  •  %g ch  •  %.1fkHz  •  %d/%d live  •  A%d B%d R%d D%d", loaded_sec, tex_ch, tex_sr / 1000, cand_live_count, cand_count, attack_pool_count, body_pool_count, release_pool_count, debris_pool_count);
   );
 );
 
@@ -2509,7 +2961,9 @@ gfx_x = sx; gfx_y = sy + spx(22);
 slider10 < 0.5 ? sprintf(#modebuf, "One-Shot") :
 slider10 < 1.5 ? sprintf(#modebuf, "Random") :
 sprintf(#modebuf, "Granular");
-gfx_printf("%s  •  active %d  •  cloud %.3fs", #modebuf, voices_last_count, tex_sr > 0 ? cloud_center / tex_sr : 0);
+desired_phase == phase_att ? sprintf(#wantph, "ATT") : desired_phase == phase_body ? sprintf(#wantph, "BODY") : desired_phase == phase_rel ? sprintf(#wantph, "REL") : sprintf(#wantph, "DEB");
+last_phase == phase_att ? sprintf(#lastph, "ATT") : last_phase == phase_body ? sprintf(#lastph, "BODY") : last_phase == phase_rel ? sprintf(#lastph, "REL") : last_phase == phase_deb ? sprintf(#lastph, "DEB") : sprintf(#lastph, "-");
+gfx_printf("%s  •  active %d  •  %s→%s  •  cloud %.3fs", #modebuf, voices_last_count, #lastph, #wantph, tex_sr > 0 ? cloud_center / tex_sr : 0);
 
 gfx_x = sx; gfx_y = sy + spx(38);
 gfx_printf("Tune %+.2f st  •  Jit ±%.1fct / ±%.1fdB / ±%.0f°", slider28, pitch_disp, amp_disp, phase_disp);
@@ -2914,7 +3368,7 @@ hover_env_pt == 1 ? (
   ) : (
     sprintf(#tip1, "Granular: denser cloud around the current region with continuity bias.");
   );
-  sprintf(#tip2, "Current mode %s.", #modebuf);
+  sprintf(#tip2, "Current mode %s. Phase pools A%d B%d R%d D%d.", #modebuf, attack_pool_count, body_pool_count, release_pool_count, debris_pool_count);
 ) : hover_slice_btn ? (
   tip_on = 1;
   slider27 > 0.5 ? (
@@ -2954,9 +3408,9 @@ hover_env_pt == 1 ? (
   tip_on = 1;
   sprintf(#tip1, "Waveform + salience heat. Click to move the granular cloud.");
   auto_slice ? (
-    sprintf(#tip2, "Auto Slice is on: local score peaks define event lengths.");
+    sprintf(#tip2, "Auto Slice is on: local score peaks define event lengths. Target %s.", #wantph);
   ) : (
-    sprintf(#tip2, "Fixed Slice is on: grains use the current slice duration.");
+    sprintf(#tip2, "Fixed Slice is on: grains use the current slice duration. Target %s.", #wantph);
   );
 );
 
