@@ -65,7 +65,7 @@ recent_max = 24;
 
 voice_base = recent_base + recent_max + 4096;
 max_voices = 24;
-v_stride = 13; // active,start,src_pos,src_len,rate,amp,phaseofs,cand,mode,reserved,polarity,age,env_len
+v_stride = 13; // active,start,src_pos,src_len,rate,amp,phaseofs,cand,mode,spawn_support,polarity,age,env_len
 
 freembuf(voice_base + max_voices * v_stride + 4096);
 
@@ -107,9 +107,15 @@ follow = 0;
 follow_ui_peak = 0.25;
 det_raw = 0;
 det_soft = 0;
+det_mix = 0;
+det_prev = 0;
+det_prime = 0;
 support_sig = 0;
 support_drive = 0;
 support_mix = 0;
+support_prev = 0;
+support_rise = 0;
+wake_force = 0;
 gate = 0;
 gate_peak = 0;
 trig_v = 0;
@@ -326,9 +332,15 @@ h > 0 ? (
           follow = 0;
           det_raw = 0;
           det_soft = 0;
+          det_mix = 0;
+          det_prev = 0;
+          det_prime = 0;
           support_sig = 0;
           support_drive = 0;
           support_mix = 0;
+          support_prev = 0;
+          support_rise = 0;
+          wake_force = 0;
           gate = 0;
           gate_peak = 0;
           trig_v = 0;
@@ -1006,53 +1018,122 @@ function pick_candidate(mode_local) local(i, weight, total, rr, accum, chosen, d
   chosen;
 );
 
-function refine_spawn_start(start, region_len, mode_local) local(search_back, search_fwd, lo, hi, fr, best_f, best_cost, vm, v0, vp, edge, future, cost, zc) (
-  mode_local == 0 ? (
-    search_back = min(floor(ana_win * 0.10), 64);
-    search_fwd  = min(max(floor(region_len * 0.30), floor(ana_win * 0.35)), 512);
-  ) : (
+function refine_spawn_start(start, region_len, mode_local) local(search_back, search_fwd, lo, hi, fr, best_f, best_cost, vm, v0, vp, edge, future, cost, zc, best_anchor, best_onset, rise, pre_roll, sub_lo, sub_hi, future2, onset_cost) (
+  mode_local == 2 ? (
     search_back = min(floor(ana_win * 0.18), 96);
     search_fwd  = min(max(floor(region_len * 0.18), floor(ana_win * 0.20)), 256);
-  );
 
-  lo = start - search_back;
-  hi = start + search_fwd;
-  lo < 1 ? lo = 1;
-  hi > tex_frames - 3 ? hi = tex_frames - 3;
+    lo = start - search_back;
+    hi = start + search_fwd;
+    lo < 1 ? lo = 1;
+    hi > tex_frames - 3 ? hi = tex_frames - 3;
 
-  best_f = start;
-  best_cost = 1000000;
-  fr = lo;
-  loop(max(1, hi - lo + 1),
-    vm = tex_read(fr - 1, 0);
-    v0 = tex_read(fr, 0);
-    vp = tex_read(fr + 1, 0);
-    tex_ch > 1 ? (
-      vm = 0.5 * (vm + tex_read(fr - 1, 1));
-      v0 = 0.5 * (v0 + tex_read(fr, 1));
-      vp = 0.5 * (vp + tex_read(fr + 1, 1));
-    );
+    best_f = start;
+    best_cost = 1000000;
+    fr = lo;
+    loop(max(1, hi - lo + 1),
+      vm = tex_read(fr - 1, 0);
+      v0 = tex_read(fr, 0);
+      vp = tex_read(fr + 1, 0);
+      tex_ch > 1 ? (
+        vm = 0.5 * (vm + tex_read(fr - 1, 1));
+        v0 = 0.5 * (v0 + tex_read(fr, 1));
+        vp = 0.5 * (vp + tex_read(fr + 1, 1));
+      );
 
-    edge = abs(v0) + 0.55 * abs(vp - vm);
-    zc = ((v0 >= 0) != (vm >= 0)) ? 1 : 0;
+      edge = abs(v0) + 0.55 * abs(vp - vm);
+      zc = ((v0 >= 0) != (vm >= 0)) ? 1 : 0;
 
-    mode_local == 0 ? (
-      future = abs(tex_read(fr + 4, 0)) + abs(tex_read(fr + 8, 0));
-      tex_ch > 1 ? future = 0.5 * (future + abs(tex_read(fr + 4, 1)) + abs(tex_read(fr + 8, 1)));
-      cost = edge - 0.20 * future;
-    ) : (
       future = abs(tex_read(fr + 2, 0));
       tex_ch > 1 ? future = 0.5 * (future + abs(tex_read(fr + 2, 1)));
       cost = edge - 0.06 * future;
+
+      zc > 0 ? cost *= 0.82;
+      cost < best_cost ? (
+        best_cost = cost;
+        best_f = fr;
+      );
+
+      fr += 1;
+    );
+  ) : (
+    // One-shot/random should start close to the candidate's salient attack, not
+    // drag in a long quiet pre-roll that makes Wet feel pushed behind Dry.
+    search_fwd = min(max(floor(region_len * 0.65), floor(ana_win * 0.90)), 4096);
+    lo = start;
+    hi = start + search_fwd;
+    lo < 1 ? lo = 1;
+    hi > tex_frames - 9 ? hi = tex_frames - 9;
+
+    best_anchor = start;
+    best_onset = -1000000;
+    fr = lo;
+    loop(max(1, hi - lo + 1),
+      vm = tex_read(fr - 1, 0);
+      v0 = tex_read(fr, 0);
+      vp = tex_read(fr + 1, 0);
+      future = abs(tex_read(fr + 4, 0));
+      future2 = abs(tex_read(fr + 8, 0));
+      tex_ch > 1 ? (
+        vm = 0.5 * (vm + tex_read(fr - 1, 1));
+        v0 = 0.5 * (v0 + tex_read(fr, 1));
+        vp = 0.5 * (vp + tex_read(fr + 1, 1));
+        future = 0.5 * (future + abs(tex_read(fr + 4, 1)));
+        future2 = 0.5 * (future2 + abs(tex_read(fr + 8, 1)));
+      );
+
+      rise = abs(vp) - abs(vm);
+      rise < 0 ? rise = 0;
+      edge = abs(v0) + 0.40 * abs(vp - vm);
+      zc = ((v0 >= 0) != (vm >= 0)) ? 1 : 0;
+
+      onset_cost = 0.62 * abs(vp - vm) + 0.52 * rise + 0.18 * future + 0.12 * future2 - 0.10 * edge;
+      zc > 0 ? onset_cost *= 1.06;
+
+      onset_cost > best_onset ? (
+        best_onset = onset_cost;
+        best_anchor = fr;
+      );
+
+      fr += 1;
     );
 
-    zc > 0 ? cost *= 0.82;
-    cost < best_cost ? (
-      best_cost = cost;
-      best_f = fr;
-    );
+    pre_roll = floor(max(0.002 * tex_sr, min(0.012 * tex_sr, env_a_ms * 0.001 * tex_sr * 0.65)));
+    pre_roll < 8 ? pre_roll = 8;
+    pre_roll > floor(ana_win * 0.45) ? pre_roll = floor(ana_win * 0.45);
 
-    fr += 1;
+    best_f = best_anchor - pre_roll;
+    best_f < 1 ? best_f = 1;
+
+    // Tiny local anti-click refinement around the onset-aligned start.
+    sub_lo = best_f - min(floor(pre_roll * 0.50), 20);
+    sub_hi = best_f + min(floor(pre_roll * 0.25), 12);
+    sub_lo < 1 ? sub_lo = 1;
+    sub_hi > tex_frames - 3 ? sub_hi = tex_frames - 3;
+
+    best_cost = 1000000;
+    fr = sub_lo;
+    loop(max(1, sub_hi - sub_lo + 1),
+      vm = tex_read(fr - 1, 0);
+      v0 = tex_read(fr, 0);
+      vp = tex_read(fr + 1, 0);
+      tex_ch > 1 ? (
+        vm = 0.5 * (vm + tex_read(fr - 1, 1));
+        v0 = 0.5 * (v0 + tex_read(fr, 1));
+        vp = 0.5 * (vp + tex_read(fr + 1, 1));
+      );
+
+      edge = abs(v0) + 0.45 * abs(vp - vm);
+      zc = ((v0 >= 0) != (vm >= 0)) ? 1 : 0;
+      cost = edge;
+      zc > 0 ? cost *= 0.85;
+      cost < best_cost ? (
+        best_cost = cost;
+        best_f = fr;
+      );
+
+      fr += 1;
+    );
   );
 
   best_f;
@@ -1209,11 +1290,10 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
     env_nom_len = env_a_s_base + env_d_s_base + env_r_s_base;
     env_nom_len < 8 ? env_nom_len = 8;
 
-    auto_slice ? (
-      req_env_len < env_nom_len ? req_env_len = env_nom_len;
-    ) : (
-      req_env_len > env_nom_len ? req_env_len = env_nom_len;
-    );
+    // Grain articulation should remain a per-voice envelope, not be collapsed
+    // by slice/event duration. Short slices may still bias source length, but
+    // the voice envelope should not shrink below the programmed ADSR surface.
+    req_env_len < env_nom_len ? req_env_len = env_nom_len;
 
     src_need = floor(req_env_len * rate) + 8;
     req_src_len < src_need ? req_src_len = src_need;
@@ -1287,7 +1367,7 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
     mem[vb + 6 ] = off;
     mem[vb + 7 ] = ci;
     mem[vb + 8 ] = mode_local;
-    mem[vb + 9 ] = 0;
+    mem[vb + 9 ] = support_sig;
     mem[vb + 10] = sign;
     mem[vb + 11] = 0;
     mem[vb + 12] = req_env_len;
@@ -1329,12 +1409,32 @@ det_raw > follow ? (
 det_soft = 1 - exp(-det_sat_k * max(0, follow));
 det_soft < 0 ? det_soft = 0;
 det_soft > 1 ? det_soft = 1;
-det_soft > follow_ui_peak ? follow_ui_peak = det_soft;
+
+// onset assist / priming: wake the detector quickly on fresh transients without
+// making the whole confidence path twitchy all the time.
+det_rise = det_raw - det_prev;
+det_prev = det_raw;
+det_rise < 0 ? det_rise = 0;
+
+startup_idle = (gate <= 0) && (support_sig < 0.04);
+det_prime = 0;
+det_rise > 0 ? (
+  det_prime = 1 - exp(-(0.85 + 0.15 * sensitivity) * det_rise);
+  det_prime *= startup_idle ? 0.85 : 0.18;
+);
+det_prime < 0 ? det_prime = 0;
+det_prime > 1 ? det_prime = 1;
+
+det_mix = det_soft;
+det_prime > det_mix ? det_mix = det_prime;
+det_mix < 0 ? det_mix = 0;
+det_mix > 1 ? det_mix = 1;
+det_mix > follow_ui_peak ? follow_ui_peak = det_mix;
 
 // soft-knee participation map
 knee_span = knee_hi - knee_lo;
 knee_span <= eps ? knee_span = eps;
-knee_t = (det_soft - knee_lo) / knee_span;
+knee_t = (det_mix - knee_lo) / knee_span;
 support_raw = smoothstep01(knee_t);
 
 // final support smoothing
@@ -1344,11 +1444,33 @@ support_raw > support_sig ? (
   support_sig = support_raw + sup_rel_c * (support_sig - support_raw);
 );
 
+// seed the support state slightly on cold onsets so the first bite is not shaved off.
+startup_idle ? (
+  support_seed = support_raw * (0.30 + 0.45 * det_prime);
+  support_seed > support_sig ? support_sig = support_seed;
+);
+
 // optional baseline: whisper-level motion can still grow a faint bed,
 // but true silence still collapses to zero.
 support_drive = support_sig + support_floor * det_soft * (1 - support_sig);
 support_drive < 0 ? support_drive = 0;
 support_drive > 1 ? support_drive = 1;
+
+support_rise = support_drive - support_prev;
+support_rise < 0 ? support_rise = 0;
+
+wake_force = 0;
+((support_prev < 0.025) && (support_drive > 0.055)) ? (
+  wake_force = 1;
+);
+((det_prime > 0.18) && (support_drive > 0.04)) ? (
+  wake_force = 1;
+);
+((support_rise > 0.05) && (support_drive > 0.08)) ? (
+  wake_force = 1;
+);
+
+support_prev = support_drive;
 
 support_mix =
   mode == 0 ? max(0.18, 0.22 + 0.78 * support_drive) :
@@ -1361,11 +1483,16 @@ note_off = 0;
 trig_on = 0.10;
 trig_off = 0.04;
 
+gate_open_ctl = support_sig;
+prime_gate = det_prime * (0.65 + 0.10 * sensitivity);
+prime_gate > 1 ? prime_gate = 1;
+prime_gate > gate_open_ctl ? gate_open_ctl = prime_gate;
+
 gate <= 0 ? (
-  support_sig >= trig_on ? (
+  gate_open_ctl >= trig_on ? (
     gate = 1;
     note_on = 1;
-    gate_peak = support_sig;
+    gate_peak = support_drive;
     trig_v = cur_v;
   );
 ) : (
@@ -1386,11 +1513,17 @@ cloud_radius_frames = max(128, floor((dur_ms * 0.001 * tex_sr) * (0.90 + pos_wan
 note_on && tex_loaded && analysis_ready ? (
   mode == 0 ? (
     spawn_voice(0);
-    trig_flash = 1;
   ) : (
-    spawn_countdown = 0;
-    trig_flash = 1;
+    // First grain must land exactly when the source event clears the gate.
+    // Do not wait for the random/granular scheduler to "wake up" later.
+    spawn_voice(mode);
+    texture_running = 1;
+
+    note_density_eff = density * max(0.18, support_drive);
+    note_base_interval = srate / max(0.12, note_density_eff);
+    spawn_countdown = max(1, floor(note_base_interval * (0.88 + 0.16 * rand01())));
   );
+  trig_flash = 1;
 );
 
 note_off ? (
@@ -1415,15 +1548,22 @@ note_off ? (
 );
 
 mode > 0 ? (
-  density_eff = density * support_drive;
+  density_eff = density * max(0.05, support_drive);
   spawn_prob = 0.10 + 0.90 * support_drive;
-  texture_running = (support_drive > 0.01) && tex_loaded && analysis_ready;
+
+  // Support should shape density/assertiveness, but gate permission should
+  // decide whether new voices are allowed at all. Otherwise Dry+Wet feels like
+  // the whole texture engine is shifted later by support attack/release lag.
+  texture_running = (gate > 0) && tex_loaded && analysis_ready;
+  base_interval = srate / max(0.12, density_eff);
 
   texture_running ? (
+    wake_force ? spawn_countdown = min(spawn_countdown, max(1, floor(base_interval * 0.35)));
+    spawn_countdown > base_interval ? spawn_countdown = base_interval;
+
     spawn_countdown -= 1;
     spawn_countdown <= 0 ? (
-      rand01() <= spawn_prob ? spawn_voice(mode);
-      base_interval = srate / max(0.12, density_eff);
+      (wake_force || (rand01() <= spawn_prob)) ? spawn_voice(mode);
       jitter_amt = mode == 2 ? 0.18 : 0.35;
       spawn_countdown = max(1, floor(base_interval * (1 + randSym() * jitter_amt)));
     );
@@ -1456,8 +1596,15 @@ active_ct = 0;
         envv < 0 ? envv = 0;
 
         src = mem[vb + 1] + srcpos + mem[vb + 6];
-        gate_rel_mode == 2 ? (
-          motion_env = sqrt(max(0, support_sig));
+        gate_rel_mode == 2 && (gate <= 0) ? (
+          spawn_sup = mem[vb + 9];
+          spawn_sup < 0.06 ? spawn_sup = 0.06;
+          rel_ratio = support_sig / spawn_sup;
+          rel_ratio < 0 ? rel_ratio = 0;
+          rel_ratio > 1 ? rel_ratio = 1;
+          // Clamp should feel like a post-release leash, not a second master envelope
+          // constantly re-owning already spawned voices.
+          motion_env = 0.30 + 0.70 * sqrt(rel_ratio);
         ) : (
           motion_env = 1;
         );
@@ -1505,7 +1652,7 @@ abs(texR) > out_abs ? out_abs = abs(texR);
 
 // salience budget: detector support + user Support budget keep texture from leaping ahead.
 input_sal = raw_in_abs;
-det_soft > input_sal ? input_sal = det_soft;
+det_mix > input_sal ? input_sal = det_mix;
 input_sal > 1 ? input_sal = 1;
 input_sal < 0 ? input_sal = 0;
 
@@ -2371,7 +2518,7 @@ gfx_printf("Tune %+.2f st  •  Jit ±%.1fct / ±%.1fdB / ±%.0f°", slider28, p
 follow_warp = 0.35;
 follow_inv_warp = 1 / follow_warp;
 
-follow_det = clampg(det_soft, 0, 1);
+follow_det = clampg(det_mix, 0, 1);
 follow_disp = pow(follow_det, follow_warp);
 thr_on_disp  = pow(clampg(slider4, 0, 1), follow_warp);
 thr_off_disp = pow(clampg(slider4 * slider24, 0, 1), follow_warp);
@@ -2390,7 +2537,7 @@ draw_meter(follow_bar_x, follow_bar_y, follow_bar_w, follow_bar_h, follow_disp, 
 
 gfx_r = 0.70; gfx_g = 0.76; gfx_b = 0.84; gfx_a = 1;
 gfx_x = sx; gfx_y = sy + spx(92);
-gfx_printf("knee %.4f→%.4f  live %.0f%%  floor %.0f%%", slider4 * slider24, slider4, support_sig * 100, support_floor * 100);
+gfx_printf("knee %.4f→%.4f  live %.0f%%  onset %.0f%%  wake %g", slider4 * slider24, slider4, support_sig * 100, det_prime * 100, wake_force);
 
 out_disp = 1 - exp(-2.4 * meter_out);
 gfx_r = 0.82; gfx_g = 0.86; gfx_b = 0.92; gfx_a = 1;
@@ -2716,7 +2863,7 @@ hover_env_pt == 1 ? (
 ) : hover_follow_bar ? (
   tip_on = 1;
   sprintf(#tip1, "Continuous detector: drag the high knee, wheel the low knee/hysteresis.");
-  sprintf(#tip2, "Soft %.4f, knee %.4f→%.4f, live support %.0f%%.", det_soft, slider4 * slider24, slider4, support_sig * 100);
+  sprintf(#tip2, "Det %.4f, onset %.4f, knee %.4f→%.4f, live %.0f%%.", det_mix, det_prime, slider4 * slider24, slider4, support_sig * 100);
 ) : hover_macro == 1 ? (
   tip_on = 1;
   auto_slice ? (
@@ -2784,7 +2931,7 @@ hover_env_pt == 1 ? (
   ) : slider26 < 1.5 ? (
     sprintf(#tip1, "Tight release: tails are shortened on gate-off.");
   ) : (
-    sprintf(#tip1, "Clamp release: texture follows the motion envelope after gate-off.");
+    sprintf(#tip1, "Clamp release: after gate-off, tails are leashed relative to their spawn support.");
   );
   sprintf(#tip2, "Useful when wetness should not overshoot the physical action.");
 ) : hover_out_btn ? (
