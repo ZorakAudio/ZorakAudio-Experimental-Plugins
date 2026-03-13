@@ -105,6 +105,11 @@ spawn_countdown = 0;
 
 follow = 0;
 follow_ui_peak = 0.25;
+det_raw = 0;
+det_soft = 0;
+support_sig = 0;
+support_drive = 0;
+support_mix = 0;
 gate = 0;
 gate_peak = 0;
 trig_v = 0;
@@ -170,10 +175,14 @@ tex_gain = exp((slider2 / 20) * ln10);
 
 sensitivity = slider3;
 
-// threshold lives directly in detector space and is edited on the FOLLOW bar.
+// threshold lives directly on the detector soft-knee meter.
 th_on = slider4;
 th_off = slider4 * slider24;
 th_off < 0 ? th_off = 0;
+
+knee_hi = th_on;
+knee_lo = th_off;
+det_sat_k = 1.35 + 0.20 * min(1, (sensitivity - 0.1) / 7.9);
 
 mode = floor(slider10 + 0.5);
 
@@ -200,7 +209,7 @@ phase_jit_deg = pow(jitter, 0.95) * 180;
 global_pitch_st = slider28;
 global_pitch_cents = global_pitch_st * 100;
 
-support = slider25;
+support_budget = slider25;
 gate_rel_mode = floor(slider26 + 0.5);
 auto_slice = slider27 > 0.5;
 
@@ -229,6 +238,19 @@ f_rel_s = max(1, floor(follow_rel_ms * 0.001 * srate));
 
 f_atk_c = exp(-1 / f_atk_s);
 f_rel_c = exp(-1 / f_rel_s);
+
+sup_atk_ms = max(2, follow_atk_ms * 0.70);
+sup_rel_ms = max(10, follow_rel_ms * 0.80);
+sup_atk_s = max(1, floor(sup_atk_ms * 0.001 * srate));
+sup_rel_s = max(1, floor(sup_rel_ms * 0.001 * srate));
+sup_atk_c = exp(-1 / sup_atk_s);
+sup_rel_c = exp(-1 / sup_rel_s);
+
+support_floor =
+  mode == 0 ? 0 :
+  mode == 1 ? (0.02 + 0.04 * flow_sq) :
+  (0.04 + 0.04 * flow_sq);
+support_floor > 0.08 ? support_floor = 0.08;
 
 env_a_s_base = max(1, floor(env_a_ms * 0.001 * srate));
 env_d_s_base = max(1, floor(env_d_ms * 0.001 * srate));
@@ -302,6 +324,11 @@ h > 0 ? (
           tex_rate = tex_sr / srate;
 
           follow = 0;
+          det_raw = 0;
+          det_soft = 0;
+          support_sig = 0;
+          support_drive = 0;
+          support_mix = 0;
           gate = 0;
           gate_peak = 0;
           trig_v = 0;
@@ -801,7 +828,7 @@ trig_flash *= 0.92;
 last_spawn_flash *= 0.94;
 meter_out *= 0.90;
 follow_ui_peak *= 0.97;
-follow > follow_ui_peak ? follow_ui_peak = follow;
+det_soft > follow_ui_peak ? follow_ui_peak = det_soft;
 
 @sample
 function clamp1(v, lo, hi) (
@@ -830,6 +857,11 @@ function shape01(t, k) local(p) (
     t = 1 - pow(1 - t, p);
   );
   t;
+);
+
+function smoothstep01(t) (
+  t = clamp1(t, 0, 1);
+  t * t * (3 - 2 * t);
 );
 
 function tex_read(frame, ch) local(i0, frac, i1, base0, base1, s0, s1, lim) (
@@ -1222,11 +1254,12 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
 
     trig_amp = 0.38 + 0.62 * pow(max(trig_v, 0.001), 0.60);
     strength = (1 - input_link) + input_link * trig_amp;
+    strength *= (0.15 + 0.85 * support_mix);
     mode_local == 1 ? strength *= 0.92;
     mode_local == 2 ? strength *= 0.80;
 
     // Pre-budget highly salient grains so low Support behaves like backing texture, not foreground theft.
-    local_support = support + (1 - support) * (1 - 0.75 * max(score, mem[base + 7]));
+    local_support = support_budget + (1 - support_budget) * (1 - 0.75 * max(score, mem[base + 7]));
     local_support < 0.22 ? local_support = 0.22;
     strength *= local_support;
 
@@ -1282,44 +1315,69 @@ in_abs = abs(spl0);
 abs(spl1) > in_abs ? in_abs = abs(spl1);
 raw_in_abs = in_abs;
 
-// detector drive
-det_in = raw_in_abs * sensitivity;
+// detector extraction + first smoothing
+// treat the detector as a continuous confidence signal, not a binary gate.
+det_raw = raw_in_abs * sensitivity;
 
-det_in > follow ? (
-  follow = det_in + f_atk_c * (follow - det_in);
+det_raw > follow ? (
+  follow = det_raw + f_atk_c * (follow - det_raw);
 ) : (
-  follow = det_in + f_rel_c * (follow - det_in);
+  follow = det_raw + f_rel_c * (follow - det_raw);
 );
 
-follow > follow_ui_peak ? follow_ui_peak = follow;
+// soft saturation: weak motion blooms a bit, strong motion compresses gently.
+det_soft = 1 - exp(-det_sat_k * max(0, follow));
+det_soft < 0 ? det_soft = 0;
+det_soft > 1 ? det_soft = 1;
+det_soft > follow_ui_peak ? follow_ui_peak = det_soft;
 
-gate_src = det_in;
-follow > gate_src ? gate_src = follow;
+// soft-knee participation map
+knee_span = knee_hi - knee_lo;
+knee_span <= eps ? knee_span = eps;
+knee_t = (det_soft - knee_lo) / knee_span;
+support_raw = smoothstep01(knee_t);
 
-denom = 1 - th_on;
-denom <= eps ? denom = eps;
-cur_v = clamp1((gate_src - th_on) / denom, 0, 1);
+// final support smoothing
+support_raw > support_sig ? (
+  support_sig = support_raw + sup_atk_c * (support_sig - support_raw);
+) : (
+  support_sig = support_raw + sup_rel_c * (support_sig - support_raw);
+);
+
+// optional baseline: whisper-level motion can still grow a faint bed,
+// but true silence still collapses to zero.
+support_drive = support_sig + support_floor * det_soft * (1 - support_sig);
+support_drive < 0 ? support_drive = 0;
+support_drive > 1 ? support_drive = 1;
+
+support_mix =
+  mode == 0 ? max(0.18, 0.22 + 0.78 * support_drive) :
+  support_drive;
+
+cur_v = support_drive;
 
 note_on = 0;
 note_off = 0;
+trig_on = 0.10;
+trig_off = 0.04;
 
 gate <= 0 ? (
-  follow >= th_on ? (
+  support_sig >= trig_on ? (
     gate = 1;
     note_on = 1;
-    gate_peak = gate_src;
+    gate_peak = support_sig;
     trig_v = cur_v;
   );
 ) : (
-  follow <= th_off ? (
+  support_sig <= trig_off ? (
     gate = 0;
     note_off = 1;
   );
 );
 
 gate > 0 ? (
-  gate_src > gate_peak ? gate_peak = gate_src;
-  peak_v = clamp1((gate_peak - th_on) / denom, 0, 1);
+  support_sig > gate_peak ? gate_peak = support_sig;
+  peak_v = support_drive;
   peak_v > trig_v ? trig_v = peak_v;
 );
 
@@ -1330,7 +1388,6 @@ note_on && tex_loaded && analysis_ready ? (
     spawn_voice(0);
     trig_flash = 1;
   ) : (
-    texture_running = 1;
     spawn_countdown = 0;
     trig_flash = 1;
   );
@@ -1357,13 +1414,21 @@ note_off ? (
   );
 );
 
-(texture_running > 0) && tex_loaded && analysis_ready && (mode > 0) ? (
-  spawn_countdown -= 1;
-  spawn_countdown <= 0 ? (
-    spawn_voice(mode);
-    base_interval = srate / max(0.25, density);
-    jitter_amt = mode == 2 ? 0.18 : 0.35;
-    spawn_countdown = max(1, floor(base_interval * (1 + randSym() * jitter_amt)));
+mode > 0 ? (
+  density_eff = density * support_drive;
+  spawn_prob = 0.10 + 0.90 * support_drive;
+  texture_running = (support_drive > 0.01) && tex_loaded && analysis_ready;
+
+  texture_running ? (
+    spawn_countdown -= 1;
+    spawn_countdown <= 0 ? (
+      rand01() <= spawn_prob ? spawn_voice(mode);
+      base_interval = srate / max(0.12, density_eff);
+      jitter_amt = mode == 2 ? 0.18 : 0.35;
+      spawn_countdown = max(1, floor(base_interval * (1 + randSym() * jitter_amt)));
+    );
+  ) : (
+    spawn_countdown = 0;
   );
 );
 
@@ -1392,8 +1457,7 @@ active_ct = 0;
 
         src = mem[vb + 1] + srcpos + mem[vb + 6];
         gate_rel_mode == 2 ? (
-          motion_env = clamp1(follow / max(th_on, 0.000001), 0, 1);
-          motion_env = sqrt(motion_env);
+          motion_env = sqrt(max(0, support_sig));
         ) : (
           motion_env = 1;
         );
@@ -1439,14 +1503,13 @@ voices_last_count = active_ct;
 out_abs = abs(texL);
 abs(texR) > out_abs ? out_abs = abs(texR);
 
-// salience budget: keep texture from leaping ahead of the input.
+// salience budget: detector support + user Support budget keep texture from leaping ahead.
 input_sal = raw_in_abs;
-raw_follow = follow / max(sensitivity, 0.000001);
-raw_follow > input_sal ? input_sal = raw_follow;
+det_soft > input_sal ? input_sal = det_soft;
 input_sal > 1 ? input_sal = 1;
 input_sal < 0 ? input_sal = 0;
 
-support_ceiling = input_sal + support * (1 - input_sal);
+support_ceiling = input_sal + (support_budget * support_mix) * (1 - input_sal);
 support_ceiling < 0 ? support_ceiling = 0;
 support_ceiling > 1 ? support_ceiling = 1;
 
@@ -2308,7 +2371,7 @@ gfx_printf("Tune %+.2f st  •  Jit ±%.1fct / ±%.1fdB / ±%.0f°", slider28, p
 follow_warp = 0.35;
 follow_inv_warp = 1 / follow_warp;
 
-follow_det = clampg(follow, 0, 1);
+follow_det = clampg(det_soft, 0, 1);
 follow_disp = pow(follow_det, follow_warp);
 thr_on_disp  = pow(clampg(slider4, 0, 1), follow_warp);
 thr_off_disp = pow(clampg(slider4 * slider24, 0, 1), follow_warp);
@@ -2327,7 +2390,7 @@ draw_meter(follow_bar_x, follow_bar_y, follow_bar_w, follow_bar_h, follow_disp, 
 
 gfx_r = 0.70; gfx_g = 0.76; gfx_b = 0.84; gfx_a = 1;
 gfx_x = sx; gfx_y = sy + spx(92);
-gfx_printf("thr %.4f  off %.4f  hyst %.0f%%", slider4, slider4 * slider24, slider24 * 100);
+gfx_printf("knee %.4f→%.4f  live %.0f%%  floor %.0f%%", slider4 * slider24, slider4, support_sig * 100, support_floor * 100);
 
 out_disp = 1 - exp(-2.4 * meter_out);
 gfx_r = 0.82; gfx_g = 0.86; gfx_b = 0.92; gfx_a = 1;
@@ -2337,7 +2400,7 @@ draw_meter(sx, sy + spx(134), sw, spx(14), out_disp, 0.32, 0.94, 0.44, -1, -1);
 
 gfx_r = 0.70; gfx_g = 0.76; gfx_b = 0.84; gfx_a = 1;
 gfx_x = sx; gfx_y = sy + spx(154);
-gfx_printf("peak %.5f  gate %g  support %.0f%%", meter_out, gate, support_gain * 100);
+gfx_printf("peak %.5f  gate %g  live %.0f%%  duck %.0f%%", meter_out, gate, support_mix * 100, support_gain * 100);
 
 // macro controls
 macro_y0 = sy + spx(172);
@@ -2652,8 +2715,8 @@ hover_env_pt == 1 ? (
   sprintf(#tip2, "Current release %.1f ms.", slider18);
 ) : hover_follow_bar ? (
   tip_on = 1;
-  sprintf(#tip1, "Follower gate bar: drag threshold, wheel hysteresis.");
-  sprintf(#tip2, "Threshold %.4f, gate-off %.4f, hysteresis %.0f%%.", slider4, slider4 * slider24, slider24 * 100);
+  sprintf(#tip1, "Continuous detector: drag the high knee, wheel the low knee/hysteresis.");
+  sprintf(#tip2, "Soft %.4f, knee %.4f→%.4f, live support %.0f%%.", det_soft, slider4 * slider24, slider4, support_sig * 100);
 ) : hover_macro == 1 ? (
   tip_on = 1;
   auto_slice ? (
@@ -2685,12 +2748,12 @@ hover_env_pt == 1 ? (
   sprintf(#tip2, "Current tune %+.2f st (%+d cents).", slider28, tip_pitch_cents);
 ) : hover_macro == 7 ? (
   tip_on = 1;
-  sprintf(#tip1, "Sensitivity drives the detector before thresholding.");
-  sprintf(#tip2, "Current sensitivity %.2fx. Higher hears smaller motions.", slider3);
+  sprintf(#tip1, "Sensitivity drives the detector before saturation + soft-knee participation.");
+  sprintf(#tip2, "Current sensitivity %.2fx. Higher blooms quieter motion sooner.", slider3);
 ) : hover_macro == 8 ? (
   tip_on = 1;
-  sprintf(#tip1, "Support is the salience budget for keeping texture behind the source.");
-  sprintf(#tip2, "Current support %.0f%%. Lower values duck harder.", slider25 * 100);
+  sprintf(#tip1, "Support is the salience budget applied after detector support is computed.");
+  sprintf(#tip2, "Current support %.0f%%. Lower values keep texture further behind the source.", slider25 * 100);
 ) : hover_macro == 9 ? (
   tip_on = 1;
   sprintf(#tip1, "Dry/wet blend for the texture layer.");
