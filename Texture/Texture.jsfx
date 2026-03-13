@@ -33,7 +33,7 @@ slider24:0.70<0.05,0.99,0.001>-Gate Hysteresis
 slider25:1<0,1,0.001>-Support
 slider26:0<0,2,1{Free,Tight,Clamp}>-Gate Release Mode
 slider27:0<0,1,1{Fixed,Auto}>-Auto Slice
-slider28:0<0,1,0.001>-Reserved
+slider28:0<-24,24,0.01>-Global Pitch (st)
 slider29:0<0,1,0.001>-Reserved
 slider30:0<0,1,0.001>-Reserved
 
@@ -197,6 +197,8 @@ pos_wander = 0.03 + flow_sq * 0.97;
 pitch_jit = pow(jitter, 1.15) * 72;
 amp_jit_db = jitter * 4.5;
 phase_jit_deg = pow(jitter, 0.95) * 180;
+global_pitch_st = slider28;
+global_pitch_cents = global_pitch_st * 100;
 
 support = slider25;
 gate_rel_mode = floor(slider26 + 0.5);
@@ -1150,7 +1152,7 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
     rndf = 1 + dur_var * randSym();
     rndf < 0.18 ? rndf = 0.18;
 
-    cents = pitch_jit * randSym();
+    cents = global_pitch_cents + pitch_jit * randSym();
     rate = tex_sr / srate * exp((cents / 1200) * ln2);
 
     auto_slice ? (
@@ -1679,9 +1681,10 @@ function macro_norm(id) (
   id == 3 ? norm_lin(slider6, 0, 1) :
   id == 4 ? norm_lin(slider7, 0, 1) :
   id == 5 ? norm_lin(slider8, 0, 1) :
-  id == 6 ? norm_log(slider3, 0.1, 8) :
-  id == 7 ? norm_lin(slider25, 0, 1) :
-  id == 8 ? norm_lin(slider1, 0, 1) :
+  id == 6 ? norm_lin(slider28, -24, 24) :
+  id == 7 ? norm_log(slider3, 0.1, 8) :
+  id == 8 ? norm_lin(slider25, 0, 1) :
+  id == 9 ? norm_lin(slider1, 0, 1) :
   0;
 );
 
@@ -1691,9 +1694,10 @@ function macro_set(id, t) (
   id == 3 ? (slider6 = denorm_lin(t, 0, 1); sliderchange(slider6););
   id == 4 ? (slider7 = denorm_lin(t, 0, 1); sliderchange(slider7););
   id == 5 ? (slider8 = denorm_lin(t, 0, 1); sliderchange(slider8););
-  id == 6 ? (slider3 = denorm_log(t, 0.1, 8); sliderchange(slider3););
-  id == 7 ? (slider25 = denorm_lin(t, 0, 1); sliderchange(slider25););
-  id == 8 ? (slider1 = denorm_lin(t, 0, 1); sliderchange(slider1););
+  id == 6 ? (slider28 = denorm_lin(t, -24, 24); sliderchange(slider28););
+  id == 7 ? (slider3 = denorm_log(t, 0.1, 8); sliderchange(slider3););
+  id == 8 ? (slider25 = denorm_lin(t, 0, 1); sliderchange(slider25););
+  id == 9 ? (slider1 = denorm_lin(t, 0, 1); sliderchange(slider1););
 );
 
 function macro_strings(id) (
@@ -1713,12 +1717,15 @@ function macro_strings(id) (
     sprintf(#mlab, "Jitter");
     sprintf(#mval, "%.0f%%", slider8 * 100);
   ) : id == 6 ? (
+    sprintf(#mlab, "Pitch");
+    sprintf(#mval, "%+.2f st", slider28);
+  ) : id == 7 ? (
     sprintf(#mlab, "Sensitivity");
     sprintf(#mval, "%.2f x", slider3);
-  ) : id == 7 ? (
+  ) : id == 8 ? (
     sprintf(#mlab, "Support");
     sprintf(#mval, "%.0f%%", slider25 * 100);
-  ) : id == 8 ? (
+  ) : id == 9 ? (
     sprintf(#mlab, "Mix");
     sprintf(#mval, "%.0f%%", slider1 * 100);
   );
@@ -1729,9 +1736,11 @@ function macro_color(id) (
     mr = 0.26; mg = 0.70; mb = 0.92;
   ) : id <= 4 ? (
     mr = 0.34; mg = 0.84; mb = 0.54;
-  ) : id <= 5 ? (
+  ) : id == 5 ? (
     mr = 0.74; mg = 0.56; mb = 0.96;
-  ) : id <= 7 ? (
+  ) : id == 6 ? (
+    mr = 0.94; mg = 0.48; mb = 0.88;
+  ) : id <= 8 ? (
     mr = 0.96; mg = 0.72; mb = 0.24;
   ) : (
     mr = 0.88; mg = 0.82; mb = 0.36;
@@ -1810,17 +1819,17 @@ top_h = spx(32);
 wf_x = pad;
 wf_y = pad + top_h + spx(12);
 wf_w = gfx_w - pad * 2;
-wf_h = floor(gfx_h * 0.36);
-wf_h < spx(150) ? wf_h = spx(150);
+wf_h = floor(gfx_h * 0.35);
+wf_h < spx(142) ? wf_h = spx(142);
 
-footer_y = wf_y + wf_h + spx(8);
-lower_y = footer_y + spx(18);
+footer_y = wf_y + wf_h + spx(6);
+lower_y = wf_y + wf_h + spx(14);
 
 env_x = pad;
 env_y = lower_y;
 env_w = floor((gfx_w - pad * 3) * 0.56);
 env_h = gfx_h - env_y - pad;
-env_h < spx(240) ? env_h = spx(240);
+env_h < spx(232) ? env_h = spx(232);
 
 side_x = env_x + env_w + pad;
 side_y = env_y;
@@ -1960,6 +1969,7 @@ gfx_line(wf_x, mid_y, wf_x + wf_w, mid_y, 1);
   draw_ref < 0.000001 ? draw_ref = wf_absmax;
   draw_ref < 0.000001 ? draw_ref = 1;
   scale = (wf_h * 0.44) / draw_ref;
+  wf_right = wf_x + wf_w - 1;
 
   i = 0;
   loop(wf_bins,
@@ -1967,18 +1977,29 @@ gfx_line(wf_x, mid_y, wf_x + wf_w, mid_y, 1);
     mxv = mem[wf_base + i * 2 + 1];
 
     x = wf_x + i * xstep;
+    x2c = x + max(1, floor(xstep + 0.5));
+    x2c > wf_x + wf_w ? x2c = wf_x + wf_w;
+    bar_w = x2c - x;
+    bar_w < 1 ? bar_w = 1;
+
     y1 = mid_y - mxv * scale;
     y2 = mid_y - mn * scale;
+    y1 < wf_y ? y1 = wf_y;
+    y1 > wf_y + wf_h ? y1 = wf_y + wf_h;
+    y2 < wf_y ? y2 = wf_y;
+    y2 > wf_y + wf_h ? y2 = wf_y + wf_h;
 
     hv = mem[heat_base + i];
     gfx_r = 0.82 * hv;
     gfx_g = 0.44 * hv;
     gfx_b = 0.16 * hv;
     gfx_a = 0.10 + 0.14 * hv;
-    gfx_rect(x, wf_y + wf_h - spx(18), max(1, xstep + 1), spx(18), 1);
+    x < wf_x + wf_w ? gfx_rect(x, wf_y + wf_h - spx(18), bar_w, spx(18), 1);
 
+    xline = x;
+    xline > wf_right ? xline = wf_right;
     gfx_r = 0.66; gfx_g = 0.84; gfx_b = 0.94; gfx_a = 0.90;
-    gfx_line(x, y1, x, y2, 1);
+    gfx_line(xline, y1, xline, y2, 1);
 
     i += 1;
   );
@@ -1995,10 +2016,14 @@ gfx_line(wf_x, mid_y, wf_x + wf_w, mid_y, 1);
 );
 
 (tex_loaded > 0) ? (
+  wf_right = wf_x + wf_w - 1;
+
   last_spawn_len > 0 ? (
     lx1 = wf_x + (last_spawn_start / max(1, tex_frames)) * wf_w;
     lx2 = wf_x + ((last_spawn_start + last_spawn_len) / max(1, tex_frames)) * wf_w;
-    lx2 < lx1 + 2 ? lx2 = lx1 + 2;
+    lx1 = clampg(lx1, wf_x, wf_right);
+    lx2 = clampg(lx2, wf_x, wf_x + wf_w);
+    lx2 < lx1 + 2 ? lx2 = min(wf_x + wf_w, lx1 + 2);
 
     last_spawn_mode == 0 ? (
       gfx_r = 0.18; gfx_g = 0.62; gfx_b = 0.94;
@@ -2008,7 +2033,7 @@ gfx_line(wf_x, mid_y, wf_x + wf_w, mid_y, 1);
       gfx_r = 0.70; gfx_g = 0.42; gfx_b = 0.94;
     );
     gfx_a = 0.08 + 0.12 * last_spawn_flash;
-    gfx_rect(lx1, wf_y, lx2 - lx1, wf_h, 1);
+    gfx_rect(lx1, wf_y, max(1, lx2 - lx1), wf_h, 1);
   );
 
   vi = 0;
@@ -2023,7 +2048,11 @@ gfx_line(wf_x, mid_y, wf_x + wf_w, mid_y, 1);
       x1 = wf_x + (vstart / max(1, tex_frames)) * wf_w;
       x2 = wf_x + ((vstart + vlen) / max(1, tex_frames)) * wf_w;
       px = wf_x + ((vstart + vpos) / max(1, tex_frames)) * wf_w;
-      x2 < x1 + 2 ? x2 = x1 + 2;
+
+      x1 = clampg(x1, wf_x, wf_right);
+      x2 = clampg(x2, wf_x, wf_x + wf_w);
+      px = clampg(px, wf_x, wf_right);
+      x2 < x1 + 2 ? x2 = min(wf_x + wf_w, x1 + 2);
 
       vmode == 0 ? (
         gfx_r = 0.18; gfx_g = 0.70; gfx_b = 0.96;
@@ -2033,7 +2062,7 @@ gfx_line(wf_x, mid_y, wf_x + wf_w, mid_y, 1);
         gfx_r = 0.76; gfx_g = 0.52; gfx_b = 0.98;
       );
       gfx_a = 0.06;
-      gfx_rect(x1, wf_y, x2 - x1, wf_h, 1);
+      gfx_rect(x1, wf_y, max(1, x2 - x1), wf_h, 1);
 
       gfx_a = 0.85;
       gfx_line(px, wf_y, px, wf_y + wf_h, 1);
@@ -2046,6 +2075,7 @@ over_wf = hit(mx, my, wf_x, wf_y, wf_w, wf_h);
 over_wf && (tex_loaded > 0) ? (
   hover_n = clampg((mx - wf_x) / wf_w, 0, 1);
   hover_x = wf_x + hover_n * wf_w;
+  hover_x = clampg(hover_x, wf_x, wf_x + wf_w - 1);
   hover_sec = tex_sr > 0 ? (hover_n * tex_frames) / tex_sr : 0;
 
   gfx_r = 0.98; gfx_g = 0.92; gfx_b = 0.52; gfx_a = 0.82;
@@ -2053,8 +2083,12 @@ over_wf && (tex_loaded > 0) ? (
 
   sprintf(#hoverbuf, "%.3fs", hover_sec);
   gfx_setfont(1, "Verdana", ft_small);
+  gfx_measurestr(#hoverbuf, hov_tw, hov_th);
+  hov_tx = hover_x + spx(8);
+  hov_tx + hov_tw > wf_x + wf_w - spx(6) ? hov_tx = hover_x - hov_tw - spx(8);
+  hov_tx < wf_x + spx(6) ? hov_tx = wf_x + spx(6);
   gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.98; gfx_a = 1;
-  gfx_x = hover_x + spx(8); gfx_y = wf_y + spx(8);
+  gfx_x = hov_tx; gfx_y = wf_y + spx(8);
   gfx_drawstr(#hoverbuf);
 
   click ? (
@@ -2062,21 +2096,6 @@ over_wf && (tex_loaded > 0) ? (
   );
 );
 
-gfx_setfont(1, "Verdana", ft_small);
-gfx_r = 0.82; gfx_g = 0.86; gfx_b = 0.92; gfx_a = 1;
-gfx_x = wf_x + spx(2); gfx_y = footer_y;
-last_spawn_len > 0 ? (
-  spawn_sec = tex_sr > 0 ? last_spawn_start / tex_sr : 0;
-  spawn_len_ms = tex_sr > 0 ? 1000 * last_spawn_len / tex_sr : 0;
-  gfx_printf("Last grain %.3fs  •  Slice %.1fms  •  Active voices %d  •  Cloud %.3fs",
-    spawn_sec,
-    spawn_len_ms,
-    voices_last_count,
-    tex_sr > 0 ? cloud_center / tex_sr : 0
-  );
-) : (
-  gfx_printf("Click the waveform to relocate the granular cloud.");
-);
 
 // envelope panel
 gfx_r = 0.085; gfx_g = 0.095; gfx_b = 0.122; gfx_a = 1;
@@ -2089,10 +2108,6 @@ gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.98; gfx_a = 1;
 gfx_x = env_x + spx(14); gfx_y = env_y + spx(12);
 gfx_printf("Envelope");
 
-gfx_setfont(1, "Verdana", ft_meta);
-gfx_r = 0.72; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
-gfx_x = env_x + spx(86); gfx_y = env_y + spx(15);
-gfx_printf("Drag graph or knobs  •  wheel curve strips or graph segments");
 
 e_pad = spx(18);
 graph_x = env_x + e_pad;
@@ -2263,6 +2278,16 @@ sx = side_x + sp;
 sy = side_y + spx(14);
 sw = side_w - sp * 2;
 
+pitch_disp = pow(slider8, 1.15) * 72;
+amp_disp = slider8 * 4.5;
+phase_disp = pow(slider8, 0.95) * 180;
+flow_density =
+  slider10 < 0.5 ? 1 :
+  slider10 < 1.5 ? (0.85 + slider5 * slider5 * 15.0) :
+  (3.0 + pow(slider5, 1.6) * 42.0);
+wander_pct = (0.03 + slider5 * slider5 * 0.97) * 100;
+repeat_pct = (0.20 + 0.80 * slider6) * 100;
+
 gfx_setfont(1, "Verdana", ft_panel);
 gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.98; gfx_a = 1;
 gfx_x = sx; gfx_y = sy;
@@ -2276,6 +2301,9 @@ slider10 < 1.5 ? sprintf(#modebuf, "Random") :
 sprintf(#modebuf, "Granular");
 gfx_printf("%s  •  active %d  •  cloud %.3fs", #modebuf, voices_last_count, tex_sr > 0 ? cloud_center / tex_sr : 0);
 
+gfx_x = sx; gfx_y = sy + spx(38);
+gfx_printf("Tune %+.2f st  •  Jit ±%.1fct / ±%.1fdB / ±%.0f°", slider28, pitch_disp, amp_disp, phase_disp);
+
 // follower meter
 follow_warp = 0.35;
 follow_inv_warp = 1 / follow_warp;
@@ -2286,38 +2314,35 @@ thr_on_disp  = pow(clampg(slider4, 0, 1), follow_warp);
 thr_off_disp = pow(clampg(slider4 * slider24, 0, 1), follow_warp);
 
 follow_bar_x = sx;
-follow_bar_y = sy + spx(70);
+follow_bar_y = sy + spx(72);
 follow_bar_w = sw;
 follow_bar_h = spx(14);
 hover_follow_bar = hit(mx, my, follow_bar_x, follow_bar_y - spx(4), follow_bar_w, follow_bar_h + spx(10));
 
 gfx_setfont(1, "Verdana", ft_meta);
 gfx_r = 0.82; gfx_g = 0.86; gfx_b = 0.92; gfx_a = 1;
-gfx_x = sx; gfx_y = sy + spx(54);
+gfx_x = sx; gfx_y = sy + spx(56);
 gfx_printf("FOLLOW");
 draw_meter(follow_bar_x, follow_bar_y, follow_bar_w, follow_bar_h, follow_disp, 0.24, 0.72, 0.92, thr_on_disp, thr_off_disp);
 
 gfx_r = 0.70; gfx_g = 0.76; gfx_b = 0.84; gfx_a = 1;
-gfx_x = sx; gfx_y = sy + spx(88);
-gfx_printf("det %.4f  thr %.4f  off %.4f  hyst %.0f%%", follow, slider4, slider4 * slider24, slider24 * 100);
-
-gfx_x = sx; gfx_y = sy + spx(102);
-gfx_printf("drag bar = threshold  •  wheel = hysteresis");
+gfx_x = sx; gfx_y = sy + spx(92);
+gfx_printf("thr %.4f  off %.4f  hyst %.0f%%", slider4, slider4 * slider24, slider24 * 100);
 
 out_disp = 1 - exp(-2.4 * meter_out);
 gfx_r = 0.82; gfx_g = 0.86; gfx_b = 0.92; gfx_a = 1;
-gfx_x = sx; gfx_y = sy + spx(132);
+gfx_x = sx; gfx_y = sy + spx(118);
 gfx_printf("TEXTURE OUT");
-draw_meter(sx, sy + spx(148), sw, spx(14), out_disp, 0.32, 0.94, 0.44, -1, -1);
+draw_meter(sx, sy + spx(134), sw, spx(14), out_disp, 0.32, 0.94, 0.44, -1, -1);
 
 gfx_r = 0.70; gfx_g = 0.76; gfx_b = 0.84; gfx_a = 1;
-gfx_x = sx; gfx_y = sy + spx(166);
-gfx_printf("peak %.5f  gate %g  trig %.3f", meter_out, gate, trig_v);
+gfx_x = sx; gfx_y = sy + spx(154);
+gfx_printf("peak %.5f  gate %g  support %.0f%%", meter_out, gate, support_gain * 100);
 
 // macro controls
-macro_y0 = sy + spx(198);
-row_h = spx(30);
-row_gap = spx(4);
+macro_y0 = sy + spx(172);
+row_h = spx(27);
+row_gap = spx(3);
 col_gap = spx(14);
 col_w = floor((sw - col_gap) * 0.5);
 c1x = sx;
@@ -2325,10 +2350,10 @@ c2x = sx + col_w + col_gap;
 
 hover_macro = 0;
 i = 0;
-loop(8,
+loop(9,
   cid = i + 1;
-  col = cid <= 4 ? 0 : 1;
-  row = col ? (cid - 5) : (cid - 1);
+  col = cid <= 5 ? 0 : 1;
+  row = col ? (cid - 6) : (cid - 1);
   cx = col ? c2x : c1x;
   cy = macro_y0 + row * (row_h + row_gap);
 
@@ -2361,7 +2386,7 @@ loop(8,
   i += 1;
 );
 
-// derived summary
+// compact status values used by the header + tooltips
 flow_density =
   slider10 < 0.5 ? 1 :
   slider10 < 1.5 ? (0.85 + slider5 * slider5 * 15.0) :
@@ -2371,24 +2396,6 @@ repeat_pct = (0.20 + 0.80 * slider6) * 100;
 pitch_disp = pow(slider8, 1.15) * 72;
 amp_disp = slider8 * 4.5;
 phase_disp = pow(slider8, 0.95) * 180;
-gate_rel_mode < 0.5 ? sprintf(#gatebuf, "free") :
-gate_rel_mode < 1.5 ? sprintf(#gatebuf, "tight") :
-sprintf(#gatebuf, "clamp");
-slider27 > 0.5 ? sprintf(#slicebuf, "auto") : sprintf(#slicebuf, "fixed");
-
-info_y = macro_y0 + 4 * (row_h + row_gap) + spx(18);
-gfx_setfont(1, "Verdana", ft_meta);
-gfx_r = 0.72; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
-gfx_x = sx; gfx_y = info_y;
-gfx_printf("Flow drives density %.2f/s and wander %.0f%%.", flow_density, wander_pct);
-gfx_x = sx; gfx_y = info_y + spx(18);
-gfx_printf("Focus biases salience and repeat-avoid %.0f%%.", repeat_pct);
-gfx_x = sx; gfx_y = info_y + spx(36);
-gfx_printf("Jitter bundles ±%.1f ct, ±%.1f dB, phase ±%.0f°.", pitch_disp, amp_disp, phase_disp);
-gfx_x = sx; gfx_y = info_y + spx(54);
-gfx_printf("Support %.0f%%  •  release %s  •  slice %s.", slider25 * 100, #gatebuf, #slicebuf);
-gfx_x = sx; gfx_y = info_y + spx(72);
-gfx_printf("Candidate gate keeps %d of %d grains live.", cand_live_count, cand_count);
 
 // follow bar interaction
 rclick && hover_follow_bar ? (
@@ -2586,6 +2593,190 @@ wheel != 0 && (hover_env_seg > 0) && (hover_slope == 0) ? (
 
 !lmb && (ui_active_kind == 0) ? (
   ui_active_id = 0;
+);
+
+
+// hover tooltip
+tip_on = 0;
+sprintf(#tip1, "");
+sprintf(#tip2, "");
+
+hover_mode_btn  = hit(mx, my, mode_x, top_y, mode_w, btn_h);
+hover_slice_btn = hit(mx, my, slice_x, top_y, slice_w, btn_h);
+hover_gate_btn  = hit(mx, my, gate_x, top_y, gate_w, btn_h);
+hover_out_btn   = hit(mx, my, out_x, top_y, out_w, btn_h);
+hover_auto_btn  = hit(mx, my, auto_x, top_y, util_w, btn_h);
+hover_reload_btn= hit(mx, my, reload_x, top_y, reload_w, btn_h);
+tip_pitch_cents = floor(abs(slider28) * 100 + 0.5);
+slider28 < 0 ? tip_pitch_cents = -tip_pitch_cents;
+
+hover_env_pt == 1 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Attack point: drag right for longer onset.");
+  sprintf(#tip2, "Current attack %.1f ms, curve %.2f.", slider15, slider19);
+) : hover_env_pt == 2 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Decay/Sustain point: drag right for decay, up/down for sustain.");
+  sprintf(#tip2, "Current decay %.1f ms, sustain %.3f, curve %.2f.", slider16, slider17, slider20);
+) : hover_env_pt == 3 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Release point: drag right for longer tail.");
+  sprintf(#tip2, "Current release %.1f ms, curve %.2f.", slider18, slider21);
+) : hover_slope == 1 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Attack curve strip. Wheel or drag for concave/linear/convex.");
+  sprintf(#tip2, "Current attack curve %.2f.", slider19);
+) : hover_slope == 2 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Decay curve strip. Wheel or drag to reshape the fall.");
+  sprintf(#tip2, "Current decay curve %.2f.", slider20);
+) : hover_slope == 3 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Release curve strip. Wheel or drag to tighten or soften the tail.");
+  sprintf(#tip2, "Current release curve %.2f.", slider21);
+) : hover_knob == 1 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Attack time for every grain envelope.");
+  sprintf(#tip2, "Current attack %.1f ms.", slider15);
+) : hover_knob == 2 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Decay time after the attack peak.");
+  sprintf(#tip2, "Current decay %.1f ms.", slider16);
+) : hover_knob == 3 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Sustain level held before release.");
+  sprintf(#tip2, "Current sustain %.3f.", slider17);
+) : hover_knob == 4 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Release time for every grain tail.");
+  sprintf(#tip2, "Current release %.1f ms.", slider18);
+) : hover_follow_bar ? (
+  tip_on = 1;
+  sprintf(#tip1, "Follower gate bar: drag threshold, wheel hysteresis.");
+  sprintf(#tip2, "Threshold %.4f, gate-off %.4f, hysteresis %.0f%%.", slider4, slider4 * slider24, slider24 * 100);
+) : hover_macro == 1 ? (
+  tip_on = 1;
+  auto_slice ? (
+    sprintf(#tip1, "Slice cap for auto event bounds.");
+    sprintf(#tip2, "Current cap %.0f ms. Longer caps allow broader detected events.", slider9);
+  ) : (
+    sprintf(#tip1, "Fixed per-grain slice duration.");
+    sprintf(#tip2, "Current slice %.0f ms.", slider9);
+  );
+) : hover_macro == 2 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Flow changes density and position wander.");
+  sprintf(#tip2, "Current density %.2f/s, wander %.0f%%.", flow_density, wander_pct);
+) : hover_macro == 3 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Focus prefers more salient grains and avoids repeats.");
+  sprintf(#tip2, "Repeat-avoid %.0f%% with tighter event picking.", repeat_pct);
+) : hover_macro == 4 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Grounding normalizes uneven source dynamics.");
+  sprintf(#tip2, "Current grounding %.0f%%.", slider7 * 100);
+) : hover_macro == 5 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Jitter adds per-grain pitch, level, and phase offset variation.");
+  sprintf(#tip2, "Now ±%.1f ct, ±%.1f dB, ±%.0f°.", pitch_disp, amp_disp, phase_disp);
+) : hover_macro == 6 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Global pitch shifts the entire texture engine.");
+  sprintf(#tip2, "Current tune %+.2f st (%+d cents).", slider28, tip_pitch_cents);
+) : hover_macro == 7 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Sensitivity drives the detector before thresholding.");
+  sprintf(#tip2, "Current sensitivity %.2fx. Higher hears smaller motions.", slider3);
+) : hover_macro == 8 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Support is the salience budget for keeping texture behind the source.");
+  sprintf(#tip2, "Current support %.0f%%. Lower values duck harder.", slider25 * 100);
+) : hover_macro == 9 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Dry/wet blend for the texture layer.");
+  sprintf(#tip2, "Current mix %.0f%% texture.", slider1 * 100);
+) : hover_mode_btn ? (
+  tip_on = 1;
+  slider10 < 0.5 ? (
+    sprintf(#tip1, "One-Shot: one event per trigger, best for punctuated actions.");
+  ) : slider10 < 1.5 ? (
+    sprintf(#tip1, "Random: event-weighted wandering through the source.");
+  ) : (
+    sprintf(#tip1, "Granular: denser cloud around the current region with continuity bias.");
+  );
+  sprintf(#tip2, "Current mode %s.", #modebuf);
+) : hover_slice_btn ? (
+  tip_on = 1;
+  slider27 > 0.5 ? (
+    sprintf(#tip1, "Auto Slice uses local salience peaks + event bounds.");
+    sprintf(#tip2, "Slice becomes a cap instead of a fixed duration.");
+  ) : (
+    sprintf(#tip1, "Fixed Slice forces a nominal duration for every grain.");
+    sprintf(#tip2, "Switch to Auto for score-driven event lengths.");
+  );
+) : hover_gate_btn ? (
+  tip_on = 1;
+  slider26 < 0.5 ? (
+    sprintf(#tip1, "Free release: grains keep their own tail.");
+  ) : slider26 < 1.5 ? (
+    sprintf(#tip1, "Tight release: tails are shortened on gate-off.");
+  ) : (
+    sprintf(#tip1, "Clamp release: texture follows the motion envelope after gate-off.");
+  );
+  sprintf(#tip2, "Useful when wetness should not overshoot the physical action.");
+) : hover_out_btn ? (
+  tip_on = 1;
+  slider11 > 0.5 ? (
+    sprintf(#tip1, "Wet Only outputs just the texture layer.");
+  ) : (
+    sprintf(#tip1, "Dry+Wet keeps the original input underneath.");
+  );
+  sprintf(#tip2, "Current output peak %.5f.", meter_out);
+) : hover_auto_btn ? (
+  tip_on = 1;
+  sprintf(#tip1, "Auto Reload watches the file slot and refreshes when it changes.");
+  slider12 > 0.5 ? sprintf(#tip2, "Auto reload is on.") : sprintf(#tip2, "Auto reload is off.");
+) : hover_reload_btn ? (
+  tip_on = 1;
+  sprintf(#tip1, "Manual reload of the file slot and analysis cache.");
+  sprintf(#tip2, "Use after changing source files or if the host misses an update.");
+) : over_wf ? (
+  tip_on = 1;
+  sprintf(#tip1, "Waveform + salience heat. Click to move the granular cloud.");
+  auto_slice ? (
+    sprintf(#tip2, "Auto Slice is on: local score peaks define event lengths.");
+  ) : (
+    sprintf(#tip2, "Fixed Slice is on: grains use the current slice duration.");
+  );
+);
+
+tip_on ? (
+  gfx_setfont(1, "Verdana", ft_meta);
+  gfx_measurestr(#tip1, tip_tw1, tip_th1);
+  gfx_measurestr(#tip2, tip_tw2, tip_th2);
+  tip_pad = spx(8);
+  tip_w = max(tip_tw1, tip_tw2) + tip_pad * 2;
+  tip_h = tip_th1 + tip_th2 + tip_pad * 2 + spx(2);
+
+  tip_x = mx + spx(16);
+  tip_y = my + spx(18);
+  tip_x + tip_w > gfx_w - pad ? tip_x = gfx_w - pad - tip_w;
+  tip_y + tip_h > gfx_h - pad ? tip_y = my - tip_h - spx(14);
+  tip_x < pad ? tip_x = pad;
+  tip_y < pad ? tip_y = pad;
+
+  gfx_r = 0.07; gfx_g = 0.09; gfx_b = 0.12; gfx_a = 0.96;
+  gfx_rect(tip_x, tip_y, tip_w, tip_h, 1);
+  gfx_r = 0.22; gfx_g = 0.26; gfx_b = 0.34; gfx_a = 1;
+  gfx_roundrect(tip_x, tip_y, tip_w, tip_h, spx(6), 1);
+
+  gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.99; gfx_a = 1;
+  gfx_x = tip_x + tip_pad; gfx_y = tip_y + tip_pad;
+  gfx_drawstr(#tip1);
+
+  gfx_r = 0.76; gfx_g = 0.80; gfx_b = 0.88; gfx_a = 1;
+  gfx_x = tip_x + tip_pad; gfx_y = tip_y + tip_pad + tip_th1 + spx(2);
+  gfx_drawstr(#tip2);
 );
 
 ui_add_undo ? sliderchange(-1);
