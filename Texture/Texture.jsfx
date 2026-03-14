@@ -142,8 +142,11 @@ trig_flash = 0;
 last_spawn_flash = 0;
 last_spawn_start = 0;
 last_spawn_len = 0;
+last_spawn_envlen = 0;
+last_spawn_phase = 0;
 last_spawn_mode = 0;
 voices_last_count = 0;
+spawn_continuation = 0;
 
 file_state = 0;
 last_reload = 0;
@@ -423,7 +426,10 @@ h > 0 ? (
           support_gain = 1;
           trig_flash = 0;
           last_spawn_flash = 0;
+          last_spawn_envlen = 0;
+          last_spawn_phase = 0;
           voices_last_count = 0;
+          spawn_continuation = 0;
 
           ri = 0;
           loop(recent_max,
@@ -1614,8 +1620,11 @@ function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms,
       dzc   = abs(mem[base + 4] - mem[pbase + 4]) / max(0.000001, max_zc);
       dctr  = abs(mem[base + 5] - mem[pbase + 5]) / max(0.000001, max_ctr);
       dedge = abs(mem[base + 8] - mem[pbase + 8]) / max(0.000001, max_edge);
+      dstart = abs(mem[base] - mem[pbase]) / max(1, (cand_win(ci) + cand_win(prev_ci)) * 1.5);
+      dstart > 1 ? dstart = 1;
+      slope_flip = ((mem[base + 9] >= 0) != (mem[pbase + 9] >= 0)) ? 1 : 0;
 
-      compat = exp(-(2.6 * drms + 2.3 * dflux + 1.6 * dzc + 1.9 * dctr + 1.2 * dedge));
+      compat = exp(-(2.6 * drms + 2.3 * dflux + 1.6 * dzc + 1.9 * dctr + 1.2 * dedge + 0.85 * dstart + 0.35 * slope_flip));
       compat_amt = (mode_local == 0 ? 0.18 : mode_local == 1 ? 0.46 : 0.82) * profile_comp_mul;
       compat_amt > 0.96 ? compat_amt = 0.96;
       weight *= (1 - compat_amt) + compat_amt * compat;
@@ -1739,7 +1748,7 @@ function pick_candidate(mode_local) local(primary_phase, secondary_phase, total,
 );
 
 function refine_spawn_start(start, region_len, mode_local) local(search_back, search_fwd, lo, hi, fr, best_f, best_cost, vm, v0, vp, edge, future, cost, zc, best_anchor, best_onset, rise, pre_roll, sub_lo, sub_hi, future2, onset_cost) (
-  mode_local == 2 ? (
+  ((mode_local == 2) || (spawn_continuation > 0)) ? (
     search_back = min(floor(ana_win * 0.18), 96);
     search_fwd  = min(max(floor(region_len * 0.18), floor(ana_win * 0.20)), 256);
 
@@ -2000,6 +2009,65 @@ function env_eval(age, env_len, is_gran) local(a_s, d_s, r_s, hold_s, tot, scale
   out;
 );
 
+function ola_window(age, env_len, mode_local, cand_phase) local(fade_ratio, fade_len, min_s, max_s, t, win_in, win_out, rem, out) (
+  mode_local == 0 ? (
+    fade_ratio =
+      cand_phase == phase_att ? 0.06 :
+      cand_phase == phase_rel ? 0.10 :
+      cand_phase == phase_deb ? 0.08 :
+      0.09;
+  ) : mode_local == 1 ? (
+    fade_ratio =
+      cand_phase == phase_att ? 0.12 :
+      cand_phase == phase_rel ? 0.22 :
+      cand_phase == phase_deb ? 0.10 :
+      0.18;
+  ) : (
+    fade_ratio =
+      cand_phase == phase_att ? 0.18 :
+      cand_phase == phase_rel ? 0.30 :
+      cand_phase == phase_deb ? 0.12 :
+      0.26;
+  );
+
+  // Preserve the first bite on fresh rises, but make ongoing grains overlap more smoothly.
+  support_rise > 0.012 ? fade_ratio *= 0.70;
+  support_fall > 0.010 ? fade_ratio *= 1.15;
+
+  min_s = floor((mode_local == 0 ? 0.004 : mode_local == 1 ? 0.008 : 0.010) * srate);
+  max_s = floor((mode_local == 2 ? 0.060 : 0.040) * srate);
+
+  fade_len = floor(env_len * fade_ratio);
+  fade_len < min_s ? fade_len = min_s;
+  fade_len > max_s ? fade_len = max_s;
+  fade_len * 2 > env_len ? fade_len = max(1, floor(env_len * 0.5));
+
+  out = 1;
+  fade_len > 1 ? (
+    age < fade_len ? (
+      t = age / max(1, fade_len);
+      win_in = sin(0.5 * PI * clamp1(t, 0, 1));
+      win_in *= win_in;
+    ) : (
+      win_in = 1;
+    );
+
+    rem = env_len - 1 - age;
+    rem < fade_len ? (
+      t = rem / max(1, fade_len);
+      win_out = sin(0.5 * PI * clamp1(t, 0, 1));
+      win_out *= win_out;
+    ) : (
+      win_out = 1;
+    );
+
+    out = win_in * win_out;
+    mode_local == 0 ? out = 0.55 + 0.45 * out;
+  );
+
+  out;
+);
+
 function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len, env_nom_len, rndf, wanderf, cents, rate, ampj, rms, peak, corr, maxsafe, trig_amp, strength, off, zcn, halfcyc_samp, phase_deg, slot, vb, sign, gran_mult, src_need, cap_src_len, score, local_support, start_region, cand_phase, phase_family, phase_len_mul, local_win) (
   (tex_loaded > 0) && (analysis_ready > 0) && (cand_count > 0) ? (
     ci = pick_candidate(mode_local);
@@ -2075,7 +2143,9 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
     local_win = cand_scale(ci) == scale_short ? ana_win_short : ana_win_med;
     start_region > local_win * 2 ? start_region = local_win * 2;
     start_region < local_win ? start_region = local_win;
+    spawn_continuation = ((mode_local > 0) && (voices_last_count > 0) && ((support_drive > 0.14) || (support_fall > 0.006)));
     start = refine_spawn_start(start, start_region, mode_local);
+    spawn_continuation = 0;
     start > cap_src_len ? start = cap_src_len;
     start < 0 ? start = 0;
 
@@ -2148,6 +2218,8 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
 
     last_spawn_start = start;
     last_spawn_len = req_src_len;
+    last_spawn_envlen = req_env_len;
+    last_spawn_phase = cand_phase;
     last_spawn_mode = mode_local;
     last_spawn_flash = 1;
   );
@@ -2368,11 +2440,41 @@ mode > 0 ? (
   density_eff = density * max(0.05, support_drive);
   spawn_prob = 0.10 + 0.90 * support_drive;
 
+  // When support is clearly falling, bias toward fewer late spawns so the texture
+  // resolves through overlap instead of firing a fresh event right at the end.
+  support_fall > 0.010 ? (
+    tail_guard = 1 - min(0.55, support_fall * 14);
+    density_eff *= tail_guard;
+    spawn_prob *= (0.70 + 0.30 * tail_guard);
+  );
+
   // Support should shape density/assertiveness, but gate permission should
   // decide whether new voices are allowed at all. Otherwise Dry+Wet feels like
   // the whole texture engine is shifted later by support attack/release lag.
   texture_running = (gate > 0) && tex_loaded && analysis_ready;
   base_interval = srate / max(0.12, density_eff);
+
+  // Minimum overlap-add guarantee: if density is sparse, do not allow the hop to
+  // outrun the previous grain's tail completely. This keeps random/granular motion
+  // from sounding like isolated re-triggers.
+  last_spawn_envlen > 0 ? (
+    hop_ratio =
+      mode == 2 ? (
+        last_spawn_phase == phase_body ? 0.48 :
+        last_spawn_phase == phase_rel ? 0.54 :
+        last_spawn_phase == phase_att ? 0.62 :
+        0.72
+      ) : (
+        last_spawn_phase == phase_body ? 0.72 :
+        last_spawn_phase == phase_rel ? 0.66 :
+        last_spawn_phase == phase_att ? 0.82 :
+        0.88
+      );
+    support_fall > 0.010 ? hop_ratio *= 1.08;
+    overlap_interval = floor(last_spawn_envlen * hop_ratio);
+    overlap_interval < 1 ? overlap_interval = 1;
+    base_interval > overlap_interval ? base_interval = overlap_interval;
+  );
 
   texture_running ? (
     wake_force ? spawn_countdown = min(spawn_countdown, max(1, floor(base_interval * 0.35)));
@@ -2411,6 +2513,10 @@ active_ct = 0;
         is_gran = (mem[vb + 8] == 2);
         envv = env_eval(age, envlen, is_gran);
         envv < 0 ? envv = 0;
+
+        ci = floor(mem[vb + 7]);
+        cand_phase = ci >= 0 ? floor(mem[cand_base + ci * cand_stride + 13] + 0.5) : phase_body;
+        envv *= ola_window(age, envlen, mem[vb + 8], cand_phase);
 
         src = mem[vb + 1] + srcpos + mem[vb + 6];
         gate_rel_mode == 2 && (gate <= 0) ? (
@@ -3828,7 +3934,7 @@ hover_env_pt == 1 ? (
   ) : (
     sprintf(#tip1, "Granular: denser cloud around the current region with continuity bias.");
   );
-  sprintf(#tip2, "Current mode %s. Phase pools A%d B%d R%d D%d.", #modebuf, attack_pool_count, body_pool_count, release_pool_count, debris_pool_count);
+  sprintf(#tip2, "Current mode %s. Phase pools A%d B%d R%d D%d. OLA smoothing is active.", #modebuf, attack_pool_count, body_pool_count, release_pool_count, debris_pool_count);
 ) : hover_prof_btn ? (
   tip_on = 1;
   sprintf(#tip1, "Material profile changes phase priors, continuity, scale bias, and duration behavior.");

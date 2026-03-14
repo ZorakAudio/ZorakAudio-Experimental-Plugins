@@ -4698,6 +4698,11 @@ private:
             preserveVmStateSnapshotIndex = -1;
         }
 
+        constexpr int kMouseButtonMask = 1 | 2 | 64;
+        const int currentMouseButtons = inputCopy.mouseCap & kMouseButtonMask;
+        const bool mouseButtonEdgeThisFrame = currentMouseButtons != lastRenderMouseButtons;
+        lastRenderMouseButtons = currentMouseButtons;
+
         std::memcpy (effectiveSliders.data(), snap->sliders.data(), sizeof (double) * 64);
 
         for (int i = 0; i < 64; ++i)
@@ -4751,8 +4756,11 @@ private:
             }
         }
 
-        const bool preserveVmState = preserveVmStateUntilNewSnapshot;
-        if (preserveVmState)
+        // Preserve VM-owned interaction state only on button-transition frames,
+        // and while waiting for the audio snapshot to catch up with UI-authored
+        // writes. Holding a button down no longer blocks vars/mem refresh.
+        const bool preserveVmStateThisFrame = preserveVmStateUntilNewSnapshot || mouseButtonEdgeThisFrame;
+        if (preserveVmStateThisFrame)
         {
             s.vars = nullptr;
             s.memSpans = nullptr;
@@ -4761,8 +4769,7 @@ private:
         }
 
         const bool captureStateWrites = inputCopy.captureStateWrites;
-        const bool anyMouseButtonDown = (inputCopy.mouseCap & (1 | 2 | 64)) != 0;
-        const bool baselineFromVm = anyMouseButtonDown || preserveVmState;
+        const bool baselineFromVm = preserveVmStateThisFrame;
 
         bool wrotePersistentVmState = false;
 
@@ -5042,6 +5049,7 @@ private:
     uint64_t uiSliderOverrideMask = 0;
     bool preserveVmStateUntilNewSnapshot = false;
     int preserveVmStateSnapshotIndex = -1;
+    int lastRenderMouseButtons = 0;
 };
 
 // HELP show/hide

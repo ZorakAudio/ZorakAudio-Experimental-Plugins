@@ -1719,29 +1719,17 @@ public:
     // IMPORTANT:
     // We always sync sliders (they are the "public" parameter surface).
     //
-    // For vars/mem, we must be careful: many JSFX UIs keep *interaction state*
-    // (e.g. drag_id, prev_mouse_cap, hover flags, toggle state) in vars/mem.
-    // The audio thread snapshot can lag behind UI edits (queued writes), and
-    // blindly re-syncing vars/mem every frame can stomp the UI's most recent
-    // state.
-    //
-    // Symptom: clicking a new control keeps dragging the previously-selected
-    // control because prev_mouse_cap/drag state gets overwritten right before
-    // the edge-detect logic runs.
-    //
-    // Fix: during a mouse interaction (any button down), preserve the VM's
-    // vars/mem and only sync sliders. When no buttons are down, we resync
-    // vars/mem from the snapshot so the UI can display audio-driven state.
+    // Vars/mem sync policy is decided by the caller. The UI worker omits
+    // vars/mem on button-edge frames, and while waiting for a fresh audio
+    // snapshot after UI-authored writes. If a snapshot supplies vars/mem,
+    // apply them unconditionally so held mouse buttons do not freeze
+    // audio-driven visuals.
     // ------------------------------------------------------------
     if (snap.sliders) vm->syncSliders(snap.sliders, snap.slidersCount);
 
-    const bool anyMouseButtonDown = (mouseCap & (1 | 2 | 64)) != 0;
-    if (!anyMouseButtonDown)
-    {
-      if (snap.vars)    vm->syncVars(snap.vars, snap.varsCount);
-      if (snap.memSpans && snap.memSpanCount > 0) vm->syncMemSpans(snap.memSpans, snap.memSpanCount, snap.logicalMemN);
-      else if (snap.mem)                     vm->syncMem(snap.mem, snap.memN);
-    }
+    if (snap.vars)    vm->syncVars(snap.vars, snap.varsCount);
+    if (snap.memSpans && snap.memSpanCount > 0) vm->syncMemSpans(snap.memSpans, snap.memSpanCount, snap.logicalMemN);
+    else if (snap.mem)                     vm->syncMem(snap.mem, snap.memN);
 
     vm->setTiming(snap.srate, snap.samplesblock);
 
