@@ -1,0 +1,1010 @@
+desc:Gesture MIDI Pad XL
+// Gesture MIDI Pad XL - drawable gesture pad with CC/Note output and popup mapping menus
+
+tags:midi utility controller gesture xy note cc
+in_pin:none
+out_pin:none
+options:no_meter want_all_kb gfx_hz=60
+
+slider1:1<0,3,1{Direct,Loop,OneShot,PingPong}>-Mode
+slider2:1<0.10,4,0.01:log!>-Playback Speed
+slider3:0.25<0,0.95,0.01>-Smoothing
+slider4:7<1,30,1>-Min Point Distance (px)
+slider5:1<1,16,1>-MIDI Channel
+slider6:1<0,127,1>-CC X
+slider7:74<0,127,1>-CC Y
+slider8:11<0,127,1>-CC Speed
+slider9:1<0,1,1{Off,On}>-Emit Speed CC
+slider10:1<0,1,1{Off,On}>-Emit While Drawing
+slider11:1<0,1,1{Off,On}>-Auto Play After Draw
+slider12:1<0,16,1>-CC Deadband
+slider13:1.50<0.10,10,0.01:log!>-Speed Sensitivity
+slider14:0<0,2,1{CC Only,Note Only,CC + Note}>-Output Mode
+slider15:0<0,2,1{X,Y,Speed}>-Note Pitch Source
+slider16:3<0,3,1{Fixed,X,Y,Speed}>-Note Velocity Source
+slider17:36<0,127,1>-Note Base
+slider18:24<1,72,1>-Note Span
+slider19:100<1,127,1>-Fixed Note Velocity
+
+@init
+ext_noinit = 1;
+gfx_ext_retina = 1;
+
+max_points = 1024;
+x_base = 0;
+y_base = x_base + max_points;
+t_base = y_base + max_points;
+
+function clamp(v, lo, hi)
+(
+  v < lo ? lo : v > hi ? hi : v;
+);
+
+function lerp(a, b, t)
+(
+  a + (b - a) * t;
+);
+
+function sync_params()
+(
+  mode = floor(slider1 + 0.5);
+  play_speed = slider2;
+  smooth_amt = clamp(slider3, 0, 0.95);
+  min_pt_dist = max(1, floor(slider4 + 0.5));
+  midi_chan = floor(slider5 + 0.5) - 1;
+  cc_x_num = floor(slider6 + 0.5);
+  cc_y_num = floor(slider7 + 0.5);
+  cc_speed_num = floor(slider8 + 0.5);
+  emit_speed = slider9 >= 0.5;
+  emit_drawing = slider10 >= 0.5;
+  auto_play = slider11 >= 0.5;
+  cc_deadband = max(0, floor(slider12 + 0.5));
+  speed_sense = slider13;
+  output_mode = floor(slider14 + 0.5);
+  note_pitch_src = floor(slider15 + 0.5);
+  note_vel_src = floor(slider16 + 0.5);
+  note_base = floor(slider17 + 0.5);
+  note_span = max(1, floor(slider18 + 0.5));
+  note_fixed_vel = max(1, floor(slider19 + 0.5));
+);
+
+function force_all_notes_off()
+(
+  note_flush = 1;
+);
+
+function reset_gesture()
+(
+  point_count = 0;
+  drawing = 0;
+  playback_active = 0;
+  play_phase = 0;
+  play_dir = 1;
+  gesture_duration = 1;
+  live_x_target = live_y_target = live_speed_target = 0;
+  sm_x = sm_y = sm_speed = 0;
+  view_x = view_y = view_speed = 0;
+  last_sent_x = last_sent_y = last_sent_speed = -1000;
+  force_all_notes_off();
+);
+
+function add_point(px, py, pt)
+(
+  point_count < max_points ? (
+    x_base[point_count] = clamp(px, 0, 1);
+    y_base[point_count] = clamp(py, 0, 1);
+    t_base[point_count] = max(0, pt);
+    point_count += 1;
+  );
+);
+
+function begin_draw(nx, ny, now, px, py)
+(
+  drawing = 1;
+  playback_active = 0;
+  play_phase = 0;
+  play_dir = 1;
+  point_count = 0;
+  draw_start_time = now;
+  last_add_time = 0;
+  last_add_px = px;
+  last_add_py = py;
+  last_live_time = now;
+  last_live_x = nx;
+  last_live_y = ny;
+  live_x_target = nx;
+  live_y_target = ny;
+  live_speed_target = 0;
+  add_point(nx, ny, 0);
+);
+
+function update_draw(nx, ny, now, px, py)
+local(dx, dy, dt, speed_raw, dist_px, elapsed)
+(
+  dt = max(now - last_live_time, 0.0001);
+  dx = nx - last_live_x;
+  dy = ny - last_live_y;
+  speed_raw = sqrt(dx*dx + dy*dy) / dt;
+
+  live_x_target = clamp(nx, 0, 1);
+  live_y_target = clamp(ny, 0, 1);
+  live_speed_target = clamp(speed_raw * speed_sense * 0.18, 0, 1);
+
+  last_live_x = nx;
+  last_live_y = ny;
+  last_live_time = now;
+
+  dx = px - last_add_px;
+  dy = py - last_add_py;
+  dist_px = sqrt(dx*dx + dy*dy);
+  elapsed = now - draw_start_time;
+
+  (dist_px >= min_pt_dist) || ((elapsed - last_add_time) >= 0.04) ? (
+    add_point(nx, ny, elapsed);
+    last_add_px = px;
+    last_add_py = py;
+    last_add_time = elapsed;
+  );
+);
+
+function end_draw()
+local(i, invdur)
+(
+  drawing ? (
+    drawing = 0;
+
+    point_count <= 0 ? (
+      gesture_duration = 1;
+    ) : (
+      gesture_duration = max(t_base[point_count-1], 0.001);
+      point_count == 1 ? (
+        gesture_duration = 0.5;
+        t_base[0] = 0;
+      ) : (
+        invdur = 1 / gesture_duration;
+        i = 0;
+        loop(point_count,
+          t_base[i] *= invdur;
+          i += 1;
+        );
+      );
+
+      play_phase = 0;
+      play_dir = 1;
+      (auto_play && mode > 0 && point_count > 0) ? (
+        playback_active = 1;
+      );
+    );
+  );
+);
+
+function sample_gesture(ph)
+local(i, t0, t1, a, x0, y0, x1, y1, dt, dx, dy, found)
+(
+  ph = clamp(ph, 0, 1);
+  point_count <= 0 ? (
+    sample_x = sample_y = sample_speed = 0;
+  ) : point_count == 1 ? (
+    sample_x = x_base[0];
+    sample_y = y_base[0];
+    sample_speed = 0;
+  ) : (
+    found = 0;
+    i = 0;
+    loop(point_count - 1,
+      !found ? (
+        t0 = t_base[i];
+        t1 = t_base[i+1];
+        ((ph >= t0) && (ph <= t1)) || ((i == point_count - 2) && (ph >= t1)) ? (
+          a = (t1 > t0) ? ((ph - t0) / max(t1 - t0, 0.000001)) : 0;
+          x0 = x_base[i];
+          y0 = y_base[i];
+          x1 = x_base[i+1];
+          y1 = y_base[i+1];
+          sample_x = lerp(x0, x1, a);
+          sample_y = lerp(y0, y1, a);
+          dt = max((t1 - t0) * gesture_duration, 0.0001);
+          dx = x1 - x0;
+          dy = y1 - y0;
+          sample_speed = clamp((sqrt(dx*dx + dy*dy) / dt) * speed_sense * 0.18, 0, 1);
+          found = 1;
+        );
+      );
+      i += 1;
+    );
+
+    !found ? (
+      sample_x = x_base[point_count-1];
+      sample_y = y_base[point_count-1];
+      sample_speed = 0;
+    );
+  );
+);
+
+function ui_button(id, x, y, w, h, state)
+local(hot, click, active)
+(
+  hot = (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + h);
+  click = 0;
+
+  mouse_pressed && hot ? (
+    drag_item = id;
+  );
+
+  active = drag_item == id;
+  mouse_released && active && hot ? (
+    click = 1;
+  );
+  active && !mouse_down ? (
+    drag_item = 0;
+    active = 0;
+  );
+
+  state ? gfx_set(0.14, 0.76, 0.64, 0.18) : hot ? gfx_set(0.20, 0.24, 0.30, 0.95) : gfx_set(0.12, 0.14, 0.18, 0.95);
+  gfx_rect(x, y, w, h);
+  state ? gfx_set(0.18, 0.82, 0.70, 0.85) : gfx_set(0.65, 0.72, 0.82, hot ? 0.55 : 0.28);
+  gfx_roundrect(x, y, w, h, 8, 1);
+
+  click;
+);
+
+function ui_dropdown(id, x, y, w, h, label_str, value_str, accent)
+local(hot, click, active)
+(
+  hot = (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + h);
+  click = 0;
+
+  mouse_pressed && hot ? (
+    drag_item = id;
+  );
+
+  active = drag_item == id;
+  mouse_released && active && hot ? (
+    click = 1;
+  );
+  active && !mouse_down ? (
+    drag_item = 0;
+    active = 0;
+  );
+
+  gfx_set(0.10, 0.11, 0.15, 1);
+  gfx_rect(x, y, w, h);
+  accent ? gfx_set(0.18, 0.82, 0.70, hot ? 0.34 : 0.22) : gfx_set(0.65, 0.72, 0.82, hot ? 0.30 : 0.16);
+  gfx_roundrect(x, y, w, h, 8, 1);
+
+  gfx_setfont(2, "Arial", 10, 'b');
+  gfx_set(0.54, 0.62, 0.74, 1);
+  gfx_x = x + 10; gfx_y = y + 6; gfx_drawstr(label_str);
+
+  gfx_setfont(3, "Arial", 12, 'b');
+  gfx_set(0.92, 0.97, 1.00, 1);
+  gfx_x = x + 10; gfx_y = y + 20; gfx_drawstr(value_str, 1|256, x + w - 26, y + h - 6);
+
+  gfx_set(0.84, 0.90, 0.98, 0.85);
+  gfx_triangle(x + w - 16, y + h * 0.42, x + w - 8, y + h * 0.42, x + w - 12, y + h * 0.60);
+
+  click;
+);
+
+function ui_hslider(id, x, y, w, h, val, minv, maxv, quant)
+local(hot, t, newv)
+(
+  hot = (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + h);
+  newv = val;
+
+  mouse_pressed && hot ? (
+    drag_item = id;
+  );
+
+  drag_item == id ? (
+    mouse_down ? (
+      t = clamp((mx - x) / max(w, 1), 0, 1);
+      newv = minv + t * (maxv - minv);
+    ) : (
+      drag_item = 0;
+    );
+  );
+
+  quant > 0 ? (
+    newv = floor(newv / quant + 0.5) * quant;
+  );
+  newv = clamp(newv, minv, maxv);
+
+  t = (newv - minv) / max(maxv - minv, 0.000001);
+
+  gfx_set(0.09, 0.10, 0.13, 1);
+  gfx_rect(x, y, w, h);
+  gfx_set(0.65, 0.72, 0.82, 0.22);
+  gfx_roundrect(x, y, w, h, h * 0.5, 1);
+  gfx_set(0.18, 0.82, 0.70, 0.32);
+  gfx_rect(x+1, y+1, max(2, (w-2) * t), h-2);
+  gfx_set(0.93, 0.96, 1.00, 1);
+  gfx_circle(x + t * w, y + h * 0.5, h * 0.42, 1, 1);
+  gfx_set(0.06, 0.07, 0.09, 1);
+  gfx_circle(x + t * w, y + h * 0.5, h * 0.20, 1, 1);
+
+  newv;
+);
+
+function draw_meter(x, y, w, h, val, accent)
+local(t)
+(
+  t = clamp(val, 0, 1);
+  gfx_set(0.10, 0.11, 0.14, 1);
+  gfx_rect(x, y, w, h);
+  gfx_set(0.65, 0.72, 0.82, 0.18);
+  gfx_roundrect(x, y, w, h, h * 0.5, 1);
+  accent ? gfx_set(0.18, 0.82, 0.70, 0.35) : gfx_set(0.74, 0.60, 0.96, 0.35);
+  gfx_rect(x+1, y+1, max(2, (w-2) * t), h-2);
+);
+
+function ui_knob(id, x, y, r, val, minv, maxv, quant)
+local(dx, dy, hot, newv, norm, ang, fine)
+(
+  dx = mx - x;
+  dy = my - y;
+  hot = (dx*dx + dy*dy) <= (r*r);
+  newv = val;
+
+  mouse_pressed && hot ? (
+    drag_item = id;
+    drag_start_y = my;
+    drag_start_val = val;
+  );
+
+  drag_item == id ? (
+    mouse_down ? (
+      fine = (mouse_cap & 8) ? 0.22 : 1;
+      newv = drag_start_val + ((drag_start_y - my) / 140) * (maxv - minv) * fine;
+    ) : (
+      drag_item = 0;
+    );
+  );
+
+  quant > 0 ? (
+    newv = floor(newv / quant + 0.5) * quant;
+  );
+  newv = clamp(newv, minv, maxv);
+  norm = (newv - minv) / max(maxv - minv, 0.000001);
+  ang = (-0.75 + norm * 1.5) * $pi;
+
+  gfx_set(0.08, 0.09, 0.12, 1);
+  gfx_circle(x, y, r + 3, 1, 1);
+  gfx_set(0.14, 0.16, 0.22, 1);
+  gfx_circle(x, y, r, 1, 1);
+  gfx_set(0.18, 0.82, 0.70, 0.25);
+  gfx_circle(x, y, r, 0, 1);
+  gfx_set(0.30, 0.34, 0.42, 0.85);
+  gfx_arc(x, y, r - 6, -0.75*$pi, 0.75*$pi, 1);
+  gfx_set(0.18, 0.82, 0.70, 0.9);
+  gfx_arc(x, y, r - 6, -0.75*$pi, ang, 1);
+  gfx_set(0.95, 0.98, 1.00, 1);
+  gfx_line(x, y, x + cos(ang) * (r - 9), y + sin(ang) * (r - 9), 1);
+  gfx_set(0.06, 0.07, 0.09, 1);
+  gfx_circle(x, y, 3, 1, 1);
+
+  newv;
+);
+
+function draw_card(x, y, w, h, title_str)
+(
+  gfx_set(0.08, 0.09, 0.12, 1);
+  gfx_rect(x, y, w, h);
+  gfx_set(0.65, 0.72, 0.82, 0.16);
+  gfx_roundrect(x, y, w, h, 10, 1);
+  gfx_setfont(2, "Arial", 10, 'b');
+  gfx_set(0.56, 0.66, 0.78, 1);
+  gfx_x = x + 12; gfx_y = y + 8; gfx_drawstr(title_str);
+);
+
+function cc_label(cc, outstr)
+(
+  sprintf(outstr, "CC %d", cc);
+  cc == 0 ? strcat(outstr, "  Bank Select");
+  cc == 1 ? strcat(outstr, "  Mod Wheel");
+  cc == 2 ? strcat(outstr, "  Breath");
+  cc == 4 ? strcat(outstr, "  Foot Ctrl");
+  cc == 5 ? strcat(outstr, "  Porta Time");
+  cc == 7 ? strcat(outstr, "  Volume");
+  cc == 10 ? strcat(outstr, "  Pan");
+  cc == 11 ? strcat(outstr, "  Expression");
+  cc == 64 ? strcat(outstr, "  Sustain");
+  cc == 71 ? strcat(outstr, "  Resonance");
+  cc == 74 ? strcat(outstr, "  Brightness");
+  cc == 91 ? strcat(outstr, "  Reverb");
+  cc == 93 ? strcat(outstr, "  Chorus");
+);
+
+function output_mode_label(val, outstr)
+(
+  val == 0 ? strcpy(outstr, "CC Only");
+  val == 1 ? strcpy(outstr, "Note Only");
+  val == 2 ? strcpy(outstr, "CC + Note");
+);
+
+function mode_label(val, outstr)
+(
+  val == 0 ? strcpy(outstr, "Direct");
+  val == 1 ? strcpy(outstr, "Loop");
+  val == 2 ? strcpy(outstr, "One-Shot");
+  val == 3 ? strcpy(outstr, "Ping-Pong");
+);
+
+function pitch_src_label(val, outstr)
+(
+  val == 0 ? strcpy(outstr, "X Axis");
+  val == 1 ? strcpy(outstr, "Y Axis");
+  val == 2 ? strcpy(outstr, "Speed");
+);
+
+function vel_src_label(val, outstr)
+(
+  val == 0 ? strcpy(outstr, "Fixed Velocity");
+  val == 1 ? strcpy(outstr, "X Axis");
+  val == 2 ? strcpy(outstr, "Y Axis");
+  val == 3 ? strcpy(outstr, "Speed");
+);
+
+function note_name(note, outstr)
+local(pc, oct)
+(
+  pc = note % 12;
+  pc == 0 ? strcpy(outstr, "C");
+  pc == 1 ? strcpy(outstr, "C#");
+  pc == 2 ? strcpy(outstr, "D");
+  pc == 3 ? strcpy(outstr, "D#");
+  pc == 4 ? strcpy(outstr, "E");
+  pc == 5 ? strcpy(outstr, "F");
+  pc == 6 ? strcpy(outstr, "F#");
+  pc == 7 ? strcpy(outstr, "G");
+  pc == 8 ? strcpy(outstr, "G#");
+  pc == 9 ? strcpy(outstr, "A");
+  pc == 10 ? strcpy(outstr, "A#");
+  pc == 11 ? strcpy(outstr, "B");
+  oct = floor(note / 12) - 1;
+  sprintf(#tmp_note_num, "%d", oct);
+  strcat(outstr, #tmp_note_num);
+);
+
+function show_mode_menu(current)
+local(sel)
+(
+  #menu_mode = current == 0 ? "!Direct|Loop|One-Shot|Ping-Pong" : current == 1 ? "Direct|!Loop|One-Shot|Ping-Pong" : current == 2 ? "Direct|Loop|!One-Shot|Ping-Pong" : "Direct|Loop|One-Shot|!Ping-Pong";
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu_mode);
+  sel > 0 ? (sel - 1) : current;
+);
+
+function show_output_mode_menu(current)
+local(sel)
+(
+  #menu_out = current == 0 ? "!CC Only|Note Only|CC + Note" : current == 1 ? "CC Only|!Note Only|CC + Note" : "CC Only|Note Only|!CC + Note";
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu_out);
+  sel > 0 ? (sel - 1) : current;
+);
+
+function show_pitch_src_menu(current)
+local(sel)
+(
+  #menu_pitch = current == 0 ? "!X Axis|Y Axis|Speed" : current == 1 ? "X Axis|!Y Axis|Speed" : "X Axis|Y Axis|!Speed";
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu_pitch);
+  sel > 0 ? (sel - 1) : current;
+);
+
+function show_vel_src_menu(current)
+local(sel)
+(
+  #menu_vel = current == 0 ? "!Fixed Velocity|X Axis|Y Axis|Speed" : current == 1 ? "Fixed Velocity|!X Axis|Y Axis|Speed" : current == 2 ? "Fixed Velocity|X Axis|!Y Axis|Speed" : "Fixed Velocity|X Axis|Y Axis|!Speed";
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu_vel);
+  sel > 0 ? (sel - 1) : current;
+);
+
+function show_channel_menu(current)
+local(sel, i)
+(
+  strcpy(#menu_chan, "");
+  i = 1;
+  loop(16,
+    i == current ? strcat(#menu_chan, "!");
+    sprintf(#menu_item, "Channel %d", i);
+    strcat(#menu_chan, #menu_item);
+    i < 16 ? strcat(#menu_chan, "|");
+    i += 1;
+  );
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu_chan);
+  sel > 0 ? sel : current;
+);
+
+function show_cc_menu(current)
+local(sel, i)
+(
+  strcpy(#menu_cc, "");
+  i = 0;
+  loop(128,
+    i == current ? strcat(#menu_cc, "!");
+    cc_label(i, #menu_item);
+    strcat(#menu_cc, #menu_item);
+    i < 127 ? strcat(#menu_cc, "|");
+    i += 1;
+  );
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu_cc);
+  sel > 0 ? (sel - 1) : current;
+);
+
+sync_params();
+reset_gesture();
+held_note = -1;
+held_vel = 0;
+note_flush = 0;
+prev_mouse_down = 0;
+drag_item = 0;
+drag_start_y = 0;
+drag_start_val = 0;
+
+@slider
+sync_params();
+
+@block
+while (midirecv(offset, msg1, msg2, msg3)) (
+  midisend(offset, msg1, msg2, msg3);
+);
+
+note_flush ? (
+  held_note >= 0 ? (
+    midisend(0, $x80 | midi_chan, held_note, 0);
+    held_note = -1;
+    held_vel = 0;
+  );
+  note_flush = 0;
+);
+
+out_active = 0;
+target_x = live_x_target;
+target_y = live_y_target;
+target_speed = live_speed_target;
+
+drawing && emit_drawing ? (
+  out_active = 1;
+) : (
+  (playback_active && mode > 0 && point_count > 0) ? (
+    sample_gesture(play_phase);
+    target_x = sample_x;
+    target_y = sample_y;
+    target_speed = sample_speed;
+    out_active = 1;
+
+    phase_step = (samplesblock / srate) * play_speed / max(gesture_duration, 0.001);
+
+    mode == 1 ? (
+      play_phase += phase_step;
+      play_phase -= floor(play_phase);
+    ) : mode == 2 ? (
+      play_phase += phase_step;
+      play_phase >= 1 ? (
+        play_phase = 1;
+        playback_active = 0;
+      );
+    ) : (
+      play_phase += phase_step * play_dir;
+      play_phase > 1 ? (
+        play_phase = 2 - play_phase;
+        play_dir = -1;
+      );
+      play_phase < 0 ? (
+        play_phase = -play_phase;
+        play_dir = 1;
+      );
+      play_phase = clamp(play_phase, 0, 1);
+    );
+  ) : (
+    (mode == 0 && point_count > 0) ? (
+      target_x = x_base[point_count-1];
+      target_y = y_base[point_count-1];
+      target_speed = 0;
+      out_active = 1;
+    );
+  );
+);
+
+follow_amt = 1 - smooth_amt;
+sm_x += (target_x - sm_x) * follow_amt;
+sm_y += (target_y - sm_y) * follow_amt;
+sm_speed += (target_speed - sm_speed) * follow_amt;
+
+view_x = sm_x;
+view_y = sm_y;
+view_speed = sm_speed;
+
+send_ccs = (output_mode == 0) || (output_mode == 2);
+send_notes = (output_mode == 1) || (output_mode == 2);
+
+(send_ccs && out_active) ? (
+  ccx_val = floor(clamp(sm_x, 0, 1) * 127 + 0.5);
+  ccy_val = floor(clamp(sm_y, 0, 1) * 127 + 0.5);
+  ccs_val = floor(clamp(sm_speed, 0, 1) * 127 + 0.5);
+
+  (abs(ccx_val - last_sent_x) >= cc_deadband) || (last_sent_x < 0) ? (
+    midisend(0, $xB0 | midi_chan, cc_x_num, ccx_val);
+    last_sent_x = ccx_val;
+  );
+
+  (abs(ccy_val - last_sent_y) >= cc_deadband) || (last_sent_y < 0) ? (
+    midisend(0, $xB0 | midi_chan, cc_y_num, ccy_val);
+    last_sent_y = ccy_val;
+  );
+
+  emit_speed ? (
+    (abs(ccs_val - last_sent_speed) >= cc_deadband) || (last_sent_speed < 0) ? (
+      midisend(0, $xB0 | midi_chan, cc_speed_num, ccs_val);
+      last_sent_speed = ccs_val;
+    );
+  );
+);
+
+want_note = send_notes && (drawing || (playback_active && mode > 0));
+
+want_note ? (
+  pitch_norm = note_pitch_src == 0 ? sm_x : note_pitch_src == 1 ? sm_y : sm_speed;
+  cur_note = clamp(note_base + floor(clamp(pitch_norm, 0, 1) * note_span + 0.5), 0, 127);
+  vel_norm = note_vel_src == 0 ? (note_fixed_vel / 127) : note_vel_src == 1 ? sm_x : note_vel_src == 2 ? sm_y : sm_speed;
+  cur_vel = clamp(floor(clamp(vel_norm, 0, 1) * 127 + 0.5), 1, 127);
+
+  held_note < 0 ? (
+    midisend(0, $x90 | midi_chan, cur_note, cur_vel);
+    held_note = cur_note;
+    held_vel = cur_vel;
+  ) : (
+    cur_note != held_note ? (
+      midisend(0, $x80 | midi_chan, held_note, 0);
+      midisend(0, $x90 | midi_chan, cur_note, cur_vel);
+      held_note = cur_note;
+      held_vel = cur_vel;
+    );
+  );
+) : (
+  held_note >= 0 ? (
+    midisend(0, $x80 | midi_chan, held_note, 0);
+    held_note = -1;
+    held_vel = 0;
+  );
+);
+
+@gfx 1220 760
+mx = mouse_x;
+my = mouse_y;
+mouse_down = mouse_cap & 1;
+mouse_pressed = mouse_down && !prev_mouse_down;
+mouse_released = !mouse_down && prev_mouse_down;
+prev_mouse_down = mouse_down;
+gfx_getchar();
+
+sync_params();
+
+panel_w = max(390, min(430, gfx_w * 0.35));
+pad_x = 18;
+pad_y = 56;
+pad_w = max(300, gfx_w - panel_w - 54);
+pad_h = max(260, gfx_h - 78);
+panel_x = pad_x + pad_w + 18;
+panel_y = pad_y;
+panel_h = pad_h;
+
+// Background
+gfx_set(0.05, 0.06, 0.08, 1);
+gfx_rect(0, 0, gfx_w, gfx_h);
+gfx_set(0.07, 0.08, 0.11, 1);
+gfx_rect(0, 0, gfx_w, 42);
+gfx_setfont(1, "Arial", 22, 'b');
+gfx_set(0.93, 0.97, 1.00, 1);
+gfx_x = 18; gfx_y = 10; gfx_drawstr("Gesture MIDI Pad XL");
+gfx_setfont(2, "Arial", 12, 0);
+gfx_set(0.60, 0.68, 0.78, 1);
+gfx_x = 18; gfx_y = 32; gfx_drawstr("Draw gestures, map them to CC or Notes, and record the stream directly in REAPER.");
+
+// Pad frame
+gfx_set(0.09, 0.10, 0.13, 1);
+gfx_rect(pad_x, pad_y, pad_w, pad_h);
+gfx_set(0.25, 0.30, 0.38, 0.35);
+gfx_roundrect(pad_x, pad_y, pad_w, pad_h, 10, 1);
+
+// Pad grid
+gfx_set(0.18, 0.22, 0.28, 0.55);
+i = 1;
+loop(9,
+  gx = pad_x + (pad_w / 10) * i;
+  gy = pad_y + (pad_h / 10) * i;
+  gfx_line(gx, pad_y+1, gx, pad_y+pad_h-1, 1);
+  gfx_line(pad_x+1, gy, pad_x+pad_w-1, gy, 1);
+  i += 1;
+);
+
+mode_label(mode, #mode_disp);
+output_mode_label(output_mode, #out_disp);
+cc_label(cc_x_num, #ccx_disp);
+cc_label(cc_y_num, #ccy_disp);
+cc_label(cc_speed_num, #ccs_disp);
+
+// Axis / mapping labels
+gfx_setfont(2, "Arial", 11, 'b');
+gfx_set(0.45, 0.55, 0.66, 1);
+gfx_x = pad_x + 12; gfx_y = pad_y + 10; gfx_drawstr(#out_disp);
+gfx_x = pad_x + 12; gfx_y = pad_y + pad_h - 38; gfx_drawstr(#ccx_disp);
+gfx_x = pad_x + 12; gfx_y = pad_y + pad_h - 22; gfx_drawstr(#ccy_disp);
+
+// Gesture path
+point_count > 0 ? (
+  gfx_set(0.18, 0.82, 0.70, 0.90);
+  sx0 = pad_x + x_base[0] * pad_w;
+  sy0 = pad_y + (1 - y_base[0]) * pad_h;
+  i = 1;
+  loop(point_count - 1,
+    sx1 = pad_x + x_base[i] * pad_w;
+    sy1 = pad_y + (1 - y_base[i]) * pad_h;
+    gfx_line(sx0, sy0, sx1, sy1, 1);
+    sx0 = sx1;
+    sy0 = sy1;
+    i += 1;
+  );
+
+  gfx_set(0.75, 0.88, 0.98, 0.80);
+  gfx_circle(pad_x + x_base[0] * pad_w, pad_y + (1 - y_base[0]) * pad_h, 4, 1, 1);
+  gfx_set(0.98, 0.54, 0.74, 0.90);
+  gfx_circle(pad_x + x_base[point_count-1] * pad_w, pad_y + (1 - y_base[point_count-1]) * pad_h, 4, 1, 1);
+);
+
+// Crosshair / playhead
+cx = pad_x + clamp(view_x, 0, 1) * pad_w;
+cy = pad_y + (1 - clamp(view_y, 0, 1)) * pad_h;
+gfx_set(0.95, 0.97, 1.00, 0.08);
+gfx_line(cx, pad_y+1, cx, pad_y+pad_h-1, 1);
+gfx_line(pad_x+1, cy, pad_x+pad_w-1, cy, 1);
+gfx_set(drawing ? 0.98 : 0.18, drawing ? 0.57 : 0.82, drawing ? 0.76 : 0.70, 1);
+gfx_circle(cx, cy, drawing ? 7 : 6, 1, 1);
+gfx_set(0.05, 0.06, 0.08, 1);
+gfx_circle(cx, cy, 2, 1, 1);
+
+// Panel cards
+card_gap = 8;
+card1_y = panel_y;
+card1_h = 96;
+card2_y = card1_y + card1_h + card_gap;
+card2_h = 92;
+card3_y = card2_y + card2_h + card_gap;
+card3_h = 168;
+card4_y = card3_y + card3_h + card_gap;
+card4_h = 130;
+card5_y = card4_y + card4_h + card_gap;
+card5_h = panel_y + panel_h - card5_y;
+
+draw_card(panel_x, card1_y, panel_w, card1_h, "TRANSPORT & PLAYBACK");
+draw_card(panel_x, card2_y, panel_w, card2_h, "PERFORMANCE");
+draw_card(panel_x, card3_y, panel_w, card3_h, "MAPPING");
+draw_card(panel_x, card4_y, panel_w, card4_h, "NOTE OUTPUT");
+draw_card(panel_x, card5_y, panel_w, card5_h, "ADVANCED & STATUS");
+
+// Card 1: mode + buttons
+mode_label(mode, #mode_disp);
+mode_click = ui_dropdown(100, panel_x + 12, card1_y + 24, panel_w - 24, 42, "Playback Mode", #mode_disp, 1);
+mode_click ? (
+  slider1 = show_mode_menu(mode);
+  sliderchange(slider1);
+  sync_params();
+);
+
+btn_y = card1_y + 66;
+btn_w = floor((panel_w - 32) / 3);
+clear_click = ui_button(101, panel_x + 12, btn_y, btn_w, 26, 0);
+play_click  = ui_button(102, panel_x + 16 + btn_w, btn_y, btn_w, 26, playback_active && mode > 0);
+retri_click = ui_button(103, panel_x + 20 + btn_w*2, btn_y, btn_w, 26, 0);
+
+clear_click ? (
+  reset_gesture();
+);
+(play_click && point_count > 0 && mode > 0) ? (
+  playback_active ? (
+    playback_active = 0;
+  ) : (
+    playback_active = 1;
+    play_phase = 0;
+    play_dir = 1;
+  );
+);
+(retri_click && point_count > 0 && mode > 0) ? (
+  playback_active = 1;
+  play_phase = 0;
+  play_dir = 1;
+);
+
+gfx_setfont(2, "Arial", 11, 'b');
+gfx_set(0.92, 0.97, 1.00, 1);
+gfx_x = panel_x + 12; gfx_y = btn_y; gfx_drawstr("CLEAR", 1|4|256, panel_x + 12 + btn_w, btn_y + 26);
+gfx_x = panel_x + 16 + btn_w; gfx_y = btn_y;
+playback_active && mode > 0 ? gfx_drawstr("STOP", 1|4|256, panel_x + 16 + btn_w*2, btn_y + 26) : gfx_drawstr("PLAY", 1|4|256, panel_x + 16 + btn_w*2, btn_y + 26);
+gfx_x = panel_x + 20 + btn_w*2; gfx_y = btn_y; gfx_drawstr("RETRIG", 1|4|256, panel_x + 20 + btn_w*3, btn_y + 26);
+
+// Card 2: knobs + toggles
+knob_y = card2_y + 52;
+k1x = panel_x + 74;
+k2x = panel_x + 178;
+new_speed = ui_knob(110, k1x, knob_y, 31, slider2, 0.10, 4.0, 0.01);
+abs(new_speed - slider2) > 0.00001 ? ( slider2 = new_speed; sliderchange(slider2); sync_params(); );
+new_smooth = ui_knob(111, k2x, knob_y, 31, slider3, 0.0, 0.95, 0.01);
+abs(new_smooth - slider3) > 0.00001 ? ( slider3 = new_smooth; sliderchange(slider3); sync_params(); );
+
+gfx_setfont(2, "Arial", 11, 'b');
+gfx_set(0.90, 0.96, 1.00, 1);
+gfx_x = k1x - 42; gfx_y = knob_y + 36; gfx_drawstr("SPEED", 1|256, k1x + 42, knob_y + 52);
+gfx_x = k2x - 42; gfx_y = knob_y + 36; gfx_drawstr("SMOOTH", 1|256, k2x + 42, knob_y + 52);
+sprintf(#txt, "%.2fx", slider2);
+gfx_x = k1x - 42; gfx_y = knob_y - 10; gfx_drawstr(#txt, 1|4|256, k1x + 42, knob_y + 12);
+sprintf(#txt, "%.2f", slider3);
+gfx_x = k2x - 42; gfx_y = knob_y - 10; gfx_drawstr(#txt, 1|4|256, k2x + 42, knob_y + 12);
+
+tog_x = panel_x + 250;
+tog_w = panel_w - (tog_x - panel_x) - 12;
+t_emit = ui_button(112, tog_x, card2_y + 22, tog_w, 18, emit_drawing);
+t_auto = ui_button(113, tog_x, card2_y + 44, tog_w, 18, auto_play);
+t_spd  = ui_button(114, tog_x, card2_y + 66, tog_w, 18, emit_speed);
+
+t_emit ? ( slider10 = emit_drawing ? 0 : 1; sliderchange(slider10); sync_params(); );
+t_auto ? ( slider11 = auto_play ? 0 : 1; sliderchange(slider11); sync_params(); );
+t_spd  ? ( slider9  = emit_speed ? 0 : 1; sliderchange(slider9); sync_params(); );
+
+gfx_setfont(2, "Arial", 10, 'b');
+gfx_set(0.92, 0.97, 1.00, 1);
+gfx_x = tog_x + 8; gfx_y = card2_y + 22; gfx_drawstr("Emit while drawing", 4, tog_x + tog_w - 8, card2_y + 40);
+gfx_x = tog_x + 8; gfx_y = card2_y + 44; gfx_drawstr("Auto-play after draw", 4, tog_x + tog_w - 8, card2_y + 62);
+gfx_x = tog_x + 8; gfx_y = card2_y + 66; gfx_drawstr("Speed CC active", 4, tog_x + tog_w - 8, card2_y + 84);
+
+// Card 3: mapping
+output_mode_label(output_mode, #out_disp);
+out_click = ui_dropdown(120, panel_x + 12, card3_y + 24, panel_w - 24, 42, "Output Type", #out_disp, 1);
+out_click ? (
+  slider14 = show_output_mode_menu(output_mode);
+  sliderchange(slider14);
+  sync_params();
+  force_all_notes_off();
+);
+
+sprintf(#chan_disp, "Channel %d", midi_chan + 1);
+chan_click = ui_dropdown(121, panel_x + 12, card3_y + 72, 126, 42, "MIDI Channel", #chan_disp, 0);
+chan_click ? (
+  slider5 = show_channel_menu(midi_chan + 1);
+  sliderchange(slider5);
+  sync_params();
+  force_all_notes_off();
+);
+
+cc_label(cc_x_num, #ccx_disp);
+mapx_click = ui_dropdown(122, panel_x + 146, card3_y + 72, panel_w - 158, 42, "X Axis → CC", #ccx_disp, 0);
+mapx_click ? (
+  slider6 = show_cc_menu(cc_x_num);
+  sliderchange(slider6);
+  sync_params();
+);
+
+cc_label(cc_y_num, #ccy_disp);
+mapy_click = ui_dropdown(123, panel_x + 12, card3_y + 120, 184, 42, "Y Axis → CC", #ccy_disp, 0);
+mapy_click ? (
+  slider7 = show_cc_menu(cc_y_num);
+  sliderchange(slider7);
+  sync_params();
+);
+
+cc_label(cc_speed_num, #ccs_disp);
+maps_click = ui_dropdown(124, panel_x + 204, card3_y + 120, panel_w - 216, 42, emit_speed ? "Speed → CC" : "Speed → CC (currently off)", #ccs_disp, emit_speed);
+maps_click ? (
+  slider8 = show_cc_menu(cc_speed_num);
+  sliderchange(slider8);
+  sync_params();
+);
+
+// Card 4: note section
+pitch_src_label(note_pitch_src, #pitch_disp);
+vel_src_label(note_vel_src, #vel_disp);
+note_mode_active = (output_mode == 1) || (output_mode == 2);
+np_click = ui_dropdown(130, panel_x + 12, card4_y + 24, 184, 42, "Pitch Source", #pitch_disp, note_mode_active);
+np_click ? (
+  slider15 = show_pitch_src_menu(note_pitch_src);
+  sliderchange(slider15);
+  sync_params();
+  force_all_notes_off();
+);
+
+nv_click = ui_dropdown(131, panel_x + 204, card4_y + 24, panel_w - 216, 42, "Velocity Source", #vel_disp, note_mode_active);
+nv_click ? (
+  slider16 = show_vel_src_menu(note_vel_src);
+  sliderchange(slider16);
+  sync_params();
+  force_all_notes_off();
+);
+
+row_y = card4_y + 76;
+new_v = ui_hslider(132, panel_x + 112, row_y + 6, panel_w - 124, 12, slider17, 0, 127, 1);
+abs(new_v - slider17) > 0.00001 ? ( slider17 = new_v; sliderchange(slider17); sync_params(); force_all_notes_off(); );
+note_name(note_base, #base_note_disp);
+gfx_setfont(2, "Arial", 10, 'b'); gfx_set(0.88, 0.94, 1.00, 1);
+gfx_x = panel_x + 12; gfx_y = row_y; gfx_drawstr("Base Note"); gfx_x = panel_x + panel_w - 10; gfx_y = row_y; gfx_drawstr(#base_note_disp, 2|256, panel_x + panel_w - 10, row_y + 12);
+
+row_y += 22;
+new_v = ui_hslider(133, panel_x + 112, row_y + 6, panel_w - 124, 12, slider18, 1, 72, 1);
+abs(new_v - slider18) > 0.00001 ? ( slider18 = new_v; sliderchange(slider18); sync_params(); );
+sprintf(#txt, "%d semitones", note_span);
+gfx_x = panel_x + 12; gfx_y = row_y; gfx_drawstr("Note Span"); gfx_x = panel_x + panel_w - 10; gfx_y = row_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, row_y + 12);
+
+row_y += 22;
+new_v = ui_hslider(134, panel_x + 112, row_y + 6, panel_w - 124, 12, slider19, 1, 127, 1);
+abs(new_v - slider19) > 0.00001 ? ( slider19 = new_v; sliderchange(slider19); sync_params(); );
+sprintf(#txt, "%d", note_fixed_vel);
+gfx_x = panel_x + 12; gfx_y = row_y; gfx_drawstr("Fixed Vel"); gfx_x = panel_x + panel_w - 10; gfx_y = row_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, row_y + 12);
+
+// Card 5: advanced + status
+adv_y = card5_y + 24;
+new_v = ui_hslider(140, panel_x + 116, adv_y + 6, panel_w - 128, 12, slider4, 1, 30, 1);
+abs(new_v - slider4) > 0.00001 ? ( slider4 = new_v; sliderchange(slider4); sync_params(); );
+gfx_setfont(2, "Arial", 10, 'b'); gfx_set(0.88, 0.94, 1.00, 1);
+gfx_x = panel_x + 12; gfx_y = adv_y; gfx_drawstr("Min Dist"); sprintf(#txt, "%d px", min_pt_dist); gfx_x = panel_x + panel_w - 10; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, adv_y + 12);
+
+adv_y += 22;
+new_v = ui_hslider(141, panel_x + 116, adv_y + 6, panel_w - 128, 12, slider12, 0, 16, 1);
+abs(new_v - slider12) > 0.00001 ? ( slider12 = new_v; sliderchange(slider12); sync_params(); );
+gfx_x = panel_x + 12; gfx_y = adv_y; gfx_drawstr("Deadband"); sprintf(#txt, "%d", cc_deadband); gfx_x = panel_x + panel_w - 10; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, adv_y + 12);
+
+adv_y += 22;
+new_v = ui_hslider(142, panel_x + 116, adv_y + 6, panel_w - 128, 12, slider13, 0.10, 10.0, 0.01);
+abs(new_v - slider13) > 0.00001 ? ( slider13 = new_v; sliderchange(slider13); sync_params(); );
+gfx_x = panel_x + 12; gfx_y = adv_y; gfx_drawstr("Speed Sense"); sprintf(#txt, "%.2f", speed_sense); gfx_x = panel_x + panel_w - 10; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, adv_y + 12);
+
+meter_y = adv_y + 28;
+bar_x = panel_x + 28;
+bar_w = panel_w - 40;
+gfx_set(0.72, 0.80, 0.90, 1);
+gfx_x = panel_x + 12; gfx_y = meter_y; gfx_drawstr("X");
+draw_meter(bar_x, meter_y + 2, bar_w, 8, clamp(view_x, 0, 1), 1);
+meter_y += 16;
+gfx_x = panel_x + 12; gfx_y = meter_y; gfx_drawstr("Y");
+draw_meter(bar_x, meter_y + 2, bar_w, 8, clamp(view_y, 0, 1), 1);
+meter_y += 16;
+gfx_x = panel_x + 12; gfx_y = meter_y; gfx_drawstr("S");
+draw_meter(bar_x, meter_y + 2, bar_w, 8, clamp(view_speed, 0, 1), 0);
+
+status_y = card5_y + card5_h - 24;
+gfx_setfont(2, "Arial", 10, 0);
+gfx_set(0.58, 0.66, 0.76, 1);
+point_count <= 0 ? (
+  gfx_x = panel_x + 12; gfx_y = status_y; gfx_drawstr("Draw in the pad. Click dropdowns to remap CC and Note behavior.");
+) : drawing ? (
+  gfx_x = panel_x + 12; gfx_y = status_y; gfx_drawstr("Live gesture active. Record-enable the track to capture the outgoing MIDI.");
+) : playback_active ? (
+  gfx_x = panel_x + 12; gfx_y = status_y; gfx_drawstr("Playback running. The loop is currently streaming MIDI from the pad.");
+) : (
+  held_note >= 0 ? note_name(held_note, #held_note_disp) : strcpy(#held_note_disp, "--");
+  sprintf(#txt, "%d pts  |  %.2fs  |  Ch %d  |  Held note: %s", point_count, gesture_duration, midi_chan + 1, #held_note_disp);
+  gfx_x = panel_x + 12; gfx_y = status_y; gfx_drawstr(#txt);
+);
+
+// Gesture capture
+inside_pad = (mx >= pad_x) && (mx <= pad_x + pad_w) && (my >= pad_y) && (my <= pad_y + pad_h);
+inside_pad && mouse_pressed ? (
+  nx = clamp((mx - pad_x) / max(pad_w, 1), 0, 1);
+  ny = clamp(1 - ((my - pad_y) / max(pad_h, 1)), 0, 1);
+  begin_draw(nx, ny, time_precise(), mx, my);
+);
+
+drawing && mouse_down ? (
+  nx = clamp((mx - pad_x) / max(pad_w, 1), 0, 1);
+  ny = clamp(1 - ((my - pad_y) / max(pad_h, 1)), 0, 1);
+  update_draw(nx, ny, time_precise(), mx, my);
+);
+
+drawing && mouse_released ? (
+  nx = clamp((mx - pad_x) / max(pad_w, 1), 0, 1);
+  ny = clamp(1 - ((my - pad_y) / max(pad_h, 1)), 0, 1);
+  update_draw(nx, ny, time_precise(), mx, my);
+  end_draw();
+);
