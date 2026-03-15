@@ -36,6 +36,10 @@ slider27:0<0,1,1{Fixed,Auto}>-Auto Slice
 slider28:0<-24,24,0.01>-Global Pitch (st)
 slider29:0<0,4,1{Neutral,Cloth,Wet,Bed,Friction}>-Material Profile
 slider30:0<0,1,1{Off,On}>-Debug Overlay
+slider31:0<0,1,0.001>-Env Mix
+slider32:180<20,1500,1>-Env Speed (ms)
+slider33:0<0,1,0.001>-Slice Rand
+slider34:0<0,1,0.001>-Support Rand
 
 @init
 ln10 = 2.302585092994046;
@@ -184,15 +188,7 @@ ui_drag_start_y = 0;
 ui_drag_start_val = 0;
 ui_drag_start_val2 = 0;
 
-profile_cache_init = 0;
 last_profile_sel = -1;
-cache_slider1 = slider1; cache_slider2 = slider2; cache_slider3 = slider3; cache_slider4 = slider4;
-cache_slider5 = slider5; cache_slider6 = slider6; cache_slider7 = slider7; cache_slider8 = slider8;
-cache_slider9 = slider9; cache_slider10 = slider10; cache_slider11 = slider11; cache_slider12 = slider12;
-cache_slider13 = slider13; cache_slider14 = slider14; cache_slider15 = slider15; cache_slider16 = slider16;
-cache_slider17 = slider17; cache_slider18 = slider18; cache_slider19 = slider19; cache_slider20 = slider20;
-cache_slider21 = slider21; cache_slider22 = slider22; cache_slider23 = slider23; cache_slider24 = slider24;
-cache_slider25 = slider25; cache_slider26 = slider26; cache_slider27 = slider27; cache_slider28 = slider28;
 
 recent_family_mean = 0;
 recent_nrms_mean = 0;
@@ -210,6 +206,23 @@ dbg_w_scale = 1;
 dbg_w_family = 1;
 dbg_w_compat = 1;
 dbg_w_total = 1;
+
+// coarse spectral-envelope imprint states (wet-only, broad-band, smoothed)
+env_shape_mix = 0;
+env_shape_speed_ms = 180;
+env_shape_floor = 0.00025;
+env_shape_max_ratio = 1.0;
+env_lp1_c = 0; env_lp2_c = 0; env_lp3_c = 0;
+env_band_atk_c = 0; env_band_rel_c = 0;
+env_gain_atk_c = 0; env_gain_rel_c = 0;
+dry_lp1 = 0; dry_lp2 = 0; dry_lp3 = 0;
+wetm_lp1 = 0; wetm_lp2 = 0; wetm_lp3 = 0;
+wetL_lp1 = 0; wetL_lp2 = 0; wetL_lp3 = 0;
+wetR_lp1 = 0; wetR_lp2 = 0; wetR_lp3 = 0;
+dry_env0 = 0; dry_env1 = 0; dry_env2 = 0; dry_env3 = 0;
+wet_env0 = 0; wet_env1 = 0; wet_env2 = 0; wet_env3 = 0;
+env_gain0 = 1; env_gain1 = 1; env_gain2 = 1; env_gain3 = 1;
+env_shape_conf = 0;
 
 ri = 0;
 loop(recent_max,
@@ -233,48 +246,17 @@ slider20 < -1 ? slider20 = -1;
 slider20 > 1 ? slider20 = 1;
 slider21 < -1 ? slider21 = -1;
 slider21 > 1 ? slider21 = 1;
+slider33 < 0 ? slider33 = 0;
+slider33 > 1 ? slider33 = 1;
+slider34 < 0 ? slider34 = 0;
+slider34 > 1 ? slider34 = 1;
 
-profile_restore = 0;
 cur_profile_sel = floor(slider29 + 0.5);
-profile_cache_init <= 0 ? (
-  cache_slider1 = slider1; cache_slider2 = slider2; cache_slider3 = slider3; cache_slider4 = slider4;
-  cache_slider5 = slider5; cache_slider6 = slider6; cache_slider7 = slider7; cache_slider8 = slider8;
-  cache_slider9 = slider9; cache_slider10 = slider10; cache_slider11 = slider11; cache_slider12 = slider12;
-  cache_slider13 = slider13; cache_slider14 = slider14; cache_slider15 = slider15; cache_slider16 = slider16;
-  cache_slider17 = slider17; cache_slider18 = slider18; cache_slider19 = slider19; cache_slider20 = slider20;
-  cache_slider21 = slider21; cache_slider22 = slider22; cache_slider23 = slider23; cache_slider24 = slider24;
-  cache_slider25 = slider25; cache_slider26 = slider26; cache_slider27 = slider27; cache_slider28 = slider28;
+last_profile_sel < 0 ? last_profile_sel = cur_profile_sel;
+cur_profile_sel != last_profile_sel ? (
+  // Profile changes update behavioral priors only.
+  // Do not resurrect stale macro/envelope state from any cache.
   last_profile_sel = cur_profile_sel;
-  profile_cache_init = 1;
-) : cur_profile_sel != last_profile_sel ? (
-  slider1 = cache_slider1; slider2 = cache_slider2; slider3 = cache_slider3; slider4 = cache_slider4;
-  slider5 = cache_slider5; slider6 = cache_slider6; slider7 = cache_slider7; slider8 = cache_slider8;
-  slider9 = cache_slider9; slider10 = cache_slider10; slider11 = cache_slider11; slider12 = cache_slider12;
-  slider13 = cache_slider13; slider14 = cache_slider14; slider15 = cache_slider15; slider16 = cache_slider16;
-  slider17 = cache_slider17; slider18 = cache_slider18; slider19 = cache_slider19; slider20 = cache_slider20;
-  slider21 = cache_slider21; slider22 = cache_slider22; slider23 = cache_slider23; slider24 = cache_slider24;
-  slider25 = cache_slider25; slider26 = cache_slider26; slider27 = cache_slider27; slider28 = cache_slider28;
-  profile_restore = 1;
-  last_profile_sel = cur_profile_sel;
-) : (
-  cache_slider1 = slider1; cache_slider2 = slider2; cache_slider3 = slider3; cache_slider4 = slider4;
-  cache_slider5 = slider5; cache_slider6 = slider6; cache_slider7 = slider7; cache_slider8 = slider8;
-  cache_slider9 = slider9; cache_slider10 = slider10; cache_slider11 = slider11; cache_slider12 = slider12;
-  cache_slider13 = slider13; cache_slider14 = slider14; cache_slider15 = slider15; cache_slider16 = slider16;
-  cache_slider17 = slider17; cache_slider18 = slider18; cache_slider19 = slider19; cache_slider20 = slider20;
-  cache_slider21 = slider21; cache_slider22 = slider22; cache_slider23 = slider23; cache_slider24 = slider24;
-  cache_slider25 = slider25; cache_slider26 = slider26; cache_slider27 = slider27; cache_slider28 = slider28;
-  last_profile_sel = cur_profile_sel;
-);
-
-profile_restore ? (
-  sliderchange(slider1); sliderchange(slider2); sliderchange(slider3); sliderchange(slider4);
-  sliderchange(slider5); sliderchange(slider6); sliderchange(slider7); sliderchange(slider8);
-  sliderchange(slider9); sliderchange(slider10); sliderchange(slider11); sliderchange(slider12);
-  sliderchange(slider13); sliderchange(slider14); sliderchange(slider15); sliderchange(slider16);
-  sliderchange(slider17); sliderchange(slider18); sliderchange(slider19); sliderchange(slider20);
-  sliderchange(slider21); sliderchange(slider22); sliderchange(slider23); sliderchange(slider24);
-  sliderchange(slider25); sliderchange(slider26); sliderchange(slider27); sliderchange(slider28);
 );
 
 wet = slider1;
@@ -317,10 +299,31 @@ global_pitch_st = slider28;
 global_pitch_cents = global_pitch_st * 100;
 
 support_budget = slider25;
+slice_rand_amt = slider33;
+support_rand_amt = slider34;
+slice_rand_span = 1 + 0.60 * slice_rand_amt;
+slice_rand_down_pct = (1 - 1 / max(1.000001, slice_rand_span)) * 100;
+slice_rand_up_pct = (slice_rand_span - 1) * 100;
+support_rand_down_pct = 22 * support_rand_amt;
+support_rand_up_pct = 8 * support_rand_amt;
 gate_rel_mode = floor(slider26 + 0.5);
 auto_slice = slider27 > 0.5;
 profile = floor(slider29 + 0.5);
 debug_overlay = slider30 > 0.5;
+
+env_shape_mix = slider31;
+env_shape_speed_ms = slider32;
+env_shape_speed_s = max(1, floor(env_shape_speed_ms * 0.001 * srate));
+env_shape_atk_s = max(1, floor(env_shape_speed_s * 0.35));
+env_gain_atk_s = max(1, floor(env_shape_speed_s * 0.50));
+env_band_atk_c = exp(-1 / env_shape_atk_s);
+env_band_rel_c = exp(-1 / env_shape_speed_s);
+env_gain_atk_c = exp(-1 / env_gain_atk_s);
+env_gain_rel_c = exp(-1 / env_shape_speed_s);
+env_lp1_c = exp(-2 * PI * 180 / srate);
+env_lp2_c = exp(-2 * PI * 900 / srate);
+env_lp3_c = exp(-2 * PI * 3800 / srate);
+env_shape_max_ratio = exp((8 / 20) * ln10);
 
 // lightweight material profile layer: changes priors, not engines.
 profile == 0 ? (
@@ -2173,7 +2176,7 @@ function ola_window(age, env_len, mode_local, cand_phase) local(fade_ratio, fade
   out;
 );
 
-function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len, env_nom_len, rndf, wanderf, cents, rate, ampj, rms, peak, corr, maxsafe, trig_amp, strength, off, zcn, halfcyc_samp, phase_deg, slot, vb, sign, gran_mult, src_need, cap_src_len, score, local_support, start_region, cand_phase, phase_family, phase_len_mul, local_win) (
+function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len, env_nom_len, rndf, wanderf, cents, rate, ampj, rms, peak, corr, maxsafe, trig_amp, strength, off, zcn, halfcyc_samp, phase_deg, slot, vb, sign, gran_mult, src_need, cap_src_len, score, local_support, start_region, cand_phase, phase_family, phase_len_mul, local_win, slice_rand_scale, sr, support_rand_mul) (
   (tex_loaded > 0) && (analysis_ready > 0) && (cand_count > 0) ? (
     ci = pick_candidate(mode_local);
     base = cand_base + ci * cand_stride;
@@ -2198,8 +2201,13 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
       req_src_len = floor(auto_ev_len * (0.92 + 0.16 * rand01()));
       req_env_len = floor(req_src_len / max(rate, 0.000001));
     ) : (
-      req_src_len = floor(dur_ms * 0.001 * tex_sr * rndf);
-      req_env_len = floor(dur_ms * 0.001 * srate * rndf);
+      slice_rand_scale = 1;
+      slice_rand_amt > 0 ? (
+        sr = randSym();
+        slice_rand_scale = exp(sr * log(max(1.000001, slice_rand_span)));
+      );
+      req_src_len = floor(dur_ms * 0.001 * tex_sr * rndf * slice_rand_scale);
+      req_env_len = floor(dur_ms * 0.001 * srate * rndf * slice_rand_scale);
     );
 
     phase_len_mul =
@@ -2280,7 +2288,15 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
 
     // Pre-budget highly salient grains so low Support behaves like backing texture, not foreground theft.
     local_support = support_budget + (1 - support_budget) * (1 - 0.75 * max(score, mem[base + 7]));
+    support_rand_mul = 1;
+    support_rand_amt > 0 ? (
+      sr = randSym();
+      sr > 0 ? sr *= 0.35;
+      support_rand_mul += 0.22 * support_rand_amt * sr;
+    );
+    local_support *= support_rand_mul;
     local_support < 0.22 ? local_support = 0.22;
+    local_support > 1.10 ? local_support = 1.10;
     strength *= local_support;
 
     // phase jitter in actual sample-offset terms:
@@ -2761,6 +2777,81 @@ active_ct > 1 ? (
 
 voices_last_count = active_ct;
 
+// coarse spectral-envelope imprinting: let the dry input lend broad timbral body
+// to the generated wet texture without full-bin vocoder weirdness.
+env_shape_conf = 0;
+env_shape_mix > 0.0001 ? (
+  env_shape_conf = env_shape_mix * clamp1(0.12 + 0.88 * max(support_drive, raw_in_abs * 3), 0, 1);
+
+  dry_m = 0.5 * (spl0 + spl1);
+  dry_lp1 = dry_m + env_lp1_c * (dry_lp1 - dry_m);
+  dry_lp2 = dry_m + env_lp2_c * (dry_lp2 - dry_m);
+  dry_lp3 = dry_m + env_lp3_c * (dry_lp3 - dry_m);
+  dry_b0 = dry_lp1;
+  dry_b1 = dry_lp2 - dry_lp1;
+  dry_b2 = dry_lp3 - dry_lp2;
+  dry_b3 = dry_m - dry_lp3;
+
+  dry_a0 = abs(dry_b0); dry_a1 = abs(dry_b1); dry_a2 = abs(dry_b2); dry_a3 = abs(dry_b3);
+  dry_a0 > dry_env0 ? (dry_env0 = dry_a0 + env_band_atk_c * (dry_env0 - dry_a0);) : (dry_env0 = dry_a0 + env_band_rel_c * (dry_env0 - dry_a0););
+  dry_a1 > dry_env1 ? (dry_env1 = dry_a1 + env_band_atk_c * (dry_env1 - dry_a1);) : (dry_env1 = dry_a1 + env_band_rel_c * (dry_env1 - dry_a1););
+  dry_a2 > dry_env2 ? (dry_env2 = dry_a2 + env_band_atk_c * (dry_env2 - dry_a2);) : (dry_env2 = dry_a2 + env_band_rel_c * (dry_env2 - dry_a2););
+  dry_a3 > dry_env3 ? (dry_env3 = dry_a3 + env_band_atk_c * (dry_env3 - dry_a3);) : (dry_env3 = dry_a3 + env_band_rel_c * (dry_env3 - dry_a3););
+
+  wet_m = 0.5 * (texL + texR);
+  wetm_lp1 = wet_m + env_lp1_c * (wetm_lp1 - wet_m);
+  wetm_lp2 = wet_m + env_lp2_c * (wetm_lp2 - wet_m);
+  wetm_lp3 = wet_m + env_lp3_c * (wetm_lp3 - wet_m);
+  wet_b0 = wetm_lp1;
+  wet_b1 = wetm_lp2 - wetm_lp1;
+  wet_b2 = wetm_lp3 - wetm_lp2;
+  wet_b3 = wet_m - wetm_lp3;
+
+  wet_a0 = abs(wet_b0); wet_a1 = abs(wet_b1); wet_a2 = abs(wet_b2); wet_a3 = abs(wet_b3);
+  wet_a0 > wet_env0 ? (wet_env0 = wet_a0 + env_band_atk_c * (wet_env0 - wet_a0);) : (wet_env0 = wet_a0 + env_band_rel_c * (wet_env0 - wet_a0););
+  wet_a1 > wet_env1 ? (wet_env1 = wet_a1 + env_band_atk_c * (wet_env1 - wet_a1);) : (wet_env1 = wet_a1 + env_band_rel_c * (wet_env1 - wet_a1););
+  wet_a2 > wet_env2 ? (wet_env2 = wet_a2 + env_band_atk_c * (wet_env2 - wet_a2);) : (wet_env2 = wet_a2 + env_band_rel_c * (wet_env2 - wet_a2););
+  wet_a3 > wet_env3 ? (wet_env3 = wet_a3 + env_band_atk_c * (wet_env3 - wet_a3);) : (wet_env3 = wet_a3 + env_band_rel_c * (wet_env3 - wet_a3););
+
+  ratio0 = (dry_env0 + env_shape_floor) / (wet_env0 + env_shape_floor);
+  ratio1 = (dry_env1 + env_shape_floor) / (wet_env1 + env_shape_floor);
+  ratio2 = (dry_env2 + env_shape_floor) / (wet_env2 + env_shape_floor);
+  ratio3 = (dry_env3 + env_shape_floor) / (wet_env3 + env_shape_floor);
+  ratio0 > env_shape_max_ratio ? ratio0 = env_shape_max_ratio; ratio0 < 1 / env_shape_max_ratio ? ratio0 = 1 / env_shape_max_ratio;
+  ratio1 > env_shape_max_ratio ? ratio1 = env_shape_max_ratio; ratio1 < 1 / env_shape_max_ratio ? ratio1 = 1 / env_shape_max_ratio;
+  ratio2 > env_shape_max_ratio ? ratio2 = env_shape_max_ratio; ratio2 < 1 / env_shape_max_ratio ? ratio2 = 1 / env_shape_max_ratio;
+  ratio3 > env_shape_max_ratio ? ratio3 = env_shape_max_ratio; ratio3 < 1 / env_shape_max_ratio ? ratio3 = 1 / env_shape_max_ratio;
+
+  tgt_g0 = exp(log(ratio0) * env_shape_conf);
+  tgt_g1 = exp(log(ratio1) * env_shape_conf);
+  tgt_g2 = exp(log(ratio2) * env_shape_conf);
+  tgt_g3 = exp(log(ratio3) * env_shape_conf);
+
+  tgt_g0 > env_gain0 ? (env_gain0 = tgt_g0 + env_gain_atk_c * (env_gain0 - tgt_g0);) : (env_gain0 = tgt_g0 + env_gain_rel_c * (env_gain0 - tgt_g0););
+  tgt_g1 > env_gain1 ? (env_gain1 = tgt_g1 + env_gain_atk_c * (env_gain1 - tgt_g1);) : (env_gain1 = tgt_g1 + env_gain_rel_c * (env_gain1 - tgt_g1););
+  tgt_g2 > env_gain2 ? (env_gain2 = tgt_g2 + env_gain_atk_c * (env_gain2 - tgt_g2);) : (env_gain2 = tgt_g2 + env_gain_rel_c * (env_gain2 - tgt_g2););
+  tgt_g3 > env_gain3 ? (env_gain3 = tgt_g3 + env_gain_atk_c * (env_gain3 - tgt_g3);) : (env_gain3 = tgt_g3 + env_gain_rel_c * (env_gain3 - tgt_g3););
+
+  wetL_lp1 = texL + env_lp1_c * (wetL_lp1 - texL);
+  wetL_lp2 = texL + env_lp2_c * (wetL_lp2 - texL);
+  wetL_lp3 = texL + env_lp3_c * (wetL_lp3 - texL);
+  wetR_lp1 = texR + env_lp1_c * (wetR_lp1 - texR);
+  wetR_lp2 = texR + env_lp2_c * (wetR_lp2 - texR);
+  wetR_lp3 = texR + env_lp3_c * (wetR_lp3 - texR);
+
+  Lb0 = wetL_lp1;
+  Lb1 = wetL_lp2 - wetL_lp1;
+  Lb2 = wetL_lp3 - wetL_lp2;
+  Lb3 = texL - wetL_lp3;
+  Rb0 = wetR_lp1;
+  Rb1 = wetR_lp2 - wetR_lp1;
+  Rb2 = wetR_lp3 - wetR_lp2;
+  Rb3 = texR - wetR_lp3;
+
+  texL = Lb0 * env_gain0 + Lb1 * env_gain1 + Lb2 * env_gain2 + Lb3 * env_gain3;
+  texR = Rb0 * env_gain0 + Rb1 * env_gain1 + Rb2 * env_gain2 + Rb3 * env_gain3;
+);
+
 out_abs = abs(texL);
 abs(texR) > out_abs ? out_abs = abs(texR);
 
@@ -3009,6 +3100,7 @@ function macro_norm(id) (
   id == 7 ? norm_log(slider3, 0.1, 8) :
   id == 8 ? norm_lin(slider25, 0, 1) :
   id == 9 ? norm_lin(slider1, 0, 1) :
+  id == 10 ? norm_lin(slider31, 0, 1) :
   0;
 );
 
@@ -3022,6 +3114,7 @@ function macro_set(id, t) (
   id == 7 ? (slider3 = denorm_log(t, 0.1, 8); sliderchange(slider3););
   id == 8 ? (slider25 = denorm_lin(t, 0, 1); sliderchange(slider25););
   id == 9 ? (slider1 = denorm_lin(t, 0, 1); sliderchange(slider1););
+  id == 10 ? (slider31 = denorm_lin(t, 0, 1); sliderchange(slider31););
 );
 
 function macro_strings(id) (
@@ -3052,6 +3145,9 @@ function macro_strings(id) (
   ) : id == 9 ? (
     sprintf(#mlab, "Mix");
     sprintf(#mval, "%.0f%%", slider1 * 100);
+  ) : id == 10 ? (
+    sprintf(#mlab, "Env Mix");
+    sprintf(#mval, "%.0f%%", slider31 * 100);
   );
 );
 
@@ -3066,8 +3162,10 @@ function macro_color(id) (
     mr = 0.94; mg = 0.48; mb = 0.88;
   ) : id <= 8 ? (
     mr = 0.96; mg = 0.72; mb = 0.24;
-  ) : (
+  ) : id == 9 ? (
     mr = 0.88; mg = 0.82; mb = 0.36;
+  ) : (
+    mr = 0.28; mg = 0.86; mb = 0.84;
   );
 );
 
@@ -3136,6 +3234,7 @@ drag_div = (mouse_cap & 8) ? 520 : ((mouse_cap & 4) ? 120 : 240);
 time_drag_scale = (mouse_cap & 8) ? 0.004 : ((mouse_cap & 4) ? 0.018 : 0.0095);
 
 ui_add_undo = 0;
+ui_button_click = 0;
 
 pad = spx(16);
 top_h = spx(32);
@@ -3222,7 +3321,9 @@ click && hov ? (
   next_mode > 2 ? next_mode = 0;
   slider10 = next_mode;
   sliderchange(slider10);
-  ui_add_undo = 1;
+  ui_active_kind = 0;
+  ui_active_id = 0;
+  ui_button_click = 1;
 );
 draw_button(mode_x, top_y, mode_w, btn_h, 1, hov, mode_r, mode_g, mode_b, mode_label);
 
@@ -3237,12 +3338,16 @@ click && hov ? (
   next_profile > 4 ? next_profile = 0;
   slider29 = next_profile;
   sliderchange(slider29);
-  ui_add_undo = 1;
+  ui_active_kind = 0;
+  ui_active_id = 0;
+  ui_button_click = 1;
 );
 rclick && hov ? (
   slider30 = slider30 > 0.5 ? 0 : 1;
   sliderchange(slider30);
-  ui_add_undo = 1;
+  ui_active_kind = 0;
+  ui_active_id = 0;
+  ui_button_click = 1;
 );
 draw_button(prof_x, top_y, prof_w, btn_h, 1, hov, 0.46, 0.60, 0.94, #profbtn);
 
@@ -3250,7 +3355,9 @@ hov = hit(mx, my, slice_x, top_y, slice_w, btn_h);
 click && hov ? (
   slider27 = slider27 > 0.5 ? 0 : 1;
   sliderchange(slider27);
-  ui_add_undo = 1;
+  ui_active_kind = 0;
+  ui_active_id = 0;
+  ui_button_click = 1;
 );
 slider27 > 0.5 ? sprintf(#btn, "AUTO SLICE") : sprintf(#btn, "FIXED SLICE");
 draw_button(slice_x, top_y, slice_w, btn_h, slider27 > 0.5, hov, 0.30, 0.60, 0.88, #btn);
@@ -3261,7 +3368,9 @@ click && hov ? (
   next_gate > 2 ? next_gate = 0;
   slider26 = next_gate;
   sliderchange(slider26);
-  ui_add_undo = 1;
+  ui_active_kind = 0;
+  ui_active_id = 0;
+  ui_button_click = 1;
 );
 gate_label =
   slider26 < 0.5 ? "REL: FREE" :
@@ -3273,7 +3382,9 @@ hov = hit(mx, my, out_x, top_y, out_w, btn_h);
 click && hov ? (
   slider11 = slider11 > 0.5 ? 0 : 1;
   sliderchange(slider11);
-  ui_add_undo = 1;
+  ui_active_kind = 0;
+  ui_active_id = 0;
+  ui_button_click = 1;
 );
 slider11 > 0.5 ? sprintf(#btn, "WET ONLY") : sprintf(#btn, "DRY+WET");
 draw_button(out_x, top_y, out_w, btn_h, slider11 > 0.5, hov, 0.20, 0.48, 0.70, #btn);
@@ -3282,7 +3393,9 @@ hov = hit(mx, my, auto_x, top_y, util_w, btn_h);
 click && hov ? (
   slider12 = slider12 > 0.5 ? 0 : 1;
   sliderchange(slider12);
-  ui_add_undo = 1;
+  ui_active_kind = 0;
+  ui_active_id = 0;
+  ui_button_click = 1;
 );
 slider12 > 0.5 ? sprintf(#btn, "AUTO ON") : sprintf(#btn, "AUTO OFF");
 draw_button(auto_x, top_y, util_w, btn_h, slider12 > 0.5, hov, 0.18, 0.62, 0.34, #btn);
@@ -3292,7 +3405,9 @@ click && hov ? (
   ui_force_reload = 1;
   slider13 = 1;
   sliderchange(slider13);
-  ui_add_undo = 1;
+  ui_active_kind = 0;
+  ui_active_id = 0;
+  ui_button_click = 1;
 );
 sprintf(#btn, "RELOAD");
 draw_button(reload_x, top_y, reload_w, btn_h, 1, hov, 0.54, 0.32, 0.18, #btn);
@@ -3776,7 +3891,7 @@ c2x = sx + col_w + col_gap;
 
 hover_macro = 0;
 i = 0;
-loop(9,
+loop(10,
   cid = i + 1;
   col = cid <= 5 ? 0 : 1;
   row = col ? (cid - 6) : (cid - 1);
@@ -3789,6 +3904,13 @@ loop(9,
   n = macro_norm(cid);
   macro_color(cid);
   macro_strings(cid);
+  (mouse_cap & 4) && over && (cid == 1) ? (
+    sprintf(#mlab, auto_slice ? "Slice Rand*" : "Slice Rand");
+    sprintf(#mval, "-%.0f/+%.0f%%", slice_rand_down_pct, slice_rand_up_pct);
+  ) : (mouse_cap & 4) && over && (cid == 8) ? (
+    sprintf(#mlab, "Support Rand");
+    sprintf(#mval, "-%.0f/+%.0f%%", support_rand_down_pct, support_rand_up_pct);
+  );
 
   gfx_r = 0.10; gfx_g = 0.12; gfx_b = 0.16; gfx_a = 1;
   gfx_rect(cx, cy, col_w, row_h, 1);
@@ -3869,7 +3991,24 @@ click && (ui_active_kind == 0) && (hover_macro > 0) ? (
   ui_drag_start_val = macro_norm(hover_macro);
 );
 
-wheel != 0 && (hover_macro > 0) && (hover_slope == 0) && (hover_knob == 0) ? (
+wheel != 0 && (hover_macro == 10) && (hover_slope == 0) && (hover_knob == 0) && (mouse_cap & 8) ? (
+  slider32 += (wheel / 120.0) * 12 * coarse_mult;
+  slider32 = clampg(slider32, 20, 1500);
+  sliderchange(slider32);
+  ui_add_undo = 1;
+) : wheel != 0 && (hover_macro == 1) && (hover_slope == 0) && (hover_knob == 0) && (mouse_cap & 4) ? (
+  rand_step = (wheel / 120.0) * 0.025 * fine_mult;
+  slider33 += rand_step;
+  slider33 = clampg(slider33, 0, 1);
+  sliderchange(slider33);
+  ui_add_undo = 1;
+) : wheel != 0 && (hover_macro == 8) && (hover_slope == 0) && (hover_knob == 0) && (mouse_cap & 4) ? (
+  rand_step = (wheel / 120.0) * 0.025 * fine_mult;
+  slider34 += rand_step;
+  slider34 = clampg(slider34, 0, 1);
+  sliderchange(slider34);
+  ui_add_undo = 1;
+) : wheel != 0 && (hover_macro > 0) && (hover_slope == 0) && (hover_knob == 0) ? (
   macro_set(hover_macro, macro_norm(hover_macro) + wheel_step);
   ui_add_undo = 1;
 );
@@ -4085,10 +4224,10 @@ hover_env_pt == 1 ? (
   tip_on = 1;
   auto_slice ? (
     sprintf(#tip1, "Slice cap for auto event bounds.");
-    sprintf(#tip2, "Current cap %.0f ms. Longer caps allow broader detected events.", slider9);
+    sprintf(#tip2, "Current cap %.0f ms. Ctrl+wheel parks Slice Rand at -%.0f/+%.0f%%, but it is ignored while Auto Slice is on.", slider9, slice_rand_down_pct, slice_rand_up_pct);
   ) : (
     sprintf(#tip1, "Fixed per-grain slice duration.");
-    sprintf(#tip2, "Current slice %.0f ms.", slider9);
+    sprintf(#tip2, "Current slice %.0f ms. Ctrl+wheel sets Slice Rand to -%.0f/+%.0f%% per grain.", slider9, slice_rand_down_pct, slice_rand_up_pct);
   );
 ) : hover_macro == 2 ? (
   tip_on = 1;
@@ -4117,11 +4256,15 @@ hover_env_pt == 1 ? (
 ) : hover_macro == 8 ? (
   tip_on = 1;
   sprintf(#tip1, "Support is the salience budget applied after detector support is computed.");
-  sprintf(#tip2, "Current support %.0f%%. Lower values keep texture further behind the source.", slider25 * 100);
+  sprintf(#tip2, "Current support %.0f%%. Ctrl+wheel adds per-grain Support Rand of -%.0f/+%.0f%% without touching detector stability.", slider25 * 100, support_rand_down_pct, support_rand_up_pct);
 ) : hover_macro == 9 ? (
   tip_on = 1;
   sprintf(#tip1, "Dry/wet blend for the texture layer.");
   sprintf(#tip2, "Current mix %.0f%% texture.", slider1 * 100);
+) : hover_macro == 10 ? (
+  tip_on = 1;
+  sprintf(#tip1, "Broad spectral-envelope imprint from dry input onto wet texture only.");
+  sprintf(#tip2, "Current mix %.0f%%, speed %.0f ms. Shift+wheel adjusts speed. Coarse 4-band shaping, bounded and smoothed.", slider31 * 100, slider32);
 ) : hover_mode_btn ? (
   tip_on = 1;
   slider10 < 0.5 ? (
@@ -4211,4 +4354,5 @@ tip_on ? (
   gfx_drawstr(#tip2);
 );
 
+ui_button_click ? ui_add_undo = 0;
 ui_add_undo ? sliderchange(-1);
