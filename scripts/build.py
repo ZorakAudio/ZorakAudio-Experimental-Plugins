@@ -351,6 +351,11 @@ def main() -> None:
 
         ]
 
+        fft_legacy_env = os.environ.get("ZA_JSFX_FFT_LEGACY_IN_ORDER")
+        if fft_legacy_env is not None:
+            fft_legacy_on = fft_legacy_env.strip().lower() in ("1", "true", "yes", "on")
+            cmake_args.append(f"-DZA_JSFX_FFT_LEGACY_IN_ORDER={'ON' if fft_legacy_on else 'OFF'}")
+
         if enable_clap:
             feats = " ".join(p.get("clapFeatures", ["audio-effect"]))
             cmake_args += [

@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <functional>
 #include <chrono>
+#include <type_traits>
 
 #include <atomic>
 #include <condition_variable>
@@ -74,6 +75,7 @@ extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed);
 // to this file.
 // ------------------------------
 #include "YSFXGfxInterpreter.h"
+#include "WDL/fft.h"
 
 
 
@@ -684,135 +686,233 @@ static std::vector<JsfxFileDecl> parseJsfxFilenameDecls (const char* jsfxText)
 }
 
 } // namespace
-// ---- Minimal FFT runtime helpers for JSFX scripts (used by DOT, etc.)
-// These operate on st->mem as an interleaved complex buffer:
+
+// ---- JSFX FFT runtime helpers ----------------------------------------------
+// JSFX complex FFTs operate on st->mem as an interleaved complex buffer:
 //   mem[base + 2*i + 0] = real
 //   mem[base + 2*i + 1] = imag
 //
-// We intentionally implement fft()/ifft() to produce / consume NORMAL (in-order)
-// frequency bins. The JSFX permute helpers are therefore no-ops in this runtime.
-// This is sufficient for the scripts in this repo (they call permute/ipermute
-// around fft/ifft), and avoids extra bit-reversal shuffles.
-
+// We back these helpers with Cockos/WDL FFT, which is already compiled into
+// the plugin build. In strict mode, semantics match REAPER/JSFX:
+//   - fft()/ifft() operate on WDL's permuted complex-bin order
+//   - fft_permute() converts FFT output to natural order
+//   - fft_ipermute() converts natural-order bins back to the order ifft() expects
+//
+// For back-compat with older AOT builds that assumed in-order fft()/ifft() and
+// no-op permute helpers, define ZA_JSFX_FFT_LEGACY_IN_ORDER=1.
 namespace
 {
+#if ! defined (ZA_JSFX_FFT_LEGACY_IN_ORDER)
+ #define ZA_JSFX_FFT_LEGACY_IN_ORDER 0
+#endif
+
+static_assert (sizeof (WDL_FFT_COMPLEX) == sizeof (double) * 2,
+               "WDL_FFT_COMPLEX must map to interleaved doubles");
+static_assert (std::is_trivially_copyable_v<WDL_FFT_COMPLEX>,
+               "WDL_FFT_COMPLEX must be trivially copyable");
+
 static inline bool isPowerOfTwo (int64_t n) noexcept
 {
     return (n > 0) && ((n & (n - 1)) == 0);
 }
 
-static inline void swapComplex (double* base, int64_t a, int64_t b) noexcept
-{
-    const int64_t ia = 2 * a;
-    const int64_t ib = 2 * b;
+static constexpr int64_t kJsfxFftMinSize = 16;
+static constexpr int64_t kJsfxFftMaxSize = 32768;
+static constexpr int64_t kJsfxFftPageDoubles = 65536;
 
-    std::swap (base[ia + 0], base[ib + 0]);
-    std::swap (base[ia + 1], base[ib + 1]);
+struct JsfxFftScratchBuffer
+{
+    WDL_FFT_COMPLEX* data = nullptr;
+    int capacity = 0;
+
+    ~JsfxFftScratchBuffer()
+    {
+        std::free (data);
+    }
+
+    WDL_FFT_COMPLEX* ensure (int needed) noexcept
+    {
+        if (needed <= capacity)
+            return data;
+
+        void* p = std::realloc (data, (size_t) needed * sizeof (WDL_FFT_COMPLEX));
+        if (p == nullptr)
+            return nullptr;
+
+        data = static_cast<WDL_FFT_COMPLEX*> (p);
+        capacity = needed;
+        return data;
+    }
+};
+
+static thread_local JsfxFftScratchBuffer gJsfxFftScratch;
+
+static inline int64_t jsfxRoundToIndex (double v) noexcept
+{
+    return (int64_t) (v + (v >= 0.0 ? 1.0e-5 : -1.0e-5));
 }
 
-static void fftInPlace (double* buf, int64_t N, bool inverse) noexcept
+static inline bool isSupportedJsfxFftSize (int64_t n) noexcept
 {
-    // Bit-reversal reorder (in-place).
-    for (int64_t i = 1, j = 0; i < N; ++i)
-    {
-        int64_t bit = N >> 1;
-        for (; j & bit; bit >>= 1)
-            j ^= bit;
-        j ^= bit;
+    return n >= kJsfxFftMinSize && n <= kJsfxFftMaxSize && isPowerOfTwo (n);
+}
 
-        if (i < j)
-            swapComplex (buf, i, j);
-    }
+static inline bool staysWithinJsfxFftPage (int64_t base, int64_t complexCount) noexcept
+{
+    if (base < 0 || complexCount <= 0)
+        return false;
 
-    const double twoPi = 6.283185307179586476925286766559;
-    const double sign  = inverse ? +1.0 : -1.0;
+    const int64_t spanDoubles = 2 * complexCount;
+    const int64_t lastIndex = base + spanDoubles - 1;
+    if (lastIndex < base)
+        return false;
 
-    for (int64_t len = 2; len <= N; len <<= 1)
-    {
-        const int64_t half = len >> 1;
-        const double angStep = sign * twoPi / (double) len;
+    return (base / kJsfxFftPageDoubles) == (lastIndex / kJsfxFftPageDoubles);
+}
 
-        for (int64_t i = 0; i < N; i += len)
-        {
-            for (int64_t k = 0; k < half; ++k)
-            {
-                const double ang = angStep * (double) k;
-                const double wr  = std::cos (ang);
-                const double wi  = std::sin (ang);
+static inline void ensureWdlFftInit() noexcept
+{
+    static std::once_flag once;
+    std::call_once (once, [] { WDL_fft_init(); });
+}
 
-                const int64_t a = i + k;
-                const int64_t b = a + half;
+static bool prepareJsfxFftRegion (DSPJSFX_State* st, double baseD, double sizeD, int64_t& base, int& N) noexcept
+{
+    if (st == nullptr)
+        return false;
 
-                const double ar = buf[2 * a + 0];
-                const double ai = buf[2 * a + 1];
-                const double br = buf[2 * b + 0];
-                const double bi = buf[2 * b + 1];
+    const int64_t size = jsfxRoundToIndex (sizeD);
+    int64_t start = jsfxRoundToIndex (baseD);
+    if (start < 0)
+        start = 0;
 
-                // t = w * b
-                const double tr = wr * br - wi * bi;
-                const double ti = wr * bi + wi * br;
+    if (! isSupportedJsfxFftSize (size))
+        return false;
 
-                buf[2 * a + 0] = ar + tr;
-                buf[2 * a + 1] = ai + ti;
-                buf[2 * b + 0] = ar - tr;
-                buf[2 * b + 1] = ai - ti;
-            }
-        }
-    }
+    if (! staysWithinJsfxFftPage (start, size))
+        return false;
+
+    const int64_t needed = start + (2 * size);
+    jsfx_ensure_mem (st, needed);
+    if (st->mem == nullptr || needed > st->memN)
+        return false;
+
+    ensureWdlFftInit();
+
+    base = start;
+    N = (int) size;
+    return true;
+}
+
+static inline WDL_FFT_COMPLEX* asWdlComplex (double* interleaved) noexcept
+{
+    return reinterpret_cast<WDL_FFT_COMPLEX*> (interleaved);
+}
+
+static bool permuteWdlToNaturalInPlace (double* interleaved, int N) noexcept
+{
+    WDL_FFT_COMPLEX* scratch = gJsfxFftScratch.ensure (N);
+    if (scratch == nullptr)
+        return false;
+
+    auto* buf = asWdlComplex (interleaved);
+    const int* perm = WDL_fft_permute_tab (N);
+    if (perm == nullptr)
+        return false;
+
+    for (int i = 0; i < N; ++i)
+        scratch[(size_t) i] = buf[perm[i]];
+
+    std::memcpy (buf, scratch, (size_t) N * sizeof (WDL_FFT_COMPLEX));
+    return true;
+}
+
+static bool permuteNaturalToWdlInPlace (double* interleaved, int N) noexcept
+{
+    WDL_FFT_COMPLEX* scratch = gJsfxFftScratch.ensure (N);
+    if (scratch == nullptr)
+        return false;
+
+    auto* buf = asWdlComplex (interleaved);
+    const int* perm = WDL_fft_permute_tab (N);
+    if (perm == nullptr)
+        return false;
+
+    for (int i = 0; i < N; ++i)
+        scratch[(size_t) perm[i]] = buf[i];
+
+    std::memcpy (buf, scratch, (size_t) N * sizeof (WDL_FFT_COMPLEX));
+    return true;
 }
 } // namespace
 
 extern "C" double jsfx_fft (DSPJSFX_State* st, double baseD, double sizeD)
 {
-    if (! st || ! st->mem)
+    int64_t base = 0;
+    int N = 0;
+    if (! prepareJsfxFftRegion (st, baseD, sizeD, base, N))
         return 0.0;
 
-    const int64_t N    = (int64_t) (sizeD + 1.0e-5);
-    int64_t base = (int64_t) (baseD + 1.0e-5);
-
-    if (N <= 1 || ! isPowerOfTwo (N))
+#if ZA_JSFX_FFT_LEGACY_IN_ORDER
+    if (gJsfxFftScratch.ensure (N) == nullptr)
         return 0.0;
+#endif
 
-    if (base < 0)
-        base = 0;
+    WDL_fft (asWdlComplex (st->mem + base), N, 0);
 
-    // Need 2*N doubles for interleaved complex values.
-    jsfx_ensure_mem (st, base + 2 * N);
+#if ZA_JSFX_FFT_LEGACY_IN_ORDER
+    (void) permuteWdlToNaturalInPlace (st->mem + base, N);
+#endif
 
-    fftInPlace (st->mem + base, N, false);
     return 0.0;
 }
 
 extern "C" double jsfx_ifft (DSPJSFX_State* st, double baseD, double sizeD)
 {
-    if (! st || ! st->mem)
+    int64_t base = 0;
+    int N = 0;
+    if (! prepareJsfxFftRegion (st, baseD, sizeD, base, N))
         return 0.0;
 
-    const int64_t N    = (int64_t) (sizeD + 1.0e-5);
-    int64_t base = (int64_t) (baseD + 1.0e-5);
-
-    if (N <= 1 || ! isPowerOfTwo (N))
+#if ZA_JSFX_FFT_LEGACY_IN_ORDER
+    if (! permuteNaturalToWdlInPlace (st->mem + base, N))
         return 0.0;
+#endif
 
-    if (base < 0)
-        base = 0;
-
-    jsfx_ensure_mem (st, base + 2 * N);
-
-    fftInPlace (st->mem + base, N, true);
+    WDL_fft (asWdlComplex (st->mem + base), N, 1);
     return 0.0;
 }
 
-extern "C" double jsfx_fft_permute (DSPJSFX_State* /*st*/, double /*base*/, double /*size*/)
+extern "C" double jsfx_fft_permute (DSPJSFX_State* st, double baseD, double sizeD)
 {
-    // No-op: our fft()/ifft() are already in-order.
+#if ZA_JSFX_FFT_LEGACY_IN_ORDER
+    juce::ignoreUnused (st, baseD, sizeD);
     return 0.0;
+#else
+    int64_t base = 0;
+    int N = 0;
+    if (! prepareJsfxFftRegion (st, baseD, sizeD, base, N))
+        return 0.0;
+
+    (void) permuteWdlToNaturalInPlace (st->mem + base, N);
+    return 0.0;
+#endif
 }
 
-extern "C" double jsfx_fft_ipermute (DSPJSFX_State* /*st*/, double /*base*/, double /*size*/)
+extern "C" double jsfx_fft_ipermute (DSPJSFX_State* st, double baseD, double sizeD)
 {
-    // No-op: our fft()/ifft() are already in-order.
+#if ZA_JSFX_FFT_LEGACY_IN_ORDER
+    juce::ignoreUnused (st, baseD, sizeD);
     return 0.0;
+#else
+    int64_t base = 0;
+    int N = 0;
+    if (! prepareJsfxFftRegion (st, baseD, sizeD, base, N))
+        return 0.0;
+
+    (void) permuteNaturalToWdlInPlace (st->mem + base, N);
+    return 0.0;
+#endif
 }
 
 
