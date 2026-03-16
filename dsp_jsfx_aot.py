@@ -6,12 +6,15 @@ DSP-JSFX -> LLVM IR (llvmlite) compiler front-end.
 
 Contract (DSP-JSFX):
 - Sections: @init, @slider, @block, @sample (any may be missing)
-- DSP-only: no @gfx, no strings, no MIDI, no preprocessor.
+- DSP-first AOT subset: no @gfx compilation, no preprocessor.
+- Strings are accepted as opaque handles for compatibility helpers.
+- MIDI builtins midirecv()/midisend() are supported in @block and @sample.
 - Type: everything is double.
 - Variables: spl0..spl63, slider1..slider64, user vars (persistent), builtins:
     - mem  (numeric base pointer index = 0.0)
     - srate (read/write state field)
     - samplesblock (read/write state field; host should set before @block)
+    - MIDI calls: midirecv(offset,msg1,msg2,msg3), midisend(offset,msg1,msg2,msg3)
 - Memory:
     - mem[...] is heap-backed (double*).
     - Pointer-style indexing is allowed: a[b] == mem[(int)a + (int)b].
@@ -918,8 +921,91 @@ def collect_user_vars(programs: Dict[str, List[Node]], fn_defs: Dict[str, Functi
 # -----------------------------
 
 _SPL_RE = re.compile(r"^spl([0-9]+)$")
+_PIN_RE = re.compile(r"^\s*(in_pin|out_pin)\s*:\s*(.*?)\s*$", re.IGNORECASE)
 
-def infer_spl_io(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Dict[str, int]:
+def parse_pin_hints(jsfx_text: str) -> Dict[str, Optional[int]]:
+    """Parse JSFX pin declarations.
+
+    Returns {'inputs': int|None, 'outputs': int|None}. None means "not explicitly declared".
+    JSFX allows repeated in_pin:/out_pin: lines; the special token 'none' declares zero pins.
+    """
+    saw: Dict[str, bool] = {'inputs': False, 'outputs': False}
+    counts: Dict[str, int] = {'inputs': 0, 'outputs': 0}
+
+    for raw_line in jsfx_text.splitlines():
+        line = raw_line
+        if '//' in line:
+            line = line.split('//', 1)[0]
+        if ';' in line:
+            line = line.split(';', 1)[0]
+        m = _PIN_RE.match(line)
+        if not m:
+            continue
+        kind = 'inputs' if m.group(1).lower() == 'in_pin' else 'outputs'
+        value = m.group(2).strip()
+        saw[kind] = True
+        if value.lower() == 'none':
+            counts[kind] = 0
+            continue
+        counts[kind] += 1
+
+    return {k: (counts[k] if saw[k] else None) for k in ('inputs', 'outputs')}
+
+def detect_midi_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Dict[str, bool]:
+    uses_midirecv = False
+    uses_midisend = False
+
+    def rec(n: Node) -> None:
+        nonlocal uses_midirecv, uses_midisend
+        if isinstance(n, (Num, StrLit, Var)):
+            return
+        if isinstance(n, Index):
+            rec(n.base); rec(n.index); return
+        if isinstance(n, Unary):
+            rec(n.a); return
+        if isinstance(n, Binary):
+            rec(n.l); rec(n.r); return
+        if isinstance(n, Assign):
+            rec(n.target); rec(n.value); return
+        if isinstance(n, Call):
+            if n.fn == 'midirecv':
+                uses_midirecv = True
+            elif n.fn == 'midisend':
+                uses_midisend = True
+            for a in n.args:
+                rec(a)
+            return
+        if isinstance(n, Loop):
+            rec(n.count); rec(n.body); return
+        if isinstance(n, Ternary):
+            rec(n.cond); rec(n.then); rec(n.els); return
+        if isinstance(n, Seq):
+            for it in n.items: rec(it)
+            return
+        if isinstance(n, If):
+            rec(n.cond); rec(n.then)
+            if n.els: rec(n.els)
+            return
+        if isinstance(n, While):
+            rec(n.cond); rec(n.body); return
+        if isinstance(n, FunctionDef):
+            rec(n.body); return
+        raise TypeError(type(n))
+
+    for prog in programs.values():
+        for st in prog:
+            rec(st)
+
+    for f in fn_defs.values():
+        rec(f.body)
+
+    return {
+        'uses_midi': uses_midirecv or uses_midisend,
+        'accepts_midi_input': uses_midirecv,
+        'produces_midi_output': uses_midisend,
+    }
+
+def infer_spl_io(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef], pin_hints: Optional[Dict[str, Optional[int]]] = None) -> Dict[str, int]:
     """Infer minimum input/output channel counts from splN usage.
 
     Heuristic:
@@ -1020,20 +1106,36 @@ def infer_spl_io(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef
     max_read = max(reads) if reads else -1
     max_write = max(writes) if writes else -1
 
-    in_ch = (max_read + 1) if max_read >= 0 else 0
-    out_ch = (max_write + 1) if max_write >= 0 else 0
+    inferred_in_ch = (max_read + 1) if max_read >= 0 else 0
+    inferred_out_ch = (max_write + 1) if max_write >= 0 else 0
 
-    # If a script has no explicit I/O usage, fall back to a sensible minimum.
-    if in_ch == 0 and out_ch == 0:
+    pin_hints = pin_hints or {}
+    declared_in = pin_hints.get('inputs')
+    declared_out = pin_hints.get('outputs')
+
+    in_ch = int(inferred_in_ch)
+    out_ch = int(inferred_out_ch)
+
+    if declared_in is not None:
+        in_ch = int(declared_in)
+    if declared_out is not None:
+        out_ch = int(declared_out)
+
+    # If a script has no explicit I/O usage and no explicit pin declarations,
+    # keep a conservative stereo fallback for backward compatibility.
+    if declared_in is None and declared_out is None and in_ch == 0 and out_ch == 0:
         in_ch = 2
         out_ch = 2
-    elif in_ch == 0:
+
+    # Mirror unspecified side to the specified side only when there was no explicit
+    # declaration forcing silence on that edge.
+    if declared_in is None and in_ch == 0 and out_ch > 0:
         in_ch = out_ch
-    elif out_ch == 0:
+    if declared_out is None and out_ch == 0 and in_ch > 0:
         out_ch = in_ch
 
-    in_ch = max(1, min(64, int(in_ch)))
-    out_ch = max(1, min(64, int(out_ch)))
+    in_ch = max(0, min(64, int(in_ch)))
+    out_ch = max(0, min(64, int(out_ch)))
     process_ch = max(in_ch, out_ch)
 
     return {
@@ -1083,7 +1185,19 @@ class LLVMModuleEmitter:
         # 4: i64 memN
         # 5: double srate
         # 6: double samplesblock
+        # 7: DSPJSFX_MidiEvent* midiIn
+        # 8: i32 midiInCount
+        # 9: i32 midiInReadIndex
+        # 10: i32 midiInCapacity
+        # 11: DSPJSFX_MidiEvent* midiOut
+        # 12: i32 midiOutCount
+        # 13: i32 midiOutCapacity
+        # 14: i32 currentBlockSize
+        # 15: double currentSampleRate
+        # 16: i32 pendingNoteCleanup
+        # 17..22: optional diagnostics counters
         self.var_cap = max(1, (max(sym.vars.values()) + 1) if sym.vars else 1)
+        self.midi_event_ty = ir.LiteralStructType([self.i32, self.i32, self.i32, self.i32])
 
         self.state_ty = ir.LiteralStructType([
             ir.ArrayType(self.double, 64),
@@ -1093,6 +1207,22 @@ class LLVMModuleEmitter:
             self.i64,
             self.double,
             self.double,
+            self.midi_event_ty.as_pointer(),
+            self.i32,
+            self.i32,
+            self.i32,
+            self.midi_event_ty.as_pointer(),
+            self.i32,
+            self.i32,
+            self.i32,
+            self.double,
+            self.i32,
+            self.i32,
+            self.i32,
+            self.i32,
+            self.i32,
+            self.i32,
+            self.i32,
         ])
         self.state_ptr = self.state_ty.as_pointer()
 
@@ -1103,6 +1233,17 @@ class LLVMModuleEmitter:
             self.module,
             ir.FunctionType(ir.VoidType(), [self.state_ptr, self.i64]),
             name="jsfx_ensure_mem"
+        )
+
+        self.fn_midirecv = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer()]),
+            name="jsfx_midirecv"
+        )
+        self.fn_midisend = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double]),
+            name="jsfx_midisend"
         )
 
         self._intrinsics: Dict[str, ir.Function] = {}
@@ -1306,6 +1447,15 @@ class LLVMModuleEmitter:
 
     def _to_f64(self, builder, x_i32):
         return builder.sitofp(x_i32, self.double)
+
+    def _get_midirecv_lvalue_ptr(self, builder: ir.IRBuilder, st: ir.Value, node: Node) -> ir.Value:
+        if isinstance(node, Var):
+            if node.name == "mem":
+                raise ValueError("midirecv output arguments must be assignable variables or mem[] slots")
+            return self._get_slot_ptr(builder, st, node.name)
+        if isinstance(node, Index):
+            return self._mem_elem_ptr(builder, st, node.base, node.index)
+        raise ValueError("midirecv output arguments must be assignable variables or mem[] slots")
 
     
     def declare_user_functions(self, fn_defs: Dict[str, FunctionDef]) -> None:
@@ -1595,6 +1745,26 @@ class LLVMModuleEmitter:
                 val = builder.load(ptr)
                 return builder.select(in_range, val, self._const_f64(0.0))
 
+
+            if fn == "midirecv":
+                if len(n.args) != 4:
+                    raise ValueError("midirecv expects 4 args")
+                out_offset = self._get_midirecv_lvalue_ptr(builder, st, n.args[0])
+                out_msg1 = self._get_midirecv_lvalue_ptr(builder, st, n.args[1])
+                out_msg2 = self._get_midirecv_lvalue_ptr(builder, st, n.args[2])
+                out_msg3 = self._get_midirecv_lvalue_ptr(builder, st, n.args[3])
+                ret = builder.call(self.fn_midirecv, [st, out_offset, out_msg1, out_msg2, out_msg3])
+                return self._to_f64(builder, ret)
+
+            if fn == "midisend":
+                if len(n.args) != 4:
+                    raise ValueError("midisend expects 4 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                a2 = self.emit_expr(builder, st, n.args[2])
+                a3 = self.emit_expr(builder, st, n.args[3])
+                ret = builder.call(self.fn_midisend, [st, a0, a1, a2, a3])
+                return self._to_f64(builder, ret)
 
             # ------------------------------------------------------------
             # File I/O (DSP-JSFX runtime)
@@ -2103,9 +2273,10 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
 
     Semantics:
     - st->samplesblock = (double)numSamples
-    - call jsfx_slider(st)
+    - st->currentBlockSize = numSamples
+    - st->currentSampleRate = st->srate
     - call jsfx_block(st)
-    - for each sample:
+    - for each sample (if numChannels > 0):
         load inputs[ch][i] into st.spl[ch] (as double)
         call jsfx_sample(st)
         store st.spl[ch] to outputs[ch][i] (as float)
@@ -2151,6 +2322,17 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     nSamp64 = builder.sext(nSamp, self.i64)
     sb_val = builder.sitofp(nSamp64, self.double)
     builder.store(sb_val, sb_ptr)
+
+    # mirror block metadata for runtime helpers
+    fld_blocksize = ir.Constant(self.i32, 14)
+    blocksize_ptr = builder.gep(st, [z, fld_blocksize], inbounds=True)
+    builder.store(nSamp, blocksize_ptr)
+
+    fld_currate = ir.Constant(self.i32, 15)
+    currate_ptr = builder.gep(st, [z, fld_currate], inbounds=True)
+    fld_srate = ir.Constant(self.i32, 5)
+    srate_ptr = builder.gep(st, [z, fld_srate], inbounds=True)
+    builder.store(builder.load(srate_ptr), currate_ptr)
 
     # Call block 
     builder.call(fn_block, [st])
@@ -2264,8 +2446,9 @@ def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
     fn_defs, programs = extract_function_defs(programs)
     user_vars = collect_user_vars(programs, fn_defs)
 
-    io_channels = infer_spl_io(programs, fn_defs)
-
+    pin_hints = parse_pin_hints(jsfx_text)
+    io_channels = infer_spl_io(programs, fn_defs, pin_hints=pin_hints)
+    midi_caps = detect_midi_usage(programs, fn_defs)
 
     sym = SymTable(user_vars)
 
@@ -2281,11 +2464,25 @@ def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
 
     emit_process_block_fn(emitter, fn_init, fn_slider, fn_block, fn_sample)
 
+    plugin_kind = "audio_effect"
+    if midi_caps["uses_midi"]:
+        if io_channels["inputs"] == 0 and io_channels["outputs"] == 0:
+            plugin_kind = "midi_effect"
+        elif io_channels["inputs"] == 0 and io_channels["outputs"] > 0 and midi_caps["accepts_midi_input"]:
+            plugin_kind = "instrument"
+        elif io_channels["inputs"] > 0 or io_channels["outputs"] > 0:
+            plugin_kind = "hybrid"
+        else:
+            plugin_kind = "midi_effect"
+
     meta = {
         "vars": user_vars,
         "var_cap": emitter.var_cap,
         "sections_present": {k: bool(v) for k, v in programs.items()},
         "io_channels": io_channels,
+        "pin_hints": pin_hints,
+        "midi": midi_caps,
+        "plugin_kind": plugin_kind,
     }
     return emitter.module, meta
 
@@ -2296,13 +2493,18 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     user_vars: Dict[str, int] = dict(meta.get("vars", {}) or {})
 
     io_meta: Dict[str, Any] = dict(meta.get("io_channels", {}) or {})
-    in_ch = int(io_meta.get("inputs", 2) or 2)
-    out_ch = int(io_meta.get("outputs", 2) or 2)
+    in_ch = int(io_meta.get("inputs", 0) or 0)
+    out_ch = int(io_meta.get("outputs", 0) or 0)
     proc_ch = int(io_meta.get("process", max(in_ch, out_ch)) or max(in_ch, out_ch))
+    midi_meta: Dict[str, Any] = dict(meta.get("midi", {}) or {})
+    uses_midi = 1 if midi_meta.get("uses_midi") else 0
+    accepts_midi_input = 1 if midi_meta.get("accepts_midi_input") else 0
+    produces_midi_output = 1 if midi_meta.get("produces_midi_output") else 0
+    plugin_kind = str(meta.get("plugin_kind", "audio_effect") or "audio_effect")
 
-    in_ch = max(1, min(64, in_ch))
-    out_ch = max(1, min(64, out_ch))
-    proc_ch = max(1, min(64, proc_ch))
+    in_ch = max(0, min(64, in_ch))
+    out_ch = max(0, min(64, out_ch))
+    proc_ch = max(0, min(64, proc_ch))
 
 
     def _c_escape(s: str) -> str:
@@ -2313,15 +2515,26 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("#include <stdint.h>")
 
     lines.append("")
-    lines.append("/* Inferred minimum I/O channel counts (from splN usage) */")
+    lines.append("/* Inferred minimum I/O channel counts (from splN usage / pin declarations) */")
     lines.append(f"#define DSPJSFX_INPUT_CHANNELS {in_ch}")
     lines.append(f"#define DSPJSFX_OUTPUT_CHANNELS {out_ch}")
     lines.append(f"#define DSPJSFX_PROCESS_CHANNELS {proc_ch}")
+    lines.append(f"#define DSPJSFX_USES_MIDI {uses_midi}")
+    lines.append(f"#define DSPJSFX_ACCEPTS_MIDI_INPUT {accepts_midi_input}")
+    lines.append(f"#define DSPJSFX_PRODUCES_MIDI_OUTPUT {produces_midi_output}")
+    lines.append(f'#define DSPJSFX_PLUGIN_KIND "{_c_escape(plugin_kind)}"')
     lines.append("")
     lines.append("")
     lines.append("#ifdef __cplusplus")
     lines.append('extern "C" {')
     lines.append("#endif")
+    lines.append("")
+    lines.append("typedef struct DSPJSFX_MidiEvent {")
+    lines.append("    int32_t sampleOffset;")
+    lines.append("    int32_t msg1;")
+    lines.append("    int32_t msg2;")
+    lines.append("    int32_t msg3;")
+    lines.append("} DSPJSFX_MidiEvent;")
     lines.append("")
     lines.append("typedef struct DSPJSFX_State {")
     lines.append("    double spl[64];")
@@ -2331,6 +2544,22 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    int64_t memN;")
     lines.append("    double srate;")
     lines.append("    double samplesblock;")
+    lines.append("    DSPJSFX_MidiEvent* midiIn;")
+    lines.append("    int32_t midiInCount;")
+    lines.append("    int32_t midiInReadIndex;")
+    lines.append("    int32_t midiInCapacity;")
+    lines.append("    DSPJSFX_MidiEvent* midiOut;")
+    lines.append("    int32_t midiOutCount;")
+    lines.append("    int32_t midiOutCapacity;")
+    lines.append("    int32_t currentBlockSize;")
+    lines.append("    double currentSampleRate;")
+    lines.append("    int32_t pendingNoteCleanup;")
+    lines.append("    int32_t midiInDropped;")
+    lines.append("    int32_t midiOutDropped;")
+    lines.append("    int32_t midiInCountLastBlock;")
+    lines.append("    int32_t midiOutCountLastBlock;")
+    lines.append("    int32_t midiInPeak;")
+    lines.append("    int32_t midiOutPeak;")
     lines.append("} DSPJSFX_State;")
     lines.append("")
 
@@ -2370,6 +2599,8 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("/* Runtime hook required by mem[] growth checks. You must provide this when linking.")
     lines.append("   Even if you never exceed memN, the symbol must exist. */")
     lines.append("void jsfx_ensure_mem(DSPJSFX_State* st, int64_t needed);")
+    lines.append("int jsfx_midirecv(DSPJSFX_State* st, double* offset, double* msg1, double* msg2, double* msg3);")
+    lines.append("int jsfx_midisend(DSPJSFX_State* st, double offset, double msg1, double msg2, double msg3);")
     lines.append("")
     lines.append("#ifdef __cplusplus")
     lines.append("}")

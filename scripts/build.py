@@ -253,6 +253,26 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
     return out_obj, out_h, out_meta, out_ll
 
 
+def derive_jsfx_plugin_capabilities(meta: dict | None) -> dict[str, str]:
+    meta = dict(meta or {})
+    midi = dict(meta.get("midi") or {})
+    plugin_kind = str(meta.get("plugin_kind") or "audio_effect").lower()
+
+    accepts_midi = bool(midi.get("accepts_midi_input"))
+    produces_midi = bool(midi.get("produces_midi_output"))
+
+    is_synth = plugin_kind == "instrument"
+    is_midi_effect = plugin_kind == "midi_effect"
+
+    return {
+        "PLUGIN_KIND": plugin_kind,
+        "PLUGIN_IS_SYNTH": "ON" if is_synth else "OFF",
+        "PLUGIN_NEEDS_MIDI_INPUT": "ON" if accepts_midi else "OFF",
+        "PLUGIN_NEEDS_MIDI_OUTPUT": "ON" if produces_midi else "OFF",
+        "PLUGIN_IS_MIDI_EFFECT": "ON" if is_midi_effect else "OFF",
+    }
+
+
 def cmake_safe_version(tag: str) -> str:
     # Accept things like v0.2.0, R0.1.1, 0.2.0, 0.2
     m = re.search(r'(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?', tag)
@@ -326,12 +346,21 @@ def main() -> None:
         # Decide build inputs per plugin type
         dsp = None
         jsfx_obj = None
+        jsfx_caps = {
+            "PLUGIN_KIND": "audio_effect",
+            "PLUGIN_IS_SYNTH": "OFF",
+            "PLUGIN_NEEDS_MIDI_INPUT": "OFF",
+            "PLUGIN_NEEDS_MIDI_OUTPUT": "OFF",
+            "PLUGIN_IS_MIDI_EFFECT": "OFF",
+        }
 
         if plugin_type == "faust":
             dsp = find_single_dsp(plugin_dir)
         else:
             jsfx = find_single_jsfx(plugin_dir)
-            jsfx_obj, _, _, _ = build_jsfx_aot(repo_root, cmake_build, slug, jsfx)
+            jsfx_obj, _, jsfx_meta_path, _ = build_jsfx_aot(repo_root, cmake_build, slug, jsfx)
+            jsfx_meta = json.loads(jsfx_meta_path.read_text(encoding="utf-8")) if jsfx_meta_path.exists() else {}
+            jsfx_caps = derive_jsfx_plugin_capabilities(jsfx_meta)
 
         cmake_args = [
             "cmake",
@@ -348,6 +377,11 @@ def main() -> None:
             f"-DPLUGIN_TYPE={plugin_type}",
             f"-DPLUGIN_DSP={dsp if dsp else ''}",
             f"-DPLUGIN_JSFX_OBJ={jsfx_obj if jsfx_obj else ''}",
+            f"-DPLUGIN_KIND={jsfx_caps['PLUGIN_KIND']}",
+            f"-DPLUGIN_IS_SYNTH={jsfx_caps['PLUGIN_IS_SYNTH']}",
+            f"-DPLUGIN_NEEDS_MIDI_INPUT={jsfx_caps['PLUGIN_NEEDS_MIDI_INPUT']}",
+            f"-DPLUGIN_NEEDS_MIDI_OUTPUT={jsfx_caps['PLUGIN_NEEDS_MIDI_OUTPUT']}",
+            f"-DPLUGIN_IS_MIDI_EFFECT={jsfx_caps['PLUGIN_IS_MIDI_EFFECT']}",
 
         ]
 

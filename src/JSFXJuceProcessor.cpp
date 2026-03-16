@@ -52,6 +52,22 @@
   #endif
 #endif
 
+#ifndef DSPJSFX_USES_MIDI
+  #define DSPJSFX_USES_MIDI 0
+#endif
+
+#ifndef DSPJSFX_ACCEPTS_MIDI_INPUT
+  #define DSPJSFX_ACCEPTS_MIDI_INPUT 0
+#endif
+
+#ifndef DSPJSFX_PRODUCES_MIDI_OUTPUT
+  #define DSPJSFX_PRODUCES_MIDI_OUTPUT 0
+#endif
+
+#ifndef DSPJSFX_PLUGIN_KIND
+  #define DSPJSFX_PLUGIN_KIND "audio_effect"
+#endif
+
 // ---- You must provide this symbol for AOT (declared in the generated header)
 extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed);
 
@@ -952,6 +968,105 @@ extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed)
     noteTrackedJsfxMemUsed (st, needed);
 }
 
+namespace
+{
+static constexpr int kInitialMidiQueueCapacity = 512;
+
+static inline int jsfxRoundToInt (double v) noexcept
+{
+    if (! std::isfinite (v))
+        return 0;
+    return (int) std::llround (v);
+}
+
+static inline int jsfxClampMidiByte (double v) noexcept
+{
+    return juce::jlimit (0, 255, jsfxRoundToInt (v));
+}
+
+static inline int jsfxClampMidiOffset (const DSPJSFX_State* st, double v) noexcept
+{
+    const int maxOffset = (st != nullptr && st->currentBlockSize > 0) ? (st->currentBlockSize - 1) : 0;
+    return juce::jlimit (0, juce::jmax (0, maxOffset), jsfxRoundToInt (v));
+}
+
+static inline int jsfxShortMessageLength (int statusByte) noexcept
+{
+    const int len = juce::MidiMessage::getMessageLengthFromFirstByte ((juce::uint8) (statusByte & 0xff));
+    if (len < 1)
+        return 1;
+    return juce::jmin (3, len);
+}
+
+static juce::MidiMessage makeJsfxMidiMessage (int msg1, int msg2, int msg3)
+{
+    const juce::uint8 data[3] = { (juce::uint8) (msg1 & 0xff), (juce::uint8) (msg2 & 0xff), (juce::uint8) (msg3 & 0xff) };
+    return juce::MidiMessage (data, jsfxShortMessageLength (msg1), 0.0);
+}
+
+static void stableSortMidiEventsByOffset (DSPJSFX_MidiEvent* events, int count) noexcept
+{
+    if (events == nullptr || count <= 1)
+        return;
+
+    for (int i = 1; i < count; ++i)
+    {
+        const auto key = events[i];
+        int j = i - 1;
+        while (j >= 0 && events[j].sampleOffset > key.sampleOffset)
+        {
+            events[j + 1] = events[j];
+            --j;
+        }
+        events[j + 1] = key;
+    }
+}
+
+static void appendAllNotesOffMessages (juce::MidiBuffer& midiMessages, int sampleOffset)
+{
+    const int clampedOffset = juce::jmax (0, sampleOffset);
+    for (int ch = 1; ch <= 16; ++ch)
+    {
+        midiMessages.addEvent (juce::MidiMessage::controllerEvent (ch, 120, 0), clampedOffset);
+        midiMessages.addEvent (juce::MidiMessage::controllerEvent (ch, 123, 0), clampedOffset);
+    }
+}
+}
+
+extern "C" int jsfx_midirecv (DSPJSFX_State* st, double* offset, double* msg1, double* msg2, double* msg3)
+{
+    if (st == nullptr || st->midiIn == nullptr)
+        return 0;
+
+    if (st->midiInReadIndex < 0 || st->midiInReadIndex >= st->midiInCount)
+        return 0;
+
+    const auto& ev = st->midiIn[st->midiInReadIndex++];
+    if (offset != nullptr) *offset = (double) ev.sampleOffset;
+    if (msg1 != nullptr) *msg1 = (double) ev.msg1;
+    if (msg2 != nullptr) *msg2 = (double) ev.msg2;
+    if (msg3 != nullptr) *msg3 = (double) ev.msg3;
+    return 1;
+}
+
+extern "C" int jsfx_midisend (DSPJSFX_State* st, double offset, double msg1, double msg2, double msg3)
+{
+    if (st == nullptr || st->midiOut == nullptr || st->midiOutCapacity <= 0)
+        return 0;
+
+    if (st->midiOutCount >= st->midiOutCapacity)
+    {
+        ++st->midiOutDropped;
+        return 0;
+    }
+
+    auto& ev = st->midiOut[st->midiOutCount++];
+    ev.sampleOffset = jsfxClampMidiOffset (st, offset);
+    ev.msg1 = jsfxClampMidiByte (msg1);
+    ev.msg2 = jsfxClampMidiByte (msg2);
+    ev.msg3 = jsfxClampMidiByte (msg3);
+    return 1;
+}
 
 class JSFXJuceEditor;
 
@@ -1102,14 +1217,16 @@ public:
                       return juce::AudioChannelSet::discreteChannels (ch);
                   };
 
-                  const int outCh = juce::jlimit (1, 64, (int) DSPJSFX_NUM_OUTPUTS);
-                  const int inCh  = juce::jlimit (outCh, 64, (int) DSPJSFX_NUM_INPUTS);
-                  const int scCh  = juce::jmax (0, inCh - outCh);
+                  const int outCh = juce::jlimit (0, 64, (int) DSPJSFX_NUM_OUTPUTS);
+                  const int inCh  = juce::jlimit (0, 64, (int) DSPJSFX_NUM_INPUTS);
+                  const int mainInCh = juce::jmin (inCh, juce::jmax (0, outCh));
+                  const int scCh  = juce::jmax (0, inCh - mainInCh);
 
-                  auto bp = juce::AudioProcessor::BusesProperties()
-                                .withInput  ("Input",  setForCh (outCh), true)
-                                .withOutput ("Output", setForCh (outCh), true);
-
+                  auto bp = juce::AudioProcessor::BusesProperties();
+                  if (mainInCh > 0)
+                      bp = bp.withInput ("Input", setForCh (mainInCh), true);
+                  if (outCh > 0)
+                      bp = bp.withOutput ("Output", setForCh (outCh), true);
                   if (scCh > 0)
                       bp = bp.withInput ("Sidechain", setForCh (scCh), false);
 
@@ -1327,9 +1444,12 @@ public:
         return JucePlugin_Name;  // fallback
     #endif
     }
-    bool acceptsMidi() const override { return false; }
-    bool producesMidi() const override { return false; }
-    bool isMidiEffect() const override { return false; }
+    bool acceptsMidi() const override { return DSPJSFX_ACCEPTS_MIDI_INPUT != 0; }
+    bool producesMidi() const override { return DSPJSFX_PRODUCES_MIDI_OUTPUT != 0; }
+    bool isMidiEffect() const override
+    {
+        return (DSPJSFX_USES_MIDI != 0) && (DSPJSFX_NUM_INPUTS == 0) && (DSPJSFX_NUM_OUTPUTS == 0);
+    }
     double getTailLengthSeconds() const override { return 0.0; }
 
     int getNumPrograms() override { return 1; }
@@ -1342,15 +1462,18 @@ public:
     {
         resetStateStructOnly();
         st.srate = sampleRate;
+        st.currentSampleRate = sampleRate;
+        prepareMidiRuntime (samplesPerBlockExpected);
+        requestEmergencyMidiCleanup();
 
         // Pre-size scratch buffers to avoid allocation in the audio callback.
         if (samplesPerBlockExpected > 0)
         {
             zeroIn.assign ((size_t) samplesPerBlockExpected, 0.0f);
 
-            const int outCh = juce::jlimit (1, 64, getTotalNumOutputChannels());
-            const int inCh  = juce::jlimit (outCh, 64, getTotalNumInputChannels());
-            const int requiredCh = juce::jlimit (1, 64, juce::jmax ((int) DSPJSFX_NUM_INPUTS, (int) DSPJSFX_NUM_OUTPUTS));
+            const int outCh = juce::jlimit (0, 64, getTotalNumOutputChannels());
+            const int inCh  = juce::jlimit (0, 64, getTotalNumInputChannels());
+            const int requiredCh = juce::jlimit (0, 64, juce::jmax ((int) DSPJSFX_NUM_INPUTS, (int) DSPJSFX_NUM_OUTPUTS));
             const int numCh = juce::jmin (64, juce::jmax (requiredCh, juce::jmax (inCh, outCh)));
             const int scratchCh = juce::jmax (0, numCh - outCh);
 
@@ -1394,56 +1517,85 @@ public:
         updateGfxSnapshotIfNeeded ((int) gfxSnapPeriodSamples);
     }
 
-    void releaseResources() override {}
+    void releaseResources() override
+    {
+        requestEmergencyMidiCleanup();
+        st.midiInCount = 0;
+        st.midiInReadIndex = 0;
+        st.midiOutCount = 0;
+    }
+
+    void reset() override
+    {
+        requestEmergencyMidiCleanup();
+        st.midiInCount = 0;
+        st.midiInReadIndex = 0;
+        st.midiOutCount = 0;
+    }
 
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override
     {
-        // Be permissive: hosts vary wildly. We'll clamp to 64 and provide
-        // safe dummy buffers for missing channels in processBlock().
-        if (layouts.outputBuses.size() < 1)
+        const auto busSizeOrZero = [] (const juce::AudioChannelSet& set) -> int
+        {
+            return set.isDisabled() ? 0 : set.size();
+        };
+
+        const int mainOut = (layouts.outputBuses.size() > 0) ? busSizeOrZero (layouts.getMainOutputChannelSet()) : 0;
+        const int mainIn  = (layouts.inputBuses.size()  > 0) ? busSizeOrZero (layouts.getMainInputChannelSet())  : 0;
+
+        if (mainOut < 0 || mainOut > 64 || mainIn < 0 || mainIn > 64)
             return false;
 
-        const auto mainOut = layouts.getMainOutputChannelSet();
-        if (mainOut.isDisabled() || mainOut.size() < 1 || mainOut.size() > 64)
+        if (mainIn > 0 && mainOut > 0 && mainIn < mainOut)
             return false;
 
-        if (layouts.inputBuses.size() < 1)
-            return false;
-
-        const auto mainIn = layouts.getMainInputChannelSet();
-        if (mainIn.isDisabled() || mainIn.size() < 1 || mainIn.size() > 64)
-            return false;
-
-        // Main input should at least cover the main output channel count.
-        if (mainIn.size() < mainOut.size())
-            return false;
-
-        // Total channels across buses must fit into JSFX spl[64].
         int totalIn = 0;
         for (int i = 0; i < layouts.inputBuses.size(); ++i)
-            totalIn += layouts.inputBuses[i].size();
+            totalIn += busSizeOrZero (layouts.inputBuses[i]);
 
         int totalOut = 0;
         for (int i = 0; i < layouts.outputBuses.size(); ++i)
-            totalOut += layouts.outputBuses[i].size();
+            totalOut += busSizeOrZero (layouts.outputBuses[i]);
 
-        return (totalIn >= 1 && totalIn <= 64 && totalOut >= 1 && totalOut <= 64);
+        if (totalIn < 0 || totalIn > 64 || totalOut < 0 || totalOut > 64)
+            return false;
+
+        if (totalIn < (int) DSPJSFX_NUM_INPUTS)
+            return false;
+        if (totalOut < (int) DSPJSFX_NUM_OUTPUTS)
+            return false;
+
+        if (totalIn == 0 && totalOut == 0)
+            return DSPJSFX_USES_MIDI != 0;
+
+        return true;
     }
 
-    void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+    void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) override
     {
         juce::ScopedNoDenormals _;
 
         const int numSamples = buffer.getNumSamples();
 
-        // JUCE multi-bus: main in/out are bus 0; optional sidechain is bus 1.
-        auto mainIn  = getBusBuffer (buffer, true,  0);
-        auto mainOut = getBusBuffer (buffer, false, 0);
+        juce::AudioBuffer<float> mainIn;
+        juce::AudioBuffer<float> mainOut;
+        juce::AudioBuffer<float> scIn;
+
+        if (getBusCount (true) > 0)
+        {
+            if (auto* bus = getBus (true, 0); bus != nullptr && bus->isEnabled())
+                mainIn = getBusBuffer (buffer, true, 0);
+        }
+
+        if (getBusCount (false) > 0)
+        {
+            if (auto* bus = getBus (false, 0); bus != nullptr && bus->isEnabled())
+                mainOut = getBusBuffer (buffer, false, 0);
+        }
 
         const int mainInCh  = juce::jmin (mainIn.getNumChannels(), 64);
         const int mainOutCh = juce::jmin (mainOut.getNumChannels(), 64);
 
-        juce::AudioBuffer<float> scIn;
         int scCh = 0;
         if (getBusCount (true) > 1)
         {
@@ -1455,20 +1607,15 @@ public:
         }
 
         const int totalInCh  = juce::jmin (mainInCh + scCh, 64);
-        const int totalOutCh = mainOutCh;
+        const int totalOutCh = juce::jmin (mainOutCh, 64);
 
-        // Always run at least as many channels as the compiled JSFX expects.
-        // Missing channels are satisfied with zero-input + scratch outputs.
-        const int requiredCh = juce::jlimit (1, 64, juce::jmax ((int) DSPJSFX_NUM_INPUTS, (int) DSPJSFX_NUM_OUTPUTS));
-
+        const int requiredCh = juce::jlimit (0, 64, juce::jmax ((int) DSPJSFX_NUM_INPUTS, (int) DSPJSFX_NUM_OUTPUTS));
         const int numCh = juce::jmin (64, juce::jmax (requiredCh, juce::jmax (totalInCh, totalOutCh)));
 
-        // Ensure zero input buffer (for missing input channels).
         if ((int) zeroIn.size() != numSamples)
             zeroIn.assign ((size_t) numSamples, 0.0f);
-        const float* const zeroPtr = zeroIn.data();
+        const float* const zeroPtr = zeroIn.empty() ? nullptr : zeroIn.data();
 
-        // Ensure scratch outputs for channels that have no corresponding host output.
         const int scratchCh = juce::jmax (0, numCh - totalOutCh);
         if (scratchCh > 0)
         {
@@ -1478,16 +1625,14 @@ public:
                 scratchOut.clear();
             }
         }
-        else
+        else if (scratchOut.getNumChannels() != 0)
         {
-            if (scratchOut.getNumChannels() != 0)
-                scratchOut.setSize (0, 0);
+            scratchOut.setSize (0, 0);
         }
 
-        inPtrs.resize  ((size_t) numCh);
+        inPtrs.resize ((size_t) numCh);
         outPtrs.resize ((size_t) numCh);
 
-        // ---- Build input pointer list (main then sidechain) ----
         int dst = 0;
         for (int ch = 0; ch < mainInCh && dst < numCh; ++ch, ++dst)
             inPtrs[(size_t) dst] = mainIn.getReadPointer (ch);
@@ -1496,7 +1641,6 @@ public:
         for (; dst < numCh; ++dst)
             inPtrs[(size_t) dst] = zeroPtr;
 
-        // ---- Build output pointer list (host outs then scratch) ----
         for (int ch = 0; ch < totalOutCh && ch < numCh; ++ch)
             outPtrs[(size_t) ch] = mainOut.getWritePointer (ch);
         for (int ch = totalOutCh; ch < numCh; ++ch)
@@ -1510,8 +1654,20 @@ public:
 
         applyQueuedGfxStateWrites();
 
-        jsfx_process_block (&st, inPtrs.data(), outPtrs.data(), numCh, numSamples);
+        st.currentBlockSize = numSamples;
+        st.currentSampleRate = st.srate;
+        importMidiToState (midiMessages, numSamples);
+        midiMessages.clear();
 
+        if (pendingEmergencyMidiCleanup.exchange (false, std::memory_order_acq_rel) || st.pendingNoteCleanup != 0)
+        {
+            appendAllNotesOffMessages (midiMessages, 0);
+            st.pendingNoteCleanup = 0;
+        }
+
+        jsfx_process_block (&st, numCh > 0 ? inPtrs.data() : nullptr, numCh > 0 ? outPtrs.data() : nullptr, numCh, numSamples);
+
+        flushMidiFromState (midiMessages);
         updateGfxSnapshotIfNeeded (numSamples);
     }
 
@@ -1554,6 +1710,7 @@ public:
                 tree.removeChild (files, nullptr);
 
             apvts->replaceState (tree);
+            requestEmergencyMidiCleanup();
 
             if (files.isValid() && ! fileDecls.empty())
             {
@@ -2515,6 +2672,8 @@ private:
         st.mem  = (double*) std::calloc ((size_t) initialN, sizeof (double));
         st.memN = (st.mem != nullptr ? initialN : 0);
 
+        prepareMidiRuntime (0);
+
         gMemOwner[&st] = st.mem;
         gMemSize [&st] = st.memN;
         gMemUsed [&st] = 0;
@@ -2529,10 +2688,102 @@ private:
 
         st.mem  = memKeep;
         st.memN = memNKeep;
+        bindMidiRuntimeBuffers();
 
         gMemOwner[&st] = st.mem;
         gMemSize [&st] = st.memN;
         gMemUsed [&st] = 0;
+    }
+
+    void bindMidiRuntimeBuffers()
+    {
+        st.midiIn = midiInStorage.empty() ? nullptr : midiInStorage.data();
+        st.midiInCapacity = (int32_t) midiInStorage.size();
+        st.midiInCount = 0;
+        st.midiInReadIndex = 0;
+
+        st.midiOut = midiOutStorage.empty() ? nullptr : midiOutStorage.data();
+        st.midiOutCapacity = (int32_t) midiOutStorage.size();
+        st.midiOutCount = 0;
+
+        st.currentSampleRate = st.srate;
+        st.currentBlockSize = 0;
+    }
+
+    void prepareMidiRuntime (int samplesPerBlockExpected)
+    {
+        juce::ignoreUnused (samplesPerBlockExpected);
+
+        if ((int) midiInStorage.size() < kInitialMidiQueueCapacity)
+            midiInStorage.resize ((size_t) kInitialMidiQueueCapacity);
+        if ((int) midiOutStorage.size() < kInitialMidiQueueCapacity)
+            midiOutStorage.resize ((size_t) kInitialMidiQueueCapacity);
+
+        bindMidiRuntimeBuffers();
+    }
+
+    void requestEmergencyMidiCleanup()
+    {
+        pendingEmergencyMidiCleanup.store (true, std::memory_order_release);
+        st.pendingNoteCleanup = 1;
+    }
+
+    void importMidiToState (const juce::MidiBuffer& midiMessages, int numSamples)
+    {
+        st.currentBlockSize = numSamples;
+        st.midiInCount = 0;
+        st.midiInReadIndex = 0;
+        st.midiOutCount = 0;
+        st.midiInCountLastBlock = 0;
+        st.midiOutCountLastBlock = 0;
+
+        if (st.midiIn == nullptr || st.midiInCapacity <= 0)
+            return;
+
+        for (const auto metadata : midiMessages)
+        {
+            const auto msg = metadata.getMessage();
+            if (msg.isSysEx())
+                continue;
+
+            if (st.midiInCount >= st.midiInCapacity)
+            {
+                ++st.midiInDropped;
+                continue;
+            }
+
+            const auto* raw = msg.getRawData();
+            const int rawSize = juce::jmin (msg.getRawDataSize(), 3);
+            if (raw == nullptr || rawSize <= 0)
+                continue;
+
+            auto& ev = st.midiIn[st.midiInCount++];
+            ev.sampleOffset = juce::jlimit (0, juce::jmax (0, numSamples - 1), metadata.samplePosition);
+            ev.msg1 = (int) (juce::uint8) raw[0];
+            ev.msg2 = (rawSize > 1) ? (int) (juce::uint8) raw[1] : 0;
+            ev.msg3 = (rawSize > 2) ? (int) (juce::uint8) raw[2] : 0;
+        }
+
+        st.midiInCountLastBlock = st.midiInCount;
+        st.midiInPeak = juce::jmax (st.midiInPeak, st.midiInCount);
+    }
+
+    void flushMidiFromState (juce::MidiBuffer& midiMessages)
+    {
+        if (st.midiOut == nullptr || st.midiOutCount <= 0)
+            return;
+
+        stableSortMidiEventsByOffset (st.midiOut, st.midiOutCount);
+        st.midiOutCountLastBlock = st.midiOutCount;
+        st.midiOutPeak = juce::jmax (st.midiOutPeak, st.midiOutCount);
+
+        for (int i = 0; i < st.midiOutCount; ++i)
+        {
+            const auto& ev = st.midiOut[i];
+            midiMessages.addEvent (makeJsfxMidiMessage (ev.msg1, ev.msg2, ev.msg3), ev.sampleOffset);
+        }
+
+        st.midiOutCount = 0;
     }
 
     bool pushParamsToStateSliders()
@@ -2790,6 +3041,9 @@ private:
         return clamp01f (std::log (std::abs (inside)) / logBase);
     }
     DSPJSFX_State st {};
+    std::vector<DSPJSFX_MidiEvent> midiInStorage;
+    std::vector<DSPJSFX_MidiEvent> midiOutStorage;
+    std::atomic<bool> pendingEmergencyMidiCleanup { false };
     std::unique_ptr<juce::AudioProcessorValueTreeState> apvts;
 
 // ---- GFX snapshot triple-buffer ----

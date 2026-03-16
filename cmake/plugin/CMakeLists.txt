@@ -10,6 +10,11 @@ set(PLUGIN_VERSION "0.0.0" CACHE STRING "Version string")
 set(PLUGIN_DSP "" CACHE FILEPATH "Path to .dsp file")
 set(PLUGIN_TYPE "faust" CACHE STRING "Plugin type: faust or jsfx")
 set(PLUGIN_JSFX_OBJ "" CACHE FILEPATH "Path to JSFX AOT object file (.o/.obj)")
+set(PLUGIN_KIND "audio_effect" CACHE STRING "Logical plugin kind: audio_effect, midi_effect, instrument, hybrid")
+set(PLUGIN_IS_SYNTH OFF CACHE BOOL "Whether JUCE should classify the plugin as a synth/instrument")
+set(PLUGIN_NEEDS_MIDI_INPUT OFF CACHE BOOL "Whether the plugin wants MIDI input")
+set(PLUGIN_NEEDS_MIDI_OUTPUT OFF CACHE BOOL "Whether the plugin produces MIDI output")
+set(PLUGIN_IS_MIDI_EFFECT OFF CACHE BOOL "Whether JUCE should classify the plugin as a MIDI effect")
 
 set(ZA_ROOT "" CACHE PATH "Repo root")
 set(ZA_ENABLE_CLAP OFF CACHE BOOL "Build CLAP target too")
@@ -84,10 +89,10 @@ juce_add_plugin(${PLUGIN_SLUG}
   BUNDLE_ID "${BUNDLE_ID}"
   PLUGIN_MANUFACTURER_CODE "${MANUFACTURER_CODE}"
   PLUGIN_CODE "${PLUGIN_CODE}"
-  IS_SYNTH FALSE
-  NEEDS_MIDI_INPUT FALSE
-  NEEDS_MIDI_OUTPUT FALSE
-  IS_MIDI_EFFECT FALSE
+  IS_SYNTH ${PLUGIN_IS_SYNTH}
+  NEEDS_MIDI_INPUT ${PLUGIN_NEEDS_MIDI_INPUT}
+  NEEDS_MIDI_OUTPUT ${PLUGIN_NEEDS_MIDI_OUTPUT}
+  IS_MIDI_EFFECT ${PLUGIN_IS_MIDI_EFFECT}
   EDITOR_WANTS_KEYBOARD_FOCUS FALSE
   COPY_PLUGIN_AFTER_BUILD FALSE
   FORMATS VST3
@@ -161,6 +166,10 @@ target_include_directories(${PLUGIN_SLUG}
 target_compile_definitions(${PLUGIN_SLUG}
   PRIVATE
     ZA_PLUGIN_NAME="${PLUGIN_NAME}"
+    ZA_PLUGIN_KIND="${PLUGIN_KIND}"
+    ZA_PLUGIN_WANTS_MIDI_INPUT=$<BOOL:${PLUGIN_NEEDS_MIDI_INPUT}>
+    ZA_PLUGIN_WANTS_MIDI_OUTPUT=$<BOOL:${PLUGIN_NEEDS_MIDI_OUTPUT}>
+    ZA_PLUGIN_IS_MIDI_EFFECT=$<BOOL:${PLUGIN_IS_MIDI_EFFECT}>
 )
 
 target_link_libraries(${PLUGIN_SLUG}
