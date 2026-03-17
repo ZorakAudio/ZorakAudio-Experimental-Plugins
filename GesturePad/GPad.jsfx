@@ -23,8 +23,10 @@ slider14:0<0,2,1{CC Only,Note Only,CC + Note}>-Output Mode
 slider15:0<0,2,1{X,Y,Speed}>-Note Pitch Source
 slider16:3<0,3,1{Fixed,X,Y,Speed}>-Note Velocity Source
 slider17:36<0,127,1>-Note Base
-slider18:24<1,72,1>-Note Span
+slider18:127<0,127,1>-Note Span
 slider19:100<1,127,1>-Fixed Note Velocity
+slider20:0<0,8,1{Speed,Vel X,Vel Y,Acc X,Acc Y,Jerk X,Jerk Y,Err X,Err Y}>-Motion Lane Source
+slider21:1.00<0.10,20,0.01:log!>-Motion Lane Sensitivity
 
 @init
 ext_noinit = 1;
@@ -64,8 +66,124 @@ function sync_params()
   note_pitch_src = floor(slider15 + 0.5);
   note_vel_src = floor(slider16 + 0.5);
   note_base = floor(slider17 + 0.5);
-  note_span = max(1, floor(slider18 + 0.5));
+  note_span = max(0, floor(slider18 + 0.5));
   note_fixed_vel = max(1, floor(slider19 + 0.5));
+  motion_lane_src = floor(slider20 + 0.5);
+  motion_sense = slider21;
+);
+
+function reset_motion_state()
+(
+  motion_valid = 0;
+  prev_motion_x = prev_motion_y = 0;
+  prev_vx = prev_vy = 0;
+  prev_ax = prev_ay = 0;
+  last_errx = last_erry = 0;
+  motion_value = 0;
+  motion_signed = 0;
+  view_motion = 0;
+);
+
+function motion_src_is_bipolar(src)
+(
+  src > 0;
+);
+
+function motion_src_label(src, outstr)
+(
+  src == 0 ? strcpy(outstr, "Speed");
+  src == 1 ? strcpy(outstr, "Vel X");
+  src == 2 ? strcpy(outstr, "Vel Y");
+  src == 3 ? strcpy(outstr, "Acc X");
+  src == 4 ? strcpy(outstr, "Acc Y");
+  src == 5 ? strcpy(outstr, "Jerk X");
+  src == 6 ? strcpy(outstr, "Jerk Y");
+  src == 7 ? strcpy(outstr, "Err X");
+  src == 8 ? strcpy(outstr, "Err Y");
+);
+
+function motion_src_menu_label(src, outstr)
+(
+  src == 0 ? strcpy(outstr, "Speed (unipolar)");
+  src == 1 ? strcpy(outstr, "Velocity X (signed)");
+  src == 2 ? strcpy(outstr, "Velocity Y (signed)");
+  src == 3 ? strcpy(outstr, "Acceleration X (signed)");
+  src == 4 ? strcpy(outstr, "Acceleration Y (signed)");
+  src == 5 ? strcpy(outstr, "Jerk X (signed)");
+  src == 6 ? strcpy(outstr, "Jerk Y (signed)");
+  src == 7 ? strcpy(outstr, "Entropy / Err X (signed)");
+  src == 8 ? strcpy(outstr, "Entropy / Err Y (signed)");
+);
+
+function show_motion_src_menu(current)
+local(sel)
+(
+  #menu_motion = current == 0 ? "!Speed (unipolar)|Velocity X (signed)|Velocity Y (signed)|Acceleration X (signed)|Acceleration Y (signed)|Jerk X (signed)|Jerk Y (signed)|Entropy / Err X (signed)|Entropy / Err Y (signed)"
+  : current == 1 ? "Speed (unipolar)|!Velocity X (signed)|Velocity Y (signed)|Acceleration X (signed)|Acceleration Y (signed)|Jerk X (signed)|Jerk Y (signed)|Entropy / Err X (signed)|Entropy / Err Y (signed)"
+  : current == 2 ? "Speed (unipolar)|Velocity X (signed)|!Velocity Y (signed)|Acceleration X (signed)|Acceleration Y (signed)|Jerk X (signed)|Jerk Y (signed)|Entropy / Err X (signed)|Entropy / Err Y (signed)"
+  : current == 3 ? "Speed (unipolar)|Velocity X (signed)|Velocity Y (signed)|!Acceleration X (signed)|Acceleration Y (signed)|Jerk X (signed)|Jerk Y (signed)|Entropy / Err X (signed)|Entropy / Err Y (signed)"
+  : current == 4 ? "Speed (unipolar)|Velocity X (signed)|Velocity Y (signed)|Acceleration X (signed)|!Acceleration Y (signed)|Jerk X (signed)|Jerk Y (signed)|Entropy / Err X (signed)|Entropy / Err Y (signed)"
+  : current == 5 ? "Speed (unipolar)|Velocity X (signed)|Velocity Y (signed)|Acceleration X (signed)|Acceleration Y (signed)|!Jerk X (signed)|Jerk Y (signed)|Entropy / Err X (signed)|Entropy / Err Y (signed)"
+  : current == 6 ? "Speed (unipolar)|Velocity X (signed)|Velocity Y (signed)|Acceleration X (signed)|Acceleration Y (signed)|Jerk X (signed)|!Jerk Y (signed)|Entropy / Err X (signed)|Entropy / Err Y (signed)"
+  : current == 7 ? "Speed (unipolar)|Velocity X (signed)|Velocity Y (signed)|Acceleration X (signed)|Acceleration Y (signed)|Jerk X (signed)|Jerk Y (signed)|!Entropy / Err X (signed)|Entropy / Err Y (signed)"
+  : "Speed (unipolar)|Velocity X (signed)|Velocity Y (signed)|Acceleration X (signed)|Acceleration Y (signed)|Jerk X (signed)|Jerk Y (signed)|Entropy / Err X (signed)|!Entropy / Err Y (signed)";
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu_motion);
+  sel > 0 ? (sel - 1) : current;
+);
+
+function common_cc_value(idx)
+(
+  idx == 0 ? 1
+  : idx == 1 ? 11
+  : idx == 2 ? 74
+  : idx == 3 ? 71
+  : idx == 4 ? 7
+  : idx == 5 ? 10
+  : idx == 6 ? 64
+  : idx == 7 ? 91
+  : idx == 8 ? 93
+  : idx == 9 ? 5
+  : idx == 10 ? 0
+  : idx == 11 ? 2
+  : idx == 12 ? 4
+  : idx == 13 ? 8
+  : idx == 14 ? 12
+  : idx == 15 ? 13
+  : idx == 16 ? 16
+  : idx == 17 ? 17
+  : idx == 18 ? 18
+  : idx == 19 ? 19
+  : idx == 20 ? 20
+  : idx == 21 ? 21
+  : idx == 22 ? 22
+  : idx == 23 ? 23
+  : -1;
+);
+
+function open_cc_picker(target_id, current_cc)
+local(i)
+(
+  cc_picker_open = 1;
+  cc_picker_target = target_id;
+  cc_picker_current = current_cc;
+  cc_picker_page = current_cc < 32 ? 1 : current_cc < 64 ? 2 : current_cc < 96 ? 3 : 4;
+  i = 0;
+  loop(24,
+    common_cc_value(i) == current_cc ? (cc_picker_page = 0;);
+    i += 1;
+  );
+);
+
+function apply_cc_picker_value(cc)
+(
+  cc = clamp(floor(cc + 0.5), 0, 127);
+  cc_picker_target == 1 ? ( slider6 = cc; sliderchange(slider6); );
+  cc_picker_target == 2 ? ( slider7 = cc; sliderchange(slider7); );
+  cc_picker_target == 3 ? ( slider8 = cc; sliderchange(slider8); );
+  sync_params();
+  cc_picker_current = cc;
+  cc_picker_open = 0;
 );
 
 function force_all_notes_off()
@@ -73,8 +191,25 @@ function force_all_notes_off()
   note_flush = 1;
 );
 
+function note_range_set(low_note, high_note)
+local(lo, hi)
+(
+  lo = clamp(floor(low_note + 0.5), 0, 127);
+  hi = clamp(floor(high_note + 0.5), 0, 127);
+  hi < lo ? (tmp = lo; lo = hi; hi = tmp;);
+  slider17 = lo;
+  slider18 = hi - lo;
+  sliderchange(slider17);
+  sliderchange(slider18);
+  sync_params();
+  force_all_notes_off();
+);
+
+
+
 function reset_gesture()
 (
+  reset_motion_state();
   point_count = 0;
   drawing = 0;
   playback_active = 0;
@@ -224,7 +359,7 @@ local(i, t0, t1, a, x0, y0, x1, y1, dt, dx, dy, found)
 function ui_button(id, x, y, w, h, state)
 local(hot, click, active)
 (
-  hot = (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + h);
+  hot = (!ui_input_lock || (id >= 900)) && (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + h);
   click = 0;
 
   mouse_pressed && hot ? (
@@ -251,7 +386,7 @@ local(hot, click, active)
 function ui_dropdown(id, x, y, w, h, label_str, value_str, accent)
 local(hot, click, active)
 (
-  hot = (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + h);
+  hot = (!ui_input_lock || (id >= 900)) && (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + h);
   click = 0;
 
   mouse_pressed && hot ? (
@@ -289,7 +424,7 @@ local(hot, click, active)
 function ui_hslider(id, x, y, w, h, val, minv, maxv, quant)
 local(hot, t, newv)
 (
-  hot = (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + h);
+  hot = (!ui_input_lock || (id >= 900)) && (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + h);
   newv = val;
 
   mouse_pressed && hot ? (
@@ -338,12 +473,28 @@ local(t)
   gfx_rect(x+1, y+1, max(2, (w-2) * t), h-2);
 );
 
+function draw_bipolar_meter(x, y, w, h, val, accent)
+local(mid, t, cx)
+(
+  mid = x + w * 0.5;
+  t = clamp(val, -1, 1);
+  gfx_set(0.10, 0.11, 0.14, 1);
+  gfx_rect(x, y, w, h);
+  gfx_set(0.65, 0.72, 0.82, 0.18);
+  gfx_roundrect(x, y, w, h, h * 0.5, 1);
+  gfx_set(0.70, 0.76, 0.84, 0.18);
+  gfx_line(mid, y+1, mid, y+h-1, 1);
+  cx = mid + (w * 0.5 - 1) * t;
+  accent ? gfx_set(0.18, 0.82, 0.70, 0.35) : gfx_set(0.96, 0.62, 0.72, 0.35);
+  t >= 0 ? gfx_rect(mid, y+1, max(1, cx-mid), h-2) : gfx_rect(cx, y+1, max(1, mid-cx), h-2);
+);
+
 function ui_knob(id, x, y, r, val, minv, maxv, quant)
 local(dx, dy, hot, newv, norm, ang, fine)
 (
   dx = mx - x;
   dy = my - y;
-  hot = (dx*dx + dy*dy) <= (r*r);
+  hot = (!ui_input_lock || (id >= 900)) && ((dx*dx + dy*dy) <= (r*r));
   newv = val;
 
   mouse_pressed && hot ? (
@@ -397,6 +548,70 @@ function draw_card(x, y, w, h, title_str)
   gfx_x = x + 12; gfx_y = y + 8; gfx_drawstr(title_str);
 );
 
+function tooltip_region(id, x, y, w, h)
+(
+  (tooltip_id == 0) && (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + h) ? (
+    tooltip_id = id;
+  );
+);
+
+function set_tooltip_strings(id)
+(
+  strcpy(#tt_title, "");
+  strcpy(#tt_body, "");
+
+  id == 1 ? ( strcpy(#tt_title, "Gesture Pad"); strcpy(#tt_body, "Draw here. X/Y become MIDI, and gesture speed can drive a third CC or note velocity."); );
+  id == 2 ? ( strcpy(#tt_title, "Playback Mode"); strcpy(#tt_body, "Direct streams live draw data. Replay modes follow the captured path after you finish drawing."); );
+  id == 3 ? ( strcpy(#tt_title, "Clear Gesture"); strcpy(#tt_body, "Erase the current path, stop playback, and release any held note."); );
+  id == 4 ? ( strcpy(#tt_title, "Play / Stop"); strcpy(#tt_body, "Start or stop replaying the captured gesture in the selected playback mode."); );
+  id == 5 ? ( strcpy(#tt_title, "Retrigger"); strcpy(#tt_body, "Restart replay from the beginning of the stored gesture."); );
+  id == 6 ? ( strcpy(#tt_title, "Playback Speed"); strcpy(#tt_body, "Controls replay speed for Loop, One-Shot, and Ping-Pong modes."); );
+  id == 7 ? ( strcpy(#tt_title, "Smoothing"); strcpy(#tt_body, "Higher values soften motion and reduce jitter before MIDI is emitted."); );
+  id == 8 ? ( strcpy(#tt_title, "Emit While Drawing"); strcpy(#tt_body, "When enabled, MIDI streams live while the mouse button is held down."); );
+  id == 9 ? ( strcpy(#tt_title, "Auto-Play After Draw"); strcpy(#tt_body, "Automatically starts gesture replay as soon as you release the mouse."); );
+  id == 10 ? ( strcpy(#tt_title, "Speed CC Active"); strcpy(#tt_body, "Enables the third CC lane driven by gesture speed."); );
+  id == 11 ? ( strcpy(#tt_title, "Output Type"); strcpy(#tt_body, "Choose whether the pad emits CC, Notes, or both at once."); );
+  id == 12 ? ( strcpy(#tt_title, "MIDI Channel"); strcpy(#tt_body, "All outgoing CC and Note messages use this MIDI channel."); );
+  id == 13 ? ( strcpy(#tt_title, "X Axis Mapping"); strcpy(#tt_body, "Choose which MIDI CC receives horizontal position from the pad."); );
+  id == 14 ? ( strcpy(#tt_title, "Y Axis Mapping"); strcpy(#tt_body, "Choose which MIDI CC receives vertical position from the pad."); );
+  id == 15 ? ( strcpy(#tt_title, "Motion Lane Mapping"); strcpy(#tt_body, "Choose which MIDI CC receives the third motion lane. In Advanced you can switch that lane between Speed, signed Velocity, signed Acceleration, signed Jerk, and signed prediction error."); );
+  id == 16 ? ( strcpy(#tt_title, "Pitch Source"); strcpy(#tt_body, "Choose whether note pitch follows X, Y, or gesture speed."); );
+  id == 17 ? ( strcpy(#tt_title, "Velocity Source"); strcpy(#tt_body, "Choose whether note velocity is fixed or follows X, Y, or speed."); );
+  id == 18 ? ( strcpy(#tt_title, "Base Note"); strcpy(#tt_body, "The lowest note used by Note output."); );
+  id == 19 ? ( strcpy(#tt_title, "Note Range Strip"); strcpy(#tt_body, "Drag the left and right handles to set the low and high MIDI notes intuitively. Quick buttons jump to Full 128 or Piano 88 ranges."); );
+  id == 20 ? ( strcpy(#tt_title, "Fixed Velocity"); strcpy(#tt_body, "Used only when Velocity Source is set to Fixed Velocity."); );
+  id == 21 ? ( strcpy(#tt_title, "Minimum Point Distance"); strcpy(#tt_body, "How far the mouse must move before a new point is stored in the gesture."); );
+  id == 22 ? ( strcpy(#tt_title, "CC Deadband"); strcpy(#tt_body, "Minimum CC change before another MIDI value is sent."); );
+  id == 23 ? ( strcpy(#tt_title, "Speed Sensitivity"); strcpy(#tt_body, "Scales how strongly cursor movement affects the unipolar speed lane."); );
+  id == 24 ? ( strcpy(#tt_title, "Motion Lane Source"); strcpy(#tt_body, "Advanced source for the third motion lane. Speed stays unipolar. Velocity, acceleration, jerk, and prediction error are bipolar and emit center-zero MIDI CC values."); );
+  id == 25 ? ( strcpy(#tt_title, "Motion Lane Sensitivity"); strcpy(#tt_body, "Gain for advanced signed motion features before they are encoded to MIDI CC. Higher values exaggerate bipolar movement and prediction error."); );
+  id == 26 ? ( strcpy(#tt_title, "Full Range"); strcpy(#tt_body, "Map the note strip to the entire 0 to 127 MIDI note range."); );
+  id == 27 ? ( strcpy(#tt_title, "Piano 88"); strcpy(#tt_body, "Jump to the classic 88-key piano range: A0 to C8."); );
+);
+
+function draw_tooltip_box()
+local(tx, ty, tw, th)
+(
+  tooltip_id > 0 ? (
+    set_tooltip_strings(tooltip_id);
+    tw = min(460, gfx_w - 24);
+    th = 48;
+    tx = clamp(mx + 18, 12, gfx_w - tw - 12);
+    ty = clamp(my + 18, 12, gfx_h - th - 12);
+
+    gfx_set(0.03, 0.04, 0.06, 0.96);
+    gfx_rect(tx, ty, tw, th);
+    gfx_set(0.18, 0.82, 0.70, 0.42);
+    gfx_roundrect(tx, ty, tw, th, 8, 1);
+    gfx_setfont(2, "Arial", 10, 'b');
+    gfx_set(0.94, 0.98, 1.0, 1);
+    gfx_x = tx + 10; gfx_y = ty + 6; gfx_drawstr(#tt_title);
+    gfx_setfont(2, "Arial", 10, 0);
+    gfx_set(0.74, 0.82, 0.90, 1);
+    gfx_x = tx + 10; gfx_y = ty + 22; gfx_drawstr(#tt_body, 4, tx + tw - 10, ty + th - 6);
+  );
+);
+
 function cc_label(cc, outstr)
 (
   sprintf(outstr, "CC %d", cc);
@@ -413,6 +628,35 @@ function cc_label(cc, outstr)
   cc == 74 ? strcat(outstr, "  Brightness");
   cc == 91 ? strcat(outstr, "  Reverb");
   cc == 93 ? strcat(outstr, "  Chorus");
+);
+
+function cc_short_name(cc, outstr)
+(
+  strcpy(outstr, "");
+  cc == 0 ? strcpy(outstr, "Bank Sel");
+  cc == 1 ? strcpy(outstr, "Mod");
+  cc == 2 ? strcpy(outstr, "Breath");
+  cc == 4 ? strcpy(outstr, "Foot");
+  cc == 5 ? strcpy(outstr, "Porta");
+  cc == 7 ? strcpy(outstr, "Volume");
+  cc == 8 ? strcpy(outstr, "Balance");
+  cc == 10 ? strcpy(outstr, "Pan");
+  cc == 11 ? strcpy(outstr, "Expr");
+  cc == 12 ? strcpy(outstr, "FX1");
+  cc == 13 ? strcpy(outstr, "FX2");
+  cc == 16 ? strcpy(outstr, "Gen 1");
+  cc == 17 ? strcpy(outstr, "Gen 2");
+  cc == 18 ? strcpy(outstr, "Gen 3");
+  cc == 19 ? strcpy(outstr, "Gen 4");
+  cc == 20 ? strcpy(outstr, "Gen 5");
+  cc == 21 ? strcpy(outstr, "Gen 6");
+  cc == 22 ? strcpy(outstr, "Gen 7");
+  cc == 23 ? strcpy(outstr, "Gen 8");
+  cc == 64 ? strcpy(outstr, "Sustain");
+  cc == 71 ? strcpy(outstr, "Reson");
+  cc == 74 ? strcpy(outstr, "Bright");
+  cc == 91 ? strcpy(outstr, "Reverb");
+  cc == 93 ? strcpy(outstr, "Chorus");
 );
 
 function output_mode_label(val, outstr)
@@ -545,6 +789,10 @@ prev_mouse_down = 0;
 drag_item = 0;
 drag_start_y = 0;
 drag_start_val = 0;
+cc_picker_open = 0;
+cc_picker_target = 0;
+cc_picker_current = 0;
+cc_picker_page = 1;
 
 @slider
 sync_params();
@@ -620,13 +868,77 @@ view_x = sm_x;
 view_y = sm_y;
 view_speed = sm_speed;
 
+out_active ? (
+  dt_block = max(samplesblock / srate, 0.0001);
+  !motion_valid ? (
+    prev_motion_x = sm_x;
+    prev_motion_y = sm_y;
+    prev_vx = prev_vy = 0;
+    prev_ax = prev_ay = 0;
+    last_errx = last_erry = 0;
+    motion_valid = 1;
+  );
+
+  cur_vx = (sm_x - prev_motion_x) / dt_block;
+  cur_vy = (sm_y - prev_motion_y) / dt_block;
+  cur_ax = (cur_vx - prev_vx) / dt_block;
+  cur_ay = (cur_vy - prev_vy) / dt_block;
+  cur_jx = (cur_ax - prev_ax) / dt_block;
+  cur_jy = (cur_ay - prev_ay) / dt_block;
+  pred_x = prev_motion_x + prev_vx * dt_block;
+  pred_y = prev_motion_y + prev_vy * dt_block;
+  last_errx = sm_x - pred_x;
+  last_erry = sm_y - pred_y;
+
+  motion_lane_src == 0 ? (
+    motion_value = clamp(sm_speed, 0, 1);
+    motion_signed = 0;
+  ) : motion_lane_src == 1 ? (
+    motion_value = clamp(cur_vx * motion_sense * 0.35, -1, 1);
+    motion_signed = 1;
+  ) : motion_lane_src == 2 ? (
+    motion_value = clamp(cur_vy * motion_sense * 0.35, -1, 1);
+    motion_signed = 1;
+  ) : motion_lane_src == 3 ? (
+    motion_value = clamp(cur_ax * motion_sense * 0.035, -1, 1);
+    motion_signed = 1;
+  ) : motion_lane_src == 4 ? (
+    motion_value = clamp(cur_ay * motion_sense * 0.035, -1, 1);
+    motion_signed = 1;
+  ) : motion_lane_src == 5 ? (
+    motion_value = clamp(cur_jx * motion_sense * 0.0035, -1, 1);
+    motion_signed = 1;
+  ) : motion_lane_src == 6 ? (
+    motion_value = clamp(cur_jy * motion_sense * 0.0035, -1, 1);
+    motion_signed = 1;
+  ) : motion_lane_src == 7 ? (
+    motion_value = clamp(last_errx * motion_sense * 18.0, -1, 1);
+    motion_signed = 1;
+  ) : (
+    motion_value = clamp(last_erry * motion_sense * 18.0, -1, 1);
+    motion_signed = 1;
+  );
+
+  prev_motion_x = sm_x;
+  prev_motion_y = sm_y;
+  prev_vx = cur_vx;
+  prev_vy = cur_vy;
+  prev_ax = cur_ax;
+  prev_ay = cur_ay;
+) : (
+  motion_valid = 0;
+  motion_value = 0;
+  motion_signed = motion_src_is_bipolar(motion_lane_src);
+);
+view_motion = motion_value;
+
 send_ccs = (output_mode == 0) || (output_mode == 2);
 send_notes = (output_mode == 1) || (output_mode == 2);
 
 (send_ccs && out_active) ? (
   ccx_val = floor(clamp(sm_x, 0, 1) * 127 + 0.5);
   ccy_val = floor(clamp(sm_y, 0, 1) * 127 + 0.5);
-  ccs_val = floor(clamp(sm_speed, 0, 1) * 127 + 0.5);
+  ccs_val = motion_signed ? clamp(floor(64 + motion_value * 63 + 0.5), 0, 127) : floor(clamp(motion_value, 0, 1) * 127 + 0.5);
 
   (abs(ccx_val - last_sent_x) >= cc_deadband) || (last_sent_x < 0) ? (
     midisend(0, $xB0 | midi_chan, cc_x_num, ccx_val);
@@ -650,7 +962,9 @@ want_note = send_notes && (drawing || (playback_active && mode > 0));
 
 want_note ? (
   pitch_norm = note_pitch_src == 0 ? sm_x : note_pitch_src == 1 ? sm_y : sm_speed;
-  cur_note = clamp(note_base + floor(clamp(pitch_norm, 0, 1) * note_span + 0.5), 0, 127);
+  note_hi = clamp(note_base + note_span, note_base, 127);
+  effective_note_span = max(0, note_hi - note_base);
+  cur_note = clamp(note_base + floor(clamp(pitch_norm, 0, 1) * effective_note_span + 0.5), 0, 127);
   vel_norm = note_vel_src == 0 ? (note_fixed_vel / 127) : note_vel_src == 1 ? sm_x : note_vel_src == 2 ? sm_y : sm_speed;
   cur_vel = clamp(floor(clamp(vel_norm, 0, 1) * 127 + 0.5), 1, 127);
 
@@ -685,32 +999,58 @@ gfx_getchar();
 
 sync_params();
 
-panel_w = max(390, min(430, gfx_w * 0.35));
-pad_x = 18;
-pad_y = 56;
-pad_w = max(300, gfx_w - panel_w - 54);
-pad_h = max(260, gfx_h - 78);
-panel_x = pad_x + pad_w + 18;
+ui_input_lock = cc_picker_open;
+tooltip_id = 0;
+ui_scale = clamp(min(gfx_w / 1220, gfx_h / 760), 0.90, 1.25);
+margin = floor(18 * ui_scale + 0.5);
+top_h = floor(42 * ui_scale + 0.5);
+card_gap = floor(8 * ui_scale + 0.5);
+drop_h = floor(42 * ui_scale + 0.5);
+btn_h = floor(26 * ui_scale + 0.5);
+toggle_h = floor(18 * ui_scale + 0.5);
+knob_r = floor(31 * ui_scale + 0.5);
+slider_h = floor(12 * ui_scale + 0.5);
+row_gap = floor(22 * ui_scale + 0.5);
+font_title = floor(22 * ui_scale + 0.5);
+font_sub = floor(12 * ui_scale + 0.5);
+font_label = max(10, floor(11 * ui_scale + 0.5));
+
+panel_w = gfx_w * 0.42;
+panel_w = clamp(panel_w, 430, 560);
+max_panel_w = max(430, gfx_w - floor(320 * ui_scale + 0.5));
+panel_w = min(panel_w, max_panel_w);
+pad_x = margin;
+pad_y = top_h + floor(14 * ui_scale + 0.5);
+panel_x = gfx_w - margin - panel_w;
+pad_w = panel_x - pad_x - margin;
+pad_w < floor(280 * ui_scale + 0.5) ? (
+  panel_w = max(400, gfx_w * 0.39);
+  panel_x = gfx_w - margin - panel_w;
+  pad_w = panel_x - pad_x - margin;
+);
+pad_h = max(floor(260 * ui_scale + 0.5), gfx_h - pad_y - margin);
 panel_y = pad_y;
 panel_h = pad_h;
+stack_panel = panel_w < 490;
 
 // Background
 gfx_set(0.05, 0.06, 0.08, 1);
 gfx_rect(0, 0, gfx_w, gfx_h);
 gfx_set(0.07, 0.08, 0.11, 1);
-gfx_rect(0, 0, gfx_w, 42);
-gfx_setfont(1, "Arial", 22, 'b');
+gfx_rect(0, 0, gfx_w, top_h);
+gfx_setfont(1, "Arial", font_title, 'b');
 gfx_set(0.93, 0.97, 1.00, 1);
-gfx_x = 18; gfx_y = 10; gfx_drawstr("Gesture MIDI Pad XL");
-gfx_setfont(2, "Arial", 12, 0);
+gfx_x = margin; gfx_y = floor(10 * ui_scale + 0.5); gfx_drawstr("Gesture MIDI Pad XL");
+gfx_setfont(2, "Arial", font_sub, 0);
 gfx_set(0.60, 0.68, 0.78, 1);
-gfx_x = 18; gfx_y = 32; gfx_drawstr("Draw gestures, map them to CC or Notes, and record the stream directly in REAPER.");
+gfx_x = margin; gfx_y = floor(32 * ui_scale + 0.5); gfx_drawstr("Draw gestures, map them to CC or Notes, and record the stream directly in REAPER.");
 
 // Pad frame
 gfx_set(0.09, 0.10, 0.13, 1);
 gfx_rect(pad_x, pad_y, pad_w, pad_h);
 gfx_set(0.25, 0.30, 0.38, 0.35);
 gfx_roundrect(pad_x, pad_y, pad_w, pad_h, 10, 1);
+tooltip_region(1, pad_x, pad_y, pad_w, pad_h);
 
 // Pad grid
 gfx_set(0.18, 0.22, 0.28, 0.55);
@@ -728,9 +1068,10 @@ output_mode_label(output_mode, #out_disp);
 cc_label(cc_x_num, #ccx_disp);
 cc_label(cc_y_num, #ccy_disp);
 cc_label(cc_speed_num, #ccs_disp);
+motion_src_label(motion_lane_src, #motion_disp);
 
 // Axis / mapping labels
-gfx_setfont(2, "Arial", 11, 'b');
+gfx_setfont(2, "Arial", font_label, 'b');
 gfx_set(0.45, 0.55, 0.66, 1);
 gfx_x = pad_x + 12; gfx_y = pad_y + 10; gfx_drawstr(#out_disp);
 gfx_x = pad_x + 12; gfx_y = pad_y + pad_h - 38; gfx_drawstr(#ccx_disp);
@@ -769,17 +1110,16 @@ gfx_set(0.05, 0.06, 0.08, 1);
 gfx_circle(cx, cy, 2, 1, 1);
 
 // Panel cards
-card_gap = 8;
 card1_y = panel_y;
-card1_h = 96;
+card1_h = floor(96 * ui_scale + 0.5);
 card2_y = card1_y + card1_h + card_gap;
-card2_h = 92;
+card2_h = floor(92 * ui_scale + 0.5);
 card3_y = card2_y + card2_h + card_gap;
-card3_h = 168;
+card3_h = stack_panel ? floor(258 * ui_scale + 0.5) : floor(168 * ui_scale + 0.5);
 card4_y = card3_y + card3_h + card_gap;
-card4_h = 130;
+card4_h = stack_panel ? floor(210 * ui_scale + 0.5) : floor(158 * ui_scale + 0.5);
 card5_y = card4_y + card4_h + card_gap;
-card5_h = panel_y + panel_h - card5_y;
+card5_h = max(floor(126 * ui_scale + 0.5), panel_y + panel_h - card5_y);
 
 draw_card(panel_x, card1_y, panel_w, card1_h, "TRANSPORT & PLAYBACK");
 draw_card(panel_x, card2_y, panel_w, card2_h, "PERFORMANCE");
@@ -789,18 +1129,22 @@ draw_card(panel_x, card5_y, panel_w, card5_h, "ADVANCED & STATUS");
 
 // Card 1: mode + buttons
 mode_label(mode, #mode_disp);
-mode_click = ui_dropdown(100, panel_x + 12, card1_y + 24, panel_w - 24, 42, "Playback Mode", #mode_disp, 1);
+mode_click = ui_dropdown(100, panel_x + 12, card1_y + 24, panel_w - 24, drop_h, "Playback Mode", #mode_disp, 1);
+tooltip_region(2, panel_x + 12, card1_y + 24, panel_w - 24, drop_h);
 mode_click ? (
   slider1 = show_mode_menu(mode);
   sliderchange(slider1);
   sync_params();
 );
 
-btn_y = card1_y + 66;
+btn_y = card1_y + 24 + drop_h + 8;
 btn_w = floor((panel_w - 32) / 3);
-clear_click = ui_button(101, panel_x + 12, btn_y, btn_w, 26, 0);
-play_click  = ui_button(102, panel_x + 16 + btn_w, btn_y, btn_w, 26, playback_active && mode > 0);
-retri_click = ui_button(103, panel_x + 20 + btn_w*2, btn_y, btn_w, 26, 0);
+clear_click = ui_button(101, panel_x + 12, btn_y, btn_w, btn_h, 0);
+play_click  = ui_button(102, panel_x + 16 + btn_w, btn_y, btn_w, btn_h, playback_active && mode > 0);
+retri_click = ui_button(103, panel_x + 20 + btn_w*2, btn_y, btn_w, btn_h, 0);
+tooltip_region(3, panel_x + 12, btn_y, btn_w, btn_h);
+tooltip_region(4, panel_x + 16 + btn_w, btn_y, btn_w, btn_h);
+tooltip_region(5, panel_x + 20 + btn_w*2, btn_y, btn_w, btn_h);
 
 clear_click ? (
   reset_gesture();
@@ -820,23 +1164,25 @@ clear_click ? (
   play_dir = 1;
 );
 
-gfx_setfont(2, "Arial", 11, 'b');
+gfx_setfont(2, "Arial", font_label, 'b');
 gfx_set(0.92, 0.97, 1.00, 1);
-gfx_x = panel_x + 12; gfx_y = btn_y; gfx_drawstr("CLEAR", 1|4|256, panel_x + 12 + btn_w, btn_y + 26);
+gfx_x = panel_x + 12; gfx_y = btn_y; gfx_drawstr("CLEAR", 1|4|256, panel_x + 12 + btn_w, btn_y + btn_h);
 gfx_x = panel_x + 16 + btn_w; gfx_y = btn_y;
-playback_active && mode > 0 ? gfx_drawstr("STOP", 1|4|256, panel_x + 16 + btn_w*2, btn_y + 26) : gfx_drawstr("PLAY", 1|4|256, panel_x + 16 + btn_w*2, btn_y + 26);
-gfx_x = panel_x + 20 + btn_w*2; gfx_y = btn_y; gfx_drawstr("RETRIG", 1|4|256, panel_x + 20 + btn_w*3, btn_y + 26);
+playback_active && mode > 0 ? gfx_drawstr("STOP", 1|4|256, panel_x + 16 + btn_w*2, btn_y + btn_h) : gfx_drawstr("PLAY", 1|4|256, panel_x + 16 + btn_w*2, btn_y + btn_h);
+gfx_x = panel_x + 20 + btn_w*2; gfx_y = btn_y; gfx_drawstr("RETRIG", 1|4|256, panel_x + 20 + btn_w*3, btn_y + btn_h);
 
 // Card 2: knobs + toggles
 knob_y = card2_y + 52;
-k1x = panel_x + 74;
-k2x = panel_x + 178;
-new_speed = ui_knob(110, k1x, knob_y, 31, slider2, 0.10, 4.0, 0.01);
+k1x = panel_x + floor(panel_w * 0.16);
+k2x = panel_x + floor(panel_w * 0.38);
+new_speed = ui_knob(110, k1x, knob_y, knob_r, slider2, 0.10, 4.0, 0.01);
 abs(new_speed - slider2) > 0.00001 ? ( slider2 = new_speed; sliderchange(slider2); sync_params(); );
-new_smooth = ui_knob(111, k2x, knob_y, 31, slider3, 0.0, 0.95, 0.01);
+new_smooth = ui_knob(111, k2x, knob_y, knob_r, slider3, 0.0, 0.95, 0.01);
 abs(new_smooth - slider3) > 0.00001 ? ( slider3 = new_smooth; sliderchange(slider3); sync_params(); );
+tooltip_region(6, k1x - knob_r - 6, knob_y - knob_r - 6, knob_r*2 + 12, knob_r*2 + 12);
+tooltip_region(7, k2x - knob_r - 6, knob_y - knob_r - 6, knob_r*2 + 12, knob_r*2 + 12);
 
-gfx_setfont(2, "Arial", 11, 'b');
+gfx_setfont(2, "Arial", font_label, 'b');
 gfx_set(0.90, 0.96, 1.00, 1);
 gfx_x = k1x - 42; gfx_y = knob_y + 36; gfx_drawstr("SPEED", 1|256, k1x + 42, knob_y + 52);
 gfx_x = k2x - 42; gfx_y = knob_y + 36; gfx_drawstr("SMOOTH", 1|256, k2x + 42, knob_y + 52);
@@ -845,11 +1191,14 @@ gfx_x = k1x - 42; gfx_y = knob_y - 10; gfx_drawstr(#txt, 1|4|256, k1x + 42, knob
 sprintf(#txt, "%.2f", slider3);
 gfx_x = k2x - 42; gfx_y = knob_y - 10; gfx_drawstr(#txt, 1|4|256, k2x + 42, knob_y + 12);
 
-tog_x = panel_x + 250;
+tog_x = panel_x + floor(panel_w * 0.56);
 tog_w = panel_w - (tog_x - panel_x) - 12;
-t_emit = ui_button(112, tog_x, card2_y + 22, tog_w, 18, emit_drawing);
-t_auto = ui_button(113, tog_x, card2_y + 44, tog_w, 18, auto_play);
-t_spd  = ui_button(114, tog_x, card2_y + 66, tog_w, 18, emit_speed);
+t_emit = ui_button(112, tog_x, card2_y + 22, tog_w, toggle_h, emit_drawing);
+t_auto = ui_button(113, tog_x, card2_y + 44, tog_w, toggle_h, auto_play);
+t_spd  = ui_button(114, tog_x, card2_y + 66, tog_w, toggle_h, emit_speed);
+tooltip_region(8, tog_x, card2_y + 22, tog_w, toggle_h);
+tooltip_region(9, tog_x, card2_y + 44, tog_w, toggle_h);
+tooltip_region(10, tog_x, card2_y + 66, tog_w, toggle_h);
 
 t_emit ? ( slider10 = emit_drawing ? 0 : 1; sliderchange(slider10); sync_params(); );
 t_auto ? ( slider11 = auto_play ? 0 : 1; sliderchange(slider11); sync_params(); );
@@ -863,7 +1212,8 @@ gfx_x = tog_x + 8; gfx_y = card2_y + 66; gfx_drawstr("Speed CC active", 4, tog_x
 
 // Card 3: mapping
 output_mode_label(output_mode, #out_disp);
-out_click = ui_dropdown(120, panel_x + 12, card3_y + 24, panel_w - 24, 42, "Output Type", #out_disp, 1);
+out_click = ui_dropdown(120, panel_x + 12, card3_y + 24, panel_w - 24, drop_h, "Output Type", #out_disp, 1);
+tooltip_region(11, panel_x + 12, card3_y + 24, panel_w - 24, drop_h);
 out_click ? (
   slider14 = show_output_mode_menu(output_mode);
   sliderchange(slider14);
@@ -871,96 +1221,277 @@ out_click ? (
   force_all_notes_off();
 );
 
+row2_y = card3_y + 24 + drop_h + 6;
+row3_y = row2_y + drop_h + 6;
+row4_y = row3_y + drop_h + 6;
+half_w = floor((panel_w - 36) * 0.5);
+
 sprintf(#chan_disp, "Channel %d", midi_chan + 1);
-chan_click = ui_dropdown(121, panel_x + 12, card3_y + 72, 126, 42, "MIDI Channel", #chan_disp, 0);
-chan_click ? (
-  slider5 = show_channel_menu(midi_chan + 1);
-  sliderchange(slider5);
-  sync_params();
-  force_all_notes_off();
-);
+stack_panel ? (
+  chan_click = ui_dropdown(121, panel_x + 12, row2_y, panel_w - 24, drop_h, "MIDI Channel", #chan_disp, 0);
+  tooltip_region(12, panel_x + 12, row2_y, panel_w - 24, drop_h);
+  chan_click ? (
+    slider5 = show_channel_menu(midi_chan + 1);
+    sliderchange(slider5);
+    sync_params();
+    force_all_notes_off();
+  );
 
-cc_label(cc_x_num, #ccx_disp);
-mapx_click = ui_dropdown(122, panel_x + 146, card3_y + 72, panel_w - 158, 42, "X Axis → CC", #ccx_disp, 0);
-mapx_click ? (
-  slider6 = show_cc_menu(cc_x_num);
-  sliderchange(slider6);
-  sync_params();
-);
+  cc_label(cc_x_num, #ccx_disp);
+  mapx_click = ui_dropdown(122, panel_x + 12, row3_y, panel_w - 24, drop_h, "X Axis → CC", #ccx_disp, 0);
+  tooltip_region(13, panel_x + 12, row3_y, panel_w - 24, drop_h);
+  mapx_click ? (
+    open_cc_picker(1, cc_x_num);
+  );
 
-cc_label(cc_y_num, #ccy_disp);
-mapy_click = ui_dropdown(123, panel_x + 12, card3_y + 120, 184, 42, "Y Axis → CC", #ccy_disp, 0);
-mapy_click ? (
-  slider7 = show_cc_menu(cc_y_num);
-  sliderchange(slider7);
-  sync_params();
-);
+  cc_label(cc_y_num, #ccy_disp);
+  mapy_click = ui_dropdown(123, panel_x + 12, row4_y, panel_w - 24, drop_h, "Y Axis → CC", #ccy_disp, 0);
+  tooltip_region(14, panel_x + 12, row4_y, panel_w - 24, drop_h);
+  mapy_click ? (
+    open_cc_picker(2, cc_y_num);
+  );
 
-cc_label(cc_speed_num, #ccs_disp);
-maps_click = ui_dropdown(124, panel_x + 204, card3_y + 120, panel_w - 216, 42, emit_speed ? "Speed → CC" : "Speed → CC (currently off)", #ccs_disp, emit_speed);
-maps_click ? (
-  slider8 = show_cc_menu(cc_speed_num);
-  sliderchange(slider8);
-  sync_params();
+  cc_label(cc_speed_num, #ccs_disp);
+  row5_y = row4_y + drop_h + 6;
+  sprintf(#motion_map_label, emit_speed ? "%s → CC" : "%s → CC (currently off)", #motion_disp);
+  maps_click = ui_dropdown(124, panel_x + 12, row5_y, panel_w - 24, drop_h, #motion_map_label, #ccs_disp, emit_speed);
+  tooltip_region(15, panel_x + 12, row5_y, panel_w - 24, drop_h);
+  maps_click ? (
+    open_cc_picker(3, cc_speed_num);
+  );
+) : (
+  chan_click = ui_dropdown(121, panel_x + 12, row2_y, 136, drop_h, "MIDI Channel", #chan_disp, 0);
+  tooltip_region(12, panel_x + 12, row2_y, 136, drop_h);
+  chan_click ? (
+    slider5 = show_channel_menu(midi_chan + 1);
+    sliderchange(slider5);
+    sync_params();
+    force_all_notes_off();
+  );
+
+  cc_label(cc_x_num, #ccx_disp);
+  mapx_click = ui_dropdown(122, panel_x + 156, row2_y, panel_w - 168, drop_h, "X Axis → CC", #ccx_disp, 0);
+  tooltip_region(13, panel_x + 156, row2_y, panel_w - 168, drop_h);
+  mapx_click ? (
+    open_cc_picker(1, cc_x_num);
+  );
+
+  cc_label(cc_y_num, #ccy_disp);
+  mapy_click = ui_dropdown(123, panel_x + 12, row3_y, half_w, drop_h, "Y Axis → CC", #ccy_disp, 0);
+  tooltip_region(14, panel_x + 12, row3_y, half_w, drop_h);
+  mapy_click ? (
+    open_cc_picker(2, cc_y_num);
+  );
+
+  cc_label(cc_speed_num, #ccs_disp);
+  sprintf(#motion_map_label, emit_speed ? "%s → CC" : "%s → CC (currently off)", #motion_disp);
+  maps_click = ui_dropdown(124, panel_x + 24 + half_w, row3_y, half_w, drop_h, #motion_map_label, #ccs_disp, emit_speed);
+  tooltip_region(15, panel_x + 24 + half_w, row3_y, half_w, drop_h);
+  maps_click ? (
+    open_cc_picker(3, cc_speed_num);
+  );
 );
 
 // Card 4: note section
 pitch_src_label(note_pitch_src, #pitch_disp);
 vel_src_label(note_vel_src, #vel_disp);
 note_mode_active = (output_mode == 1) || (output_mode == 2);
-np_click = ui_dropdown(130, panel_x + 12, card4_y + 24, 184, 42, "Pitch Source", #pitch_disp, note_mode_active);
-np_click ? (
-  slider15 = show_pitch_src_menu(note_pitch_src);
-  sliderchange(slider15);
-  sync_params();
-  force_all_notes_off();
+slider_label_w = floor(112 * ui_scale + 0.5);
+slider_x = panel_x + slider_label_w;
+slider_w = panel_w - (slider_x - panel_x) - 12;
+
+stack_panel ? (
+  np_click = ui_dropdown(130, panel_x + 12, card4_y + 24, panel_w - 24, drop_h, "Pitch Source", #pitch_disp, note_mode_active);
+  tooltip_region(16, panel_x + 12, card4_y + 24, panel_w - 24, drop_h);
+  np_click ? (
+    slider15 = show_pitch_src_menu(note_pitch_src);
+    sliderchange(slider15);
+    sync_params();
+    force_all_notes_off();
+  );
+
+  nv_click = ui_dropdown(131, panel_x + 12, card4_y + 24 + drop_h + 6, panel_w - 24, drop_h, "Velocity Source", #vel_disp, note_mode_active);
+  tooltip_region(17, panel_x + 12, card4_y + 24 + drop_h + 6, panel_w - 24, drop_h);
+  nv_click ? (
+    slider16 = show_vel_src_menu(note_vel_src);
+    sliderchange(slider16);
+    sync_params();
+    force_all_notes_off();
+  );
+
+  row_y = card4_y + 24 + drop_h * 2 + 18;
+) : (
+  half_note_w = floor((panel_w - 36) * 0.5);
+  np_click = ui_dropdown(130, panel_x + 12, card4_y + 24, half_note_w, drop_h, "Pitch Source", #pitch_disp, note_mode_active);
+  tooltip_region(16, panel_x + 12, card4_y + 24, half_note_w, drop_h);
+  np_click ? (
+    slider15 = show_pitch_src_menu(note_pitch_src);
+    sliderchange(slider15);
+    sync_params();
+    force_all_notes_off();
+  );
+
+  nv_click = ui_dropdown(131, panel_x + 24 + half_note_w, card4_y + 24, half_note_w, drop_h, "Velocity Source", #vel_disp, note_mode_active);
+  tooltip_region(17, panel_x + 24 + half_note_w, card4_y + 24, half_note_w, drop_h);
+  nv_click ? (
+    slider16 = show_vel_src_menu(note_vel_src);
+    sliderchange(slider16);
+    sync_params();
+    force_all_notes_off();
+  );
+
+  row_y = card4_y + 76;
 );
 
-nv_click = ui_dropdown(131, panel_x + 204, card4_y + 24, panel_w - 216, 42, "Velocity Source", #vel_disp, note_mode_active);
-nv_click ? (
-  slider16 = show_vel_src_menu(note_vel_src);
-  sliderchange(slider16);
-  sync_params();
-  force_all_notes_off();
-);
+note_lo = note_base;
+note_hi = clamp(note_base + note_span, note_base, 127);
+range_btn_w = floor(74 * ui_scale + 0.5);
+range_btn_gap = 6;
+range_btn_y = row_y - 2;
+range_bar_x = panel_x + 12;
+range_bar_y = row_y + 22;
+range_bar_w = panel_w - 24;
+range_bar_h = max(22, floor(24 * ui_scale + 0.5));
 
-row_y = card4_y + 76;
-new_v = ui_hslider(132, panel_x + 112, row_y + 6, panel_w - 124, 12, slider17, 0, 127, 1);
-abs(new_v - slider17) > 0.00001 ? ( slider17 = new_v; sliderchange(slider17); sync_params(); force_all_notes_off(); );
-note_name(note_base, #base_note_disp);
 gfx_setfont(2, "Arial", 10, 'b'); gfx_set(0.88, 0.94, 1.00, 1);
-gfx_x = panel_x + 12; gfx_y = row_y; gfx_drawstr("Base Note"); gfx_x = panel_x + panel_w - 10; gfx_y = row_y; gfx_drawstr(#base_note_disp, 2|256, panel_x + panel_w - 10, row_y + 12);
+gfx_x = panel_x + 12; gfx_y = row_y; gfx_drawstr("Note Range");
+full_click = ui_button(135, panel_x + panel_w - (range_btn_w*2 + range_btn_gap + 12), range_btn_y, range_btn_w, 18, (note_lo == 0) && (note_hi == 127));
+p88_click  = ui_button(136, panel_x + panel_w - (range_btn_w + 12), range_btn_y, range_btn_w, 18, (note_lo == 21) && (note_hi == 108));
+tooltip_region(26, panel_x + panel_w - (range_btn_w*2 + range_btn_gap + 12), range_btn_y, range_btn_w, 18);
+tooltip_region(27, panel_x + panel_w - (range_btn_w + 12), range_btn_y, range_btn_w, 18);
+gfx_x = panel_x + panel_w - (range_btn_w*2 + range_btn_gap + 12); gfx_y = range_btn_y; gfx_drawstr("FULL", 1|4|256, panel_x + panel_w - (range_btn_w + range_btn_gap + 12), range_btn_y + 18);
+gfx_x = panel_x + panel_w - (range_btn_w + 12); gfx_y = range_btn_y; gfx_drawstr("PIANO 88", 1|4|256, panel_x + panel_w - 12, range_btn_y + 18);
+full_click ? note_range_set(0, 127);
+p88_click ? note_range_set(21, 108);
 
-row_y += 22;
-new_v = ui_hslider(133, panel_x + 112, row_y + 6, panel_w - 124, 12, slider18, 1, 72, 1);
-abs(new_v - slider18) > 0.00001 ? ( slider18 = new_v; sliderchange(slider18); sync_params(); );
-sprintf(#txt, "%d semitones", note_span);
-gfx_x = panel_x + 12; gfx_y = row_y; gfx_drawstr("Note Span"); gfx_x = panel_x + panel_w - 10; gfx_y = row_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, row_y + 12);
+gfx_set(0.09, 0.10, 0.13, 1);
+gfx_rect(range_bar_x, range_bar_y, range_bar_w, range_bar_h);
+gfx_set(0.65, 0.72, 0.82, 0.16);
+gfx_roundrect(range_bar_x, range_bar_y, range_bar_w, range_bar_h, 8, 1);
+i = 0;
+loop(11,
+  oct_x = range_bar_x + range_bar_w * ((i+1) * 12 / 128);
+  gfx_set(0.50, 0.56, 0.64, 0.16);
+  gfx_line(oct_x, range_bar_y + 1, oct_x, range_bar_y + range_bar_h - 1, 1);
+  i += 1;
+);
+sel_x0 = range_bar_x + (note_lo / 127) * range_bar_w;
+sel_x1 = range_bar_x + (note_hi / 127) * range_bar_w;
+gfx_set(0.18, 0.82, 0.70, 0.30);
+gfx_rect(sel_x0, range_bar_y + 1, max(2, sel_x1 - sel_x0), range_bar_h - 2);
+gfx_set(0.18, 0.82, 0.70, 0.92);
+gfx_line(sel_x0, range_bar_y + 1, sel_x0, range_bar_y + range_bar_h - 1, 1);
+gfx_line(sel_x1, range_bar_y + 1, sel_x1, range_bar_y + range_bar_h - 1, 1);
+gfx_circle(sel_x0, range_bar_y + range_bar_h * 0.5, 5, 1, 1);
+gfx_circle(sel_x1, range_bar_y + range_bar_h * 0.5, 5, 1, 1);
+tooltip_region(19, range_bar_x, range_bar_y, range_bar_w, range_bar_h);
 
-row_y += 22;
-new_v = ui_hslider(134, panel_x + 112, row_y + 6, panel_w - 124, 12, slider19, 1, 127, 1);
+(!ui_input_lock && mouse_pressed && (mx >= range_bar_x) && (mx <= range_bar_x + range_bar_w) && (my >= range_bar_y) && (my <= range_bar_y + range_bar_h)) ? (
+  abs(mx - sel_x0) <= abs(mx - sel_x1) ? (drag_item = 150;) : (drag_item = 151;);
+);
+((drag_item == 150) || (drag_item == 151)) ? (
+  mouse_down ? (
+    drag_note = clamp(floor(((mx - range_bar_x) / max(range_bar_w, 1)) * 127 + 0.5), 0, 127);
+    drag_item == 150 ? note_range_set(drag_note, note_hi) : note_range_set(note_lo, drag_note);
+    note_lo = note_base;
+    note_hi = clamp(note_base + note_span, note_base, 127);
+  ) : (
+    drag_item = 0;
+  );
+);
+
+note_name(note_lo, #base_note_disp);
+note_name(note_hi, #hi_note_disp);
+sprintf(#txt, "%s → %s   (%d notes)", #base_note_disp, #hi_note_disp, note_hi - note_lo + 1);
+gfx_x = range_bar_x; gfx_y = range_bar_y + range_bar_h + 6; gfx_drawstr(#txt);
+
+row_y = range_bar_y + range_bar_h + 26;
+new_v = ui_hslider(134, slider_x, row_y + 6, slider_w, slider_h, slider19, 1, 127, 1);
 abs(new_v - slider19) > 0.00001 ? ( slider19 = new_v; sliderchange(slider19); sync_params(); );
+tooltip_region(20, slider_x, row_y + 6, slider_w, slider_h);
 sprintf(#txt, "%d", note_fixed_vel);
 gfx_x = panel_x + 12; gfx_y = row_y; gfx_drawstr("Fixed Vel"); gfx_x = panel_x + panel_w - 10; gfx_y = row_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, row_y + 12);
 
 // Card 5: advanced + status
-adv_y = card5_y + 24;
-new_v = ui_hslider(140, panel_x + 116, adv_y + 6, panel_w - 128, 12, slider4, 1, 30, 1);
-abs(new_v - slider4) > 0.00001 ? ( slider4 = new_v; sliderchange(slider4); sync_params(); );
 gfx_setfont(2, "Arial", 10, 'b'); gfx_set(0.88, 0.94, 1.00, 1);
-gfx_x = panel_x + 12; gfx_y = adv_y; gfx_drawstr("Min Dist"); sprintf(#txt, "%d px", min_pt_dist); gfx_x = panel_x + panel_w - 10; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, adv_y + 12);
+stack_panel ? (
+  adv_y = card5_y + 24;
+  new_v = ui_hslider(140, slider_x, adv_y + 6, slider_w, slider_h, slider4, 1, 30, 1);
+  abs(new_v - slider4) > 0.00001 ? ( slider4 = new_v; sliderchange(slider4); sync_params(); );
+  tooltip_region(21, slider_x, adv_y + 6, slider_w, slider_h);
+  gfx_x = panel_x + 12; gfx_y = adv_y; gfx_drawstr("Min Dist"); sprintf(#txt, "%d px", min_pt_dist); gfx_x = panel_x + panel_w - 10; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, adv_y + 12);
 
-adv_y += 22;
-new_v = ui_hslider(141, panel_x + 116, adv_y + 6, panel_w - 128, 12, slider12, 0, 16, 1);
-abs(new_v - slider12) > 0.00001 ? ( slider12 = new_v; sliderchange(slider12); sync_params(); );
-gfx_x = panel_x + 12; gfx_y = adv_y; gfx_drawstr("Deadband"); sprintf(#txt, "%d", cc_deadband); gfx_x = panel_x + panel_w - 10; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, adv_y + 12);
+  adv_y += row_gap;
+  new_v = ui_hslider(141, slider_x, adv_y + 6, slider_w, slider_h, slider12, 0, 16, 1);
+  abs(new_v - slider12) > 0.00001 ? ( slider12 = new_v; sliderchange(slider12); sync_params(); );
+  tooltip_region(22, slider_x, adv_y + 6, slider_w, slider_h);
+  gfx_x = panel_x + 12; gfx_y = adv_y; gfx_drawstr("Deadband"); sprintf(#txt, "%d", cc_deadband); gfx_x = panel_x + panel_w - 10; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, adv_y + 12);
 
-adv_y += 22;
-new_v = ui_hslider(142, panel_x + 116, adv_y + 6, panel_w - 128, 12, slider13, 0.10, 10.0, 0.01);
-abs(new_v - slider13) > 0.00001 ? ( slider13 = new_v; sliderchange(slider13); sync_params(); );
-gfx_x = panel_x + 12; gfx_y = adv_y; gfx_drawstr("Speed Sense"); sprintf(#txt, "%.2f", speed_sense); gfx_x = panel_x + panel_w - 10; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, adv_y + 12);
+  adv_y += row_gap;
+  new_v = ui_hslider(142, slider_x, adv_y + 6, slider_w, slider_h, slider13, 0.10, 10.0, 0.01);
+  abs(new_v - slider13) > 0.00001 ? ( slider13 = new_v; sliderchange(slider13); sync_params(); );
+  tooltip_region(23, slider_x, adv_y + 6, slider_w, slider_h);
+  gfx_x = panel_x + 12; gfx_y = adv_y; gfx_drawstr("Speed Sense"); sprintf(#txt, "%.2f", speed_sense); gfx_x = panel_x + panel_w - 10; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, adv_y + 12);
 
-meter_y = adv_y + 28;
+  adv_y += row_gap;
+  motion_src_menu_label(motion_lane_src, #motion_src_disp);
+  motion_click = ui_dropdown(143, panel_x + 12, adv_y - 2, panel_w - 24, drop_h, "Motion Lane Source", #motion_src_disp, motion_lane_src > 0);
+  tooltip_region(24, panel_x + 12, adv_y - 2, panel_w - 24, drop_h);
+  motion_click ? (
+    slider20 = show_motion_src_menu(motion_lane_src);
+    sliderchange(slider20);
+    sync_params();
+  );
+
+  adv_y += drop_h + 6;
+  new_v = ui_hslider(144, slider_x, adv_y + 6, slider_w, slider_h, slider21, 0.10, 20.0, 0.01);
+  abs(new_v - slider21) > 0.00001 ? ( slider21 = new_v; sliderchange(slider21); sync_params(); );
+  tooltip_region(25, slider_x, adv_y + 6, slider_w, slider_h);
+  gfx_x = panel_x + 12; gfx_y = adv_y; gfx_drawstr("Motion Sense"); sprintf(#txt, "%.2f", motion_sense); gfx_x = panel_x + panel_w - 10; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, panel_x + panel_w - 10, adv_y + 12);
+
+  meter_y = adv_y + 28;
+) : (
+  adv_y = card5_y + 24;
+  adv_w = panel_w - 24;
+  half_adv = floor((adv_w - 12) * 0.5);
+  left_x = panel_x + 12;
+  right_x = left_x + half_adv + 12;
+  compact_label_w = 74;
+  compact_slider_h = slider_h;
+
+  new_v = ui_hslider(140, left_x + compact_label_w, adv_y + 6, half_adv - compact_label_w, compact_slider_h, slider4, 1, 30, 1);
+  abs(new_v - slider4) > 0.00001 ? ( slider4 = new_v; sliderchange(slider4); sync_params(); );
+  tooltip_region(21, left_x + compact_label_w, adv_y + 6, half_adv - compact_label_w, compact_slider_h);
+  gfx_x = left_x; gfx_y = adv_y; gfx_drawstr("Min Dist"); sprintf(#txt, "%d px", min_pt_dist); gfx_x = left_x + half_adv - 4; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, left_x + half_adv - 4, adv_y + 12);
+
+  new_v = ui_hslider(141, right_x + compact_label_w, adv_y + 6, half_adv - compact_label_w, compact_slider_h, slider12, 0, 16, 1);
+  abs(new_v - slider12) > 0.00001 ? ( slider12 = new_v; sliderchange(slider12); sync_params(); );
+  tooltip_region(22, right_x + compact_label_w, adv_y + 6, half_adv - compact_label_w, compact_slider_h);
+  gfx_x = right_x; gfx_y = adv_y; gfx_drawstr("Deadband"); sprintf(#txt, "%d", cc_deadband); gfx_x = right_x + half_adv - 4; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, right_x + half_adv - 4, adv_y + 12);
+
+  adv_y += row_gap;
+  new_v = ui_hslider(142, left_x + compact_label_w, adv_y + 6, half_adv - compact_label_w, compact_slider_h, slider13, 0.10, 10.0, 0.01);
+  abs(new_v - slider13) > 0.00001 ? ( slider13 = new_v; sliderchange(slider13); sync_params(); );
+  tooltip_region(23, left_x + compact_label_w, adv_y + 6, half_adv - compact_label_w, compact_slider_h);
+  gfx_x = left_x; gfx_y = adv_y; gfx_drawstr("Speed Sense"); sprintf(#txt, "%.2f", speed_sense); gfx_x = left_x + half_adv - 4; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, left_x + half_adv - 4, adv_y + 12);
+
+  new_v = ui_hslider(144, right_x + compact_label_w, adv_y + 6, half_adv - compact_label_w, compact_slider_h, slider21, 0.10, 20.0, 0.01);
+  abs(new_v - slider21) > 0.00001 ? ( slider21 = new_v; sliderchange(slider21); sync_params(); );
+  tooltip_region(25, right_x + compact_label_w, adv_y + 6, half_adv - compact_label_w, compact_slider_h);
+  gfx_x = right_x; gfx_y = adv_y; gfx_drawstr("Motion Sense"); sprintf(#txt, "%.2f", motion_sense); gfx_x = right_x + half_adv - 4; gfx_y = adv_y; gfx_drawstr(#txt, 2|256, right_x + half_adv - 4, adv_y + 12);
+
+  adv_y += row_gap + 2;
+  motion_src_menu_label(motion_lane_src, #motion_src_disp);
+  motion_click = ui_dropdown(143, left_x, adv_y, adv_w, drop_h - 6, "Motion Lane Source", #motion_src_disp, motion_lane_src > 0);
+  tooltip_region(24, left_x, adv_y, adv_w, drop_h - 6);
+  motion_click ? (
+    slider20 = show_motion_src_menu(motion_lane_src);
+    sliderchange(slider20);
+    sync_params();
+  );
+
+  meter_y = adv_y + drop_h + 2;
+);
 bar_x = panel_x + 28;
 bar_w = panel_w - 40;
 gfx_set(0.72, 0.80, 0.90, 1);
@@ -970,27 +1501,113 @@ meter_y += 16;
 gfx_x = panel_x + 12; gfx_y = meter_y; gfx_drawstr("Y");
 draw_meter(bar_x, meter_y + 2, bar_w, 8, clamp(view_y, 0, 1), 1);
 meter_y += 16;
-gfx_x = panel_x + 12; gfx_y = meter_y; gfx_drawstr("S");
-draw_meter(bar_x, meter_y + 2, bar_w, 8, clamp(view_speed, 0, 1), 0);
+gfx_x = panel_x + 12; gfx_y = meter_y; gfx_drawstr("M");
+motion_signed ? draw_bipolar_meter(bar_x, meter_y + 2, bar_w, 8, view_motion, 0) : draw_meter(bar_x, meter_y + 2, bar_w, 8, clamp(view_motion, 0, 1), 0);
 
 status_y = card5_y + card5_h - 24;
 gfx_setfont(2, "Arial", 10, 0);
 gfx_set(0.58, 0.66, 0.76, 1);
 point_count <= 0 ? (
-  gfx_x = panel_x + 12; gfx_y = status_y; gfx_drawstr("Draw in the pad. Click dropdowns to remap CC and Note behavior.");
+  gfx_x = panel_x + 12; gfx_y = status_y; gfx_drawstr("Draw in the pad. Hover controls to see quick tooltips.");
 ) : drawing ? (
   gfx_x = panel_x + 12; gfx_y = status_y; gfx_drawstr("Live gesture active. Record-enable the track to capture the outgoing MIDI.");
 ) : playback_active ? (
   gfx_x = panel_x + 12; gfx_y = status_y; gfx_drawstr("Playback running. The loop is currently streaming MIDI from the pad.");
 ) : (
   held_note >= 0 ? note_name(held_note, #held_note_disp) : strcpy(#held_note_disp, "--");
-  sprintf(#txt, "%d pts  |  %.2fs  |  Ch %d  |  Held note: %s", point_count, gesture_duration, midi_chan + 1, #held_note_disp);
+  motion_src_label(motion_lane_src, #motion_status_disp);
+  sprintf(#txt, "%d pts  |  %.2fs  |  Ch %d  |  Motion: %s  |  Held note: %s", point_count, gesture_duration, midi_chan + 1, #motion_status_disp, #held_note_disp);
   gfx_x = panel_x + 12; gfx_y = status_y; gfx_drawstr(#txt);
+);
+
+// Custom CC picker overlay
+cc_picker_open ? (
+  picker_w = clamp(gfx_w * 0.62, 520, 760);
+  picker_h = clamp(gfx_h * 0.54, 340, 480);
+  picker_x = floor((gfx_w - picker_w) * 0.5);
+  picker_y = floor((gfx_h - picker_h) * 0.5);
+  gfx_set(0.00, 0.00, 0.00, 0.58);
+  gfx_rect(0, 0, gfx_w, gfx_h);
+  draw_card(picker_x, picker_y, picker_w, picker_h, "CC ASSIGNMENT");
+
+  cc_picker_target == 1 ? strcpy(#picker_title, "Assign X Axis CC");
+  cc_picker_target == 2 ? strcpy(#picker_title, "Assign Y Axis CC");
+  cc_picker_target == 3 ? strcpy(#picker_title, "Assign Motion Lane CC");
+  cc_label(cc_picker_current, #picker_cc_disp);
+  gfx_setfont(3, "Arial", 13, 'b');
+  gfx_set(0.92, 0.97, 1.00, 1);
+  gfx_x = picker_x + 14; gfx_y = picker_y + 28; gfx_drawstr(#picker_title);
+  gfx_setfont(2, "Arial", 10, 0);
+  gfx_set(0.60, 0.68, 0.78, 1);
+  gfx_x = picker_x + 14; gfx_y = picker_y + 46; gfx_drawstr("Pages kill the horrible endless CC scroll. Pick a common target or jump by 32.");
+  gfx_setfont(3, "Arial", 14, 'b');
+  gfx_set(0.18, 0.82, 0.70, 1);
+  gfx_x = picker_x + picker_w - 220; gfx_y = picker_y + 28; gfx_drawstr(#picker_cc_disp, 2|256, picker_x + picker_w - 16, picker_y + 46);
+
+  tab_y = picker_y + 66;
+  tab_w = floor((picker_w - 28) / 5);
+  page_names0 = 0;
+  page_id = 0;
+  loop(5,
+    tab_x = picker_x + 12 + page_id * tab_w;
+    tab_click = ui_button(900 + page_id, tab_x, tab_y, tab_w - 4, 20, cc_picker_page == page_id);
+    page_id == 0 ? strcpy(#page_disp, "COMMON");
+    page_id == 1 ? strcpy(#page_disp, "0-31");
+    page_id == 2 ? strcpy(#page_disp, "32-63");
+    page_id == 3 ? strcpy(#page_disp, "64-95");
+    page_id == 4 ? strcpy(#page_disp, "96-127");
+    gfx_setfont(2, "Arial", 10, 'b');
+    gfx_set(0.92, 0.97, 1.00, 1);
+    gfx_x = tab_x; gfx_y = tab_y; gfx_drawstr(#page_disp, 1|4|256, tab_x + tab_w - 4, tab_y + 20);
+    tab_click ? (cc_picker_page = page_id;);
+    page_id += 1;
+  );
+
+  close_click = ui_button(910, picker_x + picker_w - 92, picker_y + picker_h - 30, 76, 20, 0);
+  gfx_setfont(2, "Arial", 10, 'b');
+  gfx_set(0.92, 0.97, 1.00, 1);
+  gfx_x = picker_x + picker_w - 92; gfx_y = picker_y + picker_h - 30; gfx_drawstr("CLOSE", 1|4|256, picker_x + picker_w - 16, picker_y + picker_h - 10);
+  close_click ? (cc_picker_open = 0;);
+
+  grid_x = picker_x + 14;
+  grid_y = tab_y + 30;
+  grid_w = picker_w - 28;
+  grid_h = picker_h - (grid_y - picker_y) - 44;
+  cols = 4;
+  rows = 8;
+  cell_w = floor((grid_w - 6 * (cols - 1)) / cols);
+  cell_h = floor((grid_h - 6 * (rows - 1)) / rows);
+  idx = 0;
+  loop(rows,
+    col = 0;
+    loop(cols,
+      cell_x = grid_x + col * (cell_w + 6);
+      cell_y = grid_y + floor(idx / cols) * (cell_h + 6);
+      cc_val = cc_picker_page == 0 ? common_cc_value(idx) : ((cc_picker_page - 1) * 32 + idx);
+      valid_cc = (cc_val >= 0) && (cc_val <= 127);
+      valid_cc ? (
+        cell_click = ui_button(920 + idx, cell_x, cell_y, cell_w, cell_h, cc_picker_current == cc_val);
+        sprintf(#cell_num, "CC %d", cc_val);
+        cc_short_name(cc_val, #cell_name);
+        gfx_setfont(3, "Arial", 12, 'b');
+        gfx_set(0.92, 0.97, 1.00, 1);
+        gfx_x = cell_x + 8; gfx_y = cell_y + 8; gfx_drawstr(#cell_num);
+        strlen(#cell_name) > 0 ? (
+          gfx_setfont(2, "Arial", 10, 0);
+          gfx_set(0.64, 0.74, 0.84, 1);
+          gfx_x = cell_x + 8; gfx_y = cell_y + 24; gfx_drawstr(#cell_name);
+        );
+        cell_click ? apply_cc_picker_value(cc_val);
+      );
+      idx += 1;
+      col += 1;
+    );
+  );
 );
 
 // Gesture capture
 inside_pad = (mx >= pad_x) && (mx <= pad_x + pad_w) && (my >= pad_y) && (my <= pad_y + pad_h);
-inside_pad && mouse_pressed ? (
+(!ui_input_lock && inside_pad && mouse_pressed) ? (
   nx = clamp((mx - pad_x) / max(pad_w, 1), 0, 1);
   ny = clamp(1 - ((my - pad_y) / max(pad_h, 1)), 0, 1);
   begin_draw(nx, ny, time_precise(), mx, my);
@@ -1008,3 +1625,8 @@ drawing && mouse_released ? (
   update_draw(nx, ny, time_precise(), mx, my);
   end_draw();
 );
+
+!cc_picker_open ? draw_tooltip_box();
+
+@serialize
+0;

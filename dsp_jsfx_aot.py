@@ -166,21 +166,24 @@ class Lexer:
                 return Tok("num", txt, sp)
 
             # identifier / keyword
-            if c.isalpha() or c == "_" or c == "$":
+            if c.isalpha() or c in "_$#":
                 # Allow dotted identifiers (e.g. u.next_bank) as a single symbol.
-                # This matches common JSFX style for pseudo-namespacing.
-                m = re.match(r"[$A-Za-z_][$A-Za-z0-9_]*(?:\.[\$A-Za-z_][\$A-Za-z0-9_]*)*", self.src[self.i:])
+                # Also allow JSFX string variables like #menu_item.
+                m = re.match(r"[#$A-Za-z_][#$A-Za-z0-9_]*(?:\.[#$A-Za-z_][#$A-Za-z0-9_]*)*", self.src[self.i:])
                 assert m
                 txt = m.group(0)
                 self._adv(len(txt))
                 kind = "kw" if txt in ("if", "else", "while") else "ident"
                 return Tok(kind, txt, sp)
 
-            # string literal
-            # JSFX/EEL2 supports double-quoted strings (commonly used for gfx_printf/sprintf).
-            # We keep this lexer intentionally small, but we *must* at least accept strings so
-            # scripts that define @gfx helpers inside @init/@slider can still compile.
-            if c == '"':
+            # quoted literal
+            # Accept both double-quoted strings and single-quoted char/string-ish
+            # literals. Many JSFX UI helpers use forms like:
+            #   gfx_setfont(2, "Arial", 10, 'b');
+            # We keep the runtime semantics intentionally lightweight here and
+            # represent either form as an opaque string handle token.
+            if c in ('"', "'"):
+                quote = c
                 self._adv()  # consume opening quote
                 out = []
                 while True:
@@ -189,20 +192,25 @@ class Lexer:
                         raise SyntaxError(self._fmt_err("Unterminated string literal"))
                     if ch in ("\n", "\r"):
                         raise SyntaxError(self._fmt_err("Newline in string literal"))
-                    if ch == '"':
+                    if ch == quote:
                         self._adv()  # closing quote
                         break
                     if ch == "\\":
-                        self._adv()  # consume \\ 
+                        self._adv()  # consume backslash
                         esc = self._peek()
                         if esc == "\0":
                             raise SyntaxError(self._fmt_err("Unterminated string escape"))
                         self._adv()
-                        if esc == "n": out.append("\n")
-                        elif esc == "r": out.append("\r")
-                        elif esc == "t": out.append("\t")
-                        elif esc == '"': out.append('"')
-                        elif esc == "\\": out.append("\\")
+                        if esc == "n":
+                            out.append("\n")
+                        elif esc == "r":
+                            out.append("\r")
+                        elif esc == "t":
+                            out.append("\t")
+                        elif esc == quote:
+                            out.append(quote)
+                        elif esc == "\\":
+                            out.append("\\")
                         else:
                             # Unknown escapes: keep the escaped character verbatim.
                             out.append(esc)
@@ -1587,6 +1595,11 @@ class LLVMModuleEmitter:
                 return self._const_f64(math.pi)
             if n.name == "$e":
                 return self._const_f64(math.e)
+            if n.name.startswith("$x") and len(n.name) > 2:
+                try:
+                    return self._const_f64(float(int(n.name[2:], 16)))
+                except ValueError:
+                    pass
 
             ptr = self._get_slot_ptr(builder, st, n.name)  # handles locals + globals + srate/samplesblock
             return builder.load(ptr)
