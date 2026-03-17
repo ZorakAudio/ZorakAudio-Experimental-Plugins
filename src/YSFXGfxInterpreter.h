@@ -453,12 +453,31 @@ struct MemSpanView
   int count = 0;
 };
 
+static constexpr int SHOWMENU_NB_NONE_VALUE     = 0;
+static constexpr int SHOWMENU_NB_PENDING_VALUE  = -1;
+static constexpr int SHOWMENU_NB_CANCELED_VALUE = -2;
+
 struct AsyncMenuPort
 {
   virtual ~AsyncMenuPort() = default;
-  virtual bool consumeCompletedMenuResult(int& result) = 0;
-  virtual bool isMenuOpen() const = 0;
-  virtual void requestOpenMenu(const juce::String& description, int x, int y) = 0;
+
+  // Worker-thread modal menu call. This blocks the dedicated @gfx worker until
+  // the UI-side menu is dismissed, while keeping the message thread responsive.
+  // That preserves classic JSFX gfx_showmenu() semantics.
+  virtual int showMenuModal(const juce::String& description, int x, int y) = 0;
+
+  // Explicit non-blocking menu API.
+  //
+  // open() returns 1 on success, 0 if no menu was opened.
+  // poll() returns one of:
+  //   SHOWMENU_NB_NONE_VALUE      (0)  -> no active async menu / no pending result
+  //   SHOWMENU_NB_PENDING_VALUE   (-1) -> async menu still open or waiting
+  //   SHOWMENU_NB_CANCELED_VALUE  (-2) -> async menu canceled / clicked away
+  //   > 0                               -> selected 1-based menu index
+  // cancel() returns 1 if a pending/open async menu was canceled, 0 otherwise.
+  virtual int showMenuNonBlockingOpen(const juce::String& description, int x, int y) = 0;
+  virtual int showMenuNonBlockingPoll() = 0;
+  virtual int showMenuNonBlockingCancel() = 0;
 };
 
 // -------------------------
@@ -511,6 +530,10 @@ public:
     srate_var = get_var("srate");
     samplesblock_var = get_var("samplesblock");
 
+    showmenu_nb_none_var = get_var("SHOWMENU_NB_NONE");
+    showmenu_nb_pending_var = get_var("SHOWMENU_NB_PENDING");
+    showmenu_nb_canceled_var = get_var("SHOWMENU_NB_CANCELED");
+
     // Default values
     *gfx_x = 0.0;
     *gfx_y = 0.0;
@@ -523,7 +546,16 @@ public:
     if (srate_var) *srate_var = 44100.0;
     if (samplesblock_var) *samplesblock_var = 0.0;
 
+    refreshShowMenuNbConstants();
+
     currentFont = juce::Font(juce::Font::getDefaultSansSerifFontName(), 12.0f, juce::Font::plain);
+  }
+
+  void refreshShowMenuNbConstants()
+  {
+    if (showmenu_nb_none_var) *showmenu_nb_none_var = (EEL_F) SHOWMENU_NB_NONE_VALUE;
+    if (showmenu_nb_pending_var) *showmenu_nb_pending_var = (EEL_F) SHOWMENU_NB_PENDING_VALUE;
+    if (showmenu_nb_canceled_var) *showmenu_nb_canceled_var = (EEL_F) SHOWMENU_NB_CANCELED_VALUE;
   }
 
   juce::Colour getCurrentColour() const
@@ -587,6 +619,8 @@ public:
 
     *gfx_w = (double)w;
     *gfx_h = (double)h;
+
+    refreshShowMenuNbConstants();
 
     if (gfx_frame) *gfx_frame = frameCounter++;
   }
@@ -836,9 +870,12 @@ public:
     NSEEL_addfunc_varparm_ex("gfx_drawstr",    1, 0, NSEEL_PProc_THIS, &eel_gfx_drawstr,    nullptr);
     NSEEL_addfunc_varparm_ex("gfx_printf",     1, 0, NSEEL_PProc_THIS, &eel_gfx_printf,     nullptr);
     NSEEL_addfunc_varparm_ex("gfx_setfont",    1, 0, NSEEL_PProc_THIS, &eel_gfx_setfont,    nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_measurestr", 1, 0, NSEEL_PProc_THIS, &eel_gfx_measurestr, nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_getchar",    0, 0, NSEEL_PProc_THIS, &eel_gfx_getchar,    nullptr);
-    NSEEL_addfunc_varparm_ex("gfx_showmenu",   1, 0, NSEEL_PProc_THIS, &eel_gfx_showmenu,   nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_measurestr",      1, 0, NSEEL_PProc_THIS, &eel_gfx_measurestr,      nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_getchar",         0, 0, NSEEL_PProc_THIS, &eel_gfx_getchar,         nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_showmenu",        1, 0, NSEEL_PProc_THIS, &eel_gfx_showmenu,        nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_showmenu_nb_open",   1, 0, NSEEL_PProc_THIS, &eel_gfx_showmenu_nb_open,   nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_showmenu_nb_poll",   0, 0, NSEEL_PProc_THIS, &eel_gfx_showmenu_nb_poll,   nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_showmenu_nb_cancel", 0, 0, NSEEL_PProc_THIS, &eel_gfx_showmenu_nb_cancel, nullptr);
 
     // Minimal host interaction helpers used by many JSFX UIs.
     // See: https://www.reaper.fm/sdk/js/advfunc.php
@@ -1220,34 +1257,71 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   }
 
 
-  // Non-blocking gfx_showmenu bridge.
+  // Worker-blocking gfx_showmenu bridge.
   //
-  // The first call opens a host-side overlay menu and returns 0 immediately.
-  // While the menu remains open, repeated calls continue returning 0.
-  // Once the user makes a selection (or dismisses the menu), the next call
-  // returns the completed result and clears it.
+  // JSFX expects gfx_showmenu() to behave modally: the call returns the user's
+  // selection (or 0 on cancel) to the same call site. The explicit
+  // gfx_showmenu_nb_* family below provides true async semantics for new UIs.
+  static bool decodeMenuDescription(void* opaque, EEL_F* menuExpr, juce::String& outDescription)
+  {
+    if (opaque == nullptr || menuExpr == nullptr)
+      return false;
+
+    EEL_STRING_MUTEXLOCK_SCOPE;
+    const char* str = EEL_STRING_GET_FOR_INDEX(*menuExpr, nullptr);
+    if (str == nullptr || *str == '\0')
+      return false;
+
+    outDescription = juce::String::fromUTF8(str);
+    return ! outDescription.isEmpty();
+  }
+
   static EEL_F NSEEL_CGEN_CALL eel_gfx_showmenu(void* opaque, INT_PTR np, EEL_F** parms)
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 1 || self->asyncMenuPort == nullptr)
       return 0.0;
 
-    int readyResult = 0;
-    if (self->asyncMenuPort->consumeCompletedMenuResult(readyResult))
-      return (EEL_F) readyResult;
-
-    if (self->asyncMenuPort->isMenuOpen())
-      return 0.0;
-
-    EEL_STRING_MUTEXLOCK_SCOPE;
-    const char* str = EEL_STRING_GET_FOR_INDEX(*parms[0], nullptr);
-    if (str == nullptr || *str == '\0')
+    juce::String description;
+    if (! decodeMenuDescription(opaque, parms[0], description))
       return 0.0;
 
     const int x = (int) std::llround(self->gfx_x ? (double) *self->gfx_x : 0.0);
     const int y = (int) std::llround(self->gfx_y ? (double) *self->gfx_y : 0.0);
-    self->asyncMenuPort->requestOpenMenu(juce::String::fromUTF8(str), x, y);
-    return 0.0;
+    return (EEL_F) self->asyncMenuPort->showMenuModal(description, x, y);
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_gfx_showmenu_nb_open(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*)opaque;
+    if (!self || np < 1 || self->asyncMenuPort == nullptr)
+      return 0.0;
+
+    juce::String description;
+    if (! decodeMenuDescription(opaque, parms[0], description))
+      return 0.0;
+
+    const int x = (int) std::llround(self->gfx_x ? (double) *self->gfx_x : 0.0);
+    const int y = (int) std::llround(self->gfx_y ? (double) *self->gfx_y : 0.0);
+    return (EEL_F) self->asyncMenuPort->showMenuNonBlockingOpen(description, x, y);
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_gfx_showmenu_nb_poll(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    juce::ignoreUnused(np, parms);
+    auto* self = (GfxVm*)opaque;
+    if (!self || self->asyncMenuPort == nullptr)
+      return (EEL_F) SHOWMENU_NB_NONE_VALUE;
+    return (EEL_F) self->asyncMenuPort->showMenuNonBlockingPoll();
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_gfx_showmenu_nb_cancel(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    juce::ignoreUnused(np, parms);
+    auto* self = (GfxVm*)opaque;
+    if (!self || self->asyncMenuPort == nullptr)
+      return 0.0;
+    return (EEL_F) self->asyncMenuPort->showMenuNonBlockingCancel();
   }
 
   static EEL_F NSEEL_CGEN_CALL eel_gfx_circle(void* opaque, INT_PTR np, EEL_F** parms)
@@ -1525,6 +1599,10 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   EEL_F* mouse_cap = nullptr;
   EEL_F* mouse_wheel = nullptr;
   EEL_F* mouse_hwheel = nullptr;
+
+  EEL_F* showmenu_nb_none_var = nullptr;
+  EEL_F* showmenu_nb_pending_var = nullptr;
+  EEL_F* showmenu_nb_canceled_var = nullptr;
 
   EEL_F* srate_var = nullptr;
   EEL_F* samplesblock_var = nullptr;

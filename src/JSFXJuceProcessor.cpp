@@ -4026,6 +4026,18 @@ public:
         if (! menuOpen)
             return;
 
+        // Do not close/activate on mouseDown(). If the overlay disappears before
+        // mouseUp(), JUCE will deliver the release to the underlying @gfx view,
+        // which can immediately retrigger the source control. Keep the overlay
+        // alive until mouseUp so the full click gesture is consumed here.
+        updateHover (e.getPosition());
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (! menuOpen)
+            return;
+
         const auto pos = e.getPosition();
 
         int level = -1, index = -1;
@@ -4580,18 +4592,21 @@ public:
         repaint();
     }
 
-    void mouseMove (const juce::MouseEvent& e) override { updateMouse (e, false); }
-    void mouseDrag (const juce::MouseEvent& e) override { updateMouse (e, true); }
+    void mouseMove (const juce::MouseEvent& e) override { updateMouse (e, false, false); }
+    void mouseDrag (const juce::MouseEvent& e) override { updateMouse (e, true, false); }
 
     void mouseDown (const juce::MouseEvent& e) override
     {
         grabKeyboardFocus();
-        updateMouse (e, true);
+        updateMouse (e, true, false);
     }
 
     void mouseUp (const juce::MouseEvent& e) override
     {
-        updateMouse (e, true);
+        // Some JUCE backends report the just-released button as still present
+        // in e.mods during mouseUp(). Use the current global modifier state so
+        // releases are observed immediately and in the correct order.
+        updateMouse (e, true, true);
     }
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& d) override
@@ -4603,11 +4618,16 @@ public:
 
         {
             const std::lock_guard<std::mutex> lock (inputMutex);
-            sharedInput.mouseX = (float) e.position.x;
-            sharedInput.mouseY = (float) e.position.y;
-            sharedInput.mouseCap = mouseCap;
-            sharedInput.pendingWheel += (float) (d.deltaY * 120.0);
-            sharedInput.pendingHWheel += (float) (d.deltaX * 120.0);
+
+            MouseStateFrame frame;
+            frame.mouseX = (float) e.position.x;
+            frame.mouseY = (float) e.position.y;
+            frame.mouseCap = mouseCap;
+            frame.pendingWheel = (float) (d.deltaY * 120.0);
+            frame.pendingHWheel = (float) (d.deltaX * 120.0);
+            frame.captureStateWrites = true;
+
+            enqueueMouseFrameLocked (frame);
             sharedInput.captureStateWrites = true;
         }
 
@@ -4686,10 +4706,22 @@ public:
         {
             const std::lock_guard<std::mutex> lock (inputMutex);
             sharedInput.clearKeys = true;
-            sharedInput.captureStateWrites = false;
-            sharedInput.mouseCap = 0;
             sharedInput.pendingWheel = 0.0f;
             sharedInput.pendingHWheel = 0.0f;
+
+            const int releasedCap = sharedInput.mouseCap & ~kMouseButtonMask;
+            sharedInput.mouseFrames.clear();
+
+            MouseStateFrame frame;
+            frame.mouseX = sharedInput.mouseX;
+            frame.mouseY = sharedInput.mouseY;
+            frame.mouseCap = releasedCap;
+            frame.captureStateWrites = true;
+            sharedInput.mouseFrames.push_back (frame);
+
+            sharedInput.mouseCap = releasedCap;
+            sharedInput.captureStateWrites = true;
+            mouseCap = releasedCap;
         }
 
         notifyWorker();
@@ -4711,6 +4743,16 @@ private:
         bool enqueueChar = false;
     };
 
+    struct MouseStateFrame
+    {
+        float mouseX = 0.0f;
+        float mouseY = 0.0f;
+        int mouseCap = 0;
+        float pendingWheel = 0.0f;
+        float pendingHWheel = 0.0f;
+        bool captureStateWrites = false;
+    };
+
     struct SharedInputState
     {
         float mouseX = 0.0f;
@@ -4721,6 +4763,7 @@ private:
         bool captureStateWrites = false;
         bool clearKeys = false;
         std::deque<KeyEvent> keyEvents;
+        std::deque<MouseStateFrame> mouseFrames;
     };
 
     struct PendingSliderApply
@@ -4734,6 +4777,13 @@ private:
 
     struct MenuBridge final : public jsfx_gfx::AsyncMenuPort
     {
+        enum class ActiveMode
+        {
+            none,
+            modal,
+            nonBlocking
+        };
+
         void setCallbacks (std::function<void()> asyncWakeFn,
                            std::function<void()> quiesceInputFn,
                            std::function<void()> workerWakeFn)
@@ -4743,47 +4793,21 @@ private:
             workerWake = std::move (workerWakeFn);
         }
 
-        bool consumeCompletedMenuResult (int& result) override
-        {
-            const std::lock_guard<std::mutex> lock (mutex);
-            if (! hasCompletedResult)
-                return false;
-
-            result = completedResult;
-            completedResult = 0;
-            hasCompletedResult = false;
-            // Keep the bridge logically busy until the completed result is
-            // actually consumed by the interpreter. Clearing the busy flag here
-            // prevents immediate reopen loops when gfx_showmenu() is evaluated
-            // again before the pending result is delivered.
-            openOrPending.store (false, std::memory_order_release);
-            return true;
-        }
-
-        bool isMenuOpen() const override
-        {
-            const std::lock_guard<std::mutex> lock (mutex);
-            return openOrPending.load (std::memory_order_acquire) || hasCompletedResult;
-        }
-
-        void requestOpenMenu (const juce::String& description, int x, int y) override
+        int showMenuModal (const juce::String& description, int x, int y) override
         {
             {
                 const std::lock_guard<std::mutex> lock (mutex);
-                // If a menu is already opening/open, or if a completed result is
-                // still waiting to be consumed by gfx_showmenu(), ignore the
-                // request. Reopening here clears the pending result and causes
-                // the classic "menu closes, instantly reappears forever" bug.
-                if (openOrPending.load (std::memory_order_acquire) || hasCompletedResult)
-                    return;
+                if (! canStartRequestLocked())
+                    return 0;
 
+                activeMode = ActiveMode::modal;
                 pendingDescription = description;
                 pendingX = x;
                 pendingY = y;
                 hasPendingOpen = true;
+                hasPendingCancel = false;
                 hasCompletedResult = false;
                 completedResult = 0;
-                openOrPending.store (true, std::memory_order_release);
             }
 
             if (quiesceInput)
@@ -4791,6 +4815,75 @@ private:
 
             if (asyncWake)
                 asyncWake();
+
+            std::unique_lock<std::mutex> lock (mutex);
+            completedCv.wait (lock, [this] { return hasCompletedResult; });
+
+            const int result = completedResult;
+            clearStateLocked();
+            return result;
+        }
+
+        int showMenuNonBlockingOpen (const juce::String& description, int x, int y) override
+        {
+            {
+                const std::lock_guard<std::mutex> lock (mutex);
+                if (! canStartRequestLocked())
+                    return 0;
+
+                activeMode = ActiveMode::nonBlocking;
+                pendingDescription = description;
+                pendingX = x;
+                pendingY = y;
+                hasPendingOpen = true;
+                hasPendingCancel = false;
+                hasCompletedResult = false;
+                completedResult = jsfx_gfx::SHOWMENU_NB_NONE_VALUE;
+            }
+
+            if (quiesceInput)
+                quiesceInput();
+
+            if (asyncWake)
+                asyncWake();
+
+            if (workerWake)
+                workerWake();
+
+            return 1;
+        }
+
+        int showMenuNonBlockingPoll() override
+        {
+            const std::lock_guard<std::mutex> lock (mutex);
+            if (activeMode != ActiveMode::nonBlocking)
+                return jsfx_gfx::SHOWMENU_NB_NONE_VALUE;
+
+            if (! hasCompletedResult)
+                return jsfx_gfx::SHOWMENU_NB_PENDING_VALUE;
+
+            const int result = completedResult;
+            clearStateLocked();
+            return result;
+        }
+
+        int showMenuNonBlockingCancel() override
+        {
+            {
+                const std::lock_guard<std::mutex> lock (mutex);
+                if (activeMode != ActiveMode::nonBlocking || hasCompletedResult || hasPendingCancel)
+                    return 0;
+
+                hasPendingCancel = true;
+            }
+
+            if (asyncWake)
+                asyncWake();
+
+            if (workerWake)
+                workerWake();
+
+            return 1;
         }
 
         bool takePendingOpen (juce::String& description, int& x, int& y)
@@ -4806,20 +4899,37 @@ private:
             return true;
         }
 
-        void completeMenu (int result)
+        bool takePendingCancel()
+        {
+            const std::lock_guard<std::mutex> lock (mutex);
+            if (! hasPendingCancel)
+                return false;
+
+            hasPendingCancel = false;
+            hasPendingOpen = false;
+            pendingDescription.clear();
+            pendingX = 0;
+            pendingY = 0;
+            return true;
+        }
+
+        void completeMenu (int rawResult)
         {
             {
                 const std::lock_guard<std::mutex> lock (mutex);
-                completedResult = result;
+                if (activeMode == ActiveMode::none)
+                    return;
+
+                completedResult = translateResultForActiveModeLocked (rawResult);
                 hasCompletedResult = true;
                 hasPendingOpen = false;
+                hasPendingCancel = false;
                 pendingDescription.clear();
                 pendingX = 0;
                 pendingY = 0;
-                // Stay logically busy until consumeCompletedMenuResult() has
-                // handed the result back to the interpreter.
-                openOrPending.store (true, std::memory_order_release);
             }
+
+            completedCv.notify_all();
 
             if (workerWake)
                 workerWake();
@@ -4830,24 +4940,83 @@ private:
 
         void cancelAll()
         {
-            const std::lock_guard<std::mutex> lock (mutex);
+            bool hadActiveMenu = false;
+            {
+                const std::lock_guard<std::mutex> lock (mutex);
+                hadActiveMenu = (activeMode != ActiveMode::none)
+                             || hasPendingOpen
+                             || hasPendingCancel
+                             || hasCompletedResult;
+
+                if (! hadActiveMenu)
+                {
+                    clearStateLocked();
+                }
+                else
+                {
+                    completedResult = (activeMode == ActiveMode::nonBlocking)
+                                    ? jsfx_gfx::SHOWMENU_NB_CANCELED_VALUE
+                                    : 0;
+                    hasCompletedResult = true;
+                    hasPendingOpen = false;
+                    hasPendingCancel = false;
+                    pendingDescription.clear();
+                    pendingX = 0;
+                    pendingY = 0;
+                }
+            }
+
+            if (hadActiveMenu)
+            {
+                completedCv.notify_all();
+
+                if (workerWake)
+                    workerWake();
+
+                if (asyncWake)
+                    asyncWake();
+            }
+        }
+
+    private:
+        bool canStartRequestLocked() const noexcept
+        {
+            return activeMode == ActiveMode::none
+                && ! hasPendingOpen
+                && ! hasPendingCancel
+                && ! hasCompletedResult;
+        }
+
+        int translateResultForActiveModeLocked (int rawResult) const noexcept
+        {
+            if (activeMode == ActiveMode::nonBlocking)
+                return rawResult > 0 ? rawResult : jsfx_gfx::SHOWMENU_NB_CANCELED_VALUE;
+
+            return rawResult > 0 ? rawResult : 0;
+        }
+
+        void clearStateLocked()
+        {
+            activeMode = ActiveMode::none;
             pendingDescription.clear();
             pendingX = 0;
             pendingY = 0;
             completedResult = 0;
             hasCompletedResult = false;
             hasPendingOpen = false;
-            openOrPending.store (false, std::memory_order_release);
+            hasPendingCancel = false;
         }
 
         mutable std::mutex mutex;
+        std::condition_variable completedCv;
         juce::String pendingDescription;
         int pendingX = 0;
         int pendingY = 0;
         int completedResult = 0;
         bool hasCompletedResult = false;
         bool hasPendingOpen = false;
-        std::atomic<bool> openOrPending { false };
+        bool hasPendingCancel = false;
+        ActiveMode activeMode = ActiveMode::none;
 
         std::function<void()> asyncWake;
         std::function<void()> quiesceInput;
@@ -4857,6 +5026,15 @@ private:
     void handleAsyncUpdate() override
     {
         bool repaintNeeded = repaintPending.exchange (false, std::memory_order_acq_rel);
+
+        if (menuBridge.takePendingCancel())
+        {
+            if (menuOverlay.isMenuShowing())
+                menuOverlay.forceCloseSilently();
+
+            menuBridge.completeMenu (0);
+            repaintNeeded = true;
+        }
 
         juce::String menuDesc;
         int menuX = 0;
@@ -4901,6 +5079,12 @@ private:
 
     void stopWorker()
     {
+        // gfx_showmenu() now blocks the dedicated worker thread until the menu
+        // is dismissed. Tear-down must therefore cancel any outstanding menu
+        // wait before joining, or the editor can deadlock on close.
+        menuOverlay.forceCloseSilently();
+        menuBridge.cancelAll();
+
         stopWorkerFlag.store (true, std::memory_order_release);
         workerWakeFlag.store (true, std::memory_order_release);
         workerCv.notify_all();
@@ -4918,24 +5102,48 @@ private:
     void quietInputForMenu()
     {
         const std::lock_guard<std::mutex> lock (inputMutex);
-        sharedInput.mouseCap = 0;
+
+        const int releasedCap = sharedInput.mouseCap & ~kMouseButtonMask;
+        const bool hadButtons = (sharedInput.mouseCap & kMouseButtonMask) != 0;
+
+        sharedInput.mouseFrames.clear();
         sharedInput.pendingWheel = 0.0f;
         sharedInput.pendingHWheel = 0.0f;
-        sharedInput.captureStateWrites = false;
+
+        if (hadButtons)
+        {
+            MouseStateFrame frame;
+            frame.mouseX = sharedInput.mouseX;
+            frame.mouseY = sharedInput.mouseY;
+            frame.mouseCap = releasedCap;
+            frame.captureStateWrites = true;
+            sharedInput.mouseFrames.push_back (frame);
+        }
+
+        sharedInput.mouseCap = releasedCap;
+        sharedInput.captureStateWrites = hadButtons;
+        mouseCap = releasedCap;
     }
 
-    void updateMouse (const juce::MouseEvent& e, bool markDirty)
+    void updateMouse (const juce::MouseEvent& e, bool markDirty, bool useCurrentModifiers)
     {
         if (! hasGfxFlag || ! gfxCompiledOkFlag)
             return;
 
-        updateMouseCapFromModifiers (e.mods);
+        updateMouseCapFromModifiers (useCurrentModifiers ? juce::ModifierKeys::getCurrentModifiers()
+                                                         : e.mods);
 
         {
             const std::lock_guard<std::mutex> lock (inputMutex);
-            sharedInput.mouseX = (float) e.position.x;
-            sharedInput.mouseY = (float) e.position.y;
-            sharedInput.mouseCap = mouseCap;
+
+            MouseStateFrame frame;
+            frame.mouseX = (float) e.position.x;
+            frame.mouseY = (float) e.position.y;
+            frame.mouseCap = mouseCap;
+            frame.captureStateWrites = markDirty;
+
+            enqueueMouseFrameLocked (frame);
+
             if (markDirty)
                 sharedInput.captureStateWrites = true;
         }
@@ -5021,14 +5229,33 @@ private:
         }
 
         SharedInputState inputCopy;
+        bool hasQueuedMouseFramesRemaining = false;
         {
             const std::lock_guard<std::mutex> lock (inputMutex);
-            inputCopy.mouseX = sharedInput.mouseX;
-            inputCopy.mouseY = sharedInput.mouseY;
-            inputCopy.mouseCap = sharedInput.mouseCap;
-            inputCopy.pendingWheel = sharedInput.pendingWheel;
-            inputCopy.pendingHWheel = sharedInput.pendingHWheel;
-            inputCopy.captureStateWrites = sharedInput.captureStateWrites;
+
+            if (! sharedInput.mouseFrames.empty())
+            {
+                const auto frame = sharedInput.mouseFrames.front();
+                sharedInput.mouseFrames.pop_front();
+
+                inputCopy.mouseX = frame.mouseX;
+                inputCopy.mouseY = frame.mouseY;
+                inputCopy.mouseCap = frame.mouseCap;
+                inputCopy.pendingWheel = frame.pendingWheel;
+                inputCopy.pendingHWheel = frame.pendingHWheel;
+                inputCopy.captureStateWrites = frame.captureStateWrites;
+            }
+            else
+            {
+                inputCopy.mouseX = sharedInput.mouseX;
+                inputCopy.mouseY = sharedInput.mouseY;
+                inputCopy.mouseCap = sharedInput.mouseCap;
+                inputCopy.pendingWheel = sharedInput.pendingWheel;
+                inputCopy.pendingHWheel = sharedInput.pendingHWheel;
+                inputCopy.captureStateWrites = false;
+            }
+
+            inputCopy.captureStateWrites = inputCopy.captureStateWrites || sharedInput.captureStateWrites;
             inputCopy.clearKeys = sharedInput.clearKeys;
             inputCopy.keyEvents.swap (sharedInput.keyEvents);
 
@@ -5036,6 +5263,7 @@ private:
             sharedInput.pendingHWheel = 0.0f;
             sharedInput.captureStateWrites = false;
             sharedInput.clearKeys = false;
+            hasQueuedMouseFramesRemaining = ! sharedInput.mouseFrames.empty();
         }
 
         if (inputCopy.clearKeys)
@@ -5068,7 +5296,6 @@ private:
             preserveVmStateSnapshotIndex = -1;
         }
 
-        constexpr int kMouseButtonMask = 1 | 2 | 64;
         const int currentMouseButtons = inputCopy.mouseCap & kMouseButtonMask;
         const bool mouseButtonEdgeThisFrame = currentMouseButtons != lastRenderMouseButtons;
         lastRenderMouseButtons = currentMouseButtons;
@@ -5284,6 +5511,9 @@ private:
 
         processor.endGfxSnapshotRead (snapIdx);
         publishCanvas();
+
+        if (hasQueuedMouseFramesRemaining)
+            notifyWorker();
     }
 
     static int packCC(const char* s) noexcept
@@ -5350,6 +5580,39 @@ private:
         }
 
         return 0;
+    }
+
+    static constexpr int kMouseButtonMask = 1 | 2 | 64;
+
+    void enqueueMouseFrameLocked (const MouseStateFrame& frame)
+    {
+        sharedInput.mouseX = frame.mouseX;
+        sharedInput.mouseY = frame.mouseY;
+        sharedInput.mouseCap = frame.mouseCap;
+
+        if (! sharedInput.mouseFrames.empty())
+        {
+            auto& back = sharedInput.mouseFrames.back();
+            const bool canCoalesce = ! back.captureStateWrites
+                                  && ! frame.captureStateWrites
+                                  && back.mouseCap == frame.mouseCap
+                                  && back.pendingWheel == 0.0f
+                                  && back.pendingHWheel == 0.0f
+                                  && frame.pendingWheel == 0.0f
+                                  && frame.pendingHWheel == 0.0f;
+            if (canCoalesce)
+            {
+                back.mouseX = frame.mouseX;
+                back.mouseY = frame.mouseY;
+                return;
+            }
+        }
+
+        sharedInput.mouseFrames.push_back (frame);
+
+        constexpr size_t kMaxQueuedMouseFrames = 512;
+        if (sharedInput.mouseFrames.size() > kMaxQueuedMouseFrames)
+            sharedInput.mouseFrames.pop_front();
     }
 
     void updateMouseCapFromModifiers (const juce::ModifierKeys& mods)
