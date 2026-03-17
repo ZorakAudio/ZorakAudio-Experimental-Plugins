@@ -4752,19 +4752,29 @@ private:
             result = completedResult;
             completedResult = 0;
             hasCompletedResult = false;
+            // Keep the bridge logically busy until the completed result is
+            // actually consumed by the interpreter. Clearing the busy flag here
+            // prevents immediate reopen loops when gfx_showmenu() is evaluated
+            // again before the pending result is delivered.
+            openOrPending.store (false, std::memory_order_release);
             return true;
         }
 
         bool isMenuOpen() const override
         {
-            return openOrPending.load (std::memory_order_acquire);
+            const std::lock_guard<std::mutex> lock (mutex);
+            return openOrPending.load (std::memory_order_acquire) || hasCompletedResult;
         }
 
         void requestOpenMenu (const juce::String& description, int x, int y) override
         {
             {
                 const std::lock_guard<std::mutex> lock (mutex);
-                if (openOrPending.load (std::memory_order_acquire))
+                // If a menu is already opening/open, or if a completed result is
+                // still waiting to be consumed by gfx_showmenu(), ignore the
+                // request. Reopening here clears the pending result and causes
+                // the classic "menu closes, instantly reappears forever" bug.
+                if (openOrPending.load (std::memory_order_acquire) || hasCompletedResult)
                     return;
 
                 pendingDescription = description;
@@ -4802,7 +4812,13 @@ private:
                 const std::lock_guard<std::mutex> lock (mutex);
                 completedResult = result;
                 hasCompletedResult = true;
-                openOrPending.store (false, std::memory_order_release);
+                hasPendingOpen = false;
+                pendingDescription.clear();
+                pendingX = 0;
+                pendingY = 0;
+                // Stay logically busy until consumeCompletedMenuResult() has
+                // handed the result back to the interpreter.
+                openOrPending.store (true, std::memory_order_release);
             }
 
             if (workerWake)
