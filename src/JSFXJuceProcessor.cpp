@@ -3897,12 +3897,15 @@ public:
         rootItems = std::move (parsed);
         if (rootItems.empty())
         {
-            finish (0, false);
+            finishNow (0, false);
             return;
         }
 
         anchor = anchorPos;
         menuOpen = true;
+        finishScheduled = false;
+        scheduledResult = 0;
+        scheduledNotify = false;
         openPath.clear();
         highlightIndices.clear();
         highlightIndices.push_back (firstSelectableIndex (rootItems));
@@ -3921,7 +3924,10 @@ public:
 
     void forceCloseSilently()
     {
-        finish (0, false);
+        finishScheduled = false;
+        scheduledResult = 0;
+        scheduledNotify = false;
+        finishNow (0, false);
     }
 
     void paint (juce::Graphics& g) override
@@ -4043,7 +4049,7 @@ public:
         int level = -1, index = -1;
         if (! hitTestPanels (pos, level, index))
         {
-            finish (0, true);
+            scheduleFinish (0, true);
             return;
         }
 
@@ -4062,7 +4068,7 @@ public:
 
         if (key == juce::KeyPress::escapeKey)
         {
-            finish (0, true);
+            scheduleFinish (0, true);
             return true;
         }
 
@@ -4108,7 +4114,7 @@ public:
             }
             else
             {
-                finish (0, true);
+                scheduleFinish (0, true);
             }
             return true;
         }
@@ -4126,7 +4132,7 @@ public:
     void focusLost (juce::Component::FocusChangeType) override
     {
         if (menuOpen)
-            finish (0, true);
+            scheduleFinish (0, true);
     }
 
 private:
@@ -4454,10 +4460,44 @@ private:
             return;
         }
 
-        finish (item.resultId, true);
+        scheduleFinish (item.resultId, true);
     }
 
-    void finish (int result, bool notify)
+    void scheduleFinish (int result, bool notify)
+    {
+        if (! menuOpen && ! finishScheduled)
+            return;
+
+        scheduledResult = result;
+        scheduledNotify = notify;
+
+        if (finishScheduled)
+            return;
+
+        finishScheduled = true;
+        auto safeThis = juce::Component::SafePointer<GfxMenuOverlay> (this);
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (safeThis != nullptr)
+                safeThis->flushScheduledFinish();
+        });
+    }
+
+    void flushScheduledFinish()
+    {
+        if (! finishScheduled)
+            return;
+
+        const int result = scheduledResult;
+        const bool notify = scheduledNotify;
+        finishScheduled = false;
+        scheduledResult = 0;
+        scheduledNotify = false;
+
+        finishNow (result, notify);
+    }
+
+    void finishNow (int result, bool notify)
     {
         menuOpen = false;
         rootItems.clear();
@@ -4477,6 +4517,9 @@ private:
     juce::Point<int> anchor;
     juce::Font menuFont { juce::Font::getDefaultSansSerifFontName(), 13.0f, juce::Font::plain };
     bool menuOpen = false;
+    bool finishScheduled = false;
+    int scheduledResult = 0;
+    bool scheduledNotify = false;
 };
 
 class GfxView final : public juce::Component,
