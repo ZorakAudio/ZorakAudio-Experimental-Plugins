@@ -1068,6 +1068,37 @@ extern "C" int jsfx_midisend (DSPJSFX_State* st, double offset, double msg1, dou
     return 1;
 }
 
+
+extern "C" int jsfx_sliderchange (DSPJSFX_State* st, double sliderMask)
+{
+    if (st == nullptr)
+        return 0;
+
+    const int64_t mask = (sliderMask > 0.0) ? (int64_t) std::llround (sliderMask) : 0;
+    if (mask <= 0)
+        return 0;
+
+    st->pendingSliderChangeMask |= mask;
+    return 1;
+}
+
+extern "C" int jsfx_slider_automate (DSPJSFX_State* st, double sliderMask, double endTouch)
+{
+    if (st == nullptr)
+        return 0;
+
+    const int64_t mask = (sliderMask > 0.0) ? (int64_t) std::llround (sliderMask) : 0;
+    if (mask <= 0)
+        return 0;
+
+    st->pendingSliderChangeMask |= mask;
+    if (endTouch != 0.0)
+        st->pendingSliderAutomateEndMask |= mask;
+    else
+        st->pendingSliderAutomateMask |= mask;
+    return 1;
+}
+
 class JSFXJuceEditor;
 
 
@@ -1493,6 +1524,8 @@ public:
 
         // Push params BEFORE @init, matching REAPER JSFX behaviour (sliders are valid in @init).
         lastSlidersValid = false;
+        internalSliderPendingMask = 0;
+        dspGestureActive.fill (false);
         (void) pushParamsToStateSliders();
 
         jsfx_init (&st);
@@ -1520,6 +1553,8 @@ public:
     void releaseResources() override
     {
         requestEmergencyMidiCleanup();
+        endAllDspGestures();
+        internalSliderPendingMask = 0;
         st.midiInCount = 0;
         st.midiInReadIndex = 0;
         st.midiOutCount = 0;
@@ -1528,6 +1563,8 @@ public:
     void reset() override
     {
         requestEmergencyMidiCleanup();
+        endAllDspGestures();
+        internalSliderPendingMask = 0;
         st.midiInCount = 0;
         st.midiInReadIndex = 0;
         st.midiOutCount = 0;
@@ -1666,6 +1703,7 @@ public:
         }
 
         jsfx_process_block (&st, numCh > 0 ? inPtrs.data() : nullptr, numCh > 0 ? outPtrs.data() : nullptr, numCh, numSamples);
+        consumeDspSliderChanges();
 
         flushMidiFromState (midiMessages);
         updateGfxSnapshotIfNeeded (numSamples);
@@ -2171,13 +2209,111 @@ public:
 
 
     // ------------------------------------------------------------
-    // Host <- @gfx slider edits
+    // Host <- @gfx / DSP-internal slider edits
     //
-    // Some JSFX UIs (including the provided "Detail Extractor") modify slider
-    // variables inside @gfx and call sliderchange()/slider_automate() to notify
-    // the host. Our @gfx interpreter runs out-of-band, so we need an explicit
-    // bridge to push those edits back into the real parameter set.
+    // JSFX scripts can modify sliders from @gfx or from DSP sections
+    // (@block/@sample) and call sliderchange()/slider_automate() to notify the
+    // host. The @gfx path is out-of-band and the DSP path is realtime, so both
+    // end up funneled through the same conversion helpers here.
     // ------------------------------------------------------------
+    bool jsfxSliderValueToParameterNormalised (size_t sliderIndex, double jsfxValue, float& outNorm) const
+    {
+        if (apvts == nullptr || sliderIndex >= sliderParamUsed.size() || ! sliderParamUsed[sliderIndex])
+            return false;
+
+        const auto& info = sliderParamInfo[sliderIndex];
+        auto* p = apvts->getParameter (info.pid);
+        if (p == nullptr)
+            return false;
+
+        float rawForParam = 0.0f;
+        if (info.isChoice)
+        {
+            const double step = (double) (info.step > 0.0f ? info.step : 1.0f);
+            int idx = (int) std::llround ((jsfxValue - (double) info.min) / step);
+
+            if (auto* c = dynamic_cast<juce::AudioParameterChoice*> (p))
+            {
+                const int maxIdx = juce::jmax (0, c->choices.size() - 1);
+                idx = juce::jlimit (0, maxIdx, idx);
+            }
+            else
+            {
+                const auto r = p->getNormalisableRange();
+                idx = juce::jlimit ((int) std::llround (r.start), (int) std::llround (r.end), idx);
+            }
+
+            rawForParam = (float) idx;
+        }
+        else
+        {
+            double v = juce::jlimit<double> ((double) info.min, (double) info.max, jsfxValue);
+            const double step = (double) (info.step > 0.0f ? info.step : 0.0f);
+            if (step > 0.0)
+            {
+                const double q = std::llround ((v - (double) info.min) / step);
+                v = (double) info.min + q * step;
+                v = juce::jlimit<double> ((double) info.min, (double) info.max, v);
+            }
+            rawForParam = (float) v;
+        }
+
+        outNorm = p->convertTo0to1 (rawForParam);
+        return true;
+    }
+
+    double hostParameterToJsfxSliderValue (size_t sliderIndex) const
+    {
+        if (sliderIndex >= sliderParamUsed.size() || ! sliderParamUsed[sliderIndex])
+            return st.sliders[sliderIndex];
+
+        const auto& info = sliderParamInfo[sliderIndex];
+        double newVal = st.sliders[sliderIndex];
+
+        if (auto* v = paramAtomics[sliderIndex])
+        {
+            newVal = (double) v->load();
+        }
+        else if (apvts != nullptr)
+        {
+            if (auto* p = apvts->getParameter (info.pid))
+            {
+                const float norm = p->getValue();
+                newVal = (double) p->convertFrom0to1 (norm);
+            }
+        }
+
+        if (info.isChoice)
+        {
+            const auto idx = (int64_t) std::llround (newVal);
+            newVal = (double) info.min + (double) idx * (double) info.step;
+        }
+
+        newVal = juce::jlimit<double> ((double) info.min, (double) info.max, newVal);
+
+        if (! info.isChoice)
+        {
+            const double step = (double) (info.step > 0.0f ? info.step : 0.0f);
+            if (step > 0.0)
+            {
+                const double q = std::llround ((newVal - (double) info.min) / step);
+                newVal = (double) info.min + q * step;
+                newVal = juce::jlimit<double> ((double) info.min, (double) info.max, newVal);
+            }
+        }
+
+        return newVal;
+    }
+
+    static bool sliderValuesEquivalent (const SliderParamInfo& info, double a, double b) noexcept
+    {
+        if (info.isChoice)
+            return (int64_t) std::llround (a) == (int64_t) std::llround (b);
+
+        const double tol = std::max (1.0e-6, (info.step > 0.0f ? (double) info.step * 0.25 : 1.0e-6));
+        return std::abs (a - b) <= tol;
+    }
+
     void applyGfxSliderChanges (const double* newSliders, int count,
                                 uint64_t changeMask,
                                 uint64_t automateMask,
@@ -2187,11 +2323,12 @@ public:
             return;
 
         const int n = juce::jlimit (0, 64, count);
+        const uint64_t applyMask = changeMask | automateMask | automateEndMask;
 
         for (int i = 0; i < n; ++i)
         {
             const uint64_t bit = (uint64_t)1u << (uint64_t)i;
-            if ((changeMask & bit) == 0)
+            if ((applyMask & bit) == 0)
                 continue;
 
             if (! sliderParamUsed[(size_t)i])
@@ -2201,50 +2338,10 @@ public:
             auto* p = apvts->getParameter (info.pid);
             if (p == nullptr)
                 continue;
+            float norm = 0.0f;
+            if (! jsfxSliderValueToParameterNormalised ((size_t) i, newSliders[i], norm))
+                continue;
 
-            // Convert JSFX numeric slider value -> parameter raw value.
-            // For CHOICE parameters, JSFX uses the original numeric min..max range,
-            // but the host parameter is the *choice index*.
-            float rawForParam = 0.0f;
-            if (info.isChoice)
-            {
-                const double step = (double) (info.step > 0.0f ? info.step : 1.0f);
-                int idx = (int) std::llround ((newSliders[i] - (double) info.min) / step);
-
-                // Clamp to valid choice index range.
-                if (auto* c = dynamic_cast<juce::AudioParameterChoice*> (p))
-                {
-                    const int maxIdx = juce::jmax (0, c->choices.size() - 1);
-                    idx = juce::jlimit (0, maxIdx, idx);
-                }
-                else
-                {
-                    // Fallback: clamp using the parameter's own normalisable range.
-                    const auto r = p->getNormalisableRange();
-                    idx = juce::jlimit ((int) std::llround (r.start), (int) std::llround (r.end), idx);
-                }
-
-                rawForParam = (float) idx;
-            }
-            else
-            {
-                // Clamp and snap to JSFX step.
-                double v = juce::jlimit<double> ((double) info.min, (double) info.max, newSliders[i]);
-
-                const double step = (double) (info.step > 0.0f ? info.step : 0.0f);
-                if (step > 0.0)
-                {
-                    const double q = std::llround ((v - (double) info.min) / step);
-                    v = (double) info.min + q * step;
-                    v = juce::jlimit<double> ((double) info.min, (double) info.max, v);
-                }
-
-                rawForParam = (float) v;
-            }
-
-            const float norm = p->convertTo0to1 (rawForParam);
-
-            // Start touch automation if requested.
             if ((automateMask & bit) != 0)
             {
                 if (! gfxGestureActive[(size_t)i])
@@ -2254,10 +2351,8 @@ public:
                 }
             }
 
-            // Push value to host.
             p->setValueNotifyingHost (norm);
 
-            // End touch automation if requested.
             if ((automateEndMask & bit) != 0)
             {
                 if (gfxGestureActive[(size_t)i])
@@ -2267,11 +2362,78 @@ public:
                 }
                 else
                 {
-                    // Harmless: endChangeGesture() even if we didn't begin.
                     p->endChangeGesture();
                 }
             }
         }
+    }
+
+    void consumeDspSliderChanges()
+    {
+        const uint64_t changeMask = st.pendingSliderChangeMask > 0 ? (uint64_t) st.pendingSliderChangeMask : 0u;
+        const uint64_t automateMask = st.pendingSliderAutomateMask > 0 ? (uint64_t) st.pendingSliderAutomateMask : 0u;
+        const uint64_t automateEndMask = st.pendingSliderAutomateEndMask > 0 ? (uint64_t) st.pendingSliderAutomateEndMask : 0u;
+        const uint64_t applyMask = changeMask | automateMask | automateEndMask;
+
+        if (applyMask == 0 || apvts == nullptr)
+        {
+            st.pendingSliderChangeMask = 0;
+            st.pendingSliderAutomateMask = 0;
+            st.pendingSliderAutomateEndMask = 0;
+            return;
+        }
+
+        for (int i = 0; i < 64; ++i)
+        {
+            const uint64_t bit = (uint64_t)1u << (uint64_t)i;
+            if ((applyMask & bit) == 0)
+                continue;
+
+            if (! sliderParamUsed[(size_t) i])
+                continue;
+
+            const auto& info = sliderParamInfo[(size_t) i];
+            auto* p = apvts->getParameter (info.pid);
+            if (p == nullptr)
+                continue;
+
+            float norm = 0.0f;
+            if (! jsfxSliderValueToParameterNormalised ((size_t) i, st.sliders[i], norm))
+                continue;
+
+            if ((automateMask & bit) != 0)
+            {
+                if (! dspGestureActive[(size_t) i])
+                {
+                    p->beginChangeGesture();
+                    dspGestureActive[(size_t) i] = true;
+                }
+            }
+
+            p->setValueNotifyingHost (norm);
+
+            if ((automateEndMask & bit) != 0)
+            {
+                if (dspGestureActive[(size_t) i])
+                {
+                    p->endChangeGesture();
+                    dspGestureActive[(size_t) i] = false;
+                }
+                else
+                {
+                    p->endChangeGesture();
+                }
+            }
+
+            internalSliderShadow[(size_t) i] = st.sliders[i];
+            internalSliderPendingMask |= bit;
+            lastSliders[(size_t) i] = st.sliders[i];
+        }
+
+        lastSlidersValid = true;
+        st.pendingSliderChangeMask = 0;
+        st.pendingSliderAutomateMask = 0;
+        st.pendingSliderAutomateEndMask = 0;
     }
 
     void endAllGfxGestures()
@@ -2292,6 +2454,31 @@ public:
                 p->endChangeGesture();
 
             gfxGestureActive[(size_t)i] = false;
+        }
+    }
+
+
+    void endAllDspGestures()
+    {
+        if (apvts == nullptr)
+        {
+            dspGestureActive.fill (false);
+            return;
+        }
+
+        for (int i = 0; i < 64; ++i)
+        {
+            if (! dspGestureActive[(size_t)i])
+                continue;
+
+            if (! sliderParamUsed[(size_t)i])
+                continue;
+
+            const auto& info = sliderParamInfo[(size_t)i];
+            if (auto* p = apvts->getParameter (info.pid))
+                p->endChangeGesture();
+
+            dspGestureActive[(size_t)i] = false;
         }
     }
 
@@ -2795,51 +2982,18 @@ private:
         {
             if (! sliderParamUsed[i])
                 continue;
-
             const auto& info = sliderParamInfo[i];
-            double newVal = st.sliders[i];
+            const uint64_t bit = (uint64_t) 1u << (uint64_t) i;
+            const double hostVal = hostParameterToJsfxSliderValue (i);
+            double newVal = hostVal;
 
-            // Robust value read:
-            // - RangedAudioParameter::getValue() is ALWAYS normalised 0..1
-            // - convertFrom0to1() ALWAYS returns the raw value in the parameter's declared range
-            // This avoids accidentally feeding JSFX normalised values when the original slider
-            // range was e.g. 0..100 or -24..+24.
-            if (auto* v = paramAtomics[i])
+            if ((internalSliderPendingMask & bit) != 0)
             {
-                // NOTE: For AudioParameterFloat, this returns the raw value in range.
-                // For AudioParameterChoice, this returns the raw choice index.
-                newVal = (double) v->load();
-            }
-            else if (auto* p = apvts->getParameter (info.pid))
-            {
-                const float norm = p->getValue();
-                newVal = (double) p->convertFrom0to1 (norm);
-            }
-
-            // If the host-facing parameter is a CHOICE, its raw value is an index [0..N-1].
-            // JSFX expects the original numeric slider value (min + index*step).
-            if (info.isChoice)
-            {
-                const auto idx = (int64_t) std::llround (newVal);
-                newVal = (double) info.min + (double) idx * (double) info.step;
-            }
-
-            // Clamp to the declared JSFX range.
-            newVal = juce::jlimit<double> ((double) info.min, (double) info.max, newVal);
-
-            // If this slider is not a CHOICE, emulate JSFX slider stepping.
-            // This prevents host float jitter from triggering @slider rebuilds.
-            if (! info.isChoice)
-            {
-                const double step = (double) (info.step > 0.0f ? info.step : 0.0f);
-                if (step > 0.0)
-                {
-                    const double q = std::llround ((newVal - (double) info.min) / step);
-                    newVal = (double) info.min + q * step;
-
-                    // clamp again after quantize
-                    newVal = juce::jlimit<double> ((double) info.min, (double) info.max, newVal);
-                }
+                const double shadowVal = internalSliderShadow[i];
+                if (sliderValuesEquivalent (info, hostVal, shadowVal))
+                    internalSliderPendingMask &= ~bit;
+                else
+                    newVal = shadowVal;
             }
 
             // Detect actual value change
@@ -3203,6 +3357,9 @@ int64_t jsfxDeclaredMaxMem = 0;
     juce::AudioBuffer<float> scratchOut;
     std::array<double, 64> lastSliders {};
     bool lastSlidersValid = false;
+    std::array<bool, 64> dspGestureActive {};
+    std::array<double, 64> internalSliderShadow {};
+    uint64_t internalSliderPendingMask = 0;
 };
 
 class FilteredPanel final : public juce::Component, private juce::Timer

@@ -15,7 +15,7 @@ slider6:0.72<0,1,0.001>-Focus
 slider7:0.65<0,1,0.001>-Grounding
 slider8:0.22<0,1,0.001>-Jitter
 slider9:220<10,3000,1>-Slice (ms)
-slider10:0<0,2,1{One-Shot,Random,Granular}>-Playback Mode
+slider10:0<0,3,1{One-Shot,Random,Granular,Gran Synth}>-Playback Mode
 slider11:0<0,1,1{Dry+Wet,Wet Only}>-Output Mode
 slider12:1<0,1,1{Off,On}>-Auto-Reload On File Change
 slider13:0<0,1,1{Off,Reload}>-Reload Texture
@@ -40,6 +40,8 @@ slider31:0<0,1,0.001>-Env Mix
 slider32:180<20,1500,1>-Env Speed (ms)
 slider33:0<0,1,0.001>-Slice Rand
 slider34:0<0,1,0.001>-Support Rand
+slider35:0<0,3,1{Auto,Input,Sidechain,MIDI}>-Trigger Source
+slider36:0<0,1,1{Mono,Poly}>-MIDI Note Mode
 
 @init
 ln10 = 2.302585092994046;
@@ -74,9 +76,19 @@ recent_max = 24;
 
 voice_base = recent_base + recent_max + 4096;
 max_voices = 24;
-v_stride = 13; // active,start,src_pos,src_len,rate,amp,phaseofs,cand,mode,spawn_support,polarity,age,env_len
+v_stride = 13; // active,start,src_pos,src_len,rate,amp,phaseofs,cand,mode,spawn_support,note_tag,age,env_len
 
-freembuf(voice_base + max_voices * v_stride + 4096);
+midi_note_vel_base = voice_base + max_voices * v_stride + 4096;
+midi_note_order_base = midi_note_vel_base + 128 + 64;
+cc_map_base = midi_note_order_base + 128 + 64;
+cc_param_count = 36;
+midi_evt_on_base = cc_map_base + cc_param_count + 64;
+midi_evt_off_base = midi_evt_on_base + 128;
+midi_note_countdown_base = midi_evt_off_base + 128;
+midi_active_list_base = midi_note_countdown_base + 128;
+midi_poly_max = 8;
+
+freembuf(midi_active_list_base + midi_poly_max + 4096);
 
 // file state
 tex_loaded = 0;
@@ -188,6 +200,47 @@ ui_drag_start_y = 0;
 ui_drag_start_val = 0;
 ui_drag_start_val2 = 0;
 
+midi_active_count = 0;
+midi_held_note = -1;
+midi_held_vel = 0;
+midi_note_gate = 0;
+midi_note_on_evt = 0;
+midi_note_off_evt = 0;
+midi_note_changed_evt = 0;
+midi_note_vel_norm = 0;
+midi_note_pitch_st = 0;
+midi_note_pitch_cents = 0;
+midi_order_counter = 1;
+source_mode = 0;
+eff_source_mode = 1;
+auto_source_mode = 1;
+last_source_mode = -1;
+auto_in_level = 0;
+auto_sc_level = 0;
+auto_midi_level = 0;
+auto_src_c = 0.9982;
+midi_root_note = 60;
+cc_picker_param = 0;
+cc_picker_current = -1;
+cc_browser_active = 0;
+cc_browser_param = 0;
+cc_browser_page = 0;
+cc_browser_hover = -1;
+cc_browser_selected = -2;
+ui_button_click = 0;
+midi_mode = 0;
+midi_poly_count = 0;
+block_event_arm = 0;
+midi_block_evt_on = 0;
+midi_block_evt_off = 0;
+midi_block_evt_change = 0;
+spawn_pitch_override_active = 0;
+spawn_pitch_override_cents = 0;
+spawn_support_override_active = 0;
+spawn_support_override_val = 0;
+spawn_note_tag = -1;
+last_midi_mode = -1;
+
 last_profile_sel = -1;
 
 recent_family_mean = 0;
@@ -236,6 +289,31 @@ loop(max_voices,
   mem[voice_base + vi * v_stride] = 0;
   vi += 1;
 );
+ni = 0;
+loop(128,
+  mem[midi_evt_on_base + ni] = 0;
+  mem[midi_evt_off_base + ni] = 0;
+  mem[midi_note_countdown_base + ni] = 0;
+  ni += 1;
+);
+ni = 0;
+loop(midi_poly_max,
+  mem[midi_active_list_base + ni] = -1;
+  ni += 1;
+);
+
+ni = 0;
+loop(128,
+  mem[midi_note_vel_base + ni] = 0;
+  mem[midi_note_order_base + ni] = 0;
+  ni += 1;
+);
+
+ci = 0;
+loop(cc_param_count + 1,
+  mem[cc_map_base + ci] = -1;
+  ci += 1;
+);
 
 @slider
 slider17 < 0 ? slider17 = 0;
@@ -274,6 +352,8 @@ knee_lo = th_off;
 det_sat_k = 1.35 + 0.20 * min(1, (sensitivity - 0.1) / 7.9);
 
 mode = floor(slider10 + 0.5);
+source_mode = floor(slider35 + 0.5);
+midi_mode = floor(slider36 + 0.5);
 
 flow = slider5;
 focus = slider6;
@@ -286,7 +366,8 @@ dur_var = 0.10 + 0.35 * flow;
 density =
   mode == 0 ? 1 :
   mode == 1 ? (0.85 + flow_sq * 15.0) :
-  (3.0 + pow(flow, 1.6) * 42.0);
+  mode == 2 ? (3.0 + pow(flow, 1.6) * 42.0) :
+  (2.2 + pow(flow, 1.55) * 28.0);
 
 interesting = focus;
 repeat_avoid = 0.20 + 0.80 * focus;
@@ -366,7 +447,8 @@ profile == 0 ? (
 input_link =
   mode == 0 ? 0.88 :
   mode == 1 ? 0.58 :
-  0.35;
+  mode == 2 ? 0.35 :
+  0.48;
 
 env_a_ms = slider15;
 env_d_ms = slider16;
@@ -399,14 +481,202 @@ sup_rel_c = exp(-1 / sup_rel_s);
 support_floor =
   mode == 0 ? 0 :
   mode == 1 ? (0.02 + 0.04 * flow_sq) :
-  (0.04 + 0.04 * flow_sq);
+  mode == 2 ? (0.04 + 0.04 * flow_sq) :
+  (0.03 + 0.03 * flow_sq);
 support_floor > 0.08 ? support_floor = 0.08;
 
 env_a_s_base = max(1, floor(env_a_ms * 0.001 * srate));
 env_d_s_base = max(1, floor(env_d_ms * 0.001 * srate));
 env_r_s_base = max(1, floor(env_r_ms * 0.001 * srate));
 
+source_mode != last_source_mode ? (
+  follow = 0;
+  det_raw = det_soft = det_mix = det_prev = det_prime = 0;
+  support_sig = support_drive = support_mix = support_prev = 0;
+  support_rise = support_fall = 0;
+  wake_force = 0;
+  gate = 0;
+  gate_peak = 0;
+  texture_running = 0;
+  spawn_countdown = 0;
+  last_source_mode = source_mode;
+);
+
+midi_mode != last_midi_mode ? (
+  texture_running = 0;
+  spawn_countdown = 0;
+  ni = 0;
+  loop(128,
+    mem[midi_note_countdown_base + ni] = 0;
+    ni += 1;
+  );
+  last_midi_mode = midi_mode;
+);
+
+@serialize
+ser_ver = 1.02;
+file_var(0, ser_ver);
+ser_ver < 1 ? (
+  ci = 0;
+  loop(cc_param_count + 1,
+    mem[cc_map_base + ci] = -1;
+    ci += 1;
+  );
+) : (
+  ci = 1;
+  loop(cc_param_count,
+    ccv = mem[cc_map_base + ci];
+    file_var(0, ccv);
+    mem[cc_map_base + ci] = ccv;
+    ci += 1;
+  );
+);
+
 @block
+function cc_apply_param(param, ccval) local(t, v) (
+  t = ccval / 127;
+  param == 1 ? ( slider1 = t; sliderchange(slider1); ) :
+  param == 2 ? ( slider2 = -24 + t * 48; sliderchange(slider2); ) :
+  param == 3 ? ( slider3 = 0.1 * exp(log(8 / 0.1) * t); sliderchange(slider3); ) :
+  param == 4 ? ( slider4 = t; sliderchange(slider4); ) :
+  param == 5 ? ( slider5 = t; sliderchange(slider5); ) :
+  param == 6 ? ( slider6 = t; sliderchange(slider6); ) :
+  param == 7 ? ( slider7 = t; sliderchange(slider7); ) :
+  param == 8 ? ( slider8 = t; sliderchange(slider8); ) :
+  param == 9 ? ( slider9 = 10 * exp(log(3000 / 10) * t); sliderchange(slider9); ) :
+  param == 10 ? ( slider10 = floor(t * 3.999); sliderchange(slider10); ) :
+  param == 11 ? ( slider11 = t >= 0.5 ? 1 : 0; sliderchange(slider11); ) :
+  param == 12 ? ( slider12 = t >= 0.5 ? 1 : 0; sliderchange(slider12); ) :
+  param == 13 ? ( ccval >= 64 ? ( ui_force_reload = 1; slider13 = 1; sliderchange(slider13); ); ) :
+  param == 14 ? ( slider14 = t * 720; sliderchange(slider14); ) :
+  param == 15 ? ( slider15 = 0.1 * exp(log(2000 / 0.1) * t); sliderchange(slider15); ) :
+  param == 16 ? ( slider16 = 0.1 * exp(log(3000 / 0.1) * t); sliderchange(slider16); ) :
+  param == 17 ? ( slider17 = t; sliderchange(slider17); ) :
+  param == 18 ? ( slider18 = 0.1 * exp(log(5000 / 0.1) * t); sliderchange(slider18); ) :
+  param == 19 ? ( slider19 = -1 + t * 2; sliderchange(slider19); ) :
+  param == 20 ? ( slider20 = -1 + t * 2; sliderchange(slider20); ) :
+  param == 21 ? ( slider21 = -1 + t * 2; sliderchange(slider21); ) :
+  param == 22 ? ( slider22 = 0.1 * exp(log(200 / 0.1) * t); sliderchange(slider22); ) :
+  param == 23 ? ( slider23 = 1 * exp(log(4000 / 1) * t); sliderchange(slider23); ) :
+  param == 24 ? ( slider24 = 0.05 + t * (0.99 - 0.05); sliderchange(slider24); ) :
+  param == 25 ? ( slider25 = t; sliderchange(slider25); ) :
+  param == 26 ? ( slider26 = floor(t * 2.999); sliderchange(slider26); ) :
+  param == 27 ? ( slider27 = t >= 0.5 ? 1 : 0; sliderchange(slider27); ) :
+  param == 28 ? ( slider28 = -24 + t * 48; sliderchange(slider28); ) :
+  param == 29 ? ( slider29 = floor(t * 4.999); sliderchange(slider29); ) :
+  param == 30 ? ( slider30 = t >= 0.5 ? 1 : 0; sliderchange(slider30); ) :
+  param == 31 ? ( slider31 = t; sliderchange(slider31); ) :
+  param == 32 ? ( slider32 = 20 * exp(log(1500 / 20) * t); sliderchange(slider32); ) :
+  param == 33 ? ( slider33 = t; sliderchange(slider33); ) :
+  param == 34 ? ( slider34 = t; sliderchange(slider34); ) :
+  param == 35 ? ( slider35 = floor(t * 3.999); sliderchange(slider35); ) :
+  param == 36 ? ( slider36 = t >= 0.5 ? 1 : 0; sliderchange(slider36); );
+);
+
+midi_note_on_evt = 0;
+midi_note_off_evt = 0;
+midi_note_changed_evt = 0;
+midi_block_evt_on = 0;
+midi_block_evt_off = 0;
+midi_block_evt_change = 0;
+block_event_arm = 0;
+ni = 0;
+loop(128,
+  mem[midi_evt_on_base + ni] = 0;
+  mem[midi_evt_off_base + ni] = 0;
+  ni += 1;
+);
+ni = 0;
+loop(midi_poly_max,
+  mem[midi_active_list_base + ni] = -1;
+  ni += 1;
+);
+
+while (midirecv(offset, msg1, msg2, msg3)) (
+  status = msg1 & 240;
+  chan = msg1 & 15;
+  midisend(offset, msg1, msg2, msg3);
+
+  (status == $x90) && (msg3 > 0) ? (
+    mem[midi_note_vel_base + msg2] <= 0 ? midi_active_count += 1;
+    mem[midi_note_vel_base + msg2] = msg3 / 127;
+    mem[midi_note_order_base + msg2] = midi_order_counter;
+    mem[midi_evt_on_base + msg2] = msg3 / 127;
+    mem[midi_evt_off_base + msg2] = 0;
+    mem[midi_note_countdown_base + msg2] = 0;
+    midi_order_counter += 1;
+    midi_note_on_evt = 1;
+  ) : (((status == $x80) || ((status == $x90) && (msg3 == 0)))) ? (
+    mem[midi_note_vel_base + msg2] > 0 ? midi_active_count -= 1;
+    mem[midi_note_vel_base + msg2] = 0;
+    mem[midi_note_order_base + msg2] = 0;
+    mem[midi_evt_off_base + msg2] = 1;
+    mem[midi_evt_on_base + msg2] = 0;
+    mem[midi_note_countdown_base + msg2] = 0;
+    midi_note_off_evt = 1;
+  ) : (status == $xB0) ? (
+    cci = 1;
+    loop(cc_param_count,
+      mem[cc_map_base + cci] == msg2 ? cc_apply_param(cci, msg3);
+      cci += 1;
+    );
+  );
+);
+
+midi_active_count < 0 ? midi_active_count = 0;
+prev_note_gate = midi_note_gate;
+prev_held_note = midi_held_note;
+best_ord = 0;
+midi_held_note = -1;
+midi_held_vel = 0;
+ni = 0;
+loop(128,
+  ordv = mem[midi_note_order_base + ni];
+  ordv > best_ord ? (
+    best_ord = ordv;
+    midi_held_note = ni;
+    midi_held_vel = mem[midi_note_vel_base + ni];
+  );
+  ni += 1;
+);
+midi_note_gate = midi_held_note >= 0;
+midi_note_vel_norm = midi_note_gate ? midi_held_vel : 0;
+midi_note_pitch_st = midi_note_gate ? (midi_held_note - midi_root_note) : 0;
+midi_note_pitch_cents = midi_note_pitch_st * 100;
+midi_note_changed_evt = (midi_held_note != prev_held_note) && midi_note_gate;
+(!prev_note_gate && midi_note_gate) ? midi_note_on_evt = 1;
+(prev_note_gate && !midi_note_gate) ? midi_note_off_evt = 1;
+
+midi_block_evt_on = midi_note_on_evt;
+midi_block_evt_off = midi_note_off_evt;
+midi_block_evt_change = midi_note_changed_evt;
+block_event_arm = 1;
+
+midi_poly_count = 0;
+best_prev_ord = 2147483647;
+pi = 0;
+loop(midi_poly_max,
+  best_ord = 0;
+  best_note = -1;
+  ni = 0;
+  loop(128,
+    ordv = mem[midi_note_order_base + ni];
+    (ordv > 0) && (ordv < best_prev_ord) && (ordv > best_ord) ? (
+      best_ord = ordv;
+      best_note = ni;
+    );
+    ni += 1;
+  );
+  best_note >= 0 ? (
+    mem[midi_active_list_base + pi] = best_note;
+    midi_poly_count += 1;
+    best_prev_ord = best_ord;
+  ) : (
+    mem[midi_active_list_base + pi] = -1;
+  );
+  pi += 1;
+);
+
 reload_now = ui_force_reload || ((slider13 > 0.5) && (last_reload <= 0.5));
 last_reload = slider13;
 ui_force_reload = 0;
@@ -503,6 +773,9 @@ h > 0 ? (
           last_spawn_phase = 0;
           voices_last_count = 0;
           spawn_continuation = 0;
+          auto_in_level = 0;
+          auto_sc_level = 0;
+          auto_midi_level = 0;
 
           ri = 0;
           loop(recent_max,
@@ -515,6 +788,18 @@ h > 0 ? (
           loop(max_voices,
             mem[voice_base + vi * v_stride] = 0;
             vi += 1;
+          );
+          ni = 0;
+          loop(128,
+            mem[midi_evt_on_base + ni] = 0;
+            mem[midi_evt_off_base + ni] = 0;
+            mem[midi_note_countdown_base + ni] = 0;
+            ni += 1;
+          );
+          pi = 0;
+          loop(midi_poly_max,
+            mem[midi_active_list_base + pi] = -1;
+            pi += 1;
           );
 
           // waveform summary
@@ -1513,7 +1798,7 @@ function phase_scale_weight(cur_phase, cur_scale, mode_local) local(w) (
   mode_local == 0 ? (
     cur_phase == phase_att ? w *= 1.04;
     cur_phase == phase_deb ? w *= 0.94;
-  ) : mode_local == 2 ? (
+  ) : mode_local >= 2 ? (
     cur_phase == phase_body ? w *= 1.08;
     cur_phase == phase_att ? w *= 0.88;
   );
@@ -1538,7 +1823,7 @@ function family_desire_weight(cur_family, want_family, cur_phase, mode_local) lo
   );
 
   cur_phase == phase_deb ? w *= (0.96 + 0.06 * (1 - profile_family_lock));
-  mode_local == 2 ? w *= 1.03;
+  mode_local >= 2 ? w *= 1.03;
   w;
 );
 
@@ -1570,7 +1855,7 @@ function phase_transition_weight(prev_phase, cur_phase, mode_local) local(w) (
   mode_local == 0 ? (
     cur_phase == phase_att ? w *= 1.08;
     cur_phase == phase_deb ? w *= 0.92;
-  ) : mode_local == 2 ? (
+  ) : mode_local >= 2 ? (
     cur_phase == phase_body ? w *= 1.18;
     cur_phase == phase_att ? w *= 0.72;
     cur_phase == phase_deb ? w *= 0.84;
@@ -1749,7 +2034,7 @@ function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms,
       dbg_w_total = weight;
     );
 
-    mode_local == 2 ? (
+    mode_local >= 2 ? (
       start = mem[base];
       dist = abs(start - cloud_center);
       cloud_w = 1 - min(1, dist / max(1, cloud_radius_frames));
@@ -1856,7 +2141,7 @@ function pick_candidate(mode_local) local(primary_phase, secondary_phase, total,
 );
 
 function refine_spawn_start(start, region_len, mode_local) local(search_back, search_fwd, lo, hi, fr, best_f, best_cost, vm, v0, vp, edge, future, cost, zc, best_anchor, best_onset, rise, pre_roll, sub_lo, sub_hi, future2, onset_cost) (
-  ((mode_local == 2) || (spawn_continuation > 0)) ? (
+  ((mode_local >= 2) || (spawn_continuation > 0)) ? (
     search_back = min(floor(ana_win * 0.18), 96);
     search_fwd  = min(max(floor(region_len * 0.18), floor(ana_win * 0.20)), 256);
 
@@ -2143,7 +2428,7 @@ function ola_window(age, env_len, mode_local, cand_phase) local(fade_ratio, fade
   support_fall > 0.010 ? fade_ratio *= 1.15;
 
   min_s = floor((mode_local == 0 ? 0.004 : mode_local == 1 ? 0.008 : 0.010) * srate);
-  max_s = floor((mode_local == 2 ? 0.060 : 0.040) * srate);
+  max_s = floor((mode_local >= 2 ? 0.060 : 0.040) * srate);
 
   fade_len = floor(env_len * fade_ratio);
   fade_len < min_s ? fade_len = min_s;
@@ -2192,7 +2477,7 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
     rndf = 1 + dur_var * randSym();
     rndf < 0.18 ? rndf = 0.18;
 
-    cents = global_pitch_cents + pitch_jit * randSym();
+    cents = global_pitch_cents + ((spawn_pitch_override_active > 0) ? spawn_pitch_override_cents : ((((eff_source_mode == 3) || (mode >= 3)) ? midi_note_pitch_cents : 0))) + pitch_jit * randSym();
     rate = tex_sr / srate * exp((cents / 1200) * ln2);
 
     auto_slice ? (
@@ -2212,7 +2497,7 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
 
     phase_len_mul =
       cand_phase == phase_att ? (mode_local == 0 ? 0.72 : 0.82) * profile_len_att :
-      cand_phase == phase_body ? (mode_local == 2 ? 1.18 : 1.05) * profile_len_body :
+      cand_phase == phase_body ? (mode_local >= 2 ? 1.18 : 1.05) * profile_len_body :
       cand_phase == phase_rel ? 0.90 * profile_len_rel :
       0.55 * profile_len_deb;
     req_src_len *= phase_len_mul;
@@ -2223,7 +2508,7 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
       0.78 * profile_len_deb
     );
 
-    mode_local == 2 ? (
+    mode_local >= 2 ? (
       gran_mult = 0.78 + 0.28 * rand01();
       req_src_len *= gran_mult;
       req_env_len *= gran_mult;
@@ -2245,7 +2530,7 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
     req_src_len > tex_frames - 2 ? req_src_len = tex_frames - 2;
 
     wanderf = pos_wander * pos_wander * tex_sr * 0.40 + pos_wander * req_src_len * 0.75;
-    mode_local == 2 ? (
+    mode_local >= 2 ? (
       start += randSym() * wanderf * 0.35;
     ) : (
       start += randSym() * wanderf;
@@ -2282,9 +2567,9 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
 
     trig_amp = 0.38 + 0.62 * pow(max(trig_v, 0.001), 0.60);
     strength = (1 - input_link) + input_link * trig_amp;
-    strength *= (0.15 + 0.85 * support_mix);
+    strength *= (0.15 + 0.85 * ((spawn_support_override_active > 0) ? spawn_support_override_val : support_mix));
     mode_local == 1 ? strength *= 0.92;
-    mode_local == 2 ? strength *= 0.80;
+    mode_local >= 2 ? strength *= 0.80;
 
     // Pre-budget highly salient grains so low Support behaves like backing texture, not foreground theft.
     local_support = support_budget + (1 - support_budget) * (1 - 0.75 * max(score, mem[base + 7]));
@@ -2323,8 +2608,8 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
     mem[vb + 6 ] = off;
     mem[vb + 7 ] = ci;
     mem[vb + 8 ] = mode_local;
-    mem[vb + 9 ] = support_sig;
-    mem[vb + 10] = sign;
+    mem[vb + 9 ] = (spawn_support_override_active > 0) ? spawn_support_override_val : support_sig;
+    mem[vb + 10] = spawn_note_tag;
     mem[vb + 11] = 0;
     mem[vb + 12] = req_env_len;
 
@@ -2335,7 +2620,7 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
     last_phase = cand_phase;
     last_family = phase_family;
 
-    mode_local == 2 ? (
+    mode_local >= 2 ? (
       cloud_center = cloud_center * 0.82 + start * 0.18 + randSym() * cloud_radius_frames * 0.05;
     ) : (
       cloud_center = start;
@@ -2351,10 +2636,46 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
 );
 
 
+// sample-local MIDI event latches: block MIDI parsing should not retrigger every sample.
+midi_evt_on_s = 0;
+midi_evt_off_s = 0;
+midi_evt_change_s = 0;
+midi_block_first_sample = 0;
+block_event_arm ? (
+  midi_evt_on_s = midi_block_evt_on;
+  midi_evt_off_s = midi_block_evt_off;
+  midi_evt_change_s = midi_block_evt_change;
+  midi_block_first_sample = 1;
+  block_event_arm = 0;
+);
+poly_synth = (mode >= 3) && (midi_mode > 0);
+
 // follower / detector
 in_abs = abs(spl0);
 abs(spl1) > in_abs ? in_abs = abs(spl1);
+sc_abs = abs(spl2);
+abs(spl3) > sc_abs ? sc_abs = abs(spl3);
+
+in_abs > auto_in_level ? auto_in_level = in_abs : auto_in_level = in_abs + auto_src_c * (auto_in_level - in_abs);
+sc_abs > auto_sc_level ? auto_sc_level = sc_abs : auto_sc_level = sc_abs + auto_src_c * (auto_sc_level - sc_abs);
+midi_lvl = midi_note_gate ? midi_note_vel_norm : 0;
+midi_lvl > auto_midi_level ? auto_midi_level = midi_lvl : auto_midi_level = midi_lvl + auto_src_c * (auto_midi_level - midi_lvl);
+
+auto_source_mode = 1;
+auto_midi_level > 0.020 ? (
+  auto_source_mode = 3;
+) : (auto_sc_level > 0.0012) && (auto_sc_level > auto_in_level * 1.12) ? (
+  auto_source_mode = 2;
+);
+
+eff_source_mode = source_mode == 0 ? auto_source_mode : source_mode;
 raw_in_abs = in_abs;
+eff_source_mode == 2 ? raw_in_abs = sc_abs;
+eff_source_mode == 3 ? raw_in_abs = midi_note_vel_norm;
+(mode >= 3) && midi_note_gate ? (
+  midi_force_raw = 0.22 + 0.78 * midi_note_vel_norm;
+  midi_force_raw > raw_in_abs ? raw_in_abs = midi_force_raw;
+);
 
 // detector extraction + first smoothing
 // treat the detector as a continuous confidence signal, not a binary gate.
@@ -2417,6 +2738,15 @@ support_drive = support_sig + support_floor * det_soft * (1 - support_sig);
 support_drive < 0 ? support_drive = 0;
 support_drive > 1 ? support_drive = 1;
 
+midi_gate_mode = (eff_source_mode == 3) || (mode >= 3);
+midi_note_gate ? (
+  midi_seed = 0.24 + 0.76 * midi_note_vel_norm;
+  midi_gate_mode ? (
+    support_sig < midi_seed * 0.68 ? support_sig = midi_seed * 0.68;
+    support_drive < midi_seed ? support_drive = midi_seed;
+  );
+);
+
 support_rise = support_drive - support_prev;
 support_rise < 0 ? support_rise = 0;
 support_fall = support_prev - support_drive;
@@ -2478,6 +2808,32 @@ gate > 0 ? (
   peak_v > trig_v ? trig_v = peak_v;
 );
 
+midi_gate_mode ? (
+  poly_synth ? (
+    midi_note_gate ? (
+      gate = 1;
+      gate_peak = max(gate_peak, max(support_drive, midi_note_vel_norm));
+      trig_v = max(cur_v, midi_note_vel_norm);
+      midi_evt_on_s ? note_on = 1;
+    ) : (gate > 0) ? (
+      gate = 0;
+      note_off = 1;
+    );
+  ) : (
+    midi_retrig = midi_evt_on_s || midi_evt_change_s;
+    midi_retrig ? (
+      gate = 1;
+      note_on = 1;
+      gate_peak = max(gate_peak, max(support_drive, midi_note_vel_norm));
+      trig_v = max(cur_v, midi_note_vel_norm);
+    );
+    (!midi_note_gate && (gate > 0)) ? (
+      gate = 0;
+      note_off = 1;
+    );
+  );
+);
+
 note_on ? (
   desired_phase = phase_att;
   desired_phase2 = phase_body;
@@ -2498,7 +2854,7 @@ note_on ? (
 mode == 0 ? (
   desired_phase == phase_deb ? desired_phase = phase_att;
   desired_phase2 = desired_phase == phase_att ? phase_body : phase_att;
-) : mode == 2 ? (
+) : mode >= 2 ? (
   desired_phase == phase_att ? desired_phase = phase_body;
   support_fall > 0.020 ? (
     desired_phase = phase_rel;
@@ -2600,23 +2956,31 @@ profile == 1 ? (
 
 cloud_radius_frames = max(128, floor((dur_ms * 0.001 * tex_sr) * (0.90 + pos_wander * 3.20) + tex_sr * 0.02));
 
-note_on && tex_loaded && analysis_ready ? (
-  mode == 0 ? (
+
+voice_mode = mode >= 3 ? 2 : mode;
+(!poly_synth) && note_on && tex_loaded && analysis_ready ? (
+  voice_mode == 0 ? (
+    spawn_pitch_override_active = 0;
+    spawn_support_override_active = 0;
+    spawn_note_tag = -1;
     spawn_voice(0);
   ) : (
     // First grain must land exactly when the source event clears the gate.
     // Do not wait for the random/granular scheduler to "wake up" later.
-    spawn_voice(mode);
+    spawn_pitch_override_active = 0;
+    spawn_support_override_active = 0;
+    spawn_note_tag = -1;
+    spawn_voice(voice_mode);
     texture_running = 1;
 
-    note_density_eff = density * max(0.18, support_drive);
+    note_density_eff = density * max(0.22, support_drive);
     note_base_interval = srate / max(0.12, note_density_eff);
-    spawn_countdown = max(1, floor(note_base_interval * (0.88 + 0.16 * rand01())));
+    spawn_countdown = max(1, floor(note_base_interval * (0.80 + 0.14 * rand01())));
   );
   trig_flash = 1;
 );
 
-note_off ? (
+(!poly_synth) && note_off ? (
   texture_running = 0;
 
   gate_rel_mode > 0 ? (
@@ -2637,7 +3001,80 @@ note_off ? (
   );
 );
 
-mode > 0 ? (
+poly_synth ? (
+  poly_density_div = sqrt(max(1, midi_poly_count));
+  poly_spawn_budget = 3;
+  midi_block_first_sample ? (
+    ni = 0;
+    loop(128,
+      mem[midi_evt_off_base + ni] > 0 ? (
+        gate_rel_mode > 0 ? (
+          gate_tail_s =
+            gate_rel_mode == 1 ? max(8, min(env_r_s_base, floor(0.035 * srate))) :
+            max(4, min(env_r_s_base, floor(0.012 * srate)));
+          vi = 0;
+          loop(max_voices,
+            vb = voice_base + vi * v_stride;
+            (mem[vb] > 0) && (floor(mem[vb + 10] + 0.5) == ni) ? (
+              agev = mem[vb + 11];
+              new_end = agev + gate_tail_s;
+              mem[vb + 12] > new_end ? mem[vb + 12] = new_end;
+            );
+            vi += 1;
+          );
+        );
+        mem[midi_note_countdown_base + ni] = 0;
+        mem[midi_evt_off_base + ni] = 0;
+      );
+      ni += 1;
+    );
+  );
+
+  poly_spawns = 0;
+  pi = 0;
+  loop(midi_poly_count,
+    notev = floor(mem[midi_active_list_base + pi]);
+    notev >= 0 ? (
+      note_vel = mem[midi_note_vel_base + notev];
+      note_sup = max(0.18 + 0.82 * note_vel, max(support_drive * (0.30 + 0.70 * note_vel), note_vel * 0.72));
+      note_density_eff = density * max(0.12, note_sup) / poly_density_div;
+      note_base_interval = srate / max(0.10, note_density_eff);
+
+      cd = mem[midi_note_countdown_base + notev];
+      wake_force > 0 ? (
+        wake_pull = 0.76 - 0.42 * wake_force;
+        wake_pull < 0.24 ? wake_pull = 0.24;
+        cd > floor(note_base_interval * wake_pull) ? cd = floor(note_base_interval * wake_pull);
+      );
+
+      note_on_vel = mem[midi_evt_on_base + notev];
+      note_on_vel > 0 ? (
+        cd = 0;
+      );
+
+      cd -= 1;
+      (cd <= 0) && (poly_spawns < poly_spawn_budget) ? (
+        spawn_pitch_override_active = 1;
+        spawn_pitch_override_cents = (notev - midi_root_note) * 100;
+        spawn_support_override_active = 1;
+        spawn_support_override_val = note_sup;
+        spawn_note_tag = notev;
+        spawn_voice(2);
+        spawn_pitch_override_active = 0;
+        spawn_support_override_active = 0;
+        spawn_note_tag = -1;
+        poly_spawns += 1;
+        trig_flash = 1;
+        jitter_amt = 0.14;
+        cd = max(1, floor(note_base_interval * (1 + randSym() * jitter_amt)));
+        mem[midi_evt_on_base + notev] = 0;
+      );
+      cd < 1 ? cd = 1;
+      mem[midi_note_countdown_base + notev] = cd;
+    );
+    pi += 1;
+  );
+) : mode > 0 ? (
   density_eff = density * max(0.05, support_drive);
   spawn_prob = 0.10 + 0.90 * support_drive;
 
@@ -2652,7 +3089,7 @@ mode > 0 ? (
   // Support should shape density/assertiveness, but gate permission should
   // decide whether new voices are allowed at all. Otherwise Dry+Wet feels like
   // the whole texture engine is shifted later by support attack/release lag.
-  texture_running = (gate > 0) && tex_loaded && analysis_ready;
+  texture_running = ((mode >= 3) ? midi_note_gate : (gate > 0)) && tex_loaded && analysis_ready;
   base_interval = srate / max(0.12, density_eff);
 
   // Minimum overlap-add guarantee: if density is sparse, do not allow the hop to
@@ -2660,7 +3097,7 @@ mode > 0 ? (
   // from sounding like isolated re-triggers.
   last_spawn_envlen > 0 ? (
     hop_ratio =
-      mode == 2 ? (
+      mode >= 2 ? (
         last_spawn_phase == phase_body ? 0.48 :
         last_spawn_phase == phase_rel ? 0.54 :
         last_spawn_phase == phase_att ? 0.62 :
@@ -2689,8 +3126,13 @@ mode > 0 ? (
     spawn_countdown <= 0 ? (
       spawn_gate = spawn_prob + 0.35 * wake_force;
       spawn_gate > 1 ? spawn_gate = 1;
-      ((wake_force > 0.72) || (rand01() <= spawn_gate)) ? spawn_voice(mode);
-      jitter_amt = mode == 2 ? 0.18 : 0.35;
+      ((wake_force > 0.72) || (rand01() <= spawn_gate)) ? (
+        spawn_pitch_override_active = 0;
+        spawn_support_override_active = 0;
+        spawn_note_tag = -1;
+        spawn_voice(voice_mode);
+      );
+      jitter_amt = voice_mode >= 2 ? 0.18 : 0.35;
       spawn_countdown = max(1, floor(base_interval * (1 + randSym() * jitter_amt)));
     );
   ) : (
@@ -2726,7 +3168,7 @@ active_ct = 0;
         envv *= ola_window(age, envlen, mem[vb + 8], cand_phase);
 
         src = mem[vb + 1] + srcpos + mem[vb + 6];
-        gate_rel_mode == 2 && (gate <= 0) ? (
+        gate_rel_mode >= 2 && (gate <= 0) ? (
           spawn_sup = mem[vb + 9];
           spawn_sup < 0.06 ? spawn_sup = 0.06;
           rel_ratio = support_sig / spawn_sup;
@@ -2740,7 +3182,8 @@ active_ct = 0;
         );
 
         gain = mem[vb + 5] * envv * motion_env;
-        pol = mem[vb + 10];
+        pol = 1;
+        note_tag = floor(mem[vb + 10] + 0.5);
 
         envv > 0 ? (
           tex_ch > 1 ? (
@@ -3195,6 +3638,260 @@ function curve_set(id, t) (
   id == 3 ? (slider21 = denorm_lin(t, -1, 1); sliderchange(slider21););
 );
 
+function cc_name(cc, outstr) (
+  cc < 0 ? strcpy(outstr, "Off") : sprintf(outstr, "CC %d", cc);
+);
+
+function cc_friendly_name(cc, outstr) (
+  cc < 0 ? strcpy(outstr, "Off") :
+  cc == 0 ? strcpy(outstr, "Bank Sel") :
+  cc == 1 ? strcpy(outstr, "Mod Wheel") :
+  cc == 2 ? strcpy(outstr, "Breath") :
+  cc == 4 ? strcpy(outstr, "Foot") :
+  cc == 5 ? strcpy(outstr, "Porta") :
+  cc == 7 ? strcpy(outstr, "Volume") :
+  cc == 10 ? strcpy(outstr, "Pan") :
+  cc == 11 ? strcpy(outstr, "Expression") :
+  cc == 12 ? strcpy(outstr, "FX1") :
+  cc == 13 ? strcpy(outstr, "FX2") :
+  cc == 16 ? strcpy(outstr, "Gen 1") :
+  cc == 17 ? strcpy(outstr, "Gen 2") :
+  cc == 18 ? strcpy(outstr, "Gen 3") :
+  cc == 19 ? strcpy(outstr, "Gen 4") :
+  cc == 20 ? strcpy(outstr, "Gen 5") :
+  cc == 21 ? strcpy(outstr, "Gen 6") :
+  cc == 22 ? strcpy(outstr, "Gen 7") :
+  cc == 23 ? strcpy(outstr, "Gen 8") :
+  cc == 64 ? strcpy(outstr, "Sustain") :
+  cc == 71 ? strcpy(outstr, "Reson") :
+  cc == 74 ? strcpy(outstr, "Bright") :
+  cc == 91 ? strcpy(outstr, "Reverb") :
+  cc == 93 ? strcpy(outstr, "Chorus") :
+  sprintf(outstr, "CC %d", cc);
+);
+
+function cc_common_num(idx) (
+  idx == 0 ? -1 :
+  idx == 1 ? 1 :
+  idx == 2 ? 7 :
+  idx == 3 ? 11 :
+  idx == 4 ? 74 :
+  idx == 5 ? 71 :
+  idx == 6 ? 64 :
+  idx == 7 ? 91 :
+  idx == 8 ? 93 :
+  idx == 9 ? 2 :
+  idx == 10 ? 4 :
+  idx == 11 ? 5 :
+  idx == 12 ? 10 :
+  idx == 13 ? 12 :
+  idx == 14 ? 13 :
+  idx == 15 ? 16 :
+  idx == 16 ? 17 :
+  idx == 17 ? 18 :
+  idx == 18 ? 19 :
+  idx == 19 ? 20 :
+  idx == 20 ? 21 :
+  idx == 21 ? 22 :
+  idx == 22 ? 23 : -2;
+);
+
+function begin_cc_assign(param) local(cur) (
+  cur = mem[cc_map_base + param];
+  cc_browser_param = param;
+  cc_browser_selected = -2;
+  cc_browser_hover = -1;
+  cc_browser_active = 1;
+  cc_browser_page = 0;
+  cur >= 0 ? (
+    cur < 32 ? cc_browser_page = 1 : cur < 64 ? cc_browser_page = 2 : cur < 96 ? cc_browser_page = 3 : cc_browser_page = 4;
+  );
+  ui_active_kind = 0;
+  ui_active_id = 0;
+  ui_button_click = 1;
+);
+
+function show_cc_pick(current) (
+  current;
+);
+
+function param_name(param, outstr) (
+  param == 1 ? strcpy(outstr, "Mix") :
+  param == 2 ? strcpy(outstr, "Gain") :
+  param == 3 ? strcpy(outstr, "Sensitivity") :
+  param == 4 ? strcpy(outstr, "Threshold") :
+  param == 5 ? strcpy(outstr, "Flow") :
+  param == 6 ? strcpy(outstr, "Focus") :
+  param == 7 ? strcpy(outstr, "Grounding") :
+  param == 8 ? strcpy(outstr, "Jitter") :
+  param == 9 ? strcpy(outstr, "Slice") :
+  param == 10 ? strcpy(outstr, "Playback Mode") :
+  param == 11 ? strcpy(outstr, "Output") :
+  param == 12 ? strcpy(outstr, "Auto Reload") :
+  param == 13 ? strcpy(outstr, "Reload") :
+  param == 14 ? strcpy(outstr, "Max Load") :
+  param == 15 ? strcpy(outstr, "Attack") :
+  param == 16 ? strcpy(outstr, "Decay") :
+  param == 17 ? strcpy(outstr, "Sustain") :
+  param == 18 ? strcpy(outstr, "Release") :
+  param == 19 ? strcpy(outstr, "Attack Curve") :
+  param == 20 ? strcpy(outstr, "Decay Curve") :
+  param == 21 ? strcpy(outstr, "Release Curve") :
+  param == 22 ? strcpy(outstr, "Follow Attack") :
+  param == 23 ? strcpy(outstr, "Follow Release") :
+  param == 24 ? strcpy(outstr, "Hysteresis") :
+  param == 25 ? strcpy(outstr, "Support") :
+  param == 26 ? strcpy(outstr, "Gate Release") :
+  param == 27 ? strcpy(outstr, "Auto Slice") :
+  param == 28 ? strcpy(outstr, "Global Pitch") :
+  param == 29 ? strcpy(outstr, "Profile") :
+  param == 30 ? strcpy(outstr, "Debug") :
+  param == 31 ? strcpy(outstr, "Env Mix") :
+  param == 32 ? strcpy(outstr, "Env Speed") :
+  param == 33 ? strcpy(outstr, "Slice Rand") :
+  param == 34 ? strcpy(outstr, "Support Rand") :
+  param == 35 ? strcpy(outstr, "Source") :
+  param == 36 ? strcpy(outstr, "MIDI Voice") : strcpy(outstr, "Param");
+);
+
+function param_default_text(param, outstr) (
+  param == 1 ? sprintf(outstr, "75%%") :
+  param == 2 ? sprintf(outstr, "0.0 dB") :
+  param == 3 ? sprintf(outstr, "1.25x") :
+  param == 4 ? sprintf(outstr, "0.08") :
+  param == 5 ? sprintf(outstr, "58%%") :
+  param == 6 ? sprintf(outstr, "72%%") :
+  param == 7 ? sprintf(outstr, "65%%") :
+  param == 8 ? sprintf(outstr, "22%%") :
+  param == 9 ? sprintf(outstr, "220 ms") :
+  param == 10 ? sprintf(outstr, "One-Shot") :
+  param == 11 ? sprintf(outstr, "Dry+Wet") :
+  param == 12 ? sprintf(outstr, "On") :
+  param == 13 ? sprintf(outstr, "Off") :
+  param == 14 ? sprintf(outstr, "30 s") :
+  param == 15 ? sprintf(outstr, "10 ms") :
+  param == 16 ? sprintf(outstr, "90 ms") :
+  param == 17 ? sprintf(outstr, "0.450") :
+  param == 18 ? sprintf(outstr, "180 ms") :
+  param == 19 ? sprintf(outstr, "0.00") :
+  param == 20 ? sprintf(outstr, "0.00") :
+  param == 21 ? sprintf(outstr, "0.00") :
+  param == 22 ? sprintf(outstr, "4 ms") :
+  param == 23 ? sprintf(outstr, "120 ms") :
+  param == 24 ? sprintf(outstr, "70%%") :
+  param == 25 ? sprintf(outstr, "100%%") :
+  param == 26 ? sprintf(outstr, "Free") :
+  param == 27 ? sprintf(outstr, "Fixed") :
+  param == 28 ? sprintf(outstr, "+0.00 st") :
+  param == 29 ? sprintf(outstr, "Neutral") :
+  param == 30 ? sprintf(outstr, "Off") :
+  param == 31 ? sprintf(outstr, "0%%") :
+  param == 32 ? sprintf(outstr, "180 ms") :
+  param == 33 ? sprintf(outstr, "0%%") :
+  param == 34 ? sprintf(outstr, "0%%") :
+  param == 35 ? sprintf(outstr, "Auto") :
+  param == 36 ? sprintf(outstr, "Mono") : sprintf(outstr, "-");
+);
+
+function param_apply_default(param) (
+  param == 1 ? (slider1 = 0.75; sliderchange(slider1);) :
+  param == 2 ? (slider2 = 0; sliderchange(slider2);) :
+  param == 3 ? (slider3 = 1.25; sliderchange(slider3);) :
+  param == 4 ? (slider4 = 0.08; sliderchange(slider4);) :
+  param == 5 ? (slider5 = 0.58; sliderchange(slider5);) :
+  param == 6 ? (slider6 = 0.72; sliderchange(slider6);) :
+  param == 7 ? (slider7 = 0.65; sliderchange(slider7);) :
+  param == 8 ? (slider8 = 0.22; sliderchange(slider8);) :
+  param == 9 ? (slider9 = 220; sliderchange(slider9);) :
+  param == 10 ? (slider10 = 0; sliderchange(slider10);) :
+  param == 11 ? (slider11 = 0; sliderchange(slider11);) :
+  param == 12 ? (slider12 = 1; sliderchange(slider12);) :
+  param == 13 ? (slider13 = 0; sliderchange(slider13);) :
+  param == 14 ? (slider14 = 30; sliderchange(slider14);) :
+  param == 15 ? (slider15 = 10; sliderchange(slider15);) :
+  param == 16 ? (slider16 = 90; sliderchange(slider16);) :
+  param == 17 ? (slider17 = 0.45; sliderchange(slider17);) :
+  param == 18 ? (slider18 = 180; sliderchange(slider18);) :
+  param == 19 ? (slider19 = 0; sliderchange(slider19);) :
+  param == 20 ? (slider20 = 0; sliderchange(slider20);) :
+  param == 21 ? (slider21 = 0; sliderchange(slider21);) :
+  param == 22 ? (slider22 = 4; sliderchange(slider22);) :
+  param == 23 ? (slider23 = 120; sliderchange(slider23);) :
+  param == 24 ? (slider24 = 0.70; sliderchange(slider24);) :
+  param == 25 ? (slider25 = 1; sliderchange(slider25);) :
+  param == 26 ? (slider26 = 0; sliderchange(slider26);) :
+  param == 27 ? (slider27 = 0; sliderchange(slider27);) :
+  param == 28 ? (slider28 = 0; sliderchange(slider28);) :
+  param == 29 ? (slider29 = 0; sliderchange(slider29);) :
+  param == 30 ? (slider30 = 0; sliderchange(slider30);) :
+  param == 31 ? (slider31 = 0; sliderchange(slider31);) :
+  param == 32 ? (slider32 = 180; sliderchange(slider32);) :
+  param == 33 ? (slider33 = 0; sliderchange(slider33);) :
+  param == 34 ? (slider34 = 0; sliderchange(slider34);) :
+  param == 35 ? (slider35 = 0; sliderchange(slider35);) :
+  param == 36 ? (slider36 = 0; sliderchange(slider36););
+);
+
+function open_param_menu1(p1) local(sel, ccv) (
+  param_name(p1, #p1n);
+  param_default_text(p1, #p1d);
+  cc_name(mem[cc_map_base + p1], #p1c);
+  strcpy(#menu_ctx, "");
+  sprintf(#menu_item, "%s: Set CC (%s)", #p1n, #p1c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set to Default (%s)", #p1n, #p1d); strcat(#menu_ctx, #menu_item);
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu_ctx);
+  sel == 1 ? (
+    begin_cc_assign(p1);
+  ) : sel == 2 ? (
+    param_apply_default(p1);
+    ui_add_undo = 1;
+    ui_button_click = 1;
+  );
+);
+
+function open_param_menu2(p1,p2) local(sel, ccv) (
+  param_name(p1, #p1n); param_default_text(p1, #p1d); cc_name(mem[cc_map_base + p1], #p1c);
+  param_name(p2, #p2n); param_default_text(p2, #p2d); cc_name(mem[cc_map_base + p2], #p2c);
+  strcpy(#menu_ctx, "");
+  sprintf(#menu_item, "%s: Set CC (%s)", #p1n, #p1c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set to Default (%s)", #p1n, #p1d); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set CC (%s)", #p2n, #p2c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set to Default (%s)", #p2n, #p2d); strcat(#menu_ctx, #menu_item);
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu_ctx);
+  sel == 1 ? (begin_cc_assign(p1);) :
+  sel == 2 ? (param_apply_default(p1); ui_add_undo = 1; ui_button_click = 1;) :
+  sel == 3 ? (begin_cc_assign(p2);) :
+  sel == 4 ? (param_apply_default(p2); ui_add_undo = 1; ui_button_click = 1;);
+);
+
+function open_param_menu4(p1,p2,p3,p4) local(sel, ccv) (
+  param_name(p1, #p1n); param_default_text(p1, #p1d); cc_name(mem[cc_map_base + p1], #p1c);
+  param_name(p2, #p2n); param_default_text(p2, #p2d); cc_name(mem[cc_map_base + p2], #p2c);
+  param_name(p3, #p3n); param_default_text(p3, #p3d); cc_name(mem[cc_map_base + p3], #p3c);
+  param_name(p4, #p4n); param_default_text(p4, #p4d); cc_name(mem[cc_map_base + p4], #p4c);
+  strcpy(#menu_ctx, "");
+  sprintf(#menu_item, "%s: Set CC (%s)", #p1n, #p1c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set to Default (%s)", #p1n, #p1d); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set CC (%s)", #p2n, #p2c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set to Default (%s)", #p2n, #p2d); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set CC (%s)", #p3n, #p3c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set to Default (%s)", #p3n, #p3d); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set CC (%s)", #p4n, #p4c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set to Default (%s)", #p4n, #p4d); strcat(#menu_ctx, #menu_item);
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu_ctx);
+  sel == 1 ? (begin_cc_assign(p1);) :
+  sel == 2 ? (param_apply_default(p1); ui_add_undo = 1; ui_button_click = 1;) :
+  sel == 3 ? (begin_cc_assign(p2);) :
+  sel == 4 ? (param_apply_default(p2); ui_add_undo = 1; ui_button_click = 1;) :
+  sel == 5 ? (ccv = show_cc_pick(mem[cc_map_base + p3]); mem[cc_map_base + p3] = ccv; ui_button_click = 1;) :
+  sel == 6 ? (param_apply_default(p3); ui_add_undo = 1; ui_button_click = 1;) :
+  sel == 7 ? (ccv = show_cc_pick(mem[cc_map_base + p4]); mem[cc_map_base + p4] = ccv; ui_button_click = 1;) :
+  sel == 8 ? (param_apply_default(p4); ui_add_undo = 1; ui_button_click = 1;);
+);
+
 gfx_getchar();
 
 mx = mouse_x;
@@ -3226,6 +3923,18 @@ release = !lmb && ui_lmb_last;
 ui_lmb_last = lmb > 0;
 ui_rmb_last = rmb > 0;
 ui_mmb_last = mmb > 0;
+
+modal_click = cc_browser_active > 0 ? click : 0;
+modal_rclick = cc_browser_active > 0 ? rclick : 0;
+modal_release = cc_browser_active > 0 ? release : 0;
+modal_wheel = cc_browser_active > 0 ? wheel : 0;
+modal_lmb = cc_browser_active > 0 ? lmb : 0;
+cc_browser_active > 0 ? (
+  click = 0; rclick = 0; release = 0; wheel = 0;
+  lmb = 0; rmb = 0; mmb = 0;
+  ui_active_kind = 0;
+  ui_active_id = 0;
+);
 
 fine_mult = (mouse_cap & 8) ? 0.35 : 1.0;
 coarse_mult = (mouse_cap & 4) ? 2.40 : 1.0;
@@ -3261,21 +3970,25 @@ side_h = env_h;
 
 btn_h = spx(24);
 btn_gap = spx(8);
-mode_w = spx(156);
-prof_w = spx(108);
-slice_w = spx(94);
-gate_w = spx(124);
-out_w = spx(108);
-util_w = spx(88);
-reload_w = spx(80);
+mode_w = spx(152);
+prof_w = spx(102);
+src_w = spx(88);
+midi_w = spx(86);
+slice_w = spx(90);
+gate_w = spx(116);
+out_w = spx(102);
+util_w = spx(84);
+reload_w = spx(76);
 
 reload_x = gfx_w - pad - reload_w;
 auto_x   = reload_x - util_w - btn_gap;
 out_x    = auto_x - out_w - btn_gap;
 gate_x   = out_x - gate_w - btn_gap;
 slice_x  = gate_x - slice_w - btn_gap;
-prof_x   = slice_x - prof_w - btn_gap;
-mode_x   = prof_x - mode_w - btn_gap;
+midi_x   = slice_x - midi_w - btn_gap;
+prof_x   = midi_x - prof_w - btn_gap;
+src_x    = prof_x - src_w - btn_gap;
+mode_x   = src_x - mode_w - btn_gap;
 top_y    = spx(10);
 
 gfx_r = 0.055; gfx_g = 0.060; gfx_b = 0.078; gfx_a = 1;
@@ -3311,19 +4024,24 @@ file_state == 0 ? (
 mode_label =
   slider10 < 0.5 ? "MODE: ONE-SHOT" :
   slider10 < 1.5 ? "MODE: RANDOM" :
-  "MODE: GRANULAR";
-mode_r = slider10 < 0.5 ? 0.20 : slider10 < 1.5 ? 0.72 : 0.52;
-mode_g = slider10 < 0.5 ? 0.66 : slider10 < 1.5 ? 0.50 : 0.34;
-mode_b = slider10 < 0.5 ? 0.92 : slider10 < 1.5 ? 0.22 : 0.84;
+  slider10 < 2.5 ? "MODE: GRANULAR" :
+  "MODE: GRAN SYNTH";
+mode_r = slider10 < 0.5 ? 0.20 : slider10 < 1.5 ? 0.72 : slider10 < 2.5 ? 0.52 : 0.82;
+mode_g = slider10 < 0.5 ? 0.66 : slider10 < 1.5 ? 0.50 : slider10 < 2.5 ? 0.34 : 0.34;
+mode_b = slider10 < 0.5 ? 0.92 : slider10 < 1.5 ? 0.22 : slider10 < 2.5 ? 0.84 : 0.96;
 hov = hit(mx, my, mode_x, top_y, mode_w, btn_h);
 click && hov ? (
   next_mode = floor(slider10 + 0.5) + 1;
-  next_mode > 2 ? next_mode = 0;
+  next_mode > 3 ? next_mode = 0;
   slider10 = next_mode;
   sliderchange(slider10);
   ui_active_kind = 0;
   ui_active_id = 0;
   ui_button_click = 1;
+);
+rclick && hov ? (
+  ui_active_kind = 0; ui_active_id = 0;
+  open_param_menu1(10);
 );
 draw_button(mode_x, top_y, mode_w, btn_h, 1, hov, mode_r, mode_g, mode_b, mode_label);
 
@@ -3343,13 +4061,42 @@ click && hov ? (
   ui_button_click = 1;
 );
 rclick && hov ? (
-  slider30 = slider30 > 0.5 ? 0 : 1;
-  sliderchange(slider30);
+  ui_active_kind = 0; ui_active_id = 0;
+  open_param_menu2(29, 30);
+);
+draw_button(prof_x, top_y, prof_w, btn_h, 1, hov, 0.46, 0.60, 0.94, #profbtn);
+
+source_mode == 0 ? sprintf(#srcbtn, "SRC: AUTO") : source_mode == 1 ? sprintf(#srcbtn, "SRC: INPUT") : source_mode == 2 ? sprintf(#srcbtn, "SRC: SC 3/4") : sprintf(#srcbtn, "SRC: MIDI");
+hov = hit(mx, my, src_x, top_y, src_w, btn_h);
+click && hov ? (
+  next_src = floor(slider35 + 0.5) + 1;
+  next_src > 3 ? next_src = 0;
+  slider35 = next_src;
+  sliderchange(slider35);
   ui_active_kind = 0;
   ui_active_id = 0;
   ui_button_click = 1;
 );
-draw_button(prof_x, top_y, prof_w, btn_h, 1, hov, 0.46, 0.60, 0.94, #profbtn);
+rclick && hov ? (
+  ui_active_kind = 0; ui_active_id = 0;
+  open_param_menu1(35);
+);
+draw_button(src_x, top_y, src_w, btn_h, 1, hov, 0.62, 0.54, 0.94, #srcbtn);
+
+slider36 > 0.5 ? sprintf(#midibtn, "MIDI: POLY") : sprintf(#midibtn, "MIDI: MONO");
+hov = hit(mx, my, midi_x, top_y, midi_w, btn_h);
+click && hov ? (
+  slider36 = slider36 > 0.5 ? 0 : 1;
+  sliderchange(slider36);
+  ui_active_kind = 0;
+  ui_active_id = 0;
+  ui_button_click = 1;
+);
+rclick && hov ? (
+  ui_active_kind = 0; ui_active_id = 0;
+  open_param_menu1(36);
+);
+draw_button(midi_x, top_y, midi_w, btn_h, slider36 > 0.5, hov, 0.72, 0.46, 0.90, #midibtn);
 
 hov = hit(mx, my, slice_x, top_y, slice_w, btn_h);
 click && hov ? (
@@ -3358,6 +4105,10 @@ click && hov ? (
   ui_active_kind = 0;
   ui_active_id = 0;
   ui_button_click = 1;
+);
+rclick && hov ? (
+  ui_active_kind = 0; ui_active_id = 0;
+  open_param_menu1(27);
 );
 slider27 > 0.5 ? sprintf(#btn, "AUTO SLICE") : sprintf(#btn, "FIXED SLICE");
 draw_button(slice_x, top_y, slice_w, btn_h, slider27 > 0.5, hov, 0.30, 0.60, 0.88, #btn);
@@ -3371,6 +4122,10 @@ click && hov ? (
   ui_active_kind = 0;
   ui_active_id = 0;
   ui_button_click = 1;
+);
+rclick && hov ? (
+  ui_active_kind = 0; ui_active_id = 0;
+  open_param_menu1(26);
 );
 gate_label =
   slider26 < 0.5 ? "REL: FREE" :
@@ -3386,6 +4141,10 @@ click && hov ? (
   ui_active_id = 0;
   ui_button_click = 1;
 );
+rclick && hov ? (
+  ui_active_kind = 0; ui_active_id = 0;
+  open_param_menu1(11);
+);
 slider11 > 0.5 ? sprintf(#btn, "WET ONLY") : sprintf(#btn, "DRY+WET");
 draw_button(out_x, top_y, out_w, btn_h, slider11 > 0.5, hov, 0.20, 0.48, 0.70, #btn);
 
@@ -3396,6 +4155,10 @@ click && hov ? (
   ui_active_kind = 0;
   ui_active_id = 0;
   ui_button_click = 1;
+);
+rclick && hov ? (
+  ui_active_kind = 0; ui_active_id = 0;
+  open_param_menu1(12);
 );
 slider12 > 0.5 ? sprintf(#btn, "AUTO ON") : sprintf(#btn, "AUTO OFF");
 draw_button(auto_x, top_y, util_w, btn_h, slider12 > 0.5, hov, 0.18, 0.62, 0.34, #btn);
@@ -3409,6 +4172,10 @@ click && hov ? (
   ui_active_id = 0;
   ui_button_click = 1;
 );
+rclick && hov ? (
+  ui_active_kind = 0; ui_active_id = 0;
+  open_param_menu2(13, 14);
+);
 sprintf(#btn, "RELOAD");
 draw_button(reload_x, top_y, reload_w, btn_h, 1, hov, 0.54, 0.32, 0.18, #btn);
 
@@ -3420,7 +4187,8 @@ profile == 3 ? sprintf(#profname, "Bed") :
 sprintf(#profname, "Friction");
 slider10 < 0.5 ? sprintf(#modebuf, "One-Shot") :
 slider10 < 1.5 ? sprintf(#modebuf, "Random") :
-sprintf(#modebuf, "Granular");
+slider10 < 2.5 ? sprintf(#modebuf, "Granular") :
+sprintf(#modebuf, "Gran Synth");
 desired_phase == phase_att ? sprintf(#wantph, "ATT") : desired_phase == phase_body ? sprintf(#wantph, "BODY") : desired_phase == phase_rel ? sprintf(#wantph, "REL") : sprintf(#wantph, "DEB");
 last_phase == phase_att ? sprintf(#lastph, "ATT") : last_phase == phase_body ? sprintf(#lastph, "BODY") : last_phase == phase_rel ? sprintf(#lastph, "REL") : last_phase == phase_deb ? sprintf(#lastph, "DEB") : sprintf(#lastph, "-");
 
@@ -3502,8 +4270,10 @@ gfx_line(wf_x, mid_y, wf_x + wf_w, mid_y, 1);
       gfx_r = 0.18; gfx_g = 0.62; gfx_b = 0.94;
     ) : last_spawn_mode == 1 ? (
       gfx_r = 0.88; gfx_g = 0.62; gfx_b = 0.18;
-    ) : (
+    ) : last_spawn_mode == 2 ? (
       gfx_r = 0.70; gfx_g = 0.42; gfx_b = 0.94;
+    ) : (
+      gfx_r = 0.92; gfx_g = 0.36; gfx_b = 0.96;
     );
     gfx_a = 0.08 + 0.12 * last_spawn_flash;
     gfx_rect(lx1, wf_y, max(1, lx2 - lx1), wf_h, 1);
@@ -3531,8 +4301,10 @@ gfx_line(wf_x, mid_y, wf_x + wf_w, mid_y, 1);
         gfx_r = 0.18; gfx_g = 0.70; gfx_b = 0.96;
       ) : vmode == 1 ? (
         gfx_r = 0.92; gfx_g = 0.66; gfx_b = 0.20;
-      ) : (
+      ) : vmode == 2 ? (
         gfx_r = 0.76; gfx_g = 0.52; gfx_b = 0.98;
+      ) : (
+        gfx_r = 0.94; gfx_g = 0.38; gfx_b = 0.98;
       );
       gfx_a = 0.06;
       gfx_rect(x1, wf_y, max(1, x2 - x1), wf_h, 1);
@@ -3818,7 +4590,8 @@ phase_disp = pow(slider8, 0.95) * 180;
 flow_density =
   slider10 < 0.5 ? 1 :
   slider10 < 1.5 ? (0.85 + slider5 * slider5 * 15.0) :
-  (3.0 + pow(slider5, 1.6) * 42.0);
+  slider10 < 2.5 ? (3.0 + pow(slider5, 1.6) * 42.0) :
+  (2.2 + pow(slider5, 1.55) * 28.0);
 wander_pct = (0.03 + slider5 * slider5 * 0.97) * 100;
 repeat_pct = (0.20 + 0.80 * slider6) * 100;
 
@@ -3832,7 +4605,8 @@ gfx_r = 0.74; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
 gfx_x = sx; gfx_y = sy + spx(22);
 slider10 < 0.5 ? sprintf(#modebuf, "One-Shot") :
 slider10 < 1.5 ? sprintf(#modebuf, "Random") :
-sprintf(#modebuf, "Granular");
+slider10 < 2.5 ? sprintf(#modebuf, "Granular") :
+sprintf(#modebuf, "Gran Synth");
 profile == 0 ? sprintf(#profname, "Neutral") :
 profile == 1 ? sprintf(#profname, "Cloth") :
 profile == 2 ? sprintf(#profname, "Wet") :
@@ -3840,7 +4614,9 @@ profile == 3 ? sprintf(#profname, "Bed") :
 sprintf(#profname, "Friction");
 desired_phase == phase_att ? sprintf(#wantph, "ATT") : desired_phase == phase_body ? sprintf(#wantph, "BODY") : desired_phase == phase_rel ? sprintf(#wantph, "REL") : sprintf(#wantph, "DEB");
 last_phase == phase_att ? sprintf(#lastph, "ATT") : last_phase == phase_body ? sprintf(#lastph, "BODY") : last_phase == phase_rel ? sprintf(#lastph, "REL") : last_phase == phase_deb ? sprintf(#lastph, "DEB") : sprintf(#lastph, "-");
-gfx_printf("%s/%s  •  active %d  •  %s→%s  •  fam %d→%d", #profname, #modebuf, voices_last_count, #lastph, #wantph, last_family, desired_family);
+source_mode == 0 ? (eff_source_mode == 1 ? sprintf(#srcshort, "A>IN") : eff_source_mode == 2 ? sprintf(#srcshort, "A>SC") : sprintf(#srcshort, "A>M")) : source_mode == 1 ? sprintf(#srcshort, "IN") : source_mode == 2 ? sprintf(#srcshort, "SC") : sprintf(#srcshort, "MIDI");
+midi_note_gate ? sprintf(#notebuf, "%d", midi_held_note) : sprintf(#notebuf, "-");
+gfx_printf("%s/%s/%s  •  n%s  •  active %d  •  %s→%s  •  fam %d→%d", #profname, #modebuf, #srcshort, #notebuf, voices_last_count, #lastph, #wantph, last_family, desired_family);
 
 gfx_x = sx; gfx_y = sy + spx(38);
 gfx_printf("Tune %+.2f st  •  Jit ±%.1fct / ±%.1fdB / ±%.0f°  •  S%d/M%d", slider28, pitch_disp, amp_disp, phase_disp, cand_short_live_count, cand_med_live_count);
@@ -3938,7 +4714,8 @@ loop(10,
 flow_density =
   slider10 < 0.5 ? 1 :
   slider10 < 1.5 ? (0.85 + slider5 * slider5 * 15.0) :
-  (3.0 + pow(slider5, 1.6) * 42.0);
+  slider10 < 2.5 ? (3.0 + pow(slider5, 1.6) * 42.0) :
+  (2.2 + pow(slider5, 1.55) * 28.0);
 wander_pct = (0.03 + slider5 * slider5 * 0.97) * 100;
 repeat_pct = (0.20 + 0.80 * slider6) * 100;
 pitch_disp = pow(slider8, 1.15) * 72;
@@ -3947,13 +4724,8 @@ phase_disp = pow(slider8, 0.95) * 180;
 
 // follow bar interaction
 rclick && hover_follow_bar ? (
-  slider4 = 0.08;
-  slider24 = 0.70;
-  sliderchange(slider4);
-  sliderchange(slider24);
-  ui_add_undo = 1;
-  ui_active_kind = 0;
-  ui_active_id = 0;
+  ui_active_kind = 0; ui_active_id = 0;
+  open_param_menu4(4, 24, 22, 23);
 );
 
 click && (ui_active_kind == 0) && hover_follow_bar ? (
@@ -3983,6 +4755,19 @@ wheel != 0 && hover_follow_bar ? (
 );
 
 // macro interaction
+rclick && (hover_macro > 0) ? (
+  ui_active_kind = 0; ui_active_id = 0;
+  hover_macro == 1 ? open_param_menu2(9, 33) :
+  hover_macro == 2 ? open_param_menu1(5) :
+  hover_macro == 3 ? open_param_menu1(6) :
+  hover_macro == 4 ? open_param_menu1(7) :
+  hover_macro == 5 ? open_param_menu1(8) :
+  hover_macro == 6 ? open_param_menu1(28) :
+  hover_macro == 7 ? open_param_menu1(3) :
+  hover_macro == 8 ? open_param_menu2(25, 34) :
+  hover_macro == 9 ? open_param_menu2(1, 2) :
+  hover_macro == 10 ? open_param_menu2(31, 32);
+);
 click && (ui_active_kind == 0) && (hover_macro > 0) ? (
   ui_active_kind = 1;
   ui_active_id = hover_macro;
@@ -4026,13 +4811,12 @@ wheel != 0 && (hover_macro == 10) && (hover_slope == 0) && (hover_knob == 0) && 
 
 // main knob interaction
 rclick && (hover_knob > 0) ? (
-  hover_knob == 1 ? (slider15 = def_a; sliderchange(slider15););
-  hover_knob == 2 ? (slider16 = def_d; sliderchange(slider16););
-  hover_knob == 3 ? (slider17 = def_s; sliderchange(slider17););
-  hover_knob == 4 ? (slider18 = def_r; sliderchange(slider18););
-  ui_add_undo = 1;
   ui_active_kind = 0;
   ui_active_id = 0;
+  hover_knob == 1 ? open_param_menu1(15) :
+  hover_knob == 2 ? open_param_menu1(16) :
+  hover_knob == 3 ? open_param_menu1(17) :
+  open_param_menu1(18);
 );
 
 click && (ui_active_kind == 0) && (hover_knob > 0) ? (
@@ -4060,12 +4844,11 @@ wheel != 0 && (hover_knob > 0) ? (
 
 // slope strip interaction
 rclick && (hover_slope > 0) ? (
-  hover_slope == 1 ? (slider19 = def_ac; sliderchange(slider19););
-  hover_slope == 2 ? (slider20 = def_dc; sliderchange(slider20););
-  hover_slope == 3 ? (slider21 = def_rc; sliderchange(slider21););
-  ui_add_undo = 1;
   ui_active_kind = 0;
   ui_active_id = 0;
+  hover_slope == 1 ? open_param_menu1(19) :
+  hover_slope == 2 ? open_param_menu1(20) :
+  open_param_menu1(21);
 );
 
 click && (ui_active_kind == 0) && (hover_slope > 0) ? (
@@ -4129,21 +4912,8 @@ click && (ui_active_kind == 0) && (hover_env_pt > 0) ? (
 );
 
 rclick && (hover_env_pt > 0) ? (
-  hover_env_pt == 1 ? (
-    slider15 = def_a;
-    sliderchange(slider15);
-  ) : hover_env_pt == 2 ? (
-    slider16 = def_d;
-    slider17 = def_s;
-    sliderchange(slider16);
-    sliderchange(slider17);
-  ) : hover_env_pt == 3 ? (
-    slider18 = def_r;
-    sliderchange(slider18);
-  );
-  ui_add_undo = 1;
-  ui_active_kind = 0;
-  ui_active_id = 0;
+  ui_active_kind = 0; ui_active_id = 0;
+  hover_env_pt == 1 ? open_param_menu1(15) : hover_env_pt == 2 ? open_param_menu2(16, 17) : open_param_menu1(18);
 );
 
 wheel != 0 && (hover_env_seg > 0) && (hover_slope == 0) ? (
@@ -4168,6 +4938,8 @@ sprintf(#tip2, "");
 
 hover_mode_btn  = hit(mx, my, mode_x, top_y, mode_w, btn_h);
 hover_prof_btn  = hit(mx, my, prof_x, top_y, prof_w, btn_h);
+hover_src_btn   = hit(mx, my, src_x, top_y, src_w, btn_h);
+hover_midi_btn  = hit(mx, my, midi_x, top_y, midi_w, btn_h);
 hover_slice_btn = hit(mx, my, slice_x, top_y, slice_w, btn_h);
 hover_gate_btn  = hit(mx, my, gate_x, top_y, gate_w, btn_h);
 hover_out_btn   = hit(mx, my, out_x, top_y, out_w, btn_h);
@@ -4271,15 +5043,27 @@ hover_env_pt == 1 ? (
     sprintf(#tip1, "One-Shot: one event per trigger, best for punctuated actions.");
   ) : slider10 < 1.5 ? (
     sprintf(#tip1, "Random: event-weighted wandering through the source.");
-  ) : (
+  ) : slider10 < 2.5 ? (
     sprintf(#tip1, "Granular: denser cloud around the current region with continuity bias.");
+  ) : (
+    sprintf(#tip1, "Gran Synth: MIDI-note-driven texture synth. Held notes force pitch and gate like a normal synth; source selection can still feed Input/SC support when wanted.");
   );
   sprintf(#tip2, "Current mode %s. Phase pools A%d B%d R%d D%d. OLA smoothing is active.", #modebuf, attack_pool_count, body_pool_count, release_pool_count, debris_pool_count);
 ) : hover_prof_btn ? (
   tip_on = 1;
   sprintf(#tip1, "Material profile changes phase priors, continuity, scale bias, and duration behavior.");
   debug_overlay ? sprintf(#dbgtxt, "on") : sprintf(#dbgtxt, "off");
-  sprintf(#tip2, "Current profile %s. Short/medium live S%d M%d. Profile changes preserve your current macros/envelope; RMB toggles debug overlay (%s).", #profname, cand_short_live_count, cand_med_live_count, #dbgtxt);
+  sprintf(#tip2, "Current profile %s. Short/medium live S%d M%d. Right-click opens CC/default menu; debug is mappable too (%s).", #profname, cand_short_live_count, cand_med_live_count, #dbgtxt);
+) : hover_src_btn ? (
+  tip_on = 1;
+  source_mode == 0 ? (
+    eff_source_mode == 1 ? sprintf(#tip1, "Auto source: currently listening to Input 1/2.") : eff_source_mode == 2 ? sprintf(#tip1, "Auto source: currently listening to Sidechain 3/4.") : sprintf(#tip1, "Auto source: currently driven by MIDI.");
+  ) : source_mode == 1 ? sprintf(#tip1, "Input source: detector listens to channels 1/2.") : source_mode == 2 ? sprintf(#tip1, "Sidechain source: detector listens to channels 3/4.") : sprintf(#tip1, "MIDI source: detector/support are driven by held MIDI notes.");
+  sprintf(#tip2, "Current selector %s. Auto prioritizes live MIDI, otherwise the stronger of Input or SC. In Gran Synth, MIDI always owns pitch and gate.", #srcbtn);
+) : hover_midi_btn ? (
+  tip_on = 1;
+  slider36 > 0.5 ? sprintf(#tip1, "MIDI Poly: up to %d recent held notes get their own granular schedulers.", midi_poly_max) : sprintf(#tip1, "MIDI Mono: last-note priority with the lightest CPU cost and tightest response.");
+  sprintf(#tip2, "Poly shares density across active notes, limits per-sample spawns, and tags note voices for clean release handling.");
 ) : hover_slice_btn ? (
   tip_on = 1;
   slider27 > 0.5 ? (
@@ -4354,5 +5138,124 @@ tip_on ? (
   gfx_drawstr(#tip2);
 );
 
+
+
+cc_browser_active ? (
+  param_name(cc_browser_param, #ccptitle);
+  cc_name(mem[cc_map_base + cc_browser_param], #cccur);
+
+  ov_pad = spx(18);
+  ov_x = pad + spx(10);
+  ov_y = pad + spx(18);
+  ov_w = gfx_w - ov_x * 2;
+  ov_h = gfx_h - ov_y * 2;
+  ov_tab_h = spx(26);
+  ov_tab_gap = spx(8);
+  ov_grid_y = ov_y + spx(74);
+  ov_cols = 4;
+  ov_rows = 8;
+  ov_cell_gap = spx(8);
+  ov_cell_w = floor((ov_w - ov_pad * 2 - ov_cell_gap * (ov_cols - 1)) / ov_cols);
+  ov_cell_h = spx(34);
+  ov_grid_x = ov_x + ov_pad;
+
+  gfx_r = 0.02; gfx_g = 0.03; gfx_b = 0.05; gfx_a = 0.90;
+  gfx_rect(0, 0, gfx_w, gfx_h, 1);
+
+  gfx_r = 0.05; gfx_g = 0.07; gfx_b = 0.10; gfx_a = 0.98;
+  gfx_rect(ov_x, ov_y, ov_w, ov_h, 1);
+  gfx_r = 0.18; gfx_g = 0.22; gfx_b = 0.30; gfx_a = 1;
+  gfx_roundrect(ov_x, ov_y, ov_w, ov_h, spx(8), 1);
+
+  gfx_setfont(1, "Verdana", ft_small);
+  gfx_r = 0.70; gfx_g = 0.76; gfx_b = 0.84; gfx_a = 1;
+  gfx_x = ov_x + ov_pad; gfx_y = ov_y + spx(12);
+  gfx_printf("CC ASSIGNMENT");
+
+  gfx_setfont(1, "Verdana", ft_panel);
+  gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.99; gfx_a = 1;
+  gfx_x = ov_x + ov_pad; gfx_y = ov_y + spx(32);
+  gfx_printf("Assign %s CC", #ccptitle);
+
+  gfx_setfont(1, "Verdana", ft_meta);
+  gfx_r = 0.58; gfx_g = 0.64; gfx_b = 0.72; gfx_a = 1;
+  gfx_x = ov_x + ov_pad; gfx_y = ov_y + spx(52);
+  gfx_printf("Pages kill the horrible endless CC scroll. Pick a common target or jump by 32.");
+  gfx_r = 0.16; gfx_g = 0.88; gfx_b = 0.94; gfx_a = 1;
+  gfx_measurestr(#cccur, ccw, cch);
+  gfx_x = ov_x + ov_w - ov_pad - ccw; gfx_y = ov_y + spx(16);
+  gfx_drawstr(#cccur);
+
+  tab_x = ov_x + ov_pad;
+  ti = 0;
+  loop(5,
+    ti == 0 ? strcpy(#tabtxt, "COMMON") : ti == 1 ? strcpy(#tabtxt, "0-31") : ti == 2 ? strcpy(#tabtxt, "32-63") : ti == 3 ? strcpy(#tabtxt, "64-95") : strcpy(#tabtxt, "96-127");
+    tab_w = floor((ov_w - ov_pad * 2 - ov_tab_gap * 4) / 5);
+    tab_hov = hit(mx, my, tab_x, ov_y + spx(62), tab_w, ov_tab_h);
+    modal_click && tab_hov ? cc_browser_page = ti;
+    draw_button(tab_x, ov_y + spx(62), tab_w, ov_tab_h, cc_browser_page == ti, tab_hov, 0.18, 0.56, 0.48, #tabtxt);
+    tab_x += tab_w + ov_tab_gap;
+    ti += 1;
+  );
+
+  cc_browser_selected = -2;
+  ci = 0;
+  loop(ov_rows,
+    cj = 0;
+    loop(ov_cols,
+      cell_idx = ci * ov_cols + cj;
+      cell_x = ov_grid_x + cj * (ov_cell_w + ov_cell_gap);
+      cell_y = ov_grid_y + ci * (ov_cell_h + ov_cell_gap);
+      ccnum = -2;
+      cc_browser_page == 0 ? (
+        ccnum = cc_common_num(cell_idx);
+      ) : (
+        ccnum = (cc_browser_page - 1) * 32 + cell_idx;
+        ccnum > 127 ? ccnum = -2;
+      );
+
+      ccnum != -2 ? (
+        cc_friendly_name(ccnum, #cclbl);
+        ccnum < 0 ? strcpy(#cctop, "OFF") : sprintf(#cctop, "CC %d", ccnum);
+        cell_hov = hit(mx, my, cell_x, cell_y, ov_cell_w, ov_cell_h);
+        is_sel = mem[cc_map_base + cc_browser_param] == ccnum;
+
+        gfx_r = is_sel ? 0.10 : 0.08; gfx_g = is_sel ? 0.36 : 0.11; gfx_b = is_sel ? 0.26 : 0.15; gfx_a = 1;
+        cell_hov ? (gfx_r += 0.05; gfx_g += 0.05; gfx_b += 0.05;);
+        gfx_rect(cell_x, cell_y, ov_cell_w, ov_cell_h, 1);
+        gfx_r = 0.18; gfx_g = 0.22; gfx_b = 0.30; gfx_a = 1;
+        gfx_roundrect(cell_x, cell_y, ov_cell_w, ov_cell_h, spx(6), 1);
+
+        gfx_setfont(1, "Verdana", ft_small);
+        gfx_r = 0.95; gfx_g = 0.97; gfx_b = 0.99; gfx_a = 1;
+        gfx_x = cell_x + spx(10); gfx_y = cell_y + spx(6);
+        gfx_drawstr(#cctop);
+
+        gfx_setfont(1, "Verdana", ft_tiny);
+        gfx_r = 0.62; gfx_g = 0.68; gfx_b = 0.76; gfx_a = 1;
+        gfx_x = cell_x + spx(10); gfx_y = cell_y + spx(20);
+        gfx_drawstr(#cclbl);
+
+        modal_click && cell_hov ? cc_browser_selected = ccnum;
+      );
+      cj += 1;
+    );
+    ci += 1;
+  );
+
+  close_x = ov_x + ov_w - ov_pad - spx(80);
+  close_y = ov_y + ov_h - ov_pad - spx(24);
+  close_hov = hit(mx, my, close_x, close_y, spx(80), spx(24));
+  draw_button(close_x, close_y, spx(80), spx(24), 0, close_hov, 0.40, 0.22, 0.22, "CLOSE");
+
+  (modal_click && close_hov) || modal_rclick ? (
+    cc_browser_active = 0;
+  );
+  cc_browser_selected != -2 ? (
+    mem[cc_map_base + cc_browser_param] = cc_browser_selected;
+    cc_browser_active = 0;
+    ui_button_click = 1;
+  );
+);
 ui_button_click ? ui_add_undo = 0;
 ui_add_undo ? sliderchange(-1);

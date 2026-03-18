@@ -13,8 +13,8 @@ slider4:7<1,30,1>-Min Point Distance (px)
 slider5:1<1,16,1>-MIDI Channel
 slider6:1<0,127,1>-CC X
 slider7:74<0,127,1>-CC Y
-slider8:11<0,127,1>-CC Speed
-slider9:1<0,1,1{Off,On}>-Emit Speed CC
+slider8:11<0,127,1>-CC Primary Motion
+slider9:1<0,1,1{Off,On}>-Emit Primary Motion CC
 slider10:1<0,1,1{Off,On}>-Emit While Drawing
 slider11:1<0,1,1{Off,On}>-Auto Play After Draw
 slider12:1<0,16,1>-CC Deadband
@@ -25,8 +25,17 @@ slider16:3<0,3,1{Fixed,X,Y,Speed}>-Note Velocity Source
 slider17:36<0,127,1>-Note Base
 slider18:127<0,127,1>-Note Span
 slider19:100<1,127,1>-Fixed Note Velocity
-slider20:0<0,8,1{Speed,Vel X,Vel Y,Acc X,Acc Y,Jerk X,Jerk Y,Err X,Err Y}>-Motion Lane Source
+slider20:0<0,8,1{Speed,Vel X,Vel Y,Acc X,Acc Y,Jerk X,Jerk Y,Err X,Err Y}>-Primary Motion Lane Source
 slider21:1.00<0.10,20,0.01:log!>-Motion Lane Sensitivity
+slider22:-1<-1,127,1>-Adv CC Speed
+slider23:-1<-1,127,1>-Adv CC Vel X
+slider24:-1<-1,127,1>-Adv CC Vel Y
+slider25:-1<-1,127,1>-Adv CC Acc X
+slider26:-1<-1,127,1>-Adv CC Acc Y
+slider27:-1<-1,127,1>-Adv CC Jerk X
+slider28:-1<-1,127,1>-Adv CC Jerk Y
+slider29:-1<-1,127,1>-Adv CC Err X
+slider30:-1<-1,127,1>-Adv CC Err Y
 
 @init
 ext_noinit = 1;
@@ -36,6 +45,7 @@ max_points = 1024;
 x_base = 0;
 y_base = x_base + max_points;
 t_base = y_base + max_points;
+adv_last_base = t_base + max_points;
 
 function clamp(v, lo, hi)
 (
@@ -70,6 +80,15 @@ function sync_params()
   note_fixed_vel = max(1, floor(slider19 + 0.5));
   motion_lane_src = floor(slider20 + 0.5);
   motion_sense = slider21;
+  adv_cc_speed_num = clamp(floor(slider22 + 0.5), -1, 127);
+  adv_cc_velx_num = clamp(floor(slider23 + 0.5), -1, 127);
+  adv_cc_vely_num = clamp(floor(slider24 + 0.5), -1, 127);
+  adv_cc_accx_num = clamp(floor(slider25 + 0.5), -1, 127);
+  adv_cc_accy_num = clamp(floor(slider26 + 0.5), -1, 127);
+  adv_cc_jerkx_num = clamp(floor(slider27 + 0.5), -1, 127);
+  adv_cc_jerky_num = clamp(floor(slider28 + 0.5), -1, 127);
+  adv_cc_errx_num = clamp(floor(slider29 + 0.5), -1, 127);
+  adv_cc_erry_num = clamp(floor(slider30 + 0.5), -1, 127);
 );
 
 function reset_motion_state()
@@ -82,6 +101,86 @@ function reset_motion_state()
   motion_value = 0;
   motion_signed = 0;
   view_motion = 0;
+);
+
+function reset_adv_cc_history()
+local(i)
+(
+  i = 0;
+  loop(9,
+    adv_last_base[i] = -1000;
+    i += 1;
+  );
+);
+
+function calc_motion_source(src)
+(
+  src == 0 ? (
+    motion_calc_value = clamp(sm_speed, 0, 1);
+    motion_calc_signed = 0;
+  ) : src == 1 ? (
+    motion_calc_value = clamp(cur_vx * motion_sense * 0.35, -1, 1);
+    motion_calc_signed = 1;
+  ) : src == 2 ? (
+    motion_calc_value = clamp(cur_vy * motion_sense * 0.35, -1, 1);
+    motion_calc_signed = 1;
+  ) : src == 3 ? (
+    motion_calc_value = clamp(cur_ax * motion_sense * 0.035, -1, 1);
+    motion_calc_signed = 1;
+  ) : src == 4 ? (
+    motion_calc_value = clamp(cur_ay * motion_sense * 0.035, -1, 1);
+    motion_calc_signed = 1;
+  ) : src == 5 ? (
+    motion_calc_value = clamp(cur_jx * motion_sense * 0.0035, -1, 1);
+    motion_calc_signed = 1;
+  ) : src == 6 ? (
+    motion_calc_value = clamp(cur_jy * motion_sense * 0.0035, -1, 1);
+    motion_calc_signed = 1;
+  ) : src == 7 ? (
+    motion_calc_value = clamp(last_errx * motion_sense * 18.0, -1, 1);
+    motion_calc_signed = 1;
+  ) : (
+    motion_calc_value = clamp(last_erry * motion_sense * 18.0, -1, 1);
+    motion_calc_signed = 1;
+  );
+);
+
+function advanced_motion_cc_for_src(src)
+(
+  src == 0 ? adv_cc_speed_num
+  : src == 1 ? adv_cc_velx_num
+  : src == 2 ? adv_cc_vely_num
+  : src == 3 ? adv_cc_accx_num
+  : src == 4 ? adv_cc_accy_num
+  : src == 5 ? adv_cc_jerkx_num
+  : src == 6 ? adv_cc_jerky_num
+  : src == 7 ? adv_cc_errx_num
+  : adv_cc_erry_num;
+);
+
+function advanced_motion_cc_set(src, cc)
+(
+  src == 0 ? ( slider22 = cc; sliderchange(slider22); );
+  src == 1 ? ( slider23 = cc; sliderchange(slider23); );
+  src == 2 ? ( slider24 = cc; sliderchange(slider24); );
+  src == 3 ? ( slider25 = cc; sliderchange(slider25); );
+  src == 4 ? ( slider26 = cc; sliderchange(slider26); );
+  src == 5 ? ( slider27 = cc; sliderchange(slider27); );
+  src == 6 ? ( slider28 = cc; sliderchange(slider28); );
+  src == 7 ? ( slider29 = cc; sliderchange(slider29); );
+  src == 8 ? ( slider30 = cc; sliderchange(slider30); );
+);
+
+function active_adv_motion_cc_count()
+local(i, count)
+(
+  count = 0;
+  i = 0;
+  loop(9,
+    advanced_motion_cc_for_src(i) >= 0 ? count += 1;
+    i += 1;
+  );
+  count;
 );
 
 function motion_src_is_bipolar(src)
@@ -167,7 +266,7 @@ local(i)
   cc_picker_open = 1;
   cc_picker_target = target_id;
   cc_picker_current = current_cc;
-  cc_picker_page = current_cc < 32 ? 1 : current_cc < 64 ? 2 : current_cc < 96 ? 3 : 4;
+  cc_picker_page = current_cc < 0 ? 0 : current_cc < 32 ? 1 : current_cc < 64 ? 2 : current_cc < 96 ? 3 : 4;
   i = 0;
   loop(24,
     common_cc_value(i) == current_cc ? (cc_picker_page = 0;);
@@ -177,12 +276,20 @@ local(i)
 
 function apply_cc_picker_value(cc)
 (
-  cc = clamp(floor(cc + 0.5), 0, 127);
+  cc = floor(cc + 0.5);
+  cc_picker_target < 10 ? (
+    cc = clamp(cc, 0, 127);
+  ) : (
+    cc = clamp(cc, -1, 127);
+  );
   cc_picker_target == 1 ? ( slider6 = cc; sliderchange(slider6); );
   cc_picker_target == 2 ? ( slider7 = cc; sliderchange(slider7); );
   cc_picker_target == 3 ? ( slider8 = cc; sliderchange(slider8); );
+  cc_picker_target >= 10 ? advanced_motion_cc_set(cc_picker_target - 10, cc);
   sync_params();
   cc_picker_current = cc;
+  last_sent_x = last_sent_y = last_sent_speed = -1000;
+  reset_adv_cc_history();
   cc_picker_open = 0;
 );
 
@@ -220,6 +327,7 @@ function reset_gesture()
   sm_x = sm_y = sm_speed = 0;
   view_x = view_y = view_speed = 0;
   last_sent_x = last_sent_y = last_sent_speed = -1000;
+  reset_adv_cc_history();
   force_all_notes_off();
 );
 
@@ -560,7 +668,7 @@ function set_tooltip_strings(id)
   strcpy(#tt_title, "");
   strcpy(#tt_body, "");
 
-  id == 1 ? ( strcpy(#tt_title, "Gesture Pad"); strcpy(#tt_body, "Draw here. X/Y become MIDI, and gesture speed can drive a third CC or note velocity."); );
+  id == 1 ? ( strcpy(#tt_title, "Gesture Pad"); strcpy(#tt_body, "Draw here. X/Y become MIDI, and gesture motion can drive the primary motion CC lane or note velocity."); );
   id == 2 ? ( strcpy(#tt_title, "Playback Mode"); strcpy(#tt_body, "Direct streams live draw data. Replay modes follow the captured path after you finish drawing."); );
   id == 3 ? ( strcpy(#tt_title, "Clear Gesture"); strcpy(#tt_body, "Erase the current path, stop playback, and release any held note."); );
   id == 4 ? ( strcpy(#tt_title, "Play / Stop"); strcpy(#tt_body, "Start or stop replaying the captured gesture in the selected playback mode."); );
@@ -569,12 +677,12 @@ function set_tooltip_strings(id)
   id == 7 ? ( strcpy(#tt_title, "Smoothing"); strcpy(#tt_body, "Higher values soften motion and reduce jitter before MIDI is emitted."); );
   id == 8 ? ( strcpy(#tt_title, "Emit While Drawing"); strcpy(#tt_body, "When enabled, MIDI streams live while the mouse button is held down."); );
   id == 9 ? ( strcpy(#tt_title, "Auto-Play After Draw"); strcpy(#tt_body, "Automatically starts gesture replay as soon as you release the mouse."); );
-  id == 10 ? ( strcpy(#tt_title, "Speed CC Active"); strcpy(#tt_body, "Enables the third CC lane driven by gesture speed."); );
+  id == 10 ? ( strcpy(#tt_title, "Primary Motion CC"); strcpy(#tt_body, "Enables the main motion-derived CC lane. Its source can be Speed, signed Velocity, signed Acceleration, signed Jerk, or signed prediction error."); );
   id == 11 ? ( strcpy(#tt_title, "Output Type"); strcpy(#tt_body, "Choose whether the pad emits CC, Notes, or both at once."); );
   id == 12 ? ( strcpy(#tt_title, "MIDI Channel"); strcpy(#tt_body, "All outgoing CC and Note messages use this MIDI channel."); );
   id == 13 ? ( strcpy(#tt_title, "X Axis Mapping"); strcpy(#tt_body, "Choose which MIDI CC receives horizontal position from the pad."); );
   id == 14 ? ( strcpy(#tt_title, "Y Axis Mapping"); strcpy(#tt_body, "Choose which MIDI CC receives vertical position from the pad."); );
-  id == 15 ? ( strcpy(#tt_title, "Motion Lane Mapping"); strcpy(#tt_body, "Choose which MIDI CC receives the third motion lane. In Advanced you can switch that lane between Speed, signed Velocity, signed Acceleration, signed Jerk, and signed prediction error."); );
+  id == 15 ? ( strcpy(#tt_title, "Primary Motion Mapping"); strcpy(#tt_body, "Choose which MIDI CC receives the main motion lane. The hidden Extra CC menu lets you assign additional motion sources to their own CCs at the same time."); );
   id == 16 ? ( strcpy(#tt_title, "Pitch Source"); strcpy(#tt_body, "Choose whether note pitch follows X, Y, or gesture speed."); );
   id == 17 ? ( strcpy(#tt_title, "Velocity Source"); strcpy(#tt_body, "Choose whether note velocity is fixed or follows X, Y, or speed."); );
   id == 18 ? ( strcpy(#tt_title, "Base Note"); strcpy(#tt_body, "The lowest note used by Note output."); );
@@ -583,10 +691,11 @@ function set_tooltip_strings(id)
   id == 21 ? ( strcpy(#tt_title, "Minimum Point Distance"); strcpy(#tt_body, "How far the mouse must move before a new point is stored in the gesture."); );
   id == 22 ? ( strcpy(#tt_title, "CC Deadband"); strcpy(#tt_body, "Minimum CC change before another MIDI value is sent."); );
   id == 23 ? ( strcpy(#tt_title, "Speed Sensitivity"); strcpy(#tt_body, "Scales how strongly cursor movement affects the unipolar speed lane."); );
-  id == 24 ? ( strcpy(#tt_title, "Motion Lane Source"); strcpy(#tt_body, "Advanced source for the third motion lane. Speed stays unipolar. Velocity, acceleration, jerk, and prediction error are bipolar and emit center-zero MIDI CC values."); );
-  id == 25 ? ( strcpy(#tt_title, "Motion Lane Sensitivity"); strcpy(#tt_body, "Gain for advanced signed motion features before they are encoded to MIDI CC. Higher values exaggerate bipolar movement and prediction error."); );
+  id == 24 ? ( strcpy(#tt_title, "Primary Motion Source"); strcpy(#tt_body, "Choose the source feeding the main motion CC lane. Speed stays unipolar. Velocity, acceleration, jerk, and prediction error are bipolar and emit center-zero MIDI CC values."); );
+  id == 25 ? ( strcpy(#tt_title, "Motion Lane Sensitivity"); strcpy(#tt_body, "Shared gain for the signed motion features before they are encoded to MIDI CC. Higher values exaggerate velocity, acceleration, jerk, and prediction error."); );
   id == 26 ? ( strcpy(#tt_title, "Full Range"); strcpy(#tt_body, "Map the note strip to the entire 0 to 127 MIDI note range."); );
   id == 27 ? ( strcpy(#tt_title, "Piano 88"); strcpy(#tt_body, "Jump to the classic 88-key piano range: A0 to C8."); );
+  id == 28 ? ( strcpy(#tt_title, "Extra Motion CCs"); strcpy(#tt_body, "Hidden routing panel for optional extra motion-derived CC outputs. Assign Speed, Velocity, Acceleration, Jerk, or prediction error lanes to separate CCs without cluttering the main UI."); );
 );
 
 function draw_tooltip_box()
@@ -614,25 +723,30 @@ local(tx, ty, tw, th)
 
 function cc_label(cc, outstr)
 (
-  sprintf(outstr, "CC %d", cc);
-  cc == 0 ? strcat(outstr, "  Bank Select");
-  cc == 1 ? strcat(outstr, "  Mod Wheel");
-  cc == 2 ? strcat(outstr, "  Breath");
-  cc == 4 ? strcat(outstr, "  Foot Ctrl");
-  cc == 5 ? strcat(outstr, "  Porta Time");
-  cc == 7 ? strcat(outstr, "  Volume");
-  cc == 10 ? strcat(outstr, "  Pan");
-  cc == 11 ? strcat(outstr, "  Expression");
-  cc == 64 ? strcat(outstr, "  Sustain");
-  cc == 71 ? strcat(outstr, "  Resonance");
-  cc == 74 ? strcat(outstr, "  Brightness");
-  cc == 91 ? strcat(outstr, "  Reverb");
-  cc == 93 ? strcat(outstr, "  Chorus");
+  cc < 0 ? (
+    strcpy(outstr, "Off");
+  ) : (
+    sprintf(outstr, "CC %d", cc);
+    cc == 0 ? strcat(outstr, "  Bank Select");
+    cc == 1 ? strcat(outstr, "  Mod Wheel");
+    cc == 2 ? strcat(outstr, "  Breath");
+    cc == 4 ? strcat(outstr, "  Foot Ctrl");
+    cc == 5 ? strcat(outstr, "  Porta Time");
+    cc == 7 ? strcat(outstr, "  Volume");
+    cc == 10 ? strcat(outstr, "  Pan");
+    cc == 11 ? strcat(outstr, "  Expression");
+    cc == 64 ? strcat(outstr, "  Sustain");
+    cc == 71 ? strcat(outstr, "  Resonance");
+    cc == 74 ? strcat(outstr, "  Brightness");
+    cc == 91 ? strcat(outstr, "  Reverb");
+    cc == 93 ? strcat(outstr, "  Chorus");
+  );
 );
 
 function cc_short_name(cc, outstr)
 (
   strcpy(outstr, "");
+  cc < 0 ? strcpy(outstr, "Off");
   cc == 0 ? strcpy(outstr, "Bank Sel");
   cc == 1 ? strcpy(outstr, "Mod");
   cc == 2 ? strcpy(outstr, "Breath");
@@ -782,6 +896,7 @@ local(sel, i)
 
 sync_params();
 reset_gesture();
+reset_adv_cc_history();
 held_note = -1;
 held_vel = 0;
 note_flush = 0;
@@ -793,6 +908,7 @@ cc_picker_open = 0;
 cc_picker_target = 0;
 cc_picker_current = 0;
 cc_picker_page = 1;
+motion_menu_open = 0;
 
 @slider
 sync_params();
@@ -890,34 +1006,9 @@ out_active ? (
   last_errx = sm_x - pred_x;
   last_erry = sm_y - pred_y;
 
-  motion_lane_src == 0 ? (
-    motion_value = clamp(sm_speed, 0, 1);
-    motion_signed = 0;
-  ) : motion_lane_src == 1 ? (
-    motion_value = clamp(cur_vx * motion_sense * 0.35, -1, 1);
-    motion_signed = 1;
-  ) : motion_lane_src == 2 ? (
-    motion_value = clamp(cur_vy * motion_sense * 0.35, -1, 1);
-    motion_signed = 1;
-  ) : motion_lane_src == 3 ? (
-    motion_value = clamp(cur_ax * motion_sense * 0.035, -1, 1);
-    motion_signed = 1;
-  ) : motion_lane_src == 4 ? (
-    motion_value = clamp(cur_ay * motion_sense * 0.035, -1, 1);
-    motion_signed = 1;
-  ) : motion_lane_src == 5 ? (
-    motion_value = clamp(cur_jx * motion_sense * 0.0035, -1, 1);
-    motion_signed = 1;
-  ) : motion_lane_src == 6 ? (
-    motion_value = clamp(cur_jy * motion_sense * 0.0035, -1, 1);
-    motion_signed = 1;
-  ) : motion_lane_src == 7 ? (
-    motion_value = clamp(last_errx * motion_sense * 18.0, -1, 1);
-    motion_signed = 1;
-  ) : (
-    motion_value = clamp(last_erry * motion_sense * 18.0, -1, 1);
-    motion_signed = 1;
-  );
+  calc_motion_source(motion_lane_src);
+  motion_value = motion_calc_value;
+  motion_signed = motion_calc_signed;
 
   prev_motion_x = sm_x;
   prev_motion_y = sm_y;
@@ -955,6 +1046,22 @@ send_notes = (output_mode == 1) || (output_mode == 2);
       midisend(0, $xB0 | midi_chan, cc_speed_num, ccs_val);
       last_sent_speed = ccs_val;
     );
+  );
+
+  adv_idx = 0;
+  loop(9,
+    adv_cc_num = advanced_motion_cc_for_src(adv_idx);
+    adv_cc_num >= 0 ? (
+      calc_motion_source(adv_idx);
+      adv_cc_val = motion_calc_signed ? clamp(floor(64 + motion_calc_value * 63 + 0.5), 0, 127) : floor(clamp(motion_calc_value, 0, 1) * 127 + 0.5);
+      (abs(adv_cc_val - adv_last_base[adv_idx]) >= cc_deadband) || (adv_last_base[adv_idx] < 0) ? (
+        midisend(0, $xB0 | midi_chan, adv_cc_num, adv_cc_val);
+        adv_last_base[adv_idx] = adv_cc_val;
+      );
+    ) : (
+      adv_last_base[adv_idx] = -1000;
+    );
+    adv_idx += 1;
   );
 );
 
@@ -999,7 +1106,7 @@ gfx_getchar();
 
 sync_params();
 
-ui_input_lock = cc_picker_open;
+ui_input_lock = cc_picker_open || motion_menu_open;
 tooltip_id = 0;
 ui_scale = clamp(min(gfx_w / 1220, gfx_h / 760), 0.90, 1.25);
 margin = floor(18 * ui_scale + 0.5);
@@ -1208,7 +1315,7 @@ gfx_setfont(2, "Arial", 10, 'b');
 gfx_set(0.92, 0.97, 1.00, 1);
 gfx_x = tog_x + 8; gfx_y = card2_y + 22; gfx_drawstr("Emit while drawing", 4, tog_x + tog_w - 8, card2_y + 40);
 gfx_x = tog_x + 8; gfx_y = card2_y + 44; gfx_drawstr("Auto-play after draw", 4, tog_x + tog_w - 8, card2_y + 62);
-gfx_x = tog_x + 8; gfx_y = card2_y + 66; gfx_drawstr("Speed CC active", 4, tog_x + tog_w - 8, card2_y + 84);
+gfx_x = tog_x + 8; gfx_y = card2_y + 66; gfx_drawstr("Primary motion CC", 4, tog_x + tog_w - 8, card2_y + 84);
 
 // Card 3: mapping
 output_mode_label(output_mode, #out_disp);
@@ -1253,7 +1360,7 @@ stack_panel ? (
 
   cc_label(cc_speed_num, #ccs_disp);
   row5_y = row4_y + drop_h + 6;
-  sprintf(#motion_map_label, emit_speed ? "%s → CC" : "%s → CC (currently off)", #motion_disp);
+  sprintf(#motion_map_label, emit_speed ? "Primary %s → CC" : "Primary %s → CC (off)", #motion_disp);
   maps_click = ui_dropdown(124, panel_x + 12, row5_y, panel_w - 24, drop_h, #motion_map_label, #ccs_disp, emit_speed);
   tooltip_region(15, panel_x + 12, row5_y, panel_w - 24, drop_h);
   maps_click ? (
@@ -1284,7 +1391,7 @@ stack_panel ? (
   );
 
   cc_label(cc_speed_num, #ccs_disp);
-  sprintf(#motion_map_label, emit_speed ? "%s → CC" : "%s → CC (currently off)", #motion_disp);
+  sprintf(#motion_map_label, emit_speed ? "Primary %s → CC" : "Primary %s → CC (off)", #motion_disp);
   maps_click = ui_dropdown(124, panel_x + 24 + half_w, row3_y, half_w, drop_h, #motion_map_label, #ccs_disp, emit_speed);
   tooltip_region(15, panel_x + 24 + half_w, row3_y, half_w, drop_h);
   maps_click ? (
@@ -1414,6 +1521,21 @@ gfx_x = panel_x + 12; gfx_y = row_y; gfx_drawstr("Fixed Vel"); gfx_x = panel_x +
 
 // Card 5: advanced + status
 gfx_setfont(2, "Arial", 10, 'b'); gfx_set(0.88, 0.94, 1.00, 1);
+adv_route_count = active_adv_motion_cc_count();
+extra_btn_w = floor(122 * ui_scale + 0.5);
+extra_btn_x = panel_x + panel_w - extra_btn_w - 12;
+extra_btn_y = card5_y + 6;
+extra_click = ui_button(145, extra_btn_x, extra_btn_y, extra_btn_w, 18, adv_route_count > 0);
+tooltip_region(28, extra_btn_x, extra_btn_y, extra_btn_w, 18);
+extra_click ? (
+  motion_menu_open = motion_menu_open ? 0 : 1;
+  drag_item = 0;
+);
+adv_route_count > 0 ? sprintf(#extra_btn_disp, "EXTRA CCs (%d)", adv_route_count) : strcpy(#extra_btn_disp, "EXTRA CCs");
+gfx_setfont(2, "Arial", 10, 'b');
+gfx_set(0.92, 0.97, 1.00, 1);
+gfx_x = extra_btn_x; gfx_y = extra_btn_y; gfx_drawstr(#extra_btn_disp, 1|4|256, extra_btn_x + extra_btn_w, extra_btn_y + 18);
+
 stack_panel ? (
   adv_y = card5_y + 24;
   new_v = ui_hslider(140, slider_x, adv_y + 6, slider_w, slider_h, slider4, 1, 30, 1);
@@ -1435,7 +1557,7 @@ stack_panel ? (
 
   adv_y += row_gap;
   motion_src_menu_label(motion_lane_src, #motion_src_disp);
-  motion_click = ui_dropdown(143, panel_x + 12, adv_y - 2, panel_w - 24, drop_h, "Motion Lane Source", #motion_src_disp, motion_lane_src > 0);
+  motion_click = ui_dropdown(143, panel_x + 12, adv_y - 2, panel_w - 24, drop_h, "Primary Motion Source", #motion_src_disp, motion_lane_src > 0);
   tooltip_region(24, panel_x + 12, adv_y - 2, panel_w - 24, drop_h);
   motion_click ? (
     slider20 = show_motion_src_menu(motion_lane_src);
@@ -1482,7 +1604,7 @@ stack_panel ? (
 
   adv_y += row_gap + 2;
   motion_src_menu_label(motion_lane_src, #motion_src_disp);
-  motion_click = ui_dropdown(143, left_x, adv_y, adv_w, drop_h - 6, "Motion Lane Source", #motion_src_disp, motion_lane_src > 0);
+  motion_click = ui_dropdown(143, left_x, adv_y, adv_w, drop_h - 6, "Primary Motion Source", #motion_src_disp, motion_lane_src > 0);
   tooltip_region(24, left_x, adv_y, adv_w, drop_h - 6);
   motion_click ? (
     slider20 = show_motion_src_menu(motion_lane_src);
@@ -1516,8 +1638,75 @@ point_count <= 0 ? (
 ) : (
   held_note >= 0 ? note_name(held_note, #held_note_disp) : strcpy(#held_note_disp, "--");
   motion_src_label(motion_lane_src, #motion_status_disp);
-  sprintf(#txt, "%d pts  |  %.2fs  |  Ch %d  |  Motion: %s  |  Held note: %s", point_count, gesture_duration, midi_chan + 1, #motion_status_disp, #held_note_disp);
+  sprintf(#txt, "%d pts  |  %.2fs  |  Ch %d  |  Motion: %s  |  Extra: %d  |  Held: %s", point_count, gesture_duration, midi_chan + 1, #motion_status_disp, adv_route_count, #held_note_disp);
   gfx_x = panel_x + 12; gfx_y = status_y; gfx_drawstr(#txt);
+);
+
+// Extra motion CC overlay
+motion_menu_open ? (
+  motion_w = clamp(gfx_w * 0.54, 500, 680);
+  motion_h = clamp(gfx_h * 0.66, 412, 500);
+  motion_x = floor((gfx_w - motion_w) * 0.5);
+  motion_y = floor((gfx_h - motion_h) * 0.5);
+  gfx_set(0.00, 0.00, 0.00, 0.52);
+  gfx_rect(0, 0, gfx_w, gfx_h);
+  draw_card(motion_x, motion_y, motion_w, motion_h, "EXTRA MOTION CC ROUTING");
+
+  gfx_setfont(3, "Arial", 13, 'b');
+  gfx_set(0.92, 0.97, 1.00, 1);
+  gfx_x = motion_x + 14; gfx_y = motion_y + 28; gfx_drawstr("Assign optional extra CC outputs for any motion source.");
+  gfx_setfont(2, "Arial", 10, 0);
+  gfx_set(0.60, 0.68, 0.78, 1);
+  gfx_x = motion_x + 14; gfx_y = motion_y + 46; gfx_drawstr("Off disables a route. Signed lanes emit center-zero MIDI. These routes run alongside the primary motion lane.");
+  gfx_x = motion_x + 14; gfx_y = motion_y + 60; gfx_drawstr("They also share Deadband, Smoothing, and Motion Sense with the main engine.");
+
+  route_btn_w = 168;
+  route_btn_x = motion_x + motion_w - route_btn_w - 14;
+  route_y0 = motion_y + 84;
+  route_h = 24;
+  route_gap = 8;
+  route_idx = 0;
+  loop(9,
+    row_y = route_y0 + route_idx * (route_h + route_gap);
+    motion_src_label(route_idx, #route_disp);
+    route_cc = advanced_motion_cc_for_src(route_idx);
+    route_cc < 0 ? (
+      strcpy(#route_cc_disp, "OFF");
+    ) : (
+      sprintf(#route_cc_disp, "CC %d", route_cc);
+      cc_short_name(route_cc, #route_cc_name);
+      strlen(#route_cc_name) > 0 ? (
+        strcat(#route_cc_disp, "  ");
+        strcat(#route_cc_disp, #route_cc_name);
+      );
+    );
+
+    gfx_setfont(2, "Arial", 10, 'b');
+    gfx_set(0.90, 0.96, 1.00, 1);
+    gfx_x = motion_x + 14; gfx_y = row_y + 2; gfx_drawstr(#route_disp);
+
+    motion_src_is_bipolar(route_idx) ? strcpy(#route_type_disp, "Signed 64=center") : strcpy(#route_type_disp, "Unipolar 0-127");
+    gfx_setfont(2, "Arial", 9, 0);
+    gfx_set(0.58, 0.68, 0.78, 1);
+    gfx_x = motion_x + 14; gfx_y = row_y + 14; gfx_drawstr(#route_type_disp);
+
+    route_click = ui_button(950 + route_idx, route_btn_x, row_y, route_btn_w, route_h, route_cc >= 0);
+    gfx_setfont(2, "Arial", 10, 'b');
+    gfx_set(0.92, 0.97, 1.00, 1);
+    gfx_x = route_btn_x; gfx_y = row_y; gfx_drawstr(#route_cc_disp, 1|4|256, route_btn_x + route_btn_w, row_y + route_h);
+    route_click ? (
+      open_cc_picker(10 + route_idx, route_cc);
+      motion_menu_open = 0;
+    );
+
+    route_idx += 1;
+  );
+
+  motion_close_click = ui_button(980, motion_x + motion_w - 92, motion_y + motion_h - 30, 76, 20, 0);
+  gfx_setfont(2, "Arial", 10, 'b');
+  gfx_set(0.92, 0.97, 1.00, 1);
+  gfx_x = motion_x + motion_w - 92; gfx_y = motion_y + motion_h - 30; gfx_drawstr("CLOSE", 1|4|256, motion_x + motion_w - 16, motion_y + motion_h - 10);
+  motion_close_click ? (motion_menu_open = 0;);
 );
 
 // Custom CC picker overlay
@@ -1532,14 +1721,22 @@ cc_picker_open ? (
 
   cc_picker_target == 1 ? strcpy(#picker_title, "Assign X Axis CC");
   cc_picker_target == 2 ? strcpy(#picker_title, "Assign Y Axis CC");
-  cc_picker_target == 3 ? strcpy(#picker_title, "Assign Motion Lane CC");
+  cc_picker_target == 3 ? strcpy(#picker_title, "Assign Primary Motion CC");
+  cc_picker_target >= 10 ? (
+    motion_src_menu_label(cc_picker_target - 10, #picker_motion_src);
+    sprintf(#picker_title, "Assign %s CC", #picker_motion_src);
+  );
   cc_label(cc_picker_current, #picker_cc_disp);
   gfx_setfont(3, "Arial", 13, 'b');
   gfx_set(0.92, 0.97, 1.00, 1);
   gfx_x = picker_x + 14; gfx_y = picker_y + 28; gfx_drawstr(#picker_title);
   gfx_setfont(2, "Arial", 10, 0);
   gfx_set(0.60, 0.68, 0.78, 1);
-  gfx_x = picker_x + 14; gfx_y = picker_y + 46; gfx_drawstr("Pages kill the horrible endless CC scroll. Pick a common target or jump by 32.");
+  cc_picker_target >= 10 ? (
+    gfx_x = picker_x + 14; gfx_y = picker_y + 46; gfx_drawstr("Pages kill the horrible endless CC scroll. Pick a common target or jump by 32, or turn the route off.");
+  ) : (
+    gfx_x = picker_x + 14; gfx_y = picker_y + 46; gfx_drawstr("Pages kill the horrible endless CC scroll. Pick a common target or jump by 32.");
+  );
   gfx_setfont(3, "Arial", 14, 'b');
   gfx_set(0.18, 0.82, 0.70, 1);
   gfx_x = picker_x + picker_w - 220; gfx_y = picker_y + 28; gfx_drawstr(#picker_cc_disp, 2|256, picker_x + picker_w - 16, picker_y + 46);
@@ -1561,6 +1758,14 @@ cc_picker_open ? (
     gfx_x = tab_x; gfx_y = tab_y; gfx_drawstr(#page_disp, 1|4|256, tab_x + tab_w - 4, tab_y + 20);
     tab_click ? (cc_picker_page = page_id;);
     page_id += 1;
+  );
+
+  cc_picker_target >= 10 ? (
+    off_click = ui_button(911, picker_x + 16, picker_y + picker_h - 30, 86, 20, cc_picker_current < 0);
+    gfx_setfont(2, "Arial", 10, 'b');
+    gfx_set(0.92, 0.97, 1.00, 1);
+    gfx_x = picker_x + 16; gfx_y = picker_y + picker_h - 30; gfx_drawstr("TURN OFF", 1|4|256, picker_x + 102, picker_y + picker_h - 10);
+    off_click ? apply_cc_picker_value(-1);
   );
 
   close_click = ui_button(910, picker_x + picker_w - 92, picker_y + picker_h - 30, 76, 20, 0);
@@ -1626,7 +1831,7 @@ drawing && mouse_released ? (
   end_draw();
 );
 
-!cc_picker_open ? draw_tooltip_box();
+(!cc_picker_open && !motion_menu_open) ? draw_tooltip_box();
 
 @serialize
 0;

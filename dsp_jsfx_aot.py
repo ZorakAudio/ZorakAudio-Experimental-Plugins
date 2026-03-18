@@ -1204,6 +1204,9 @@ class LLVMModuleEmitter:
         # 15: double currentSampleRate
         # 16: i32 pendingNoteCleanup
         # 17..22: optional diagnostics counters
+        # 23: i64 pendingSliderChangeMask
+        # 24: i64 pendingSliderAutomateMask
+        # 25: i64 pendingSliderAutomateEndMask
         self.var_cap = max(1, (max(sym.vars.values()) + 1) if sym.vars else 1)
         self.midi_event_ty = ir.LiteralStructType([self.i32, self.i32, self.i32, self.i32])
 
@@ -1231,6 +1234,9 @@ class LLVMModuleEmitter:
             self.i32,
             self.i32,
             self.i32,
+            self.i64,
+            self.i64,
+            self.i64,
         ])
         self.state_ptr = self.state_ty.as_pointer()
 
@@ -1252,6 +1258,16 @@ class LLVMModuleEmitter:
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double]),
             name="jsfx_midisend"
+        )
+        self.fn_sliderchange = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double]),
+            name="jsfx_sliderchange"
+        )
+        self.fn_slider_automate = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
+            name="jsfx_slider_automate"
         )
 
         self._intrinsics: Dict[str, ir.Function] = {}
@@ -1464,6 +1480,19 @@ class LLVMModuleEmitter:
         if isinstance(node, Index):
             return self._mem_elem_ptr(builder, st, node.base, node.index)
         raise ValueError("midirecv output arguments must be assignable variables or mem[] slots")
+
+    def _emit_slider_mask_arg(self, builder: ir.IRBuilder, st: ir.Value, arg: Node) -> ir.Value:
+        # JSFX sliderchange()/slider_automate() accept either a direct slider
+        # variable reference (slider1, slider2, ...) or an integer bitmask.
+        # In AOT we can resolve direct slider variables at compile time and pass
+        # numeric bitmask expressions through verbatim.
+        if isinstance(arg, Var):
+            m = re.fullmatch(r"slider([1-9][0-9]?)", arg.name)
+            if m is not None:
+                idx1 = int(m.group(1))
+                if 1 <= idx1 <= 64:
+                    return self._const_f64(float(1 << (idx1 - 1)))
+        return self.emit_expr(builder, st, arg)
 
     
     def declare_user_functions(self, fn_defs: Dict[str, FunctionDef]) -> None:
@@ -2027,27 +2056,27 @@ class LLVMModuleEmitter:
                 return self._const_f64(0.0)
 
             if fn == "sliderchange":
-                # JSFX builtin: sliderchange(slider_index_or_var)
+                # JSFX builtin: sliderchange(slider_mask_or_var)
                 #
-                # In REAPER this marks sliders as changed / triggers @slider handling.
-                # For DSP-only AOT compilation we don't emulate UI-side slider change
-                # notifications; treat as a no-op.
+                # Record internally-driven slider changes so the host bridge can
+                # re-run @slider and mirror the new value back to the host param.
                 if len(n.args) != 1:
                     raise ValueError("sliderchange expects 1 arg")
-                _ = self.emit_expr(builder, st, n.args[0])
-                return self._const_f64(0.0)
+                mask = self._emit_slider_mask_arg(builder, st, n.args[0])
+                ret = builder.call(self.fn_sliderchange, [st, mask])
+                return self._to_f64(builder, ret)
 
             if fn == "slider_automate":
-                # JSFX builtin: slider_automate(slider_index_or_var, [is_end_gesture])
+                # JSFX builtin: slider_automate(slider_mask_or_var, [is_end_gesture])
                 #
-                # This is a host automation hint (begin/end gestures). For DSP-only
-                # AOT compilation, treat as a no-op.
+                # Record host automation gesture hints for internally-driven slider
+                # changes so the runtime can begin/end touch gestures correctly.
                 if len(n.args) not in (1, 2):
                     raise ValueError("slider_automate expects 1 or 2 args")
-                _ = self.emit_expr(builder, st, n.args[0])
-                if len(n.args) == 2:
-                    _ = self.emit_expr(builder, st, n.args[1])
-                return self._const_f64(0.0)
+                mask = self._emit_slider_mask_arg(builder, st, n.args[0])
+                end_touch = self.emit_expr(builder, st, n.args[1]) if len(n.args) == 2 else self._const_f64(0.0)
+                ret = builder.call(self.fn_slider_automate, [st, mask, end_touch])
+                return self._to_f64(builder, ret)
 
             if fn == "memset":
                 # JSFX builtin: memset(dest, value, length)
@@ -2350,17 +2379,36 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     # Call block 
     builder.call(fn_block, [st])
 
+    # If @block changed sliders internally (via sliderchange/slider_automate),
+    # run @slider once before @sample so derived state tracks the new values
+    # within the same host block.
+    fld_sliderchg = ir.Constant(self.i32, 23)
+    fld_sliderauto = ir.Constant(self.i32, 24)
+    fld_sliderautoend = ir.Constant(self.i32, 25)
+    sliderchg_ptr = builder.gep(st, [z, fld_sliderchg], inbounds=True)
+    sliderauto_ptr = builder.gep(st, [z, fld_sliderauto], inbounds=True)
+    sliderautoend_ptr = builder.gep(st, [z, fld_sliderautoend], inbounds=True)
+    sliderchg_mask = builder.load(sliderchg_ptr)
+    sliderauto_mask = builder.load(sliderauto_ptr)
+    sliderautoend_mask = builder.load(sliderautoend_ptr)
+    any_sliderchg = builder.or_(sliderchg_mask, sliderauto_mask)
+    any_sliderchg = builder.or_(any_sliderchg, sliderautoend_mask)
+    have_sliderchg = builder.icmp_signed("!=", any_sliderchg, ir.Constant(self.i64, 0))
+    with builder.if_then(have_sliderchg):
+        builder.call(fn_slider, [st])
+
     # Outer sample loop blocks
     samp_cond = fn.append_basic_block("samp_cond")
     samp_body = fn.append_basic_block("samp_body")
     samp_end  = fn.append_basic_block("samp_end")
 
+    pre_loop_bb = builder.block
     builder.branch(samp_cond)
 
     # samp_cond
     builder.position_at_end(samp_cond)
     i_phi = builder.phi(self.i32, name="i")
-    i_phi.add_incoming(zero_i32, entry)
+    i_phi.add_incoming(zero_i32, pre_loop_bb)
     in_range = builder.icmp_signed("<", i_phi, nSamp)
     builder.cbranch(in_range, samp_body, samp_end)
 
@@ -2573,6 +2621,9 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    int32_t midiOutCountLastBlock;")
     lines.append("    int32_t midiInPeak;")
     lines.append("    int32_t midiOutPeak;")
+    lines.append("    int64_t pendingSliderChangeMask;")
+    lines.append("    int64_t pendingSliderAutomateMask;")
+    lines.append("    int64_t pendingSliderAutomateEndMask;")
     lines.append("} DSPJSFX_State;")
     lines.append("")
 
@@ -2614,6 +2665,8 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("void jsfx_ensure_mem(DSPJSFX_State* st, int64_t needed);")
     lines.append("int jsfx_midirecv(DSPJSFX_State* st, double* offset, double* msg1, double* msg2, double* msg3);")
     lines.append("int jsfx_midisend(DSPJSFX_State* st, double offset, double msg1, double msg2, double msg3);")
+    lines.append("int jsfx_sliderchange(DSPJSFX_State* st, double sliderMask);")
+    lines.append("int jsfx_slider_automate(DSPJSFX_State* st, double sliderMask, double endTouch);")
     lines.append("")
     lines.append("#ifdef __cplusplus")
     lines.append("}")
