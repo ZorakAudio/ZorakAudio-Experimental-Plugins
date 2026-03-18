@@ -2304,7 +2304,7 @@ class LLVMModuleEmitter:
 
 
 
-def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn_block: ir.Function, fn_sample: ir.Function) -> ir.Function:
+def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn_block: ir.Function, fn_sample: ir.Function, has_sample_work: bool) -> ir.Function:
     """
     Emits:
         void jsfx_process_block(State* st,
@@ -2396,6 +2396,13 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     have_sliderchg = builder.icmp_signed("!=", any_sliderchg, ir.Constant(self.i64, 0))
     with builder.if_then(have_sliderchg):
         builder.call(fn_slider, [st])
+
+    # Fast path: if the script has no top-level @sample work, stop after @block.
+    # This matters a lot for MIDI-only/controller JSFX where the generic runtime
+    # would otherwise pay a per-sample loop cost for no useful work.
+    if not has_sample_work:
+        builder.ret_void()
+        return fn
 
     # Outer sample loop blocks
     samp_cond = fn.append_basic_block("samp_cond")
@@ -2523,7 +2530,8 @@ def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
 
     emitter.emit_user_functions()
 
-    emit_process_block_fn(emitter, fn_init, fn_slider, fn_block, fn_sample)
+    has_sample_work = len(programs["sample"]) > 0
+    emit_process_block_fn(emitter, fn_init, fn_slider, fn_block, fn_sample, has_sample_work)
 
     plugin_kind = "audio_effect"
     if midi_caps["uses_midi"]:
@@ -2544,6 +2552,7 @@ def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
         "pin_hints": pin_hints,
         "midi": midi_caps,
         "plugin_kind": plugin_kind,
+        "has_sample_section": has_sample_work,
     }
     return emitter.module, meta
 
@@ -2583,6 +2592,7 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append(f"#define DSPJSFX_USES_MIDI {uses_midi}")
     lines.append(f"#define DSPJSFX_ACCEPTS_MIDI_INPUT {accepts_midi_input}")
     lines.append(f"#define DSPJSFX_PRODUCES_MIDI_OUTPUT {produces_midi_output}")
+    lines.append(f"#define DSPJSFX_HAS_SAMPLE_SECTION {1 if meta.get('has_sample_section', False) else 0}")
     lines.append(f'#define DSPJSFX_PLUGIN_KIND "{_c_escape(plugin_kind)}"')
     lines.append("")
     lines.append("")

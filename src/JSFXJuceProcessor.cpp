@@ -1022,6 +1022,22 @@ static void stableSortMidiEventsByOffset (DSPJSFX_MidiEvent* events, int count) 
     }
 }
 
+static inline bool midiEventsAlreadySortedByOffset (const DSPJSFX_MidiEvent* events, int count) noexcept
+{
+    if (events == nullptr || count <= 1)
+        return true;
+
+    int prev = events[0].sampleOffset;
+    for (int i = 1; i < count; ++i)
+    {
+        const int cur = events[i].sampleOffset;
+        if (cur < prev)
+            return false;
+        prev = cur;
+    }
+    return true;
+}
+
 static void appendAllNotesOffMessages (juce::MidiBuffer& midiMessages, int sampleOffset)
 {
     const int clampedOffset = juce::jmax (0, sampleOffset);
@@ -1614,6 +1630,12 @@ public:
 
         const int numSamples = buffer.getNumSamples();
 
+#if (DSPJSFX_NUM_INPUTS == 0) && (DSPJSFX_NUM_OUTPUTS == 0)
+        // Pure MIDI/controller JSFX do not need any audio-bus plumbing.
+        // Skipping the generic bus/scratch setup removes a large fixed cost when
+        // hosts drive the plugin with tiny MIDI-only blocks.
+        const int numCh = 0;
+#else
         juce::AudioBuffer<float> mainIn;
         juce::AudioBuffer<float> mainOut;
         juce::AudioBuffer<float> scIn;
@@ -1682,6 +1704,7 @@ public:
             outPtrs[(size_t) ch] = mainOut.getWritePointer (ch);
         for (int ch = totalOutCh; ch < numCh; ++ch)
             outPtrs[(size_t) ch] = scratchOut.getWritePointer (ch - totalOutCh);
+#endif
 
         promotePendingFileLoads();
 
@@ -2960,14 +2983,23 @@ private:
         if (st.midiOut == nullptr || st.midiOutCount <= 0)
             return;
 
-        stableSortMidiEventsByOffset (st.midiOut, st.midiOutCount);
+        if (! midiEventsAlreadySortedByOffset (st.midiOut, st.midiOutCount))
+            stableSortMidiEventsByOffset (st.midiOut, st.midiOutCount);
+
         st.midiOutCountLastBlock = st.midiOutCount;
         st.midiOutPeak = juce::jmax (st.midiOutPeak, st.midiOutCount);
+
+        midiMessages.ensureSize ((size_t) juce::jmax (128, st.midiOutCount * 8));
 
         for (int i = 0; i < st.midiOutCount; ++i)
         {
             const auto& ev = st.midiOut[i];
-            midiMessages.addEvent (makeJsfxMidiMessage (ev.msg1, ev.msg2, ev.msg3), ev.sampleOffset);
+            const juce::uint8 raw[3] = {
+                (juce::uint8) (ev.msg1 & 0xff),
+                (juce::uint8) (ev.msg2 & 0xff),
+                (juce::uint8) (ev.msg3 & 0xff)
+            };
+            midiMessages.addEvent (raw, jsfxShortMessageLength (ev.msg1), ev.sampleOffset);
         }
 
         st.midiOutCount = 0;
