@@ -68,6 +68,10 @@
   #define DSPJSFX_PLUGIN_KIND "audio_effect"
 #endif
 
+#ifndef DSPJSFX_HAS_SAMPLE_SECTION
+  #define DSPJSFX_HAS_SAMPLE_SECTION 1
+#endif
+
 // ---- You must provide this symbol for AOT (declared in the generated header)
 extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed);
 
@@ -1115,6 +1119,8 @@ extern "C" int jsfx_slider_automate (DSPJSFX_State* st, double sliderMask, doubl
     return 1;
 }
 
+#include "JSFXCorrectnessCheck.h"
+
 class JSFXJuceEditor;
 
 
@@ -1445,6 +1451,10 @@ public:
         initStateMemory();
         gFileOwner[&st] = this;
         initGfxSnapshots();
+
+       #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+        correctnessRuntime = std::make_unique<jsfx_correctness::Runtime> (this);
+       #endif
     }
 
     ~JSFXJuceProcessor() override
@@ -1558,6 +1568,19 @@ public:
         }
 
         jsfx_slider (&st);
+
+       #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+        if (correctnessRuntime != nullptr)
+        {
+            correctnessRuntime->setRingSampleRate (sampleRate);
+            correctnessRuntime->resetAndPrime (st);
+            if (correctnessRuntime->isReady())
+            {
+                correctnessRuntime->compareSliderAndVarState (st, -1, -1, "@prepare");
+                correctnessRuntime->compareMemoryPages (st, -1, -1, "@prepare");
+            }
+        }
+       #endif
 
         // Seed an initial GFX snapshot so the UI has something immediately,
         // even before any editor is opened.
@@ -1709,8 +1732,25 @@ public:
         promotePendingFileLoads();
 
         const bool slidersChanged = pushParamsToStateSliders();
+
+       #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+        auto* shadow = (correctnessRuntime != nullptr && correctnessRuntime->isReady())
+                         ? correctnessRuntime->getShadow()
+                         : nullptr;
+       #endif
+
         if (slidersChanged)
+        {
             jsfx_slider (&st);
+
+           #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+            if (shadow != nullptr)
+            {
+                shadow->syncHostSlidersAndAliases (st.sliders, 64);
+                shadow->runSlider();
+            }
+           #endif
+        }
 
         applyQueuedGfxStateWrites();
 
@@ -1724,6 +1764,89 @@ public:
             appendAllNotesOffMessages (midiMessages, 0);
             st.pendingNoteCleanup = 0;
         }
+
+       #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+        if (shadow != nullptr)
+        {
+            const int blockIndex = correctnessRuntime->getNextBlockIndex();
+            shadow->beginBlock (st, numSamples);
+
+            if (slidersChanged)
+                correctnessRuntime->compareSliderAndVarState (st, blockIndex, -1, "pre-@block/@slider");
+
+            correctnessRuntime->compareSliderAndVarState (st, blockIndex, -1, "pre-@block");
+
+            st.samplesblock = (double) numSamples;
+            st.currentBlockSize = numSamples;
+            st.currentSampleRate = st.srate;
+
+           #if DSPJSFX_HAS_SAMPLE_SECTION
+            jsfx_block (&st);
+           #else
+            jsfx_process_block (&st,
+                                numCh > 0 ? inPtrs.data() : nullptr,
+                                numCh > 0 ? outPtrs.data() : nullptr,
+                                numCh,
+                                numSamples);
+           #endif
+            shadow->runBlock();
+
+            correctnessRuntime->compareSliderAndVarState (st, blockIndex, -1, "@block");
+
+            const auto shadowMasksAfterBlock = shadow->peekPendingSliderMasks();
+            correctnessRuntime->comparePendingSliderMasks (st, shadowMasksAfterBlock, blockIndex, "@block");
+
+            const bool compiledNeedsSlider = (st.pendingSliderChangeMask != 0 || st.pendingSliderAutomateMask != 0 || st.pendingSliderAutomateEndMask != 0);
+            const bool shadowNeedsSlider = (shadowMasksAfterBlock.change != 0 || shadowMasksAfterBlock.automate != 0 || shadowMasksAfterBlock.automateEnd != 0);
+
+            if (compiledNeedsSlider)
+                jsfx_slider (&st);
+            if (shadowNeedsSlider)
+                shadow->runSlider();
+
+            if (compiledNeedsSlider || shadowNeedsSlider)
+            {
+                correctnessRuntime->compareSliderAndVarState (st, blockIndex, -1, "@slider");
+                correctnessRuntime->comparePendingSliderMasks (st, shadow->peekPendingSliderMasks(), blockIndex, "@slider");
+            }
+
+           #if DSPJSFX_HAS_SAMPLE_SECTION
+            if (numSamples > 0)
+            {
+                const float* const* inData = numCh > 0 ? inPtrs.data() : nullptr;
+                for (int sample = 0; sample < numSamples; ++sample)
+                {
+                    for (int ch = 0; ch < numCh; ++ch)
+                        st.spl[ch] = (double) (inData != nullptr && inData[ch] != nullptr ? inData[ch][sample] : 0.0f);
+
+                    shadow->setInputSample (inData, numCh, sample);
+
+                    jsfx_sample (&st);
+                    shadow->runSample();
+
+                    correctnessRuntime->observeAudioFrame (st, blockIndex, sample, numCh);
+                    correctnessRuntime->compareSliderAndVarState (st, blockIndex, sample, "@sample");
+
+                    for (int ch = 0; ch < numCh; ++ch)
+                    {
+                        const double compiled = (double) (float) st.spl[ch];
+                        const double ref = shadow->getOutputValue (ch);
+                        outPtrs[(size_t) ch][sample] = correctnessRuntime->selectOutputSample (ch, compiled, ref, numCh);
+                    }
+                }
+            }
+           #endif
+
+            correctnessRuntime->compareMidiOutput (st, blockIndex, "post-block");
+            correctnessRuntime->compareMemoryPages (st, blockIndex, numSamples > 0 ? (numSamples - 1) : -1, "post-block");
+            correctnessRuntime->noteBlockCompared();
+
+            consumeDspSliderChanges();
+            flushMidiFromState (midiMessages);
+            updateGfxSnapshotIfNeeded (numSamples);
+            return;
+        }
+       #endif
 
         jsfx_process_block (&st, numCh > 0 ? inPtrs.data() : nullptr, numCh > 0 ? outPtrs.data() : nullptr, numCh, numSamples);
         consumeDspSliderChanges();
@@ -1798,6 +1921,67 @@ public:
 
     juce::AudioProcessorValueTreeState& getApvts() noexcept { return *apvts; }
     const juce::AudioProcessorValueTreeState& getApvts() const noexcept { return *apvts; }
+
+   #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+    bool hasCorrectnessMonitor() const noexcept { return correctnessRuntime != nullptr; }
+    juce::String getCorrectnessStatusText() const
+    {
+        return correctnessRuntime != nullptr ? correctnessRuntime->getStatusText()
+                                           : juce::String ("Correctness monitor unavailable");
+    }
+    int getCorrectnessMonitorMode() const noexcept
+    {
+        return correctnessRuntime != nullptr ? (int) correctnessRuntime->getMonitorMode()
+                                            : (int) jsfx_correctness::MonitorAudioMode::Compiled;
+    }
+    void setCorrectnessMonitorMode (int mode) noexcept
+    {
+        if (correctnessRuntime == nullptr)
+            return;
+
+        switch (mode)
+        {
+            case (int) jsfx_correctness::MonitorAudioMode::Shadow:
+                correctnessRuntime->setMonitorMode (jsfx_correctness::MonitorAudioMode::Shadow);
+                break;
+            case (int) jsfx_correctness::MonitorAudioMode::Delta:
+                correctnessRuntime->setMonitorMode (jsfx_correctness::MonitorAudioMode::Delta);
+                break;
+            case (int) jsfx_correctness::MonitorAudioMode::Compiled:
+            default:
+                correctnessRuntime->setMonitorMode (jsfx_correctness::MonitorAudioMode::Compiled);
+                break;
+        }
+    }
+    bool getCorrectnessFreezeOnFirstMismatch() const noexcept
+    {
+        return correctnessRuntime != nullptr ? correctnessRuntime->getFreezeOnFirstMismatch() : true;
+    }
+    void setCorrectnessFreezeOnFirstMismatch (bool shouldFreeze) noexcept
+    {
+        if (correctnessRuntime != nullptr)
+            correctnessRuntime->setFreezeOnFirstMismatch (shouldFreeze);
+    }
+    void clearCorrectnessMonitor()
+    {
+        if (correctnessRuntime != nullptr)
+            correctnessRuntime->clear();
+    }
+    juce::String exportCorrectnessArtifacts() const
+    {
+        return correctnessRuntime != nullptr ? correctnessRuntime->exportBundle (getName())
+                                            : juce::String ("Correctness monitor unavailable");
+    }
+   #else
+    bool hasCorrectnessMonitor() const noexcept { return false; }
+    juce::String getCorrectnessStatusText() const { return "Correctness monitor disabled at build time"; }
+    int getCorrectnessMonitorMode() const noexcept { return 0; }
+    void setCorrectnessMonitorMode (int) noexcept {}
+    bool getCorrectnessFreezeOnFirstMismatch() const noexcept { return true; }
+    void setCorrectnessFreezeOnFirstMismatch (bool) noexcept {}
+    void clearCorrectnessMonitor() {}
+    juce::String exportCorrectnessArtifacts() const { return "Correctness monitor disabled at build time"; }
+   #endif
 
     juce::String getFileSlotDisplayText (int slotIndex0) const
     {
@@ -3093,14 +3277,26 @@ private:
             if (w.kind == GfxStateWrite::Kind::Var)
             {
                 if (w.index >= 0 && w.index < varsCap)
+                {
                     st.vars[(size_t) w.index] = w.value;
+                   #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+                    if (correctnessRuntime != nullptr)
+                        correctnessRuntime->applyExternalVarWrite (w.index, w.value);
+                   #endif
+                }
             }
             else // Mem
             {
                 const int64_t mi = (int64_t) w.index;
                 const int64_t logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
                 if (st.mem != nullptr && isGfxMirroredMemIndex (mi, logicalMemN))
+                {
                     st.mem[(size_t) mi] = w.value;
+                   #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+                    if (correctnessRuntime != nullptr)
+                        correctnessRuntime->applyExternalMemWrite ((int) mi, w.value);
+                   #endif
+                }
             }
 
             tail = (tail + 1u) & gfxWriteQueueMask;
@@ -3231,6 +3427,10 @@ private:
     std::vector<DSPJSFX_MidiEvent> midiOutStorage;
     std::atomic<bool> pendingEmergencyMidiCleanup { false };
     std::unique_ptr<juce::AudioProcessorValueTreeState> apvts;
+
+   #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+    std::unique_ptr<jsfx_correctness::Runtime> correctnessRuntime;
+   #endif
 
 // ---- GFX snapshot triple-buffer ----
 void initGfxSnapshots()
@@ -3735,6 +3935,23 @@ explicit JSFXJuceEditor (JSFXJuceProcessor& p)
         };
         addAndMakeVisible (helpButton);
 
+       #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+        debugButton.setButtonText ("DBG");
+        debugButton.setTooltip ("Show correctness monitor");
+        debugButton.setVisible (processor.hasCorrectnessMonitor());
+        debugButton.onClick = [this]
+        {
+            if (correctnessOverlay.isVisible())
+                hideCorrectnessMonitor();
+            else
+                showCorrectnessMonitor();
+        };
+        addAndMakeVisible (debugButton);
+
+        addChildComponent (correctnessOverlay);
+        correctnessOverlay.setVisible (false);
+       #endif
+
         // --- Help overlay (bounded inside editor) ---
         addChildComponent (helpOverlay);
         helpOverlay.setVisible (false);
@@ -3781,8 +3998,19 @@ explicit JSFXJuceEditor (JSFXJuceProcessor& p)
         auto top = r.removeFromTop (kTopBarH);
 
         const int btnSize = 24;
-        helpButton.setBounds (top.getRight() - btnSize - 8, (kTopBarH - btnSize) / 2, btnSize, btnSize);
+        int right = top.getRight() - 8;
+
+        helpButton.setBounds (right - btnSize, (kTopBarH - btnSize) / 2, btnSize, btnSize);
         helpButton.toFront (false);
+        right -= btnSize + 6;
+
+       #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+        if (debugButton.isVisible())
+        {
+            debugButton.setBounds (right - 44, (kTopBarH - btnSize) / 2, 44, btnSize);
+            debugButton.toFront (false);
+        }
+       #endif
 
         const bool hasGfx      = gfxView.isVisible();
         const bool hasControls = genericEditor.hasAnyVisibleControls();
@@ -3827,6 +4055,9 @@ explicit JSFXJuceEditor (JSFXJuceProcessor& p)
             gfxView.setBounds (0, 0, 0, 0);
 
         helpOverlay.setBounds (getLocalBounds());
+       #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+        correctnessOverlay.setBounds (getLocalBounds());
+       #endif
     }
 private:
     static constexpr int kTopBarH = 40;
@@ -4021,6 +4252,175 @@ private:
     };
 
     // -----------------------
+    // Correctness monitor overlay
+    // -----------------------
+   #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+    class CorrectnessOverlay final : public juce::Component, private juce::Timer
+    {
+    public:
+        explicit CorrectnessOverlay (JSFXJuceProcessor& p)
+            : processor (p)
+        {
+            title.setText ("CORRECTNESS CHECK", juce::dontSendNotification);
+            title.setJustificationType (juce::Justification::centredLeft);
+            title.setFont (UnicodeLNF::pickFont (16.0f).boldened());
+            addAndMakeVisible (title);
+
+            close.setButtonText ("X");
+            close.onClick = [this] { setVisible (false); };
+            addAndMakeVisible (close);
+
+            modeLabel.setText ("Monitor audio", juce::dontSendNotification);
+            modeLabel.setJustificationType (juce::Justification::centredLeft);
+            addAndMakeVisible (modeLabel);
+
+            mode.addItem ("Compiled DSP-JSFX", 1);
+            mode.addItem ("Shadow EEL2", 2);
+            mode.addItem ("Delta", 3);
+            mode.onChange = [this]
+            {
+                processor.setCorrectnessMonitorMode (juce::jmax (0, mode.getSelectedId() - 1));
+                refreshNow();
+            };
+            addAndMakeVisible (mode);
+
+            freezeToggle.setButtonText ("Freeze on first mismatch");
+            freezeToggle.onClick = [this]
+            {
+                processor.setCorrectnessFreezeOnFirstMismatch (freezeToggle.getToggleState());
+                refreshNow();
+            };
+            addAndMakeVisible (freezeToggle);
+
+            clearButton.setButtonText ("Clear");
+            clearButton.onClick = [this]
+            {
+                processor.clearCorrectnessMonitor();
+                refreshNow();
+            };
+            addAndMakeVisible (clearButton);
+
+            exportButton.setButtonText ("Export 30s");
+            exportButton.onClick = [this]
+            {
+                footer.setText (processor.exportCorrectnessArtifacts(), juce::dontSendNotification);
+                refreshNow();
+            };
+            addAndMakeVisible (exportButton);
+
+            footer.setJustificationType (juce::Justification::centredLeft);
+            footer.setFont (UnicodeLNF::pickFont (12.5f));
+            addAndMakeVisible (footer);
+
+            status.setMultiLine (true);
+            status.setReadOnly (true);
+            status.setScrollbarsShown (true);
+            status.setCaretVisible (false);
+            status.setPopupMenuEnabled (true);
+            status.setFont (UnicodeLNF::pickFont (13.5f));
+            status.setLineSpacing (1.2f);
+            status.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+            status.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+            status.setColour (juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
+            addAndMakeVisible (status);
+
+            setWantsKeyboardFocus (true);
+            refreshNow();
+            startTimerHz (8);
+        }
+
+        void refreshNow()
+        {
+            const bool enabled = processor.hasCorrectnessMonitor();
+            mode.setEnabled (enabled);
+            freezeToggle.setEnabled (enabled);
+            clearButton.setEnabled (enabled);
+            exportButton.setEnabled (enabled);
+
+            mode.setSelectedId (juce::jlimit (1, 3, processor.getCorrectnessMonitorMode() + 1), juce::dontSendNotification);
+            freezeToggle.setToggleState (processor.getCorrectnessFreezeOnFirstMismatch(), juce::dontSendNotification);
+
+            const auto statusText = processor.getCorrectnessStatusText();
+            if (status.getText() != statusText)
+                status.setText (statusText, juce::dontSendNotification);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            g.fillAll (juce::Colours::black.withAlpha (0.55f));
+
+            auto panel = panelBounds.toFloat();
+            g.setColour (juce::Colours::darkgrey.withAlpha (0.96f));
+            g.fillRoundedRectangle (panel, 10.0f);
+
+            g.setColour (juce::Colours::white.withAlpha (0.25f));
+            g.drawRoundedRectangle (panel, 10.0f, 1.5f);
+        }
+
+        void resized() override
+        {
+            auto r = getLocalBounds();
+            const int margin = juce::jlimit (16, 48, juce::jmin (getWidth(), getHeight()) / 14);
+            auto panel = r.reduced (margin);
+
+            panel.setWidth (juce::jmax (620, panel.getWidth()));
+            panel.setHeight (juce::jmax (360, panel.getHeight()));
+            panel = panel.withCentre (r.getCentre());
+            panelBounds = panel;
+
+            auto inner = panel.reduced (16);
+            auto header = inner.removeFromTop (30);
+            close.setBounds (header.removeFromRight (28));
+            title.setBounds (header);
+
+            inner.removeFromTop (10);
+            auto controls = inner.removeFromTop (70);
+
+            auto row1 = controls.removeFromTop (28);
+            modeLabel.setBounds (row1.removeFromLeft (110));
+            mode.setBounds (row1.removeFromLeft (220));
+
+            auto row2 = controls.removeFromTop (32);
+            freezeToggle.setBounds (row2.removeFromLeft (220));
+            exportButton.setBounds (row2.removeFromRight (110));
+            row2.removeFromRight (8);
+            clearButton.setBounds (row2.removeFromRight (80));
+
+            inner.removeFromTop (8);
+            auto footerArea = inner.removeFromBottom (24);
+            footer.setBounds (footerArea);
+
+            status.setBounds (inner);
+        }
+
+        void mouseUp (const juce::MouseEvent& e) override
+        {
+            if (! panelBounds.contains (e.getPosition()))
+                setVisible (false);
+        }
+
+    private:
+        void timerCallback() override
+        {
+            if (isVisible())
+                refreshNow();
+        }
+
+        JSFXJuceProcessor& processor;
+        juce::Rectangle<int> panelBounds;
+        juce::Label title;
+        juce::Label modeLabel;
+        juce::Label footer;
+        juce::TextButton close;
+        juce::ComboBox mode;
+        juce::ToggleButton freezeToggle;
+        juce::TextButton clearButton;
+        juce::TextButton exportButton;
+        juce::TextEditor status;
+    };
+   #endif
+
+    // -----------------------
     // Tooltip handling (JUCE TooltipWindow)
     // -----------------------
     class SmartTooltipWindow final : public juce::TooltipWindow
@@ -4037,6 +4437,11 @@ private:
             // Hide tooltips while the HELP overlay is open or while dragging.
             if (editor.helpOverlay.isVisible())
                 return {};
+
+           #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+            if (editor.correctnessOverlay.isVisible())
+                return {};
+           #endif
 
             if (juce::ModifierKeys::getCurrentModifiers().isAnyMouseButtonDown())
                 return {};
@@ -5921,6 +6326,9 @@ private:
     // -----------------------
     void showHelp()
     {
+       #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+        hideCorrectnessMonitor();
+       #endif
 
         auto help = processor.getJsfxHelpText();
         if (help.isEmpty())
@@ -5938,6 +6346,23 @@ private:
         helpOverlay.setVisible (false);
     }
 
+   #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+    void showCorrectnessMonitor()
+    {
+        hideHelp();
+        correctnessOverlay.refreshNow();
+        correctnessOverlay.setVisible (true);
+        correctnessOverlay.toFront (true);
+        correctnessOverlay.grabKeyboardFocus();
+        resized();
+    }
+
+    void hideCorrectnessMonitor()
+    {
+        correctnessOverlay.setVisible (false);
+    }
+   #endif
+
     JSFXJuceProcessor& processor;
     FilteredPanel genericEditor;
     juce::Viewport controlsViewport;
@@ -5949,6 +6374,10 @@ private:
 
     juce::TextButton helpButton;
     HelpOverlay helpOverlay;
+   #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+    juce::TextButton debugButton;
+    CorrectnessOverlay correctnessOverlay { processor };
+   #endif
     static constexpr int kTooltipDelayMs = 1000;
     SmartTooltipWindow tooltipWindow;
 };

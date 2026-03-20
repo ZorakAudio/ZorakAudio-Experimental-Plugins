@@ -16,6 +16,8 @@ set(PLUGIN_NEEDS_MIDI_INPUT OFF CACHE BOOL "Whether the plugin wants MIDI input"
 set(PLUGIN_NEEDS_MIDI_OUTPUT OFF CACHE BOOL "Whether the plugin produces MIDI output")
 set(PLUGIN_IS_MIDI_EFFECT OFF CACHE BOOL "Whether JUCE should classify the plugin as a MIDI effect")
 
+set(ZA_JSFX_CORRECTNESS_CHECK OFF CACHE BOOL "Enable JSFX shadow-EEL2 correctness monitor/instrumentation")
+
 set(ZA_ROOT "" CACHE PATH "Repo root")
 set(ZA_ENABLE_CLAP OFF CACHE BOOL "Build CLAP target too")
 set(CLAP_ID "" CACHE STRING "Unique CLAP id")
@@ -153,6 +155,7 @@ else()
       EELSCRIPT_NO_PREPROC=1
       EELSCRIPT_NO_LICE=1
       # DO NOT define EELSCRIPT_NO_EVAL
+      ZA_JSFX_CORRECTNESS_CHECK=$<BOOL:${ZA_JSFX_CORRECTNESS_CHECK}>
   )
 endif()
 

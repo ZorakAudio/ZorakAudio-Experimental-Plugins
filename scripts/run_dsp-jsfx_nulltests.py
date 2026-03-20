@@ -79,6 +79,9 @@ def build_all_jsfx_plugins(repo_root: Path, jsfx_plugins: list[dict]) -> tuple[s
             "--out", build_out,
             "--only", slug,
         ]
+
+        if os.environ.get("NULLTEST_BUILD_CORRECTNESS_CHECK", "0").strip().lower() in ("1", "true", "yes", "on"):
+            cmd.append("--correctness-check")
         print("[build] " + " ".join(cmd))
         cp = subprocess.run(cmd, cwd=str(repo_root))
         if cp.returncode != 0:

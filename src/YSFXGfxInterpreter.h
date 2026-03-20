@@ -483,7 +483,7 @@ struct AsyncMenuPort
 // -------------------------
 // EEL VM wrapper implementing gfx_* API by recording DrawCmds
 // -------------------------
-class GfxVm final : public eelScriptInst
+class GfxVm : public eelScriptInst
 {
 public:
   // Resolve (and auto-create) an EEL variable by name.

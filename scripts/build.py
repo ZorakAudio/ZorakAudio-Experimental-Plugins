@@ -290,6 +290,7 @@ def main() -> None:
     ap.add_argument("--only", default="", help="Build only one plugin (match slug OR name OR dir). Case-insensitive.")
     ap.add_argument("--clean", action="store_true", help="Delete build directory for current platform before building")
     ap.add_argument("--clean-only", action="store_true", help="Delete build directory for current platform and exit")
+    ap.add_argument("--correctness-check", action="store_true", help="Enable JSFX shadow EEL2 correctness monitor/instrumentation at compile time")
 
     args = ap.parse_args()
 
@@ -382,6 +383,7 @@ def main() -> None:
             f"-DPLUGIN_NEEDS_MIDI_INPUT={jsfx_caps['PLUGIN_NEEDS_MIDI_INPUT']}",
             f"-DPLUGIN_NEEDS_MIDI_OUTPUT={jsfx_caps['PLUGIN_NEEDS_MIDI_OUTPUT']}",
             f"-DPLUGIN_IS_MIDI_EFFECT={jsfx_caps['PLUGIN_IS_MIDI_EFFECT']}",
+            f"-DZA_JSFX_CORRECTNESS_CHECK={'ON' if args.correctness_check else 'OFF'}",
 
         ]
 

@@ -87,8 +87,12 @@ midi_evt_off_base = midi_evt_on_base + 128;
 midi_note_countdown_base = midi_evt_off_base + 128;
 midi_active_list_base = midi_note_countdown_base + 128;
 midi_poly_max = 8;
+cc_amt_base = midi_active_list_base + midi_poly_max + 64;
+cc_center_base = cc_amt_base + cc_param_count + 64;
+cc_last_base = cc_center_base + cc_param_count + 64;
+cc_dirty_base = cc_last_base + cc_param_count + 64;
 
-freembuf(midi_active_list_base + midi_poly_max + 4096);
+freembuf(cc_dirty_base + cc_param_count + 4096);
 
 // file state
 tex_loaded = 0;
@@ -312,6 +316,10 @@ loop(128,
 ci = 0;
 loop(cc_param_count + 1,
   mem[cc_map_base + ci] = -1;
+  mem[cc_amt_base + ci] = 0.20;
+  mem[cc_center_base + ci] = -1000;
+  mem[cc_last_base + ci] = -1000;
+  mem[cc_dirty_base + ci] = 0;
   ci += 1;
 );
 
@@ -328,6 +336,53 @@ slider33 < 0 ? slider33 = 0;
 slider33 > 1 ? slider33 = 1;
 slider34 < 0 ? slider34 = 0;
 slider34 > 1 ? slider34 = 1;
+
+function clamp_slider(v, lo, hi) (
+  v < lo ? v = lo;
+  v > hi ? v = hi;
+  v;
+);
+
+function cc_param_norm_slider(param) local(t) (
+  param == 1 ? t = slider1 :
+  param == 2 ? t = (slider2 + 24) / 48 :
+  param == 3 ? t = log(slider3 / 0.1) / log(8 / 0.1) :
+  param == 4 ? t = slider4 :
+  param == 5 ? t = slider5 :
+  param == 6 ? t = slider6 :
+  param == 7 ? t = slider7 :
+  param == 8 ? t = slider8 :
+  param == 9 ? t = log(slider9 / 10) / log(3000 / 10) :
+  param == 10 ? t = slider10 / 3 :
+  param == 11 ? t = slider11 :
+  param == 12 ? t = slider12 :
+  param == 13 ? t = slider13 :
+  param == 14 ? t = slider14 / 720 :
+  param == 15 ? t = log(slider15 / 0.1) / log(2000 / 0.1) :
+  param == 16 ? t = log(slider16 / 0.1) / log(3000 / 0.1) :
+  param == 17 ? t = slider17 :
+  param == 18 ? t = log(slider18 / 0.1) / log(5000 / 0.1) :
+  param == 19 ? t = (slider19 + 1) * 0.5 :
+  param == 20 ? t = (slider20 + 1) * 0.5 :
+  param == 21 ? t = (slider21 + 1) * 0.5 :
+  param == 22 ? t = log(slider22 / 0.1) / log(200 / 0.1) :
+  param == 23 ? t = log(slider23 / 1) / log(4000 / 1) :
+  param == 24 ? t = (slider24 - 0.05) / (0.99 - 0.05) :
+  param == 25 ? t = slider25 :
+  param == 26 ? t = slider26 / 2 :
+  param == 27 ? t = slider27 :
+  param == 28 ? t = (slider28 + 24) / 48 :
+  param == 29 ? t = slider29 / 4 :
+  param == 30 ? t = slider30 :
+  param == 31 ? t = slider31 :
+  param == 32 ? t = log(slider32 / 20) / log(1500 / 20) :
+  param == 33 ? t = slider33 :
+  param == 34 ? t = slider34 :
+  param == 35 ? t = slider35 / 3 :
+  param == 36 ? t = slider36 :
+  t = 0;
+  clamp_slider(t, 0, 1);
+);
 
 cur_profile_sel = floor(slider29 + 0.5);
 last_profile_sel < 0 ? last_profile_sel = cur_profile_sel;
@@ -513,13 +568,32 @@ midi_mode != last_midi_mode ? (
   last_midi_mode = midi_mode;
 );
 
+// Keep a per-parameter user center for CC automation.
+// CC-applied changes set cc_dirty so they do not re-center themselves.
+ci = 1;
+loop(cc_param_count,
+  cn = cc_param_norm_slider(ci);
+  lastn = mem[cc_last_base + ci];
+  cd = mem[cc_dirty_base + ci];
+  (lastn < -100) || (abs(cn - lastn) > 0.0000001) ? (
+    cd > 0 ? (
+      mem[cc_dirty_base + ci] = 0;
+    ) : (
+      mem[cc_center_base + ci] = cn;
+    );
+    mem[cc_last_base + ci] = cn;
+  );
+  ci += 1;
+);
+
 @serialize
-ser_ver = 1.02;
+ser_ver = 1.03;
 file_var(0, ser_ver);
 ser_ver < 1 ? (
   ci = 0;
   loop(cc_param_count + 1,
     mem[cc_map_base + ci] = -1;
+    mem[cc_amt_base + ci] = 0.20;
     ci += 1;
   );
 ) : (
@@ -530,11 +604,80 @@ ser_ver < 1 ? (
     mem[cc_map_base + ci] = ccv;
     ci += 1;
   );
+
+  ser_ver >= 1.03 ? (
+    ci = 1;
+    loop(cc_param_count,
+      cca = mem[cc_amt_base + ci];
+      file_var(0, cca);
+      mem[cc_amt_base + ci] = cca;
+      ci += 1;
+    );
+  ) : (
+    ci = 1;
+    loop(cc_param_count,
+      mem[cc_amt_base + ci] = 0.20;
+      ci += 1;
+    );
+  );
 );
 
 @block
-function cc_apply_param(param, ccval) local(t, v) (
-  t = ccval / 127;
+function cc_param_is_relative(param) (
+  !((param == 10) || (param == 11) || (param == 12) || (param == 13) ||
+    (param == 26) || (param == 27) || (param == 29) || (param == 30) ||
+    (param == 35) || (param == 36));
+);
+
+function cc_clamp01(v) (
+  v < 0 ? v = 0;
+  v > 1 ? v = 1;
+  v;
+);
+
+function cc_param_norm_block(param) local(t) (
+  param == 1 ? t = slider1 :
+  param == 2 ? t = (slider2 + 24) / 48 :
+  param == 3 ? t = log(slider3 / 0.1) / log(8 / 0.1) :
+  param == 4 ? t = slider4 :
+  param == 5 ? t = slider5 :
+  param == 6 ? t = slider6 :
+  param == 7 ? t = slider7 :
+  param == 8 ? t = slider8 :
+  param == 9 ? t = log(slider9 / 10) / log(3000 / 10) :
+  param == 10 ? t = slider10 / 3 :
+  param == 11 ? t = slider11 :
+  param == 12 ? t = slider12 :
+  param == 13 ? t = slider13 :
+  param == 14 ? t = slider14 / 720 :
+  param == 15 ? t = log(slider15 / 0.1) / log(2000 / 0.1) :
+  param == 16 ? t = log(slider16 / 0.1) / log(3000 / 0.1) :
+  param == 17 ? t = slider17 :
+  param == 18 ? t = log(slider18 / 0.1) / log(5000 / 0.1) :
+  param == 19 ? t = (slider19 + 1) * 0.5 :
+  param == 20 ? t = (slider20 + 1) * 0.5 :
+  param == 21 ? t = (slider21 + 1) * 0.5 :
+  param == 22 ? t = log(slider22 / 0.1) / log(200 / 0.1) :
+  param == 23 ? t = log(slider23 / 1) / log(4000 / 1) :
+  param == 24 ? t = (slider24 - 0.05) / (0.99 - 0.05) :
+  param == 25 ? t = slider25 :
+  param == 26 ? t = slider26 / 2 :
+  param == 27 ? t = slider27 :
+  param == 28 ? t = (slider28 + 24) / 48 :
+  param == 29 ? t = slider29 / 4 :
+  param == 30 ? t = slider30 :
+  param == 31 ? t = slider31 :
+  param == 32 ? t = log(slider32 / 20) / log(1500 / 20) :
+  param == 33 ? t = slider33 :
+  param == 34 ? t = slider34 :
+  param == 35 ? t = slider35 / 3 :
+  param == 36 ? t = slider36 :
+  t = 0;
+  cc_clamp01(t);
+);
+
+function cc_param_apply_norm(param, t) (
+  t = cc_clamp01(t);
   param == 1 ? ( slider1 = t; sliderchange(slider1); ) :
   param == 2 ? ( slider2 = -24 + t * 48; sliderchange(slider2); ) :
   param == 3 ? ( slider3 = 0.1 * exp(log(8 / 0.1) * t); sliderchange(slider3); ) :
@@ -544,10 +687,6 @@ function cc_apply_param(param, ccval) local(t, v) (
   param == 7 ? ( slider7 = t; sliderchange(slider7); ) :
   param == 8 ? ( slider8 = t; sliderchange(slider8); ) :
   param == 9 ? ( slider9 = 10 * exp(log(3000 / 10) * t); sliderchange(slider9); ) :
-  param == 10 ? ( slider10 = floor(t * 3.999); sliderchange(slider10); ) :
-  param == 11 ? ( slider11 = t >= 0.5 ? 1 : 0; sliderchange(slider11); ) :
-  param == 12 ? ( slider12 = t >= 0.5 ? 1 : 0; sliderchange(slider12); ) :
-  param == 13 ? ( ccval >= 64 ? ( ui_force_reload = 1; slider13 = 1; sliderchange(slider13); ); ) :
   param == 14 ? ( slider14 = t * 720; sliderchange(slider14); ) :
   param == 15 ? ( slider15 = 0.1 * exp(log(2000 / 0.1) * t); sliderchange(slider15); ) :
   param == 16 ? ( slider16 = 0.1 * exp(log(3000 / 0.1) * t); sliderchange(slider16); ) :
@@ -560,17 +699,39 @@ function cc_apply_param(param, ccval) local(t, v) (
   param == 23 ? ( slider23 = 1 * exp(log(4000 / 1) * t); sliderchange(slider23); ) :
   param == 24 ? ( slider24 = 0.05 + t * (0.99 - 0.05); sliderchange(slider24); ) :
   param == 25 ? ( slider25 = t; sliderchange(slider25); ) :
-  param == 26 ? ( slider26 = floor(t * 2.999); sliderchange(slider26); ) :
-  param == 27 ? ( slider27 = t >= 0.5 ? 1 : 0; sliderchange(slider27); ) :
   param == 28 ? ( slider28 = -24 + t * 48; sliderchange(slider28); ) :
-  param == 29 ? ( slider29 = floor(t * 4.999); sliderchange(slider29); ) :
-  param == 30 ? ( slider30 = t >= 0.5 ? 1 : 0; sliderchange(slider30); ) :
   param == 31 ? ( slider31 = t; sliderchange(slider31); ) :
   param == 32 ? ( slider32 = 20 * exp(log(1500 / 20) * t); sliderchange(slider32); ) :
   param == 33 ? ( slider33 = t; sliderchange(slider33); ) :
-  param == 34 ? ( slider34 = t; sliderchange(slider34); ) :
-  param == 35 ? ( slider35 = floor(t * 3.999); sliderchange(slider35); ) :
-  param == 36 ? ( slider36 = t >= 0.5 ? 1 : 0; sliderchange(slider36); );
+  param == 34 ? ( slider34 = t; sliderchange(slider34); );
+);
+
+function cc_apply_param(param, ccval) local(t, ctr, amt, bipolar) (
+  t = ccval / 127;
+  cc_param_is_relative(param) ? (
+    ctr = mem[cc_center_base + param];
+    ctr < -10 ? (
+      ctr = cc_param_norm_block(param);
+      mem[cc_center_base + param] = ctr;
+    );
+    amt = mem[cc_amt_base + param];
+    amt < 0 ? amt = 0;
+    amt > 1 ? amt = 1;
+    bipolar = t * 2 - 1;
+    cc_param_apply_norm(param, ctr + bipolar * amt);
+  ) : (
+    param == 10 ? ( slider10 = floor(t * 3.999); sliderchange(slider10); ) :
+    param == 11 ? ( slider11 = t >= 0.5 ? 1 : 0; sliderchange(slider11); ) :
+    param == 12 ? ( slider12 = t >= 0.5 ? 1 : 0; sliderchange(slider12); ) :
+    param == 13 ? ( ccval >= 64 ? ( ui_force_reload = 1; slider13 = 1; sliderchange(slider13); ); ) :
+    param == 26 ? ( slider26 = floor(t * 2.999); sliderchange(slider26); ) :
+    param == 27 ? ( slider27 = t >= 0.5 ? 1 : 0; sliderchange(slider27); ) :
+    param == 29 ? ( slider29 = floor(t * 4.999); sliderchange(slider29); ) :
+    param == 30 ? ( slider30 = t >= 0.5 ? 1 : 0; sliderchange(slider30); ) :
+    param == 35 ? ( slider35 = floor(t * 3.999); sliderchange(slider35); ) :
+    param == 36 ? ( slider36 = t >= 0.5 ? 1 : 0; sliderchange(slider36); );
+  );
+  mem[cc_dirty_base + param] = 1;
 );
 
 midi_note_on_evt = 0;
@@ -592,38 +753,71 @@ loop(midi_poly_max,
   ni += 1;
 );
 
+function midi_flush_all_notes() local(fi) (
+  fi = 0;
+  loop(128,
+    mem[midi_note_vel_base + fi] = 0;
+    mem[midi_note_order_base + fi] = 0;
+    mem[midi_evt_on_base + fi] = 0;
+    mem[midi_evt_off_base + fi] = 1;
+    mem[midi_note_countdown_base + fi] = 0;
+    fi += 1;
+  );
+  midi_active_count = 0;
+  midi_held_note = -1;
+  midi_held_vel = 0;
+  midi_note_gate = 0;
+  midi_note_vel_norm = 0;
+  midi_note_pitch_st = 0;
+  midi_note_pitch_cents = 0;
+);
+
+raw_block_on = 0;
+raw_block_off = 0;
+panic_all_notes = 0;
+
 while (midirecv(offset, msg1, msg2, msg3)) (
   status = msg1 & 240;
   chan = msg1 & 15;
   midisend(offset, msg1, msg2, msg3);
 
-  (status == $x90) && (msg3 > 0) ? (
-    mem[midi_note_vel_base + msg2] <= 0 ? midi_active_count += 1;
+  (msg1 == $xFC) || (msg1 == $xFF) ? (
+    panic_all_notes = 1;
+  ) : (status == $x90) && (msg3 > 0) ? (
     mem[midi_note_vel_base + msg2] = msg3 / 127;
     mem[midi_note_order_base + msg2] = midi_order_counter;
     mem[midi_evt_on_base + msg2] = msg3 / 127;
     mem[midi_evt_off_base + msg2] = 0;
     mem[midi_note_countdown_base + msg2] = 0;
     midi_order_counter += 1;
-    midi_note_on_evt = 1;
+    raw_block_on = 1;
   ) : (((status == $x80) || ((status == $x90) && (msg3 == 0)))) ? (
-    mem[midi_note_vel_base + msg2] > 0 ? midi_active_count -= 1;
     mem[midi_note_vel_base + msg2] = 0;
     mem[midi_note_order_base + msg2] = 0;
     mem[midi_evt_off_base + msg2] = 1;
     mem[midi_evt_on_base + msg2] = 0;
     mem[midi_note_countdown_base + msg2] = 0;
-    midi_note_off_evt = 1;
+    raw_block_off = 1;
   ) : (status == $xB0) ? (
-    cci = 1;
-    loop(cc_param_count,
-      mem[cc_map_base + cci] == msg2 ? cc_apply_param(cci, msg3);
-      cci += 1;
+    ((msg2 == 120) || (msg2 == 123)) ? (
+      panic_all_notes = 1;
+    ) : (
+      cci = 1;
+      loop(cc_param_count,
+        mem[cc_map_base + cci] == msg2 ? cc_apply_param(cci, msg3);
+        cci += 1;
+      );
     );
   );
 );
 
-midi_active_count < 0 ? midi_active_count = 0;
+panic_all_notes ? (
+  midi_flush_all_notes();
+  raw_block_off = 1;
+  raw_block_on = 0;
+);
+
+midi_active_count = 0;
 prev_note_gate = midi_note_gate;
 prev_held_note = midi_held_note;
 best_ord = 0;
@@ -631,6 +825,7 @@ midi_held_note = -1;
 midi_held_vel = 0;
 ni = 0;
 loop(128,
+  mem[midi_note_vel_base + ni] > 0 ? midi_active_count += 1;
   ordv = mem[midi_note_order_base + ni];
   ordv > best_ord ? (
     best_ord = ordv;
@@ -643,12 +838,25 @@ midi_note_gate = midi_held_note >= 0;
 midi_note_vel_norm = midi_note_gate ? midi_held_vel : 0;
 midi_note_pitch_st = midi_note_gate ? (midi_held_note - midi_root_note) : 0;
 midi_note_pitch_cents = midi_note_pitch_st * 100;
-midi_note_changed_evt = (midi_held_note != prev_held_note) && midi_note_gate;
-(!prev_note_gate && midi_note_gate) ? midi_note_on_evt = 1;
-(prev_note_gate && !midi_note_gate) ? midi_note_off_evt = 1;
+
+// For mono control, derive block events from the FINAL held-note state,
+// not from any transient note-on that happened earlier in the same block.
+// That prevents note-on/note-off flurries inside one block from creating
+// ghost retriggers after the finger is already gone.
+midi_note_on_evt = 0;
+midi_note_off_evt = 0;
+midi_note_changed_evt = 0;
+
+(!prev_note_gate && midi_note_gate) ? (
+  midi_note_on_evt = 1;
+) : (prev_note_gate && !midi_note_gate) ? (
+  midi_note_off_evt = 1;
+) : (prev_note_gate && midi_note_gate && (midi_held_note != prev_held_note)) ? (
+  midi_note_changed_evt = 1;
+);
 
 midi_block_evt_on = midi_note_on_evt;
-midi_block_evt_off = midi_note_off_evt;
+midi_block_evt_off = midi_note_off_evt || raw_block_off;
 midi_block_evt_change = midi_note_changed_evt;
 block_event_arm = 1;
 
@@ -675,6 +883,22 @@ loop(midi_poly_max,
     mem[midi_active_list_base + pi] = -1;
   );
   pi += 1;
+);
+
+// If no notes remain, flush per-note schedulers so stale countdowns cannot
+// resurrect old MIDI lanes later.
+(midi_active_count <= 0) ? (
+  ni = 0;
+  loop(128,
+    mem[midi_note_countdown_base + ni] = 0;
+    mem[midi_evt_on_base + ni] = 0;
+    ni += 1;
+  );
+  pi = 0;
+  loop(midi_poly_max,
+    mem[midi_active_list_base + pi] = -1;
+    pi += 1;
+  );
 );
 
 reload_now = ui_force_reload || ((slider13 > 0.5) && (last_reload <= 0.5));
@@ -2788,15 +3012,17 @@ prime_gate = det_prime * (0.65 + 0.10 * sensitivity + 0.18 * wake_force);
 prime_gate > 1 ? prime_gate = 1;
 prime_gate > gate_open_ctl ? gate_open_ctl = prime_gate;
 
+gate_support_enable = (!midi_gate_mode) || midi_note_gate;
+
 gate <= 0 ? (
-  gate_open_ctl >= trig_on ? (
+  gate_support_enable && (gate_open_ctl >= trig_on) ? (
     gate = 1;
     note_on = 1;
     gate_peak = support_drive;
     trig_v = cur_v;
   );
 ) : (
-  support_sig <= trig_off ? (
+  (!gate_support_enable) || (support_sig <= trig_off) ? (
     gate = 0;
     note_off = 1;
   );
@@ -2832,6 +3058,7 @@ midi_gate_mode ? (
       note_off = 1;
     );
   );
+  !midi_note_gate ? note_on = 0;
 );
 
 note_on ? (
@@ -3696,6 +3923,35 @@ function cc_common_num(idx) (
   idx == 22 ? 23 : -2;
 );
 
+function cc_amt_text(param, outstr) local(a) (
+  a = mem[cc_amt_base + param];
+  a < 0 ? a = 0;
+  a > 1 ? a = 1;
+  sprintf(outstr, "±%.0f%%", a * 100);
+);
+
+function begin_cc_range_assign(param) local(sel, a) (
+  strcpy(#menu_ctx, "");
+  strcat(#menu_ctx, "Off (Direct around center)|");
+  strcat(#menu_ctx, "±5%|±10%|±15%|±20%|±25%|±35%|±50%|±75%|±100%");
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu_ctx);
+  sel == 1 ? a = 0 :
+  sel == 2 ? a = 0.05 :
+  sel == 3 ? a = 0.10 :
+  sel == 4 ? a = 0.15 :
+  sel == 5 ? a = 0.20 :
+  sel == 6 ? a = 0.25 :
+  sel == 7 ? a = 0.35 :
+  sel == 8 ? a = 0.50 :
+  sel == 9 ? a = 0.75 :
+  sel == 10 ? a = 1.00;
+  (sel >= 1) && (sel <= 10) ? (
+    mem[cc_amt_base + param] = a;
+    ui_button_click = 1;
+  );
+);
+
 function begin_cc_assign(param) local(cur) (
   cur = mem[cc_map_base + param];
   cc_browser_param = param;
@@ -3836,14 +4092,18 @@ function open_param_menu1(p1) local(sel, ccv) (
   param_name(p1, #p1n);
   param_default_text(p1, #p1d);
   cc_name(mem[cc_map_base + p1], #p1c);
+  cc_amt_text(p1, #p1a);
   strcpy(#menu_ctx, "");
   sprintf(#menu_item, "%s: Set CC (%s)", #p1n, #p1c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set CC Range (%s)", #p1n, #p1a); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
   sprintf(#menu_item, "%s: Set to Default (%s)", #p1n, #p1d); strcat(#menu_ctx, #menu_item);
   gfx_x = mx; gfx_y = my;
   sel = gfx_showmenu(#menu_ctx);
   sel == 1 ? (
     begin_cc_assign(p1);
   ) : sel == 2 ? (
+    begin_cc_range_assign(p1);
+  ) : sel == 3 ? (
     param_apply_default(p1);
     ui_add_undo = 1;
     ui_button_click = 1;
@@ -3851,45 +4111,57 @@ function open_param_menu1(p1) local(sel, ccv) (
 );
 
 function open_param_menu2(p1,p2) local(sel, ccv) (
-  param_name(p1, #p1n); param_default_text(p1, #p1d); cc_name(mem[cc_map_base + p1], #p1c);
-  param_name(p2, #p2n); param_default_text(p2, #p2d); cc_name(mem[cc_map_base + p2], #p2c);
+  param_name(p1, #p1n); param_default_text(p1, #p1d); cc_name(mem[cc_map_base + p1], #p1c); cc_amt_text(p1, #p1a);
+  param_name(p2, #p2n); param_default_text(p2, #p2d); cc_name(mem[cc_map_base + p2], #p2c); cc_amt_text(p2, #p2a);
   strcpy(#menu_ctx, "");
   sprintf(#menu_item, "%s: Set CC (%s)", #p1n, #p1c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set CC Range (%s)", #p1n, #p1a); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
   sprintf(#menu_item, "%s: Set to Default (%s)", #p1n, #p1d); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
   sprintf(#menu_item, "%s: Set CC (%s)", #p2n, #p2c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set CC Range (%s)", #p2n, #p2a); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
   sprintf(#menu_item, "%s: Set to Default (%s)", #p2n, #p2d); strcat(#menu_ctx, #menu_item);
   gfx_x = mx; gfx_y = my;
   sel = gfx_showmenu(#menu_ctx);
   sel == 1 ? (begin_cc_assign(p1);) :
-  sel == 2 ? (param_apply_default(p1); ui_add_undo = 1; ui_button_click = 1;) :
-  sel == 3 ? (begin_cc_assign(p2);) :
-  sel == 4 ? (param_apply_default(p2); ui_add_undo = 1; ui_button_click = 1;);
+  sel == 2 ? (begin_cc_range_assign(p1);) :
+  sel == 3 ? (param_apply_default(p1); ui_add_undo = 1; ui_button_click = 1;) :
+  sel == 4 ? (begin_cc_assign(p2);) :
+  sel == 5 ? (begin_cc_range_assign(p2);) :
+  sel == 6 ? (param_apply_default(p2); ui_add_undo = 1; ui_button_click = 1;);
 );
 
 function open_param_menu4(p1,p2,p3,p4) local(sel, ccv) (
-  param_name(p1, #p1n); param_default_text(p1, #p1d); cc_name(mem[cc_map_base + p1], #p1c);
-  param_name(p2, #p2n); param_default_text(p2, #p2d); cc_name(mem[cc_map_base + p2], #p2c);
-  param_name(p3, #p3n); param_default_text(p3, #p3d); cc_name(mem[cc_map_base + p3], #p3c);
-  param_name(p4, #p4n); param_default_text(p4, #p4d); cc_name(mem[cc_map_base + p4], #p4c);
+  param_name(p1, #p1n); param_default_text(p1, #p1d); cc_name(mem[cc_map_base + p1], #p1c); cc_amt_text(p1, #p1a);
+  param_name(p2, #p2n); param_default_text(p2, #p2d); cc_name(mem[cc_map_base + p2], #p2c); cc_amt_text(p2, #p2a);
+  param_name(p3, #p3n); param_default_text(p3, #p3d); cc_name(mem[cc_map_base + p3], #p3c); cc_amt_text(p3, #p3a);
+  param_name(p4, #p4n); param_default_text(p4, #p4d); cc_name(mem[cc_map_base + p4], #p4c); cc_amt_text(p4, #p4a);
   strcpy(#menu_ctx, "");
   sprintf(#menu_item, "%s: Set CC (%s)", #p1n, #p1c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set CC Range (%s)", #p1n, #p1a); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
   sprintf(#menu_item, "%s: Set to Default (%s)", #p1n, #p1d); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
   sprintf(#menu_item, "%s: Set CC (%s)", #p2n, #p2c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set CC Range (%s)", #p2n, #p2a); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
   sprintf(#menu_item, "%s: Set to Default (%s)", #p2n, #p2d); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
   sprintf(#menu_item, "%s: Set CC (%s)", #p3n, #p3c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set CC Range (%s)", #p3n, #p3a); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
   sprintf(#menu_item, "%s: Set to Default (%s)", #p3n, #p3d); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
   sprintf(#menu_item, "%s: Set CC (%s)", #p4n, #p4c); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
+  sprintf(#menu_item, "%s: Set CC Range (%s)", #p4n, #p4a); strcat(#menu_ctx, #menu_item); strcat(#menu_ctx, "|");
   sprintf(#menu_item, "%s: Set to Default (%s)", #p4n, #p4d); strcat(#menu_ctx, #menu_item);
   gfx_x = mx; gfx_y = my;
   sel = gfx_showmenu(#menu_ctx);
   sel == 1 ? (begin_cc_assign(p1);) :
-  sel == 2 ? (param_apply_default(p1); ui_add_undo = 1; ui_button_click = 1;) :
-  sel == 3 ? (begin_cc_assign(p2);) :
-  sel == 4 ? (param_apply_default(p2); ui_add_undo = 1; ui_button_click = 1;) :
-  sel == 5 ? (ccv = show_cc_pick(mem[cc_map_base + p3]); mem[cc_map_base + p3] = ccv; ui_button_click = 1;) :
-  sel == 6 ? (param_apply_default(p3); ui_add_undo = 1; ui_button_click = 1;) :
-  sel == 7 ? (ccv = show_cc_pick(mem[cc_map_base + p4]); mem[cc_map_base + p4] = ccv; ui_button_click = 1;) :
-  sel == 8 ? (param_apply_default(p4); ui_add_undo = 1; ui_button_click = 1;);
+  sel == 2 ? (begin_cc_range_assign(p1);) :
+  sel == 3 ? (param_apply_default(p1); ui_add_undo = 1; ui_button_click = 1;) :
+  sel == 4 ? (begin_cc_assign(p2);) :
+  sel == 5 ? (begin_cc_range_assign(p2);) :
+  sel == 6 ? (param_apply_default(p2); ui_add_undo = 1; ui_button_click = 1;) :
+  sel == 7 ? (begin_cc_assign(p3);) :
+  sel == 8 ? (begin_cc_range_assign(p3);) :
+  sel == 9 ? (param_apply_default(p3); ui_add_undo = 1; ui_button_click = 1;) :
+  sel == 10 ? (begin_cc_assign(p4);) :
+  sel == 11 ? (begin_cc_range_assign(p4);) :
+  sel == 12 ? (param_apply_default(p4); ui_add_undo = 1; ui_button_click = 1;);
 );
 
 gfx_getchar();
