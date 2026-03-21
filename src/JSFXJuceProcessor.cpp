@@ -255,10 +255,24 @@ static inline int64_t getGfxLogicalJsfxMemN (DSPJSFX_State* st, int64_t declared
     if (st == nullptr)
         return tracked;
 
+    // Even before the DSP side has touched JSFX memory, @gfx can author
+    // low-address working sets (gesture buffers, UI state tables, etc.).
+    // If we report a logical size of 0 here, the UI bridge exposes no shared
+    // mem spans, so those writes never make it back to the realtime state.
+    // That lets scalar vars cross the bridge while their backing low-memory
+    // tables stay zero on the DSP side, which can make playback collapse to
+    // the origin instead of following the captured path.
+    //
+    // Keep a bounded low-prefix window live at all times so @gfx-authored
+    // low-memory data can round-trip immediately, while still capping the copy
+    // cost. High-address mirroring remains gated by tracked usage / maxmem via
+    // buildGfxMirrorRanges().
+    const int64_t baseline = std::min<int64_t> (st->memN, (int64_t) kGfxSharedPrefixDoubles);
+
     if (declaredMaxMem > 0)
         return std::max<int64_t> (tracked, std::min<int64_t> (declaredMaxMem, st->memN));
 
-    return tracked;
+    return std::max<int64_t> (tracked, baseline);
 }
 
 // -----------------------------------------------------------------------------
@@ -3292,6 +3306,7 @@ private:
                 if (st.mem != nullptr && isGfxMirroredMemIndex (mi, logicalMemN))
                 {
                     st.mem[(size_t) mi] = w.value;
+                    noteTrackedJsfxMemUsed (&st, mi + 1);
                    #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
                     if (correctnessRuntime != nullptr)
                         correctnessRuntime->applyExternalMemWrite ((int) mi, w.value);
