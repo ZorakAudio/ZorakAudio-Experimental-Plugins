@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 set(PLUGIN_NAME "" CACHE STRING "Plugin display name")
+set(PLUGIN_ARTIFACT_NAME "" CACHE STRING "Filesystem-safe plugin file/bundle basename")
 set(PLUGIN_SLUG "" CACHE STRING "Target name (no spaces)")
 set(PLUGIN_CODE "" CACHE STRING "4-char plugin code")
 set(MANUFACTURER_NAME "" CACHE STRING "Manufacturer name")
@@ -25,6 +26,10 @@ set(CLAP_FEATURES "audio-effect" CACHE STRING "Space-separated CLAP features")
 
 if(NOT PLUGIN_NAME OR NOT PLUGIN_SLUG OR NOT PLUGIN_CODE OR NOT MANUFACTURER_NAME OR NOT MANUFACTURER_CODE)
   message(FATAL_ERROR "Missing required args. Need PLUGIN_NAME, PLUGIN_SLUG, PLUGIN_CODE, MANUFACTURER_NAME, MANUFACTURER_CODE.")
+endif()
+
+if(NOT PLUGIN_ARTIFACT_NAME)
+  set(PLUGIN_ARTIFACT_NAME "${PLUGIN_SLUG}")
 endif()
 
 if(PLUGIN_TYPE STREQUAL "faust")
@@ -86,7 +91,9 @@ endif()
 
 # ---- JUCE plugin ----
 juce_add_plugin(${PLUGIN_SLUG}
-  PRODUCT_NAME "${PLUGIN_NAME}"
+  PRODUCT_NAME "${PLUGIN_ARTIFACT_NAME}"
+  PLUGIN_NAME "${PLUGIN_NAME}"
+  DESCRIPTION "${PLUGIN_NAME}"
   COMPANY_NAME "${MANUFACTURER_NAME}"
   BUNDLE_ID "${BUNDLE_ID}"
   PLUGIN_MANUFACTURER_CODE "${MANUFACTURER_CODE}"
