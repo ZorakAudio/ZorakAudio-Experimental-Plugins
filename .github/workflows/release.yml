@@ -118,7 +118,11 @@ jobs:
           echo "CMAKE_OSX_DEPLOYMENT_TARGET=11.0" >> $GITHUB_ENV
           echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> $GITHUB_ENV
 
-      - name: Build + package
+      - name: Show discovered plugins
+        run: |
+          python scripts/build.py --list
+
+      - name: Build + package category-organized VST3/CLAP layout
         run: |
           python scripts/build.py --config Release --tag "${{ github.ref_name }}" --out dist
 

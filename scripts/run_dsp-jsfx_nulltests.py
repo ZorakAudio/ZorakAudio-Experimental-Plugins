@@ -13,6 +13,8 @@ from pathlib import Path
 
 import numpy as np
 
+from pluginlib import PluginDiscoveryError, PluginSpec, discover_plugins
+
 
 AUDIO_EXTS = [".wav"]  # deterministic: render WAV only
 SEARCH_DIR_SUFFIXES = ["", "render", "_render", "renders", "_renders", "out", "_out"]
@@ -45,9 +47,9 @@ def clean_dir(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def build_all_jsfx_plugins(repo_root: Path, jsfx_plugins: list[dict]) -> tuple[str, str, str]:
+def build_all_jsfx_plugins(repo_root: Path, jsfx_plugins: list[PluginSpec]) -> tuple[str, str, str]:
     """
-    Builds all pluginType=='jsfx' entries using scripts/build.py --only <slug>.
+    Builds all discovered JSFX plugins using scripts/build.py --only <slug>.
 
     Returns (build_config, build_tag, build_out) used, so staging can be deterministic.
     """
@@ -66,10 +68,8 @@ def build_all_jsfx_plugins(repo_root: Path, jsfx_plugins: list[dict]) -> tuple[s
     if not jsfx_plugins:
         return build_config, build_tag, build_out
 
-    for p in jsfx_plugins:
-        slug = p.get("slug")
-        if not slug:
-            die(f"JSFX plugin missing slug: {p}")
+    for spec in jsfx_plugins:
+        slug = spec.slug
 
         cmd = [
             sys.executable,
@@ -310,7 +310,10 @@ def looks_like_jsfx_file(path: Path) -> bool:
 
 def copy_jsfx_sources(repo_root: Path, plugin_dir: Path, effects_dir: Path) -> int:
     """
-    Copy any JSFX-ish source files from plugin_dir into Effects/<plugin_dir_name>/...
+    Copy JSFX-ish source files from a plugin leaf into Effects/<plugin_dir_name>/...
+
+    The repository layout keeps the entry file under src/, but REAPER JSFX lookups are usually
+    friendlier when that leading src/ segment is stripped in the staged portable Effects tree.
     """
     count = 0
     dest_base = effects_dir / plugin_dir.name
@@ -324,6 +327,8 @@ def copy_jsfx_sources(repo_root: Path, plugin_dir: Path, effects_dir: Path) -> i
             continue
         if looks_like_jsfx_file(src):
             relpath = src.relative_to(plugin_dir)
+            if relpath.parts and relpath.parts[0] == "src":
+                relpath = Path(*relpath.parts[1:]) if len(relpath.parts) > 1 else Path(src.name)
             dst = dest_base / relpath
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
@@ -746,9 +751,10 @@ def read_any_text(paths: list[Path]) -> str:
 
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    cfg_path = repo_root / "plugins.json"
-    if not cfg_path.exists():
-        die(f"Missing {rel(repo_root, cfg_path)}")
+    try:
+        plugins = discover_plugins(repo_root)
+    except PluginDiscoveryError as exc:
+        die(str(exc))
 
     # --- Ensure portable REAPER exists (zip -> extracted) ---
     reaper_zip = locate_reaper_zip(repo_root)
@@ -809,12 +815,10 @@ def main() -> None:
     report_dir = Path(os.environ.get("NULLTEST_REPORT_DIR", repo_root / ".ci" / "out"))
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    plugins = cfg.get("plugins", [])
-    jsfx_plugins = [p for p in plugins if p.get("pluginType") == "jsfx"]  # 
+    jsfx_plugins = [spec for spec in plugins if spec.plugin_type == "jsfx"]
 
     if not jsfx_plugins:
-        die("No JSFX plugins found in plugins.json (pluginType == 'jsfx').")
+        die("No JSFX plugins found under plugins/**/plugin.json.")
 
     # Build all JSFX plugins (default ON). Disable with NULLTEST_BUILD=0
     if os.environ.get("NULLTEST_BUILD", "1") != "0":
@@ -825,7 +829,7 @@ def main() -> None:
         build_out = os.environ.get("NULLTEST_BUILD_OUT", "dist")
 
     # --- Stage artifacts + discover tests + requirements ---
-    all_rpps: list[tuple[dict, Path]] = []
+    all_rpps: list[tuple[PluginSpec, Path]] = []
     required_clap_ids: set[str] = set()
     required_vst3_names: set[str] = set()
     required_js_descs: set[str] = set()
@@ -835,17 +839,15 @@ def main() -> None:
     staged_clap = 0
     staged_jsfx = 0
 
-    for p in jsfx_plugins:
-        plug_dir = repo_root / p["dir"]
+    for spec in jsfx_plugins:
+        plug_dir = spec.root_dir
         if not plug_dir.exists():
             die(f"Plugin dir missing: {rel(repo_root, plug_dir)}")
 
         # Stage JSFX sources into Effects
         staged_jsfx += copy_jsfx_sources(repo_root, plug_dir, effects_dir)
 
-        slug = p.get("slug")
-        if not slug:
-            die(f"Missing slug for plugin entry: {p}")
+        slug = spec.slug
 
         # Deterministic: stage what we just built
         v3, cl = stage_built_vst3_and_clap(repo_root, slug, build_config, vst3_dir, clap_dir)
@@ -866,7 +868,7 @@ def main() -> None:
         # Collect all .rpp tests under this plugin dir
         rpps = sorted([x for x in plug_dir.rglob("*.rpp") if x.is_file()])
         for rpp in rpps:
-            all_rpps.append((p, rpp))
+            all_rpps.append((spec, rpp))
             req = parse_rpp_requirements(rpp)
             required_clap_ids |= req["clap_ids"]
             required_vst3_names |= req["vst3_names"]
@@ -877,15 +879,15 @@ def main() -> None:
         die("No .rpp tests found under any JSFX plugin directories.")
 
     # --- Preflight: ensure required assets exist before running REAPER ---
-    for p, rpp in all_rpps:
+    for _, rpp in all_rpps:
         preflight_jsfx_required(effects_dir, rpp)
 
     # CLAP IDs referenced in projects should match plugin config clapIds (sanity check)
-    known_clap_ids = {p.get("clapId") for p in jsfx_plugins if p.get("clapId")}
+    known_clap_ids = {spec.clap_id for spec in jsfx_plugins if spec.clap_id}
     unknown_clap_ids = sorted([cid for cid in required_clap_ids if cid not in known_clap_ids])
     if unknown_clap_ids:
         die(
-            "RPP references CLAP IDs not present in plugins.json clapId fields:\n"
+            "RPP references CLAP IDs not present in plugin leaf metadata:\n"
             + "\n".join(f"  - {cid}" for cid in unknown_clap_ids)
         )
 
@@ -913,10 +915,10 @@ def main() -> None:
     failures = 0
     start_run = time.time()
 
-    for p, rpp in all_rpps:
+    for spec, rpp in all_rpps:
         tol = parse_tol_from_name(rpp.stem, default_tol)
         started = time.time()
-        print(f"\n=== {p.get('slug', p['dir'])} :: {rel(repo_root, rpp)} (tol={tol})")
+        print(f"\n=== {spec.slug} :: {rel(repo_root, rpp)} (tol={tol})")
 
         try:
             cp = run_reaper_render(reaper_exe, rpp, timeout_s=timeout_s, report_dir=report_dir)
@@ -962,7 +964,7 @@ def main() -> None:
 
         results.append(
             {
-                "plugin": p.get("slug", p["dir"]),
+                "plugin": spec.slug,
                 "rpp": rel(repo_root, rpp),
                 "render": rel(repo_root, wav) if wav.exists() else str(wav),
                 "tol": tol,

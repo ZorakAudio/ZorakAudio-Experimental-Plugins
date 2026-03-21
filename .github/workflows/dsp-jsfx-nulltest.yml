@@ -5,9 +5,11 @@ name: JSFX Null Tests
   workflow_dispatch: {}
   push:
     paths:
-      - "**/*.jsfx"
-      - "**/*.rpp"
-      - "plugins.json"
+      - "plugins/**"
+      - "scripts/**"
+      - "src/**"
+      - "cmake/plugin/**"
+      - "dsp_jsfx_aot.py"
       - ".ci/**"
   pull_request: {}
 

@@ -4,6 +4,7 @@
 
 #include "faust_support_min.h"
 #include "FaustDSP.h"
+#include "PluginMarkdownHelp.h"
 
 namespace
 {
@@ -407,7 +408,14 @@ public:
         apvts = std::make_unique<juce::AudioProcessorValueTreeState> (*this, nullptr, "PARAMS", std::move (layout));
     }
 
-    const juce::String getName() const override { return JucePlugin_Name; }
+    const juce::String getName() const override
+    {
+    #if defined(ZA_PLUGIN_NAME)
+        return ZA_PLUGIN_NAME;
+    #else
+        return JucePlugin_Name;
+    #endif
+    }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
@@ -473,10 +481,7 @@ public:
         dsp->compute (numSamples, inputPtrs.data(), outputPtrs.data());
     }
 
-    juce::AudioProcessorEditor* createEditor() override
-    {
-        return new juce::GenericAudioProcessorEditor (*this);
-    }
+    juce::AudioProcessorEditor* createEditor() override;
 
     bool hasEditor() const override { return true; }
 
@@ -530,6 +535,134 @@ private:
     }
 
 };
+
+
+class FaustJuceEditor final : public juce::AudioProcessorEditor
+{
+public:
+    explicit FaustJuceEditor (FaustJuceProcessor& p)
+        : juce::AudioProcessorEditor (&p)
+        , processor (p)
+        , genericEditor (std::make_unique<juce::GenericAudioProcessorEditor> (p))
+    {
+        setOpaque (true);
+        setColour (juce::ResizableWindow::backgroundColourId, juce::Colour (0xff2f3a41));
+
+        genericPrefWidth = juce::jmax (kMinEditorWidth, genericEditor->getWidth());
+        genericPrefHeight = juce::jmax (120, genericEditor->getHeight());
+
+        controlsViewport.setViewedComponent (genericEditor.get(), false);
+        controlsViewport.setScrollBarsShown (true, false, true, false);
+        controlsViewport.setSingleStepSizes (0, 32);
+        addAndMakeVisible (controlsViewport);
+
+        helpButton.setButtonText ("?");
+        helpButton.setTooltip ("Open embedded README");
+        helpButton.onClick = [this]
+        {
+            if (helpOverlay.isVisible())
+                hideHelp();
+            else
+                showHelp();
+        };
+        addAndMakeVisible (helpButton);
+
+        addChildComponent (helpOverlay);
+        helpOverlay.setVisible (false);
+
+        setResizable (true, true);
+
+        const auto plan = za::pluginui::planEditorSections (kTopBarH,
+                                                            kMinEditorWidth,
+                                                            kMaxEditorWidth,
+                                                            kMaxEditorHeight,
+                                                            true,
+                                                            genericPrefWidth,
+                                                            genericPrefHeight,
+                                                            false,
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            0);
+
+        setResizeLimits (plan.minWidth,
+                         juce::jmax (kTopBarH + 120, plan.minHeight),
+                         juce::jmax (kMaxEditorWidth, plan.minWidth),
+                         juce::jmax (kMaxEditorHeight, plan.minHeight));
+        setSize (plan.initialWidth, juce::jmax (plan.minHeight, plan.initialHeight));
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (findColour (juce::ResizableWindow::backgroundColourId));
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        auto top = r.removeFromTop (kTopBarH);
+
+        const int btnSize = 24;
+        helpButton.setBounds (top.getRight() - btnSize - 8, (kTopBarH - btnSize) / 2, btnSize, btnSize);
+        helpButton.toFront (false);
+
+        controlsViewport.setBounds (r);
+        updateEmbeddedEditorSize();
+        helpOverlay.setBounds (getLocalBounds());
+    }
+
+private:
+    static constexpr int kTopBarH = 40;
+    static constexpr int kMinEditorWidth = 520;
+    static constexpr int kMaxEditorWidth = 2400;
+    static constexpr int kMaxEditorHeight = 2200;
+
+    void updateEmbeddedEditorSize()
+    {
+        if (genericEditor == nullptr)
+            return;
+
+        const int width = juce::jmax (1, controlsViewport.getMaximumVisibleWidth());
+        const int height = juce::jmax (genericPrefHeight, controlsViewport.getMaximumVisibleHeight());
+        genericEditor->setSize (width, height);
+    }
+
+    void showHelp()
+    {
+        auto markdown = za::pluginui::getEmbeddedPluginReadmeMarkdown().trim();
+        if (markdown.isEmpty())
+            markdown = za::pluginui::fallbackReadmeMarkdown (processor.getName());
+
+        auto title = za::pluginui::firstMarkdownHeading (markdown).trim();
+        if (title.isEmpty())
+            title = processor.getName();
+
+        helpOverlay.setHeaderTitle (title);
+        helpOverlay.setMarkdownText (markdown);
+        helpOverlay.setVisible (true);
+        helpOverlay.toFront (true);
+        helpOverlay.grabKeyboardFocus();
+        resized();
+    }
+
+    void hideHelp()
+    {
+        helpOverlay.setVisible (false);
+    }
+
+    FaustJuceProcessor& processor;
+    std::unique_ptr<juce::GenericAudioProcessorEditor> genericEditor;
+    juce::Viewport controlsViewport;
+    juce::TextButton helpButton;
+    za::pluginui::MarkdownHelpOverlay helpOverlay;
+    int genericPrefWidth = 0;
+    int genericPrefHeight = 0;
+};
+
+juce::AudioProcessorEditor* FaustJuceProcessor::createEditor()
+{
+    return new FaustJuceEditor (*this);
+}
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
