@@ -255,13 +255,13 @@ private:
         auto t = line.trim();
         level = 0;
 
-        while (level < t.length() && t[(size_t) level] == '#')
+        while (level < t.length() && t[level] == '#')
             ++level;
 
         if (level <= 0 || level > 6)
             return false;
 
-        if (level >= t.length() || ! juce::CharacterFunctions::isWhitespace (t[(size_t) level]))
+        if (level >= t.length() || ! juce::CharacterFunctions::isWhitespace (t[level]))
             return false;
 
         text = t.substring (level).trim();
@@ -283,10 +283,10 @@ private:
         }
 
         int i = 0;
-        while (i < t.length() && juce::CharacterFunctions::isDigit (t[(size_t) i]))
+        while (i < t.length() && juce::CharacterFunctions::isDigit (t[i]))
             ++i;
 
-        if (i > 0 && i + 1 < t.length() && t[(size_t) i] == '.' && juce::CharacterFunctions::isWhitespace (t[(size_t) i + 1]))
+        if (i > 0 && i + 1 < t.length() && t[i] == '.' && juce::CharacterFunctions::isWhitespace (t[i + 1]))
         {
             ordered = true;
             marker = t.substring (0, i + 1);
@@ -393,8 +393,8 @@ private:
 
         for (int i = 0; i < text.length();)
         {
-            const auto c = text[(size_t) i];
-            const auto next = (i + 1 < text.length() ? text[(size_t) i + 1] : 0);
+            const juce::juce_wchar c = text[i];
+            const juce::juce_wchar next = (i + 1 < text.length() ? text[i + 1] : juce::juce_wchar());
 
             if (! code && c == '*' && next == '*')
             {
@@ -414,7 +414,7 @@ private:
 
             if (! code && (c == '*' || c == '_'))
             {
-                const auto prev = (i > 0 ? text[(size_t) i - 1] : 0);
+                const juce::juce_wchar prev = (i > 0 ? text[i - 1] : juce::juce_wchar());
                 const bool prevWord = juce::CharacterFunctions::isLetterOrDigit (prev);
                 const bool nextWord = juce::CharacterFunctions::isLetterOrDigit (next);
 
@@ -961,7 +961,7 @@ inline juce::String firstMarkdownHeading (const juce::String& markdown)
             continue;
 
         int count = 0;
-        while (count < line.length() && line[(size_t) count] == '#')
+        while (count < line.length() && line[count] == '#')
             ++count;
 
         if (count > 0 && count < line.length())

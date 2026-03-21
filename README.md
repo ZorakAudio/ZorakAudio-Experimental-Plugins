@@ -1,26 +1,34 @@
 [![Build & Release](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/release.yml/badge.svg)](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/release.yml)
 
-[![DSP-JSFX Null Test vs. Reaper JSFX](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/dsp-jsfx-nulltest.yml/badge.svg)](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/actions/workflows/dsp-jsfx-nulltest.yml)
-
 # ZorakAudio Experimental Plugins
 
-This repository is a **multi-plugin laboratory** for ZorakAudio DSP ideas.
+ZorakAudio Experimental Plugins is a category-organized repository for building, testing, packaging, and shipping a growing collection of experimental audio plugins.
 
-It now uses a **category-first plugin tree** with **no central `plugins.json`**. Every plugin lives in its own leaf folder under `plugins/`, carries its own `plugin.json`, and is auto-discovered by the build system and CI.
+It is not a single plugin project and it is not a loose dump of prototypes. It is a shared plugin platform: a place where DSP-JSFX, Faust, JUCE, CMake, per-plugin metadata, embedded documentation, and automated packaging all work together so new ideas can be added quickly without flattening the repository into chaos.
 
-The structure is intentionally simple:
+## What lives here
 
-- one top-level **category** folder
-- one **plugin key** folder inside that category
-- no extra X/Y subcategory layer
+This repository currently brings together:
 
-That keeps the repo easier to grow, and it lets release packages mirror the same category folders inside `VST3/` and `CLAP/`.
+- experimental **JSFX** plugins compiled into **VST3** and **CLAP** through the DSP-JSFX/JUCE toolchain
+- experimental **Faust** plugins packaged through the same JUCE-based infrastructure
+- a category-first plugin tree under `plugins/`
+- per-plugin metadata via leaf-local `plugin.json` files instead of a central `plugins.json`
+- per-plugin `README.md` files that are embedded directly into each plugin's `?` help panel
+- shared build, CI, packaging, and validation tooling for the entire catalog
 
----
+The current top-level plugin categories include:
 
-## Design rules for the plugin tree
+- `Ambience`
+- `Control`
+- `Dynamics`
+- `Restoration`
+- `Spatialization`
+- `Spectral`
 
-The repository now standardizes on this layout:
+## Repository shape
+
+Every plugin is a self-contained leaf:
 
 ```text
 plugins/
@@ -29,245 +37,53 @@ plugins/
       plugin.json
       README.md
       src/
-        <entry>.jsfx | <entry>.dsp
-      tests/   # optional
-      docs/    # optional
-      assets/  # optional
+      tests/    # optional
+      docs/     # optional
+      assets/   # optional
 ```
 
-Example:
+That keeps the tree future-proof:
 
-```text
-plugins/Spatialization/DDT/
-  plugin.json
-  README.md
-  src/DDT.jsfx
-  tests/DDT Null Test.rpp
-```
+- categories stay readable and intentionally broad
+- plugin metadata lives beside the source it describes
+- display names can evolve without forcing path redesigns
+- build and CI discovery stay automatic as the catalog grows
 
-A few conventions make this future-proof:
+The root README is intentionally high-level. Plugin-specific details belong in each leaf `README.md`.
 
-- `Category` is the only grouping layer under `plugins/`.
-- `PluginKey` is a short, stable folder key, usually the same as the plugin slug.
-- the human-facing plugin name lives in `plugin.json`, so display names can evolve without forcing deep path design
-- if a category gets crowded, add another top-level category instead of introducing another nesting layer
+## Build and packaging model
 
-See [`plugins/README.md`](plugins/README.md) for the conventions used by plugin leaves.
+The repository auto-discovers plugin leaves from the `plugins/` tree. There is no root plugin registry to maintain.
 
-Every leaf `README.md` is also embedded into the plugin binary and shown in the in-plugin `?` help panel. The old JSFX `#HELP` comment macro is now deprecated; keep the leaf README as the canonical user-facing guide.
-
----
-
-## What is in here
-
-The repository currently contains:
-
-- experimental **JSFX** plugins compiled through the DSP-JSFX/JUCE path into **VST3** and **CLAP**
-- experimental **Faust** plugins compiled through JUCE into **VST3** and **CLAP**
-- the DSP-JSFX AOT compiler, JUCE wrapper code, CMake glue, null-test tooling, and CI workflows needed to build the collection
-
-This is not meant to be a single uniform product line. It is a structured place to explore, test, package, and ship many independent DSP ideas without losing organization as the catalog grows.
-
----
-
-## Current catalog
-
-### Ambience
-
-- `ADS` — Ambience Discipline System (ADS) — JSFX
-
-### Control
-
-- `GesturePad` — GesturePad — JSFX
-
-### Dynamics
-
-- `ATTACK` — ATTACK — JSFX
-- `EasyExpander` — EasyExpander — JSFX
-- `GTS` — Gaussian Transient Shaper (GTS) — Faust
-- `ModTilt` — ModTilt — Faust
-- `RED` — Reverb Expanding Downwards (RED) — Faust
-- `RTT` — Reverb Tail Tamer — JSFX
-
-### Restoration
-
-- `ClickBeGoneSG` — Click-Be-Gone (SG) — Faust
-- `VAR` — Vocal Air Recovery (VAR) — Faust
-
-### Spatialization
-
-- `3DPanner` — Hyperreal 3D Panner — JSFX
-- `DDT` — Designed Distance Topology (DDT) — JSFX
-- `DOT` — Designed Occlusion Topology (DOT) — JSFX
-- `DPT` — Designed Panning Topology (DPT) — JSFX
-- `Roomalizer` — Roomalizer — JSFX
-- `SaliencePush` — Salience Push — JSFX
-
-### Spectral
-
-- `BedRock` — BedRock — JSFX
-- `ERBTilt` — ERB Tilt — JSFX
-- `SpectralStabilizer` — Spectral Stabilizer — JSFX
-- `TSEQ` — Temporal Structural EQ (TSEQ) — JSFX
-- `Texture` — Texture — JSFX
-
----
-
-## Build workflow
-
-### 1. Get submodules
-
-```bash
-git submodule update --init --recursive
-```
-
-### 2. Install Python dependency
-
-```bash
-python -m pip install --upgrade pip llvmlite
-```
-
-For JSFX null tests you also need `numpy`:
-
-```bash
-python -m pip install numpy
-```
-
-### 3. Install external build tools
-
-Typical requirements:
-
-- **CMake**
-- **Ninja** on macOS/Linux
-- **Visual Studio + MSVC** on Windows
-- **Faust** if you want to build the `.dsp` plugins
-
-### 4. Inspect discovery
+Useful entry points:
 
 ```bash
 python scripts/build.py --list
-```
-
-### 5. Build everything
-
-```bash
 python scripts/build.py --config Release --tag dev --out dist
 ```
 
-### 6. Build a single plugin
+Release artifacts are packaged by category so the output mirrors the repository structure inside `VST3/` and `CLAP/`. That keeps installs organized and makes the repository itself a close preview of the shipped layout.
+
+## Correctness and validation
+
+The repository is moving away from treating REAPER null tests as the primary validation story.
+
+The scalable correctness path is the built-in **WDL/EEL2 shadow runtime** enabled with `--correctness-check`:
 
 ```bash
-python scripts/build.py --config Release --tag dev --only DDT
+python scripts/build.py --config Release --tag dev --out dist --correctness-check
 ```
 
-`--only` matches category, plugin key, slug, plugin name, repository path, bundle id, and CLAP id.
-
----
-
-## Release package layout
-
-A packaged build now looks like this:
-
-```text
-dist/<tag>/<os>/ZorakAudio-Experimental-Plugins-<tag>-<os>/
-  VST3/
-    Spatialization/
-      Designed Distance Topology (DDT).vst3
-  CLAP/
-    Spatialization/
-      Designed Distance Topology (DDT).clap
-  INSTALL.txt
-  manifest.json
-```
-
-This is intentional: the CI/release artifacts are organized so users can copy the **category folders** from `VST3/` and `CLAP/` directly into their plugin directories.
-
-Practical note: many hosts recurse through subfolders just fine, but not every host behaves the same way. If a specific host does not pick up category subfolders, flatten that host's install folder as a fallback.
-
-Current format behavior in this repository:
-
-- **VST3**: built on all supported platforms
-- **CLAP**: currently packaged on Windows and Linux in this repository's build script
-
----
-
-## JSFX null tests
-
-The Windows null-test workflow uses portable REAPER and auto-discovers test projects from plugin leaf folders.
-
-Typical layout:
-
-```text
-plugins/<Category>/<PluginKey>/tests/*.rpp
-```
-
-Run locally with:
+You can also target a single plugin:
 
 ```bash
-python scripts/run_dsp-jsfx_nulltests.py
+python scripts/build.py --config Release --tag dev --out dist --only DDT --correctness-check
 ```
 
-The null-test workflow watches the plugin tree plus the build/runtime scripts that affect discovery and packaging.
+That mode builds JSFX plugins with shadow EEL2 instrumentation so the compiled DSP-JSFX path can be checked against a WDL/EEL2 reference execution path. For a repository designed to scale across many plugins, that is a better long-term fit than centering the workflow around REAPER project-based null tests.
 
----
+## Why this repository matters
 
-## Adding a new plugin
+This repository is the experimental side of the ZorakAudio plugin ecosystem: a place to explore new DSP ideas seriously, with real packaging, real documentation, real correctness tooling, and a structure that can keep expanding without collapsing into manual bookkeeping.
 
-The fastest route is to scaffold a leaf folder and then replace the placeholder source.
-
-### Option A: use the scaffold script
-
-```bash
-python scripts/new_plugin.py Dynamics NewIdea \
-  --name "New Idea" \
-  --plugin-code NIDE \
-  --plugin-type jsfx
-```
-
-That creates:
-
-```text
-plugins/Dynamics/NewIdea/
-  plugin.json
-  README.md
-  src/NewIdea.jsfx
-```
-
-### Option B: create the leaf manually
-
-1. create `plugins/<Category>/<PluginKey>/`
-2. add `plugin.json`
-3. add the entry source file in `src/`
-4. add `README.md`
-5. optionally add `tests/`, `docs/`, or `assets/`
-6. run `python scripts/build.py --list`
-7. build
-
-Minimal `plugin.json` example:
-
-```json
-{
-  "name": "Designed Distance Topology (DDT)",
-  "slug": "DDT",
-  "pluginCode": "DDT2",
-  "bundleId": "com.zorakaudio.experimental.ddt",
-  "clapId": "com.zorakaudio.experimental.ddt",
-  "clapFeatures": ["audio-effect"],
-  "pluginType": "jsfx",
-  "entry": "src/DDT.jsfx"
-}
-```
-
-The leaf folder key is usually the same as `slug`, but the human-facing display name can be longer and live in `name`.
-
----
-
-## Repository highlights
-
-- no central plugin registry to maintain
-- categories map cleanly to packaged install folders
-- plugin metadata lives beside the source it describes
-- CI auto-discovers plugins from the tree
-- folder keys are stable and concise, while display names remain flexible
-
-That makes the repository easier to maintain as an experimental plugin collection rather than a flat pile of unrelated folders.
+If you are browsing the project for the first time, the best next places to look are `plugins/README.md`, any individual `plugins/<Category>/<PluginKey>/README.md`, and `scripts/new_plugin.py`.
