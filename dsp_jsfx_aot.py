@@ -1207,6 +1207,8 @@ class LLVMModuleEmitter:
         # 23: i64 pendingSliderChangeMask
         # 24: i64 pendingSliderAutomateMask
         # 25: i64 pendingSliderAutomateEndMask
+        # 26: uint32_t randMT[624]
+        # 27: uint32_t randIndex (0 means uninitialized; mirrors EEL2 __idx)
         self.var_cap = max(1, (max(sym.vars.values()) + 1) if sym.vars else 1)
         self.midi_event_ty = ir.LiteralStructType([self.i32, self.i32, self.i32, self.i32])
 
@@ -1237,6 +1239,8 @@ class LLVMModuleEmitter:
             self.i64,
             self.i64,
             self.i64,
+            ir.ArrayType(self.i32, 624),
+            self.i32,
         ])
         self.state_ptr = self.state_ty.as_pointer()
 
@@ -1271,6 +1275,7 @@ class LLVMModuleEmitter:
         )
 
         self._intrinsics: Dict[str, ir.Function] = {}
+        self._rand_gen32_fn: Optional[ir.Function] = None
         self.user_fn_defs: Dict[str, FunctionDef] = {}
         self.user_fn_ir: Dict[str, ir.Function] = {}
         self._local_slots_stack: List[Dict[str, ir.Value]] = []
@@ -1303,6 +1308,9 @@ class LLVMModuleEmitter:
 
     def _const_i64(self, v: int) -> ir.Constant:
         return ir.Constant(self.i64, int(v))
+
+    def _const_i32(self, v: int) -> ir.Constant:
+        return ir.Constant(self.i32, int(v))
 
     def _truthy(self, x: ir.Value, builder: ir.IRBuilder) -> ir.Value:
         return builder.fcmp_ordered("!=", x, self._const_f64(0.0))
@@ -1417,6 +1425,198 @@ class LLVMModuleEmitter:
         fld = ir.Constant(self.i32, 4)
         nptr = builder.gep(st, [zero, fld], inbounds=True)
         return builder.load(nptr)
+
+    def _get_rand_mt_ptr(self, builder: ir.IRBuilder, st: ir.Value) -> ir.Value:
+        zero = ir.Constant(self.i32, 0)
+        fld = ir.Constant(self.i32, 26)
+        return builder.gep(st, [zero, fld], inbounds=True)
+
+    def _get_rand_idx_ptr(self, builder: ir.IRBuilder, st: ir.Value) -> ir.Value:
+        zero = ir.Constant(self.i32, 0)
+        fld = ir.Constant(self.i32, 27)
+        return builder.gep(st, [zero, fld], inbounds=True)
+
+    def _ensure_rand_gen32_fn(self) -> ir.Function:
+        if self._rand_gen32_fn is not None:
+            return self._rand_gen32_fn
+
+        N = 624
+        M = 397
+        MATRIX_A = 0x9908B0DF
+        UPPER_MASK = 0x80000000
+        LOWER_MASK = 0x7FFFFFFF
+
+        fn = ir.Function(self.module, ir.FunctionType(self.i32, [self.state_ptr]), name="jsfx_rand_genrand_int32")
+        fn.linkage = "internal"
+        self._rand_gen32_fn = fn
+
+        entry = fn.append_basic_block("entry")
+        init_seed = fn.append_basic_block("init_seed")
+        init_cond = fn.append_basic_block("init_cond")
+        init_body = fn.append_basic_block("init_body")
+        init_done = fn.append_basic_block("init_done")
+        after_init = fn.append_basic_block("after_init")
+        twist_entry = fn.append_basic_block("twist_entry")
+        twist1_cond = fn.append_basic_block("twist1_cond")
+        twist1_body = fn.append_basic_block("twist1_body")
+        twist1_done = fn.append_basic_block("twist1_done")
+        twist2_cond = fn.append_basic_block("twist2_cond")
+        twist2_body = fn.append_basic_block("twist2_body")
+        twist2_done = fn.append_basic_block("twist2_done")
+        twist_last = fn.append_basic_block("twist_last")
+        after_twist = fn.append_basic_block("after_twist")
+        no_twist = fn.append_basic_block("no_twist")
+        temper = fn.append_basic_block("temper")
+
+        st = fn.args[0]
+        st.name = "st"
+
+        c0 = self._const_i32(0)
+        c1 = self._const_i32(1)
+        c7 = self._const_i32(7)
+        c11 = self._const_i32(11)
+        c15 = self._const_i32(15)
+        c18 = self._const_i32(18)
+        c30 = self._const_i32(30)
+        cN = self._const_i32(N)
+        cM = self._const_i32(M)
+        cN_minus_M = self._const_i32(N - M)
+        cN_minus_1 = self._const_i32(N - 1)
+        cMatrixA = self._const_i32(MATRIX_A)
+        cUpperMask = self._const_i32(UPPER_MASK)
+        cLowerMask = self._const_i32(LOWER_MASK)
+        cTemperB = self._const_i32(0x9D2C5680)
+        cTemperC = self._const_i32(0xEFC60000)
+        cSeed = self._const_i32(0x4141F00D)
+        cInitMul = self._const_i32(1812433253)
+
+        def _as_i32(idx: Any) -> ir.Value:
+            if isinstance(idx, ir.Value):
+                return idx
+            return self._const_i32(int(idx))
+
+        def _mt_elem_ptr(builder: ir.IRBuilder, idx: Any) -> ir.Value:
+            mt_ptr = self._get_rand_mt_ptr(builder, st)
+            return builder.gep(mt_ptr, [c0, _as_i32(idx)], inbounds=True)
+
+        def _load_mt(builder: ir.IRBuilder, idx: Any) -> ir.Value:
+            return builder.load(_mt_elem_ptr(builder, idx))
+
+        def _store_mt(builder: ir.IRBuilder, idx: Any, value: ir.Value) -> None:
+            builder.store(value, _mt_elem_ptr(builder, idx))
+
+        def _twist_value(builder: ir.IRBuilder, idx_a: Any, idx_b: Any, idx_src: Any) -> ir.Value:
+            y_hi = builder.and_(_load_mt(builder, idx_a), cUpperMask)
+            y_lo = builder.and_(_load_mt(builder, idx_b), cLowerMask)
+            y = builder.or_(y_hi, y_lo)
+            y_lsb = builder.and_(y, c1)
+            use_matrix = builder.icmp_unsigned("!=", y_lsb, c0)
+            mag = builder.select(use_matrix, cMatrixA, c0)
+            mixed = builder.xor(builder.lshr(y, c1), mag)
+            return builder.xor(_load_mt(builder, idx_src), mixed)
+
+        b = ir.IRBuilder(entry)
+        idx_ptr = self._get_rand_idx_ptr(b, st)
+        idx0 = b.load(idx_ptr, name="rand_idx")
+        idx_is_zero = b.icmp_unsigned("==", idx0, c0)
+        b.cbranch(idx_is_zero, init_seed, after_init)
+
+        b = ir.IRBuilder(init_seed)
+        _store_mt(b, 0, cSeed)
+        b.branch(init_cond)
+
+        b = ir.IRBuilder(init_cond)
+        mti_init = b.phi(self.i32, name="mti_init")
+        mti_init.add_incoming(c1, init_seed)
+        init_more = b.icmp_unsigned("<", mti_init, cN)
+        b.cbranch(init_more, init_body, init_done)
+
+        b = ir.IRBuilder(init_body)
+        prev_idx = b.sub(mti_init, c1)
+        prev = _load_mt(b, prev_idx)
+        prev_mix = b.xor(prev, b.lshr(prev, c30))
+        seeded = b.add(b.mul(cInitMul, prev_mix), mti_init)
+        _store_mt(b, mti_init, seeded)
+        next_mti = b.add(mti_init, c1)
+        b.branch(init_cond)
+        mti_init.add_incoming(next_mti, init_body)
+
+        b = ir.IRBuilder(init_done)
+        b.store(cN, idx_ptr)
+        b.branch(after_init)
+
+        b = ir.IRBuilder(after_init)
+        mti_cur = b.phi(self.i32, name="mti")
+        mti_cur.add_incoming(idx0, entry)
+        mti_cur.add_incoming(cN, init_done)
+        need_twist = b.icmp_unsigned(">=", mti_cur, cN)
+        b.cbranch(need_twist, twist_entry, no_twist)
+
+        b = ir.IRBuilder(twist_entry)
+        b.store(c1, idx_ptr)
+        b.branch(twist1_cond)
+
+        b = ir.IRBuilder(twist1_cond)
+        kk1 = b.phi(self.i32, name="kk1")
+        kk1.add_incoming(c0, twist_entry)
+        twist1_more = b.icmp_unsigned("<", kk1, cN_minus_M)
+        b.cbranch(twist1_more, twist1_body, twist1_done)
+
+        b = ir.IRBuilder(twist1_body)
+        kk1_p1 = b.add(kk1, c1)
+        kk1_pM = b.add(kk1, cM)
+        twist1_val = _twist_value(b, kk1, kk1_p1, kk1_pM)
+        _store_mt(b, kk1, twist1_val)
+        kk1_next = b.add(kk1, c1)
+        b.branch(twist1_cond)
+        kk1.add_incoming(kk1_next, twist1_body)
+
+        b = ir.IRBuilder(twist1_done)
+        b.branch(twist2_cond)
+
+        b = ir.IRBuilder(twist2_cond)
+        kk2 = b.phi(self.i32, name="kk2")
+        kk2.add_incoming(cN_minus_M, twist1_done)
+        twist2_more = b.icmp_unsigned("<", kk2, cN_minus_1)
+        b.cbranch(twist2_more, twist2_body, twist2_done)
+
+        b = ir.IRBuilder(twist2_body)
+        kk2_p1 = b.add(kk2, c1)
+        kk2_src = b.sub(kk2, cN_minus_M)
+        twist2_val = _twist_value(b, kk2, kk2_p1, kk2_src)
+        _store_mt(b, kk2, twist2_val)
+        kk2_next = b.add(kk2, c1)
+        b.branch(twist2_cond)
+        kk2.add_incoming(kk2_next, twist2_body)
+
+        b = ir.IRBuilder(twist2_done)
+        b.branch(twist_last)
+
+        b = ir.IRBuilder(twist_last)
+        twist_last_val = _twist_value(b, N - 1, 0, M - 1)
+        _store_mt(b, N - 1, twist_last_val)
+        b.branch(after_twist)
+
+        b = ir.IRBuilder(after_twist)
+        b.branch(temper)
+
+        b = ir.IRBuilder(no_twist)
+        next_idx = b.add(mti_cur, c1)
+        b.store(next_idx, idx_ptr)
+        b.branch(temper)
+
+        b = ir.IRBuilder(temper)
+        out_idx = b.phi(self.i32, name="out_idx")
+        out_idx.add_incoming(mti_cur, no_twist)
+        out_idx.add_incoming(c0, after_twist)
+        y = _load_mt(b, out_idx)
+        y = b.xor(y, b.lshr(y, c11))
+        y = b.xor(y, b.and_(b.shl(y, c7), cTemperB))
+        y = b.xor(y, b.and_(b.shl(y, c15), cTemperC))
+        y = b.xor(y, b.lshr(y, c18))
+        b.ret(y)
+
+        return fn
 
     def _mem_elem_ptr(self, builder, st_ptr, base_expr, idx_expr):
         """
@@ -2039,7 +2239,36 @@ class LLVMModuleEmitter:
                 a0 = self.emit_expr(builder, st, n.args[0])
                 return builder.call(fdecl, [a0])
 
+            if fn == "rand":
+                # JSFX builtin: rand([max])
+                #
+                # Mirrors EEL2's nseel_int_rand():
+                #   x = floor(arg);
+                #   if (x < 1.0) x = 1.0;
+                #   return genrand_int32() * (1.0 / 0xFFFFFFFF) * x;
+                #
+                # We intentionally keep the RNG state per DSPJSFX_State instance
+                # rather than process-global static storage. The algorithm, seed,
+                # index progression, floor/clamp behavior, and output scaling match
+                # EEL2; only the cross-instance global coupling is omitted.
+                if len(n.args) > 1:
+                    raise ValueError("rand expects 0 or 1 args")
 
+                if len(n.args) == 1:
+                    floor_fn = self._declare_math("floor")
+                    max_v = self.emit_expr(builder, st, n.args[0])
+                    max_v = builder.call(floor_fn, [max_v])
+                else:
+                    max_v = self._const_f64(1.0)
+
+                use_one = builder.fcmp_ordered("<", max_v, self._const_f64(1.0))
+                max_v = builder.select(use_one, self._const_f64(1.0), max_v)
+
+                gen_fn = self._ensure_rand_gen32_fn()
+                rand_u32 = builder.call(gen_fn, [st])
+                rand_f64 = builder.uitofp(rand_u32, self.double)
+                scale = self._const_f64(1.0 / 4294967295.0)
+                return builder.fmul(builder.fmul(rand_f64, scale), max_v)
 
             if fn == "freembuf":
                 # JSFX builtin: freembuf(top)
@@ -2634,6 +2863,8 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    int64_t pendingSliderChangeMask;")
     lines.append("    int64_t pendingSliderAutomateMask;")
     lines.append("    int64_t pendingSliderAutomateEndMask;")
+    lines.append("    uint32_t randMT[624];")
+    lines.append("    uint32_t randIndex;")
     lines.append("} DSPJSFX_State;")
     lines.append("")
 

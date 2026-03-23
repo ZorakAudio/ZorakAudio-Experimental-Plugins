@@ -1,14 +1,12 @@
-desc:Bedrock - Adaptive Subharmonic Engine
+desc:BedRock - Adaptive Subharmonic Engine V3
 
 /*
-  V2 Upgrades (still 5 knobs):
-  - Dual engine: Divider (robust for impacts) + Pitch-locked sine (clean for tonal bass)
-  - Confidence-based auto crossfade between engines
-  - Psychoacoustic harmonic translation layer (band-limited harmonics for small speakers)
-  - 4th-order band-limiting (cascade of 2nd-order Butterworth HP + LP = LR4-ish slopes)
-  - Short-term energy manager (prevents sustained low-end fatigue build-up)
-  - Auto sidechain detect: if audio is present on spl2/spl3, it triggers the gate (pitch still from source)
-  - @gfx meters: Gate / Confidence / Sine% / Lim GR / Energy GR / Detected freq / SC active
+  V3 Objective Upgrades (still 5 knobs):
+  - Robust pitch lock with 3-sample median outlier rejection
+  - Hold-last-valid pitch with graceful sine-engine decay
+  - Event-locked micro-burst layer for tactile attacks
+  - Dedicated <60 Hz LF budget controller in addition to energy clamp
+  - Expanded @gfx: Gate / Confidence / Hold / Burst / Sine% / Lim GR / Energy GR / LF Budget GR / Detected freq / SC active
 
   Routing:
   - Normal: insert on a bass/impact track
@@ -17,13 +15,14 @@ desc:Bedrock - Adaptive Subharmonic Engine
 
 // #HELP: Generates a controlled, pitch-aware sub layer beneath the input (not an EQ boost).
 // #HELP: Tracks bass pitch and synthesizes lower octaves (-1 / -2) using sine or divider engines.
-// #HELP: Automatically switches engines based on pitch stability (clean for tonal, robust for impacts).
+// #HELP: Uses median outlier rejection + pitch hold so the sine engine stays locked through short dropouts.
+// #HELP: Adds transient micro-bursts for impact and a dedicated <60 Hz LF budget for safer low-end density.
 // #HELP: Band-limits the sub and adds harmonic translation so it remains audible on small speakers.
 // #HELP: Includes transient gating, optional sustain bloom (Cinematic), and built-in energy control.
 // #HELP: Use on kick, bass, impacts, or thin sources needing weight without uncontrolled boom.
 // #HELP: Optional sidechain trigger via channels 3/4 (gate follows SC, pitch follows source).
 
-// #TOOLTIP: Selects the internal sub-generation profile (gate/sustain, engine bias, limiting, translation).
+// #TOOLTIP: Selects the internal sub-generation profile (gate/sustain, engine bias, burst behavior, limiting, translation).
 slider1:0<0,2,1{Anchor,Cinematic,Impact}>Style
 
 // #TOOLTIP: Overall amount of synthesized foundation added (fundamental + translation), with safety scaling.
@@ -32,16 +31,18 @@ slider2:40<0,100,0.1>Amount (%)
 // #TOOLTIP: Controls octave emphasis of the generated layer (0%=no octave drop, 100%=-2 oct focus via f/4).
 slider3:0<0,100,0.1>Depth (-2) (%)
 
-// #TOOLTIP: Tightness/cleanup of the low layer (higher=tighter gate, stricter pitch-confidence, stronger energy clamp).
+// #TOOLTIP: Tightness/cleanup of the low layer (higher=tighter gate, stricter pitch-confidence, shorter hold, stronger LF budgeting).
 slider4:60<0,100,0.1>Tightness (%)
 
 // #TOOLTIP: Shifts sub bandlimits + translation band (lower=darker/deeper, higher=brighter/more audible bass harmonics).
 slider5:40<0,100,0.1>Tone (%)
+
 @init
 /* ---------------- helpers ---------------- */
 function db2lin(db) ( 10^(db/20); );
 function clamp(x,lo,hi) ( min(hi,max(lo,x)); );
 function lerp(a,b,t) ( a + (b-a)*t; );
+function med3(a,b,c) ( max(min(a,b), min(max(a,b), c)); );
 function hz2a(fc) (
   fc = max(0.001, fc);
   1 - exp(-2*$pi*fc/srate);
@@ -52,7 +53,6 @@ function ms2c(ms) local(tau)(
 );
 function lin2db(x) ( 20*log(max(0.00000000000000000001,x))/log(10); );
 function softsat(x) (
-  // smooth, cheap saturator: x/(1+|x|)
   x / (1 + abs(x));
 );
 
@@ -61,12 +61,12 @@ function softsat(x) (
   twopi = 2*$pi;
 
   // UI size
-  gfx_w = 430; gfx_h = 165;
+  gfx_w = 460; gfx_h = 210;
 
   // Sidechain detect
   scEnv = 0;
   scEnvC = ms2c(120);
-  scThresh = 0.0001; // presence threshold
+  scThresh = 0.0001;
 
   // Detector (gate) filter states (1-pole HP->LP)
   det_lp_hp = 0;
@@ -77,9 +77,9 @@ function softsat(x) (
   pit_lp    = 0;
 
   // Envelopes
-  envFast = 0;     // from detector (SC or SRC)
-  envSlow = 0;     // from detector (SC or SRC)
-  srcSlow = 0;     // from source (for sustain + hysteresis)
+  envFast = 0;
+  envSlow = 0;
+  srcSlow = 0;
   gateEnv = 0;
 
   // Divider / pitch timing
@@ -89,36 +89,52 @@ function softsat(x) (
   div2count = 0;
   samplesSinceRise = 0;
 
-  periodSmooth = 1200; // ~40Hz at 48k
+  periodSmooth = 1200;
   periodDev    = 0;
   freqSmooth   = 60;
 
+  // Pitch history / hold
+  per0 = 1200;
+  per1 = 1200;
+  per2 = 1200;
+  perPos = 0;
+  perFill = 0;
+  lastGoodFreq = 60;
+  pitchHoldSamps = 1000000;
+
   // Oscillator phases
-  phase2 = 0;  // f/2
-  phase4 = 0;  // f/4
+  phase2 = 0;
+  phase4 = 0;
 
   // Sub bandlimit filter states (LR4-ish: 2x biquad HP + 2x biquad LP)
-  sub_hp1_z1 = sub_hp1_z2 = 0;
-  sub_hp2_z1 = sub_hp2_z2 = 0;
-  sub_lp1_z1 = sub_lp1_z2 = 0;
-  sub_lp2_z1 = sub_lp2_z2 = 0;
+  sub_hp1_z1 = 0; sub_hp1_z2 = 0;
+  sub_hp2_z1 = 0; sub_hp2_z2 = 0;
+  sub_lp1_z1 = 0; sub_lp1_z2 = 0;
+  sub_lp2_z1 = 0; sub_lp2_z2 = 0;
 
   // Harmonic bandpass filter states (LR4-ish HP + LP)
-  h_hp1_z1 = h_hp1_z2 = 0;
-  h_hp2_z1 = h_hp2_z2 = 0;
-  h_lp1_z1 = h_lp1_z2 = 0;
-  h_lp2_z1 = h_lp2_z2 = 0;
+  h_hp1_z1 = 0; h_hp1_z2 = 0;
+  h_hp2_z1 = 0; h_hp2_z2 = 0;
+  h_lp1_z1 = 0; h_lp1_z2 = 0;
+  h_lp2_z1 = 0; h_lp2_z2 = 0;
 
-  // Guard LP (<40Hz) biquad state
-  g_lp_z1 = g_lp_z2 = 0;
+  // Guard LP (<40 Hz) biquad state
+  g_lp_z1 = 0; g_lp_z2 = 0;
   guard_rms = 0;
   guardGain = 1;
+
+  // LF budget (<60 Hz) LP states / RMS
+  low60dry_z1 = 0; low60dry_z2 = 0;
+  low60wet_z1 = 0; low60wet_z2 = 0;
+  lowDryRms = 0;
+  lowWetRms = 0;
+  lowBudgetGain = 1;
 
   // Energy manager
   energy_rms = 0;
   energyGain = 1;
 
-  // Peak limiter (sub path)
+  // Peak limiter (wet path)
   limGain = 1;
 
   // Output safety limiter
@@ -127,12 +143,25 @@ function softsat(x) (
   // AM movement
   amPhase = 0;
 
+  // Burst engine
+  burstPos = 1;
+  burstInc = 1;
+  burstGain = 0;
+  burstDelay = 0;
+  burstCooldown = 0;
+  burstNow = 0;
+  transientPrev = 0;
+  envFastPrev = 0;
+
   // Meters
   meterGate = 0;
   meterConf = 0;
+  meterHold = 0;
+  meterBurst = 0;
   meterSine = 0;
   meterLimGR = 0;
   meterEngGR = 0;
+  meterLFGR = 0;
   meterFreq  = 0;
   meterSC    = 0;
   meterC = ms2c(80);
@@ -171,11 +200,15 @@ function softsat(x) (
   baseAMDepth   = 0.06;
   baseAMRate    = 0.50;
 
-  styleSineBias = 0.65;   // how much we prefer sine when confidence is good
-  baseHarmMix   = 0.10;   // psychoacoustic layer base
+  styleSineBias = 0.65;
+  baseHarmMix   = 0.10;
   baseHarmDrive = 2.0;
 
-  baseEnergyDb  = -23;    // short-term RMS target (sub fundamental)
+  baseEnergyDb  = -23;
+  baseHoldMs    = 260;
+  baseBurstLenMs = 24;
+  baseBurstAmt   = 0.26;
+  baseLowAbsDb   = -24;
 
   harmHP0 = 90;
   harmLP0 = 220;
@@ -206,7 +239,11 @@ function softsat(x) (
     baseHarmMix   = 0.14;
     baseHarmDrive = 2.4;
 
-    baseEnergyDb  = -21;
+    baseEnergyDb   = -21;
+    baseHoldMs     = 340;
+    baseBurstLenMs = 34;
+    baseBurstAmt   = 0.22;
+    baseLowAbsDb   = -22;
 
     harmHP0 = 100;
     harmLP0 = 240;
@@ -238,7 +275,11 @@ function softsat(x) (
     baseHarmMix   = 0.08;
     baseHarmDrive = 3.0;
 
-    baseEnergyDb  = -19;
+    baseEnergyDb   = -19;
+    baseHoldMs     = 180;
+    baseBurstLenMs = 16;
+    baseBurstAmt   = 0.34;
+    baseLowAbsDb   = -20;
 
     harmHP0 = 120;
     harmLP0 = 280;
@@ -287,13 +328,22 @@ function softsat(x) (
   sub2Db   = lerp(-60, baseSub2MaxDb, depth);
   sub2Gain = db2lin(sub2Db) * amt;
 
-  // Divider calibration (square is “hotter” than sine)
+  // Divider calibration (square is hotter than sine)
   divCal   = lerp(0.55, 0.70, 1-tight);
 
   // Sine confidence gate threshold: tighter = requires more stability
   confThresh = lerp(0.10, 0.45, tight);
   // Period jitter tolerance: tighter = less tolerance
   jitterTol  = lerp(0.28, 0.14, tight);
+
+  // Pitch hold and burst behavior
+  holdMs = clamp(baseHoldMs * (1.25 - 0.65*tight), 120, 450);
+  holdSampsMax = max(1, floor(holdMs*0.001*srate));
+
+  burstLenMs = clamp(baseBurstLenMs * (1.35 - 0.55*tight), 10, 60);
+  burstBaseGain = baseBurstAmt * (0.55 + 0.45*amt) * (1 - 0.15*tight);
+  burstCooldownSamps = max(1, floor((18 + 22*tight)*0.001*srate));
+  burstDelayMax = max(0, floor((2 + 5*(1-tight))*0.001*srate));
 
   // Harmonic band (moves with tone)
   harmHP = clamp(harmHP0 + (tone-0.5)*40, 70, 200);
@@ -309,15 +359,23 @@ function softsat(x) (
   limRelC   = ms2c(baseLimRelMs);
 
   // Energy manager target and timing
-  energyDb = baseEnergyDb + (amt-0.5)*4 - 3*tight; // more amount allows slightly more; tighter clamps earlier
+  energyDb = baseEnergyDb + (amt-0.5)*4 - 3*tight;
   energyTarget = db2lin(energyDb);
-  energyRMSC   = ms2c(1800);  // ~1.8s integration
-  energyGainC  = ms2c(220);   // GR smoothing
+  energyRMSC   = ms2c(1800);
+  energyGainC  = ms2c(220);
 
-  // LF guard (<40) (fixed)
+  // LF guard (<40 Hz)
   guardThresh = db2lin(-24);
   guardRMSC   = ms2c(500);
   guardGainC  = ms2c(220);
+
+  // LF budget under 60 Hz
+  lfBudgetBoost = db2lin(3);
+  lfBudgetExtra = sqrt(max(lfBudgetBoost*lfBudgetBoost - 1, 0));
+  lowAbsDb      = baseLowAbsDb + 5*amt - 4*tight;
+  lowAbsTarget  = db2lin(lowAbsDb);
+  lowBudgetRMSC = ms2c(260);
+  lowBudgetGainC = ms2c(70);
 
   // AM movement scales down with tightness
   amDepth = baseAMDepth * (0.3 + 0.7*amt) * (1 - 0.7*tight);
@@ -335,6 +393,7 @@ function softsat(x) (
   harmHPC  = min(harmHP,  srate*0.45);
   harmLPC  = min(harmLP,  srate*0.45);
   gfc      = min(40,      srate*0.45);
+  low60fc  = min(60,      srate*0.45);
 
   // --- sub HP biquad ---
   w0 = twopi*floorHzC/srate; cosw=cos(w0); sinw=sin(w0);
@@ -372,7 +431,7 @@ function softsat(x) (
   hLP_b0=b0*inva0; hLP_b1=b1*inva0; hLP_b2=b2*inva0;
   hLP_a1=a1*inva0; hLP_a2=a2*inva0;
 
-  // --- guard LP (<40Hz) biquad ---
+  // --- guard LP (<40 Hz) biquad ---
   w0 = twopi*gfc/srate; cosw=cos(w0); sinw=sin(w0);
   alpha = sinw/(2*Qbw);
   b0=(1-cosw)*0.5; b1=(1-cosw); b2=(1-cosw)*0.5;
@@ -380,6 +439,15 @@ function softsat(x) (
   inva0=1/a0;
   gLP_b0=b0*inva0; gLP_b1=b1*inva0; gLP_b2=b2*inva0;
   gLP_a1=a1*inva0; gLP_a2=a2*inva0;
+
+  // --- LF budget LP (<60 Hz) biquad ---
+  w0 = twopi*low60fc/srate; cosw=cos(w0); sinw=sin(w0);
+  alpha = sinw/(2*Qbw);
+  b0=(1-cosw)*0.5; b1=(1-cosw); b2=(1-cosw)*0.5;
+  a0=1+alpha; a1=-2*cosw; a2=1-alpha;
+  inva0=1/a0;
+  low60_b0=b0*inva0; low60_b1=b1*inva0; low60_b2=b2*inva0;
+  low60_a1=a1*inva0; low60_a2=a2*inva0;
 
 /* ---------------- audio ---------------- */
 @sample
@@ -392,14 +460,23 @@ function softsat(x) (
     spl0 = inL;
     spl1 = inR;
 
-    // meters decay
-    meterGate += meterC*(0 - meterGate);
-    meterConf += meterC*(0 - meterConf);
-    meterSine += meterC*(0 - meterSine);
+    meterGate  += meterC*(0 - meterGate);
+    meterConf  += meterC*(0 - meterConf);
+    meterHold  += meterC*(0 - meterHold);
+    meterBurst += meterC*(0 - meterBurst);
+    meterSine  += meterC*(0 - meterSine);
     meterLimGR += meterC*(0 - meterLimGR);
     meterEngGR += meterC*(0 - meterEngGR);
+    meterLFGR  += meterC*(0 - meterLFGR);
     meterFreq  += meterC*(0 - meterFreq);
     meterSC    += meterC*(0 - meterSC);
+
+    burstPos = 1;
+    burstDelay = 0;
+    burstCooldown = 0;
+    burstNow = 0;
+    transientPrev = 0;
+    envFastPrev = 0;
   ) : (
 
     /* --- sidechain detect (channels 3/4) --- */
@@ -411,7 +488,6 @@ function softsat(x) (
     /* --- detector path (for gating): SC if present, else source --- */
     detIn = useSC ? scMono : srcMono;
 
-    // 1-pole HP -> LP
     det_lp_hp += a_detHP*(detIn - det_lp_hp);
     det_hp = detIn - det_lp_hp;
     det_lp += a_detLP*(det_hp - det_lp);
@@ -441,6 +517,9 @@ function softsat(x) (
       gateEnv += gateRelC*(gateT - gateEnv);
     );
 
+    crest = envFast/(envSlow + eps);
+    attackSlope = max(0, envFast - envFastPrev);
+
     /* --- sustain option (Cinematic) + sustain duck --- */
     sustainAmt = clamp(srcSlow/(sustainRef + eps), 0, 1);
     sustainEnv = sustainMix * sustainAmt;
@@ -460,9 +539,9 @@ function softsat(x) (
     rising = (prevSign == -1) && (pitSign == 1);
 
     samplesSinceRise += 1;
+    pitchHoldSamps += 1;
 
     rising ? (
-      // divider toggles
       toggle1 = 1 - toggle1;
       div2count += 1;
       (div2count >= 2) ? (
@@ -470,41 +549,85 @@ function softsat(x) (
         toggle2 = 1 - toggle2;
       );
 
-      // period update
       period = max(1, samplesSinceRise);
       samplesSinceRise = 0;
 
-      // accept plausible bass range only
       freqNow = srate/(period + eps);
       valid = (freqNow >= 30) && (freqNow <= 220);
 
       valid ? (
-        // smooth period and its deviation
-        periodSmooth += 0.25*(period - periodSmooth);
-        periodDev    += 0.12*(abs(period - periodSmooth) - periodDev);
+        (perFill >= 3) ? (
+          med = med3(per0, per1, per2);
+          mad = med3(abs(per0 - med), abs(per1 - med), abs(per2 - med));
+          tol = max(2, mad*3 + med*0.08);
+          acceptP = abs(period - med) <= tol;
+        ) : (
+          acceptP = 1;
+        );
+
+        acceptP ? (
+          periodSmooth += 0.25*(period - periodSmooth);
+          periodDev    += 0.10*(abs(period - periodSmooth) - periodDev);
+          lastGoodFreq = srate/(periodSmooth + eps);
+          pitchHoldSamps = 0;
+
+          perPos == 0 ? per0 = period;
+          perPos == 1 ? per1 = period;
+          perPos == 2 ? per2 = period;
+          perPos += 1;
+          perPos >= 3 ? perPos = 0;
+          perFill < 3 ? perFill += 1;
+        ) : (
+          periodDev += 0.05*(abs(period - periodSmooth) - periodDev);
+        );
       );
     );
 
-    // derived smoothed freq
     freqSmooth = srate/(periodSmooth + eps);
 
-    // confidence: jitter + timeout + source level
+    /* --- confidence / hold --- */
     confJ = clamp(1 - (periodDev / (periodSmooth*jitterTol + eps)), 0, 1);
-    // timeout: if no rises for a while, confidence fades
-    timeoutSamps = srate*0.45; // ~450ms
+    timeoutSamps = srate*0.45;
     confT = clamp(1 - (samplesSinceRise/timeoutSamps), 0, 1);
 
     confidence = confJ * confT;
     (srcSlow < noiseFloor) ? confidence = 0;
 
-    /* --- engine crossfade --- */
+    holdNorm = clamp(1 - (pitchHoldSamps / (holdSampsMax + eps)), 0, 1);
+    holdStrength = (perFill > 0) ? (holdNorm * clamp(srcSlow/(noiseFloor*4 + eps), 0, 1)) : 0;
+
     confGate = clamp((confidence - confThresh) / (1 - confThresh + eps), 0, 1);
-    sineW = styleSineBias * confGate;          // 0..styleSineBias
+    holdGate = holdStrength * clamp(1 - confGate, 0, 1);
+
+    trackFreq = (perFill > 0) ? lerp(lastGoodFreq, freqSmooth, confGate) : freqSmooth;
+    trackFreq = clamp(trackFreq, 30, 220);
+
+    /* --- engine crossfade --- */
+    sinePilot = clamp(max(confGate, holdGate*0.60), 0, 1);
+    sineW = styleSineBias * sinePilot;
     divW  = 1 - sineW;
 
+    /* --- transient micro-burst trigger --- */
+    burstNow = 0;
+    burstCooldown > 0 ? burstCooldown -= 1;
+    trigOn = transient && !transientPrev;
+
+    trigOn && (burstCooldown <= 0) ? (
+      crestNorm = clamp((crest - 1) * 0.45, 0, 1);
+      slopeNorm = clamp((attackSlope / (envFast + noiseFloor + eps)) * 6, 0, 1);
+      burstStrength = max(crestNorm, slopeNorm);
+      burstJit = 0.90 + 0.20*rand(1);
+      burstGain = burstBaseGain * (0.35 + 0.65*burstStrength) * burstJit;
+      burstSamps = max(1, floor((burstLenMs * (0.85 + 0.30*rand(1))) * 0.001 * srate));
+      burstInc = 1 / burstSamps;
+      burstPos = 0;
+      burstDelay = floor(burstDelayMax * rand(1));
+      burstCooldown = burstCooldownSamps;
+    );
+
     /* --- sine oscillators (f/2 and f/4) --- */
-    inc2 = twopi*(freqSmooth*0.5)/srate;
-    inc4 = twopi*(freqSmooth*0.25)/srate;
+    inc2 = twopi*(trackFreq*0.5)/srate;
+    inc4 = twopi*(trackFreq*0.25)/srate;
 
     phase2 += inc2; (phase2 >= twopi) ? phase2 -= twopi;
     phase4 += inc4; (phase4 >= twopi) ? phase4 -= twopi;
@@ -519,8 +642,22 @@ function softsat(x) (
     sig1 = sineW*sin2 + divW*divCal*sq1;
     sig2 = sineW*sin4 + divW*divCal*sq2;
 
+    /* --- burst envelope (phase-aligned to current sub carriers) --- */
+    (burstDelay > 0) ? (
+      burstDelay -= 1;
+    ) : (
+      burstPos < 1 ? (
+        burstWin = 0.5 - 0.5*cos(twopi*burstPos);
+        burstNow = burstGain * burstWin;
+        burstPos += burstInc;
+        burstPos > 1 ? burstPos = 1;
+      );
+    );
+
+    subBurst = burstNow * (1.35*sub1Gain*sig1 + 0.80*sub2Gain*sig2);
+
     /* --- assemble wet sub before bandlimit --- */
-    sub_pre = cleanMix*srcMono + sub1Gain*sig1 + sub2Gain*sig2;
+    sub_pre = cleanMix*srcMono + sub1Gain*sig1 + sub2Gain*sig2 + subBurst;
     sub_pre *= subEnv;
 
     // subtle AM movement
@@ -554,8 +691,7 @@ function softsat(x) (
     sub_lp2_z2 = subLP_b2*x - subLP_a2*y;
     subFund = y;
 
-    /* --- LF guard: steady <40Hz reduction (mostly when gate is not active) --- */
-    // guard LP (2nd order)
+    /* --- LF guard: steady <40 Hz reduction (mostly when gate is not active) --- */
     gx = subFund;
     gy = gLP_b0*gx + g_lp_z1;
     g_lp_z1 = gLP_b1*gx + g_lp_z2 - gLP_a1*gy;
@@ -569,8 +705,33 @@ function softsat(x) (
     guardGain += guardGainC*(guardT - guardGain);
     subFund *= guardGain;
 
+    /* --- LF budget under 60 Hz --- */
+    dx = srcMono;
+    dy = low60_b0*dx + low60dry_z1;
+    low60dry_z1 = low60_b1*dx + low60dry_z2 - low60_a1*dy;
+    low60dry_z2 = low60_b2*dx - low60_a2*dy;
+    lowDry = dy;
+
+    wx = subFund;
+    wy = low60_b0*wx + low60wet_z1;
+    low60wet_z1 = low60_b1*wx + low60wet_z2 - low60_a1*wy;
+    low60wet_z2 = low60_b2*wx - low60_a2*wy;
+    lowWet = wy;
+
+    lowDryRms += lowBudgetRMSC*(lowDry*lowDry - lowDryRms);
+    lowWetRms += lowBudgetRMSC*(lowWet*lowWet - lowWetRms);
+    lowDryAmp = sqrt(lowDryRms + eps);
+    lowWetAmp = sqrt(lowWetRms + eps);
+
+    relAllow = lowDryAmp * lfBudgetExtra;
+    absAllow = lowAbsTarget * (0.60 + 0.40*max(subEnv, gateEnv));
+    lowAllow = max(relAllow, absAllow);
+
+    lowBudgetT = (lowWetAmp > lowAllow) ? (lowAllow/(lowWetAmp + eps)) : 1;
+    lowBudgetGain += lowBudgetGainC*(lowBudgetT - lowBudgetGain);
+    subFund *= lowBudgetGain;
+
     /* --- psychoacoustic harmonic layer --- */
-    // saturate the sub, then bandpass it into "audible bass" region
     h = softsat(subFund * harmDrive);
 
     // Harm HP stage 1
@@ -615,9 +776,9 @@ function softsat(x) (
     desired = (wetAbs > limThresh) ? (limThresh/(wetAbs + eps)) : 1;
 
     (desired < limGain) ? (
-      limGain = desired; // fast clamp
+      limGain = desired;
     ) : (
-      limGain += limRelC*(1 - limGain) // slow release
+      limGain += limRelC*(1 - limGain);
     );
 
     wet *= limGain;
@@ -626,7 +787,7 @@ function softsat(x) (
     outL = inL + wet;
     outR = inR + wet;
 
-    /* --- output safety limiter (rarely hits if wet limiter is set well) --- */
+    /* --- output safety limiter --- */
     outAbs = max(abs(outL), abs(outR));
     outDesired = (outAbs > 0.99) ? (0.99/(outAbs + eps)) : 1;
 
@@ -642,42 +803,49 @@ function softsat(x) (
     /* --- meters --- */
     meterGate += meterC*(gateEnv - meterGate);
     meterConf += meterC*(confidence - meterConf);
+    meterHold += meterC*(holdStrength - meterHold);
+    burstMeter = clamp(burstNow / max(0.0001, burstBaseGain), 0, 1);
+    meterBurst += meterC*(burstMeter - meterBurst);
     meterSine += meterC*(sineW - meterSine);
 
-    // show limiter GR and energy GR as dB reductions (0..)
     limGR = -lin2db(limGain);
     engGR = -lin2db(energyGain);
+    lfGR  = -lin2db(lowBudgetGain);
 
     meterLimGR += meterC*(limGR - meterLimGR);
     meterEngGR += meterC*(engGR - meterEngGR);
+    meterLFGR  += meterC*(lfGR - meterLFGR);
+    meterFreq  += meterC*(trackFreq - meterFreq);
 
-    meterFreq  += meterC*(freqSmooth - meterFreq);
+    transientPrev = transient;
+    envFastPrev = envFast;
   );
 
 /* ---------------- UI ---------------- */
-@gfx 430 165
-  // background
+@gfx 460 210
   gfx_set(0,0,0,1);
   gfx_rect(0,0,gfx_w,gfx_h,1);
 
-  // header
   gfx_set(1,1,1,1);
   gfx_x = 10; gfx_y = 8;
-  gfx_drawstr("GPT Subharmonic Reinforcer V2  (5 knobs)");
+  gfx_drawstr("BedRock V3  Adaptive Subharmonic Engine");
 
-  // status line
-  gfx_x = 10; gfx_y = 26;
   style == 0 ? st="Anchor";
   style == 1 ? st="Cinematic";
   style == 2 ? st="Impact";
 
   scs = (meterSC > 0.5) ? "SC" : "SRC";
+  pmode = (meterConf > confThresh) ? "LIVE" : ((meterHold > 0.05) ? "HOLD" : "DIV");
 
-  sprintf(#txt, "Style: %s   Trigger: %s   Freq: %.1f Hz", st, scs, meterFreq);
+  gfx_x = 10; gfx_y = 28;
+  sprintf(#txt, "Style: %s   Trigger: %s   Pitch: %s   Freq: %.1f Hz", st, scs, pmode, meterFreq);
   gfx_drawstr(#txt);
 
-  // bars
-  bx = 10; by = 52; bw = 410; bh = 12; gap = 8;
+  gfx_x = 10; gfx_y = 44;
+  sprintf(#txt2, "Amount: %.0f%%   Depth: %.0f%%   Tight: %.0f%%   Tone: %.0f%%", slider2, slider3, slider4, slider5);
+  gfx_drawstr(#txt2);
+
+  bx = 10; by = 66; bw = 440; bh = 10; gap = 6;
 
   function drawbar(label, v01) local(w)(
     v01 = clamp(v01, 0, 1);
@@ -693,7 +861,7 @@ function softsat(x) (
   );
 
   function drawgr(label, grdb, grmax) local(v01)(
-    v01 = clamp(grdb / max(0.001,grmax), 0, 1);
+    v01 = clamp(grdb / max(0.001, grmax), 0, 1);
     gfx_set(1,1,1,0.25);
     gfx_rect(bx, by, bw, bh, 1);
     gfx_set(1,1,1,0.85);
@@ -707,7 +875,10 @@ function softsat(x) (
 
   drawbar("Gate", meterGate);
   drawbar("Pitch confidence", meterConf);
+  drawbar("Pitch hold", meterHold);
+  drawbar("Burst inject", meterBurst);
   drawbar("Sine engine %", meterSine);
 
   drawgr("Wet limiter GR", meterLimGR, 12);
   drawgr("Energy clamp GR", meterEngGR, 12);
+  drawgr("LF budget GR", meterLFGR, 12);
