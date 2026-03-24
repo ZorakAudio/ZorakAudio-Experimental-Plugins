@@ -1,0 +1,1081 @@
+
+desc:ZK Coherent Alias Body
+//tags: enhancer body alias downsample psychoacoustic pitch
+//about:
+//  Signal-derived body reinjection via intentionally downsampled / aliased side paths.
+//  Drop it after a pitch shifter or directly on source material.
+//  Best at 96 kHz host rate (48k/24k/12k paths all available there).
+//  Lower Seed HP = more direct reinforcement. Higher Seed HP = more detail-derived body.
+//  Decohere adds micro-delay to keep the wet path from combing against the dry path.
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+slider1:35<0,100,0.1>-Body Mix (%)
+slider2:35<0,100,0.1>-48k Path
+slider3:45<0,100,0.1>-24k Path
+slider4:20<0,100,0.1>-12k Path
+slider5:1500<20,8000,1>-Seed HP (Hz)
+slider6:150<60,320,0.1>-Body Focus (Hz)
+slider7:12<0,30,0.1>-Drive (dB)
+slider8:55<0,100,0.1>-Smart (%)
+slider9:0.9<0,3.5,0.01>-Decohere (ms)
+slider10:40<0,100,0.1>-Density (%)
+slider11:0<-18,18,0.1>-Output Trim (dB)
+slider12:0<0,1,1{Add to Dry,Wet Only}>-Audit
+slider13:6<-24,24,0.1>-Inject Gain (dB)
+
+@init
+function clamp(x, lo, hi) (
+  x < lo ? lo : x > hi ? hi : x;
+);
+
+function db_to_gain(db) (
+  10^(db/20);
+);
+
+function lin_to_norm(v, vmin, vmax) (
+  clamp((v - vmin) / (vmax - vmin), 0, 1);
+);
+
+function norm_to_lin(n, vmin, vmax) (
+  vmin + clamp(n, 0, 1) * (vmax - vmin);
+);
+
+function log_to_norm(v, vmin, vmax) (
+  clamp(log(v / vmin) / log(vmax / vmin), 0, 1);
+);
+
+function norm_to_log(n, vmin, vmax) (
+  vmin * exp(log(vmax / vmin) * clamp(n, 0, 1));
+);
+
+function freq_to_g(freq) local(fc) (
+  fc = clamp(freq, 5, srate * 0.45);
+  1 - exp(-2 * $pi * fc / srate);
+);
+
+function ms_to_coef(ms) (
+  1 - exp(-1 / max(0.000001, ms * 0.001 * srate));
+);
+
+function onepole2_lp(x, g) instance(s1, s2) (
+  s1 += g * (x - s1);
+  s2 += g * (s1 - s2);
+  s2;
+);
+
+function onepole2_hp(x, g) instance(l1, l2) (
+  l1 += g * (x - l1);
+  l2 += g * (l1 - l2);
+  x - l2;
+);
+
+function envf(x, att, rel) instance(env) local(v, c) (
+  v = abs(x);
+  c = v > env ? att : rel;
+  env += c * (v - env);
+  env;
+);
+
+function ratehold(x, inc) instance(ph, held) (
+  inc >= 1 ? (
+    ph = 0;
+    held = x;
+  ) : (
+    ph += inc;
+    ph >= 1 ? (
+      ph -= floor(ph);
+      held = x;
+    );
+  );
+  held;
+);
+
+function intdelay(x, ds) instance(buf, pos) local(rp, outv) (
+  ds = clamp(ds, 0, 2047);
+  buf[pos] = x;
+  rp = pos - ds;
+  rp < 0 ? rp += 2048;
+  outv = buf[rp];
+  pos = (pos + 1) & 2047;
+  outv;
+);
+
+function softsat(x, drive) local(y) (
+  y = x * drive;
+  y / (1 + abs(y));
+);
+
+function compgain(level, thresh, ratio, att, rel) instance(env, g) local(c, tg) (
+  g == 0 ? (
+    g = 1;
+  );
+  c = level > env ? att : rel;
+  env += c * (level - env);
+  env > thresh ? (
+    tg = pow(env / thresh, (1 / ratio) - 1);
+  ) : (
+    tg = 1;
+  );
+  g += 0.08 * (tg - g);
+  g;
+);
+
+function update_coeffs() local(analysis_hi, dsmps, lane_sum, lane_ref) (
+  host_sr = srate;
+
+  body_mix = slider1 / 100;
+  amt48 = (slider2 / 100) * 0.80;
+  amt24 = (slider3 / 100) * 0.85;
+  amt12 = (slider4 / 100) * 0.90;
+  seed_hp = slider5;
+  focus_hz = slider6;
+  drive_db = slider7;
+  smart_amt = slider8 / 100;
+  deco_ms = slider9;
+  density_amt = slider10 / 100;
+  out_gain = db_to_gain(slider11);
+  wet_only = slider12;
+  inject_db = slider13;
+  inject_gain = db_to_gain(inject_db);
+
+  drive_pre = db_to_gain(drive_db * 0.75);
+  drive_post = 1 + (drive_db / 30) * 1.25;
+
+  p48_lo = clamp(focus_hz * 0.65, 25, 500);
+  p48_hi = clamp(focus_hz * 2.20, p48_lo + 25, 1200);
+  p24_lo = clamp(focus_hz * 0.45, 20, 360);
+  p24_hi = clamp(focus_hz * 1.45, p24_lo + 25, 820);
+  p12_lo = clamp(focus_hz * 0.30, 18, 240);
+  p12_hi = clamp(focus_hz * 1.05, p12_lo + 18, 460);
+
+  g_seed = freq_to_g(seed_hp);
+  g48_lo = freq_to_g(p48_lo);
+  g48_hi = freq_to_g(p48_hi);
+  g24_lo = freq_to_g(p24_lo);
+  g24_hi = freq_to_g(p24_hi);
+  g12_lo = freq_to_g(p12_lo);
+  g12_hi = freq_to_g(p12_hi);
+  g_dc = freq_to_g(20);
+
+  g_mon_low = freq_to_g(220);
+  analysis_hi = max(seed_hp, 1200);
+  g_mon_hi = freq_to_g(analysis_hi);
+
+  env_att = ms_to_coef(4);
+  env_rel = ms_to_coef(160);
+  meter_att = ms_to_coef(10);
+  meter_rel = ms_to_coef(220);
+  comp_att = ms_to_coef(5);
+  comp_rel = ms_to_coef(120);
+
+  enable48 = host_sr > 48000.1;
+  enable24 = host_sr > 24000.1;
+  enable12 = host_sr > 12000.1;
+
+  inc48 = enable48 ? 48000 / host_sr : 1;
+  inc24 = enable24 ? 24000 / host_sr : 1;
+  inc12 = enable12 ? 12000 / host_sr : 1;
+
+  dsmps = deco_ms * 0.001 * host_sr;
+  d48s = floor(dsmps * 0.35 + 0.5);
+  d24s = floor(dsmps * 0.80 + 0.5);
+  d12s = floor(dsmps * 1.30 + 0.5);
+
+  lane_sum = (enable48 ? amt48 : 0) + (enable24 ? amt24 : 0) + (enable12 ? amt12 : 0);
+  lane_ref = 0.8425;
+  wet_norm = pow(lane_ref / max(0.10, lane_sum), 0.60);
+  wet_norm = clamp(wet_norm, 0.75, 4.25);
+
+  comp_thresh = 0.18;
+  comp_ratio = 1 + density_amt * 5;
+  wet_makeup = 1.18 + density_amt * 0.52;
+
+  match_lo = clamp(focus_hz * 0.60, 30, 280);
+  match_hi = clamp(focus_hz * 1.85, match_lo + 45, 900);
+  g_match_lo = freq_to_g(match_lo);
+  g_match_hi = freq_to_g(match_hi);
+
+  scope_decim = max(1, floor(host_sr / 2200));
+);
+
+function fmt_hz(dst, v) (
+  v >= 1000 ? (
+    sprintf(dst, "%.2f kHz", v / 1000);
+  ) : (
+    sprintf(dst, "%.0f Hz", v);
+  );
+);
+
+function fmt_hz_short(dst, v) (
+  v >= 1000 ? (
+    sprintf(dst, "%.2fk", v / 1000);
+  ) : (
+    sprintf(dst, "%.0f", v);
+  );
+);
+
+function fmt_pct(dst, v) (
+  sprintf(dst, "%.0f%%", v);
+);
+
+function fmt_db(dst, v) (
+  sprintf(dst, "%+.1f dB", v);
+);
+
+function fmt_ms(dst, v) (
+  sprintf(dst, "%.2f ms", v);
+);
+
+function draw_arc(cx, cy, rad, a0, a1, steps) local(i, ang, px, py, nx, ny) (
+  i = 0;
+  loop(steps + 1,
+    ang = a0 + (a1 - a0) * i / steps;
+    nx = cx + cos(ang) * rad;
+    ny = cy + sin(ang) * rad;
+    i > 0 ? (
+      gfx_line(px, py, nx, ny);
+    );
+    px = nx;
+    py = ny;
+    i += 1;
+  );
+);
+
+function draw_box(x, y, w, h, rr, gg, bb, aa) (
+  gfx_set(rr, gg, bb, aa);
+  gfx_rect(x, y, w, h, 1);
+);
+
+function draw_outline(x, y, w, h, rr, gg, bb, aa) (
+  gfx_set(rr, gg, bb, aa);
+  gfx_line(x, y, x + w, y);
+  gfx_line(x + w, y, x + w, y + h);
+  gfx_line(x + w, y + h, x, y + h);
+  gfx_line(x, y + h, x, y);
+);
+
+function draw_knob(id, x, y, r, norm, label, val, active, hover, ar, ag, ab) local(ang, px, py, tw, th) (
+  gfx_set(0.10, 0.11, 0.14, 1);
+  gfx_circle(x, y, r, 1, 1);
+  gfx_set(0.18, 0.20, 0.25, 1);
+  gfx_circle(x, y, r, 0, 1);
+  gfx_set(0.20, 0.22, 0.27, 1);
+  draw_arc(x, y, r - 7, -0.75 * $pi, 0.75 * $pi, 36);
+  gfx_set(ar, ag, ab, 1);
+  draw_arc(x, y, r - 7, -0.75 * $pi, -0.75 * $pi + 1.5 * $pi * norm, 36);
+  ang = -0.75 * $pi + 1.5 * $pi * norm;
+  px = x + cos(ang) * (r - 15);
+  py = y + sin(ang) * (r - 15);
+  gfx_set(0.98, 0.99, 1, 1);
+  gfx_line(x, y, px, py);
+
+  gfx_set(0.70, 0.75, 0.84, 1);
+  hover ? (
+    gfx_set(0.85, 0.90, 1, 1);
+  );
+  active ? (
+    gfx_set(1, 1, 1, 1);
+  );
+  gfx_measurestr(label, tw, th);
+  gfx_x = x - tw * 0.5;
+  gfx_y = y + r + 10 * ui_scale;
+  gfx_drawstr(label);
+
+  gfx_set(0.98, 0.99, 1, 1);
+  gfx_measurestr(val, tw, th);
+  gfx_x = x - tw * 0.5;
+  gfx_y = y - 8 * ui_scale;
+  gfx_drawstr(val);
+);
+
+function draw_fader(id, x, y, w, h, norm, label, sub, active, hover, enabled, meter, fr, fg, fb) local(fillh, hy, tw, th, my) (
+  draw_box(x, y, w, h, 0.08, 0.09, 0.12, 1);
+  draw_outline(x, y, w, h, 0.18, 0.20, 0.25, 1);
+  enabled ? (
+    fillh = clamp(norm, 0, 1) * h;
+    hy = y + h - fillh;
+    draw_box(x + 2, hy + 2, w - 4, max(0, fillh - 4), fr * 0.55, fg * 0.55, fb * 0.55, 0.95);
+    my = y + h - clamp(meter, 0, 1) * h;
+    draw_box(x + w * 0.68, my + 2, w * 0.16, max(0, h - (my - y) - 4), fr, fg, fb, 0.65);
+    hover ? (
+      draw_outline(x - 1, y - 1, w + 2, h + 2, 0.78, 0.84, 1, 1);
+    );
+    active ? (
+      draw_outline(x - 1, y - 1, w + 2, h + 2, 1, 1, 1, 1);
+    );
+  ) : (
+    draw_box(x + 2, y + 2, w - 4, h - 4, 0.18, 0.18, 0.20, 0.6);
+  );
+
+  gfx_set(0.45, 0.45, 0.45, 1);
+  enabled ? (
+    gfx_set(0.95, 0.97, 1.0, 1);
+  );
+  gfx_measurestr(label, tw, th);
+  gfx_x = x + w * 0.5 - tw * 0.5;
+  gfx_y = y - 22 * ui_scale;
+  gfx_drawstr(label);
+
+  gfx_set(0.35, 0.35, 0.35, 1);
+  enabled ? (
+    gfx_set(0.65, 0.70, 0.78, 1);
+  );
+  gfx_measurestr(sub, tw, th);
+  gfx_x = x + w * 0.5 - tw * 0.5;
+  gfx_y = y + h + 8 * ui_scale;
+  gfx_drawstr(sub);
+);
+
+function draw_button(x, y, w, h, onv, label, active, hover) local(tw, th) (
+  onv ? (
+    draw_box(x, y, w, h, 0.20, 0.42, 0.32, 1);
+  ) : (
+    draw_box(x, y, w, h, 0.10, 0.11, 0.14, 1);
+  );
+
+  draw_outline(x, y, w, h, 0.22, 0.25, 0.32, 1);
+  hover ? (
+    draw_outline(x, y, w, h, 0.75, 0.82, 1, 1);
+  );
+  active ? (
+    draw_outline(x, y, w, h, 1, 1, 1, 1);
+  );
+
+  onv ? (
+    gfx_set(0.95, 1.0, 1.0, 1);
+  ) : (
+    gfx_set(0.78, 0.82, 0.90, 1);
+  );
+  gfx_measurestr(label, tw, th);
+  gfx_x = x + w * 0.5 - tw * 0.5;
+  gfx_y = y + h * 0.5 - th * 0.5;
+  gfx_drawstr(label);
+);
+
+function hit_knob(mx, my, x, y, r) (
+  ((mx - x) * (mx - x) + (my - y) * (my - y)) <= r * r;
+);
+
+function hit_rect(mx, my, x, y, w, h) (
+  mx >= x && mx <= (x + w) && my >= y && my <= (y + h);
+);
+
+function ctl_get_norm(id) local(n) (
+  n = 0;
+  id == 1 ? (n = lin_to_norm(slider1, 0, 100););
+  id == 2 ? (n = lin_to_norm(slider2, 0, 100););
+  id == 3 ? (n = lin_to_norm(slider3, 0, 100););
+  id == 4 ? (n = lin_to_norm(slider4, 0, 100););
+  id == 5 ? (n = log_to_norm(slider5, 20, 8000););
+  id == 6 ? (n = log_to_norm(slider6, 60, 320););
+  id == 7 ? (n = lin_to_norm(slider7, 0, 30););
+  id == 8 ? (n = lin_to_norm(slider8, 0, 100););
+  id == 9 ? (n = lin_to_norm(slider9, 0, 3.5););
+  id == 10 ? (n = lin_to_norm(slider10, 0, 100););
+  id == 11 ? (n = lin_to_norm(slider11, -18, 18););
+  id == 13 ? (n = lin_to_norm(slider13, -24, 24););
+  n;
+);
+
+function ctl_set_norm(id, n) local(mask) (
+  n = clamp(n, 0, 1);
+  mask = 0;
+  id == 1 ? (slider1 = norm_to_lin(n, 0, 100); mask = 1<<0;);
+  id == 2 ? (slider2 = norm_to_lin(n, 0, 100); mask = 1<<1;);
+  id == 3 ? (slider3 = norm_to_lin(n, 0, 100); mask = 1<<2;);
+  id == 4 ? (slider4 = norm_to_lin(n, 0, 100); mask = 1<<3;);
+  id == 5 ? (slider5 = norm_to_log(n, 20, 8000); mask = 1<<4;);
+  id == 6 ? (slider6 = norm_to_log(n, 60, 320); mask = 1<<5;);
+  id == 7 ? (slider7 = norm_to_lin(n, 0, 30); mask = 1<<6;);
+  id == 8 ? (slider8 = norm_to_lin(n, 0, 100); mask = 1<<7;);
+  id == 9 ? (slider9 = norm_to_lin(n, 0, 3.5); mask = 1<<8;);
+  id == 10 ? (slider10 = norm_to_lin(n, 0, 100); mask = 1<<9;);
+  id == 11 ? (slider11 = norm_to_lin(n, -18, 18); mask = 1<<10;);
+  id == 13 ? (slider13 = norm_to_lin(n, -24, 24); mask = 1<<12;);
+  mask ? (
+    sliderchange(mask);
+    update_coeffs();
+  );
+);
+
+function ctl_reset(id) local(mask) (
+  mask = 0;
+  id == 1 ? (slider1 = 35; mask = 1<<0;);
+  id == 2 ? (slider2 = 35; mask = 1<<1;);
+  id == 3 ? (slider3 = 45; mask = 1<<2;);
+  id == 4 ? (slider4 = 20; mask = 1<<3;);
+  id == 5 ? (slider5 = 1500; mask = 1<<4;);
+  id == 6 ? (slider6 = 150; mask = 1<<5;);
+  id == 7 ? (slider7 = 12; mask = 1<<6;);
+  id == 8 ? (slider8 = 55; mask = 1<<7;);
+  id == 9 ? (slider9 = 0.9; mask = 1<<8;);
+  id == 10 ? (slider10 = 40; mask = 1<<9;);
+  id == 11 ? (slider11 = 0; mask = 1<<10;);
+  id == 12 ? (slider12 = 0; mask = 1<<11;);
+  id == 13 ? (slider13 = 6; mask = 1<<12;);
+  mask ? (
+    sliderchange(mask);
+    update_coeffs();
+  );
+);
+
+function ctl_draggable(id) (
+  id == 2 ? enable48 :
+  id == 3 ? enable24 :
+  id == 4 ? enable12 :
+  id > 0;
+);
+
+function build_tooltip(id) (
+  tip_lines = 0;
+  sprintf(#tip1, "");
+  sprintf(#tip2, "");
+  sprintf(#tip3, "");
+  sprintf(#tip_val, "");
+  sprintf(#tip_footer, "Hover any control for details. Right-click or CTRL-click resets. SHIFT-drag = fine.");
+
+  id == 1 ? (
+    fmt_pct(#tip_val, slider1);
+    sprintf(#tip1, "Body Mix: %s", #tip_val);
+    sprintf(#tip2, "Add to Dry sums it under the input. Wet Only auditions only the added layer.");
+    tip_lines = 2;
+  );
+  id == 2 ? (
+    enable48 ? (
+      fmt_pct(#tip_val, slider2);
+      sprintf(#tip1, "48k Path: %s", #tip_val);
+      sprintf(#tip2, "Available only when the host runs above 48 kHz.");
+    ) : (
+      sprintf(#tip1, "48k Path is disabled at this host rate.");
+      sprintf(#tip2, "It activates only when the host runs above 48 kHz.");
+    );
+    tip_lines = 2;
+  );
+  id == 3 ? (
+    fmt_pct(#tip_val, slider3);
+    sprintf(#tip1, "24k Path: %s", #tip_val);
+    sprintf(#tip2, "Higher settings add more weight, but can thicken fast.");
+    tip_lines = 2;
+  );
+  id == 4 ? (
+    fmt_pct(#tip_val, slider4);
+    sprintf(#tip1, "12k Path: %s", #tip_val);
+    sprintf(#tip2, "Use sparingly when you want deeper, dirtier reinforcement.");
+    tip_lines = 2;
+  );
+  id == 5 ? (
+    fmt_hz(#tip_val, slider5);
+    sprintf(#tip1, "Seed HP: %s", #tip_val);
+    sprintf(#tip2, "Lower = more direct reinforcement. Higher = more detail-derived body.");
+    tip_lines = 2;
+  );
+  id == 6 ? (
+    fmt_hz(#tip_val, slider6);
+    sprintf(#tip1, "Focus: %s", #tip_val);
+    sprintf(#tip2, "Lower = deeper weight. Higher = more punch and upper body.");
+    tip_lines = 2;
+  );
+  id == 7 ? (
+    fmt_db(#tip_val, slider7);
+    sprintf(#tip1, "Drive: %s", #tip_val);
+    sprintf(#tip2, "Higher settings make the added layer denser and rougher.");
+    tip_lines = 2;
+  );
+  id == 8 ? (
+    fmt_pct(#tip_val, slider8);
+    sprintf(#tip1, "Smart: %s", #tip_val);
+    sprintf(#tip2, "Bright/detail-rich input gets more allowance; already-heavy input gets less.");
+    tip_lines = 2;
+  );
+  id == 9 ? (
+    fmt_ms(#tip_val, slider9);
+    sprintf(#tip1, "Decohere: %s", #tip_val);
+    sprintf(#tip2, "0.2-1.5 ms usually keeps the added layer solid without obvious doubling.");
+    tip_lines = 2;
+  );
+  id == 10 ? (
+    fmt_pct(#tip_val, slider10);
+    sprintf(#tip1, "Density: %s", #tip_val);
+    sprintf(#tip2, "Higher = steadier, thicker added body with less burstiness.");
+    tip_lines = 2;
+  );
+  id == 13 ? (
+    fmt_db(#tip_val, slider13);
+    sprintf(#tip1, "Inject: %s", #tip_val);
+    sprintf(#tip2, "Post-wet gain for the added body layer. About 15-35%% of dry in Focus-band add is usually enough.");
+    tip_lines = 2;
+  );
+  id == 11 ? (
+    fmt_db(#tip_val, slider11);
+    sprintf(#tip1, "Output: %s", #tip_val);
+    sprintf(#tip2, "Use this to level-match the processed signal.");
+    tip_lines = 2;
+  );
+  id == 12 ? (
+    slider12 ? (sprintf(#tip_val, "Wet Only");) : (sprintf(#tip_val, "Add to Dry"););
+    sprintf(#tip1, "Audit: %s", #tip_val);
+    sprintf(#tip2, "Right-click or CTRL-click resets back to Add to Dry.");
+    tip_lines = 2;
+  );
+
+  tip_lines ? (
+    sprintf(#tip_footer, "%s", #tip1);
+  );
+);
+
+function draw_tooltip_box(mx, my) local(tw1, th1, tw2, th2, tw3, th3, bw, bh, tx, ty, lh) (
+  tip_lines > 0 ? (
+    gfx_setfont(3, "Arial", 12 * ui_scale);
+    gfx_measurestr(#tip1, tw1, th1);
+    tw2 = tw3 = 0;
+    th2 = th3 = th1;
+    tip_lines > 1 ? gfx_measurestr(#tip2, tw2, th2);
+    tip_lines > 2 ? gfx_measurestr(#tip3, tw3, th3);
+    lh = 15 * ui_scale;
+    bw = max(tw1, max(tw2, tw3)) + 18 * ui_scale;
+    bh = 10 * ui_scale + tip_lines * lh;
+    tx = mx + 16 * ui_scale;
+    ty = my + 18 * ui_scale;
+    tx + bw > gfx_w ? tx = gfx_w - bw - 8 * ui_scale;
+    ty + bh > gfx_h ? ty = gfx_h - bh - 8 * ui_scale;
+    tx < 8 * ui_scale ? tx = 8 * ui_scale;
+    ty < 8 * ui_scale ? ty = 8 * ui_scale;
+
+    draw_box(tx, ty, bw, bh, 0.05, 0.055, 0.07, 0.98);
+    draw_outline(tx, ty, bw, bh, 0.78, 0.84, 1.0, 1);
+
+    gfx_set(0.96, 0.98, 1.0, 1);
+    gfx_x = tx + 9 * ui_scale;
+    gfx_y = ty + 6 * ui_scale;
+    gfx_drawstr(#tip1);
+
+    tip_lines > 1 ? (
+      gfx_set(0.76, 0.82, 0.92, 1);
+      gfx_x = tx + 9 * ui_scale;
+      gfx_y = ty + 6 * ui_scale + lh;
+      gfx_drawstr(#tip2);
+    );
+
+    tip_lines > 2 ? (
+      gfx_set(0.68, 0.74, 0.84, 1);
+      gfx_x = tx + 9 * ui_scale;
+      gfx_y = ty + 6 * ui_scale + 2 * lh;
+      gfx_drawstr(#tip3);
+    );
+  );
+);
+
+function draw_scope_panel(x, y, w, h) local(half, mid1, mid2, amp, i, idx, sx, sy, px, py, gx, gy, in_scale, wet_scale, tw, th, zoom) (
+  draw_box(x, y, w, h, 0.06, 0.07, 0.10, 1);
+  draw_outline(x, y, w, h, 0.18, 0.20, 0.25, 1);
+
+  half = h * 0.5;
+  mid1 = y + half * 0.55;
+  mid2 = y + half + half * 0.55;
+
+  gfx_set(0.14, 0.16, 0.20, 1);
+  gfx_line(x + 4, y + half, x + w - 4, y + half);
+  gfx_line(x + 4, mid1, x + w - 4, mid1);
+  gfx_line(x + 4, mid2, x + w - 4, mid2);
+  i = 1;
+  loop(5,
+    gx = x + i * w / 6;
+    gfx_line(gx, y + 4, gx, y + h - 4);
+    i += 1;
+  );
+
+  gfx_setfont(3, "Arial", 12 * ui_scale);
+  gfx_set(0.64, 0.72, 0.82, 1);
+  gfx_x = x + 8 * ui_scale;
+  gfx_y = y + 4 * ui_scale;
+  gfx_drawstr("DRY REF");
+
+  gfx_set(0.94, 0.78, 0.28, 1);
+  gfx_x = x + 8 * ui_scale;
+  gfx_y = y + half + 4 * ui_scale;
+  gfx_drawstr("ADDED BODY");
+
+  gfx_set(0.62, 0.68, 0.78, 1);
+  gfx_x = x + 64 * ui_scale;
+  gfx_y = y + half + 4 * ui_scale;
+  gfx_drawstr("(auto-zoom)");
+
+  in_scale = min(8, 0.80 / max(0.05, scope_in_peak));
+  wet_scale = min(64, 0.80 / max(0.004, scope_wet_peak));
+  zoom = wet_scale / max(0.0001, in_scale);
+  zoom < 1 ? zoom = 1;
+  sprintf(#scope_zoom, "x%.1f", zoom);
+  gfx_set(0.92, 0.95, 1.0, 1);
+  gfx_measurestr(#scope_zoom, tw, th);
+  gfx_x = x + w - tw - 8 * ui_scale;
+  gfx_y = y + half + 4 * ui_scale;
+  gfx_drawstr(#scope_zoom);
+
+  gfx_set(0.50, 0.64, 0.96, 1);
+  i = 0;
+  idx = scope_write;
+  loop(scope_len,
+    sx = x + 4 + (w - 8) * i / max(1, scope_len - 1);
+    sy = mid1 - scope_in_buf[idx] * in_scale * (half * 0.34);
+    i == 0 ? (
+      px = sx; py = sy;
+    ) : (
+      gfx_line(px, py, sx, sy);
+      px = sx; py = sy;
+    );
+    idx += 1;
+    idx >= scope_len ? idx = 0;
+    i += 1;
+  );
+
+  gfx_set(0.94, 0.76, 0.24, 1);
+  i = 0;
+  idx = scope_write;
+  loop(scope_len,
+    sx = x + 4 + (w - 8) * i / max(1, scope_len - 1);
+    sy = mid2 - scope_wet_buf[idx] * wet_scale * (half * 0.34);
+    i == 0 ? (
+      px = sx; py = sy;
+    ) : (
+      gfx_line(px, py, sx, sy);
+      px = sx; py = sy;
+    );
+    idx += 1;
+    idx >= scope_len ? idx = 0;
+    i += 1;
+  );
+);
+
+function get_hover(mx, my) local(id) (
+  id = 0;
+  hit_knob(mx, my, mix_x, mix_y, mix_r) ? (id = 1;);
+  id == 0 && hit_knob(mx, my, seed_x, seed_y, small_r) ? (id = 5;);
+  id == 0 && hit_knob(mx, my, focus_x, focus_y, small_r) ? (id = 6;);
+  id == 0 && hit_knob(mx, my, drive_x, drive_y, small_r) ? (id = 7;);
+  id == 0 && hit_knob(mx, my, smart_x, smart_y, small_r) ? (id = 8;);
+  id == 0 && hit_knob(mx, my, deco_x, deco_y, small_r) ? (id = 9;);
+  id == 0 && hit_knob(mx, my, dens_x, dens_y, small_r) ? (id = 10;);
+  id == 0 && hit_knob(mx, my, inj_x, inj_y, small_r) ? (id = 13;);
+  id == 0 && hit_knob(mx, my, out_x, out_y, small_r) ? (id = 11;);
+  id == 0 && hit_rect(mx, my, f48_x, fader_y, fader_w, fader_h) ? (id = 2;);
+  id == 0 && hit_rect(mx, my, f24_x, fader_y, fader_w, fader_h) ? (id = 3;);
+  id == 0 && hit_rect(mx, my, f12_x, fader_y, fader_w, fader_h) ? (id = 4;);
+  id == 0 && hit_rect(mx, my, audit_x, audit_y, audit_w, audit_h) ? (id = 12;);
+  id;
+);
+
+function draw_meter_line(ypos, label, val, rr, gg, bb) local(x, y, w, h, tw, th, fillw) (
+  x = ui_offx + 648 * ui_scale;
+  y = ui_offy + ypos * ui_scale;
+  w = 270 * ui_scale;
+  h = 16 * ui_scale;
+  gfx_set(0.62, 0.68, 0.78, 1);
+  gfx_measurestr(label, tw, th);
+  gfx_x = x;
+  gfx_y = y - 18 * ui_scale;
+  gfx_drawstr(label);
+  draw_box(x, y, w, h, 0.08, 0.09, 0.12, 1);
+  draw_outline(x, y, w, h, 0.18, 0.20, 0.25, 1);
+  fillw = clamp(val, 0, 1) * (w - 4);
+  draw_box(x + 2, y + 2, fillw, h - 4, rr, gg, bb, 0.92);
+);
+
+ext_nodenorm = 1;
+ui_w = 980;
+ui_h = 620;
+last_srate = srate;
+mouse_last_cap = 0;
+active_ctl = 0;
+drag_start_y = 0;
+drag_start_norm = 0;
+hover_ctl = 0;
+scope_len = 360;
+scope_in_buf = 500000;
+scope_wet_buf = scope_in_buf + scope_len;
+scope_write = 0;
+scope_dec_ctr = 1;
+scope_acc_in = 0;
+scope_acc_wet = 0;
+scope_acc_n = 0;
+scope_in_peak = 0.12;
+scope_wet_peak = 0.02;
+i = 0;
+loop(scope_len,
+  scope_in_buf[i] = 0;
+  scope_wet_buf[i] = 0;
+  i += 1;
+);
+update_coeffs();
+
+@slider
+update_coeffs();
+
+@sample
+srate != last_srate ? (
+  last_srate = srate;
+  update_coeffs();
+);
+
+inL = spl0;
+inR = spl1;
+mono = 0.5 * (inL + inR);
+
+// Smart analysis: bright/detail-rich material gets more body allowance.
+mon_low = monLP.onepole2_lp(mono, g_mon_low);
+mon_high = monHP.onepole2_hp(mono, g_mon_hi);
+low_env = lowEnv.envf(mon_low, env_att, env_rel);
+high_env = highEnv.envf(mon_high, env_att, env_rel);
+hf_ratio = (high_env * 2.2) / (low_env + high_env * 2.2 + 0.000000000001);
+smart_target = clamp(0.22 + 1.10 * hf_ratio, 0.18, 1.0);
+smart_gain = (1 - smart_amt) + smart_amt * smart_target;
+smart_meter = smartDisp.envf(smart_gain, meter_att, meter_rel);
+
+seedL = seedHpL.onepole2_hp(inL, g_seed);
+seedR = seedHpR.onepole2_hp(inR, g_seed);
+
+// 48k body path
+p48L = 0; p48R = 0;
+enable48 ? (
+  xL = softsat(seedL, drive_pre);
+  xR = softsat(seedR, drive_pre);
+  xL = rr48L.ratehold(xL, inc48);
+  xR = rr48R.ratehold(xR, inc48);
+  xL = softsat(xL, drive_post);
+  xR = softsat(xR, drive_post);
+  xL = bp48hL.onepole2_hp(xL, g48_lo);
+  xR = bp48hR.onepole2_hp(xR, g48_lo);
+  xL = bp48lL.onepole2_lp(xL, g48_hi);
+  xR = bp48lR.onepole2_lp(xR, g48_hi);
+  xL = d48L.intdelay(xL, d48s);
+  xR = d48R.intdelay(xR, d48s);
+  p48L = xL * amt48;
+  p48R = xR * amt48;
+);
+m48 = meter48.envf(max(abs(p48L), abs(p48R)), meter_att, meter_rel);
+
+// 24k body path
+p24L = 0; p24R = 0;
+enable24 ? (
+  xL = softsat(seedL, drive_pre);
+  xR = softsat(seedR, drive_pre);
+  xL = rr24L.ratehold(xL, inc24);
+  xR = rr24R.ratehold(xR, inc24);
+  xL = softsat(xL, drive_post);
+  xR = softsat(xR, drive_post);
+  xL = bp24hL.onepole2_hp(xL, g24_lo);
+  xR = bp24hR.onepole2_hp(xR, g24_lo);
+  xL = bp24lL.onepole2_lp(xL, g24_hi);
+  xR = bp24lR.onepole2_lp(xR, g24_hi);
+  xL = d24L.intdelay(xL, d24s);
+  xR = d24R.intdelay(xR, d24s);
+  p24L = xL * amt24;
+  p24R = xR * amt24;
+);
+m24 = meter24.envf(max(abs(p24L), abs(p24R)), meter_att, meter_rel);
+
+// 12k body path
+p12L = 0; p12R = 0;
+enable12 ? (
+  xL = softsat(seedL, drive_pre);
+  xR = softsat(seedR, drive_pre);
+  xL = rr12L.ratehold(xL, inc12);
+  xR = rr12R.ratehold(xR, inc12);
+  xL = softsat(xL, drive_post);
+  xR = softsat(xR, drive_post);
+  xL = bp12hL.onepole2_hp(xL, g12_lo);
+  xR = bp12hR.onepole2_hp(xR, g12_lo);
+  xL = bp12lL.onepole2_lp(xL, g12_hi);
+  xR = bp12lR.onepole2_lp(xR, g12_hi);
+  xL = d12L.intdelay(xL, d12s);
+  xR = d12R.intdelay(xR, d12s);
+  p12L = xL * amt12;
+  p12R = xR * amt12;
+);
+m12 = meter12.envf(max(abs(p12L), abs(p12R)), meter_att, meter_rel);
+
+// Sum and shape wet body layer.
+wetL = (p48L + p24L + p12L) * body_mix * smart_gain * wet_norm;
+wetR = (p48R + p24R + p12R) * body_mix * smart_gain * wet_norm;
+
+wet_level = max(abs(wetL), abs(wetR));
+comp_g = wetComp.compgain(wet_level, comp_thresh, comp_ratio, comp_att, comp_rel);
+wetL *= comp_g * wet_makeup * inject_gain;
+wetR *= comp_g * wet_makeup * inject_gain;
+wetL = dcWetL.onepole2_hp(wetL, g_dc);
+wetR = dcWetR.onepole2_hp(wetR, g_dc);
+
+focus_in = matchInLP.onepole2_lp(matchInHP.onepole2_hp(mono, g_match_lo), g_match_hi);
+focus_wet = matchWetLP.onepole2_lp(matchWetHP.onepole2_hp(0.5 * (wetL + wetR), g_match_lo), g_match_hi);
+focus_in_env = focusInEnv.envf(focus_in, meter_att, meter_rel);
+focus_wet_env = focusWetEnv.envf(focus_wet, meter_att, meter_rel);
+focus_add = clamp(focus_wet_env / max(0.005, focus_in_env), 0, 2.5);
+focus_add_disp = focusAddDisp.envf(focus_add, meter_att, meter_rel);
+
+wet_meter = meterWet.envf(max(abs(wetL), abs(wetR)), meter_att, meter_rel);
+in_meter = meterIn.envf(max(abs(inL), abs(inR)), meter_att, meter_rel);
+gr_meter = meterGR.envf(1 - comp_g, meter_att, meter_rel);
+
+outL = slider12 ? wetL : (inL + wetL);
+outR = slider12 ? wetR : (inR + wetR);
+
+spl0 = outL * out_gain;
+spl1 = outR * out_gain;
+
+scope_acc_in += mono;
+scope_acc_wet += 0.5 * (wetL + wetR);
+scope_acc_n += 1;
+scope_dec_ctr -= 1;
+scope_dec_ctr <= 0 ? (
+  disp_in = scope_acc_in / max(1, scope_acc_n);
+  disp_wet = scope_acc_wet / max(1, scope_acc_n);
+  scope_in_buf[scope_write] = disp_in;
+  scope_wet_buf[scope_write] = disp_wet;
+  scope_write += 1;
+  scope_write >= scope_len ? scope_write = 0;
+  scope_acc_in = 0;
+  scope_acc_wet = 0;
+  scope_acc_n = 0;
+  scope_dec_ctr = scope_decim;
+  scope_in_peak = max(abs(disp_in), scope_in_peak * 0.995);
+  scope_wet_peak = max(abs(disp_wet), scope_wet_peak * 0.992);
+);
+
+@gfx 980 620
+ui_scale = min(gfx_w / ui_w, gfx_h / ui_h);
+ui_offx = (gfx_w - ui_w * ui_scale) * 0.5;
+ui_offy = (gfx_h - ui_h * ui_scale) * 0.5;
+
+gfx_setfont(1, "Arial", 22 * ui_scale);
+gfx_setfont(2, "Arial", 14 * ui_scale);
+gfx_setfont(3, "Arial", 12 * ui_scale);
+
+// Layout
+mix_x = ui_offx + 120 * ui_scale;
+mix_y = ui_offy + 165 * ui_scale;
+mix_r = 58 * ui_scale;
+
+small_r = 35 * ui_scale;
+seed_x = ui_offx + 286 * ui_scale;
+focus_x = ui_offx + 366 * ui_scale;
+drive_x = ui_offx + 446 * ui_scale;
+smart_x = ui_offx + 526 * ui_scale;
+deco_x = ui_offx + 606 * ui_scale;
+dens_x = ui_offx + 686 * ui_scale;
+inj_x = ui_offx + 766 * ui_scale;
+out_x = ui_offx + 846 * ui_scale;
+seed_y = focus_y = drive_y = smart_y = deco_y = dens_y = inj_y = out_y = ui_offy + 160 * ui_scale;
+
+audit_x = ui_offx + 44 * ui_scale;
+audit_y = ui_offy + 252 * ui_scale;
+audit_w = 152 * ui_scale;
+audit_h = 30 * ui_scale;
+
+fader_y = ui_offy + 340 * ui_scale;
+fader_w = 42 * ui_scale;
+fader_h = 170 * ui_scale;
+f48_x = ui_offx + 56 * ui_scale;
+f24_x = ui_offx + 118 * ui_scale;
+f12_x = ui_offx + 180 * ui_scale;
+
+hover_ctl = get_hover(mouse_x, mouse_y);
+tip_ctl = active_ctl ? active_ctl : hover_ctl;
+build_tooltip(tip_ctl);
+
+left_now = mouse_cap & 1;
+right_now = mouse_cap & 2;
+ctrl_now = mouse_cap & 4;
+shift_now = mouse_cap & 8;
+left_last = mouse_last_cap & 1;
+right_last = mouse_last_cap & 2;
+new_left = left_now && (left_last == 0);
+new_right = right_now && (right_last == 0);
+rel_left = (left_now == 0) && left_last;
+
+new_right ? (
+  hover_ctl ? (
+    ctl_reset(hover_ctl);
+  );
+  active_ctl = 0;
+);
+
+new_left ? (
+  ctrl_now ? (
+    hover_ctl ? (
+      ctl_reset(hover_ctl);
+    );
+  ) : (
+    active_ctl = ctl_draggable(hover_ctl) ? hover_ctl : 0;
+    drag_start_y = mouse_y;
+    drag_start_norm = ctl_get_norm(active_ctl);
+    active_ctl == 12 ? (
+      slider12 = slider12 ? 0 : 1;
+      sliderchange(1<<11);
+      update_coeffs();
+      active_ctl = 0;
+    );
+  );
+);
+
+left_now && active_ctl ? (
+  active_ctl >= 2 && active_ctl <= 4 ? (
+    n = 1 - ((mouse_y - fader_y) / fader_h);
+    ctl_set_norm(active_ctl, n);
+  ) : (
+    fine = shift_now ? 0.22 : 1;
+    n = drag_start_norm + (drag_start_y - mouse_y) * 0.0045 * fine;
+    ctl_set_norm(active_ctl, n);
+  );
+);
+
+rel_left ? (
+  active_ctl = 0;
+);
+
+mouse_last_cap = mouse_cap;
+
+// Background
+draw_box(0, 0, gfx_w, gfx_h, 0.04, 0.045, 0.06, 1);
+draw_box(ui_offx, ui_offy, ui_w * ui_scale, ui_h * ui_scale, 0.05, 0.055, 0.07, 1);
+
+// Panels
+draw_box(ui_offx + 18 * ui_scale, ui_offy + 18 * ui_scale, 944 * ui_scale, 56 * ui_scale, 0.08, 0.09, 0.12, 1);
+draw_outline(ui_offx + 18 * ui_scale, ui_offy + 18 * ui_scale, 944 * ui_scale, 56 * ui_scale, 0.16, 0.19, 0.24, 1);
+
+draw_box(ui_offx + 28 * ui_scale, ui_offy + 95 * ui_scale, 192 * ui_scale, 195 * ui_scale, 0.07, 0.08, 0.11, 1);
+draw_outline(ui_offx + 28 * ui_scale, ui_offy + 95 * ui_scale, 192 * ui_scale, 195 * ui_scale, 0.16, 0.19, 0.24, 1);
+
+draw_box(ui_offx + 240 * ui_scale, ui_offy + 95 * ui_scale, 710 * ui_scale, 130 * ui_scale, 0.07, 0.08, 0.11, 1);
+draw_outline(ui_offx + 240 * ui_scale, ui_offy + 95 * ui_scale, 710 * ui_scale, 130 * ui_scale, 0.16, 0.19, 0.24, 1);
+
+draw_box(ui_offx + 28 * ui_scale, ui_offy + 300 * ui_scale, 210 * ui_scale, 240 * ui_scale, 0.07, 0.08, 0.11, 1);
+draw_outline(ui_offx + 28 * ui_scale, ui_offy + 300 * ui_scale, 210 * ui_scale, 240 * ui_scale, 0.16, 0.19, 0.24, 1);
+
+draw_box(ui_offx + 258 * ui_scale, ui_offy + 300 * ui_scale, 340 * ui_scale, 240 * ui_scale, 0.07, 0.08, 0.11, 1);
+draw_outline(ui_offx + 258 * ui_scale, ui_offy + 300 * ui_scale, 340 * ui_scale, 240 * ui_scale, 0.16, 0.19, 0.24, 1);
+
+draw_box(ui_offx + 618 * ui_scale, ui_offy + 300 * ui_scale, 334 * ui_scale, 240 * ui_scale, 0.07, 0.08, 0.11, 1);
+draw_outline(ui_offx + 618 * ui_scale, ui_offy + 300 * ui_scale, 334 * ui_scale, 240 * ui_scale, 0.16, 0.19, 0.24, 1);
+
+draw_box(ui_offx + 28 * ui_scale, ui_offy + 560 * ui_scale, 924 * ui_scale, 34 * ui_scale, 0.08, 0.09, 0.12, 1);
+draw_outline(ui_offx + 28 * ui_scale, ui_offy + 560 * ui_scale, 924 * ui_scale, 34 * ui_scale, 0.16, 0.19, 0.24, 1);
+
+// Header
+gfx_setfont(1, "Arial", 22 * ui_scale);
+gfx_set(0.95, 0.97, 1, 1);
+gfx_x = ui_offx + 38 * ui_scale;
+gfx_y = ui_offy + 32 * ui_scale;
+gfx_drawstr("ZK Coherent Alias Body");
+
+gfx_setfont(2, "Arial", 14 * ui_scale);
+host_sr >= 1000 ? (
+  sprintf(#hdr, "Host %.2f kHz  |  Signal-derived body reinjection", host_sr / 1000);
+) : (
+  sprintf(#hdr, "Host %.0f Hz  |  Signal-derived body reinjection", host_sr);
+);
+gfx_set(0.68, 0.74, 0.84, 1);
+gfx_x = ui_offx + 410 * ui_scale;
+gfx_y = ui_offy + 36 * ui_scale;
+gfx_drawstr(#hdr);
+
+// Section titles
+gfx_set(0.80, 0.86, 0.96, 1);
+gfx_x = ui_offx + 44 * ui_scale;  gfx_y = ui_offy + 104 * ui_scale; gfx_drawstr("MAIN");
+gfx_x = ui_offx + 258 * ui_scale; gfx_y = ui_offy + 104 * ui_scale; gfx_drawstr("CONTROL STRIP");
+gfx_x = ui_offx + 44 * ui_scale;  gfx_y = ui_offy + 310 * ui_scale; gfx_drawstr("PATH WEIGHTS");
+gfx_x = ui_offx + 278 * ui_scale; gfx_y = ui_offy + 310 * ui_scale; gfx_drawstr("ADDITION VIEW");
+gfx_x = ui_offx + 638 * ui_scale; gfx_y = ui_offy + 310 * ui_scale; gfx_drawstr("METERS");
+
+// Main knob + audit
+fmt_pct(#txt_mix, slider1);
+draw_knob(1, mix_x, mix_y, mix_r, ctl_get_norm(1), "BODY", #txt_mix, active_ctl == 1, hover_ctl == 1, 0.92, 0.73, 0.25);
+
+slider12 ? (sprintf(#audit_lbl, "WET ONLY");) : (sprintf(#audit_lbl, "ADD TO DRY"););
+draw_button(audit_x, audit_y, audit_w, audit_h, slider12, #audit_lbl, active_ctl == 12, hover_ctl == 12);
+
+gfx_setfont(3, "Arial", 12 * ui_scale);
+gfx_set(0.65, 0.70, 0.78, 1);
+gfx_x = ui_offx + 52 * ui_scale;
+gfx_y = ui_offy + 290 * ui_scale;
+gfx_drawstr("Right-click or CTRL-click resets | SHIFT drag = fine");
+
+// Top knobs
+fmt_hz(#v_seed, slider5);
+draw_knob(5, seed_x, seed_y, small_r, ctl_get_norm(5), "SEED HP", #v_seed, active_ctl == 5, hover_ctl == 5, 0.30, 0.74, 0.96);
+
+fmt_hz(#v_focus, slider6);
+draw_knob(6, focus_x, focus_y, small_r, ctl_get_norm(6), "FOCUS", #v_focus, active_ctl == 6, hover_ctl == 6, 0.30, 0.74, 0.96);
+
+fmt_db(#v_drive, slider7);
+draw_knob(7, drive_x, drive_y, small_r, ctl_get_norm(7), "DRIVE", #v_drive, active_ctl == 7, hover_ctl == 7, 0.95, 0.56, 0.28);
+
+fmt_pct(#v_smart, slider8);
+draw_knob(8, smart_x, smart_y, small_r, ctl_get_norm(8), "SMART", #v_smart, active_ctl == 8, hover_ctl == 8, 0.44, 0.88, 0.52);
+
+fmt_ms(#v_deco, slider9);
+draw_knob(9, deco_x, deco_y, small_r, ctl_get_norm(9), "DECOHERE", #v_deco, active_ctl == 9, hover_ctl == 9, 0.72, 0.62, 0.98);
+
+fmt_pct(#v_dens, slider10);
+draw_knob(10, dens_x, dens_y, small_r, ctl_get_norm(10), "DENSITY", #v_dens, active_ctl == 10, hover_ctl == 10, 0.82, 0.34, 0.74);
+
+fmt_db(#v_inj, slider13);
+draw_knob(13, inj_x, inj_y, small_r, ctl_get_norm(13), "INJECT", #v_inj, active_ctl == 13, hover_ctl == 13, 0.96, 0.78, 0.24);
+
+fmt_db(#v_out, slider11);
+draw_knob(11, out_x, out_y, small_r, ctl_get_norm(11), "OUTPUT", #v_out, active_ctl == 11, hover_ctl == 11, 0.82, 0.84, 0.88);
+
+// Faders
+sprintf(#sub48, "%.0f-%.0f", p48_lo, p48_hi);
+sprintf(#sub24, "%.0f-%.0f", p24_lo, p24_hi);
+sprintf(#sub12, "%.0f-%.0f", p12_lo, p12_hi);
+
+draw_fader(2, f48_x, fader_y, fader_w, fader_h, ctl_get_norm(2), "48k", #sub48, active_ctl == 2, hover_ctl == 2, enable48, clamp(m48 * 2.2, 0, 1), 0.28, 0.82, 0.95);
+draw_fader(3, f24_x, fader_y, fader_w, fader_h, ctl_get_norm(3), "24k", #sub24, active_ctl == 3, hover_ctl == 3, enable24, clamp(m24 * 2.2, 0, 1), 0.35, 0.70, 1.00);
+draw_fader(4, f12_x, fader_y, fader_w, fader_h, ctl_get_norm(4), "12k", #sub12, active_ctl == 4, hover_ctl == 4, enable12, clamp(m12 * 2.2, 0, 1), 0.98, 0.66, 0.26);
+
+gfx_set(0.58, 0.64, 0.74, 1);
+gfx_x = ui_offx + 44 * ui_scale; gfx_y = ui_offy + 525 * ui_scale; gfx_drawstr("Sub labels show each path's reinjection band (Hz).");
+
+// Addition view panel
+gfx_setfont(2, "Arial", 14 * ui_scale);
+gfx_set(0.93, 0.95, 1, 1);
+gfx_x = ui_offx + 280 * ui_scale; gfx_y = ui_offy + 336 * ui_scale; gfx_drawstr("Top = dry reference | Bottom = the body layer being added");
+gfx_x = ui_offx + 280 * ui_scale; gfx_y = ui_offy + 358 * ui_scale; gfx_drawstr("Wet lane is auto-zoomed so low-level additions stay visible.");
+
+draw_scope_panel(ui_offx + 276 * ui_scale, ui_offy + 382 * ui_scale, 304 * ui_scale, 126 * ui_scale);
+
+gfx_setfont(3, "Arial", 12 * ui_scale);
+gfx_set(0.66, 0.72, 0.82, 1);
+slider12 ? (sprintf(#scope_status, "Audit: Wet Only | Focus add %.0f%% of dry", focus_add_disp * 100);) : (sprintf(#scope_status, "Audit: Add to Dry | Focus add %.0f%% of dry", focus_add_disp * 100););
+gfx_x = ui_offx + 280 * ui_scale; gfx_y = ui_offy + 520 * ui_scale; gfx_drawstr(#scope_status);
+
+// Meter panel bars
+draw_meter_line(340, "Input level", clamp(in_meter * 1.8, 0, 1), 0.50, 0.64, 0.96);
+draw_meter_line(382, "Body level", clamp(wet_meter * 3.5, 0, 1), 0.92, 0.73, 0.25);
+draw_meter_line(424, "Smart gate", clamp((smart_meter - 0.18) / 0.82, 0, 1), 0.44, 0.88, 0.52);
+draw_meter_line(466, "Focus-band add", clamp(focus_add_disp / 0.35, 0, 1), 0.96, 0.78, 0.24);
+draw_meter_line(508, "Density gain reduction", clamp(gr_meter * 3.0, 0, 1), 0.98, 0.52, 0.42);
+
+// Path badges
+badge_y = ui_offy + 334 * ui_scale;
+badge_h = 24 * ui_scale;
+badge_w = 54 * ui_scale;
+bx1 = ui_offx + 870 * ui_scale;
+bx2 = bx1 - 64 * ui_scale;
+bx3 = bx2 - 64 * ui_scale;
+
+draw_button(bx3, badge_y, badge_w, badge_h, enable48, "48k", 0, 0);
+draw_button(bx2, badge_y, badge_w, badge_h, enable24, "24k", 0, 0);
+draw_button(bx1, badge_y, badge_w, badge_h, enable12, "12k", 0, 0);
+
+// Footer
+gfx_setfont(3, "Arial", 12 * ui_scale);
+gfx_set(0.70, 0.76, 0.86, 1);
+gfx_x = ui_offx + 42 * ui_scale;
+gfx_y = ui_offy + 571 * ui_scale;
+gfx_drawstr(#tip_footer);
+
+draw_tooltip_box(mouse_x, mouse_y);

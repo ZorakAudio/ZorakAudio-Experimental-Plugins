@@ -345,6 +345,7 @@ class FunctionDef(Node):
     name: str
     params: List[str]
     locals: List[str]
+    instances: List[str]
     body: Node
 
 
@@ -485,7 +486,11 @@ class Parser:
         return While(self._new_id(), kw.span, cond, body)
     
     def parse_function_def(self) -> Node:
-        # function name(a,b,c) local(x,y) ( body );
+        # JSFX/EEL2 user functions support optional qualifier lists between
+        # the parameter list and the body, e.g.:
+        #   function foo(x y) local(a b) instance(s1, s2) ( ... );
+        # The qualifier order is flexible; global() is accepted and ignored
+        # because unqualified variables are already global in our IR model.
         t_fun = self._eat("ident", "function")
 
         if self.cur.kind != "ident":
@@ -493,26 +498,8 @@ class Parser:
         t_name = self._eat("ident")
         fn_name = t_name.text
 
-        # params
-        self._eat("punc", "(")
-        params: List[str] = []
-        if not (self.cur.kind == "punc" and self.cur.text == ")"):
-            while True:
-                if self.cur.kind != "ident":
-                    raise SyntaxError(self._fmt_err("Expected parameter name"))
-                params.append(self._eat("ident").text)
-                if self.cur.kind == "punc" and self.cur.text == ",":
-                    self._adv()
-                    continue
-                break
-        self._eat("punc", ")")
-
-        # optional local(...)
-        locals_: List[str] = []
-        self._skip_seps()
-
-        if self.cur.kind == "ident" and self.cur.text == "local":
-            self._adv()  # consume 'local'
+        def parse_name_list(kind_label: str, *, allow_whitespace: bool = True) -> List[str]:
+            out: List[str] = []
             self._eat("punc", "(")
             self._skip_seps()
 
@@ -525,29 +512,45 @@ class Parser:
                         break
 
                     if self.cur.kind != "ident":
-                        raise SyntaxError(self._fmt_err("Expected local variable name"))
-                    locals_.append(self._eat("ident").text)
+                        raise SyntaxError(self._fmt_err(f"Expected {kind_label} name"))
+                    out.append(self._eat("ident").text)
 
                     self._skip_seps()
-                    # JSFX allows local() names to be separated by commas OR whitespace.
-                    # Examples:
-                    #   local(a,b,c)
-                    #   local(a b c)
+                    # JSFX allows names in these lists to be separated by
+                    # commas OR whitespace/newlines.
                     if self.cur.kind == "punc" and self.cur.text == ",":
                         self._adv()
                         continue
-                    if self.cur.kind == "ident":
+                    if allow_whitespace and self.cur.kind == "ident":
                         continue
                     break
 
             self._skip_seps()
             self._eat("punc", ")")
+            return out
 
+        # params: JSFX accepts comma- or whitespace-separated names here.
+        params = parse_name_list("parameter", allow_whitespace=True)
+
+        locals_: List[str] = []
+        instances: List[str] = []
         self._skip_seps()
 
+        while self.cur.kind == "ident" and self.cur.text in ("local", "instance", "global"):
+            qual = self.cur.text
+            self._adv()
+            names = parse_name_list(f"{qual} variable", allow_whitespace=True)
 
+            if qual == "local":
+                locals_.extend(names)
+            elif qual == "instance":
+                instances.extend(names)
+            else:
+                # global() is documentation / explicit declaration in JSFX;
+                # no special lowering is required here.
+                pass
 
-        self._skip_seps()
+            self._skip_seps()
 
         # body must be a parenthesized expression/sequence
         if not (self.cur.kind == "punc" and self.cur.text == "("):
@@ -559,7 +562,7 @@ class Parser:
         if self.cur.kind == "semi":
             self._adv()
 
-        return FunctionDef(self._new_id(), t_fun.span, fn_name, params, locals_, body)
+        return FunctionDef(self._new_id(), t_fun.span, fn_name, params, locals_, instances, body)
 
 
 
@@ -1170,6 +1173,237 @@ def extract_function_defs(programs: Dict[str, List[Node]]) -> Tuple[Dict[str, Fu
         out[sec] = new_prog
 
     return fns, out
+
+
+def _mangle_jsfx_component(text: str) -> str:
+    out: List[str] = []
+    for ch in text:
+        if ch.isalnum() or ch == "_":
+            out.append(ch)
+        else:
+            out.append(f"_x{ord(ch):02X}_")
+    if not out:
+        return "_"
+    if out[0][0].isdigit():
+        out.insert(0, "_")
+    return "".join(out)
+
+
+def _make_specialized_fn_name(section: str, fn_name: str, namespace: Optional[str]) -> str:
+    sec_m = _mangle_jsfx_component(section)
+    fn_m = _mangle_jsfx_component(fn_name)
+    if namespace:
+        ns_m = _mangle_jsfx_component(namespace)
+        return f"__fn__{sec_m}__{fn_m}__ns__{ns_m}"
+    return f"__fn__{sec_m}__{fn_m}"
+
+
+def _make_persistent_local_name(section: str, fn_name: str, local_name: str) -> str:
+    sec_m = _mangle_jsfx_component(section)
+    fn_m = _mangle_jsfx_component(fn_name)
+    loc_m = _mangle_jsfx_component(local_name)
+    return f"__fnlocal__{sec_m}__{fn_m}__{loc_m}"
+
+
+def _make_instance_var_name(namespace: str, var_name: str) -> str:
+    # Use the actual JSFX pseudo-object spelling so instance(foo) and
+    # explicit accesses like this.foo / whatever.foo resolve to the same
+    # backing state slot.
+    return f"{namespace}.{var_name}"
+
+
+def _node_uses_relative_namespace(n: Node) -> bool:
+    if isinstance(n, Var):
+        return n.name == "this" or n.name.startswith("this.")
+    if isinstance(n, (Num, StrLit)):
+        return False
+    if isinstance(n, Index):
+        return _node_uses_relative_namespace(n.base) or _node_uses_relative_namespace(n.index)
+    if isinstance(n, Unary):
+        return _node_uses_relative_namespace(n.a)
+    if isinstance(n, Binary):
+        return _node_uses_relative_namespace(n.l) or _node_uses_relative_namespace(n.r)
+    if isinstance(n, Assign):
+        return _node_uses_relative_namespace(n.target) or _node_uses_relative_namespace(n.value)
+    if isinstance(n, Call):
+        if n.fn == "this" or n.fn.startswith("this."):
+            return True
+        return any(_node_uses_relative_namespace(a) for a in n.args)
+    if isinstance(n, Loop):
+        return _node_uses_relative_namespace(n.count) or _node_uses_relative_namespace(n.body)
+    if isinstance(n, Ternary):
+        return (_node_uses_relative_namespace(n.cond) or
+                _node_uses_relative_namespace(n.then) or
+                _node_uses_relative_namespace(n.els))
+    if isinstance(n, Seq):
+        return any(_node_uses_relative_namespace(it) for it in n.items)
+    if isinstance(n, If):
+        return (_node_uses_relative_namespace(n.cond) or
+                _node_uses_relative_namespace(n.then) or
+                (n.els is not None and _node_uses_relative_namespace(n.els)))
+    if isinstance(n, While):
+        return _node_uses_relative_namespace(n.cond) or _node_uses_relative_namespace(n.body)
+    if isinstance(n, FunctionDef):
+        return _node_uses_relative_namespace(n.body)
+    raise TypeError(type(n))
+
+
+def _resolve_relative_namespace(prefix: str, current_namespace: Optional[str]) -> Optional[str]:
+    if prefix == "this":
+        return current_namespace
+    if prefix.startswith("this."):
+        suffix = prefix[5:]
+        if current_namespace:
+            return f"{current_namespace}.{suffix}" if suffix else current_namespace
+        return suffix or current_namespace
+    return prefix
+
+
+def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Tuple[Dict[str, List[Node]], Dict[str, FunctionDef]]:
+    """Lower JSFX user-function local()/instance() namespace semantics.
+
+    Strategy:
+      - local() variables become persistent state vars with per-caller-section
+        mangled names, so repeated calls do not reset them to zero.
+      - instance() variables become namespaced persistent state vars keyed by
+        the call-site namespace (e.g. monLP.onepole2_lp -> monLP.s1 / monLP.s2).
+      - user functions are specialized per caller section, and additionally per
+        namespace when needed, so relative namespace references and local()
+        storage follow JSFX/EEL2 behavior closely enough for DSP code.
+
+    This intentionally does not attempt to implement full dynamic/relative
+    namespace features such as this.. hierarchy walking.
+    """
+    if not fn_defs:
+        return programs, fn_defs
+
+    fn_needs_namespace: Dict[str, bool] = {
+        name: bool(fdef.instances) or _node_uses_relative_namespace(fdef.body)
+        for name, fdef in fn_defs.items()
+    }
+
+    specialized_defs: Dict[str, FunctionDef] = {}
+    specialized_name_cache: Dict[Tuple[str, str, Optional[str]], str] = {}
+    in_progress: Set[Tuple[str, str, Optional[str]]] = set()
+
+    def rewrite_var_name(name: str, params: Set[str], local_map: Dict[str, str], instance_map: Dict[str, str], current_namespace: Optional[str]) -> str:
+        if name in params:
+            return name
+        if name in local_map:
+            return local_map[name]
+        if name in instance_map:
+            return instance_map[name]
+        if name == "this":
+            return current_namespace or name
+        if name.startswith("this."):
+            suffix = name[5:]
+            if current_namespace:
+                return f"{current_namespace}.{suffix}" if suffix else current_namespace
+            return suffix or name
+        return name
+
+    def resolve_user_call(fn_name: str, current_namespace: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        if fn_name in fn_defs:
+            return fn_name, None
+
+        parts = fn_name.split(".")
+        if len(parts) >= 2 and parts[-1] in fn_defs:
+            base = parts[-1]
+            prefix = ".".join(parts[:-1])
+            return base, _resolve_relative_namespace(prefix, current_namespace)
+
+        return None, None
+
+    def ensure_specialized(section: str, base_fn: str, call_namespace: Optional[str]) -> str:
+        if base_fn not in fn_defs:
+            return base_fn
+
+        orig = fn_defs[base_fn]
+        namespace_key = call_namespace if fn_needs_namespace.get(base_fn, False) else None
+        if fn_needs_namespace.get(base_fn, False) and not namespace_key:
+            namespace_key = base_fn
+
+        key = (section, base_fn, namespace_key)
+        cached = specialized_name_cache.get(key)
+        if cached is not None:
+            return cached
+        if key in in_progress:
+            raise ValueError(f"Recursive or cyclic user-function specialization detected for {base_fn}")
+
+        spec_name = _make_specialized_fn_name(section, base_fn, namespace_key)
+        specialized_name_cache[key] = spec_name
+        in_progress.add(key)
+
+        local_map = {name: _make_persistent_local_name(section, base_fn, name) for name in orig.locals}
+        instance_map = {name: _make_instance_var_name(namespace_key, name) for name in orig.instances} if namespace_key else {}
+        params = set(orig.params)
+
+        body = rewrite_node(orig.body, section, namespace_key, params, local_map, instance_map)
+
+        specialized_defs[spec_name] = FunctionDef(
+            orig.id,
+            orig.span,
+            spec_name,
+            list(orig.params),
+            [],
+            [],
+            body,
+        )
+
+        in_progress.remove(key)
+        return spec_name
+
+    def rewrite_call_name(fn_name: str, section: str, current_namespace: Optional[str]) -> str:
+        base_fn, call_namespace = resolve_user_call(fn_name, current_namespace)
+        if base_fn is None:
+            return fn_name
+        return ensure_specialized(section, base_fn, call_namespace)
+
+    def rewrite_node(n: Node, section: str, current_namespace: Optional[str], params: Set[str], local_map: Dict[str, str], instance_map: Dict[str, str]) -> Node:
+        if isinstance(n, (Num, StrLit)):
+            return n
+        if isinstance(n, Var):
+            new_name = rewrite_var_name(n.name, params, local_map, instance_map, current_namespace)
+            if new_name == n.name:
+                return n
+            return Var(n.id, n.span, new_name)
+        if isinstance(n, Index):
+            return Index(n.id, n.span, rewrite_node(n.base, section, current_namespace, params, local_map, instance_map), rewrite_node(n.index, section, current_namespace, params, local_map, instance_map))
+        if isinstance(n, Unary):
+            return Unary(n.id, n.span, n.op, rewrite_node(n.a, section, current_namespace, params, local_map, instance_map))
+        if isinstance(n, Binary):
+            return Binary(n.id, n.span, n.op, rewrite_node(n.l, section, current_namespace, params, local_map, instance_map), rewrite_node(n.r, section, current_namespace, params, local_map, instance_map))
+        if isinstance(n, Assign):
+            return Assign(n.id, n.span, n.op, rewrite_node(n.target, section, current_namespace, params, local_map, instance_map), rewrite_node(n.value, section, current_namespace, params, local_map, instance_map))
+        if isinstance(n, Call):
+            new_fn = rewrite_call_name(n.fn, section, current_namespace)
+            new_args = [rewrite_node(a, section, current_namespace, params, local_map, instance_map) for a in n.args]
+            if new_fn == n.fn and len(new_args) == len(n.args) and all(a1 is a2 for a1, a2 in zip(new_args, n.args)):
+                return n
+            return Call(n.id, n.span, new_fn, new_args)
+        if isinstance(n, Loop):
+            return Loop(n.id, n.span, rewrite_node(n.count, section, current_namespace, params, local_map, instance_map), rewrite_node(n.body, section, current_namespace, params, local_map, instance_map))
+        if isinstance(n, Ternary):
+            return Ternary(n.id, n.span, rewrite_node(n.cond, section, current_namespace, params, local_map, instance_map), rewrite_node(n.then, section, current_namespace, params, local_map, instance_map), rewrite_node(n.els, section, current_namespace, params, local_map, instance_map))
+        if isinstance(n, Seq):
+            return Seq(n.id, n.span, [rewrite_node(it, section, current_namespace, params, local_map, instance_map) for it in n.items])
+        if isinstance(n, If):
+            return If(n.id, n.span, rewrite_node(n.cond, section, current_namespace, params, local_map, instance_map), rewrite_node(n.then, section, current_namespace, params, local_map, instance_map), rewrite_node(n.els, section, current_namespace, params, local_map, instance_map) if n.els is not None else None)
+        if isinstance(n, While):
+            return While(n.id, n.span, rewrite_node(n.cond, section, current_namespace, params, local_map, instance_map), rewrite_node(n.body, section, current_namespace, params, local_map, instance_map))
+        if isinstance(n, FunctionDef):
+            raise TypeError("Unexpected nested FunctionDef during lowering")
+        raise TypeError(type(n))
+
+    lowered_programs: Dict[str, List[Node]] = {}
+    for section, prog in programs.items():
+        lowered_programs[section] = [
+            rewrite_node(node, section, None, set(), {}, {})
+            for node in prog
+        ]
+
+    return lowered_programs, specialized_defs
+
 
 
 # -----------------------------
@@ -2741,6 +2975,7 @@ def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
             programs[sec] = []
 
     fn_defs, programs = extract_function_defs(programs)
+    programs, fn_defs = lower_user_functions(programs, fn_defs)
     user_vars = collect_user_vars(programs, fn_defs)
 
     pin_hints = parse_pin_hints(jsfx_text)
