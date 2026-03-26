@@ -881,6 +881,7 @@ public:
     // See: https://www.reaper.fm/sdk/js/advfunc.php
     NSEEL_addfunc_varparm_ex("sliderchange",   1, 0, NSEEL_PProc_THIS, &eel_sliderchange,   nullptr);
     NSEEL_addfunc_varparm_ex("slider_automate",1, 0, NSEEL_PProc_THIS, &eel_slider_automate,nullptr);
+    NSEEL_addfunc_varparm_ex("slider_show",    1, 0, NSEEL_PProc_THIS, &eel_slider_show,    nullptr);
 
     // JSFX dynamic access helpers (REAPER dialect)
     // Many scripts use slider(i) / slider(i)=v and spl(i) / spl(i)=v.
@@ -1508,6 +1509,31 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     return 0.0;
   }
 
+  static EEL_F NSEEL_CGEN_CALL eel_slider_show(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*)opaque;
+    if (!self || np < 1)
+      return 0.0;
+
+    const double v = (double) *parms[0];
+    const uint64_t mask = sliderMaskFromArg (self, parms[0], v);
+    if (mask == 0)
+      return 0.0;
+
+    if (np >= 2)
+    {
+      const double show = (double) *parms[1];
+      if (show == -1.0)
+        self->sliderVisibleMask ^= mask;
+      else if (show <= 0.0)
+        self->sliderVisibleMask &= ~mask;
+      else
+        self->sliderVisibleMask |= mask;
+    }
+
+    return (EEL_F) (double) (self->sliderVisibleMask & mask);
+  }
+
   // -------------------------------------------------------------------
   // JSFX helpers: slider(i) / spl(i) dynamic access (portable implementation)
   //
@@ -1623,6 +1649,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   uint64_t sliderChangeMask = 0;
   uint64_t sliderAutomateMask = 0;
   uint64_t sliderAutomateEndMask = 0;
+  uint64_t sliderVisibleMask = ~UINT64_C (0);
   bool undoPointRequested = false;
 
   // Keyboard input

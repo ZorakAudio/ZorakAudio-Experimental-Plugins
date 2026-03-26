@@ -5080,10 +5080,17 @@ public:
         if (! gfxCompiledOkFlag)
         {
             g.fillAll (juce::Colours::black);
-            g.setColour (juce::Colours::red.withAlpha (0.9f));
-            g.drawText ("@gfx compile error:\n" + (gfxLastError.isNotEmpty() ? gfxLastError : juce::String ("(unknown error)")),
-                        getLocalBounds().reduced (6),
-                        juce::Justification::topLeft, true);
+
+            const auto area = getLocalBounds().reduced (6);
+            juce::AttributedString text;
+            text.setJustification (juce::Justification::topLeft);
+            text.append ("@gfx compile error:\n" + (gfxLastError.isNotEmpty() ? gfxLastError : juce::String ("(unknown error)")),
+                         juce::Font (14.0f),
+                         juce::Colours::red.withAlpha (0.9f));
+
+            juce::TextLayout layout;
+            layout.createLayout (text, (float) area.getWidth());
+            layout.draw (g, area.toFloat());
             return;
         }
 

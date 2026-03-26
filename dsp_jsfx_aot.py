@@ -1443,6 +1443,8 @@ class LLVMModuleEmitter:
         # 25: i64 pendingSliderAutomateEndMask
         # 26: uint32_t randMT[624]
         # 27: uint32_t randIndex (0 means uninitialized; mirrors EEL2 __idx)
+        # 28: int64_t sliderVisibleMask (bitmask, 1=visible)
+        # 29: int32_t sliderVisibilityInit
         self.var_cap = max(1, (max(sym.vars.values()) + 1) if sym.vars else 1)
         self.midi_event_ty = ir.LiteralStructType([self.i32, self.i32, self.i32, self.i32])
 
@@ -1474,6 +1476,8 @@ class LLVMModuleEmitter:
             self.i64,
             self.i64,
             ir.ArrayType(self.i32, 624),
+            self.i32,
+            self.i64,
             self.i32,
         ])
         self.state_ptr = self.state_ty.as_pointer()
@@ -1669,6 +1673,25 @@ class LLVMModuleEmitter:
         zero = ir.Constant(self.i32, 0)
         fld = ir.Constant(self.i32, 27)
         return builder.gep(st, [zero, fld], inbounds=True)
+
+    def _get_slider_visible_mask_ptr(self, builder: ir.IRBuilder, st: ir.Value) -> ir.Value:
+        zero = ir.Constant(self.i32, 0)
+        fld = ir.Constant(self.i32, 28)
+        return builder.gep(st, [zero, fld], inbounds=True)
+
+    def _get_slider_visibility_init_ptr(self, builder: ir.IRBuilder, st: ir.Value) -> ir.Value:
+        zero = ir.Constant(self.i32, 0)
+        fld = ir.Constant(self.i32, 29)
+        return builder.gep(st, [zero, fld], inbounds=True)
+
+    def _ensure_slider_visibility_initialized(self, builder: ir.IRBuilder, st: ir.Value) -> None:
+        init_ptr = self._get_slider_visibility_init_ptr(builder, st)
+        init_v = builder.load(init_ptr)
+        needs_init = builder.icmp_signed("==", init_v, self._const_i32(0))
+        with builder.if_then(needs_init):
+            vis_ptr = self._get_slider_visible_mask_ptr(builder, st)
+            builder.store(ir.Constant(self.i64, -1), vis_ptr)
+            builder.store(self._const_i32(1), init_ptr)
 
     def _ensure_rand_gen32_fn(self) -> ir.Function:
         if self._rand_gen32_fn is not None:
@@ -2541,6 +2564,52 @@ class LLVMModuleEmitter:
                 ret = builder.call(self.fn_slider_automate, [st, mask, end_touch])
                 return self._to_f64(builder, ret)
 
+            if fn == "slider_show":
+                # JSFX builtin: slider_show(mask_or_sliderX[, value])
+                #
+                # REAPER semantics:
+                #   - with no value: query visibility and return requested visible bits
+                #   - value == -1: toggle requested bits
+                #   - value == 0 : hide requested bits
+                #   - otherwise  : show requested bits
+                #
+                # In AOT/JUCE there is no native REAPER slider panel, so we track
+                # visibility state internally for scripts that query it, but this has
+                # no direct host-UI side effect.
+                if len(n.args) not in (1, 2):
+                    raise ValueError("slider_show expects 1 or 2 args")
+
+                self._ensure_slider_visibility_initialized(builder, st)
+
+                mask_f = self._emit_slider_mask_arg(builder, st, n.args[0])
+                zero_f = self._const_f64(0.0)
+                mask_nonneg = builder.select(
+                    builder.fcmp_ordered("<", mask_f, zero_f),
+                    zero_f,
+                    mask_f,
+                )
+                mask_i64 = builder.fptoui(mask_nonneg, self.i64)
+
+                vis_ptr = self._get_slider_visible_mask_ptr(builder, st)
+                vis_i64 = builder.load(vis_ptr)
+
+                if len(n.args) == 2:
+                    mode_v = self.emit_expr(builder, st, n.args[1])
+                    is_toggle = builder.fcmp_ordered("==", mode_v, self._const_f64(-1.0))
+                    is_hide = builder.fcmp_ordered("==", mode_v, self._const_f64(0.0))
+
+                    all_ones = ir.Constant(self.i64, -1)
+                    hidden = builder.and_(vis_i64, builder.xor(mask_i64, all_ones))
+                    toggled = builder.xor(vis_i64, mask_i64)
+                    shown = builder.or_(vis_i64, mask_i64)
+
+                    vis_after_toggle_or_show = builder.select(is_toggle, toggled, shown)
+                    vis_i64 = builder.select(is_hide, hidden, vis_after_toggle_or_show)
+                    builder.store(vis_i64, vis_ptr)
+
+                requested_visible = builder.and_(vis_i64, mask_i64)
+                return builder.uitofp(requested_visible, self.double)
+
             if fn == "memset":
                 # JSFX builtin: memset(dest, value, length)
                 # Sets mem[dest .. dest+length-1] = value. Returns dest (double).
@@ -3100,6 +3169,8 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    int64_t pendingSliderAutomateEndMask;")
     lines.append("    uint32_t randMT[624];")
     lines.append("    uint32_t randIndex;")
+    lines.append("    int64_t sliderVisibleMask;")
+    lines.append("    int32_t sliderVisibilityInit;")
     lines.append("} DSPJSFX_State;")
     lines.append("")
 
