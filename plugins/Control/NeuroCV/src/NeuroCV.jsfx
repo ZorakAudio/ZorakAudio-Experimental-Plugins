@@ -1,0 +1,1480 @@
+desc:NeuroCV
+
+options:want_all_kb gfx_hz=60
+in_pin:Audio L
+in_pin:Audio R
+in_pin:SC/Route 3
+in_pin:SC/Route 4
+in_pin:Aux 5
+in_pin:Aux 6
+in_pin:Aux 7
+in_pin:Aux 8
+in_pin:Aux 9
+in_pin:Aux 10
+in_pin:Aux 11
+in_pin:Aux 12
+in_pin:Aux 13
+in_pin:Aux 14
+in_pin:Aux 15
+in_pin:Aux 16
+in_pin:Aux 17
+in_pin:Aux 18
+out_pin:Audio L
+out_pin:Audio R
+out_pin:SC/Route 3
+out_pin:SC/Route 4
+out_pin:Aux 5
+out_pin:Aux 6
+out_pin:Aux 7
+out_pin:Aux 8
+out_pin:Aux 9
+out_pin:Aux 10
+out_pin:Aux 11
+out_pin:Aux 12
+out_pin:Aux 13
+out_pin:Aux 14
+out_pin:Aux 15
+out_pin:Aux 16
+out_pin:Aux 17
+out_pin:Aux 18
+
+slider1:mode=0<0,2,1{Listen,Adaptive,Perform}>-Mode
+slider2:cv_uni_output=0<0,1,0.0001>-CV Uni Output (activity, read only)
+slider3:cv_bi_output=0<-1,1,0.0001>-CV Bi Output (centered, read only)
+slider4:depth=1<0,2,0.01>-Range
+slider5:smooth_ms=120<5,2000,1:log=120>-Smooth (ms)
+slider6:surprise_blend=0.65<0,1,0.01>-Surprise Blend
+slider7:learn_rate=0.04<0.001,0.25,0.001:log=0.04>-Learn Rate
+slider8:frame_ms=20<5,80,1:log=20>-Analysis frame (ms)
+slider9:route_source=0<0,5,1{Disabled,Uni Activity,Bi Centered,Structure,Surprise,Confidence}>-Audio Route Lane
+slider10:route_pair=2<1,8,1{3/4,5/6,7/8,9/10,11/12,13/14,15/16,17/18}>-Audio Route Pair
+slider11:ui_scale_user=1.1<0.85,1.25,0.01>-UI Scale
+
+@init
+
+function clamp(x lo hi)
+(
+  x < lo ? lo : x > hi ? hi : x;
+);
+
+function mix(a b t)
+(
+  a + (b-a) * t;
+);
+
+function softsign(x)
+(
+  x / (1 + abs(x));
+);
+
+function softsign_d_from_y(y)
+(
+  sqr(1 - abs(y));
+);
+
+function onepole_coeff_hz(hz sr)
+(
+  clamp(1 - exp(-2*$pi*hz/max(1,sr)), 0.000001, 1);
+);
+
+function onepole_coeff_ms(ms sr)
+(
+  ms <= 0 ? 1 : clamp(1 - exp(-1/(0.001*ms*max(1,sr))), 0.000001, 1);
+);
+
+function point_in_rect(px py x y w h)
+(
+  px >= x && px <= x+w && py >= y && py <= y+h;
+);
+
+function draw_panel(x y w h)
+(
+  gfx_set(0.10,0.11,0.14,1);
+  gfx_rect(x,y,w,h);
+  gfx_set(0.22,0.25,0.30,1);
+  gfx_roundrect(x,y,w,h,10,1);
+);
+
+function draw_unipolar_bar(x y w h val r g b) local(fw)
+(
+  val = clamp(val, 0, 1);
+  gfx_set(0.13,0.15,0.18,1);
+  gfx_rect(x,y,w,h);
+  fw = w * val;
+  gfx_set(r,g,b,1);
+  gfx_rect(x,y,fw,h);
+  gfx_set(0.25,0.28,0.34,1);
+  gfx_roundrect(x,y,w,h,4,1);
+);
+
+function draw_bipolar_bar(x y w h val r g b) local(cx fw)
+(
+  val = clamp(val, -1, 1);
+  gfx_set(0.13,0.15,0.18,1);
+  gfx_rect(x,y,w,h);
+  gfx_set(0.24,0.27,0.31,1);
+  cx = x + w*0.5;
+  gfx_line(cx, y+1, cx, y+h-1, 1);
+
+  val >= 0 ? (
+    fw = w*0.5*val;
+    gfx_set(r,g,b,1);
+    gfx_rect(cx, y, fw, h);
+  ) : (
+    fw = w*0.5*(-val);
+    gfx_set(r,g,b,1);
+    gfx_rect(cx-fw, y, fw, h);
+  );
+
+  gfx_set(0.25,0.28,0.34,1);
+  gfx_roundrect(x,y,w,h,4,1);
+);
+
+function draw_bipolar_overlay(x y w h base_v over_v br bg bb orr ogg obb) local(cx fw oy oh)
+(
+  base_v = clamp(base_v, -1, 1);
+  over_v = clamp(over_v, -1, 1);
+  gfx_set(0.13,0.15,0.18,1);
+  gfx_rect(x,y,w,h);
+  gfx_set(0.24,0.27,0.31,1);
+  cx = x + w*0.5;
+  gfx_line(cx, y+1, cx, y+h-1, 1);
+
+  base_v >= 0 ? (
+    fw = w*0.5*base_v;
+    gfx_set(br,bg,bb,1);
+    gfx_rect(cx, y, fw, h);
+  ) : (
+    fw = w*0.5*(-base_v);
+    gfx_set(br,bg,bb,1);
+    gfx_rect(cx-fw, y, fw, h);
+  );
+
+  oy = y + 2;
+  oh = max(2, h - 4);
+  over_v >= 0 ? (
+    fw = w*0.5*over_v;
+    gfx_set(orr,ogg,obb,1);
+    gfx_rect(cx, oy, fw, oh);
+  ) : (
+    fw = w*0.5*(-over_v);
+    gfx_set(orr,ogg,obb,1);
+    gfx_rect(cx-fw, oy, fw, oh);
+  );
+
+  gfx_set(0.25,0.28,0.34,1);
+  gfx_roundrect(x,y,w,h,4,1);
+);
+
+function setup_layout() local(ptr)
+(
+  FEATURES = 6;
+  CTX = 3;
+  IN_SIZE = FEATURES * CTX;
+  HIDDEN = 8;
+  OUT_SIZE = FEATURES;
+  HISTN = 240;
+
+  ptr = 0;
+
+  ptr_w1 = ptr;       ptr += IN_SIZE * HIDDEN;
+  ptr_b1 = ptr;       ptr += HIDDEN;
+  ptr_w2 = ptr;       ptr += HIDDEN * OUT_SIZE;
+  ptr_b2 = ptr;       ptr += OUT_SIZE;
+
+  ptr_h = ptr;        ptr += HIDDEN;
+  ptr_out = ptr;      ptr += OUT_SIZE;
+  ptr_dh = ptr;       ptr += HIDDEN;
+  ptr_do = ptr;       ptr += OUT_SIZE;
+
+  ptr_feat_raw = ptr; ptr += FEATURES;
+  ptr_feat_cur = ptr; ptr += FEATURES;
+  ptr_feat_prev = ptr;ptr += FEATURES;
+  ptr_feat_fast = ptr;ptr += FEATURES;
+  ptr_feat_slow = ptr;ptr += FEATURES;
+  ptr_feat_pred = ptr;ptr += FEATURES;
+  ptr_feat_mean = ptr;ptr += FEATURES;
+  ptr_feat_var = ptr; ptr += FEATURES;
+  ptr_feat_err = ptr; ptr += FEATURES;
+
+  ptr_z_prev = ptr;   ptr += IN_SIZE;
+  ptr_z_cur = ptr;    ptr += IN_SIZE;
+
+  ptr_struct_w = ptr; ptr += FEATURES;
+
+  save_mem_len = ptr;
+
+  ptr_hist_uni = ptr;       ptr += HISTN;
+  ptr_hist_bi = ptr;        ptr += HISTN;
+  ptr_hist_surprise = ptr;  ptr += HISTN;
+  ptr_hist_structure = ptr; ptr += HISTN;
+  ptr_hist_conf = ptr;      ptr += HISTN;
+
+  total_mem_len = ptr;
+);
+
+function clear_histories() local(i)
+(
+  i = 0;
+  while (i < HISTN) (
+    ptr_hist_uni[i] = 0;
+    ptr_hist_bi[i] = 0;
+    ptr_hist_surprise[i] = 0.5;
+    ptr_hist_structure[i] = 0.5;
+    ptr_hist_conf[i] = 0;
+    i += 1;
+  );
+  hist_write = 0;
+);
+
+function randomize_model() local(i n)
+(
+  n = IN_SIZE * HIDDEN;
+  i = 0;
+  while (i < n) (
+    ptr_w1[i] = (rand(2)-1) * 0.08;
+    i += 1;
+  );
+
+  i = 0;
+  while (i < HIDDEN) (
+    ptr_b1[i] = (rand(2)-1) * 0.01;
+    i += 1;
+  );
+
+  n = HIDDEN * OUT_SIZE;
+  i = 0;
+  while (i < n) (
+    ptr_w2[i] = (rand(2)-1) * 0.08;
+    i += 1;
+  );
+
+  i = 0;
+  while (i < OUT_SIZE) (
+    ptr_b2[i] = 0;
+    i += 1;
+  );
+);
+
+function reset_state() local(i nrm)
+(
+  randomize_model();
+
+  nrm = 0;
+  i = 0;
+  while (i < FEATURES) (
+    ptr_feat_raw[i] = 0;
+    ptr_feat_cur[i] = 0;
+    ptr_feat_prev[i] = 0;
+    ptr_feat_fast[i] = 0;
+    ptr_feat_slow[i] = 0;
+    ptr_feat_pred[i] = 0;
+    ptr_feat_err[i] = 0;
+    ptr_feat_mean[i] = 0;
+    ptr_feat_var[i] = 0.05;
+    ptr_struct_w[i] = (rand(2)-1) * 0.5;
+    nrm += ptr_struct_w[i] * ptr_struct_w[i];
+    i += 1;
+  );
+  nrm = sqrt(nrm + 0.0000001);
+  i = 0;
+  while (i < FEATURES) (
+    ptr_struct_w[i] /= nrm;
+    i += 1;
+  );
+
+  i = 0;
+  while (i < IN_SIZE) (
+    ptr_z_prev[i] = 0;
+    ptr_z_cur[i] = 0;
+    i += 1;
+  );
+
+  struct_norm = 0;
+  surprise_mean = 0.10;
+  surprise_var = 0.01;
+  structure_mean = 0;
+  structure_var = 0.05;
+  cv_drive_mean = 0.5;
+  cv_drive_var = 0.05;
+  avg_loss = 0.1;
+  cv_bi_target = 0;
+  cv_bi_current = 0;
+  cv_bi_for_slider = 0;
+  cv_uni_current = 0;
+  cv_uni_for_slider = 0;
+  confidence = 0;
+  signal_gate = 0;
+  learn_gate_strength = 0;
+  gate_open_rms = 0.0030;
+  gate_close_rms = 0.0018;
+  noise_rms_est = 0.0005;
+  signal_rms_est = 0.03;
+  quiet_frames = 0;
+  surprise_view = 0.5;
+  structure_view = 0.5;
+  structure_centered = 0;
+  level_view = 0;
+  frames_seen = 0;
+  have_prev_ctx = 0;
+  frame_counter = 0;
+  prev_mono_sample = 0;
+  low_l = 0;
+  low_r = 0;
+  acc_energy = 0;
+  acc_peak = 0;
+  acc_diff = 0;
+  acc_low2 = 0;
+  acc_high2 = 0;
+  acc_mid2 = 0;
+  acc_side2 = 0;
+  acc_zc = 0;
+  clear_histories();
+);
+
+function update_coeffs()
+(
+  analysis_samples = max(32, floor(frame_ms * 0.001 * srate + 0.5));
+  analysis_inv = 1 / max(1, analysis_samples);
+  smooth_coeff = onepole_coeff_ms(max(1, smooth_ms), srate);
+  low_coeff = onepole_coeff_hz(1200, srate);
+  last_srate_seen = srate;
+);
+
+function push_history(uni_v bi_v sur_v struct_v conf_v)
+(
+  ptr_hist_uni[hist_write] = uni_v;
+  ptr_hist_bi[hist_write] = bi_v;
+  ptr_hist_surprise[hist_write] = sur_v;
+  ptr_hist_structure[hist_write] = struct_v;
+  ptr_hist_conf[hist_write] = conf_v;
+  hist_write = (hist_write + 1) % HISTN;
+);
+
+function mlp_forward(in_ptr out_ptr) local(j i base sum)
+(
+  j = 0;
+  while (j < HIDDEN) (
+    base = ptr_w1 + j*IN_SIZE;
+    sum = ptr_b1[j];
+    i = 0;
+    while (i < IN_SIZE) (
+      sum += base[i] * in_ptr[i];
+      i += 1;
+    );
+    ptr_h[j] = softsign(sum);
+    j += 1;
+  );
+
+  j = 0;
+  while (j < OUT_SIZE) (
+    base = ptr_w2 + j*HIDDEN;
+    sum = ptr_b2[j];
+    i = 0;
+    while (i < HIDDEN) (
+      sum += base[i] * ptr_h[i];
+      i += 1;
+    );
+    out_ptr[j] = softsign(sum);
+    j += 1;
+  );
+);
+
+function mlp_train(in_ptr target_ptr lr) local(k j i base err delta wd acc)
+(
+  mlp_forward(in_ptr, ptr_out);
+
+  train_loss = 0;
+  k = 0;
+  while (k < OUT_SIZE) (
+    err = target_ptr[k] - ptr_out[k];
+    ptr_feat_err[k] = err;
+    train_loss += err * err;
+    ptr_do[k] = clamp(err * softsign_d_from_y(ptr_out[k]), -0.25, 0.25);
+    k += 1;
+  );
+  train_loss /= max(1, OUT_SIZE);
+
+  j = 0;
+  while (j < HIDDEN) (
+    acc = 0;
+    k = 0;
+    while (k < OUT_SIZE) (
+      acc += (ptr_w2 + k*HIDDEN)[j] * ptr_do[k];
+      k += 1;
+    );
+    ptr_dh[j] = clamp(acc * softsign_d_from_y(ptr_h[j]), -0.25, 0.25);
+    j += 1;
+  );
+
+  wd = 1 - lr * 0.0005;
+
+  k = 0;
+  while (k < OUT_SIZE) (
+    base = ptr_w2 + k*HIDDEN;
+    i = 0;
+    while (i < HIDDEN) (
+      base[i] = base[i] * wd + lr * ptr_do[k] * ptr_h[i];
+      i += 1;
+    );
+    ptr_b2[k] = ptr_b2[k] * wd + lr * ptr_do[k];
+    k += 1;
+  );
+
+  j = 0;
+  while (j < HIDDEN) (
+    base = ptr_w1 + j*IN_SIZE;
+    i = 0;
+    while (i < IN_SIZE) (
+      base[i] = base[i] * wd + lr * ptr_dh[j] * in_ptr[i];
+      i += 1;
+    );
+    ptr_b1[j] = ptr_b1[j] * wd + lr * ptr_dh[j];
+    j += 1;
+  );
+
+  train_loss;
+);
+
+function oja_project_update(feat_ptr lr) local(i y acc nrm)
+(
+  y = 0;
+  i = 0;
+  while (i < FEATURES) (
+    y += ptr_struct_w[i] * feat_ptr[i];
+    i += 1;
+  );
+
+  lr > 0 ? (
+    i = 0;
+    while (i < FEATURES) (
+      ptr_struct_w[i] += lr * (y * feat_ptr[i] - y * y * ptr_struct_w[i]);
+      i += 1;
+    );
+
+    nrm = 0;
+    i = 0;
+    while (i < FEATURES) (
+      nrm += ptr_struct_w[i] * ptr_struct_w[i];
+      i += 1;
+    );
+    nrm = sqrt(nrm + 0.0000001);
+
+    i = 0;
+    while (i < FEATURES) (
+      ptr_struct_w[i] /= nrm;
+      i += 1;
+    );
+  );
+
+  y;
+);
+
+function sync_from_sliders()
+(
+  mode = floor(clamp(mode, 0, 2) + 0.5);
+  depth = clamp(depth, 0, 2);
+  surprise_blend = clamp(surprise_blend, 0, 1);
+  learn_rate = clamp(learn_rate, 0.001, 0.25);
+  frame_ms = clamp(frame_ms, 5, 80);
+  ui_scale_user = clamp(ui_scale_user, 0.85, 1.25);
+  quiet_reset_frames = max(6, floor(250 / max(5, frame_ms)));
+  route_source = floor(clamp(route_source, 0, 5) + 0.5);
+  route_pair = floor(clamp(route_pair, 1, 8) + 0.5);
+  route_ch_a = route_pair * 2;
+  route_ch_b = route_ch_a + 1;
+
+  mode == 0 ? (
+    learn_rate_eff = learn_rate;
+    oja_rate_eff = learn_rate * 0.20;
+    norm_rate = 0.05;
+    cv_norm_rate = 0.05;
+  ) : mode == 1 ? (
+    learn_rate_eff = learn_rate * 0.15;
+    oja_rate_eff = learn_rate * 0.04;
+    norm_rate = 0.02;
+    cv_norm_rate = 0.03;
+  ) : (
+    learn_rate_eff = 0;
+    oja_rate_eff = 0;
+    norm_rate = 0.005;
+    cv_norm_rate = 0.02;
+  );
+
+  update_coeffs();
+);
+
+function draw_trace_panel(x y w h) local(i idx frac vx uniy biy svy sty cfy pxu pyu pxb pyb pxs pys pxt pyt)
+(
+  gfx_set(0.13,0.15,0.18,1);
+  gfx_rect(x,y,w,h);
+  gfx_set(0.18,0.20,0.24,1);
+  gfx_line(x, y + h*0.5, x+w, y + h*0.5, 1);
+
+  i = 0;
+  while (i < 4) (
+    cfy = y + (i+1) * h/5;
+    gfx_line(x, cfy, x+w, cfy, 1);
+    i += 1;
+  );
+
+  i = 0;
+  while (i < HISTN) (
+    idx = (hist_write + i) % HISTN;
+    frac = i / max(1, HISTN-1);
+    vx = x + frac * w;
+
+    uniy = y + h - ptr_hist_uni[idx] * h;
+    biy = y + h - (0.5 + 0.5 * ptr_hist_bi[idx]) * h;
+    svy = y + h - ptr_hist_surprise[idx] * h;
+    sty = y + h - ptr_hist_structure[idx] * h;
+
+    i == 0 ? (
+      pxu = vx; pyu = uniy;
+      pxb = vx; pyb = biy;
+      pxs = vx; pys = svy;
+      pxt = vx; pyt = sty;
+    ) : (
+      gfx_set(1.00,0.65,0.28,0.70);
+      gfx_line(pxs, pys, vx, svy, 1);
+      gfx_set(0.72,0.54,1.00,0.65);
+      gfx_line(pxt, pyt, vx, sty, 1);
+      gfx_set(0.30,1.00,0.90,0.70);
+      gfx_line(pxb, pyb, vx, biy, 1);
+      gfx_set(0.28,0.80,1.00,1.0);
+      gfx_line(pxu, pyu, vx, uniy, 1);
+
+      pxu = vx; pyu = uniy;
+      pxb = vx; pyb = biy;
+      pxs = vx; pys = svy;
+      pxt = vx; pyt = sty;
+    );
+    i += 1;
+  );
+
+  gfx_set(0.25,0.28,0.34,1);
+  gfx_roundrect(x,y,w,h,6,1);
+);
+
+function center_cv_outputs()
+(
+  cv_bi_target = 0;
+  cv_bi_current = 0;
+  cv_bi_for_slider = 0;
+  cv_uni_current = 0;
+  cv_uni_for_slider = 0;
+  cv_uni_output = cv_uni_for_slider;
+  cv_bi_output = cv_bi_for_slider;
+  sliderchange(slider2);
+  sliderchange(slider3);
+  clear_histories();
+);
+
+function draw_slider_track(x y w h val r g b) local(track_h track_y fill_w kx ky kr)
+(
+  val = clamp(val, 0, 1);
+  track_h = max(4, floor(h * 0.22));
+  track_y = y + floor((h - track_h) * 0.5);
+
+  gfx_set(0.12,0.14,0.17,1);
+  gfx_rect(x, track_y, w, track_h);
+  fill_w = w * val;
+  gfx_set(r,g,b,0.24);
+  gfx_rect(x, track_y, fill_w, track_h);
+  gfx_set(0.25,0.28,0.34,1);
+  gfx_roundrect(x, track_y, w, track_h, max(2, track_h*0.5), 1);
+
+  kx = x + w * val;
+  ky = y + h * 0.5;
+  kr = max(5, floor(h * 0.30));
+  gfx_set(r,g,b,1);
+  gfx_circle(kx, ky, kr, 1, 1);
+  gfx_set(0.07,0.08,0.10,1);
+  gfx_circle(kx, ky, kr, 0, 1);
+);
+
+function ui_slider_norm(id x y w h norm defnorm tip) local(hit nv now)
+(
+  nv = clamp(norm, 0, 1);
+  hit = point_in_rect(mouse_x, mouse_y, x, y, w, h);
+  hit ? tooltip_id = tip;
+
+  hit && mouse_r_click ? (
+    nv = defnorm;
+    ui_active = 0;
+    last_click_ctrl = 0;
+    last_click_time = 0;
+  );
+
+  hit && mouse_l_click ? (
+    now = time_precise();
+    last_click_ctrl == id && (now - last_click_time) < 0.32 ? (
+      nv = defnorm;
+      ui_active = 0;
+      last_click_ctrl = 0;
+      last_click_time = 0;
+    ) : (
+      ui_active = id;
+      last_click_ctrl = id;
+      last_click_time = now;
+    );
+  );
+
+  ui_active == id ? (
+    mouse_l ? (
+      nv = clamp((mouse_x - x) / max(1,w), 0, 1);
+    ) : (
+      ui_active = 0;
+    );
+  );
+
+  nv;
+);
+
+function ui_button(id x y w h tip) local(hit clicked)
+(
+  hit = point_in_rect(mouse_x, mouse_y, x, y, w, h);
+  hit ? tooltip_id = tip;
+  mouse_l_click && hit && ui_active == 0 ? ui_active = id;
+  clicked = 0;
+
+  ui_active == id && !mouse_l ? (
+    hit ? clicked = 1;
+    ui_active = 0;
+  );
+
+  clicked;
+);
+
+function draw_tooltip_footer(x y w h id ui_scale) local(tx ty)
+(
+  draw_panel(x, y, w, h);
+  tx = x + 14 * ui_scale;
+  ty = y + 8 * ui_scale;
+  gfx_setfont(5, "Arial", max(11, floor(11 * ui_scale)), 0);
+  gfx_set(0.90,0.93,0.98,1);
+  gfx_x = tx; gfx_y = ty;
+
+  id == 1000 ? (
+    gfx_drawstr("Mode controls the learning state. Right-click or double-click the mode row to reset to Listen.");
+  ) : id == 1001 ? (
+    gfx_drawstr("Listen learns fastest from incoming audio. Use for the capture phase.");
+  ) : id == 1002 ? (
+    gfx_drawstr("Adaptive keeps learning slowly while running. Good for gentle drift over time.");
+  ) : id == 1003 ? (
+    gfx_drawstr("Perform freezes the predictor and outputs only the learned motion.");
+  ) : id == 1010 ? (
+    gfx_drawstr("Range sets the bipolar CV depth. Lower for subtle movement, higher for wider swings.");
+  ) : id == 1011 ? (
+    gfx_drawstr("Smooth is the final CV slew time. Low values twitch, high values glide.");
+  ) : id == 1012 ? (
+    gfx_drawstr("Surprise Blend mixes structure/body with novelty. 0 = body, 1 = surprise.");
+  ) : id == 1013 ? (
+    gfx_drawstr("Learn Rate controls how quickly the predictor and structure axis adapt in Listen/Adaptive.");
+  ) : id == 1014 ? (
+    gfx_drawstr("Analysis frame is the feature window size. Smaller = faster and noisier, larger = slower and steadier.");
+  ) : id == 1020 ? (
+    gfx_drawstr("Open the advanced menu for optional audio routing and UI scale. Routing stays disabled unless you enable it.");
+  ) : id == 1021 ? (
+    gfx_drawstr("Choose which internal lane, if any, gets written to audio pins. Disabled preserves all extra channels.");
+  ) : id == 1022 ? (
+    gfx_drawstr("Choose the output channel pair used for routed CV. 3/4 overwrites sidechain; 5/6+ is safer.");
+  ) : id == 1023 ? (
+    gfx_drawstr("UI Scale is a manual zoom on top of automatic window scaling. Right-click or double-click to go back to 1.00.");
+  ) : id == 1030 ? (
+    gfx_drawstr("Reset model reinitializes predictor weights, feature statistics, and structure learning.");
+  ) : id == 1031 ? (
+    gfx_drawstr("Center CV zeros the live outputs and clears the history trace without rebuilding the model.");
+  ) : id == 1040 ? (
+    gfx_drawstr("Trace view: cyan = Uni, teal = Bi, orange = Surprise, violet = Structure.");
+  ) : id == 1041 ? (
+    gfx_drawstr("Uni Output is the activity-style 0..1 lane. It is hidden from the stock UI but still linkable/automatable.");
+  ) : id == 1042 ? (
+    gfx_drawstr("Bi Output is the centered -1..1 lane for push-pull modulation around a resting point.");
+  ) : id == 1043 ? (
+    gfx_drawstr("Feature manifold compares predicted vs actual feature states. Dark = predicted, bright = actual.");
+  ) : id == 1050 ? (
+    gfx_drawstr("Learning gate opens only when signal clearly rises above the tracked floor. Silence and noise floor do not update the model.");
+  ) : (
+    gfx_drawstr("Hover controls for help. Drag to edit. Right-click or double-click any slider to reset it to its default.");
+  );
+);
+
+setup_layout();
+
+ext_noinit = 1;
+ext_nodenorm = 1;
+
+boot_magic != 830184 ? (
+  boot_magic = 830184;
+  ui_scale_user = 1.1;
+  menu_open = 0;
+  memset(0, 0, total_mem_len);
+  reset_state();
+);
+
+sync_from_sliders();
+
+@slider
+
+cv_uni_output = cv_uni_for_slider;
+cv_bi_output = cv_bi_for_slider;
+sync_from_sliders();
+
+@block
+
+srate != last_srate_seen ? sync_from_sliders();
+
+ui_reset_req ? (
+  ui_reset_req = 0;
+  reset_state();
+  cv_uni_output = cv_uni_for_slider;
+  cv_bi_output = cv_bi_for_slider;
+  sliderchange(slider2);
+  sliderchange(slider3);
+);
+
+abs(cv_uni_output - cv_uni_for_slider) > 0.0005 ? (
+  cv_uni_output = cv_uni_for_slider;
+  sliderchange(slider2);
+);
+
+abs(cv_bi_output - cv_bi_for_slider) > 0.0005 ? (
+  cv_bi_output = cv_bi_for_slider;
+  sliderchange(slider3);
+);
+
+@sample
+
+inL = spl0;
+inR = spl1;
+
+mono = 0.5 * (inL + inR);
+mid = mono;
+side = 0.5 * (inL - inR);
+
+low_l += low_coeff * (inL - low_l);
+low_r += low_coeff * (inR - low_r);
+lp_mono = 0.5 * (low_l + low_r);
+hp_mono = mono - lp_mono;
+
+acc_energy += mono * mono;
+acc_peak = max(acc_peak, abs(mono));
+acc_diff += abs(mono - prev_mono_sample);
+acc_low2 += lp_mono * lp_mono;
+acc_high2 += hp_mono * hp_mono;
+acc_mid2 += mid * mid;
+acc_side2 += side * side;
+((mono >= 0) != (prev_mono_sample >= 0)) ? acc_zc += 1;
+prev_mono_sample = mono;
+frame_counter += 1;
+
+frame_counter >= analysis_samples ? (
+  rms = sqrt(acc_energy * analysis_inv + 0.0000000001);
+  flux_raw = acc_diff * analysis_inv;
+  bright_raw = sqrt(acc_high2 / (acc_high2 + acc_low2 + 0.0000000001));
+  width_raw = sqrt(acc_side2 / (acc_side2 + acc_mid2 + 0.0000000001));
+  zcr_raw = acc_zc * analysis_inv;
+  crest_raw = acc_peak / (rms + 0.0000000001) - 1;
+
+  level_view = rms;
+  confidence = 1 - exp(-12 * rms);
+
+  signal_rms_est += (rms - signal_rms_est) * (rms > signal_rms_est ? 0.08 : 0.01);
+  signal_gate ? (
+    rms < signal_rms_est * 0.35 ? noise_rms_est += 0.05 * (rms - noise_rms_est);
+  ) : (
+    noise_rms_est += 0.05 * (rms - noise_rms_est);
+  );
+  noise_rms_est = clamp(noise_rms_est, 0.0000001, 0.25);
+
+  gate_open_rms = max(0.0030, max(noise_rms_est * 2.5, signal_rms_est * 0.08));
+  gate_close_rms = max(0.0018, max(noise_rms_est * 1.4, signal_rms_est * 0.18));
+
+  signal_gate ? (
+    (rms < gate_close_rms || confidence < 0.03) ? signal_gate = 0;
+  ) : (
+    (rms > gate_open_rms && confidence > 0.05) ? signal_gate = 1;
+  );
+
+  learn_gate_strength = signal_gate ? clamp((rms - gate_close_rms) / max(0.0001, gate_open_rms - gate_close_rms), 0, 1) * sqrt(max(confidence, 0)) : 0;
+  active_signal_frame = signal_gate && learn_gate_strength > 0.04;
+  active_signal_frame ? (
+    quiet_frames = 0;
+  ) : (
+    quiet_frames += 1;
+  );
+
+  ptr_feat_raw[0] = rms;
+  ptr_feat_raw[1] = flux_raw;
+  ptr_feat_raw[2] = bright_raw;
+  ptr_feat_raw[3] = width_raw;
+  ptr_feat_raw[4] = zcr_raw;
+  ptr_feat_raw[5] = crest_raw;
+
+  i = 0;
+  while (i < FEATURES) (
+    dx = ptr_feat_raw[i] - ptr_feat_mean[i];
+    active_signal_frame ? (
+      ptr_feat_mean[i] += norm_rate * dx;
+      ptr_feat_var[i] += norm_rate * (dx*dx - ptr_feat_var[i]);
+    );
+    sd = sqrt(ptr_feat_var[i] + 0.000001);
+    normed = (ptr_feat_raw[i] - ptr_feat_mean[i]) / (sd + 0.0001);
+    normed = softsign(normed);
+    ptr_feat_cur[i] = normed;
+    ptr_feat_fast[i] += 0.28 * (normed - ptr_feat_fast[i]);
+    ptr_feat_slow[i] += 0.08 * (normed - ptr_feat_slow[i]);
+    i += 1;
+  );
+
+  have_prev_ctx && active_signal_frame ? (
+    mlp_forward(ptr_z_prev, ptr_feat_pred);
+
+    loss_now = 0;
+    i = 0;
+    while (i < FEATURES) (
+      errv = ptr_feat_cur[i] - ptr_feat_pred[i];
+      ptr_feat_err[i] = errv;
+      loss_now += errv * errv;
+      i += 1;
+    );
+    loss_now /= FEATURES;
+    avg_loss = mix(avg_loss, loss_now, 0.06);
+
+    learn_rate_eff > 0 && learn_gate_strength > 0.04 ? (
+      train_used = mlp_train(ptr_z_prev, ptr_feat_cur, learn_rate_eff * learn_gate_strength);
+      avg_loss = mix(avg_loss, train_used, 0.10);
+      structure_raw = oja_project_update(ptr_feat_cur, oja_rate_eff * learn_gate_strength);
+      frames_seen += 1;
+    ) : (
+      structure_raw = oja_project_update(ptr_feat_cur, 0);
+    );
+
+    surprise_raw = sqrt(loss_now + 0.0000001);
+    surprise_mean += 0.03 * (surprise_raw - surprise_mean);
+    surprise_var += 0.03 * ((surprise_raw - surprise_mean) * (surprise_raw - surprise_mean) - surprise_var);
+    surprise_norm = (surprise_raw - surprise_mean) / (sqrt(surprise_var + 0.000001) + 0.0001);
+    surprise_centered = softsign(surprise_norm);
+    surprise_view = 0.5 + 0.5 * surprise_centered;
+
+    structure_mean += 0.03 * (structure_raw - structure_mean);
+    structure_var += 0.03 * ((structure_raw - structure_mean) * (structure_raw - structure_mean) - structure_var);
+    structure_norm = (structure_raw - structure_mean) / (sqrt(structure_var + 0.000001) + 0.0001);
+    structure_centered = softsign(structure_norm);
+    structure_view = 0.5 + 0.5 * structure_centered;
+
+    cv_raw_blend = mix(structure_view, surprise_view, surprise_blend);
+    cv_drive_mean += cv_norm_rate * (cv_raw_blend - cv_drive_mean);
+    cv_drive_dx = cv_raw_blend - cv_drive_mean;
+    cv_drive_var += cv_norm_rate * (cv_drive_dx*cv_drive_dx - cv_drive_var);
+    cv_bi_target = softsign(cv_drive_dx / (sqrt(cv_drive_var + 0.000001) + 0.0001));
+    cv_bi_target = clamp(depth * cv_bi_target, -1, 1);
+    cv_bi_target *= clamp(0.25 + 0.75 * sqrt(max(confidence, 0)), 0, 1);
+    cv_uni_target = abs(cv_bi_target);
+
+    push_history(cv_uni_target, cv_bi_target, surprise_view, structure_view, confidence);
+  ) : (
+    surprise_view = mix(surprise_view, 0.5, 0.18);
+    structure_view = mix(structure_view, 0.5, 0.18);
+    structure_centered *= 0.82;
+    cv_bi_target = 0;
+    cv_uni_target = 0;
+  );
+
+  active_signal_frame ? (
+    i = 0;
+    while (i < FEATURES) (
+      ptr_z_cur[i] = ptr_feat_cur[i];
+      ptr_z_cur[FEATURES + i] = ptr_feat_cur[i] - ptr_feat_prev[i];
+      ptr_z_cur[FEATURES*2 + i] = ptr_feat_fast[i] - ptr_feat_slow[i];
+      ptr_feat_prev[i] = ptr_feat_cur[i];
+      i += 1;
+    );
+    memcpy(ptr_z_prev, ptr_z_cur, IN_SIZE);
+    have_prev_ctx = 1;
+  ) : (
+    quiet_frames > quiet_reset_frames ? (
+      i = 0;
+      while (i < IN_SIZE) (
+        ptr_z_prev[i] = 0;
+        ptr_z_cur[i] = 0;
+        i += 1;
+      );
+      have_prev_ctx = 0;
+    );
+  );
+
+  frame_counter = 0;
+  acc_energy = 0;
+  acc_peak = 0;
+  acc_diff = 0;
+  acc_low2 = 0;
+  acc_high2 = 0;
+  acc_mid2 = 0;
+  acc_side2 = 0;
+  acc_zc = 0;
+);
+
+cv_bi_current += smooth_coeff * (cv_bi_target - cv_bi_current);
+cv_bi_current = clamp(cv_bi_current, -1, 1);
+cv_uni_current = abs(cv_bi_current);
+cv_bi_for_slider = cv_bi_current;
+cv_uni_for_slider = cv_uni_current;
+
+spl0 = inL;
+spl1 = inR;
+
+route_source > 0 ? (
+  route_source == 1 ? (
+    route_va = cv_uni_current;
+    route_vb = 1 - cv_uni_current;
+  ) : route_source == 2 ? (
+    route_va = cv_bi_current;
+    route_vb = -cv_bi_current;
+  ) : route_source == 3 ? (
+    route_va = structure_centered;
+    route_vb = -structure_centered;
+  ) : route_source == 4 ? (
+    route_va = surprise_view;
+    route_vb = 1 - surprise_view;
+  ) : (
+    route_va = confidence;
+    route_vb = 1 - confidence;
+  );
+
+  route_pair == 1 ? (
+    spl2 = route_va; spl3 = route_vb;
+  ) : route_pair == 2 ? (
+    spl4 = route_va; spl5 = route_vb;
+  ) : route_pair == 3 ? (
+    spl6 = route_va; spl7 = route_vb;
+  ) : route_pair == 4 ? (
+    spl8 = route_va; spl9 = route_vb;
+  ) : route_pair == 5 ? (
+    spl10 = route_va; spl11 = route_vb;
+  ) : route_pair == 6 ? (
+    spl12 = route_va; spl13 = route_vb;
+  ) : route_pair == 7 ? (
+    spl14 = route_va; spl15 = route_vb;
+  ) : (
+    spl16 = route_va; spl17 = route_vb;
+  );
+);
+
+@gfx 1180 760
+
+gfx_ext_retina = 1;
+mouse_l = mouse_cap & 1;
+mouse_r = mouse_cap & 2;
+mouse_l_click = mouse_l && !last_mouse_l;
+mouse_r_click = mouse_r && !last_mouse_r;
+tooltip_id = 0;
+
+base_w = 1180;
+base_h = 760;
+ui_fit = min(gfx_w / base_w, gfx_h / base_h);
+ui_scale = clamp(ui_fit * ui_scale_user, 0.72, 1.25);
+
+margin = floor(16 * ui_scale);
+gap = floor(12 * ui_scale);
+header_h = floor(52 * ui_scale);
+footer_h = floor(44 * ui_scale);
+panel_y = margin + header_h + gap;
+panel_h = gfx_h - panel_y - margin - footer_h;
+usable_w = gfx_w - margin*2 - gap;
+left_w = floor(usable_w * 0.60);
+right_w = usable_w - left_w;
+left_x = margin;
+right_x = left_x + left_w + gap;
+footer_y = gfx_h - margin - footer_h;
+
+fs_title = max(17, floor(20 * ui_scale));
+fs_sub = max(11, floor(12 * ui_scale));
+fs_section = max(13, floor(14 * ui_scale));
+fs_body = max(11, floor(12 * ui_scale));
+fs_small = max(10, floor(11 * ui_scale));
+fs_big = max(22, floor(30 * ui_scale));
+fs_mode = max(12, floor(13 * ui_scale));
+
+bg_r = 0.07; bg_g = 0.08; bg_b = 0.10;
+gfx_set(bg_r,bg_g,bg_b,1);
+gfx_rect(0,0,gfx_w,gfx_h);
+
+// Header
+gfx_set(0.09,0.10,0.13,1);
+gfx_rect(margin, margin, gfx_w - margin*2, header_h);
+gfx_set(0.24,0.27,0.32,1);
+gfx_roundrect(margin, margin, gfx_w - margin*2, header_h, max(8, 10*ui_scale), 1);
+
+gfx_setfont(1, "Arial", fs_title, $'b');
+gfx_set(0.92,0.95,1.0,1);
+gfx_x = margin + 14 * ui_scale; gfx_y = margin + 10 * ui_scale;
+gfx_drawstr("PREDICTIVE CV FIELD");
+
+
+
+menu_btn_w = floor(88 * ui_scale);
+menu_btn_h = floor(28 * ui_scale);
+menu_btn_x = gfx_w - margin - menu_btn_w - 14 * ui_scale;
+menu_btn_y = margin + floor((header_h - menu_btn_h) * 0.5);
+hover = point_in_rect(mouse_x, mouse_y, menu_btn_x, menu_btn_y, menu_btn_w, menu_btn_h);
+gfx_set(menu_open ? 0.18 : 0.12, menu_open ? 0.18 : 0.14, menu_open ? 0.24 : 0.18, hover ? 1 : 0.92);
+gfx_rect(menu_btn_x, menu_btn_y, menu_btn_w, menu_btn_h);
+gfx_set(menu_open ? 0.86 : 0.72, menu_open ? 0.70 : 0.76, menu_open ? 1.00 : 0.84, 1);
+gfx_roundrect(menu_btn_x, menu_btn_y, menu_btn_w, menu_btn_h, max(6, 6*ui_scale), 1);
+gfx_setfont(3, "Arial", fs_body, $'b');
+gfx_x = menu_btn_x + 18 * ui_scale; gfx_y = menu_btn_y + 7 * ui_scale;
+menu_open ? gfx_drawstr("Close") : gfx_drawstr("Menu");
+ui_button(300, menu_btn_x, menu_btn_y, menu_btn_w, menu_btn_h, 1020) ? menu_open = !menu_open;
+
+status_w = floor(104 * ui_scale);
+status_h = menu_btn_h;
+status_x = menu_btn_x - status_w - 10 * ui_scale;
+status_y = menu_btn_y;
+mode == 0 ? (
+  gfx_set(0.24,0.16,0.09,1); gfx_rect(status_x, status_y, status_w, status_h);
+  gfx_set(1.00,0.66,0.26,1);
+  status_label = 1;
+) : mode == 1 ? (
+  gfx_set(0.10,0.18,0.11,1); gfx_rect(status_x, status_y, status_w, status_h);
+  gfx_set(0.60,0.88,0.54,1);
+  status_label = 2;
+) : (
+  gfx_set(0.09,0.13,0.22,1); gfx_rect(status_x, status_y, status_w, status_h);
+  gfx_set(0.30,0.80,1.00,1);
+  status_label = 3;
+);
+gfx_roundrect(status_x, status_y, status_w, status_h, max(6, 6*ui_scale), 1);
+gfx_setfont(3, "Arial", fs_body, $'b');
+gfx_x = status_x + 16 * ui_scale; gfx_y = status_y + 7 * ui_scale;
+status_label == 1 ? gfx_drawstr("LISTEN") : status_label == 2 ? gfx_drawstr("ADAPTIVE") : gfx_drawstr("PERFORM");
+
+// Panels
+draw_panel(left_x, panel_y, left_w, panel_h);
+draw_panel(right_x, panel_y, right_w, panel_h);
+
+// Left panel content
+inner_pad = 16 * ui_scale;
+plot_x = left_x + inner_pad;
+plot_y = panel_y + 42 * ui_scale;
+plot_w = left_w - inner_pad * 2;
+plot_h = floor(panel_h * 0.33);
+
+gfx_setfont(4, "Arial", fs_section, $'b');
+gfx_set(0.90,0.93,0.98,1);
+gfx_x = left_x + inner_pad; gfx_y = panel_y + 14 * ui_scale;
+gfx_drawstr("CV trace");
+
+gfx_setfont(2, "Arial", fs_small, 0);
+gfx_set(0.72,0.76,0.84,1);
+gfx_x = left_x + inner_pad + 72 * ui_scale; gfx_y = panel_y + 16 * ui_scale;
+gfx_drawstr("cyan = uni, teal = bi, orange = surprise, violet = structure");
+
+point_in_rect(mouse_x, mouse_y, plot_x, plot_y, plot_w, plot_h) ? tooltip_id = 1040;
+draw_trace_panel(plot_x, plot_y, plot_w, plot_h);
+
+gfx_setfont(6, "Arial", fs_big, $'b');
+gfx_set(0.28,0.80,1.0,1);
+gfx_x = plot_x + 14 * ui_scale; gfx_y = plot_y + 14 * ui_scale;
+gfx_printf("UNI %.3f", cv_uni_current);
+gfx_set(0.30,1.00,0.90,1);
+gfx_x = plot_x + 14 * ui_scale; gfx_y = plot_y + 44 * ui_scale;
+gfx_printf("BI %.3f", cv_bi_current);
+
+gfx_setfont(2, "Arial", fs_small, 0);
+gfx_set(0.72,0.76,0.84,1);
+gfx_x = plot_x + 16 * ui_scale; gfx_y = plot_y + 76 * ui_scale;
+mode == 2 ? (
+  signal_gate ? gfx_drawstr("Signal valid · model frozen in Perform") : gfx_drawstr("Signal gate closed · Perform holds state");
+) : signal_gate ? (
+  gfx_drawstr("Signal gate open · learning ignores silence/noise floor");
+) : (
+  gfx_drawstr("Signal gate closed · silence/noise floor ignored");
+);
+gfx_x = plot_x + 16 * ui_scale; gfx_y = plot_y + 92 * ui_scale;
+gfx_printf("frames learned %d   signal %.3f   floor %.4f", frames_seen, level_view, noise_rms_est);
+
+metric_top = plot_y + plot_h + 14 * ui_scale;
+metric_w = (plot_w - 24 * ui_scale) * 0.5;
+metric_gap = 36 * ui_scale;
+metric_bar_h = max(8, floor(10 * ui_scale));
+
+gfx_setfont(2, "Arial", fs_small, 0);
+gfx_set(0.82,0.86,0.92,1);
+
+// Uni
+ux = plot_x; uy = metric_top;
+point_in_rect(mouse_x, mouse_y, ux, uy, metric_w, metric_gap-4*ui_scale) ? tooltip_id = 1041;
+gfx_x = ux; gfx_y = uy; gfx_printf("uni activity %.3f", cv_uni_current);
+draw_unipolar_bar(ux, uy + 15 * ui_scale, metric_w, metric_bar_h, cv_uni_current, 0.28,0.80,1.0);
+
+// Bi
+bx = plot_x + metric_w + 24 * ui_scale; by = metric_top;
+point_in_rect(mouse_x, mouse_y, bx, by, metric_w, metric_gap-4*ui_scale) ? tooltip_id = 1042;
+gfx_x = bx; gfx_y = by; gfx_printf("bi centered %.3f", cv_bi_current);
+draw_bipolar_bar(bx, by + 15 * ui_scale, metric_w, metric_bar_h, cv_bi_current, 0.30,1.00,0.90);
+
+// Surprise
+gfx_x = ux; gfx_y = uy + metric_gap; gfx_printf("surprise %.3f", surprise_view);
+draw_unipolar_bar(ux, uy + metric_gap + 15 * ui_scale, metric_w, metric_bar_h, surprise_view, 1.00,0.65,0.28);
+
+// Structure
+gfx_x = bx; gfx_y = by + metric_gap; gfx_printf("structure %.3f", structure_centered);
+draw_bipolar_bar(bx, by + metric_gap + 15 * ui_scale, metric_w, metric_bar_h, structure_centered, 0.72,0.54,1.00);
+
+// Confidence
+gfx_x = ux; gfx_y = uy + metric_gap*2; gfx_printf("confidence %.3f", confidence);
+draw_unipolar_bar(ux, uy + metric_gap*2 + 15 * ui_scale, metric_w, metric_bar_h, confidence, 0.60,0.88,0.54);
+
+// Gate
+point_in_rect(mouse_x, mouse_y, bx, by + metric_gap*2, metric_w, metric_gap-4*ui_scale) ? tooltip_id = 1050;
+gfx_x = bx; gfx_y = by + metric_gap*2; signal_gate ? gfx_printf("learn gate open %.3f", learn_gate_strength) : gfx_drawstr("learn gate closed");
+draw_unipolar_bar(bx, by + metric_gap*2 + 15 * ui_scale, metric_w, metric_bar_h, learn_gate_strength, signal_gate ? 0.98 : 0.48, signal_gate ? 0.78 : 0.48, signal_gate ? 0.34 : 0.48);
+
+// Loss
+gfx_x = ux; gfx_y = uy + metric_gap*3; gfx_printf("loss %.5f", avg_loss);
+loss_vis = clamp(1 - sqrt(min(1, avg_loss*4)), 0, 1);
+draw_unipolar_bar(ux, uy + metric_gap*3 + 15 * ui_scale, metric_w, metric_bar_h, loss_vis, 0.86,0.44,0.44);
+
+feat_top = metric_top + metric_gap*4 + 12 * ui_scale;
+feat_row_h = 26 * ui_scale;
+feat_bar_x = plot_x + 118 * ui_scale;
+feat_bar_w = plot_w - 132 * ui_scale;
+
+point_in_rect(mouse_x, mouse_y, plot_x, feat_top, plot_w, feat_row_h*7) ? tooltip_id = 1043;
+gfx_setfont(4, "Arial", fs_section, $'b');
+gfx_set(0.90,0.93,0.98,1);
+gfx_x = plot_x; gfx_y = feat_top;
+gfx_drawstr("Feature manifold");
+
+gfx_setfont(2, "Arial", fs_small, 0);
+gfx_set(0.72,0.76,0.84,1);
+gfx_x = feat_bar_x; gfx_y = feat_top + 1 * ui_scale;
+gfx_drawstr("dark = predicted, bright = actual");
+
+fy = feat_top + 18 * ui_scale;
+label_x = plot_x;
+gfx_set(0.78,0.82,0.88,1);
+
+gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Level");
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[0], ptr_feat_cur[0], 0.22,0.36,0.46, 0.28,0.80,1.0);
+fy += feat_row_h;
+
+gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Flux");
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[1], ptr_feat_cur[1], 0.42,0.28,0.18, 1.00,0.65,0.28);
+fy += feat_row_h;
+
+gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Brightness");
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[2], ptr_feat_cur[2], 0.42,0.28,0.18, 1.00,0.65,0.28);
+fy += feat_row_h;
+
+gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Width");
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[3], ptr_feat_cur[3], 0.30,0.24,0.42, 0.72,0.54,1.00);
+fy += feat_row_h;
+
+gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("ZCR");
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[4], ptr_feat_cur[4], 0.18,0.34,0.30, 0.60,0.88,0.54);
+fy += feat_row_h;
+
+gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Crest");
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[5], ptr_feat_cur[5], 0.40,0.22,0.28, 0.86,0.44,0.44);
+
+// Right panel content
+ctrl_x = right_x + inner_pad;
+ctrl_w = right_w - inner_pad * 2;
+ctrl_y = panel_y + 14 * ui_scale;
+
+gfx_setfont(4, "Arial", fs_section, $'b');
+gfx_set(0.90,0.93,0.98,1);
+gfx_x = ctrl_x; gfx_y = ctrl_y;
+gfx_drawstr("Control surface");
+
+gfx_setfont(2, "Arial", fs_small, 0);
+gfx_set(0.72,0.76,0.84,1);
+gfx_x = ctrl_x + 124 * ui_scale; gfx_y = ctrl_y + 2 * ui_scale;
+route_source == 0 ? (
+  gfx_drawstr("route disabled");
+) : (
+  route_source == 1 ? gfx_drawstr("route: uni")
+  : route_source == 2 ? gfx_drawstr("route: bi")
+  : route_source == 3 ? gfx_drawstr("route: structure")
+  : route_source == 4 ? gfx_drawstr("route: surprise")
+  : gfx_drawstr("route: confidence");
+);
+
+ctrl_y += 30 * ui_scale;
+mode_x = ctrl_x;
+mode_y = ctrl_y;
+mode_w = ctrl_w;
+mode_h = 32 * ui_scale;
+seg_gap = 4 * ui_scale;
+seg_w = floor((mode_w - seg_gap*2) / 3);
+
+mode_hit = point_in_rect(mouse_x, mouse_y, mode_x, mode_y, mode_w, mode_h);
+mode_hit ? tooltip_id = 1000;
+mode_hit && mouse_r_click ? (
+  mode = 0; sync_from_sliders(); sliderchange(slider1);
+  last_click_ctrl = 0; last_click_time = 0;
+);
+mode_hit && mouse_l_click ? (
+  now = time_precise();
+  last_click_ctrl == 900 && (now - last_click_time) < 0.32 ? (
+    mode = 0; sync_from_sliders(); sliderchange(slider1);
+    last_click_ctrl = 0; last_click_time = 0;
+  ) : (
+    last_click_ctrl = 900; last_click_time = now;
+  );
+);
+
+gfx_setfont(7, "Arial", fs_mode, $'b');
+// Listen
+tx = mode_x; ty = mode_y;
+hover = point_in_rect(mouse_x, mouse_y, tx, ty, seg_w, mode_h);
+gfx_set(mode == 0 ? 0.32 : 0.12, mode == 0 ? 0.22 : 0.15, mode == 0 ? 0.10 : 0.18, hover ? 1 : 0.92);
+gfx_rect(tx, ty, seg_w, mode_h);
+gfx_set(mode == 0 ? 1.00 : 0.45, mode == 0 ? 0.66 : 0.48, mode == 0 ? 0.26 : 0.54, 1);
+gfx_roundrect(tx, ty, seg_w, mode_h, max(6, 6*ui_scale), 1);
+gfx_x = tx + 14 * ui_scale; gfx_y = ty + 8 * ui_scale; gfx_drawstr("Listen");
+ui_button(201, tx, ty, seg_w, mode_h, 1001) ? (mode = 0; sync_from_sliders(); sliderchange(slider1););
+
+// Adaptive
+tx = mode_x + seg_w + seg_gap;
+hover = point_in_rect(mouse_x, mouse_y, tx, ty, seg_w, mode_h);
+gfx_set(mode == 1 ? 0.12 : 0.12, mode == 1 ? 0.24 : 0.15, mode == 1 ? 0.10 : 0.18, hover ? 1 : 0.92);
+gfx_rect(tx, ty, seg_w, mode_h);
+gfx_set(mode == 1 ? 0.60 : 0.45, mode == 1 ? 0.88 : 0.48, mode == 1 ? 0.54 : 0.54, 1);
+gfx_roundrect(tx, ty, seg_w, mode_h, max(6, 6*ui_scale), 1);
+gfx_x = tx + 10 * ui_scale; gfx_y = ty + 8 * ui_scale; gfx_drawstr("Adaptive");
+ui_button(202, tx, ty, seg_w, mode_h, 1002) ? (mode = 1; sync_from_sliders(); sliderchange(slider1););
+
+// Perform
+tx = mode_x + (seg_w + seg_gap) * 2;
+hover = point_in_rect(mouse_x, mouse_y, tx, ty, seg_w, mode_h);
+gfx_set(mode == 2 ? 0.08 : 0.12, mode == 2 ? 0.16 : 0.15, mode == 2 ? 0.24 : 0.18, hover ? 1 : 0.92);
+gfx_rect(tx, ty, seg_w, mode_h);
+gfx_set(mode == 2 ? 0.28 : 0.45, mode == 2 ? 0.80 : 0.48, mode == 2 ? 1.00 : 0.54, 1);
+gfx_roundrect(tx, ty, seg_w, mode_h, max(6, 6*ui_scale), 1);
+gfx_x = tx + 12 * ui_scale; gfx_y = ty + 8 * ui_scale; gfx_drawstr("Perform");
+ui_button(203, tx, ty, seg_w, mode_h, 1003) ? (mode = 2; sync_from_sliders(); sliderchange(slider1););
+
+ctrl_y += 50 * ui_scale;
+row_gap = 48 * ui_scale;
+slider_h = 22 * ui_scale;
+
+// Range
+gfx_setfont(2, "Arial", fs_body, 0);
+gfx_set(0.82,0.86,0.92,1);
+gfx_x = ctrl_x; gfx_y = ctrl_y; gfx_drawstr("Range");
+gfx_x = ctrl_x + ctrl_w - 68 * ui_scale; gfx_y = ctrl_y; gfx_printf("%.2f", depth);
+draw_slider_track(ctrl_x, ctrl_y + 14 * ui_scale, ctrl_w, slider_h, depth/2, 0.28,0.80,1.0);
+newv = ui_slider_norm(101, ctrl_x, ctrl_y + 10 * ui_scale, ctrl_w, slider_h + 10 * ui_scale, depth/2, 0.5, 1010);
+abs(newv - depth/2) > 0.0001 ? (depth = newv * 2; sync_from_sliders(); sliderchange(slider4););
+ctrl_y += row_gap;
+
+// Smooth
+smooth_norm = (log(smooth_ms)-log(5))/(log(2000)-log(5));
+gfx_x = ctrl_x; gfx_y = ctrl_y; gfx_drawstr("Smooth");
+gfx_x = ctrl_x + ctrl_w - 92 * ui_scale; gfx_y = ctrl_y; gfx_printf("%.0f ms", smooth_ms);
+draw_slider_track(ctrl_x, ctrl_y + 14 * ui_scale, ctrl_w, slider_h, smooth_norm, 1.00,0.65,0.28);
+newv = ui_slider_norm(102, ctrl_x, ctrl_y + 10 * ui_scale, ctrl_w, slider_h + 10 * ui_scale, smooth_norm, (log(120)-log(5))/(log(2000)-log(5)), 1011);
+abs(newv - smooth_norm) > 0.0001 ? (
+  smooth_ms = exp(log(5) + newv * (log(2000)-log(5)));
+  sync_from_sliders();
+  sliderchange(slider5);
+);
+ctrl_y += row_gap;
+
+// Surprise blend
+gfx_x = ctrl_x; gfx_y = ctrl_y; gfx_drawstr("Surprise Blend");
+gfx_x = ctrl_x + ctrl_w - 64 * ui_scale; gfx_y = ctrl_y; gfx_printf("%.2f", surprise_blend);
+draw_slider_track(ctrl_x, ctrl_y + 14 * ui_scale, ctrl_w, slider_h, surprise_blend, 0.86,0.50,0.92);
+gfx_set(0.66,0.68,0.74,1); gfx_x = ctrl_x; gfx_y = ctrl_y + 28 * ui_scale; gfx_drawstr("Body");
+gfx_x = ctrl_x + ctrl_w - 58 * ui_scale; gfx_y = ctrl_y + 28 * ui_scale; gfx_drawstr("Surprise");
+newv = ui_slider_norm(103, ctrl_x, ctrl_y + 10 * ui_scale, ctrl_w, slider_h + 10 * ui_scale, surprise_blend, 0.65, 1012);
+abs(newv - surprise_blend) > 0.0001 ? (surprise_blend = newv; sync_from_sliders(); sliderchange(slider6););
+ctrl_y += row_gap;
+
+// Learn rate
+lr_norm = (log(learn_rate)-log(0.001))/(log(0.25)-log(0.001));
+gfx_set(0.82,0.86,0.92,1);
+gfx_x = ctrl_x; gfx_y = ctrl_y; gfx_drawstr("Learn Rate");
+gfx_x = ctrl_x + ctrl_w - 74 * ui_scale; gfx_y = ctrl_y; gfx_printf("%.3f", learn_rate);
+draw_slider_track(ctrl_x, ctrl_y + 14 * ui_scale, ctrl_w, slider_h, lr_norm, 0.60,0.88,0.54);
+newv = ui_slider_norm(104, ctrl_x, ctrl_y + 10 * ui_scale, ctrl_w, slider_h + 10 * ui_scale, lr_norm, (log(0.04)-log(0.001))/(log(0.25)-log(0.001)), 1013);
+abs(newv - lr_norm) > 0.0001 ? (
+  learn_rate = exp(log(0.001) + newv * (log(0.25)-log(0.001)));
+  sync_from_sliders();
+  sliderchange(slider7);
+);
+ctrl_y += row_gap;
+
+// Analysis frame
+frame_norm = (log(frame_ms)-log(5))/(log(80)-log(5));
+gfx_x = ctrl_x; gfx_y = ctrl_y; gfx_drawstr("Analysis Frame");
+gfx_x = ctrl_x + ctrl_w - 92 * ui_scale; gfx_y = ctrl_y; gfx_printf("%.0f ms", frame_ms);
+draw_slider_track(ctrl_x, ctrl_y + 14 * ui_scale, ctrl_w, slider_h, frame_norm, 0.72,0.54,1.00);
+newv = ui_slider_norm(105, ctrl_x, ctrl_y + 10 * ui_scale, ctrl_w, slider_h + 10 * ui_scale, frame_norm, (log(20)-log(5))/(log(80)-log(5)), 1014);
+abs(newv - frame_norm) > 0.0001 ? (
+  frame_ms = exp(log(5) + newv * (log(80)-log(5)));
+  sync_from_sliders();
+  sliderchange(slider8);
+);
+ctrl_y += row_gap;
+
+action_h = 32 * ui_scale;
+action_y = panel_y + panel_h - action_h - 16 * ui_scale;
+
+menu_open ? (
+  adv_y = ctrl_y + 10 * ui_scale;
+  adv_h = max(150 * ui_scale, action_y - adv_y - 10 * ui_scale);
+  draw_panel(ctrl_x, adv_y, ctrl_w, adv_h);
+  gfx_setfont(4, "Arial", fs_section, $'b');
+  gfx_set(0.90,0.93,0.98,1);
+  gfx_x = ctrl_x + 12 * ui_scale; gfx_y = adv_y + 10 * ui_scale;
+  gfx_drawstr("Advanced");
+
+  adv_x = ctrl_x + 12 * ui_scale;
+  adv_w = ctrl_w - 24 * ui_scale;
+  ay = adv_y + 34 * ui_scale;
+
+  // Route lane
+  gfx_setfont(2, "Arial", fs_body, 0);
+  gfx_set(0.82,0.86,0.92,1);
+  gfx_x = adv_x; gfx_y = ay; gfx_drawstr("Audio Route Lane");
+  route_norm = route_source / 5;
+  draw_slider_track(adv_x, ay + 14 * ui_scale, adv_w, slider_h, route_norm, 0.50,0.74,0.98);
+  newv = ui_slider_norm(106, adv_x, ay + 10 * ui_scale, adv_w, slider_h + 10 * ui_scale, route_norm, 0, 1021);
+  new_route = floor(0.5 + newv * 5);
+  new_route != route_source ? (route_source = new_route; sync_from_sliders(); sliderchange(slider9););
+  gfx_set(0.72,0.76,0.84,1); gfx_x = adv_x; gfx_y = ay + 30 * ui_scale;
+  route_source == 0 ? gfx_drawstr("Disabled") : route_source == 1 ? gfx_drawstr("Uni Activity") : route_source == 2 ? gfx_drawstr("Bi Centered") : route_source == 3 ? gfx_drawstr("Structure") : route_source == 4 ? gfx_drawstr("Surprise") : gfx_drawstr("Confidence");
+  ay += 52 * ui_scale;
+
+  // Route pair
+  gfx_set(0.82,0.86,0.92,1);
+  gfx_x = adv_x; gfx_y = ay; gfx_drawstr("Audio Route Pair");
+  pair_norm = (route_pair - 1) / 7;
+  draw_slider_track(adv_x, ay + 14 * ui_scale, adv_w, slider_h, pair_norm, 0.30,1.00,0.90);
+  newv = ui_slider_norm(107, adv_x, ay + 10 * ui_scale, adv_w, slider_h + 10 * ui_scale, pair_norm, (2-1)/7, 1022);
+  new_pair = 1 + floor(0.5 + newv * 7);
+  new_pair != route_pair ? (route_pair = new_pair; sync_from_sliders(); sliderchange(slider10););
+  gfx_set(0.72,0.76,0.84,1); gfx_x = adv_x; gfx_y = ay + 30 * ui_scale;
+  route_pair == 1 ? gfx_drawstr("3/4") : route_pair == 2 ? gfx_drawstr("5/6") : route_pair == 3 ? gfx_drawstr("7/8") : route_pair == 4 ? gfx_drawstr("9/10") : route_pair == 5 ? gfx_drawstr("11/12") : route_pair == 6 ? gfx_drawstr("13/14") : route_pair == 7 ? gfx_drawstr("15/16") : gfx_drawstr("17/18");
+  ay += 52 * ui_scale;
+
+  // UI scale
+  gfx_set(0.82,0.86,0.92,1);
+  gfx_x = adv_x; gfx_y = ay; gfx_drawstr("UI Scale");
+  gfx_x = adv_x + adv_w - 72 * ui_scale; gfx_y = ay; gfx_printf("%.2f", ui_scale_user);
+  zoom_norm = (ui_scale_user - 0.85) / (1.25 - 0.85);
+  draw_slider_track(adv_x, ay + 14 * ui_scale, adv_w, slider_h, zoom_norm, 0.90,0.84,0.54);
+  newv = ui_slider_norm(108, adv_x, ay + 10 * ui_scale, adv_w, slider_h + 10 * ui_scale, zoom_norm, (1 - 0.85)/(1.25 - 0.85), 1023);
+  abs(newv - zoom_norm) > 0.0001 ? (
+    ui_scale_user = 0.85 + newv * (1.25 - 0.85);
+    sync_from_sliders();
+    sliderchange(slider11);
+  );
+  ay += 54 * ui_scale;
+
+  gfx_setfont(2, "Arial", fs_small, 0);
+  gfx_set(route_source == 0 ? 0.72 : 1.00, route_source == 0 ? 0.76 : 0.70, route_source == 0 ? 0.84 : 0.34, 1);
+  gfx_x = adv_x; gfx_y = ay;
+  route_source == 0 ? gfx_drawstr("Extra outputs are disabled. All input pins pass through untouched.") : route_pair == 1 ? gfx_drawstr("3/4 overwrites sidechain. Use 5/6+ if you want to preserve sidechain.") : gfx_drawstr("Selected lane is written to the chosen pair; the partner channel carries the inverse.");
+  gfx_set(0.62,0.66,0.74,1); gfx_x = adv_x; gfx_y = ay + 16 * ui_scale;
+  gfx_drawstr("Right-click or double-click a slider to restore its default.");
+) : (
+  gfx_setfont(2, "Arial", fs_small, 0);
+  gfx_set(0.62,0.66,0.74,1);
+  gfx_x = ctrl_x; gfx_y = action_y - 24 * ui_scale;
+  gfx_drawstr("Menu holds optional routing and UI zoom. Routing stays off unless you enable it.");
+);
+
+btn_gap = 8 * ui_scale;
+btn_w = floor((ctrl_w - btn_gap) * 0.5);
+btn_x1 = ctrl_x;
+btn_x2 = ctrl_x + btn_w + btn_gap;
+
+hover = point_in_rect(mouse_x, mouse_y, btn_x1, action_y, btn_w, action_h);
+gfx_set(0.17,0.12,0.12, hover ? 1 : 0.92);
+gfx_rect(btn_x1, action_y, btn_w, action_h);
+gfx_set(0.86,0.44,0.44,1);
+gfx_roundrect(btn_x1, action_y, btn_w, action_h, max(6, 6*ui_scale), 1);
+gfx_setfont(7, "Arial", fs_mode, $'b');
+gfx_x = btn_x1 + 18 * ui_scale; gfx_y = action_y + 8 * ui_scale; gfx_drawstr("Reset model");
+ui_button(204, btn_x1, action_y, btn_w, action_h, 1030) ? ui_reset_req = 1;
+
+hover = point_in_rect(mouse_x, mouse_y, btn_x2, action_y, btn_w, action_h);
+gfx_set(0.12,0.12,0.16, hover ? 1 : 0.92);
+gfx_rect(btn_x2, action_y, btn_w, action_h);
+gfx_set(0.72,0.76,0.84,1);
+gfx_roundrect(btn_x2, action_y, btn_w, action_h, max(6, 6*ui_scale), 1);
+gfx_x = btn_x2 + 20 * ui_scale; gfx_y = action_y + 8 * ui_scale; gfx_drawstr("Center CV");
+ui_button(205, btn_x2, action_y, btn_w, action_h, 1031) ? center_cv_outputs();
+
+// Footer tooltip bar
+draw_tooltip_footer(margin, footer_y, gfx_w - margin*2, footer_h, tooltip_id, ui_scale);
+
+// Keyboard shortcuts
+ch = gfx_getchar();
+while (ch > 0) (
+  ch == $'1' ? (mode = 0; sync_from_sliders(); sliderchange(slider1););
+  ch == $'2' ? (mode = 1; sync_from_sliders(); sliderchange(slider1););
+  ch == $'3' ? (mode = 2; sync_from_sliders(); sliderchange(slider1););
+  ch == $'m' || ch == $'M' ? menu_open = !menu_open;
+  ch == $'r' || ch == $'R' ? ui_reset_req = 1;
+  ch == $'c' || ch == $'C' ? center_cv_outputs();
+  ch = gfx_getchar();
+);
+
+last_mouse_l = mouse_l;
+last_mouse_r = mouse_r;
+@serialize
+
+file_var(0, boot_magic);
+file_var(0, surprise_mean);
+file_var(0, surprise_var);
+file_var(0, structure_mean);
+file_var(0, structure_var);
+file_var(0, cv_drive_mean);
+file_var(0, cv_drive_var);
+file_var(0, avg_loss);
+file_var(0, cv_bi_target);
+file_var(0, cv_bi_current);
+file_var(0, cv_bi_for_slider);
+file_var(0, cv_uni_current);
+file_var(0, cv_uni_for_slider);
+file_var(0, confidence);
+file_var(0, signal_gate);
+file_var(0, learn_gate_strength);
+file_var(0, gate_open_rms);
+file_var(0, gate_close_rms);
+file_var(0, noise_rms_est);
+file_var(0, signal_rms_est);
+file_var(0, quiet_frames);
+file_var(0, surprise_view);
+file_var(0, structure_view);
+file_var(0, structure_centered);
+file_var(0, level_view);
+file_var(0, frames_seen);
+file_var(0, have_prev_ctx);
+file_var(0, hist_write);
+file_var(0, frame_counter);
+file_var(0, prev_mono_sample);
+file_var(0, low_l);
+file_var(0, low_r);
+file_var(0, acc_energy);
+file_var(0, acc_peak);
+file_var(0, acc_diff);
+file_var(0, acc_low2);
+file_var(0, acc_high2);
+file_var(0, acc_mid2);
+file_var(0, acc_side2);
+file_var(0, acc_zc);
+file_var(0, ui_scale_user);
+file_mem(0, 0, save_mem_len);
+file_mem(0, ptr_hist_uni, HISTN);
+file_mem(0, ptr_hist_bi, HISTN);
+file_mem(0, ptr_hist_surprise, HISTN);
+file_mem(0, ptr_hist_structure, HISTN);
+file_mem(0, ptr_hist_conf, HISTN);

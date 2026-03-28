@@ -60,7 +60,7 @@ wf_scan_cap = 64;
 
 cand_base = wf_base + wf_max_bins * 2 + 4096;
 cand_max = 2048;
-cand_stride = 16; // start,rms,peak,flux,zc,contrast,score,rank,edge,slope,hf,motion,onset,phase,family,scale
+cand_stride = 19; // start,rms,peak,flux,zc,contrast,score,rank,edge,slope,hf,motion,onset,phase,family,scale,pc1,pc2,novelty
 
 heat_base = cand_base + cand_max * cand_stride + 4096;
 hist_base = heat_base + wf_max_bins + 1024;
@@ -263,6 +263,11 @@ dbg_w_scale = 1;
 dbg_w_family = 1;
 dbg_w_compat = 1;
 dbg_w_total = 1;
+dbg_w_pca = 1;
+dbg_sel_novel = 0;
+pca_var1 = 0.000001;
+pca_var2 = 0.000001;
+pca_novelty_peak = 0.000001;
 
 // coarse spectral-envelope imprint states (wet-only, broad-band, smoothed)
 env_shape_mix = 0;
@@ -1295,6 +1300,9 @@ h > 0 ? (
             mem[base + 13] = 0;
             mem[base + 14] = 0;
             mem[base + 15] = scale_short;
+            mem[base + 16] = 0;
+            mem[base + 17] = 0;
+            mem[base + 18] = 0;
 
             rms > max_rms ? max_rms = rms;
             peak > max_peak ? max_peak = peak;
@@ -1449,6 +1457,9 @@ h > 0 ? (
             mem[base + 13] = 0;
             mem[base + 14] = 0;
             mem[base + 15] = scale_med;
+            mem[base + 16] = 0;
+            mem[base + 17] = 0;
+            mem[base + 18] = 0;
 
             rms > max_rms ? max_rms = rms;
             peak > max_peak ? max_peak = peak;
@@ -1732,6 +1743,186 @@ h > 0 ? (
             hb += 1;
           );
 
+          // compact descriptor-space PCA pass: learn 2 dominant material axes
+          // from live candidates and use deviation in that space as a novelty cue.
+          pca_var1 = 0.000001;
+          pca_var2 = 0.000001;
+          pca_novelty_peak = 0.000001;
+
+          cand_live_count > 3 ? (
+            pca_count = 0;
+            pca_mean0 = 0; pca_mean1 = 0; pca_mean2 = 0; pca_mean3 = 0; pca_mean4 = 0; pca_mean5 = 0;
+
+            ci = 0;
+            loop(cand_count,
+              base = cand_base + ci * cand_stride;
+              mem[base + 7] > 0 ? (
+                px0 = mem[base + 1] / max(0.000001, max_rms);
+                px1 = mem[base + 3] / max(0.000001, max_flux);
+                px2 = mem[base + 10] / max(0.000001, max_hf);
+                px3 = mem[base + 11] / max(0.000001, max_motion);
+                px4 = mem[base + 5] / max(0.000001, max_ctr);
+                px5 = mem[base + 9] / max(0.000001, max(max_slope_pos, max_slope_neg));
+                px5 < -1 ? px5 = -1;
+                px5 > 1 ? px5 = 1;
+
+                pca_mean0 += px0;
+                pca_mean1 += px1;
+                pca_mean2 += px2;
+                pca_mean3 += px3;
+                pca_mean4 += px4;
+                pca_mean5 += px5;
+                pca_count += 1;
+              );
+              ci += 1;
+            );
+
+            inv_pca_n = 1 / max(1, pca_count);
+            pca_mean0 *= inv_pca_n; pca_mean1 *= inv_pca_n; pca_mean2 *= inv_pca_n;
+            pca_mean3 *= inv_pca_n; pca_mean4 *= inv_pca_n; pca_mean5 *= inv_pca_n;
+
+            c00 = 0; c01 = 0; c02 = 0; c03 = 0; c04 = 0; c05 = 0;
+            c11 = 0; c12 = 0; c13 = 0; c14 = 0; c15 = 0;
+            c22 = 0; c23 = 0; c24 = 0; c25 = 0;
+            c33 = 0; c34 = 0; c35 = 0;
+            c44 = 0; c45 = 0;
+            c55 = 0;
+
+            ci = 0;
+            loop(cand_count,
+              base = cand_base + ci * cand_stride;
+              mem[base + 7] > 0 ? (
+                x0 = mem[base + 1] / max(0.000001, max_rms) - pca_mean0;
+                x1 = mem[base + 3] / max(0.000001, max_flux) - pca_mean1;
+                x2 = mem[base + 10] / max(0.000001, max_hf) - pca_mean2;
+                x3 = mem[base + 11] / max(0.000001, max_motion) - pca_mean3;
+                x4 = mem[base + 5] / max(0.000001, max_ctr) - pca_mean4;
+                x5 = mem[base + 9] / max(0.000001, max(max_slope_pos, max_slope_neg)) - pca_mean5;
+
+                c00 += x0 * x0; c01 += x0 * x1; c02 += x0 * x2; c03 += x0 * x3; c04 += x0 * x4; c05 += x0 * x5;
+                c11 += x1 * x1; c12 += x1 * x2; c13 += x1 * x3; c14 += x1 * x4; c15 += x1 * x5;
+                c22 += x2 * x2; c23 += x2 * x3; c24 += x2 * x4; c25 += x2 * x5;
+                c33 += x3 * x3; c34 += x3 * x4; c35 += x3 * x5;
+                c44 += x4 * x4; c45 += x4 * x5;
+                c55 += x5 * x5;
+              );
+              ci += 1;
+            );
+
+            inv_cov_n = 1 / max(1, pca_count - 1);
+            c00 *= inv_cov_n; c01 *= inv_cov_n; c02 *= inv_cov_n; c03 *= inv_cov_n; c04 *= inv_cov_n; c05 *= inv_cov_n;
+            c11 *= inv_cov_n; c12 *= inv_cov_n; c13 *= inv_cov_n; c14 *= inv_cov_n; c15 *= inv_cov_n;
+            c22 *= inv_cov_n; c23 *= inv_cov_n; c24 *= inv_cov_n; c25 *= inv_cov_n;
+            c33 *= inv_cov_n; c34 *= inv_cov_n; c35 *= inv_cov_n;
+            c44 *= inv_cov_n; c45 *= inv_cov_n; c55 *= inv_cov_n;
+
+            w10 = 0.41; w11 = 0.31; w12 = 0.23; w13 = 0.47; w14 = 0.29; w15 = 0.37;
+            pnorm = sqrt(w10*w10 + w11*w11 + w12*w12 + w13*w13 + w14*w14 + w15*w15);
+            pnorm < 0.000001 ? pnorm = 1;
+            w10 /= pnorm; w11 /= pnorm; w12 /= pnorm; w13 /= pnorm; w14 /= pnorm; w15 /= pnorm;
+
+            pi_iter = 0;
+            loop(8,
+              nw0 = c00*w10 + c01*w11 + c02*w12 + c03*w13 + c04*w14 + c05*w15;
+              nw1 = c01*w10 + c11*w11 + c12*w12 + c13*w13 + c14*w14 + c15*w15;
+              nw2 = c02*w10 + c12*w11 + c22*w12 + c23*w13 + c24*w14 + c25*w15;
+              nw3 = c03*w10 + c13*w11 + c23*w12 + c33*w13 + c34*w14 + c35*w15;
+              nw4 = c04*w10 + c14*w11 + c24*w12 + c34*w13 + c44*w14 + c45*w15;
+              nw5 = c05*w10 + c15*w11 + c25*w12 + c35*w13 + c45*w14 + c55*w15;
+              pnorm = sqrt(nw0*nw0 + nw1*nw1 + nw2*nw2 + nw3*nw3 + nw4*nw4 + nw5*nw5);
+              pnorm < 0.000001 ? pnorm = 1;
+              w10 = nw0 / pnorm; w11 = nw1 / pnorm; w12 = nw2 / pnorm; w13 = nw3 / pnorm; w14 = nw4 / pnorm; w15 = nw5 / pnorm;
+              pi_iter += 1;
+            );
+
+            w20 = -0.33; w21 = 0.52; w22 = 0.58; w23 = -0.21; w24 = 0.42; w25 = -0.28;
+            proj = w20*w10 + w21*w11 + w22*w12 + w23*w13 + w24*w14 + w25*w15;
+            w20 -= proj * w10; w21 -= proj * w11; w22 -= proj * w12; w23 -= proj * w13; w24 -= proj * w14; w25 -= proj * w15;
+            pnorm = sqrt(w20*w20 + w21*w21 + w22*w22 + w23*w23 + w24*w24 + w25*w25);
+            pnorm < 0.000001 ? pnorm = 1;
+            w20 /= pnorm; w21 /= pnorm; w22 /= pnorm; w23 /= pnorm; w24 /= pnorm; w25 /= pnorm;
+
+            pi_iter = 0;
+            loop(10,
+              nw0 = c00*w20 + c01*w21 + c02*w22 + c03*w23 + c04*w24 + c05*w25;
+              nw1 = c01*w20 + c11*w21 + c12*w22 + c13*w23 + c14*w24 + c15*w25;
+              nw2 = c02*w20 + c12*w21 + c22*w22 + c23*w23 + c24*w24 + c25*w25;
+              nw3 = c03*w20 + c13*w21 + c23*w22 + c33*w23 + c34*w24 + c35*w25;
+              nw4 = c04*w20 + c14*w21 + c24*w22 + c34*w23 + c44*w24 + c45*w25;
+              nw5 = c05*w20 + c15*w21 + c25*w22 + c35*w23 + c45*w24 + c55*w25;
+              proj = nw0*w10 + nw1*w11 + nw2*w12 + nw3*w13 + nw4*w14 + nw5*w15;
+              nw0 -= proj * w10; nw1 -= proj * w11; nw2 -= proj * w12; nw3 -= proj * w13; nw4 -= proj * w14; nw5 -= proj * w15;
+              pnorm = sqrt(nw0*nw0 + nw1*nw1 + nw2*nw2 + nw3*nw3 + nw4*nw4 + nw5*nw5);
+              pnorm < 0.000001 ? pnorm = 1;
+              w20 = nw0 / pnorm; w21 = nw1 / pnorm; w22 = nw2 / pnorm; w23 = nw3 / pnorm; w24 = nw4 / pnorm; w25 = nw5 / pnorm;
+              pi_iter += 1;
+            );
+
+            pca_var1 = 0.000001;
+            pca_var2 = 0.000001;
+            ci = 0;
+            loop(cand_count,
+              base = cand_base + ci * cand_stride;
+              mem[base + 7] > 0 ? (
+                x0 = mem[base + 1] / max(0.000001, max_rms) - pca_mean0;
+                x1 = mem[base + 3] / max(0.000001, max_flux) - pca_mean1;
+                x2 = mem[base + 10] / max(0.000001, max_hf) - pca_mean2;
+                x3 = mem[base + 11] / max(0.000001, max_motion) - pca_mean3;
+                x4 = mem[base + 5] / max(0.000001, max_ctr) - pca_mean4;
+                x5 = mem[base + 9] / max(0.000001, max(max_slope_pos, max_slope_neg)) - pca_mean5;
+
+                pc1 = x0*w10 + x1*w11 + x2*w12 + x3*w13 + x4*w14 + x5*w15;
+                pc2 = x0*w20 + x1*w21 + x2*w22 + x3*w23 + x4*w24 + x5*w25;
+                mem[base + 16] = pc1;
+                mem[base + 17] = pc2;
+                pca_var1 += pc1 * pc1;
+                pca_var2 += pc2 * pc2;
+              ) : (
+                mem[base + 16] = 0;
+                mem[base + 17] = 0;
+              );
+              ci += 1;
+            );
+
+            pca_var1 /= max(1, pca_count);
+            pca_var2 /= max(1, pca_count);
+            pca_var1 < 0.000001 ? pca_var1 = 0.000001;
+            pca_var2 < 0.000001 ? pca_var2 = 0.000001;
+
+            ci = 0;
+            loop(cand_count,
+              base = cand_base + ci * cand_stride;
+              mem[base + 7] > 0 ? (
+                pc1 = mem[base + 16];
+                pc2 = mem[base + 17];
+                nov = sqrt((pc1 * pc1) / pca_var1 + (pc2 * pc2) / pca_var2);
+                mem[base + 18] = nov;
+                nov > pca_novelty_peak ? pca_novelty_peak = nov;
+              ) : (
+                mem[base + 18] = 0;
+              );
+              ci += 1;
+            );
+
+            ci = 0;
+            loop(cand_count,
+              base = cand_base + ci * cand_stride;
+              mem[base + 7] > 0 ? (
+                mem[base + 18] /= max(pca_novelty_peak, 0.000001);
+              );
+              ci += 1;
+            );
+          ) : (
+            ci = 0;
+            loop(cand_count,
+              base = cand_base + ci * cand_stride;
+              mem[base + 16] = 0;
+              mem[base + 17] = 0;
+              mem[base + 18] = 0;
+              ci += 1;
+            );
+          );
+
           attack_pool_count = 0;
           body_pool_count = 0;
           release_pool_count = 0;
@@ -1758,14 +1949,17 @@ h > 0 ? (
               nhf = mem[base + 10] / max_hf;
               nmotion = mem[base + 11] / max_motion;
               nonset = mem[base + 12] / max_onset;
+              nnov = mem[base + 18];
+              nnov < 0 ? nnov = 0;
+              nnov > 1 ? nnov = 1;
               zc_shape = 1 - abs(nzc - 0.35) / 0.35;
               zc_shape < 0 ? zc_shape = 0;
               zc_shape > 1 ? zc_shape = 1;
 
-              attack_sc = (0.42 * nonset + 0.22 * nslope_p + 0.16 * nflux + 0.12 * nctr + 0.08 * npeak) * profile_att_class;
-              body_sc = (0.30 * nmotion + 0.22 * slope_neutral + 0.14 * sqrt(nrms) + 0.12 * nctr + 0.12 * rankn + 0.10 * (1 - min(1, nedge))) * profile_body_class;
-              release_sc = (0.38 * nslope_n + 0.22 * (1 - nonset) + 0.16 * nmotion + 0.14 * (1 - min(1, nedge)) + 0.10 * rankn) * profile_rel_class;
-              debris_sc = (0.40 * nhf + 0.18 * nzc + 0.16 * nflux + 0.12 * (1 - sqrt(nrms)) + 0.14 * (1 - min(1, nedge))) * profile_deb_class;
+              attack_sc = (0.42 * nonset + 0.22 * nslope_p + 0.16 * nflux + 0.12 * nctr + 0.08 * npeak) * profile_att_class + 0.06 * nnov;
+              body_sc = (0.30 * nmotion + 0.22 * slope_neutral + 0.14 * sqrt(nrms) + 0.12 * nctr + 0.12 * rankn + 0.10 * (1 - min(1, nedge))) * profile_body_class + 0.03 * nnov;
+              release_sc = (0.38 * nslope_n + 0.22 * (1 - nonset) + 0.16 * nmotion + 0.14 * (1 - min(1, nedge)) + 0.10 * rankn) * profile_rel_class + 0.04 * nnov;
+              debris_sc = (0.40 * nhf + 0.18 * nzc + 0.16 * nflux + 0.12 * (1 - sqrt(nrms)) + 0.14 * (1 - min(1, nedge))) * profile_deb_class + 0.08 * nnov;
 
               profile == 1 ? (
                 body_sc += 0.06 * nhf + 0.05 * nmotion;
@@ -2136,7 +2330,7 @@ function phase_desire_weight(cur_phase, want_phase, mode_local) local(w) (
   w;
 );
 
-function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms, npeak, nflux, nzc, nctr, nedge, zc_shape, mode_shape, rep, start, dist, cloud_w, prev_ci, prev_slot, pbase, drms, dflux, dzc, dctr, dedge, compat_amt, compat, prevs, nexts, peakish, gran_flux_fit, slope, nslope_p, nslope_n, slope_abs, slope_neutral, nhf, nmotion, nonset, cand_phase, phase_w, family, lastfam_w, cand_scale_v, scale_w, fam_w, phase_prof_w, base_dbg_w, family_dbg_w, compat_dbg_w, phase_relax_w) (
+function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms, npeak, nflux, nzc, nctr, nedge, zc_shape, mode_shape, rep, start, dist, cloud_w, prev_ci, prev_slot, pbase, drms, dflux, dzc, dctr, dedge, compat_amt, compat, prevs, nexts, peakish, gran_flux_fit, slope, nslope_p, nslope_n, slope_abs, slope_neutral, nhf, nmotion, nonset, cand_phase, phase_w, family, lastfam_w, cand_scale_v, scale_w, fam_w, phase_prof_w, base_dbg_w, family_dbg_w, compat_dbg_w, phase_relax_w, pca_novel, pca_w, pca_dbg_w, dpc1, dpc2, dpc) (
   base = cand_base + ci * cand_stride;
   score = mem[base + 6];
   rank = mem[base + 7];
@@ -2162,6 +2356,9 @@ function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms,
     cand_phase = floor(mem[base + 13] + 0.5);
     family = floor(mem[base + 14] + 0.5);
     cand_scale_v = floor(mem[base + 15] + 0.5);
+    pca_novel = mem[base + 18];
+    pca_novel < 0 ? pca_novel = 0;
+    pca_novel > 1 ? pca_novel = 1;
 
     zc_shape = 1 - abs(nzc - 0.35) / 0.35;
     zc_shape < 0 ? zc_shape = 0;
@@ -2170,6 +2367,7 @@ function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms,
     family_dbg_w = 1;
     lastfam_w = 1;
     compat_dbg_w = 1;
+    pca_dbg_w = 1;
 
     weight = (1 - interesting) + interesting * (0.10 + 3.00 * score * score);
     weight *= (0.15 + 0.85 * rank);
@@ -2192,6 +2390,13 @@ function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms,
       mode_shape = 0.28 + 0.42 * rank + 0.34 * nmotion + 0.18 * sqrt(nrms) + 0.16 * slope_neutral + 0.10 * gran_flux_fit + 0.10 * (1 - min(1, nedge));
     );
     weight *= mode_shape;
+
+    pca_w =
+      mode_local == 0 ? (1.02 + (0.18 + 0.46 * interesting) * pca_novel) :
+      mode_local == 1 ? (1.00 + (0.12 + 0.30 * interesting) * pca_novel) :
+      (0.98 + (0.06 + 0.18 * interesting) * pca_novel);
+    pca_dbg_w = pca_w;
+    weight *= pca_w;
 
     rep = 1 - repeat_avoid + repeat_avoid * recent_weight(ci);
     weight *= rep;
@@ -2230,8 +2435,12 @@ function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms,
       dstart = abs(mem[base] - mem[pbase]) / max(1, (cand_win(ci) + cand_win(prev_ci)) * 1.5);
       dstart > 1 ? dstart = 1;
       slope_flip = ((mem[base + 9] >= 0) != (mem[pbase + 9] >= 0)) ? 1 : 0;
+      dpc1 = abs(mem[base + 16] - mem[pbase + 16]) / max(0.000001, sqrt(pca_var1));
+      dpc2 = abs(mem[base + 17] - mem[pbase + 17]) / max(0.000001, sqrt(pca_var2));
+      dpc = 0.5 * (dpc1 + dpc2);
+      dpc > 1.5 ? dpc = 1.5;
 
-      compat = exp(-(2.6 * drms + 2.3 * dflux + 1.6 * dzc + 1.9 * dctr + 1.2 * dedge + 0.85 * dstart + 0.35 * slope_flip));
+      compat = exp(-(2.6 * drms + 2.3 * dflux + 1.6 * dzc + 1.9 * dctr + 1.2 * dedge + 0.85 * dstart + 0.35 * slope_flip + 0.55 * dpc));
       compat_amt = (mode_local == 0 ? 0.18 : mode_local == 1 ? 0.46 : 0.82) * profile_comp_mul;
       compat_amt > 0.96 ? compat_amt = 0.96;
       compat_dbg_w = (1 - compat_amt) + compat_amt * compat;
@@ -2255,6 +2464,8 @@ function candidate_weight(ci, mode_local) local(base, score, rank, weight, nrms,
       dbg_w_scale = scale_w;
       dbg_w_family = family_dbg_w * lastfam_w;
       dbg_w_compat = compat_dbg_w;
+      dbg_w_pca = pca_dbg_w;
+      dbg_sel_novel = pca_novel;
       dbg_w_total = weight;
     );
 
@@ -4593,7 +4804,7 @@ debug_overlay ? (
   dbg_x = wf_x + spx(10);
   dbg_y = wf_y + spx(10);
   dbg_w = spx(260);
-  dbg_h = spx(112);
+  dbg_h = spx(128);
 
   gfx_r = 0.06; gfx_g = 0.08; gfx_b = 0.11; gfx_a = 0.86;
   gfx_rect(dbg_x, dbg_y, dbg_w, dbg_h, 1);
@@ -4613,10 +4824,13 @@ debug_overlay ? (
   gfx_printf("pools A%d B%d R%d D%d  •  wake %.2f", attack_pool_count, body_pool_count, release_pool_count, debris_pool_count, wake_force);
 
   gfx_x = dbg_x + spx(8); gfx_y = dbg_y + spx(56);
-  gfx_printf("W base %.2f  ph %.2f  fam %.2f  sc %.2f  comp %.2f", dbg_w_base, dbg_w_phase, dbg_w_family, dbg_w_scale, dbg_w_compat);
+  gfx_printf("W base %.2f  ph %.2f  fam %.2f  sc %.2f  pca %.2f", dbg_w_base, dbg_w_phase, dbg_w_family, dbg_w_scale, dbg_w_pca);
 
   gfx_x = dbg_x + spx(8); gfx_y = dbg_y + spx(72);
-  gfx_printf("sel %.2f  recent fam %.1f  nHF %.2f  nMot %.2f", dbg_w_total, recent_family_mean, recent_hf_mean, recent_motion_mean);
+  gfx_printf("comp %.2f  sel %.2f  nov %.2f  PCApk %.2f", dbg_w_compat, dbg_w_total, dbg_sel_novel, pca_novelty_peak);
+
+  gfx_x = dbg_x + spx(8); gfx_y = dbg_y + spx(88);
+  gfx_printf("recent fam %.1f  nHF %.2f  nMot %.2f", recent_family_mean, recent_hf_mean, recent_motion_mean);
 
   // phase-colored candidate ticks near the top edge of the waveform.
   i = 0;
