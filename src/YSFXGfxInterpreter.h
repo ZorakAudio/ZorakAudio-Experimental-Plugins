@@ -103,6 +103,11 @@ static const int32_t DSPJSFX_VARS_COUNT = 0;
 static const DSPJSFX_VarDesc DSPJSFX_VARS[1] = { { "", -1 } };
 #endif
 
+static inline int64_t jsfxTruncIndexLikeAot (double v) noexcept
+{
+  return (int64_t) (v + 1.0e-5);
+}
+
 // -------------------------
 // JSFX section extraction (@gfx, @init, ...)
 // -------------------------
@@ -550,6 +555,8 @@ public:
 
     currentFont = juce::Font(juce::Font::getDefaultSansSerifFontName(), 12.0f, juce::Font::plain);
   }
+
+  virtual bool freembufIsNoop() const noexcept { return false; }
 
   void refreshShowMenuNbConstants()
   {
@@ -1548,7 +1555,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     auto* self = (GfxVm*)opaque;
     if (!self || np < 1) return 0.0;
 
-    const int idx = (int)std::llround((double)*parms[0]);
+    const int idx = (int) jsfxTruncIndexLikeAot ((double) *parms[0]);
     if (idx < 1 || idx > 64)
     {
       // Setter form still returns the value (mirrors assignment-as-expression).
@@ -1585,9 +1592,12 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     auto* self = (GfxVm*)opaque;
     if (!self || np < 1) return 0.0;
 
-    int64_t n = (int64_t)std::llround((double)*parms[0]);
+    int64_t n = jsfxTruncIndexLikeAot ((double) *parms[0]);
     if (n < 0) n = 0;
     if (n > 0x7fffffffLL) n = 0x7fffffffLL;
+
+    if (self->freembufIsNoop())
+      return 0.0;
 
     // Shrink/grow EEL RAM (mem[]).
     if (self->m_vm)

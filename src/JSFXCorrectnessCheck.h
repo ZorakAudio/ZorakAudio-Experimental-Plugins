@@ -171,6 +171,7 @@ public:
     }
 
     bool isReady() const noexcept { return ready; }
+    bool freembufIsNoop() const noexcept override { return true; }
     const juce::String& getLastError() const noexcept { return lastError; }
 
     void ensureRamSize (int64_t needed)
@@ -504,7 +505,7 @@ private:
         if (self == nullptr || np < 1)
             return 0.0;
 
-        const int idx = (int) std::llround ((double) *parms[0]);
+        const int idx = (int) jsfx_gfx::jsfxTruncIndexLikeAot ((double) *parms[0]);
         if (idx < 0 || idx >= 64)
             return (np >= 2) ? *parms[1] : 0.0;
 
@@ -978,7 +979,8 @@ public:
             || (isFrozen() && mismatchLatched.load (std::memory_order_acquire)))
             return;
 
-        const int64_t compareUsed = std::max<int64_t> (aotState.memN, (int64_t) shadow->memSize);
+        const int64_t compareUsed = std::max<int64_t> (getTrackedJsfxMemUsed (const_cast<DSPJSFX_State*> (&aotState)),
+                                                       shadow->logicalMemUsedForCompare());
         if (compareUsed <= 0)
             return;
 

@@ -46,6 +46,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import math
 import os
@@ -1407,6 +1408,737 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
 
 
 # -----------------------------
+# Loop-invariant scalar hoisting
+# -----------------------------
+
+_PURE_HOIST_CALLS: Set[str] = {
+    "min", "max",
+    "sin", "cos", "sqrt", "fabs", "floor", "ceil",
+    "pow", "exp", "log", "tan", "log10",
+}
+
+_SLIDER_VAR_RE = re.compile(r"^slider([1-9][0-9]?)$")
+_JSFX_HEX_CONST_RE = re.compile(r"^\$x[0-9A-Fa-f]+$")
+
+
+class _LoopMutationSummary:
+    __slots__ = (
+        "written_vars",
+        "writes_mem",
+        "writes_dynamic_slider",
+        "writes_dynamic_spl",
+        "writes_unknown_state",
+    )
+
+    def __init__(self) -> None:
+        self.written_vars: Set[str] = set()
+        self.writes_mem = False
+        self.writes_dynamic_slider = False
+        self.writes_dynamic_spl = False
+        self.writes_unknown_state = False
+
+    def merge(self, other: '_LoopMutationSummary') -> '_LoopMutationSummary':
+        self.written_vars.update(other.written_vars)
+        self.writes_mem = self.writes_mem or other.writes_mem
+        self.writes_dynamic_slider = self.writes_dynamic_slider or other.writes_dynamic_slider
+        self.writes_dynamic_spl = self.writes_dynamic_spl or other.writes_dynamic_spl
+        self.writes_unknown_state = self.writes_unknown_state or other.writes_unknown_state
+        return self
+
+
+def _is_slider_var_name(name: str) -> bool:
+    m = _SLIDER_VAR_RE.fullmatch(name)
+    return m is not None and 1 <= int(m.group(1)) <= 64
+
+
+def _is_spl_var_name(name: str) -> bool:
+    m = _SPL_RE.fullmatch(name)
+    return m is not None and 0 <= int(m.group(1)) < 64
+
+
+def _is_compile_time_constant_var(name: str) -> bool:
+    if name == "mem":
+        return True
+    if name in ("$pi", "$e"):
+        return True
+    return _JSFX_HEX_CONST_RE.fullmatch(name) is not None
+
+
+def _note_mutated_lvalue(node: Node, out: _LoopMutationSummary) -> None:
+    if isinstance(node, Var):
+        if node.name != "mem":
+            out.written_vars.add(node.name)
+        return
+    if isinstance(node, Index):
+        out.writes_mem = True
+        return
+    if isinstance(node, Call) and len(node.args) == 1 and node.fn in ("slider", "spl"):
+        if node.fn == "slider":
+            out.writes_dynamic_slider = True
+        else:
+            out.writes_dynamic_spl = True
+        return
+    out.writes_unknown_state = True
+
+
+def _summarize_loop_mutations(node: Node, user_fn_names: Set[str]) -> _LoopMutationSummary:
+    out = _LoopMutationSummary()
+
+    def rec(n: Node) -> None:
+        if isinstance(n, (Num, StrLit, Var)):
+            return
+        if isinstance(n, Index):
+            rec(n.base)
+            rec(n.index)
+            return
+        if isinstance(n, Unary):
+            rec(n.a)
+            return
+        if isinstance(n, Binary):
+            rec(n.l)
+            rec(n.r)
+            return
+        if isinstance(n, Assign):
+            _note_mutated_lvalue(n.target, out)
+            rec(n.target)
+            rec(n.value)
+            return
+        if isinstance(n, Call):
+            for a in n.args:
+                rec(a)
+
+            fn = n.fn
+            if fn in user_fn_names:
+                out.writes_unknown_state = True
+                return
+
+            if fn == "midirecv":
+                for a in n.args[:4]:
+                    _note_mutated_lvalue(a, out)
+                return
+
+            if fn == "file_var" and len(n.args) >= 2:
+                _note_mutated_lvalue(n.args[1], out)
+                return
+
+            if fn == "file_riff" and len(n.args) >= 3:
+                _note_mutated_lvalue(n.args[1], out)
+                _note_mutated_lvalue(n.args[2], out)
+                return
+
+            if fn in ("memset", "fft", "ifft", "fft_permute", "fft_ipermute", "file_mem"):
+                out.writes_mem = True
+                return
+
+            if fn == "abs":
+                fn = "fabs"
+
+            if fn in _PURE_HOIST_CALLS:
+                return
+
+            if fn.startswith("gfx_") or fn in (
+                "slider", "spl",
+                "midisend", "rand",
+                "freembuf", "sliderchange", "slider_automate",
+                "file_open", "file_close", "file_rewind", "file_seek", "file_avail", "file_text",
+                "sprintf", "printf",
+                "strcpy", "strcat", "strcmp", "strlen",
+                "str_getchar", "str_setchar",
+                "str_insert", "str_delete", "str_mid", "strncpy",
+                "file_read", "file_write", "file_string",
+            ):
+                return
+
+            out.writes_unknown_state = True
+            return
+        if isinstance(n, Loop):
+            rec(n.count)
+            rec(n.body)
+            return
+        if isinstance(n, Ternary):
+            rec(n.cond)
+            rec(n.then)
+            rec(n.els)
+            return
+        if isinstance(n, Seq):
+            for it in n.items:
+                rec(it)
+            return
+        if isinstance(n, If):
+            rec(n.cond)
+            rec(n.then)
+            if n.els is not None:
+                rec(n.els)
+            return
+        if isinstance(n, While):
+            rec(n.cond)
+            rec(n.body)
+            return
+        if isinstance(n, FunctionDef):
+            rec(n.body)
+            return
+        raise TypeError(type(n))
+
+    rec(node)
+    return out
+
+
+def _is_loop_invariant_expr(node: Node, summary: _LoopMutationSummary, user_fn_names: Set[str]) -> bool:
+    if isinstance(node, (Num, StrLit)):
+        return True
+
+    if isinstance(node, Var):
+        if _is_compile_time_constant_var(node.name):
+            return True
+        if node.name in summary.written_vars:
+            return False
+        if summary.writes_unknown_state:
+            return False
+        if _is_slider_var_name(node.name) and summary.writes_dynamic_slider:
+            return False
+        if _is_spl_var_name(node.name) and summary.writes_dynamic_spl:
+            return False
+        return True
+
+    if isinstance(node, Index):
+        return False
+
+    if isinstance(node, Unary):
+        return _is_loop_invariant_expr(node.a, summary, user_fn_names)
+
+    if isinstance(node, Binary):
+        return (_is_loop_invariant_expr(node.l, summary, user_fn_names) and
+                _is_loop_invariant_expr(node.r, summary, user_fn_names))
+
+    if isinstance(node, Ternary):
+        return (_is_loop_invariant_expr(node.cond, summary, user_fn_names) and
+                _is_loop_invariant_expr(node.then, summary, user_fn_names) and
+                _is_loop_invariant_expr(node.els, summary, user_fn_names))
+
+    if isinstance(node, Call):
+        if node.fn in user_fn_names:
+            return False
+        fn = "fabs" if node.fn == "abs" else node.fn
+        if fn not in _PURE_HOIST_CALLS:
+            return False
+        return all(_is_loop_invariant_expr(a, summary, user_fn_names) for a in node.args)
+
+    if isinstance(node, (Assign, Loop, Seq, If, While, FunctionDef)):
+        return False
+
+    raise TypeError(type(node))
+
+
+def _collect_loop_invariant_candidates(node: Node,
+                                       summary: _LoopMutationSummary,
+                                       user_fn_names: Set[str],
+                                       out: List[Node]) -> None:
+    if isinstance(node, (Loop, While)):
+        return
+
+    if isinstance(node, (Unary, Binary, Ternary, Call)) and _is_loop_invariant_expr(node, summary, user_fn_names):
+        out.append(node)
+        return
+
+    if isinstance(node, (Num, StrLit, Var)):
+        return
+    if isinstance(node, Index):
+        _collect_loop_invariant_candidates(node.base, summary, user_fn_names, out)
+        _collect_loop_invariant_candidates(node.index, summary, user_fn_names, out)
+        return
+    if isinstance(node, Unary):
+        _collect_loop_invariant_candidates(node.a, summary, user_fn_names, out)
+        return
+    if isinstance(node, Binary):
+        _collect_loop_invariant_candidates(node.l, summary, user_fn_names, out)
+        _collect_loop_invariant_candidates(node.r, summary, user_fn_names, out)
+        return
+    if isinstance(node, Assign):
+        _collect_loop_invariant_candidates(node.target, summary, user_fn_names, out)
+        _collect_loop_invariant_candidates(node.value, summary, user_fn_names, out)
+        return
+    if isinstance(node, Call):
+        for a in node.args:
+            _collect_loop_invariant_candidates(a, summary, user_fn_names, out)
+        return
+    if isinstance(node, Ternary):
+        _collect_loop_invariant_candidates(node.cond, summary, user_fn_names, out)
+        _collect_loop_invariant_candidates(node.then, summary, user_fn_names, out)
+        _collect_loop_invariant_candidates(node.els, summary, user_fn_names, out)
+        return
+    if isinstance(node, Seq):
+        for it in node.items:
+            _collect_loop_invariant_candidates(it, summary, user_fn_names, out)
+        return
+    if isinstance(node, If):
+        _collect_loop_invariant_candidates(node.cond, summary, user_fn_names, out)
+        _collect_loop_invariant_candidates(node.then, summary, user_fn_names, out)
+        if node.els is not None:
+            _collect_loop_invariant_candidates(node.els, summary, user_fn_names, out)
+        return
+    if isinstance(node, FunctionDef):
+        _collect_loop_invariant_candidates(node.body, summary, user_fn_names, out)
+        return
+    raise TypeError(type(node))
+
+
+def plan_loop_invariant_hoists(programs: Dict[str, List[Node]],
+                               fn_defs: Dict[str, FunctionDef]) -> Dict[int, List[Node]]:
+    user_fn_names = set(fn_defs.keys())
+    out: Dict[int, List[Node]] = {}
+
+    def visit(n: Node) -> None:
+        if isinstance(n, Loop):
+            summary = _summarize_loop_mutations(n.body, user_fn_names)
+            cands: List[Node] = []
+            _collect_loop_invariant_candidates(n.body, summary, user_fn_names, cands)
+            if cands:
+                out[n.id] = cands
+            visit(n.count)
+            visit(n.body)
+            return
+
+        if isinstance(n, While):
+            summary = _summarize_loop_mutations(n.cond, user_fn_names)
+            summary.merge(_summarize_loop_mutations(n.body, user_fn_names))
+            cands: List[Node] = []
+            _collect_loop_invariant_candidates(n.cond, summary, user_fn_names, cands)
+            _collect_loop_invariant_candidates(n.body, summary, user_fn_names, cands)
+            if cands:
+                out[n.id] = cands
+            visit(n.cond)
+            visit(n.body)
+            return
+
+        if isinstance(n, (Num, StrLit, Var)):
+            return
+        if isinstance(n, Index):
+            visit(n.base)
+            visit(n.index)
+            return
+        if isinstance(n, Unary):
+            visit(n.a)
+            return
+        if isinstance(n, Binary):
+            visit(n.l)
+            visit(n.r)
+            return
+        if isinstance(n, Assign):
+            visit(n.target)
+            visit(n.value)
+            return
+        if isinstance(n, Call):
+            for a in n.args:
+                visit(a)
+            return
+        if isinstance(n, Ternary):
+            visit(n.cond)
+            visit(n.then)
+            visit(n.els)
+            return
+        if isinstance(n, Seq):
+            for it in n.items:
+                visit(it)
+            return
+        if isinstance(n, If):
+            visit(n.cond)
+            visit(n.then)
+            if n.els is not None:
+                visit(n.els)
+            return
+        if isinstance(n, FunctionDef):
+            visit(n.body)
+            return
+        raise TypeError(type(n))
+
+    for prog in programs.values():
+        for st in prog:
+            visit(st)
+
+    for f in fn_defs.values():
+        visit(f.body)
+
+    return out
+
+
+class _SectionRWInfo:
+    __slots__ = (
+        "read_vars",
+        "write_counts",
+        "writes_mem",
+        "writes_dynamic_slider",
+        "writes_dynamic_spl",
+        "writes_unknown_state",
+    )
+
+    def __init__(self) -> None:
+        self.read_vars: Set[str] = set()
+        self.write_counts: Counter[str] = Counter()
+        self.writes_mem = False
+        self.writes_dynamic_slider = False
+        self.writes_dynamic_spl = False
+        self.writes_unknown_state = False
+
+    @property
+    def written_vars(self) -> Set[str]:
+        return set(self.write_counts.keys())
+
+    def merge(self, other: '_SectionRWInfo') -> '_SectionRWInfo':
+        self.read_vars.update(other.read_vars)
+        self.write_counts.update(other.write_counts)
+        self.writes_mem = self.writes_mem or other.writes_mem
+        self.writes_dynamic_slider = self.writes_dynamic_slider or other.writes_dynamic_slider
+        self.writes_dynamic_spl = self.writes_dynamic_spl or other.writes_dynamic_spl
+        self.writes_unknown_state = self.writes_unknown_state or other.writes_unknown_state
+        return self
+
+
+def _note_section_write_var(out: _SectionRWInfo, name: str) -> None:
+    if name != "mem":
+        out.write_counts[name] += 1
+
+
+def _collect_section_lvalue_rw(node: Node, user_fn_names: Set[str], out: _SectionRWInfo) -> None:
+    if isinstance(node, Var):
+        _note_section_write_var(out, node.name)
+        return
+    if isinstance(node, Index):
+        out.writes_mem = True
+        _collect_section_rw(node.base, user_fn_names, out)
+        _collect_section_rw(node.index, user_fn_names, out)
+        return
+    if isinstance(node, Call) and len(node.args) == 1 and node.fn in ("slider", "spl"):
+        _collect_section_rw(node.args[0], user_fn_names, out)
+        if node.fn == "slider":
+            out.writes_dynamic_slider = True
+        else:
+            out.writes_dynamic_spl = True
+        return
+    out.writes_unknown_state = True
+    _collect_section_rw(node, user_fn_names, out)
+
+
+def _collect_section_rw(node: Node, user_fn_names: Set[str], out: _SectionRWInfo) -> None:
+    if isinstance(node, (Num, StrLit)):
+        return
+    if isinstance(node, Var):
+        out.read_vars.add(node.name)
+        return
+    if isinstance(node, Index):
+        _collect_section_rw(node.base, user_fn_names, out)
+        _collect_section_rw(node.index, user_fn_names, out)
+        return
+    if isinstance(node, Unary):
+        _collect_section_rw(node.a, user_fn_names, out)
+        return
+    if isinstance(node, Binary):
+        _collect_section_rw(node.l, user_fn_names, out)
+        _collect_section_rw(node.r, user_fn_names, out)
+        return
+    if isinstance(node, Assign):
+        _collect_section_lvalue_rw(node.target, user_fn_names, out)
+        _collect_section_rw(node.value, user_fn_names, out)
+        return
+    if isinstance(node, Call):
+        fn = node.fn
+        if fn == "midirecv":
+            for a in node.args[:4]:
+                _collect_section_lvalue_rw(a, user_fn_names, out)
+            return
+        if fn == "file_var":
+            if len(node.args) >= 1:
+                _collect_section_rw(node.args[0], user_fn_names, out)
+            if len(node.args) >= 2:
+                _collect_section_lvalue_rw(node.args[1], user_fn_names, out)
+            for a in node.args[2:]:
+                _collect_section_rw(a, user_fn_names, out)
+            return
+        if fn == "file_riff":
+            if len(node.args) >= 1:
+                _collect_section_rw(node.args[0], user_fn_names, out)
+            if len(node.args) >= 2:
+                _collect_section_lvalue_rw(node.args[1], user_fn_names, out)
+            if len(node.args) >= 3:
+                _collect_section_lvalue_rw(node.args[2], user_fn_names, out)
+            for a in node.args[3:]:
+                _collect_section_rw(a, user_fn_names, out)
+            return
+
+        for a in node.args:
+            _collect_section_rw(a, user_fn_names, out)
+
+        if fn in user_fn_names:
+            out.writes_unknown_state = True
+            return
+
+        if fn in ("memset", "fft", "ifft", "fft_permute", "fft_ipermute", "file_mem"):
+            out.writes_mem = True
+            return
+
+        return
+    if isinstance(node, Loop):
+        _collect_section_rw(node.count, user_fn_names, out)
+        _collect_section_rw(node.body, user_fn_names, out)
+        return
+    if isinstance(node, Ternary):
+        _collect_section_rw(node.cond, user_fn_names, out)
+        _collect_section_rw(node.then, user_fn_names, out)
+        _collect_section_rw(node.els, user_fn_names, out)
+        return
+    if isinstance(node, Seq):
+        for it in node.items:
+            _collect_section_rw(it, user_fn_names, out)
+        return
+    if isinstance(node, If):
+        _collect_section_rw(node.cond, user_fn_names, out)
+        _collect_section_rw(node.then, user_fn_names, out)
+        if node.els is not None:
+            _collect_section_rw(node.els, user_fn_names, out)
+        return
+    if isinstance(node, While):
+        _collect_section_rw(node.cond, user_fn_names, out)
+        _collect_section_rw(node.body, user_fn_names, out)
+        return
+    if isinstance(node, FunctionDef):
+        _collect_section_rw(node.body, user_fn_names, out)
+        return
+    raise TypeError(type(node))
+
+
+def _summarize_section_rw(nodes: List[Node], user_fn_names: Set[str]) -> _SectionRWInfo:
+    out = _SectionRWInfo()
+    for node in nodes:
+        _collect_section_rw(node, user_fn_names, out)
+    return out
+
+
+class _StageInvariantSummary:
+    __slots__ = (
+        "mutable_vars",
+        "writes_dynamic_slider",
+        "writes_unknown_state",
+        "allow_slider_vars",
+        "allow_samplesblock",
+        "allow_srate",
+    )
+
+    def __init__(self,
+                 mutable_vars: Set[str],
+                 *,
+                 writes_dynamic_slider: bool,
+                 writes_unknown_state: bool,
+                 allow_slider_vars: bool,
+                 allow_samplesblock: bool,
+                 allow_srate: bool) -> None:
+        self.mutable_vars = set(mutable_vars)
+        self.writes_dynamic_slider = writes_dynamic_slider
+        self.writes_unknown_state = writes_unknown_state
+        self.allow_slider_vars = allow_slider_vars
+        self.allow_samplesblock = allow_samplesblock
+        self.allow_srate = allow_srate
+
+
+def _is_stage_invariant_expr(node: Node,
+                             summary: _StageInvariantSummary,
+                             user_fn_names: Set[str]) -> bool:
+    if isinstance(node, (Num, StrLit)):
+        return True
+
+    if isinstance(node, Var):
+        if _is_compile_time_constant_var(node.name):
+            return True
+        if summary.writes_unknown_state:
+            return False
+        if node.name == "srate":
+            return summary.allow_srate and node.name not in summary.mutable_vars
+        if node.name == "samplesblock":
+            return summary.allow_samplesblock and node.name not in summary.mutable_vars
+        if _is_spl_var_name(node.name):
+            return False
+        if _is_slider_var_name(node.name):
+            return (summary.allow_slider_vars and
+                    not summary.writes_dynamic_slider and
+                    node.name not in summary.mutable_vars)
+        return node.name not in summary.mutable_vars
+
+    if isinstance(node, Index):
+        return False
+
+    if isinstance(node, Unary):
+        return _is_stage_invariant_expr(node.a, summary, user_fn_names)
+
+    if isinstance(node, Binary):
+        return (_is_stage_invariant_expr(node.l, summary, user_fn_names) and
+                _is_stage_invariant_expr(node.r, summary, user_fn_names))
+
+    if isinstance(node, Ternary):
+        return (_is_stage_invariant_expr(node.cond, summary, user_fn_names) and
+                _is_stage_invariant_expr(node.then, summary, user_fn_names) and
+                _is_stage_invariant_expr(node.els, summary, user_fn_names))
+
+    if isinstance(node, Call):
+        if node.fn in user_fn_names:
+            return False
+        fn = "fabs" if node.fn == "abs" else node.fn
+        if fn not in _PURE_HOIST_CALLS:
+            return False
+        return all(_is_stage_invariant_expr(a, summary, user_fn_names) for a in node.args)
+
+    if isinstance(node, (Assign, Loop, Seq, If, While, FunctionDef)):
+        return False
+
+    raise TypeError(type(node))
+
+
+def _adjusted_write_counts(base: Counter[str], name: str) -> Counter[str]:
+    out = Counter(base)
+    if out.get(name, 0) > 0:
+        out[name] -= 1
+        if out[name] <= 0:
+            del out[name]
+    return out
+
+
+def _make_user_var_assignment_candidate(node: Node) -> Optional[Tuple[str, Node]]:
+    if not isinstance(node, Assign):
+        return None
+    if node.op != "=":
+        return None
+    if not isinstance(node.target, Var):
+        return None
+    name = node.target.name
+    if name in BUILTIN_NAMES:
+        return None
+    if _is_slider_var_name(name) or _is_spl_var_name(name):
+        return None
+    if name.startswith("$"):
+        return None
+    return name, node.value
+
+
+def _plan_sample_to_block_hoists(programs: Dict[str, List[Node]], user_fn_names: Set[str]) -> None:
+    slider_info = _summarize_section_rw(programs["slider"], user_fn_names)
+    active_sample_info = _summarize_section_rw(programs["sample"], user_fn_names)
+
+    if slider_info.writes_unknown_state or active_sample_info.writes_unknown_state:
+        return
+
+    new_sample: List[Node] = []
+    moved: List[Node] = []
+    prefix_reads: Set[str] = set()
+    prefix_writes: Set[str] = set()
+
+    for node in programs["sample"]:
+        info = _summarize_section_rw([node], user_fn_names)
+        cand = _make_user_var_assignment_candidate(node)
+        movable = False
+
+        if cand is not None:
+            target_name, rhs = cand
+            rhs_info = _summarize_section_rw([rhs], user_fn_names)
+            adjusted_counts = _adjusted_write_counts(active_sample_info.write_counts, target_name)
+            mutable_vars = set(adjusted_counts.keys()) | slider_info.written_vars
+            stage_summary = _StageInvariantSummary(
+                mutable_vars,
+                writes_dynamic_slider=(active_sample_info.writes_dynamic_slider or slider_info.writes_dynamic_slider),
+                writes_unknown_state=False,
+                allow_slider_vars=True,
+                allow_samplesblock=True,
+                allow_srate=True,
+            )
+
+            movable = (
+                target_name not in prefix_reads and
+                target_name not in prefix_writes and
+                target_name not in slider_info.read_vars and
+                target_name not in slider_info.written_vars and
+                target_name not in adjusted_counts and
+                target_name not in rhs_info.read_vars and
+                _is_stage_invariant_expr(rhs, stage_summary, user_fn_names)
+            )
+
+        if movable:
+            moved.append(node)
+            active_sample_info.write_counts = _adjusted_write_counts(active_sample_info.write_counts, target_name)
+            continue
+
+        new_sample.append(node)
+        prefix_reads.update(info.read_vars)
+        prefix_writes.update(info.written_vars)
+
+    if moved:
+        programs["sample"] = new_sample
+        programs["block"] = list(programs["block"]) + moved
+
+
+def _plan_block_to_init_hoists(programs: Dict[str, List[Node]], user_fn_names: Set[str]) -> None:
+    slider_info = _summarize_section_rw(programs["slider"], user_fn_names)
+    sample_info = _summarize_section_rw(programs["sample"], user_fn_names)
+    active_block_info = _summarize_section_rw(programs["block"], user_fn_names)
+
+    if slider_info.writes_unknown_state or sample_info.writes_unknown_state or active_block_info.writes_unknown_state:
+        return
+
+    new_block: List[Node] = []
+    moved: List[Node] = []
+    prefix_reads: Set[str] = set()
+    prefix_writes: Set[str] = set()
+
+    for node in programs["block"]:
+        info = _summarize_section_rw([node], user_fn_names)
+        cand = _make_user_var_assignment_candidate(node)
+        movable = False
+
+        if cand is not None:
+            target_name, rhs = cand
+            rhs_info = _summarize_section_rw([rhs], user_fn_names)
+            adjusted_counts = _adjusted_write_counts(active_block_info.write_counts, target_name)
+            mutable_vars = set(adjusted_counts.keys()) | slider_info.written_vars | sample_info.written_vars
+            stage_summary = _StageInvariantSummary(
+                mutable_vars,
+                writes_dynamic_slider=(active_block_info.writes_dynamic_slider or slider_info.writes_dynamic_slider or sample_info.writes_dynamic_slider),
+                writes_unknown_state=False,
+                allow_slider_vars=False,
+                allow_samplesblock=False,
+                allow_srate=True,
+            )
+
+            movable = (
+                target_name not in prefix_reads and
+                target_name not in prefix_writes and
+                target_name not in slider_info.read_vars and
+                target_name not in slider_info.written_vars and
+                target_name not in adjusted_counts and
+                target_name not in sample_info.written_vars and
+                target_name not in rhs_info.read_vars and
+                _is_stage_invariant_expr(rhs, stage_summary, user_fn_names)
+            )
+
+        if movable:
+            moved.append(node)
+            active_block_info.write_counts = _adjusted_write_counts(active_block_info.write_counts, target_name)
+            continue
+
+        new_block.append(node)
+        prefix_reads.update(info.read_vars)
+        prefix_writes.update(info.written_vars)
+
+    if moved:
+        programs["block"] = new_block
+        programs["init"] = list(programs["init"]) + moved
+
+
+def hoist_section_invariants(programs: Dict[str, List[Node]],
+                             fn_defs: Dict[str, FunctionDef]) -> Dict[str, List[Node]]:
+    out = {sec: list(nodes) for sec, nodes in programs.items()}
+    user_fn_names = set(fn_defs.keys())
+
+    _plan_sample_to_block_hoists(out, user_fn_names)
+    _plan_block_to_init_hoists(out, user_fn_names)
+    return out
+
+
+# -----------------------------
 # LLVM IR emission (llvmlite)
 # -----------------------------
 
@@ -1516,7 +2248,9 @@ class LLVMModuleEmitter:
         self._rand_gen32_fn: Optional[ir.Function] = None
         self.user_fn_defs: Dict[str, FunctionDef] = {}
         self.user_fn_ir: Dict[str, ir.Function] = {}
+        self.loop_hoists: Dict[int, List[Node]] = {}
         self._local_slots_stack: List[Dict[str, ir.Value]] = []
+        self._hoisted_value_stack: List[Dict[int, ir.Value]] = []
 
 
         self._buildins: Dict[str, ir.Function] = {}
@@ -1549,6 +2283,19 @@ class LLVMModuleEmitter:
 
     def _const_i32(self, v: int) -> ir.Constant:
         return ir.Constant(self.i32, int(v))
+
+    def _lookup_hoisted_value(self, node: Node) -> Optional[ir.Value]:
+        for env in reversed(self._hoisted_value_stack):
+            cached = env.get(node.id)
+            if cached is not None:
+                return cached
+        return None
+
+    def _compute_loop_hoisted_values(self, builder: ir.IRBuilder, st: ir.Value, loop_id: int) -> Dict[int, ir.Value]:
+        out: Dict[int, ir.Value] = {}
+        for node in self.loop_hoists.get(loop_id, []):
+            out[node.id] = self.emit_expr(builder, st, node)
+        return out
 
     def _truthy(self, x: ir.Value, builder: ir.IRBuilder) -> ir.Value:
         return builder.fcmp_ordered("!=", x, self._const_f64(0.0))
@@ -2043,27 +2790,36 @@ class LLVMModuleEmitter:
         builder.position_at_end(merge_bb)
 
     def emit_while(self, builder: ir.IRBuilder, st: ir.Value, n: While) -> None:
-        fn = builder.function
-        pre_bb = builder.block
-        cond_bb = fn.append_basic_block(f"while_cond_{n.id}")
-        body_bb = fn.append_basic_block(f"while_body_{n.id}")
-        after_bb = fn.append_basic_block(f"while_after_{n.id}")
+        hoisted = self._compute_loop_hoisted_values(builder, st, n.id)
+        self._hoisted_value_stack.append(hoisted)
+        try:
+            fn = builder.function
+            pre_bb = builder.block
+            cond_bb = fn.append_basic_block(f"while_cond_{n.id}")
+            body_bb = fn.append_basic_block(f"while_body_{n.id}")
+            after_bb = fn.append_basic_block(f"while_after_{n.id}")
 
-        builder.branch(cond_bb)
-
-        builder.position_at_end(cond_bb)
-        condv = self.emit_expr(builder, st, n.cond)
-        cond = self._truthy(condv, builder)
-        builder.cbranch(cond, body_bb, after_bb)
-
-        builder.position_at_end(body_bb)
-        self.emit_stmt(builder, st, n.body)
-        if not builder.block.is_terminated:
             builder.branch(cond_bb)
 
-        builder.position_at_end(after_bb)
+            builder.position_at_end(cond_bb)
+            condv = self.emit_expr(builder, st, n.cond)
+            cond = self._truthy(condv, builder)
+            builder.cbranch(cond, body_bb, after_bb)
+
+            builder.position_at_end(body_bb)
+            self.emit_stmt(builder, st, n.body)
+            if not builder.block.is_terminated:
+                builder.branch(cond_bb)
+
+            builder.position_at_end(after_bb)
+        finally:
+            self._hoisted_value_stack.pop()
 
     def emit_expr(self, builder: ir.IRBuilder, st: ir.Value, n: Node) -> ir.Value:
+        cached = self._lookup_hoisted_value(n)
+        if cached is not None:
+            return cached
+
         # literals
         if isinstance(n, Num):
             return self._const_f64(n.value)
@@ -2796,7 +3552,6 @@ class LLVMModuleEmitter:
         loop(count, body): repeats body count times, returns last body's value or 0.
         """
         fn = builder.function
-        pre_bb = builder.block
 
         count_v = self.emit_expr(builder, st, n.count)
         count_i = builder.fptosi(count_v, self.i64)
@@ -2804,35 +3559,41 @@ class LLVMModuleEmitter:
         is_neg = builder.icmp_signed("<", count_i, self._const_i64(0))
         n_i = builder.select(is_neg, self._const_i64(0), count_i)
 
-        cond_bb = fn.append_basic_block(f"loop_cond_{n.id}")
-        body_bb = fn.append_basic_block(f"loop_body_{n.id}")
-        after_bb = fn.append_basic_block(f"loop_after_{n.id}")
+        hoisted = self._compute_loop_hoisted_values(builder, st, n.id)
+        self._hoisted_value_stack.append(hoisted)
+        try:
+            pre_bb = builder.block
+            cond_bb = fn.append_basic_block(f"loop_cond_{n.id}")
+            body_bb = fn.append_basic_block(f"loop_body_{n.id}")
+            after_bb = fn.append_basic_block(f"loop_after_{n.id}")
 
-        builder.branch(cond_bb)
-
-        builder.position_at_end(cond_bb)
-        phi_i = builder.phi(self.i64)
-        phi_last = builder.phi(self.double)
-        phi_i.add_incoming(self._const_i64(0), pre_bb)
-        phi_last.add_incoming(self._const_f64(0.0), pre_bb)
-
-        keep_going = builder.icmp_signed("<", phi_i, n_i)
-        builder.cbranch(keep_going, body_bb, after_bb)
-
-        builder.position_at_end(body_bb)
-        v = self.emit_expr(builder, st, n.body)
-        i_next = builder.add(phi_i, self._const_i64(1))
-        latch_bb = builder.block
-        if not builder.block.is_terminated:
             builder.branch(cond_bb)
 
-        # Add incoming from latch
-        phi_i.add_incoming(i_next, latch_bb)
-        phi_last.add_incoming(v, latch_bb)
+            builder.position_at_end(cond_bb)
+            phi_i = builder.phi(self.i64)
+            phi_last = builder.phi(self.double)
+            phi_i.add_incoming(self._const_i64(0), pre_bb)
+            phi_last.add_incoming(self._const_f64(0.0), pre_bb)
 
-        builder.position_at_end(after_bb)
-        # cond_bb dominates after_bb, so phi_last is valid here
-        return phi_last
+            keep_going = builder.icmp_signed("<", phi_i, n_i)
+            builder.cbranch(keep_going, body_bb, after_bb)
+
+            builder.position_at_end(body_bb)
+            v = self.emit_expr(builder, st, n.body)
+            i_next = builder.add(phi_i, self._const_i64(1))
+            latch_bb = builder.block
+            if not builder.block.is_terminated:
+                builder.branch(cond_bb)
+
+            # Add incoming from latch
+            phi_i.add_incoming(i_next, latch_bb)
+            phi_last.add_incoming(v, latch_bb)
+
+            builder.position_at_end(after_bb)
+            # cond_bb dominates after_bb, so phi_last is valid here
+            return phi_last
+        finally:
+            self._hoisted_value_stack.pop()
 
 
 
@@ -3045,6 +3806,8 @@ def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
 
     fn_defs, programs = extract_function_defs(programs)
     programs, fn_defs = lower_user_functions(programs, fn_defs)
+    programs = hoist_section_invariants(programs, fn_defs)
+    loop_hoists = plan_loop_invariant_hoists(programs, fn_defs)
     user_vars = collect_user_vars(programs, fn_defs)
 
     pin_hints = parse_pin_hints(jsfx_text)
@@ -3054,6 +3817,7 @@ def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
     sym = SymTable(user_vars)
 
     emitter = LLVMModuleEmitter(sym)
+    emitter.loop_hoists = loop_hoists
     emitter.declare_user_functions(fn_defs)
 
     fn_init = emitter.emit_section_fn("jsfx_init", programs["init"])
