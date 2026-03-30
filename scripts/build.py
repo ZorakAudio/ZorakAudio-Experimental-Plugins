@@ -180,6 +180,10 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
       - JSFXDSP.ll
     inside the per-plugin build dir.
     """
+    def env_truthy(name: str) -> bool:
+        v = os.environ.get(name, "").strip().lower()
+        return v not in ("", "0", "false", "no", "off")
+
     out_obj = cmake_build / ("JSFXDSP.obj" if os.name == "nt" else "JSFXDSP.o")
     out_h = cmake_build / "JSFXDSP.h"
     out_meta = cmake_build / "JSFXDSP_meta.json"
@@ -195,6 +199,19 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
         banner=f"embedded JSFX source from {jsfx_path.name}",
     )
 
+    opt_level = os.environ.get("JSFX_AOT_OPT_LEVEL", "2").strip() or "2"
+    opt_dump_root = os.environ.get("JSFX_AOT_OPT_DUMP_DIR", "").strip()
+
+    enable_custom_opt = env_truthy("JSFX_AOT_ENABLE_CUSTOM_OPT")
+    enable_section_hoist = enable_custom_opt or env_truthy("JSFX_AOT_ENABLE_SECTION_HOIST")
+    enable_loop_hoist = enable_custom_opt or env_truthy("JSFX_AOT_ENABLE_LOOP_HOIST")
+
+    # Backward-compatible escape hatches if local scripts still export the old names.
+    if env_truthy("JSFX_AOT_DISABLE_SECTION_HOIST"):
+        enable_section_hoist = False
+    if env_truthy("JSFX_AOT_DISABLE_LOOP_HOIST"):
+        enable_loop_hoist = False
+
     comp = find_jsfx_aot_compiler(repo_root)
     cmd = [
         sys.executable, str(comp),
@@ -203,8 +220,19 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
         "--out-obj", str(out_obj),
         "--out-h", str(out_h),
         "--meta", str(out_meta),
-        "--opt", "2",
+        "--opt", opt_level,
     ]
+
+    if opt_dump_root:
+        cmd += ["--opt-dump-dir", str(Path(opt_dump_root) / slug)]
+    if enable_section_hoist:
+        cmd += ["--enable-section-hoist"]
+    if enable_loop_hoist:
+        cmd += ["--enable-loop-hoist"]
+    if env_truthy("JSFX_AOT_DISABLE_SECTION_HOIST"):
+        cmd += ["--no-section-hoist"]
+    if env_truthy("JSFX_AOT_DISABLE_LOOP_HOIST"):
+        cmd += ["--no-loop-hoist"]
 
     if os.name == "nt":
         cmd += ["--target", "x86_64-pc-windows-msvc"]

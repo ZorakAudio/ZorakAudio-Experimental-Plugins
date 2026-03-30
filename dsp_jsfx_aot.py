@@ -1408,6 +1408,322 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
 
 
 # -----------------------------
+# Optimization debug / reporting helpers
+# -----------------------------
+
+_OPT_DEBUG_SECTION_ORDER = ("init", "slider", "block", "sample")
+
+
+def _format_num_literal(v: float) -> str:
+    try:
+        fv = float(v)
+    except Exception:
+        return str(v)
+    if math.isfinite(fv):
+        txt = format(fv, ".17g")
+        if txt == "-0":
+            txt = "0"
+        return txt
+    return str(fv)
+
+
+def _node_to_jsfx_text(node: Node, indent: int = 0) -> str:
+    pad = "  " * indent
+
+    if isinstance(node, Num):
+        return _format_num_literal(node.value)
+    if isinstance(node, StrLit):
+        return json.dumps(node.value)
+    if isinstance(node, Var):
+        return node.name
+    if isinstance(node, Index):
+        return f"{_node_to_jsfx_text(node.base, indent)}[{_node_to_jsfx_text(node.index, indent)}]"
+    if isinstance(node, Unary):
+        return f"({node.op}{_node_to_jsfx_text(node.a, indent)})"
+    if isinstance(node, Binary):
+        return f"({_node_to_jsfx_text(node.l, indent)} {node.op} {_node_to_jsfx_text(node.r, indent)})"
+    if isinstance(node, Assign):
+        return f"{_node_to_jsfx_text(node.target, indent)} {node.op} {_node_to_jsfx_text(node.value, indent)}"
+    if isinstance(node, Call):
+        return f"{node.fn}({', '.join(_node_to_jsfx_text(a, indent) for a in node.args)})"
+    if isinstance(node, Loop):
+        return f"loop({_node_to_jsfx_text(node.count, indent)}, {_node_to_jsfx_text(node.body, indent)})"
+    if isinstance(node, Ternary):
+        return f"({_node_to_jsfx_text(node.cond, indent)} ? {_node_to_jsfx_text(node.then, indent)} : {_node_to_jsfx_text(node.els, indent)})"
+    if isinstance(node, Seq):
+        if not node.items:
+            return "()"
+        inner = []
+        for it in node.items:
+            inner.append(_stmt_to_jsfx_text(it, indent + 1, annotate=False))
+        return "(\n" + "\n".join(inner) + "\n" + pad + ")"
+    if isinstance(node, If):
+        txt = f"if ({_node_to_jsfx_text(node.cond, indent)}) {_node_to_jsfx_text(node.then, indent)}"
+        if node.els is not None:
+            txt += f" else {_node_to_jsfx_text(node.els, indent)}"
+        return txt
+    if isinstance(node, While):
+        return f"while ({_node_to_jsfx_text(node.cond, indent)}) {_node_to_jsfx_text(node.body, indent)}"
+    if isinstance(node, FunctionDef):
+        quals: List[str] = []
+        if node.locals:
+            quals.append("local(" + ", ".join(node.locals) + ")")
+        if node.instances:
+            quals.append("instance(" + ", ".join(node.instances) + ")")
+        qual_txt = (" " + " ".join(quals)) if quals else ""
+        return f"function {node.name}({', '.join(node.params)}){qual_txt} {_node_to_jsfx_text(node.body, indent)}"
+    raise TypeError(type(node))
+
+
+def _stmt_to_jsfx_text(node: Node, indent: int = 0, *, annotate: bool) -> str:
+    pad = "  " * indent
+    ann = ""
+    if annotate:
+        ann = f"{pad}// L{getattr(node.span, 'line', 0)} C{getattr(node.span, 'col', 0)} ID{getattr(node, 'id', 0)}\n"
+    tail = "" if isinstance(node, FunctionDef) else ";"
+    return ann + pad + _node_to_jsfx_text(node, indent) + tail
+
+
+def _program_to_jsfx_text(nodes: List[Node], *, annotate: bool) -> str:
+    if not nodes:
+        return "// <empty>"
+    return "\n".join(_stmt_to_jsfx_text(n, 0, annotate=annotate) for n in nodes)
+
+
+def _emit_original_sections_text(sections: Dict[str, Tuple[str, int]]) -> str:
+    order = list(_OPT_DEBUG_SECTION_ORDER)
+    extras = [k for k in sections.keys() if k not in order]
+    order.extend(sorted(extras))
+
+    parts: List[str] = []
+    for sec in order:
+        if sec not in sections:
+            continue
+        code, start_line = sections[sec]
+        parts.append(f"@{sec}    // source starts at line {start_line}")
+        body = code.rstrip()
+        parts.append(body if body else "// <empty>")
+        parts.append("")
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _emit_reconstructed_sections_text(programs: Dict[str, List[Node]],
+                                      fn_defs: Dict[str, FunctionDef],
+                                      *,
+                                      annotate: bool) -> str:
+    parts: List[str] = []
+    for sec in _OPT_DEBUG_SECTION_ORDER:
+        parts.append(f"@{sec}")
+        parts.append(_program_to_jsfx_text(programs.get(sec, []), annotate=annotate))
+        parts.append("")
+
+    if fn_defs:
+        parts.append("/* user functions */")
+        for name in sorted(fn_defs.keys()):
+            parts.append(_stmt_to_jsfx_text(fn_defs[name], 0, annotate=annotate))
+            parts.append("")
+
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _make_opt_event(kind: str, node: Node, **extra: Any) -> Dict[str, Any]:
+    ev: Dict[str, Any] = {
+        "kind": kind,
+        "node_id": int(getattr(node, "id", 0) or 0),
+        "line": int(getattr(node.span, "line", 0) or 0),
+        "col": int(getattr(node.span, "col", 0) or 0),
+        "text": _node_to_jsfx_text(node),
+    }
+    ev.update(extra)
+    return ev
+
+
+def _record_opt_event(events: Optional[List[Dict[str, Any]]], event: Dict[str, Any]) -> None:
+    if events is not None:
+        events.append(event)
+
+
+def _sort_opt_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(
+        events,
+        key=lambda ev: (
+            str(ev.get("from_section") or ev.get("section") or ""),
+            int(ev.get("loop_line") or 0),
+            int(ev.get("line") or 0),
+            int(ev.get("col") or 0),
+            str(ev.get("kind") or ""),
+            int(ev.get("node_id") or 0),
+        ),
+    )
+
+
+def _build_opt_report(events: List[Dict[str, Any]], *, enable_section_hoists: bool, enable_loop_hoists: bool) -> Dict[str, Any]:
+    ordered = _sort_opt_events(list(events))
+    summary = {
+        "section_hoists": sum(1 for ev in ordered if ev.get("kind") == "section_hoist"),
+        "loop_hoists": sum(1 for ev in ordered if ev.get("kind") == "loop_hoist"),
+    }
+    return {
+        "settings": {
+            "section_hoists_enabled": bool(enable_section_hoists),
+            "loop_hoists_enabled": bool(enable_loop_hoists),
+        },
+        "summary": summary,
+        "events": ordered,
+    }
+
+
+def _emit_opt_report_text(report: Dict[str, Any]) -> str:
+    settings = dict(report.get("settings") or {})
+    summary = dict(report.get("summary") or {})
+    events = list(report.get("events") or [])
+
+    lines: List[str] = []
+    lines.append("DSP-JSFX optimization movement report")
+    lines.append("")
+    lines.append(f"section hoists enabled: {1 if settings.get('section_hoists_enabled') else 0}")
+    lines.append(f"loop hoists enabled: {1 if settings.get('loop_hoists_enabled') else 0}")
+    lines.append(f"section hoists: {int(summary.get('section_hoists', 0) or 0)}")
+    lines.append(f"loop hoists: {int(summary.get('loop_hoists', 0) or 0)}")
+    lines.append("")
+
+    section_events = [ev for ev in events if ev.get("kind") == "section_hoist"]
+    loop_events = [ev for ev in events if ev.get("kind") == "loop_hoist"]
+
+    lines.append("SECTION HOISTS")
+    if not section_events:
+        lines.append("  <none>")
+    else:
+        for ev in section_events:
+            lines.append(
+                f"  {ev.get('from_section')} -> {ev.get('to_section')} | L{ev.get('line')}:{ev.get('col')} | id {ev.get('node_id')} | {ev.get('target') or '?'}"
+            )
+            lines.append(f"    {ev.get('text')}")
+    lines.append("")
+
+    lines.append("LOOP HOISTS")
+    if not loop_events:
+        lines.append("  <none>")
+    else:
+        for ev in loop_events:
+            lines.append(
+                f"  {ev.get('section')} | {ev.get('loop_kind')} L{ev.get('loop_line')}:{ev.get('loop_col')} | expr L{ev.get('line')}:{ev.get('col')} | loop id {ev.get('loop_id')} | expr id {ev.get('node_id')}"
+            )
+            lines.append(f"    {ev.get('text')}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _write_opt_report(path: str, report: Dict[str, Any]) -> None:
+    if not path:
+        return
+    out_path = Path(path)
+    if out_path.suffix.lower() == ".json":
+        out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    else:
+        out_path.write_text(_emit_opt_report_text(report), encoding="utf-8")
+
+
+def _ensure_dir(path: str) -> Path:
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def prepare_jsfx_pipeline(jsfx_text: str,
+                          *,
+                          enable_section_hoists: bool = False,
+                          enable_loop_hoists: bool = False,
+                          collect_opt_report: bool = False) -> Dict[str, Any]:
+    sections = extract_sections(jsfx_text)
+
+    programs: Dict[str, List[Node]] = {}
+    for sec in _OPT_DEBUG_SECTION_ORDER:
+        if sec in sections:
+            code, start_line = sections[sec]
+            parser = Parser(code, base_line=start_line)
+            programs[sec] = parser.parse_program()
+        else:
+            programs[sec] = []
+
+    fn_defs, programs = extract_function_defs(programs)
+    programs, fn_defs = lower_user_functions(programs, fn_defs)
+    lowered_programs = {sec: list(nodes) for sec, nodes in programs.items()}
+
+    opt_events: Optional[List[Dict[str, Any]]] = [] if collect_opt_report else None
+
+    work_programs = {sec: list(nodes) for sec, nodes in lowered_programs.items()}
+    if enable_section_hoists:
+        work_programs = hoist_section_invariants(work_programs, fn_defs, events=opt_events)
+
+    if enable_loop_hoists:
+        loop_hoists = plan_loop_invariant_hoists(work_programs, fn_defs, events=opt_events)
+    else:
+        loop_hoists = {}
+
+    return {
+        "sections": sections,
+        "fn_defs": fn_defs,
+        "lowered_programs": lowered_programs,
+        "programs": work_programs,
+        "loop_hoists": loop_hoists,
+        "opt_report": _build_opt_report(opt_events or [], enable_section_hoists=enable_section_hoists, enable_loop_hoists=enable_loop_hoists),
+    }
+
+
+def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir.Module, Dict[str, Any]]:
+    programs: Dict[str, List[Node]] = dict(pipeline["programs"])
+    fn_defs: Dict[str, FunctionDef] = dict(pipeline["fn_defs"])
+    loop_hoists: Dict[int, List[Node]] = dict(pipeline["loop_hoists"])
+
+    user_vars = collect_user_vars(programs, fn_defs)
+
+    pin_hints = parse_pin_hints(jsfx_text)
+    io_channels = infer_spl_io(programs, fn_defs, pin_hints=pin_hints)
+    midi_caps = detect_midi_usage(programs, fn_defs)
+
+    sym = SymTable(user_vars)
+
+    emitter = LLVMModuleEmitter(sym)
+    emitter.loop_hoists = loop_hoists
+    emitter.declare_user_functions(fn_defs)
+
+    fn_init = emitter.emit_section_fn("jsfx_init", programs["init"])
+    fn_slider = emitter.emit_section_fn("jsfx_slider", programs["slider"])
+    fn_block = emitter.emit_section_fn("jsfx_block", programs["block"])
+    fn_sample = emitter.emit_section_fn("jsfx_sample", programs["sample"])
+
+    emitter.emit_user_functions()
+
+    has_sample_work = len(programs["sample"]) > 0
+    emit_process_block_fn(emitter, fn_init, fn_slider, fn_block, fn_sample, has_sample_work)
+
+    plugin_kind = "audio_effect"
+    if midi_caps["uses_midi"]:
+        if io_channels["inputs"] == 0 and io_channels["outputs"] == 0:
+            plugin_kind = "midi_effect"
+        elif io_channels["inputs"] == 0 and io_channels["outputs"] > 0 and midi_caps["accepts_midi_input"]:
+            plugin_kind = "instrument"
+        elif io_channels["inputs"] > 0 or io_channels["outputs"] > 0:
+            plugin_kind = "hybrid"
+        else:
+            plugin_kind = "midi_effect"
+
+    meta = {
+        "vars": user_vars,
+        "var_cap": emitter.var_cap,
+        "sections_present": {k: bool(v) for k, v in programs.items()},
+        "io_channels": io_channels,
+        "pin_hints": pin_hints,
+        "midi": midi_caps,
+        "plugin_kind": plugin_kind,
+        "has_sample_section": has_sample_work,
+    }
+    return emitter.module, meta
+
+
+
+# -----------------------------
 # Loop-invariant scalar hoisting
 # -----------------------------
 
@@ -1683,19 +1999,30 @@ def _collect_loop_invariant_candidates(node: Node,
 
 
 def plan_loop_invariant_hoists(programs: Dict[str, List[Node]],
-                               fn_defs: Dict[str, FunctionDef]) -> Dict[int, List[Node]]:
+                               fn_defs: Dict[str, FunctionDef],
+                               events: Optional[List[Dict[str, Any]]] = None) -> Dict[int, List[Node]]:
     user_fn_names = set(fn_defs.keys())
     out: Dict[int, List[Node]] = {}
 
-    def visit(n: Node) -> None:
+    def visit(n: Node, section_name: str) -> None:
         if isinstance(n, Loop):
             summary = _summarize_loop_mutations(n.body, user_fn_names)
             cands: List[Node] = []
             _collect_loop_invariant_candidates(n.body, summary, user_fn_names, cands)
             if cands:
                 out[n.id] = cands
-            visit(n.count)
-            visit(n.body)
+                for cand in cands:
+                    _record_opt_event(events, _make_opt_event(
+                        "loop_hoist",
+                        cand,
+                        section=section_name,
+                        loop_id=n.id,
+                        loop_kind="loop",
+                        loop_line=int(getattr(n.span, "line", 0) or 0),
+                        loop_col=int(getattr(n.span, "col", 0) or 0),
+                    ))
+            visit(n.count, section_name)
+            visit(n.body, section_name)
             return
 
         if isinstance(n, While):
@@ -1706,57 +2033,67 @@ def plan_loop_invariant_hoists(programs: Dict[str, List[Node]],
             _collect_loop_invariant_candidates(n.body, summary, user_fn_names, cands)
             if cands:
                 out[n.id] = cands
-            visit(n.cond)
-            visit(n.body)
+                for cand in cands:
+                    _record_opt_event(events, _make_opt_event(
+                        "loop_hoist",
+                        cand,
+                        section=section_name,
+                        loop_id=n.id,
+                        loop_kind="while",
+                        loop_line=int(getattr(n.span, "line", 0) or 0),
+                        loop_col=int(getattr(n.span, "col", 0) or 0),
+                    ))
+            visit(n.cond, section_name)
+            visit(n.body, section_name)
             return
 
         if isinstance(n, (Num, StrLit, Var)):
             return
         if isinstance(n, Index):
-            visit(n.base)
-            visit(n.index)
+            visit(n.base, section_name)
+            visit(n.index, section_name)
             return
         if isinstance(n, Unary):
-            visit(n.a)
+            visit(n.a, section_name)
             return
         if isinstance(n, Binary):
-            visit(n.l)
-            visit(n.r)
+            visit(n.l, section_name)
+            visit(n.r, section_name)
             return
         if isinstance(n, Assign):
-            visit(n.target)
-            visit(n.value)
+            visit(n.target, section_name)
+            visit(n.value, section_name)
             return
         if isinstance(n, Call):
             for a in n.args:
-                visit(a)
+                visit(a, section_name)
             return
         if isinstance(n, Ternary):
-            visit(n.cond)
-            visit(n.then)
-            visit(n.els)
+            visit(n.cond, section_name)
+            visit(n.then, section_name)
+            visit(n.els, section_name)
             return
         if isinstance(n, Seq):
             for it in n.items:
-                visit(it)
+                visit(it, section_name)
             return
         if isinstance(n, If):
-            visit(n.cond)
-            visit(n.then)
+            visit(n.cond, section_name)
+            visit(n.then, section_name)
             if n.els is not None:
-                visit(n.els)
+                visit(n.els, section_name)
             return
         if isinstance(n, FunctionDef):
-            visit(n.body)
+            visit(n.body, section_name)
             return
         raise TypeError(type(n))
 
-    for prog in programs.values():
+    for section_name, prog in programs.items():
         for st in prog:
-            visit(st)
+            visit(st, section_name)
 
-    for f in fn_defs.values():
-        visit(f.body)
+    for fn_name, f in fn_defs.items():
+        visit(f.body, f"function:{fn_name}")
 
     return out
 
@@ -2016,7 +2353,9 @@ def _make_user_var_assignment_candidate(node: Node) -> Optional[Tuple[str, Node]
     return name, node.value
 
 
-def _plan_sample_to_block_hoists(programs: Dict[str, List[Node]], user_fn_names: Set[str]) -> None:
+def _plan_sample_to_block_hoists(programs: Dict[str, List[Node]],
+                                 user_fn_names: Set[str],
+                                 events: Optional[List[Dict[str, Any]]] = None) -> None:
     slider_info = _summarize_section_rw(programs["slider"], user_fn_names)
     active_sample_info = _summarize_section_rw(programs["sample"], user_fn_names)
 
@@ -2059,6 +2398,13 @@ def _plan_sample_to_block_hoists(programs: Dict[str, List[Node]], user_fn_names:
 
         if movable:
             moved.append(node)
+            _record_opt_event(events, _make_opt_event(
+                "section_hoist",
+                node,
+                from_section="sample",
+                to_section="block",
+                target=target_name,
+            ))
             active_sample_info.write_counts = _adjusted_write_counts(active_sample_info.write_counts, target_name)
             continue
 
@@ -2071,7 +2417,9 @@ def _plan_sample_to_block_hoists(programs: Dict[str, List[Node]], user_fn_names:
         programs["block"] = list(programs["block"]) + moved
 
 
-def _plan_block_to_init_hoists(programs: Dict[str, List[Node]], user_fn_names: Set[str]) -> None:
+def _plan_block_to_init_hoists(programs: Dict[str, List[Node]],
+                              user_fn_names: Set[str],
+                              events: Optional[List[Dict[str, Any]]] = None) -> None:
     slider_info = _summarize_section_rw(programs["slider"], user_fn_names)
     sample_info = _summarize_section_rw(programs["sample"], user_fn_names)
     active_block_info = _summarize_section_rw(programs["block"], user_fn_names)
@@ -2116,6 +2464,13 @@ def _plan_block_to_init_hoists(programs: Dict[str, List[Node]], user_fn_names: S
 
         if movable:
             moved.append(node)
+            _record_opt_event(events, _make_opt_event(
+                "section_hoist",
+                node,
+                from_section="block",
+                to_section="init",
+                target=target_name,
+            ))
             active_block_info.write_counts = _adjusted_write_counts(active_block_info.write_counts, target_name)
             continue
 
@@ -2129,12 +2484,13 @@ def _plan_block_to_init_hoists(programs: Dict[str, List[Node]], user_fn_names: S
 
 
 def hoist_section_invariants(programs: Dict[str, List[Node]],
-                             fn_defs: Dict[str, FunctionDef]) -> Dict[str, List[Node]]:
+                             fn_defs: Dict[str, FunctionDef],
+                             events: Optional[List[Dict[str, Any]]] = None) -> Dict[str, List[Node]]:
     out = {sec: list(nodes) for sec, nodes in programs.items()}
     user_fn_names = set(fn_defs.keys())
 
-    _plan_sample_to_block_hoists(out, user_fn_names)
-    _plan_block_to_init_hoists(out, user_fn_names)
+    _plan_sample_to_block_hoists(out, user_fn_names, events=events)
+    _plan_block_to_init_hoists(out, user_fn_names, events=events)
     return out
 
 
@@ -3792,66 +4148,19 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     return fn
 
 
-def compile_jsfx_to_ir(jsfx_text: str) -> Tuple[ir.Module, Dict[str, Any]]:
-    sections = extract_sections(jsfx_text)
-
-    programs: Dict[str, List[Node]] = {}
-    for sec in ("init", "slider", "block", "sample"):
-        if sec in sections:
-            code, start_line = sections[sec]
-            parser = Parser(code, base_line=start_line)
-            programs[sec] = parser.parse_program()
-        else:
-            programs[sec] = []
-
-    fn_defs, programs = extract_function_defs(programs)
-    programs, fn_defs = lower_user_functions(programs, fn_defs)
-    programs = hoist_section_invariants(programs, fn_defs)
-    loop_hoists = plan_loop_invariant_hoists(programs, fn_defs)
-    user_vars = collect_user_vars(programs, fn_defs)
-
-    pin_hints = parse_pin_hints(jsfx_text)
-    io_channels = infer_spl_io(programs, fn_defs, pin_hints=pin_hints)
-    midi_caps = detect_midi_usage(programs, fn_defs)
-
-    sym = SymTable(user_vars)
-
-    emitter = LLVMModuleEmitter(sym)
-    emitter.loop_hoists = loop_hoists
-    emitter.declare_user_functions(fn_defs)
-
-    fn_init = emitter.emit_section_fn("jsfx_init", programs["init"])
-    fn_slider = emitter.emit_section_fn("jsfx_slider", programs["slider"])
-    fn_block = emitter.emit_section_fn("jsfx_block", programs["block"])
-    fn_sample = emitter.emit_section_fn("jsfx_sample", programs["sample"])
-
-    emitter.emit_user_functions()
-
-    has_sample_work = len(programs["sample"]) > 0
-    emit_process_block_fn(emitter, fn_init, fn_slider, fn_block, fn_sample, has_sample_work)
-
-    plugin_kind = "audio_effect"
-    if midi_caps["uses_midi"]:
-        if io_channels["inputs"] == 0 and io_channels["outputs"] == 0:
-            plugin_kind = "midi_effect"
-        elif io_channels["inputs"] == 0 and io_channels["outputs"] > 0 and midi_caps["accepts_midi_input"]:
-            plugin_kind = "instrument"
-        elif io_channels["inputs"] > 0 or io_channels["outputs"] > 0:
-            plugin_kind = "hybrid"
-        else:
-            plugin_kind = "midi_effect"
-
-    meta = {
-        "vars": user_vars,
-        "var_cap": emitter.var_cap,
-        "sections_present": {k: bool(v) for k, v in programs.items()},
-        "io_channels": io_channels,
-        "pin_hints": pin_hints,
-        "midi": midi_caps,
-        "plugin_kind": plugin_kind,
-        "has_sample_section": has_sample_work,
-    }
-    return emitter.module, meta
+def compile_jsfx_to_ir(jsfx_text: str,
+                       *,
+                       enable_section_hoists: bool = False,
+                       enable_loop_hoists: bool = False,
+                       pipeline: Optional[Dict[str, Any]] = None) -> Tuple[ir.Module, Dict[str, Any]]:
+    if pipeline is None:
+        pipeline = prepare_jsfx_pipeline(
+            jsfx_text,
+            enable_section_hoists=enable_section_hoists,
+            enable_loop_hoists=enable_loop_hoists,
+            collect_opt_report=False,
+        )
+    return compile_pipeline_to_ir(jsfx_text, pipeline)
 
 
 
@@ -3989,8 +4298,10 @@ def _aot_opt_and_emit(mod_ir: ir.Module,
                      opt_level: int,
                      emit_obj: Optional[str],
                      emit_asm: Optional[str],
-                     target_triple: Optional[str] = None) -> str:
-    """Return optimized LLVM IR text. Optionally emits object and/or assembly."""
+                     target_triple: Optional[str] = None,
+                     out_ll_unopt: Optional[str] = None,
+                     out_ll_opt: Optional[str] = None) -> str:
+    """Return optimized LLVM IR text. Optionally emits object/asm and pre/post-opt IR."""
     triple = target_triple or llvm.get_default_triple()
     default_triple = llvm.get_default_triple()
 
@@ -4001,28 +4312,29 @@ def _aot_opt_and_emit(mod_ir: ir.Module,
         llvm.initialize_native_target()
         llvm.initialize_native_asmprinter()
 
-
-    triple = target_triple or llvm.get_default_triple()
     target = llvm.Target.from_triple(triple)
     tm = target.create_target_machine(opt=opt_level)
 
-    # Configure IR module for this target
     mod_ir.triple = triple
     mod_ir.data_layout = str(tm.target_data)
 
     llvm_mod = llvm.parse_assembly(str(mod_ir))
     llvm_mod.verify()
 
+    pre_opt_ir = str(llvm_mod)
+    if out_ll_unopt:
+        Path(out_ll_unopt).write_text(pre_opt_ir, encoding="utf-8")
+
     if opt_level > 0:
-        # New pass manager default pipeline (roughly -O{opt_level})
         pto = llvm.PipelineTuningOptions(speed_level=int(opt_level), size_level=0)
         pb = llvm.create_pass_builder(tm, pto)
         pm = pb.getModulePassManager()
         pm.run(llvm_mod, pb)
 
-    # IMPORTANT:
-    # llvmlite's tm.emit_object() is not reliably MSVC-linkable on Windows.
-    # For Windows targets, we shell out to clang to produce a proper COFF .obj.
+    post_opt_ir = str(llvm_mod)
+    if out_ll_opt:
+        Path(out_ll_opt).write_text(post_opt_ir, encoding="utf-8")
+
     if emit_obj:
         if target_triple and (("windows" in target_triple.lower()) or ("apple" in target_triple.lower())):
             clang = shutil.which("clang")
@@ -4033,7 +4345,7 @@ def _aot_opt_and_emit(mod_ir: ir.Module,
 
             with tempfile.TemporaryDirectory() as td:
                 ll_path = Path(td) / "aot.ll"
-                ll_path.write_text(str(llvm_mod), encoding="utf-8")
+                ll_path.write_text(post_opt_ir, encoding="utf-8")
 
                 cmd = [
                     clang,
@@ -4050,14 +4362,23 @@ def _aot_opt_and_emit(mod_ir: ir.Module,
     if emit_asm:
         Path(emit_asm).write_text(tm.emit_assembly(llvm_mod), encoding="utf-8")
 
-    return str(llvm_mod)
+    return post_opt_ir
 
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="DSP-JSFX -> LLVM IR + AOT object + JUCE-callable entry point")
     ap.add_argument("input", help="Path to .jsfx file")
-    ap.add_argument("--out-ll", default="", help="Write LLVM IR (.ll) to this path (default: stdout)")
+    ap.add_argument("--out-ll", default="", help="Write primary LLVM IR (.ll) to this path (default: stdout)")
+    ap.add_argument("--out-ll-unopt", default="", help="Write pre-LLVM-optimization IR after JSFX custom passes")
+    ap.add_argument("--out-ll-opt", default="", help="Write post-LLVM-optimization IR")
+    ap.add_argument("--opt-report", default="", help="Write movement report (.txt or .json)")
+    ap.add_argument("--opt-dump-dir", default="", help="Write original/lowered/optimized section dumps, raw/custom/optimized IR, and movement report into this directory")
+    ap.add_argument("--enable-custom-opt", action="store_true", help="Enable all experimental JSFX custom optimization passes (default: off)")
+    ap.add_argument("--enable-section-hoist", action="store_true", help="Enable experimental @sample/@block/@init section hoisting")
+    ap.add_argument("--enable-loop-hoist", action="store_true", help="Enable experimental loop-invariant scalar hoisting")
+    ap.add_argument("--no-section-hoist", action="store_true", help="Force-disable section hoisting even if a broader enable flag was supplied")
+    ap.add_argument("--no-loop-hoist", action="store_true", help="Force-disable loop hoisting even if a broader enable flag was supplied")
     ap.add_argument("--out-obj", default="", help="Emit AOT object file (.o/.obj) to this path")
     ap.add_argument("--out-asm", default="", help="Emit AOT assembly (.s) to this path")
     ap.add_argument("--out-h", default="", help="Emit C/C++ header (.h) with State + prototypes")
@@ -4067,18 +4388,87 @@ def main() -> int:
     args = ap.parse_args()
 
     txt = Path(args.input).read_text(encoding="utf-8", errors="replace")
-    mod, meta = compile_jsfx_to_ir(txt)
 
-    want_aot = bool(args.out_obj or args.out_asm)
-    if want_aot:
+    enable_section_hoists = bool(args.enable_custom_opt or args.enable_section_hoist)
+    enable_loop_hoists = bool(args.enable_custom_opt or args.enable_loop_hoist)
+    if args.no_section_hoist:
+        enable_section_hoists = False
+    if args.no_loop_hoist:
+        enable_loop_hoists = False
+    want_opt_report = bool(args.opt_report or args.opt_dump_dir)
+
+    pipeline = prepare_jsfx_pipeline(
+        txt,
+        enable_section_hoists=enable_section_hoists,
+        enable_loop_hoists=enable_loop_hoists,
+        collect_opt_report=want_opt_report,
+    )
+    mod, meta = compile_jsfx_to_ir(
+        txt,
+        enable_section_hoists=enable_section_hoists,
+        enable_loop_hoists=enable_loop_hoists,
+        pipeline=pipeline,
+    )
+
+    dump_dir: Optional[Path] = None
+    dump_unopt_path: Optional[str] = args.out_ll_unopt or None
+    dump_opt_path: Optional[str] = args.out_ll_opt or None
+
+    if args.opt_dump_dir:
+        dump_dir = _ensure_dir(args.opt_dump_dir)
+        (dump_dir / "01_sections_original.txt").write_text(
+            _emit_original_sections_text(pipeline["sections"]),
+            encoding="utf-8",
+        )
+        (dump_dir / "02_sections_lowered.txt").write_text(
+            _emit_reconstructed_sections_text(pipeline["lowered_programs"], pipeline["fn_defs"], annotate=True),
+            encoding="utf-8",
+        )
+        (dump_dir / "03_sections_after_custom_opt.txt").write_text(
+            _emit_reconstructed_sections_text(pipeline["programs"], pipeline["fn_defs"], annotate=True),
+            encoding="utf-8",
+        )
+        _write_opt_report(str(dump_dir / "10_opt_report.txt"), pipeline["opt_report"])
+        _write_opt_report(str(dump_dir / "11_opt_report.json"), pipeline["opt_report"])
+
+        raw_pipeline = prepare_jsfx_pipeline(
+            txt,
+            enable_section_hoists=False,
+            enable_loop_hoists=False,
+            collect_opt_report=False,
+        )
+        raw_mod, _ = compile_jsfx_to_ir(
+            txt,
+            enable_section_hoists=False,
+            enable_loop_hoists=False,
+            pipeline=raw_pipeline,
+        )
+        _aot_opt_and_emit(
+            mod_ir=raw_mod,
+            opt_level=0,
+            emit_obj=None,
+            emit_asm=None,
+            target_triple=(args.target or None),
+            out_ll_unopt=str(dump_dir / "20_ir_before_custom_opt.ll"),
+            out_ll_opt=None,
+        )
+
+        if not dump_unopt_path:
+            dump_unopt_path = str(dump_dir / "30_ir_after_custom_opt_before_llvm.ll")
+        if not dump_opt_path:
+            dump_opt_path = str(dump_dir / "40_ir_after_llvm_opt.ll")
+
+    want_llvm_opt_output = bool(args.out_obj or args.out_asm or dump_unopt_path or dump_opt_path)
+    if want_llvm_opt_output:
         ir_text = _aot_opt_and_emit(
             mod_ir=mod,
             opt_level=max(0, min(3, int(args.opt))),
             emit_obj=args.out_obj or None,
             emit_asm=args.out_asm or None,
             target_triple=(args.target or None),
+            out_ll_unopt=dump_unopt_path,
+            out_ll_opt=dump_opt_path,
         )
-
     else:
         ir_text = str(mod)
 
@@ -4086,6 +4476,9 @@ def main() -> int:
         Path(args.out_ll).write_text(ir_text, encoding="utf-8")
     else:
         print(ir_text)
+
+    if args.opt_report:
+        _write_opt_report(args.opt_report, pipeline["opt_report"])
 
     if args.out_h:
         Path(args.out_h).write_text(_emit_header(meta), encoding="utf-8")

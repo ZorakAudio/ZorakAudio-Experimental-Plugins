@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 class JSFXJuceProcessor;
@@ -125,7 +127,7 @@ public:
             NSEEL_addfunc_varparm_ex ("dsp_spl",   1, 0, NSEEL_PProc_THIS, &ShadowVm::eel_dsp_spl,   nullptr);
             NSEEL_addfunc_varparm_ex ("midirecv",  4, 1, NSEEL_PProc_THIS, &ShadowVm::eel_midirecv,  nullptr);
             NSEEL_addfunc_varparm_ex ("midisend",  4, 1, NSEEL_PProc_THIS, &ShadowVm::eel_midisend,  nullptr);
-            NSEEL_addfunc_varparm_ex ("file_open",   2, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_open,   nullptr);
+            NSEEL_addfunc_varparm_ex ("file_open",   1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_open,   nullptr);
             NSEEL_addfunc_varparm_ex ("file_close",  1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_close,  nullptr);
             NSEEL_addfunc_varparm_ex ("file_rewind", 1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_rewind, nullptr);
             NSEEL_addfunc_varparm_ex ("file_seek",   2, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_seek,   nullptr);
@@ -257,10 +259,11 @@ public:
         ensureRamSize (juce::jmax<int64_t> ((int64_t) 65536, aotState.memN));
     }
 
-    void runInit()   { execute (codeInit); }
-    void runSlider() { execute (codeSlider); }
-    void runBlock()  { execute (codeBlock); }
-    void runSample() { execute (codeSample); }
+    void runInit()      { execute (codeInit); }
+    void runSlider()    { execute (codeSlider); }
+    void runBlock()     { execute (codeBlock); }
+    void runSample()    { execute (codeSample); }
+    void runSerialize() { execute (codeSerialize); }
 
     void setInputSample (const float* const* inputs, int numCh, int sampleIndex)
     {
@@ -485,6 +488,9 @@ private:
         codeSample = compileOne (sections.sample.empty() ? std::string ("0;") : sections.sample, errText);
         if (errText.isNotEmpty()) { lastError = "@sample: " + errText; return; }
 
+        codeSerialize = compileOne (sections.serialize.empty() ? std::string ("0;") : sections.serialize, errText);
+        if (errText.isNotEmpty()) { lastError = "@serialize: " + errText; return; }
+
         ready = true;
     }
 
@@ -557,9 +563,12 @@ private:
     static EEL_F NSEEL_CGEN_CALL eel_file_open (void* opaque, INT_PTR np, EEL_F** parms)
     {
         auto* self = static_cast<ShadowVm*> (opaque);
-        if (self == nullptr || np < 2)
+        if (self == nullptr || np < 1)
             return -1.0;
-        return (EEL_F) jsfx_file_open (&self->bridgeState, (double) *parms[0], (double) *parms[1]);
+
+        const double indexOrSlot = (double) *parms[0];
+        const double mode = (np >= 2) ? (double) *parms[1] : 0.0;
+        return (EEL_F) jsfx_file_open (&self->bridgeState, indexOrSlot, mode);
     }
 
     static EEL_F NSEEL_CGEN_CALL eel_file_close (void* opaque, INT_PTR np, EEL_F** parms)
@@ -695,6 +704,7 @@ private:
     NSEEL_CODEHANDLE codeSlider = nullptr;
     NSEEL_CODEHANDLE codeBlock = nullptr;
     NSEEL_CODEHANDLE codeSample = nullptr;
+    NSEEL_CODEHANDLE codeSerialize = nullptr;
     bool ready = false;
     juce::String lastError;
 
@@ -715,6 +725,7 @@ public:
     explicit Runtime (JSFXJuceProcessor* ownerIn)
         : owner (ownerIn)
     {
+        initVarFirstWriteStages();
         resizeRingForSampleRate (44100.0);
     }
 
@@ -881,9 +892,13 @@ public:
             shadowVars.resize ((size_t) varCount, 0.0);
         shadow->readVars (shadowVars.data(), varCount);
 
-        scalarComparisons.fetch_add ((uint64_t) varCount, std::memory_order_relaxed);
+        const SourceWriteStage visibleStage = visibleStageForCompareLabel (stage);
         for (int i = 0; i < varCount; ++i)
         {
+            if (! shouldCompareVarAtStage (i, visibleStage))
+                continue;
+
+            scalarComparisons.fetch_add (1, std::memory_order_relaxed);
             if (! nearlyEqual (aotState.vars[i], shadowVars[(size_t) i], kScalarCompareEpsilon))
             {
                 scalarMismatches.fetch_add (1, std::memory_order_relaxed);
@@ -1269,6 +1284,209 @@ private:
         }
         return nullptr;
     }
+    enum class SourceWriteStage : uint8_t
+    {
+        Unknown = 0,
+        Init,
+        Slider,
+        Block,
+        Sample,
+    };
+
+    static bool isIdentStartChar (char c) noexcept
+    {
+        const unsigned char uc = (unsigned char) c;
+        return std::isalpha (uc) || c == '_' || c == '$' || c == '#';
+    }
+
+    static bool isIdentChar (char c) noexcept
+    {
+        const unsigned char uc = (unsigned char) c;
+        return std::isalnum (uc) || c == '_' || c == '$' || c == '#' || c == '.';
+    }
+
+    static bool isAssignmentOperatorAt (const std::string& text, size_t pos) noexcept
+    {
+        if (pos >= text.size())
+            return false;
+
+        const char c = text[pos];
+        if (c == '=')
+        {
+            const char prev = (pos > 0 ? text[pos - 1] : '\0');
+            const char next = (pos + 1 < text.size() ? text[pos + 1] : '\0');
+            return prev != '=' && prev != '!' && prev != '<' && prev != '>' && next != '=';
+        }
+
+        if (pos + 1 >= text.size())
+            return false;
+
+        const char next = text[pos + 1];
+        return ((c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '&' || c == '|' || c == '^')
+                 && next == '=');
+    }
+
+    static SourceWriteStage visibleStageForCompareLabel (const char* stage) noexcept
+    {
+        if (stage == nullptr)
+            return SourceWriteStage::Sample;
+
+        const std::string s (stage);
+        if (s == "@prepare" || s == "pre-@block" || s == "pre-@block/@slider")
+            return SourceWriteStage::Slider;
+        if (s == "@block" || s == "@slider")
+            return SourceWriteStage::Block;
+        if (s == "@sample")
+            return SourceWriteStage::Sample;
+        return SourceWriteStage::Sample;
+    }
+
+    void scanSectionForFirstWrites (const std::string& code, SourceWriteStage stage,
+                                    const std::unordered_map<std::string, int>& nameToVar) noexcept
+    {
+        bool inLineComment = false;
+        bool inBlockComment = false;
+        bool inString = false;
+        char quote = 0;
+
+        for (size_t i = 0; i < code.size();)
+        {
+            const char c = code[i];
+            const char next = (i + 1 < code.size() ? code[i + 1] : '\0');
+
+            if (inLineComment)
+            {
+                if (c == '\n')
+                    inLineComment = false;
+                ++i;
+                continue;
+            }
+
+            if (inBlockComment)
+            {
+                if (c == '*' && next == '/')
+                {
+                    i += 2;
+                    inBlockComment = false;
+                }
+                else
+                {
+                    ++i;
+                }
+                continue;
+            }
+
+            if (inString)
+            {
+                if (c == '\\' && i + 1 < code.size())
+                {
+                    i += 2;
+                    continue;
+                }
+                if (c == quote)
+                    inString = false;
+                ++i;
+                continue;
+            }
+
+            if (c == '/' && next == '/')
+            {
+                i += 2;
+                inLineComment = true;
+                continue;
+            }
+
+            if (c == '/' && next == '*')
+            {
+                i += 2;
+                inBlockComment = true;
+                continue;
+            }
+
+            if (c == '"' || c == '\'')
+            {
+                inString = true;
+                quote = c;
+                ++i;
+                continue;
+            }
+
+            if (! isIdentStartChar (c))
+            {
+                ++i;
+                continue;
+            }
+
+            const size_t start = i;
+            ++i;
+            while (i < code.size() && isIdentChar (code[i]))
+                ++i;
+
+            const std::string ident = code.substr (start, i - start);
+            auto it = nameToVar.find (ident);
+            if (it == nameToVar.end())
+                continue;
+
+            size_t j = i;
+            while (j < code.size() && (code[j] == ' ' || code[j] == '\t' || code[j] == '\r' || code[j] == '\n'))
+                ++j;
+
+            if (! isAssignmentOperatorAt (code, j))
+                continue;
+
+            const int varIndex = it->second;
+            if (varIndex < 0 || varIndex >= (int) varFirstWriteStage.size())
+                continue;
+
+            if (varFirstWriteStage[(size_t) varIndex] == SourceWriteStage::Unknown)
+                varFirstWriteStage[(size_t) varIndex] = stage;
+        }
+    }
+
+    void initVarFirstWriteStages()
+    {
+        varFirstWriteStage.clear();
+
+        if (DSPJSFX_VARS_COUNT <= 0)
+            return;
+
+        std::unordered_map<std::string, int> nameToVar;
+        nameToVar.reserve ((size_t) DSPJSFX_VARS_COUNT);
+        int maxIndex = -1;
+        for (int i = 0; i < DSPJSFX_VARS_COUNT; ++i)
+        {
+            if (DSPJSFX_VARS[i].name == nullptr || *DSPJSFX_VARS[i].name == 0 || DSPJSFX_VARS[i].index < 0)
+                continue;
+
+            nameToVar.emplace (DSPJSFX_VARS[i].name, DSPJSFX_VARS[i].index);
+            maxIndex = std::max (maxIndex, DSPJSFX_VARS[i].index);
+        }
+
+        if (maxIndex < 0)
+            return;
+
+        varFirstWriteStage.assign ((size_t) (maxIndex + 1), SourceWriteStage::Unknown);
+
+        const auto sections = jsfx_gfx::extractJsfxSections (kJsfxSourceText);
+        scanSectionForFirstWrites (sections.init,   SourceWriteStage::Init,   nameToVar);
+        scanSectionForFirstWrites (sections.slider, SourceWriteStage::Slider, nameToVar);
+        scanSectionForFirstWrites (sections.block,  SourceWriteStage::Block,  nameToVar);
+        scanSectionForFirstWrites (sections.sample, SourceWriteStage::Sample, nameToVar);
+    }
+
+    bool shouldCompareVarAtStage (int varIndex, SourceWriteStage visibleStage) const noexcept
+    {
+        if (visibleStage == SourceWriteStage::Sample)
+            return true;
+        if (varIndex < 0 || varIndex >= (int) varFirstWriteStage.size())
+            return true;
+
+        const SourceWriteStage first = varFirstWriteStage[(size_t) varIndex];
+        if (first == SourceWriteStage::Unknown)
+            return true;
+
+        return (int) first <= (int) visibleStage;
+    }
 
     bool isFrozen() const noexcept
     {
@@ -1385,6 +1603,7 @@ private:
 
     std::array<double, 64> shadowSliders {};
     std::vector<double> shadowVars;
+    std::vector<SourceWriteStage> varFirstWriteStage;
     mutable std::array<std::vector<float>, kRingChannels> ringCompiled;
     mutable std::array<std::vector<float>, kRingChannels> ringShadow;
     mutable std::array<std::vector<float>, kRingChannels> ringDelta;

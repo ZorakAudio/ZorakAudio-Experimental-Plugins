@@ -117,6 +117,7 @@ struct JsfxSections
   std::string slider;
   std::string block;
   std::string sample;
+  std::string serialize;
   std::string gfx;
   int gfxW = 0;
   int gfxH = 0;
@@ -143,7 +144,7 @@ static JsfxSections extractJsfxSections(const char* jsfxText)
   JsfxSections out;
   if (!jsfxText) return out;
 
-  enum class Sec { None, Init, Slider, Block, Sample, Gfx };
+  enum class Sec { None, Init, Slider, Block, Sample, Serialize, Gfx };
   Sec cur = Sec::None;
 
   std::string line;
@@ -167,6 +168,7 @@ static JsfxSections extractJsfxSections(const char* jsfxText)
       if (startsWithSection(ltrim, "slider")){ cur = Sec::Slider;continue; }
       if (startsWithSection(ltrim, "block")) { cur = Sec::Block; continue; }
       if (startsWithSection(ltrim, "sample")){ cur = Sec::Sample;continue; }
+      if (startsWithSection(ltrim, "serialize")) { cur = Sec::Serialize; continue; }
       if (startsWithSection(ltrim, "gfx"))
       {
         cur = Sec::Gfx;
@@ -192,8 +194,9 @@ static JsfxSections extractJsfxSections(const char* jsfxText)
       case Sec::Init:   out.init.append(line).push_back('\n'); break;
       case Sec::Slider: out.slider.append(line).push_back('\n'); break;
       case Sec::Block:  out.block.append(line).push_back('\n'); break;
-      case Sec::Sample: out.sample.append(line).push_back('\n'); break;
-      case Sec::Gfx:    out.gfx.append(line).push_back('\n'); break;
+      case Sec::Sample:    out.sample.append(line).push_back('\n'); break;
+      case Sec::Serialize: out.serialize.append(line).push_back('\n'); break;
+      case Sec::Gfx:       out.gfx.append(line).push_back('\n'); break;
       default: break;
     }
   }
