@@ -103,6 +103,17 @@ static const int32_t DSPJSFX_VARS_COUNT = 0;
 static const DSPJSFX_VarDesc DSPJSFX_VARS[1] = { { "", -1 } };
 #endif
 
+#ifndef DSPJSFX_GFX_VAR_FLAG_TO_GFX
+#define DSPJSFX_GFX_VAR_FLAG_TO_GFX 1u
+#endif
+#ifndef DSPJSFX_GFX_VAR_FLAG_FROM_GFX
+#define DSPJSFX_GFX_VAR_FLAG_FROM_GFX 2u
+#endif
+#ifndef DSPJSFX_GFX_VAR_FLAGS_COUNT
+#define DSPJSFX_GFX_VAR_FLAGS_COUNT 0
+static const uint8_t DSPJSFX_GFX_VAR_FLAGS[1] = { 0 };
+#endif
+
 static inline int64_t jsfxTruncIndexLikeAot (double v) noexcept
 {
   return (int64_t) (v + 1.0e-5);
@@ -704,9 +715,9 @@ public:
     }
   }
 
-  struct BoundVar { const char* name; int index; EEL_F* ptr; };
+  struct BoundVar { const char* name; int index; EEL_F* ptr; uint8_t flags; };
   std::vector<BoundVar> boundVars;
-  void bindUserVars(const DSPJSFX_VarDesc* vars, int count)
+  void bindUserVars(const DSPJSFX_VarDesc* vars, const uint8_t* flags, int flagsCount, int count)
   {
     boundVars.clear();
     boundVars.reserve((size_t)count);
@@ -715,7 +726,10 @@ public:
       const char* name = vars[i].name;
       const int idx = vars[i].index;
       if (!name) continue;
-      BoundVar bv { name, idx, get_var(name) };
+      const uint8_t dirFlags = (flags != nullptr && idx >= 0 && idx < flagsCount)
+                                 ? flags[idx]
+                                 : (uint8_t) (DSPJSFX_GFX_VAR_FLAG_TO_GFX | DSPJSFX_GFX_VAR_FLAG_FROM_GFX);
+      BoundVar bv { name, idx, get_var(name), dirFlags };
       boundVars.push_back(bv);
     }
   }
@@ -739,6 +753,8 @@ public:
   {
     for (const auto& bv : boundVars)
     {
+      if ((bv.flags & DSPJSFX_GFX_VAR_FLAG_TO_GFX) == 0u)
+        continue;
       if (bv.index >= 0 && bv.index < count && bv.ptr)
         *bv.ptr = vars[bv.index];
     }
@@ -817,6 +833,8 @@ public:
     if (!dst || count <= 0) return;
     for (const auto& bv : boundVars)
     {
+      if ((bv.flags & DSPJSFX_GFX_VAR_FLAG_FROM_GFX) == 0u)
+        continue;
       if (bv.index >= 0 && bv.index < count && bv.ptr)
         dst[bv.index] = *bv.ptr;
     }
@@ -1711,7 +1729,7 @@ public:
     // DSPJSFX_VARS is a *symbol* emitted by dsp_jsfx_aot.py (static const array),
     // not a preprocessor macro. So `defined(DSPJSFX_VARS)` is always false.
     // The fallback table at the top of this file guarantees DSPJSFX_VARS exists anyway.
-    vm->bindUserVars(DSPJSFX_VARS, (int)DSPJSFX_VARS_COUNT);
+    vm->bindUserVars(DSPJSFX_VARS, DSPJSFX_GFX_VAR_FLAGS, (int) DSPJSFX_GFX_VAR_FLAGS_COUNT, (int) DSPJSFX_VARS_COUNT);
 
     // Compile relevant sections. We compile init + gfx so helper functions
     // defined in init are available to gfx.

@@ -963,6 +963,212 @@ def parse_pin_hints(jsfx_text: str) -> Dict[str, Optional[int]]:
 
     return {k: (counts[k] if saw[k] else None) for k in ('inputs', 'outputs')}
 
+_OPTIONS_LINE_RE = re.compile(r"^\s*options\s*:\s*(.*)$", re.IGNORECASE)
+
+GFX_VAR_FLAG_TO_GFX = 1
+GFX_VAR_FLAG_FROM_GFX = 2
+
+_RUNTIME_AUDIO_OWNED_SECTIONS = ("slider", "block", "sample", "serialize")
+
+
+def parse_jsfx_options(jsfx_text: str) -> Dict[str, str]:
+    opts: Dict[str, str] = {}
+    for raw_line in jsfx_text.splitlines():
+        m = _OPTIONS_LINE_RE.match(raw_line)
+        if not m:
+            continue
+        payload = m.group(1).strip()
+        if not payload:
+            continue
+        for tok in re.split(r"[\s,]+", payload):
+            if not tok or "=" not in tok:
+                continue
+            key, value = tok.split("=", 1)
+            key = key.strip().lower()
+            value = value.strip()
+            if key:
+                opts[key] = value
+    return opts
+
+
+@dataclass
+class _VarUsageSummary:
+    reads: Set[str]
+    writes: Set[str]
+    reads_mem: bool = False
+    writes_mem: bool = False
+
+    def merge(self, other: '_VarUsageSummary') -> '_VarUsageSummary':
+        self.reads.update(other.reads)
+        self.writes.update(other.writes)
+        self.reads_mem = self.reads_mem or other.reads_mem
+        self.writes_mem = self.writes_mem or other.writes_mem
+        return self
+
+
+def _is_trackable_user_var_name(name: str, locals_: Set[str]) -> bool:
+    if name in locals_:
+        return False
+    if name in BUILTIN_NAMES:
+        return False
+    if name.startswith("spl") and name[3:].isdigit():
+        return False
+    if name.startswith("slider") and name[6:].isdigit():
+        return False
+    if name.startswith("$"):
+        return False
+    return True
+
+
+def _prepare_var_sync_analysis_units(jsfx_text: str) -> Tuple[Dict[str, List[Node]], Dict[str, FunctionDef]]:
+    sections = extract_sections(jsfx_text)
+    analysis_programs: Dict[str, List[Node]] = {}
+
+    for sec in ("init", "slider", "block", "sample", "serialize", "gfx"):
+        if sec in sections:
+            code, start_line = sections[sec]
+            parser = Parser(code, base_line=start_line)
+            analysis_programs[sec] = parser.parse_program()
+        else:
+            analysis_programs[sec] = []
+
+    analysis_fn_defs, analysis_programs = extract_function_defs(analysis_programs)
+    analysis_programs, analysis_fn_defs = lower_user_functions(analysis_programs, analysis_fn_defs)
+    return analysis_programs, analysis_fn_defs
+
+
+def analyze_gfx_var_sync(jsfx_text: str, user_vars: Dict[str, int]) -> Dict[str, Any]:
+    programs, fn_defs = _prepare_var_sync_analysis_units(jsfx_text)
+    fn_cache: Dict[str, _VarUsageSummary] = {}
+    fn_in_progress: Set[str] = set()
+
+    def walk_node(n: Node, locals_: Set[str]) -> _VarUsageSummary:
+        out = _VarUsageSummary(set(), set())
+
+        def walk_read(node: Node) -> None:
+            nonlocal out
+            if isinstance(node, Var):
+                if _is_trackable_user_var_name(node.name, locals_):
+                    out.reads.add(node.name)
+                return
+            if isinstance(node, (Num, StrLit)):
+                return
+            if isinstance(node, Index):
+                walk_read(node.base)
+                walk_read(node.index)
+                if isinstance(node.base, Var) and node.base.name == "mem":
+                    out.reads_mem = True
+                return
+            if isinstance(node, Unary):
+                walk_read(node.a)
+                return
+            if isinstance(node, Binary):
+                walk_read(node.l)
+                walk_read(node.r)
+                return
+            if isinstance(node, Assign):
+                walk_assign(node)
+                return
+            if isinstance(node, Call):
+                for a in node.args:
+                    walk_read(a)
+                if node.fn in fn_defs:
+                    out.merge(summarize_function(node.fn))
+                return
+            if isinstance(node, Loop):
+                walk_read(node.count)
+                walk_read(node.body)
+                return
+            if isinstance(node, Ternary):
+                walk_read(node.cond)
+                walk_read(node.then)
+                walk_read(node.els)
+                return
+            if isinstance(node, Seq):
+                for it in node.items:
+                    walk_read(it)
+                return
+            if isinstance(node, If):
+                walk_read(node.cond)
+                walk_read(node.then)
+                if node.els:
+                    walk_read(node.els)
+                return
+            if isinstance(node, While):
+                walk_read(node.cond)
+                walk_read(node.body)
+                return
+            raise TypeError(type(node))
+
+        def walk_assign(node: Assign) -> None:
+            nonlocal out
+            walk_read(node.value)
+
+            if isinstance(node.target, Var):
+                if node.op != "=":
+                    walk_read(node.target)
+                if _is_trackable_user_var_name(node.target.name, locals_):
+                    out.writes.add(node.target.name)
+                return
+
+            if isinstance(node.target, Index):
+                walk_read(node.target.base)
+                walk_read(node.target.index)
+                if isinstance(node.target.base, Var) and node.target.base.name == "mem":
+                    out.writes_mem = True
+                    if node.op != "=":
+                        out.reads_mem = True
+                return
+
+            walk_read(node.target)
+
+        walk_read(n)
+        return out
+
+    def summarize_function(name: str) -> _VarUsageSummary:
+        cached = fn_cache.get(name)
+        if cached is not None:
+            return cached
+        if name in fn_in_progress:
+            return _VarUsageSummary(set(), set())
+        fn_in_progress.add(name)
+        f = fn_defs[name]
+        locals_ = set(f.params) | set(f.locals) | set(f.instances)
+        summary = walk_node(f.body, locals_)
+        fn_in_progress.remove(name)
+        fn_cache[name] = summary
+        return summary
+
+    def summarize_section(section: str) -> _VarUsageSummary:
+        summary = _VarUsageSummary(set(), set())
+        for node in programs.get(section, []):
+            summary.merge(walk_node(node, set()))
+        return summary
+
+    gfx_usage = summarize_section("gfx")
+    audio_usage = _VarUsageSummary(set(), set())
+    for sec in _RUNTIME_AUDIO_OWNED_SECTIONS:
+        audio_usage.merge(summarize_section(sec))
+
+    flags_by_name: Dict[str, int] = {}
+    for name in user_vars.keys():
+        flags = 0
+        if name in audio_usage.writes and name in gfx_usage.reads:
+            flags |= GFX_VAR_FLAG_TO_GFX
+        if name in gfx_usage.writes and name in audio_usage.reads:
+            flags |= GFX_VAR_FLAG_FROM_GFX
+        flags_by_name[name] = flags
+
+    return {
+        "flags": flags_by_name,
+        "gfx_reads": set(gfx_usage.reads),
+        "gfx_writes": set(gfx_usage.writes),
+        "audio_reads": set(audio_usage.reads),
+        "audio_writes": set(audio_usage.writes),
+        "mem_shared": bool(gfx_usage.reads_mem or gfx_usage.writes_mem) and bool(audio_usage.reads_mem or audio_usage.writes_mem),
+    }
+
+
 def detect_midi_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Dict[str, bool]:
     uses_midirecv = False
     uses_midisend = False
@@ -1678,6 +1884,26 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
 
     user_vars = collect_user_vars(programs, fn_defs)
 
+    options = parse_jsfx_options(jsfx_text)
+    gfx_var_sync_mode = str(options.get("ownership", "legacy") or "legacy").strip().lower()
+    if gfx_var_sync_mode in ("auto", "hybrid"):
+        try:
+            gfx_var_sync = analyze_gfx_var_sync(jsfx_text, user_vars)
+            gfx_var_flags = gfx_var_sync["flags"]
+            gfx_mem_shared = bool(gfx_var_sync.get("mem_shared"))
+            gfx_var_sync_mode = "hybrid"
+        except Exception:
+            gfx_var_sync_mode = "legacy"
+            gfx_var_flags = {name: (GFX_VAR_FLAG_TO_GFX | GFX_VAR_FLAG_FROM_GFX) for name in user_vars.keys()}
+            gfx_mem_shared = True
+    elif gfx_var_sync_mode == "ui_only":
+        gfx_var_flags = {name: 0 for name in user_vars.keys()}
+        gfx_mem_shared = False
+    else:
+        gfx_var_sync_mode = "legacy"
+        gfx_var_flags = {name: (GFX_VAR_FLAG_TO_GFX | GFX_VAR_FLAG_FROM_GFX) for name in user_vars.keys()}
+        gfx_mem_shared = True
+
     pin_hints = parse_pin_hints(jsfx_text)
     io_channels = infer_spl_io(programs, fn_defs, pin_hints=pin_hints)
     midi_caps = detect_midi_usage(programs, fn_defs)
@@ -1718,6 +1944,9 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
         "midi": midi_caps,
         "plugin_kind": plugin_kind,
         "has_sample_section": has_sample_work,
+        "gfx_var_sync_mode": gfx_var_sync_mode,
+        "gfx_var_flags": gfx_var_flags,
+        "gfx_mem_shared": gfx_mem_shared,
     }
     return emitter.module, meta
 
@@ -4253,6 +4482,8 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     # NOTE: MSVC does not allow zero-sized arrays, so we emit a 1-element dummy when empty.
     items_by_index = sorted(user_vars.items(), key=lambda kv: int(kv[1]))
     count = len(items_by_index)
+    gfx_var_flags_meta: Dict[str, int] = dict(meta.get("gfx_var_flags", {}) or {})
+    gfx_var_sync_mode = str(meta.get("gfx_var_sync_mode", "legacy") or "legacy")
     lines.append("/* User vars (name -> vars[] index) */")
     lines.append("typedef struct DSPJSFX_VarDesc { const char* name; int32_t index; } DSPJSFX_VarDesc;")
     lines.append(f"#define DSPJSFX_VARS_COUNT {count}")
@@ -4263,6 +4494,23 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     else:
         for name, idx in items_by_index:
             lines.append(f'    {{"{_c_escape(str(name))}", {int(idx)}}},')
+    lines.append("};")
+    lines.append("")
+
+    lines.append("/* @gfx user-var sync flags (vars[] index).")
+    lines.append("   bit0: sync audio-owned updates into the @gfx VM (audio -> gfx)")
+    lines.append("   bit1: feed @gfx-authored writes back into the DSP state (gfx -> audio)")
+    lines.append(f"   Mode: {_c_escape(gfx_var_sync_mode)} */")
+    lines.append("#define DSPJSFX_GFX_VAR_FLAG_TO_GFX 1u")
+    lines.append("#define DSPJSFX_GFX_VAR_FLAG_FROM_GFX 2u")
+    lines.append(f"#define DSPJSFX_GFX_VAR_FLAGS_COUNT {count}")
+    lines.append(f"static const uint8_t DSPJSFX_GFX_VAR_FLAGS[{arr_size}] = {{")
+    if count == 0:
+        lines.append("    0,")
+    else:
+        for name, idx in items_by_index:
+            flags = int(gfx_var_flags_meta.get(name, GFX_VAR_FLAG_TO_GFX | GFX_VAR_FLAG_FROM_GFX))
+            lines.append(f"    {flags},")
     lines.append("};")
     lines.append("")
 

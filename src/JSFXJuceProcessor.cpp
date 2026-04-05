@@ -73,6 +73,19 @@
   #define DSPJSFX_HAS_SAMPLE_SECTION 1
 #endif
 
+#ifndef DSPJSFX_GFX_VAR_FLAG_TO_GFX
+  #define DSPJSFX_GFX_VAR_FLAG_TO_GFX 1u
+#endif
+
+#ifndef DSPJSFX_GFX_VAR_FLAG_FROM_GFX
+  #define DSPJSFX_GFX_VAR_FLAG_FROM_GFX 2u
+#endif
+
+#ifndef DSPJSFX_GFX_VAR_FLAGS_COUNT
+  #define DSPJSFX_GFX_VAR_FLAGS_COUNT 0
+  static const uint8_t DSPJSFX_GFX_VAR_FLAGS[1] = { 0 };
+#endif
+
 // ---- You must provide this symbol for AOT (declared in the generated header)
 extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed);
 
@@ -260,6 +273,17 @@ static inline int64_t getGfxLogicalJsfxMemN (DSPJSFX_State* st, int64_t declared
         return std::max<int64_t> (tracked, std::min<int64_t> (declaredMaxMem, st->memN));
 
     return tracked;
+}
+
+static inline uint8_t getJsfxGfxVarFlags (int index) noexcept
+{
+    if (index < 0)
+        return (uint8_t) (DSPJSFX_GFX_VAR_FLAG_TO_GFX | DSPJSFX_GFX_VAR_FLAG_FROM_GFX);
+
+    if (index < (int) DSPJSFX_GFX_VAR_FLAGS_COUNT)
+        return DSPJSFX_GFX_VAR_FLAGS[index];
+
+    return (uint8_t) (DSPJSFX_GFX_VAR_FLAG_TO_GFX | DSPJSFX_GFX_VAR_FLAG_FROM_GFX);
 }
 
 // -----------------------------------------------------------------------------
@@ -1456,6 +1480,7 @@ public:
         initStateMemory();
         gFileOwner[&st] = this;
         initGfxSnapshots();
+        resetGfxSliderPreviewState();
 
        #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
         correctnessRuntime = std::make_unique<jsfx_correctness::Runtime> (this);
@@ -1484,6 +1509,43 @@ public:
     // Called by the UI thread (@gfx) to push persistent VM state back to the DSP VM.
     void enqueueGfxVarWrite (int index, double value) noexcept { enqueueGfxStateWrite (GfxStateWrite::Kind::Var, index, value); }
     void enqueueGfxMemWrite (int index, double value) noexcept { enqueueGfxStateWrite (GfxStateWrite::Kind::Mem, index, value); }
+
+    // Stage low-latency @gfx slider writes for the audio thread immediately.
+    //
+    // Host parameter notification still goes through applyGfxSliderChanges() on
+    // the message thread, but this shadow lane lets the audio thread pick up the
+    // latest UI-authored value on the very next block instead of waiting for the
+    // host/APVTS round-trip to complete.
+    void stageGfxSliderPreview (const double* newSliders, int count,
+                                uint64_t changeMask,
+                                uint64_t automateMask,
+                                uint64_t automateEndMask) noexcept
+    {
+        if (newSliders == nullptr)
+            return;
+
+        const int n = juce::jlimit (0, 64, count);
+        const uint64_t applyMask = changeMask | automateMask | automateEndMask;
+        if (applyMask == 0)
+            return;
+
+        bool stagedAny = false;
+        for (int i = 0; i < n; ++i)
+        {
+            const uint64_t bit = (uint64_t) 1u << (uint64_t) i;
+            if ((applyMask & bit) == 0)
+                continue;
+            if (! sliderParamUsed[(size_t) i])
+                continue;
+
+            gfxSliderPreviewValues[(size_t) i].store (newSliders[(size_t) i], std::memory_order_release);
+            (void) gfxSliderPreviewSeq[(size_t) i].fetch_add (1u, std::memory_order_acq_rel);
+            stagedAny = true;
+        }
+
+        if (stagedAny)
+            gfxSnapshotForcePublish.store (true, std::memory_order_release);
+    }
 
     void registerGfxSnapshotClient() noexcept
     {
@@ -1557,6 +1619,7 @@ public:
         lastSlidersValid = false;
         internalSliderPendingMask = 0;
         dspGestureActive.fill (false);
+        resetGfxSliderPreviewState();
         (void) pushParamsToStateSliders();
 
         jsfx_init (&st);
@@ -1599,6 +1662,7 @@ public:
         requestEmergencyMidiCleanup();
         endAllDspGestures();
         internalSliderPendingMask = 0;
+        resetGfxSliderPreviewState();
         st.midiInCount = 0;
         st.midiInReadIndex = 0;
         st.midiOutCount = 0;
@@ -1609,6 +1673,7 @@ public:
         requestEmergencyMidiCleanup();
         endAllDspGestures();
         internalSliderPendingMask = 0;
+        resetGfxSliderPreviewState();
         st.midiInCount = 0;
         st.midiInReadIndex = 0;
         st.midiOutCount = 0;
@@ -2428,6 +2493,28 @@ public:
     // host. The @gfx path is out-of-band and the DSP path is realtime, so both
     // end up funneled through the same conversion helpers here.
     // ------------------------------------------------------------
+    static constexpr int kGfxSliderPreviewGraceMs = 100;
+
+    int getGfxSliderPreviewGraceSamples() const noexcept
+    {
+        if (st.srate > 0.0)
+            return juce::jmax (128, (int) std::llround (st.srate * ((double) kGfxSliderPreviewGraceMs / 1000.0)));
+
+        return 4096;
+    }
+
+    void resetGfxSliderPreviewState() noexcept
+    {
+        for (size_t i = 0; i < 64; ++i)
+        {
+            gfxSliderPreviewValues[i].store (0.0, std::memory_order_relaxed);
+            gfxSliderPreviewSeq[i].store (0u, std::memory_order_relaxed);
+            gfxSliderPreviewSeenSeq[i] = 0u;
+            gfxSliderPreviewAckSeq[i] = 0u;
+            gfxSliderPreviewGraceSamplesRemaining[i] = 0;
+        }
+    }
+
     bool jsfxSliderValueToParameterNormalised (size_t sliderIndex, double jsfxValue, float& outNorm) const
     {
         if (apvts == nullptr || sliderIndex >= sliderParamUsed.size() || ! sliderParamUsed[sliderIndex])
@@ -2554,6 +2641,8 @@ public:
             if (! jsfxSliderValueToParameterNormalised ((size_t) i, newSliders[i], norm))
                 continue;
 
+            const bool needsHostSet = ! sliderValuesEquivalent (info, hostParameterToJsfxSliderValue ((size_t) i), newSliders[i]);
+
             if ((automateMask & bit) != 0)
             {
                 if (! gfxGestureActive[(size_t)i])
@@ -2563,7 +2652,8 @@ public:
                 }
             }
 
-            p->setValueNotifyingHost (norm);
+            if (needsHostSet)
+                p->setValueNotifyingHost (norm);
 
             if ((automateEndMask & bit) != 0)
             {
@@ -2613,6 +2703,8 @@ public:
             if (! jsfxSliderValueToParameterNormalised ((size_t) i, st.sliders[i], norm))
                 continue;
 
+            const bool needsHostSet = ! sliderValuesEquivalent (info, hostParameterToJsfxSliderValue ((size_t) i), st.sliders[i]);
+
             if ((automateMask & bit) != 0)
             {
                 if (! dspGestureActive[(size_t) i])
@@ -2622,7 +2714,8 @@ public:
                 }
             }
 
-            p->setValueNotifyingHost (norm);
+            if (needsHostSet)
+                p->setValueNotifyingHost (norm);
 
             if ((automateEndMask & bit) != 0)
             {
@@ -2637,11 +2730,17 @@ public:
                 }
             }
 
+            const uint32_t previewSeq = gfxSliderPreviewSeq[(size_t) i].load (std::memory_order_acquire);
+            gfxSliderPreviewSeenSeq[(size_t) i] = previewSeq;
+            gfxSliderPreviewAckSeq[(size_t) i] = previewSeq;
+            gfxSliderPreviewGraceSamplesRemaining[(size_t) i] = 0;
+
             internalSliderShadow[(size_t) i] = st.sliders[i];
             internalSliderPendingMask |= bit;
             lastSliders[(size_t) i] = st.sliders[i];
         }
 
+        gfxSnapshotForcePublish.store (true, std::memory_order_release);
         lastSlidersValid = true;
         st.pendingSliderChangeMask = 0;
         st.pendingSliderAutomateMask = 0;
@@ -3198,6 +3297,8 @@ private:
     {
         bool changed = false;
         const int varsCap = (int) (sizeof (st.vars) / sizeof (st.vars[0]));
+        const int previewGraceSamples = getGfxSliderPreviewGraceSamples();
+        const int previewGraceDecrement = juce::jmax (1, st.currentBlockSize > 0 ? st.currentBlockSize : 1);
 
         for (size_t i = 0; i < 64; ++i)
         {
@@ -3207,6 +3308,35 @@ private:
             const uint64_t bit = (uint64_t) 1u << (uint64_t) i;
             const double hostVal = hostParameterToJsfxSliderValue (i);
             double newVal = hostVal;
+
+            if ((internalSliderPendingMask & bit) == 0)
+            {
+                const uint32_t previewSeq = gfxSliderPreviewSeq[i].load (std::memory_order_acquire);
+                if (previewSeq != gfxSliderPreviewAckSeq[i])
+                {
+                    if (previewSeq != gfxSliderPreviewSeenSeq[i])
+                    {
+                        gfxSliderPreviewSeenSeq[i] = previewSeq;
+                        gfxSliderPreviewGraceSamplesRemaining[i] = previewGraceSamples;
+                    }
+
+                    const double previewVal = gfxSliderPreviewValues[i].load (std::memory_order_acquire);
+                    if (sliderValuesEquivalent (info, hostVal, previewVal))
+                    {
+                        gfxSliderPreviewAckSeq[i] = previewSeq;
+                        gfxSliderPreviewGraceSamplesRemaining[i] = 0;
+                    }
+                    else if (gfxSliderPreviewGraceSamplesRemaining[i] > 0)
+                    {
+                        newVal = previewVal;
+                        gfxSliderPreviewGraceSamplesRemaining[i] = juce::jmax (0, gfxSliderPreviewGraceSamplesRemaining[i] - previewGraceDecrement);
+                    }
+                    else
+                    {
+                        gfxSliderPreviewAckSeq[i] = previewSeq;
+                    }
+                }
+            }
 
             if ((internalSliderPendingMask & bit) != 0)
             {
@@ -3497,7 +3627,19 @@ void updateGfxSnapshotIfNeeded (int numSamples)
     // (prefix + suffix) so @gfx can still see far-away summaries without dragging
     // the entire DSP heap through the UI bridge every frame.
     std::memcpy (b.sliders.data(), st.sliders, sizeof (double) * 64);
-    std::memcpy (b.vars.data(),    st.vars,    sizeof (double) * (size_t) varCount);
+
+    if ((int) DSPJSFX_GFX_VAR_FLAGS_COUNT <= 0)
+    {
+        std::memcpy (b.vars.data(), st.vars, sizeof (double) * (size_t) varCount);
+    }
+    else
+    {
+        for (int i = 0; i < varCount; ++i)
+        {
+            if ((getJsfxGfxVarFlags (i) & DSPJSFX_GFX_VAR_FLAG_TO_GFX) != 0u)
+                b.vars[(size_t) i] = st.vars[i];
+        }
+    }
 
     b.memSpanCount = 0;
     b.logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
@@ -3553,6 +3695,17 @@ int64_t gfxSnapCountdown = 0;
 int64_t jsfxDeclaredMaxMem = 0;
 
     std::array<std::atomic<float>*, 64> paramAtomics {};
+
+    // Low-latency @gfx -> audio slider shadow lane.
+    //
+    // The worker thread stages the latest UI-authored value here immediately so
+    // the audio thread can consume it on the next block without waiting for the
+    // host/APVTS round-trip on the message thread.
+    std::array<std::atomic<double>, 64> gfxSliderPreviewValues {};
+    std::array<std::atomic<uint32_t>, 64> gfxSliderPreviewSeq {};
+    std::array<uint32_t, 64> gfxSliderPreviewSeenSeq {};
+    std::array<uint32_t, 64> gfxSliderPreviewAckSeq {};
+    std::array<int, 64> gfxSliderPreviewGraceSamplesRemaining {};
 
     // Tracks touch automation sessions initiated from @gfx (slider_automate).
     // This state lives on the UI thread only.
@@ -5689,6 +5842,11 @@ private:
             return;
 
         const uint64_t applyMask = changeMask | automateMask | automateEndMask;
+
+        processor.stageGfxSliderPreview (newSliders.data(), 64,
+                                         changeMask,
+                                         automateMask,
+                                         automateEndMask);
 
         {
             const std::lock_guard<std::mutex> lock (pendingSliderMutex);

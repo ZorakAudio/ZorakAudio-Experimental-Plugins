@@ -1,5 +1,5 @@
-desc:NeuroCV
-
+desc:Predictive CV Field (multilane predictive/Oja/ICA/ESN patch)
+tags: modulation utility analysis neural predictive cv
 options:want_all_kb gfx_hz=60
 in_pin:Audio L
 in_pin:Audio R
@@ -39,16 +39,23 @@ out_pin:Aux 17
 out_pin:Aux 18
 
 slider1:mode=0<0,2,1{Listen,Adaptive,Perform}>-Mode
-slider2:cv_uni_output=0<0,1,0.0001>-CV Uni Output (activity, read only)
-slider3:cv_bi_output=0<-1,1,0.0001>-CV Bi Output (centered, read only)
+slider2:cv_uni_output=0<0,1,0.0001>-CV Uni Output (master activity, read only)
+slider3:cv_bi_output=0<-1,1,0.0001>-CV Bi Output (master centered, read only)
 slider4:depth=1<0,2,0.01>-Range
 slider5:smooth_ms=120<5,2000,1:log=120>-Smooth (ms)
 slider6:surprise_blend=0.65<0,1,0.01>-Surprise Blend
 slider7:learn_rate=0.04<0.001,0.25,0.001:log=0.04>-Learn Rate
 slider8:frame_ms=20<5,80,1:log=20>-Analysis frame (ms)
-slider9:route_source=0<0,5,1{Disabled,Uni Activity,Bi Centered,Structure,Surprise,Confidence}>-Audio Route Lane
+slider9:route_source=0<0,8,1{Disabled,Master Uni,Master Bi,Surprise,Uncertainty,Structure,Body,Confidence,Regime}>-Audio Route Lane
 slider10:route_pair=2<1,8,1{3/4,5/6,7/8,9/10,11/12,13/14,15/16,17/18}>-Audio Route Pair
-slider11:ui_scale_user=1.1<0.85,1.25,0.01>-UI Scale
+slider11:ui_scale_user=1<0.85,1.25,0.01>-UI Scale
+slider12:cv_uni_surprise=0<0,1,0.0001>-CV Uni Surprise (read only)
+slider13:cv_uni_uncertainty=0<0,1,0.0001>-CV Uni Uncertainty (read only)
+slider14:cv_bi_structure=0<-1,1,0.0001>-CV Bi Structure (read only)
+slider15:cv_uni_body=0<0,1,0.0001>-CV Uni Body (read only)
+slider16:cv_uni_confidence=0<0,1,0.0001>-CV Uni Confidence (read only)
+slider17:cv_uni_regime=0<0,1,0.0001>-CV Uni Regime (read only)
+slider18:grounding=1<0,1,0.01>-Grounding
 
 @init
 
@@ -168,12 +175,14 @@ function draw_bipolar_overlay(x y w h base_v over_v br bg bb orr ogg obb) local(
 
 function setup_layout() local(ptr)
 (
-  FEATURES = 6;
+  FEATURES = 8;
   CTX = 3;
   IN_SIZE = FEATURES * CTX;
-  HIDDEN = 8;
+  HIDDEN = 10;
   OUT_SIZE = FEATURES;
   HISTN = 240;
+  LAT = 3;
+  RES = 12;
 
   ptr = 0;
 
@@ -187,20 +196,32 @@ function setup_layout() local(ptr)
   ptr_dh = ptr;       ptr += HIDDEN;
   ptr_do = ptr;       ptr += OUT_SIZE;
 
-  ptr_feat_raw = ptr; ptr += FEATURES;
-  ptr_feat_cur = ptr; ptr += FEATURES;
-  ptr_feat_prev = ptr;ptr += FEATURES;
-  ptr_feat_fast = ptr;ptr += FEATURES;
-  ptr_feat_slow = ptr;ptr += FEATURES;
-  ptr_feat_pred = ptr;ptr += FEATURES;
-  ptr_feat_mean = ptr;ptr += FEATURES;
-  ptr_feat_var = ptr; ptr += FEATURES;
-  ptr_feat_err = ptr; ptr += FEATURES;
+  ptr_feat_raw = ptr;     ptr += FEATURES;
+  ptr_feat_cur = ptr;     ptr += FEATURES;
+  ptr_feat_prev = ptr;    ptr += FEATURES;
+  ptr_feat_fast = ptr;    ptr += FEATURES;
+  ptr_feat_slow = ptr;    ptr += FEATURES;
+  ptr_feat_pred = ptr;    ptr += FEATURES;
+  ptr_feat_mean = ptr;    ptr += FEATURES;
+  ptr_feat_var = ptr;     ptr += FEATURES;
+  ptr_feat_err = ptr;     ptr += FEATURES;
+  ptr_feat_resvar = ptr;  ptr += FEATURES;
+  ptr_feat_resid = ptr;   ptr += FEATURES;
 
-  ptr_z_prev = ptr;   ptr += IN_SIZE;
-  ptr_z_cur = ptr;    ptr += IN_SIZE;
+  ptr_z_prev = ptr;       ptr += IN_SIZE;
+  ptr_z_cur = ptr;        ptr += IN_SIZE;
 
-  ptr_struct_w = ptr; ptr += FEATURES;
+  ptr_struct_w = ptr;     ptr += FEATURES;
+  ptr_ica_w = ptr;        ptr += FEATURES;
+
+  ptr_esn_w_in = ptr;     ptr += RES * LAT;
+  ptr_esn_w_rec = ptr;    ptr += RES * RES;
+  ptr_esn_w_out = ptr;    ptr += LAT * RES;
+  ptr_esn_b_out = ptr;    ptr += LAT;
+  ptr_esn_state = ptr;    ptr += RES;
+  ptr_esn_tmp = ptr;      ptr += RES;
+  ptr_lat_pred = ptr;     ptr += LAT;
+  ptr_lat_actual = ptr;   ptr += LAT;
 
   save_mem_len = ptr;
 
@@ -254,6 +275,33 @@ function randomize_model() local(i n)
     ptr_b2[i] = 0;
     i += 1;
   );
+
+  n = RES * LAT;
+  i = 0;
+  while (i < n) (
+    ptr_esn_w_in[i] = (rand(2)-1) * 0.65;
+    i += 1;
+  );
+
+  n = RES * RES;
+  i = 0;
+  while (i < n) (
+    ptr_esn_w_rec[i] = (rand(2)-1) * 0.18;
+    i += 1;
+  );
+
+  n = LAT * RES;
+  i = 0;
+  while (i < n) (
+    ptr_esn_w_out[i] = 0;
+    i += 1;
+  );
+
+  i = 0;
+  while (i < LAT) (
+    ptr_esn_b_out[i] = 0;
+    i += 1;
+  );
 );
 
 function reset_state() local(i nrm)
@@ -272,7 +320,10 @@ function reset_state() local(i nrm)
     ptr_feat_err[i] = 0;
     ptr_feat_mean[i] = 0;
     ptr_feat_var[i] = 0.05;
+    ptr_feat_resvar[i] = 0.05;
+    ptr_feat_resid[i] = 0;
     ptr_struct_w[i] = (rand(2)-1) * 0.5;
+    ptr_ica_w[i] = (rand(2)-1) * 0.5;
     nrm += ptr_struct_w[i] * ptr_struct_w[i];
     i += 1;
   );
@@ -283,6 +334,19 @@ function reset_state() local(i nrm)
     i += 1;
   );
 
+  nrm = 0;
+  i = 0;
+  while (i < FEATURES) (
+    nrm += ptr_ica_w[i] * ptr_ica_w[i];
+    i += 1;
+  );
+  nrm = sqrt(nrm + 0.0000001);
+  i = 0;
+  while (i < FEATURES) (
+    ptr_ica_w[i] /= nrm;
+    i += 1;
+  );
+
   i = 0;
   while (i < IN_SIZE) (
     ptr_z_prev[i] = 0;
@@ -290,19 +354,54 @@ function reset_state() local(i nrm)
     i += 1;
   );
 
-  struct_norm = 0;
+  i = 0;
+  while (i < RES) (
+    ptr_esn_state[i] = 0;
+    ptr_esn_tmp[i] = 0;
+    i += 1;
+  );
+
+  i = 0;
+  while (i < LAT) (
+    ptr_lat_pred[i] = 0;
+    ptr_lat_actual[i] = 0;
+    i += 1;
+  );
+
   surprise_mean = 0.10;
   surprise_var = 0.01;
+  uncertainty_mean = 0.18;
+  uncertainty_var = 0.01;
   structure_mean = 0;
   structure_var = 0.05;
-  cv_drive_mean = 0.5;
+  accent_mean = 0;
+  accent_var = 0.05;
+  regime_mean = 0;
+  regime_var = 0.05;
+  cv_drive_mean = 0;
   cv_drive_var = 0.05;
   avg_loss = 0.1;
+
   cv_bi_target = 0;
   cv_bi_current = 0;
   cv_bi_for_slider = 0;
   cv_uni_current = 0;
   cv_uni_for_slider = 0;
+
+  surprise_uni_current = 0;
+  uncertainty_uni_current = 0.5;
+  structure_bi_current = 0;
+  body_uni_current = 0;
+  confidence_uni_current = 0;
+  regime_uni_current = 0.5;
+  surprise_uni_target = 0;
+  uncertainty_uni_target = 0.5;
+  structure_bi_target = 0;
+  body_uni_target = 0;
+  confidence_uni_target = 0;
+  regime_uni_target = 0.5;
+  cv_uni_target = 0;
+
   confidence = 0;
   signal_gate = 0;
   learn_gate_strength = 0;
@@ -311,14 +410,23 @@ function reset_state() local(i nrm)
   noise_rms_est = 0.0005;
   signal_rms_est = 0.03;
   quiet_frames = 0;
+
   surprise_view = 0.5;
+  uncertainty_view = 0.5;
   structure_view = 0.5;
+  body_view = 0;
+  regime_view = 0.5;
+  accent_view = 0.5;
   structure_centered = 0;
+  regime_centered = 0;
   level_view = 0;
   frames_seen = 0;
   have_prev_ctx = 0;
+  esn_have_pred = 0;
   frame_counter = 0;
   prev_mono_sample = 0;
+  prev_rms_raw = 0;
+  prev_width_raw = 0;
   low_l = 0;
   low_r = 0;
   acc_energy = 0;
@@ -470,6 +578,105 @@ function oja_project_update(feat_ptr lr) local(i y acc nrm)
   y;
 );
 
+function ica_project_update(resid_ptr lr) local(i y g gp nrm xw)
+(
+  y = 0;
+  i = 0;
+  while (i < FEATURES) (
+    y += ptr_ica_w[i] * resid_ptr[i];
+    i += 1;
+  );
+
+  g = softsign(y);
+  gp = softsign_d_from_y(g);
+
+  lr > 0 ? (
+    i = 0;
+    while (i < FEATURES) (
+      ptr_ica_w[i] += lr * (resid_ptr[i] * g - gp * ptr_ica_w[i]);
+      i += 1;
+    );
+
+    nrm = 0;
+    i = 0;
+    while (i < FEATURES) (
+      nrm += ptr_ica_w[i] * ptr_ica_w[i];
+      i += 1;
+    );
+    nrm = sqrt(nrm + 0.0000001);
+
+    i = 0;
+    while (i < FEATURES) (
+      ptr_ica_w[i] /= nrm;
+      i += 1;
+    );
+  );
+
+  y;
+);
+
+function esn_step_train(target_ptr lr) local(j i k sum denom mu err basein baserec baseout leak in0 in1 in2)
+(
+  leak = 0.22;
+
+  in0 = grounding * target_ptr[0] + (1 - grounding) * (esn_have_pred ? ptr_lat_pred[0] : target_ptr[0]);
+  in1 = grounding * target_ptr[1] + (1 - grounding) * (esn_have_pred ? ptr_lat_pred[1] : target_ptr[1]);
+  in2 = grounding * target_ptr[2] + (1 - grounding) * (esn_have_pred ? ptr_lat_pred[2] : target_ptr[2]);
+
+  j = 0;
+  while (j < RES) (
+    basein = ptr_esn_w_in + j*LAT;
+    baserec = ptr_esn_w_rec + j*RES;
+    sum = basein[0] * in0 + basein[1] * in1 + basein[2] * in2;
+    i = 0;
+    while (i < RES) (
+      sum += baserec[i] * ptr_esn_state[i];
+      i += 1;
+    );
+    ptr_esn_tmp[j] = mix(ptr_esn_state[j], softsign(sum), leak);
+    j += 1;
+  );
+
+  memcpy(ptr_esn_state, ptr_esn_tmp, RES);
+
+  k = 0;
+  while (k < LAT) (
+    baseout = ptr_esn_w_out + k*RES;
+    sum = ptr_esn_b_out[k];
+    j = 0;
+    while (j < RES) (
+      sum += baseout[j] * ptr_esn_state[j];
+      j += 1;
+    );
+    ptr_lat_pred[k] = clamp(softsign(sum), -1, 1);
+    k += 1;
+  );
+
+  lr > 0 ? (
+    k = 0;
+    while (k < LAT) (
+      err = target_ptr[k] - ptr_lat_pred[k];
+      denom = 0.0001;
+      j = 0;
+      while (j < RES) (
+        denom += ptr_esn_state[j] * ptr_esn_state[j];
+        j += 1;
+      );
+      mu = lr * 0.50 / denom;
+      baseout = ptr_esn_w_out + k*RES;
+      j = 0;
+      while (j < RES) (
+        baseout[j] += mu * err * ptr_esn_state[j];
+        j += 1;
+      );
+      ptr_esn_b_out[k] += lr * 0.06 * err;
+      k += 1;
+    );
+  );
+
+  esn_have_pred = 1;
+);
+
 function sync_from_sliders()
 (
   mode = floor(clamp(mode, 0, 2) + 0.5);
@@ -478,25 +685,32 @@ function sync_from_sliders()
   learn_rate = clamp(learn_rate, 0.001, 0.25);
   frame_ms = clamp(frame_ms, 5, 80);
   ui_scale_user = clamp(ui_scale_user, 0.85, 1.25);
+  grounding = clamp(grounding, 0, 1);
   quiet_reset_frames = max(6, floor(250 / max(5, frame_ms)));
-  route_source = floor(clamp(route_source, 0, 5) + 0.5);
+  route_source = floor(clamp(route_source, 0, 8) + 0.5);
   route_pair = floor(clamp(route_pair, 1, 8) + 0.5);
   route_ch_a = route_pair * 2;
   route_ch_b = route_ch_a + 1;
 
   mode == 0 ? (
     learn_rate_eff = learn_rate;
-    oja_rate_eff = learn_rate * 0.20;
+    oja_rate_eff = learn_rate * 0.18;
+    ica_rate_eff = learn_rate * 0.12;
+    esn_rate_eff = learn_rate * 0.20;
     norm_rate = 0.05;
     cv_norm_rate = 0.05;
   ) : mode == 1 ? (
     learn_rate_eff = learn_rate * 0.15;
     oja_rate_eff = learn_rate * 0.04;
+    ica_rate_eff = learn_rate * 0.03;
+    esn_rate_eff = learn_rate * 0.05;
     norm_rate = 0.02;
     cv_norm_rate = 0.03;
   ) : (
     learn_rate_eff = 0;
     oja_rate_eff = 0;
+    ica_rate_eff = 0;
+    esn_rate_eff = 0;
     norm_rate = 0.005;
     cv_norm_rate = 0.02;
   );
@@ -561,12 +775,42 @@ function center_cv_outputs()
   cv_bi_target = 0;
   cv_bi_current = 0;
   cv_bi_for_slider = 0;
+  cv_uni_target = 0;
   cv_uni_current = 0;
   cv_uni_for_slider = 0;
+
+  surprise_uni_target = 0;
+  uncertainty_uni_target = 0.5;
+  structure_bi_target = 0;
+  body_uni_target = 0;
+  confidence_uni_target = confidence;
+  regime_uni_target = 0.5;
+
+  surprise_uni_current = 0;
+  uncertainty_uni_current = 0.5;
+  structure_bi_current = 0;
+  body_uni_current = 0;
+  confidence_uni_current = confidence;
+  regime_uni_current = 0.5;
+
   cv_uni_output = cv_uni_for_slider;
   cv_bi_output = cv_bi_for_slider;
+  cv_uni_surprise = surprise_uni_current;
+  cv_uni_uncertainty = uncertainty_uni_current;
+  cv_bi_structure = structure_bi_current;
+  cv_uni_body = body_uni_current;
+  cv_uni_confidence = confidence_uni_current;
+  cv_uni_regime = regime_uni_current;
+
   sliderchange(slider2);
   sliderchange(slider3);
+  sliderchange(slider12);
+  sliderchange(slider13);
+  sliderchange(slider14);
+  sliderchange(slider15);
+  sliderchange(slider16);
+  sliderchange(slider17);
+
   clear_histories();
 );
 
@@ -668,31 +912,33 @@ function draw_tooltip_footer(x y w h id ui_scale) local(tx ty)
   ) : id == 1011 ? (
     gfx_drawstr("Smooth is the final CV slew time. Low values twitch, high values glide.");
   ) : id == 1012 ? (
-    gfx_drawstr("Surprise Blend mixes structure/body with novelty. 0 = body, 1 = surprise.");
+    gfx_drawstr("Surprise Blend mixes precision-weighted surprise against the structural body lane. 0 = structure/body, 1 = novelty/accent.");
   ) : id == 1013 ? (
-    gfx_drawstr("Learn Rate controls how quickly the predictor and structure axis adapt in Listen/Adaptive.");
+    gfx_drawstr("Learn Rate controls online updates for the predictor, Oja body lane, ICA accent lane, and ESN readout in Listen/Adaptive.");
   ) : id == 1014 ? (
     gfx_drawstr("Analysis frame is the feature window size. Smaller = faster and noisier, larger = slower and steadier.");
   ) : id == 1020 ? (
-    gfx_drawstr("Open the advanced menu for optional audio routing and UI scale. Routing stays disabled unless you enable it.");
+    gfx_drawstr("Open the advanced menu for routing, UI scale, and grounding. Routing stays disabled unless you enable it.");
   ) : id == 1021 ? (
-    gfx_drawstr("Choose which internal lane, if any, gets written to audio pins. Disabled preserves all extra channels.");
+    gfx_drawstr("Choose which semantic lane gets written to audio pins: master, surprise, uncertainty, structure, body, confidence, or regime.");
   ) : id == 1022 ? (
     gfx_drawstr("Choose the output channel pair used for routed CV. 3/4 overwrites sidechain; 5/6+ is safer.");
   ) : id == 1023 ? (
     gfx_drawstr("UI Scale is a manual zoom on top of automatic window scaling. Right-click or double-click to go back to 1.00.");
+  ) : id == 1024 ? (
+    gfx_drawstr("Grounding blends the ESN between live-driven and freer-running behavior. 1.00 = grounded, 0.00 = autonomous/hybrid.");
   ) : id == 1030 ? (
-    gfx_drawstr("Reset model reinitializes predictor weights, feature statistics, and structure learning.");
+    gfx_drawstr("Reset model reinitializes predictor weights, feature statistics, residual uncertainty, Oja/ICA lanes, and the ESN state.");
   ) : id == 1031 ? (
     gfx_drawstr("Center CV zeros the live outputs and clears the history trace without rebuilding the model.");
   ) : id == 1040 ? (
-    gfx_drawstr("Trace view: cyan = Uni, teal = Bi, orange = Surprise, violet = Structure.");
+    gfx_drawstr("Trace view: cyan = master Uni, teal = master Bi, orange = surprise lane, violet = structure lane.");
   ) : id == 1041 ? (
     gfx_drawstr("Uni Output is the activity-style 0..1 lane. It is hidden from the stock UI but still linkable/automatable.");
   ) : id == 1042 ? (
     gfx_drawstr("Bi Output is the centered -1..1 lane for push-pull modulation around a resting point.");
   ) : id == 1043 ? (
-    gfx_drawstr("Feature manifold compares predicted vs actual feature states. Dark = predicted, bright = actual.");
+    gfx_drawstr("Feature manifold compares predicted vs actual feature states across eight features and three-timescale context. Dark = predicted, bright = actual.");
   ) : id == 1050 ? (
     gfx_drawstr("Learning gate opens only when signal clearly rises above the tracked floor. Silence and noise floor do not update the model.");
   ) : (
@@ -705,9 +951,9 @@ setup_layout();
 ext_noinit = 1;
 ext_nodenorm = 1;
 
-boot_magic != 830184 ? (
-  boot_magic = 830184;
-  ui_scale_user = 1.1;
+boot_magic != 830245 ? (
+  boot_magic = 830245;
+  ui_scale_user = 1;
   menu_open = 0;
   memset(0, 0, total_mem_len);
   reset_state();
@@ -719,6 +965,12 @@ sync_from_sliders();
 
 cv_uni_output = cv_uni_for_slider;
 cv_bi_output = cv_bi_for_slider;
+cv_uni_surprise = surprise_uni_current;
+cv_uni_uncertainty = uncertainty_uni_current;
+cv_bi_structure = structure_bi_current;
+cv_uni_body = body_uni_current;
+cv_uni_confidence = confidence_uni_current;
+cv_uni_regime = regime_uni_current;
 sync_from_sliders();
 
 @block
@@ -730,8 +982,20 @@ ui_reset_req ? (
   reset_state();
   cv_uni_output = cv_uni_for_slider;
   cv_bi_output = cv_bi_for_slider;
+  cv_uni_surprise = surprise_uni_current;
+  cv_uni_uncertainty = uncertainty_uni_current;
+  cv_bi_structure = structure_bi_current;
+  cv_uni_body = body_uni_current;
+  cv_uni_confidence = confidence_uni_current;
+  cv_uni_regime = regime_uni_current;
   sliderchange(slider2);
   sliderchange(slider3);
+  sliderchange(slider12);
+  sliderchange(slider13);
+  sliderchange(slider14);
+  sliderchange(slider15);
+  sliderchange(slider16);
+  sliderchange(slider17);
 );
 
 abs(cv_uni_output - cv_uni_for_slider) > 0.0005 ? (
@@ -742,6 +1006,36 @@ abs(cv_uni_output - cv_uni_for_slider) > 0.0005 ? (
 abs(cv_bi_output - cv_bi_for_slider) > 0.0005 ? (
   cv_bi_output = cv_bi_for_slider;
   sliderchange(slider3);
+);
+
+abs(cv_uni_surprise - surprise_uni_current) > 0.0005 ? (
+  cv_uni_surprise = surprise_uni_current;
+  sliderchange(slider12);
+);
+
+abs(cv_uni_uncertainty - uncertainty_uni_current) > 0.0005 ? (
+  cv_uni_uncertainty = uncertainty_uni_current;
+  sliderchange(slider13);
+);
+
+abs(cv_bi_structure - structure_bi_current) > 0.0005 ? (
+  cv_bi_structure = structure_bi_current;
+  sliderchange(slider14);
+);
+
+abs(cv_uni_body - body_uni_current) > 0.0005 ? (
+  cv_uni_body = body_uni_current;
+  sliderchange(slider15);
+);
+
+abs(cv_uni_confidence - confidence_uni_current) > 0.0005 ? (
+  cv_uni_confidence = confidence_uni_current;
+  sliderchange(slider16);
+);
+
+abs(cv_uni_regime - regime_uni_current) > 0.0005 ? (
+  cv_uni_regime = regime_uni_current;
+  sliderchange(slider17);
 );
 
 @sample
@@ -776,6 +1070,9 @@ frame_counter >= analysis_samples ? (
   width_raw = sqrt(acc_side2 / (acc_side2 + acc_mid2 + 0.0000000001));
   zcr_raw = acc_zc * analysis_inv;
   crest_raw = acc_peak / (rms + 0.0000000001) - 1;
+  body_raw = sqrt(acc_low2 / (acc_high2 + acc_low2 + 0.0000000001));
+  transient_raw = flux_raw * (1 + max(0, crest_raw));
+  spatial_flux_raw = abs(width_raw - prev_width_raw);
 
   level_view = rms;
   confidence = 1 - exp(-12 * rms);
@@ -811,6 +1108,8 @@ frame_counter >= analysis_samples ? (
   ptr_feat_raw[3] = width_raw;
   ptr_feat_raw[4] = zcr_raw;
   ptr_feat_raw[5] = crest_raw;
+  ptr_feat_raw[6] = body_raw;
+  ptr_feat_raw[7] = transient_raw + 0.5 * spatial_flux_raw;
 
   i = 0;
   while (i < FEATURES) (
@@ -823,48 +1122,99 @@ frame_counter >= analysis_samples ? (
     normed = (ptr_feat_raw[i] - ptr_feat_mean[i]) / (sd + 0.0001);
     normed = softsign(normed);
     ptr_feat_cur[i] = normed;
-    ptr_feat_fast[i] += 0.28 * (normed - ptr_feat_fast[i]);
-    ptr_feat_slow[i] += 0.08 * (normed - ptr_feat_slow[i]);
+    ptr_feat_fast[i] += 0.22 * (normed - ptr_feat_fast[i]);
+    ptr_feat_slow[i] += 0.06 * (normed - ptr_feat_slow[i]);
     i += 1;
   );
 
   have_prev_ctx && active_signal_frame ? (
     mlp_forward(ptr_z_prev, ptr_feat_pred);
 
+    prec_sum = 0;
     loss_now = 0;
+    uncertainty_acc = 0;
+    res_lr = mode == 2 ? 0.008 : 0.020 + 0.08 * norm_rate;
+
     i = 0;
     while (i < FEATURES) (
       errv = ptr_feat_cur[i] - ptr_feat_pred[i];
       ptr_feat_err[i] = errv;
-      loss_now += errv * errv;
+      active_signal_frame ? (
+        ptr_feat_resvar[i] += res_lr * (errv*errv - ptr_feat_resvar[i]);
+      );
+      resid_sd = sqrt(ptr_feat_resvar[i] + 0.000001);
+      precision_i = clamp(1 / (0.05 + ptr_feat_resvar[i]), 0.25, 10.0);
+      ptr_feat_resid[i] = clamp(errv / (resid_sd + 0.05), -3, 3);
+      prec_sum += precision_i;
+      loss_now += errv * errv * precision_i;
+      uncertainty_acc += resid_sd;
       i += 1;
     );
-    loss_now /= FEATURES;
+
+    loss_now /= max(1, prec_sum);
+    uncertainty_raw = uncertainty_acc / FEATURES;
     avg_loss = mix(avg_loss, loss_now, 0.06);
 
     learn_rate_eff > 0 && learn_gate_strength > 0.04 ? (
       train_used = mlp_train(ptr_z_prev, ptr_feat_cur, learn_rate_eff * learn_gate_strength);
-      avg_loss = mix(avg_loss, train_used, 0.10);
-      structure_raw = oja_project_update(ptr_feat_cur, oja_rate_eff * learn_gate_strength);
+      avg_loss = mix(avg_loss, train_used, 0.08);
+      structure_raw = oja_project_update(ptr_feat_slow, oja_rate_eff * learn_gate_strength);
+      accent_raw = ica_project_update(ptr_feat_resid, ica_rate_eff * learn_gate_strength);
       frames_seen += 1;
     ) : (
-      structure_raw = oja_project_update(ptr_feat_cur, 0);
+      structure_raw = oja_project_update(ptr_feat_slow, 0);
+      accent_raw = ica_project_update(ptr_feat_resid, 0);
     );
 
     surprise_raw = sqrt(loss_now + 0.0000001);
     surprise_mean += 0.03 * (surprise_raw - surprise_mean);
     surprise_var += 0.03 * ((surprise_raw - surprise_mean) * (surprise_raw - surprise_mean) - surprise_var);
-    surprise_norm = (surprise_raw - surprise_mean) / (sqrt(surprise_var + 0.000001) + 0.0001);
-    surprise_centered = softsign(surprise_norm);
-    surprise_view = 0.5 + 0.5 * surprise_centered;
+    surprise_sd = sqrt(surprise_var + 0.000001);
+    precision_surprise_centered = softsign((surprise_raw - surprise_mean) / (surprise_sd + 0.0001));
+    uni_surprise_base = clamp(surprise_raw / (surprise_mean + 2.2 * surprise_sd + 0.0001), 0, 1);
+
+    uncertainty_mean += 0.03 * (uncertainty_raw - uncertainty_mean);
+    uncertainty_var += 0.03 * ((uncertainty_raw - uncertainty_mean) * (uncertainty_raw - uncertainty_mean) - uncertainty_var);
+    uncertainty_sd = sqrt(uncertainty_var + 0.000001);
+    uncertainty_centered = softsign((uncertainty_raw - uncertainty_mean) / (uncertainty_sd + 0.0001));
+    uncertainty_uni = clamp(uncertainty_raw / (uncertainty_mean + 2.0 * uncertainty_sd + 0.0001), 0, 1);
 
     structure_mean += 0.03 * (structure_raw - structure_mean);
     structure_var += 0.03 * ((structure_raw - structure_mean) * (structure_raw - structure_mean) - structure_var);
-    structure_norm = (structure_raw - structure_mean) / (sqrt(structure_var + 0.000001) + 0.0001);
-    structure_centered = softsign(structure_norm);
-    structure_view = 0.5 + 0.5 * structure_centered;
+    structure_sd = sqrt(structure_var + 0.000001);
+    structure_centered = softsign((structure_raw - structure_mean) / (structure_sd + 0.0001));
 
-    cv_raw_blend = mix(structure_view, surprise_view, surprise_blend);
+    accent_mean += 0.03 * (accent_raw - accent_mean);
+    accent_var += 0.03 * ((accent_raw - accent_mean) * (accent_raw - accent_mean) - accent_var);
+    accent_sd = sqrt(accent_var + 0.000001);
+    accent_centered = softsign((accent_raw - accent_mean) / (accent_sd + 0.0001));
+    accent_uni = abs(accent_centered);
+
+    uni_surprise = clamp(0.78 * uni_surprise_base + 0.22 * accent_uni, 0, 1);
+    surprise_view = uni_surprise;
+    uncertainty_view = uncertainty_uni;
+    structure_view = 0.5 + 0.5 * structure_centered;
+    body_view = clamp(abs(structure_centered), 0, 1);
+    accent_view = 0.5 + 0.5 * accent_centered;
+
+    ptr_lat_actual[0] = structure_centered;
+    ptr_lat_actual[1] = precision_surprise_centered;
+    ptr_lat_actual[2] = accent_centered * (1 - 0.35 * uncertainty_uni);
+
+    esn_step_train(ptr_lat_actual, esn_rate_eff * learn_gate_strength);
+
+    regime_raw = 0.58 * ptr_lat_pred[0] + 0.27 * ptr_lat_pred[1] + 0.15 * ptr_lat_pred[2];
+    regime_mean += 0.025 * (regime_raw - regime_mean);
+    regime_var += 0.025 * ((regime_raw - regime_mean) * (regime_raw - regime_mean) - regime_var);
+    regime_sd = sqrt(regime_var + 0.000001);
+    regime_centered = softsign((regime_raw - regime_mean) / (regime_sd + 0.0001));
+    regime_view = 0.5 + 0.5 * regime_centered;
+
+    surprise_center_mix = softsign((uni_surprise * 2 - 1) * 0.85 + 0.15 * accent_centered);
+    cv_core = mix(structure_centered, surprise_center_mix, surprise_blend);
+    auto_mix = clamp((1 - grounding) * (0.35 + 0.65 * regime_view), 0, 1);
+    cv_raw_blend = mix(cv_core, regime_centered, auto_mix);
+
     cv_drive_mean += cv_norm_rate * (cv_raw_blend - cv_drive_mean);
     cv_drive_dx = cv_raw_blend - cv_drive_mean;
     cv_drive_var += cv_norm_rate * (cv_drive_dx*cv_drive_dx - cv_drive_var);
@@ -873,21 +1223,40 @@ frame_counter >= analysis_samples ? (
     cv_bi_target *= clamp(0.25 + 0.75 * sqrt(max(confidence, 0)), 0, 1);
     cv_uni_target = abs(cv_bi_target);
 
+    surprise_uni_target = uni_surprise;
+    uncertainty_uni_target = uncertainty_uni;
+    structure_bi_target = structure_centered;
+    body_uni_target = body_view;
+    confidence_uni_target = confidence;
+    regime_uni_target = regime_view;
+
     push_history(cv_uni_target, cv_bi_target, surprise_view, structure_view, confidence);
   ) : (
     surprise_view = mix(surprise_view, 0.5, 0.18);
+    uncertainty_view = mix(uncertainty_view, 0.5, 0.18);
     structure_view = mix(structure_view, 0.5, 0.18);
-    structure_centered *= 0.82;
+    body_view *= 0.82;
+    regime_view = mix(regime_view, 0.5, 0.12);
+    accent_view = mix(accent_view, 0.5, 0.20);
+
     cv_bi_target = 0;
     cv_uni_target = 0;
+    surprise_uni_target = mix(surprise_uni_target, 0.0, 0.20);
+    uncertainty_uni_target = mix(uncertainty_uni_target, 0.5, 0.12);
+    structure_bi_target = mix(structure_bi_target, 0.0, 0.18);
+    body_uni_target = mix(body_uni_target, 0.0, 0.20);
+    confidence_uni_target = mix(confidence_uni_target, 0.0, 0.20);
+    regime_uni_target = mix(regime_uni_target, 0.5, 0.08);
+    structure_centered *= 0.82;
+    regime_centered *= 0.88;
   );
 
   active_signal_frame ? (
     i = 0;
     while (i < FEATURES) (
       ptr_z_cur[i] = ptr_feat_cur[i];
-      ptr_z_cur[FEATURES + i] = ptr_feat_cur[i] - ptr_feat_prev[i];
-      ptr_z_cur[FEATURES*2 + i] = ptr_feat_fast[i] - ptr_feat_slow[i];
+      ptr_z_cur[FEATURES + i] = ptr_feat_fast[i];
+      ptr_z_cur[FEATURES*2 + i] = ptr_feat_slow[i];
       ptr_feat_prev[i] = ptr_feat_cur[i];
       i += 1;
     );
@@ -901,9 +1270,19 @@ frame_counter >= analysis_samples ? (
         ptr_z_cur[i] = 0;
         i += 1;
       );
+      i = 0;
+      while (i < RES) (
+        ptr_esn_state[i] = 0;
+        ptr_esn_tmp[i] = 0;
+        i += 1;
+      );
+      esn_have_pred = 0;
       have_prev_ctx = 0;
     );
   );
+
+  prev_rms_raw = rms;
+  prev_width_raw = width_raw;
 
   frame_counter = 0;
   acc_energy = 0;
@@ -916,9 +1295,27 @@ frame_counter >= analysis_samples ? (
   acc_zc = 0;
 );
 
+lane_smooth_coeff = min(1, smooth_coeff * 1.35 + 0.02);
+
 cv_bi_current += smooth_coeff * (cv_bi_target - cv_bi_current);
 cv_bi_current = clamp(cv_bi_current, -1, 1);
-cv_uni_current = abs(cv_bi_current);
+cv_uni_current += lane_smooth_coeff * (cv_uni_target - cv_uni_current);
+cv_uni_current = clamp(cv_uni_current, 0, 1);
+
+surprise_uni_current += lane_smooth_coeff * (surprise_uni_target - surprise_uni_current);
+uncertainty_uni_current += lane_smooth_coeff * (uncertainty_uni_target - uncertainty_uni_current);
+structure_bi_current += lane_smooth_coeff * (structure_bi_target - structure_bi_current);
+body_uni_current += lane_smooth_coeff * (body_uni_target - body_uni_current);
+confidence_uni_current += lane_smooth_coeff * (confidence_uni_target - confidence_uni_current);
+regime_uni_current += lane_smooth_coeff * (regime_uni_target - regime_uni_current);
+
+surprise_uni_current = clamp(surprise_uni_current, 0, 1);
+uncertainty_uni_current = clamp(uncertainty_uni_current, 0, 1);
+structure_bi_current = clamp(structure_bi_current, -1, 1);
+body_uni_current = clamp(body_uni_current, 0, 1);
+confidence_uni_current = clamp(confidence_uni_current, 0, 1);
+regime_uni_current = clamp(regime_uni_current, 0, 1);
+
 cv_bi_for_slider = cv_bi_current;
 cv_uni_for_slider = cv_uni_current;
 
@@ -933,14 +1330,23 @@ route_source > 0 ? (
     route_va = cv_bi_current;
     route_vb = -cv_bi_current;
   ) : route_source == 3 ? (
-    route_va = structure_centered;
-    route_vb = -structure_centered;
+    route_va = surprise_uni_current;
+    route_vb = 1 - surprise_uni_current;
   ) : route_source == 4 ? (
-    route_va = surprise_view;
-    route_vb = 1 - surprise_view;
+    route_va = uncertainty_uni_current;
+    route_vb = 1 - uncertainty_uni_current;
+  ) : route_source == 5 ? (
+    route_va = structure_bi_current;
+    route_vb = -structure_bi_current;
+  ) : route_source == 6 ? (
+    route_va = body_uni_current;
+    route_vb = 1 - body_uni_current;
+  ) : route_source == 7 ? (
+    route_va = confidence_uni_current;
+    route_vb = 1 - confidence_uni_current;
   ) : (
-    route_va = confidence;
-    route_vb = 1 - confidence;
+    route_va = regime_uni_current;
+    route_vb = 1 - regime_uni_current;
   );
 
   route_pair == 1 ? (
@@ -963,6 +1369,7 @@ route_source > 0 ? (
 );
 
 @gfx 1180 760
+
 
 gfx_ext_retina = 1;
 mouse_l = mouse_cap & 1;
@@ -1012,7 +1419,10 @@ gfx_set(0.92,0.95,1.0,1);
 gfx_x = margin + 14 * ui_scale; gfx_y = margin + 10 * ui_scale;
 gfx_drawstr("PREDICTIVE CV FIELD");
 
-
+gfx_setfont(2, "Arial", fs_sub, 0);
+gfx_set(0.72,0.76,0.84,1);
+gfx_x = margin + 14 * ui_scale; gfx_y = margin + 30 * ui_scale;
+gfx_drawstr("GUI-only control surface · hidden sliders stay linkable/automatable");
 
 menu_btn_w = floor(88 * ui_scale);
 menu_btn_h = floor(28 * ui_scale);
@@ -1069,7 +1479,7 @@ gfx_drawstr("CV trace");
 gfx_setfont(2, "Arial", fs_small, 0);
 gfx_set(0.72,0.76,0.84,1);
 gfx_x = left_x + inner_pad + 72 * ui_scale; gfx_y = panel_y + 16 * ui_scale;
-gfx_drawstr("cyan = uni, teal = bi, orange = surprise, violet = structure");
+gfx_drawstr("cyan = master uni, teal = master bi, orange = surprise, violet = structure");
 
 point_in_rect(mouse_x, mouse_y, plot_x, plot_y, plot_w, plot_h) ? tooltip_id = 1040;
 draw_trace_panel(plot_x, plot_y, plot_w, plot_h);
@@ -1097,52 +1507,60 @@ gfx_printf("frames learned %d   signal %.3f   floor %.4f", frames_seen, level_vi
 
 metric_top = plot_y + plot_h + 14 * ui_scale;
 metric_w = (plot_w - 24 * ui_scale) * 0.5;
-metric_gap = 36 * ui_scale;
+metric_gap = 32 * ui_scale;
 metric_bar_h = max(8, floor(10 * ui_scale));
 
 gfx_setfont(2, "Arial", fs_small, 0);
 gfx_set(0.82,0.86,0.92,1);
 
-// Uni
 ux = plot_x; uy = metric_top;
+bx = plot_x + metric_w + 24 * ui_scale; by = metric_top;
+
+// Master outputs
 point_in_rect(mouse_x, mouse_y, ux, uy, metric_w, metric_gap-4*ui_scale) ? tooltip_id = 1041;
-gfx_x = ux; gfx_y = uy; gfx_printf("uni activity %.3f", cv_uni_current);
+gfx_x = ux; gfx_y = uy; gfx_printf("master uni %.3f", cv_uni_current);
 draw_unipolar_bar(ux, uy + 15 * ui_scale, metric_w, metric_bar_h, cv_uni_current, 0.28,0.80,1.0);
 
-// Bi
-bx = plot_x + metric_w + 24 * ui_scale; by = metric_top;
 point_in_rect(mouse_x, mouse_y, bx, by, metric_w, metric_gap-4*ui_scale) ? tooltip_id = 1042;
-gfx_x = bx; gfx_y = by; gfx_printf("bi centered %.3f", cv_bi_current);
+gfx_x = bx; gfx_y = by; gfx_printf("master bi %.3f", cv_bi_current);
 draw_bipolar_bar(bx, by + 15 * ui_scale, metric_w, metric_bar_h, cv_bi_current, 0.30,1.00,0.90);
 
-// Surprise
-gfx_x = ux; gfx_y = uy + metric_gap; gfx_printf("surprise %.3f", surprise_view);
-draw_unipolar_bar(ux, uy + metric_gap + 15 * ui_scale, metric_w, metric_bar_h, surprise_view, 1.00,0.65,0.28);
+// Surprise + uncertainty
+gfx_x = ux; gfx_y = uy + metric_gap; gfx_printf("surprise %.3f", surprise_uni_current);
+draw_unipolar_bar(ux, uy + metric_gap + 15 * ui_scale, metric_w, metric_bar_h, surprise_uni_current, 1.00,0.65,0.28);
 
-// Structure
-gfx_x = bx; gfx_y = by + metric_gap; gfx_printf("structure %.3f", structure_centered);
-draw_bipolar_bar(bx, by + metric_gap + 15 * ui_scale, metric_w, metric_bar_h, structure_centered, 0.72,0.54,1.00);
+gfx_x = bx; gfx_y = by + metric_gap; gfx_printf("uncertainty %.3f", uncertainty_uni_current);
+draw_unipolar_bar(bx, by + metric_gap + 15 * ui_scale, metric_w, metric_bar_h, uncertainty_uni_current, 0.92,0.78,0.42);
 
-// Confidence
-gfx_x = ux; gfx_y = uy + metric_gap*2; gfx_printf("confidence %.3f", confidence);
-draw_unipolar_bar(ux, uy + metric_gap*2 + 15 * ui_scale, metric_w, metric_bar_h, confidence, 0.60,0.88,0.54);
+// Structure + regime
+gfx_x = ux; gfx_y = uy + metric_gap*2; gfx_printf("structure %.3f", structure_bi_current);
+draw_bipolar_bar(ux, uy + metric_gap*2 + 15 * ui_scale, metric_w, metric_bar_h, structure_bi_current, 0.72,0.54,1.00);
 
-// Gate
-point_in_rect(mouse_x, mouse_y, bx, by + metric_gap*2, metric_w, metric_gap-4*ui_scale) ? tooltip_id = 1050;
-gfx_x = bx; gfx_y = by + metric_gap*2; signal_gate ? gfx_printf("learn gate open %.3f", learn_gate_strength) : gfx_drawstr("learn gate closed");
-draw_unipolar_bar(bx, by + metric_gap*2 + 15 * ui_scale, metric_w, metric_bar_h, learn_gate_strength, signal_gate ? 0.98 : 0.48, signal_gate ? 0.78 : 0.48, signal_gate ? 0.34 : 0.48);
+gfx_x = bx; gfx_y = by + metric_gap*2; gfx_printf("regime %.3f", regime_uni_current);
+draw_unipolar_bar(bx, by + metric_gap*2 + 15 * ui_scale, metric_w, metric_bar_h, regime_uni_current, 0.76,0.56,1.00);
 
-// Loss
-gfx_x = ux; gfx_y = uy + metric_gap*3; gfx_printf("loss %.5f", avg_loss);
+// Body + confidence
+gfx_x = ux; gfx_y = uy + metric_gap*3; gfx_printf("body %.3f", body_uni_current);
+draw_unipolar_bar(ux, uy + metric_gap*3 + 15 * ui_scale, metric_w, metric_bar_h, body_uni_current, 0.52,0.86,0.72);
+
+gfx_x = bx; gfx_y = by + metric_gap*3; gfx_printf("confidence %.3f", confidence_uni_current);
+draw_unipolar_bar(bx, by + metric_gap*3 + 15 * ui_scale, metric_w, metric_bar_h, confidence_uni_current, 0.60,0.88,0.54);
+
+// Gate + loss
+point_in_rect(mouse_x, mouse_y, ux, uy + metric_gap*4, metric_w, metric_gap-4*ui_scale) ? tooltip_id = 1050;
+gfx_x = ux; gfx_y = uy + metric_gap*4; signal_gate ? gfx_printf("learn gate open %.3f", learn_gate_strength) : gfx_drawstr("learn gate closed");
+draw_unipolar_bar(ux, uy + metric_gap*4 + 15 * ui_scale, metric_w, metric_bar_h, learn_gate_strength, signal_gate ? 0.98 : 0.48, signal_gate ? 0.78 : 0.48, signal_gate ? 0.34 : 0.48);
+
+gfx_x = bx; gfx_y = by + metric_gap*4; gfx_printf("loss %.5f", avg_loss);
 loss_vis = clamp(1 - sqrt(min(1, avg_loss*4)), 0, 1);
-draw_unipolar_bar(ux, uy + metric_gap*3 + 15 * ui_scale, metric_w, metric_bar_h, loss_vis, 0.86,0.44,0.44);
+draw_unipolar_bar(bx, by + metric_gap*4 + 15 * ui_scale, metric_w, metric_bar_h, loss_vis, 0.86,0.44,0.44);
 
-feat_top = metric_top + metric_gap*4 + 12 * ui_scale;
-feat_row_h = 26 * ui_scale;
+feat_top = metric_top + metric_gap*5 + 10 * ui_scale;
+feat_row_h = 21 * ui_scale;
 feat_bar_x = plot_x + 118 * ui_scale;
 feat_bar_w = plot_w - 132 * ui_scale;
 
-point_in_rect(mouse_x, mouse_y, plot_x, feat_top, plot_w, feat_row_h*7) ? tooltip_id = 1043;
+point_in_rect(mouse_x, mouse_y, plot_x, feat_top, plot_w, feat_row_h*10) ? tooltip_id = 1043;
 gfx_setfont(4, "Arial", fs_section, $'b');
 gfx_set(0.90,0.93,0.98,1);
 gfx_x = plot_x; gfx_y = feat_top;
@@ -1158,29 +1576,38 @@ label_x = plot_x;
 gfx_set(0.78,0.82,0.88,1);
 
 gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Level");
-draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[0], ptr_feat_cur[0], 0.22,0.36,0.46, 0.28,0.80,1.0);
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 10*ui_scale), ptr_feat_pred[0], ptr_feat_cur[0], 0.22,0.36,0.46, 0.28,0.80,1.0);
 fy += feat_row_h;
 
 gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Flux");
-draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[1], ptr_feat_cur[1], 0.42,0.28,0.18, 1.00,0.65,0.28);
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 10*ui_scale), ptr_feat_pred[1], ptr_feat_cur[1], 0.42,0.28,0.18, 1.00,0.65,0.28);
 fy += feat_row_h;
 
 gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Brightness");
-draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[2], ptr_feat_cur[2], 0.42,0.28,0.18, 1.00,0.65,0.28);
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 10*ui_scale), ptr_feat_pred[2], ptr_feat_cur[2], 0.42,0.28,0.18, 1.00,0.65,0.28);
 fy += feat_row_h;
 
 gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Width");
-draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[3], ptr_feat_cur[3], 0.30,0.24,0.42, 0.72,0.54,1.00);
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 10*ui_scale), ptr_feat_pred[3], ptr_feat_cur[3], 0.30,0.24,0.42, 0.72,0.54,1.00);
 fy += feat_row_h;
 
 gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("ZCR");
-draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[4], ptr_feat_cur[4], 0.18,0.34,0.30, 0.60,0.88,0.54);
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 10*ui_scale), ptr_feat_pred[4], ptr_feat_cur[4], 0.18,0.34,0.30, 0.60,0.88,0.54);
 fy += feat_row_h;
 
 gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Crest");
-draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 11*ui_scale), ptr_feat_pred[5], ptr_feat_cur[5], 0.40,0.22,0.28, 0.86,0.44,0.44);
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 10*ui_scale), ptr_feat_pred[5], ptr_feat_cur[5], 0.40,0.22,0.28, 0.86,0.44,0.44);
+fy += feat_row_h;
+
+gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Body");
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 10*ui_scale), ptr_feat_pred[6], ptr_feat_cur[6], 0.20,0.34,0.28, 0.52,0.86,0.72);
+fy += feat_row_h;
+
+gfx_x = label_x; gfx_y = fy + 4 * ui_scale; gfx_drawstr("Transient");
+draw_bipolar_overlay(feat_bar_x, fy + 4 * ui_scale, feat_bar_w, max(10, 10*ui_scale), ptr_feat_pred[7], ptr_feat_cur[7], 0.40,0.18,0.24, 0.98,0.78,0.40);
 
 // Right panel content
+
 ctrl_x = right_x + inner_pad;
 ctrl_w = right_w - inner_pad * 2;
 ctrl_y = panel_y + 14 * ui_scale;
@@ -1196,11 +1623,14 @@ gfx_x = ctrl_x + 124 * ui_scale; gfx_y = ctrl_y + 2 * ui_scale;
 route_source == 0 ? (
   gfx_drawstr("route disabled");
 ) : (
-  route_source == 1 ? gfx_drawstr("route: uni")
-  : route_source == 2 ? gfx_drawstr("route: bi")
-  : route_source == 3 ? gfx_drawstr("route: structure")
-  : route_source == 4 ? gfx_drawstr("route: surprise")
-  : gfx_drawstr("route: confidence");
+  route_source == 1 ? gfx_drawstr("route: master uni")
+  : route_source == 2 ? gfx_drawstr("route: master bi")
+  : route_source == 3 ? gfx_drawstr("route: surprise")
+  : route_source == 4 ? gfx_drawstr("route: uncertainty")
+  : route_source == 5 ? gfx_drawstr("route: structure")
+  : route_source == 6 ? gfx_drawstr("route: body")
+  : route_source == 7 ? gfx_drawstr("route: confidence")
+  : gfx_drawstr("route: regime");
 );
 
 ctrl_y += 30 * ui_scale;
@@ -1342,13 +1772,13 @@ menu_open ? (
   gfx_setfont(2, "Arial", fs_body, 0);
   gfx_set(0.82,0.86,0.92,1);
   gfx_x = adv_x; gfx_y = ay; gfx_drawstr("Audio Route Lane");
-  route_norm = route_source / 5;
+  route_norm = route_source / 8;
   draw_slider_track(adv_x, ay + 14 * ui_scale, adv_w, slider_h, route_norm, 0.50,0.74,0.98);
   newv = ui_slider_norm(106, adv_x, ay + 10 * ui_scale, adv_w, slider_h + 10 * ui_scale, route_norm, 0, 1021);
-  new_route = floor(0.5 + newv * 5);
+  new_route = floor(0.5 + newv * 8);
   new_route != route_source ? (route_source = new_route; sync_from_sliders(); sliderchange(slider9););
   gfx_set(0.72,0.76,0.84,1); gfx_x = adv_x; gfx_y = ay + 30 * ui_scale;
-  route_source == 0 ? gfx_drawstr("Disabled") : route_source == 1 ? gfx_drawstr("Uni Activity") : route_source == 2 ? gfx_drawstr("Bi Centered") : route_source == 3 ? gfx_drawstr("Structure") : route_source == 4 ? gfx_drawstr("Surprise") : gfx_drawstr("Confidence");
+  route_source == 0 ? gfx_drawstr("Disabled") : route_source == 1 ? gfx_drawstr("Master Uni") : route_source == 2 ? gfx_drawstr("Master Bi") : route_source == 3 ? gfx_drawstr("Surprise") : route_source == 4 ? gfx_drawstr("Uncertainty") : route_source == 5 ? gfx_drawstr("Structure") : route_source == 6 ? gfx_drawstr("Body") : route_source == 7 ? gfx_drawstr("Confidence") : gfx_drawstr("Regime");
   ay += 52 * ui_scale;
 
   // Route pair
@@ -1375,7 +1805,22 @@ menu_open ? (
     sync_from_sliders();
     sliderchange(slider11);
   );
-  ay += 54 * ui_scale;
+  ay += 52 * ui_scale;
+
+  // Grounding
+  gfx_set(0.82,0.86,0.92,1);
+  gfx_x = adv_x; gfx_y = ay; gfx_drawstr("Grounding");
+  gfx_x = adv_x + adv_w - 72 * ui_scale; gfx_y = ay; gfx_printf("%.2f", grounding);
+  draw_slider_track(adv_x, ay + 14 * ui_scale, adv_w, slider_h, grounding, 0.90,0.62,0.42);
+  newv = ui_slider_norm(109, adv_x, ay + 10 * ui_scale, adv_w, slider_h + 10 * ui_scale, grounding, 1, 1024);
+  abs(newv - grounding) > 0.0001 ? (
+    grounding = newv;
+    sync_from_sliders();
+    sliderchange(slider18);
+  );
+  gfx_set(0.72,0.76,0.84,1); gfx_x = adv_x; gfx_y = ay + 30 * ui_scale;
+  grounding > 0.99 ? gfx_drawstr("fully grounded to live input") : grounding < 0.05 ? gfx_drawstr("mostly free-running ESN regime") : gfx_drawstr("hybrid: live input pulls the reservoir back");
+  ay += 52 * ui_scale;
 
   gfx_setfont(2, "Arial", fs_small, 0);
   gfx_set(route_source == 0 ? 0.72 : 1.00, route_source == 0 ? 0.76 : 0.70, route_source == 0 ? 0.84 : 0.34, 1);
@@ -1387,7 +1832,7 @@ menu_open ? (
   gfx_setfont(2, "Arial", fs_small, 0);
   gfx_set(0.62,0.66,0.74,1);
   gfx_x = ctrl_x; gfx_y = action_y - 24 * ui_scale;
-  gfx_drawstr("Menu holds optional routing and UI zoom. Routing stays off unless you enable it.");
+  gfx_drawstr("Menu holds routing, grounding, and UI zoom. Routing stays off unless you enable it.");
 );
 
 btn_gap = 8 * ui_scale;
@@ -1434,16 +1879,39 @@ last_mouse_r = mouse_r;
 file_var(0, boot_magic);
 file_var(0, surprise_mean);
 file_var(0, surprise_var);
+file_var(0, uncertainty_mean);
+file_var(0, uncertainty_var);
 file_var(0, structure_mean);
 file_var(0, structure_var);
+file_var(0, accent_mean);
+file_var(0, accent_var);
+file_var(0, regime_mean);
+file_var(0, regime_var);
 file_var(0, cv_drive_mean);
 file_var(0, cv_drive_var);
 file_var(0, avg_loss);
+
 file_var(0, cv_bi_target);
 file_var(0, cv_bi_current);
 file_var(0, cv_bi_for_slider);
+file_var(0, cv_uni_target);
 file_var(0, cv_uni_current);
 file_var(0, cv_uni_for_slider);
+
+file_var(0, surprise_uni_target);
+file_var(0, uncertainty_uni_target);
+file_var(0, structure_bi_target);
+file_var(0, body_uni_target);
+file_var(0, confidence_uni_target);
+file_var(0, regime_uni_target);
+
+file_var(0, surprise_uni_current);
+file_var(0, uncertainty_uni_current);
+file_var(0, structure_bi_current);
+file_var(0, body_uni_current);
+file_var(0, confidence_uni_current);
+file_var(0, regime_uni_current);
+
 file_var(0, confidence);
 file_var(0, signal_gate);
 file_var(0, learn_gate_strength);
@@ -1453,14 +1921,22 @@ file_var(0, noise_rms_est);
 file_var(0, signal_rms_est);
 file_var(0, quiet_frames);
 file_var(0, surprise_view);
+file_var(0, uncertainty_view);
 file_var(0, structure_view);
+file_var(0, body_view);
+file_var(0, regime_view);
+file_var(0, accent_view);
 file_var(0, structure_centered);
+file_var(0, regime_centered);
 file_var(0, level_view);
 file_var(0, frames_seen);
 file_var(0, have_prev_ctx);
+file_var(0, esn_have_pred);
 file_var(0, hist_write);
 file_var(0, frame_counter);
 file_var(0, prev_mono_sample);
+file_var(0, prev_rms_raw);
+file_var(0, prev_width_raw);
 file_var(0, low_l);
 file_var(0, low_r);
 file_var(0, acc_energy);
@@ -1472,6 +1948,8 @@ file_var(0, acc_mid2);
 file_var(0, acc_side2);
 file_var(0, acc_zc);
 file_var(0, ui_scale_user);
+file_var(0, grounding);
+
 file_mem(0, 0, save_mem_len);
 file_mem(0, ptr_hist_uni, HISTN);
 file_mem(0, ptr_hist_bi, HISTN);
