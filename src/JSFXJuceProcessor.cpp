@@ -5274,13 +5274,13 @@ public:
         repaint();
     }
 
-    void mouseMove (const juce::MouseEvent& e) override { updateMouse (e, false, false); }
-    void mouseDrag (const juce::MouseEvent& e) override { updateMouse (e, true, false); }
+    void mouseMove (const juce::MouseEvent& e) override { updateMouse (e, false, false, false); }
+    void mouseDrag (const juce::MouseEvent& e) override { updateMouse (e, true, false, false); }
 
     void mouseDown (const juce::MouseEvent& e) override
     {
         grabKeyboardFocus();
-        updateMouse (e, true, false);
+        updateMouse (e, true, false, true);
     }
 
     void mouseUp (const juce::MouseEvent& e) override
@@ -5288,7 +5288,7 @@ public:
         // Some JUCE backends report the just-released button as still present
         // in e.mods during mouseUp(). Use the current global modifier state so
         // releases are observed immediately and in the correct order.
-        updateMouse (e, true, true);
+        updateMouse (e, true, true, true);
     }
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& d) override
@@ -5308,6 +5308,7 @@ public:
             frame.pendingWheel = (float) (d.deltaY * 120.0);
             frame.pendingHWheel = (float) (d.deltaX * 120.0);
             frame.captureStateWrites = true;
+            frame.preserveOrdering = false;
 
             enqueueMouseFrameLocked (frame);
             sharedInput.captureStateWrites = true;
@@ -5399,6 +5400,7 @@ public:
             frame.mouseY = sharedInput.mouseY;
             frame.mouseCap = releasedCap;
             frame.captureStateWrites = true;
+            frame.preserveOrdering = true;
             sharedInput.mouseFrames.push_back (frame);
 
             sharedInput.mouseCap = releasedCap;
@@ -5433,6 +5435,7 @@ private:
         float pendingWheel = 0.0f;
         float pendingHWheel = 0.0f;
         bool captureStateWrites = false;
+        bool preserveOrdering = false; // true for button-edge/release frames; false means latest-state aggregation
     };
 
     struct SharedInputState
@@ -5799,6 +5802,7 @@ private:
             frame.mouseY = sharedInput.mouseY;
             frame.mouseCap = releasedCap;
             frame.captureStateWrites = true;
+            frame.preserveOrdering = true;
             sharedInput.mouseFrames.push_back (frame);
         }
 
@@ -5807,7 +5811,7 @@ private:
         mouseCap = releasedCap;
     }
 
-    void updateMouse (const juce::MouseEvent& e, bool markDirty, bool useCurrentModifiers)
+    void updateMouse (const juce::MouseEvent& e, bool markDirty, bool useCurrentModifiers, bool preserveOrdering)
     {
         if (! hasGfxFlag || ! gfxCompiledOkFlag)
             return;
@@ -5823,6 +5827,7 @@ private:
             frame.mouseY = (float) e.position.y;
             frame.mouseCap = mouseCap;
             frame.captureStateWrites = markDirty;
+            frame.preserveOrdering = preserveOrdering;
 
             enqueueMouseFrameLocked (frame);
 
@@ -6277,25 +6282,43 @@ private:
         sharedInput.mouseY = frame.mouseY;
         sharedInput.mouseCap = frame.mouseCap;
 
-        if (! sharedInput.mouseFrames.empty())
+        // Continuous input should catch up to the newest state instead of
+        // replaying every stale move/drag/wheel event. Only discrete button
+        // transitions keep strict FIFO ordering.
+        if (frame.preserveOrdering)
         {
-            auto& back = sharedInput.mouseFrames.back();
-            const bool canCoalesce = ! back.captureStateWrites
-                                  && ! frame.captureStateWrites
-                                  && back.mouseCap == frame.mouseCap
-                                  && back.pendingWheel == 0.0f
-                                  && back.pendingHWheel == 0.0f
-                                  && frame.pendingWheel == 0.0f
-                                  && frame.pendingHWheel == 0.0f;
-            if (canCoalesce)
+            if (! sharedInput.mouseFrames.empty())
             {
-                back.mouseX = frame.mouseX;
-                back.mouseY = frame.mouseY;
-                return;
+                const auto& back = sharedInput.mouseFrames.back();
+                const bool staleTail = ! back.preserveOrdering
+                                     && ! back.captureStateWrites
+                                     && back.pendingWheel == 0.0f
+                                     && back.pendingHWheel == 0.0f;
+                if (staleTail)
+                    sharedInput.mouseFrames.pop_back();
             }
-        }
 
-        sharedInput.mouseFrames.push_back (frame);
+            sharedInput.mouseFrames.push_back (frame);
+        }
+        else
+        {
+            if (! sharedInput.mouseFrames.empty())
+            {
+                auto& back = sharedInput.mouseFrames.back();
+                if (! back.preserveOrdering)
+                {
+                    back.mouseX = frame.mouseX;
+                    back.mouseY = frame.mouseY;
+                    back.mouseCap = frame.mouseCap;
+                    back.pendingWheel += frame.pendingWheel;
+                    back.pendingHWheel += frame.pendingHWheel;
+                    back.captureStateWrites = back.captureStateWrites || frame.captureStateWrites;
+                    return;
+                }
+            }
+
+            sharedInput.mouseFrames.push_back (frame);
+        }
 
         constexpr size_t kMaxQueuedMouseFrames = 512;
         if (sharedInput.mouseFrames.size() > kMaxQueuedMouseFrames)
