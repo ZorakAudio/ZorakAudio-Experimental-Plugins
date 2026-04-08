@@ -6,7 +6,7 @@ DSP-JSFX -> LLVM IR (llvmlite) compiler front-end.
 
 Contract (DSP-JSFX):
 - Sections: @init, @slider, @block, @sample (any may be missing)
-- DSP-first AOT subset: no @gfx compilation, no preprocessor.
+- DSP-first AOT subset: no @gfx compilation. Basic textual import preprocessing is supported.
 - Strings are accepted as opaque handles for compatibility helpers.
 - MIDI builtins midirecv()/midisend() are supported in @block and @sample.
 - Type: everything is double.
@@ -716,8 +716,11 @@ class Parser:
                 sp = self.cur.span
                 self._adv()
                 self._skip_seps()
-                idx = self.parse_expr(0)
-                self._skip_seps()
+                if self.cur.kind == "punc" and self.cur.text == "]":
+                    idx = Num(self._new_id(), sp, 0.0)
+                else:
+                    idx = self.parse_expr(0)
+                    self._skip_seps()
                 self._eat("punc", "]")
                 node = Index(self._new_id(), sp, node, idx)
                 continue
@@ -784,6 +787,110 @@ class Parser:
 # -----------------------------
 
 _SECTION_RE = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b.*$")
+
+
+
+# --- Joep/JSFX compatibility: section-aware textual import preprocessing ---
+_IMPORT_LINE_RE = re.compile(
+    r"^\s*import\s+(?:\"([^\"]+)\"|'([^']+)'|([^\s;]+))\s*;?\s*(?://.*)?$"
+)
+
+def _read_text_file(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+def _merge_import_bundle(dst_preamble: List[str], dst_order: List[str], dst_sections: Dict[str, List[str]],
+                         src_preamble: List[str], src_order: List[str], src_sections: Dict[str, List[str]]) -> None:
+    dst_preamble.extend(src_preamble)
+    for sec in src_order:
+        if sec not in dst_sections:
+            dst_sections[sec] = []
+            dst_order.append(sec)
+        dst_sections[sec].extend(src_sections.get(sec, []))
+
+
+def _parse_jsfx_import_bundle(source_path: Path, stack: List[Path]) -> Tuple[List[str], List[str], Dict[str, List[str]]]:
+    text = _read_text_file(source_path)
+    preamble: List[str] = []
+    order: List[str] = []
+    sections: Dict[str, List[str]] = {}
+
+    current: Optional[str] = None
+    current_lines: List[str] = []
+
+    def flush_current() -> None:
+        nonlocal current_lines
+        if current is None:
+            return
+        if current not in sections:
+            sections[current] = []
+            order.append(current)
+        sections[current].extend(current_lines)
+        current_lines = []
+
+    for raw_line in text.splitlines(True):
+        m_imp = _IMPORT_LINE_RE.match(raw_line)
+        m_sec = _SECTION_RE.match(raw_line)
+
+        if m_imp:
+            token = next((g for g in m_imp.groups() if g), "")
+            if not token:
+                if current is None:
+                    preamble.append(raw_line)
+                else:
+                    current_lines.append(raw_line)
+                continue
+
+            inc_path = (source_path.parent / token).resolve()
+            if not inc_path.exists():
+                raise FileNotFoundError(
+                    f"Unable to resolve JSFX import {token!r} from {source_path}"
+                )
+            if inc_path in stack:
+                chain = " -> ".join(str(p) for p in (stack + [inc_path]))
+                raise ValueError(f"Cyclic JSFX import chain: {chain}")
+
+            child_preamble, child_order, child_sections = _parse_jsfx_import_bundle(inc_path, stack + [inc_path])
+            if current is None:
+                _merge_import_bundle(preamble, order, sections, child_preamble, child_order, child_sections)
+            else:
+                current_lines.extend(child_preamble)
+                for sec in child_order:
+                    if sec == current:
+                        current_lines.extend(child_sections.get(sec, []))
+                    else:
+                        if sec not in sections:
+                            sections[sec] = []
+                            order.append(sec)
+                        sections[sec].extend(child_sections.get(sec, []))
+            continue
+
+        if m_sec:
+            flush_current()
+            current = m_sec.group(1)
+            current_lines = []
+            continue
+
+        if current is None:
+            preamble.append(raw_line)
+        else:
+            current_lines.append(raw_line)
+
+    flush_current()
+    return preamble, order, sections
+
+
+def preprocess_jsfx_imports(jsfx_text: str, source_path: Optional[Path]) -> str:
+    if source_path is None:
+        return jsfx_text
+    src = source_path.resolve()
+    preamble, order, sections = _parse_jsfx_import_bundle(src, [src])
+    out_lines: List[str] = list(preamble)
+    for sec in order:
+        out_lines.append(f"@{sec}\n")
+        out_lines.extend(sections.get(sec, []))
+        if out_lines and not out_lines[-1].endswith("\n"):
+            out_lines.append("\n")
+    return "".join(out_lines)
 
 def extract_sections(jsfx_text: str) -> Dict[str, Tuple[str, int]]:
     """
@@ -3905,6 +4012,37 @@ class LLVMModuleEmitter:
                 ret = builder.call(self.fn_slider_automate, [st, mask, end_touch])
                 return self._to_f64(builder, ret)
 
+
+            if fn == "slider_next_chg":
+                # JSFX builtin: slider_next_chg(sliderX_or_index, out_value)
+                #
+                # Minimal AOT/JUCE compatibility implementation: expose the current
+                # value and report no future sample-accurate change point in the
+                # current block.
+                if len(n.args) != 2:
+                    raise ValueError("slider_next_chg expects 2 args")
+
+                slider_idx = self.emit_expr(builder, st, n.args[0])
+
+                out_ptr = None
+                if isinstance(n.args[1], Var) and n.args[1].name != "mem":
+                    out_ptr = self._get_slot_ptr(builder, st, n.args[1].name)
+                elif isinstance(n.args[1], Index):
+                    out_ptr = self._mem_elem_ptr(builder, st, n.args[1].base, n.args[1].index)
+                else:
+                    _ = self.emit_expr(builder, st, n.args[1])
+
+                if out_ptr is None:
+                    out_ptr = ir.Constant(self.double.as_pointer(), None)
+
+                rt_name = "jsfx_slider_next_chg"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double.as_pointer()])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+                return builder.call(fdecl, [st, slider_idx, out_ptr])
+
             if fn == "slider_show":
                 # JSFX builtin: slider_show(mask_or_sliderX[, value])
                 #
@@ -4578,6 +4716,7 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("int jsfx_midisend(DSPJSFX_State* st, double offset, double msg1, double msg2, double msg3);")
     lines.append("int jsfx_sliderchange(DSPJSFX_State* st, double sliderMask);")
     lines.append("int jsfx_slider_automate(DSPJSFX_State* st, double sliderMask, double endTouch);")
+    lines.append("double jsfx_slider_next_chg(DSPJSFX_State* st, double sliderIndex, double* outValue);")
     lines.append("")
     lines.append("#ifdef __cplusplus")
     lines.append("}")
@@ -4678,7 +4817,9 @@ def main() -> int:
     ap.add_argument("--target", default="", help="LLVM target triple for AOT object/asm (e.g. x86_64-pc-windows-msvc)")
     args = ap.parse_args()
 
-    txt = Path(args.input).read_text(encoding="utf-8", errors="replace")
+    input_path = Path(args.input).resolve()
+    txt = input_path.read_text(encoding="utf-8", errors="replace")
+    txt = preprocess_jsfx_imports(txt, input_path)
 
     enable_section_hoists = bool(args.enable_custom_opt or args.enable_section_hoist)
     enable_loop_hoists = bool(args.enable_custom_opt or args.enable_loop_hoist)

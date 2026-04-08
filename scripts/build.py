@@ -118,6 +118,131 @@ def find_jsfx_aot_compiler(repo_root: Path) -> Path:
     return p
 
 
+
+
+# --- Joep/JSFX compatibility: section-aware textual import preprocessing for embedded source ---
+_JSFX_IMPORT_RE = re.compile(
+    r"^\s*import\s+(?:\"([^\"]+)\"|'([^']+)'|([^\s;]+))\s*;?\s*(?://.*)?$"
+)
+
+
+def _merge_import_bundle(dst_preamble: list[str], dst_order: list[str], dst_sections: dict[str, list[str]],
+                         src_preamble: list[str], src_order: list[str], src_sections: dict[str, list[str]]) -> None:
+    dst_preamble.extend(src_preamble)
+    for sec in src_order:
+        if sec not in dst_sections:
+            dst_sections[sec] = []
+            dst_order.append(sec)
+        dst_sections[sec].extend(src_sections.get(sec, []))
+
+
+def preprocess_jsfx_imports_from_path(path: Path, _stack: tuple[Path, ...] = ()) -> str:
+    path = path.resolve()
+    if path in _stack:
+        chain = " -> ".join(str(p) for p in (_stack + (path,)))
+        raise RuntimeError(f"Cyclic JSFX import chain: {chain}")
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    preamble: list[str] = []
+    order: list[str] = []
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    current_lines: list[str] = []
+    section_re = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b.*$")
+
+    def flush_current() -> None:
+        nonlocal current_lines
+        if current is None:
+            return
+        if current not in sections:
+            sections[current] = []
+            order.append(current)
+        sections[current].extend(current_lines)
+        current_lines = []
+
+    for raw_line in text.splitlines(True):
+        m_imp = _JSFX_IMPORT_RE.match(raw_line)
+        m_sec = section_re.match(raw_line)
+
+        if m_imp:
+            token = next((g for g in m_imp.groups() if g), "")
+            if not token:
+                if current is None:
+                    preamble.append(raw_line)
+                else:
+                    current_lines.append(raw_line)
+                continue
+
+            inc_path = (path.parent / token).resolve()
+            if not inc_path.exists():
+                raise FileNotFoundError(
+                    f"Unable to resolve JSFX import {token!r} from {path}"
+                )
+
+            child_text = preprocess_jsfx_imports_from_path(inc_path, _stack + (path,))
+            child_preamble: list[str] = []
+            child_order: list[str] = []
+            child_sections: dict[str, list[str]] = {}
+            child_current: str | None = None
+            child_current_lines: list[str] = []
+
+            def flush_child() -> None:
+                nonlocal child_current_lines
+                if child_current is None:
+                    return
+                if child_current not in child_sections:
+                    child_sections[child_current] = []
+                    child_order.append(child_current)
+                child_sections[child_current].extend(child_current_lines)
+                child_current_lines = []
+
+            for child_line in child_text.splitlines(True):
+                mc = section_re.match(child_line)
+                if mc:
+                    flush_child()
+                    child_current = mc.group(1)
+                    child_current_lines = []
+                    continue
+                if child_current is None:
+                    child_preamble.append(child_line)
+                else:
+                    child_current_lines.append(child_line)
+            flush_child()
+
+            if current is None:
+                _merge_import_bundle(preamble, order, sections, child_preamble, child_order, child_sections)
+            else:
+                current_lines.extend(child_preamble)
+                for sec in child_order:
+                    if sec == current:
+                        current_lines.extend(child_sections.get(sec, []))
+                    else:
+                        if sec not in sections:
+                            sections[sec] = []
+                            order.append(sec)
+                        sections[sec].extend(child_sections.get(sec, []))
+            continue
+
+        if m_sec:
+            flush_current()
+            current = m_sec.group(1)
+            current_lines = []
+            continue
+
+        if current is None:
+            preamble.append(raw_line)
+        else:
+            current_lines.append(raw_line)
+
+    flush_current()
+    out: list[str] = list(preamble)
+    for sec in order:
+        out.append(f"@{sec}\n")
+        out.extend(sections.get(sec, []))
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+    return "".join(out)
+
 def _c_escape_utf8_units(text: str) -> list[str]:
     units: list[str] = []
     for b in text.encode("utf-8"):
@@ -190,7 +315,7 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
     out_ll = cmake_build / "JSFXDSP.ll"
     out_src_h = cmake_build / "JSFXSource.h"
 
-    jsfx_text = jsfx_path.read_text(encoding="utf-8", errors="replace")
+    jsfx_text = preprocess_jsfx_imports_from_path(jsfx_path.resolve())
 
     write_embedded_text_header(
         text=jsfx_text,

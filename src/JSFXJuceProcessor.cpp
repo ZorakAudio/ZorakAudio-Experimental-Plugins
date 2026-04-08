@@ -89,6 +89,30 @@
 // ---- You must provide this symbol for AOT (declared in the generated header)
 extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed);
 
+
+// --- Joep/JSFX compatibility: slider_next_chg() --------------------------
+// Minimal runtime behavior:
+//   - write the current slider value to *outValue
+//   - return 0.0 to report "no more sub-block automation change points"
+// This preserves DSP behavior for scripts that use slider_next_chg() for
+// interpolation while deferring true sample-accurate host automation support.
+extern "C" double jsfx_slider_next_chg (DSPJSFX_State* st,
+                                        double sliderIndex,
+                                        double* outValue)
+{
+    const int idx1 = (int) (sliderIndex + 1.0e-5);
+    const int idx0 = idx1 - 1;
+
+    double current = 0.0;
+    if (st != nullptr && idx0 >= 0 && idx0 < 64)
+        current = st->sliders[(size_t) idx0];
+
+    if (outValue != nullptr)
+        *outValue = current;
+
+    return 0.0;
+}
+
 // JSFX source is generated into the build dir by build.py as JSFXSource.h.
 // If it's missing, we fall back to empty text (no slider params).
 #if defined(__has_include)
