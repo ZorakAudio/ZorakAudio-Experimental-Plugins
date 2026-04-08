@@ -4,7 +4,7 @@ desc:Performance Texture Engine (PTE)
 // #FILE: Texture {Texture to be injected based on input envelope}
 filename:0,Texture
 
-options:gfx_hz=30 maxmem=32000000 ownership=hybrid
+options:gfx_hz=30 maxmem=32000000 ownership=hybrid ownership=hybrid
 
 slider1:0.75<0,1,0.001>-Mix
 slider2:0<-24,24,0.1>-Texture Gain (dB)
@@ -228,6 +228,40 @@ corpus_ctr_mean = 0.35;
 corpus_slope_mean = 0;
 corpus_onset_mean = 0.25;
 codec_token_peak = 1;
+
+cand_panel_open = 0;
+cand_panel_source = 0;
+cand_panel_sort = 0;
+cand_panel_scale = 0;
+cand_panel_limit_mode = 1;
+cand_panel_scroll = 0;
+cand_panel_total_matches = 0;
+cand_panel_view_count = 0;
+cand_panel_sel_idx = -1;
+cand_panel_sel_row = -1;
+cand_panel_hover_idx = -1;
+cand_panel_hover_row = -1;
+cand_panel_auto_cycle = 0;
+cand_panel_loop_sel = 0;
+cand_panel_preview_raw = 0;
+
+cand_preview_active = 0;
+cand_preview_ci = -1;
+cand_preview_phase = 0;
+cand_preview_start = 0;
+cand_preview_src_pos = 0;
+cand_preview_src_len = 0;
+cand_preview_rate = 1;
+cand_preview_amp = 1;
+cand_preview_phaseofs = 0;
+cand_preview_age = 0;
+cand_preview_env_len = 0;
+cand_preview_raw = 0;
+cand_preview_loop = 0;
+cand_preview_req = 0;
+cand_preview_stop_req = 0;
+
+cand_shortlist_refresh_countdown = 0;
 
 def_a = 8;
 def_d = 70;
@@ -1053,6 +1087,14 @@ h > 0 ? (
           auto_in_level = 0;
           auto_sc_level = 0;
           auto_midi_level = 0;
+          cand_preview_active = 0;
+          cand_preview_req = 0;
+          cand_preview_stop_req = 0;
+          cand_panel_sel_idx = -1;
+          cand_panel_sel_row = -1;
+          cand_panel_hover_idx = -1;
+          cand_panel_hover_row = -1;
+          cand_panel_scroll = 0;
 
           ri = 0;
           loop(recent_max,
@@ -3699,6 +3741,123 @@ function spawn_voice(mode_local) local(ci, base, start, req_src_len, req_env_len
 );
 
 
+
+function preview_edge_window(age, env_len) local(fade_len, t, rem, win_in, win_out) (
+  fade_len = floor(0.005 * srate);
+  fade_len < 8 ? fade_len = 8;
+  fade_len * 2 > env_len ? fade_len = max(1, floor(env_len * 0.5));
+
+  win_in = 1;
+  win_out = 1;
+
+  fade_len > 1 ? (
+    age < fade_len ? (
+      t = age / max(1, fade_len);
+      win_in = sin(0.5 * PI * clamp1(t, 0, 1));
+      win_in *= win_in;
+    );
+
+    rem = env_len - 1 - age;
+    rem < fade_len ? (
+      t = rem / max(1, fade_len);
+      win_out = sin(0.5 * PI * clamp1(t, 0, 1));
+      win_out *= win_out;
+    );
+  );
+
+  win_in * win_out;
+);
+
+function start_candidate_preview(ci, raw_mode, loop_mode) local(base, start, req_src_len, req_env_len, env_nom_len, rate, cap_src_len, cand_phase, phase_len_mul, local_win, start_region, src_need, preview_mode_local) (
+  (ci >= 0) && (tex_loaded > 0) && (analysis_ready > 0) ? (
+    base = cand_base + ci * cand_stride;
+    start = mem[base];
+    cand_phase = floor(mem[base + 13] + 0.5);
+    local_win = cand_scale(ci) == scale_short ? ana_win_short : ana_win_med;
+
+    rate = tex_sr / srate * exp((global_pitch_cents / 1200) * ln2);
+
+    preview_mode_local = mode >= 3 ? 2 : mode;
+    preview_mode_local < 0 ? preview_mode_local = 0;
+    preview_mode_local > 2 ? preview_mode_local = 2;
+
+    raw_mode > 0 ? (
+      slider27 > 0.5 ? (
+        compute_event_bounds(ci);
+        start = auto_ev_start;
+        req_src_len = auto_ev_len;
+      ) : (
+        req_src_len = local_win;
+      );
+      req_env_len = floor(req_src_len / max(rate, 0.000001));
+    ) : (
+      slider27 > 0.5 ? (
+        compute_event_bounds(ci);
+        start = auto_ev_start;
+        req_src_len = auto_ev_len;
+        req_env_len = floor(req_src_len / max(rate, 0.000001));
+      ) : (
+        req_src_len = floor(dur_ms * 0.001 * tex_sr);
+        req_env_len = floor(dur_ms * 0.001 * srate);
+      );
+
+      phase_len_mul =
+        cand_phase == phase_att ? (preview_mode_local == 0 ? 0.72 : 0.82) * profile_len_att :
+        cand_phase == phase_body ? (preview_mode_local >= 2 ? 1.18 : 1.05) * profile_len_body :
+        cand_phase == phase_rel ? 0.90 * profile_len_rel :
+        0.55 * profile_len_deb;
+      req_src_len *= phase_len_mul;
+      req_env_len *= (
+        cand_phase == phase_att ? 0.92 * profile_len_att :
+        cand_phase == phase_body ? 1.05 * profile_len_body :
+        cand_phase == phase_rel ? 0.96 * profile_len_rel :
+        0.78 * profile_len_deb
+      );
+
+      preview_mode_local >= 2 ? (
+        req_src_len *= 0.90;
+        req_env_len *= 0.90;
+      );
+
+      env_nom_len = env_a_s_base + env_d_s_base + env_r_s_base;
+      env_nom_len < 8 ? env_nom_len = 8;
+      req_env_len < env_nom_len ? req_env_len = env_nom_len;
+
+      src_need = floor(req_env_len * rate) + 8;
+      req_src_len < src_need ? req_src_len = src_need;
+
+      start_region = req_src_len;
+      start_region > local_win * 2 ? start_region = local_win * 2;
+      start_region < local_win ? start_region = local_win;
+      start = refine_spawn_start(start, start_region, preview_mode_local == 0 ? 1 : preview_mode_local);
+    );
+
+    req_src_len < 16 ? req_src_len = 16;
+    req_env_len < 8 ? req_env_len = 8;
+
+    cap_src_len = tex_frames - req_src_len - 2;
+    cap_src_len < 0 ? cap_src_len = 0;
+    start > cap_src_len ? start = cap_src_len;
+    start < 0 ? start = 0;
+
+    cand_preview_active = 1;
+    cand_preview_ci = ci;
+    cand_preview_phase = cand_phase;
+    cand_preview_start = start;
+    cand_preview_src_pos = 0;
+    cand_preview_src_len = req_src_len;
+    cand_preview_rate = rate;
+    cand_preview_amp = raw_mode > 0 ? 0.92 : 0.82;
+    cand_preview_phaseofs = 0;
+    cand_preview_age = 0;
+    cand_preview_env_len = req_env_len;
+    cand_preview_raw = raw_mode > 0;
+    cand_preview_loop = loop_mode > 0;
+  ) : (
+    cand_preview_active = 0;
+  );
+);
+
 // sample-local MIDI event latches: block MIDI parsing should not retrigger every sample.
 midi_evt_on_s = 0;
 midi_evt_off_s = 0;
@@ -4021,6 +4180,34 @@ profile == 1 ? (
 );
 
 cloud_radius_frames = max(128, floor((dur_ms * 0.001 * tex_sr) * (0.90 + pos_wander * 3.20) + tex_sr * 0.02));
+
+
+cand_panel_open > 0 ? (
+  cand_shortlist_refresh_countdown -= 1;
+  cand_shortlist_refresh_countdown <= 0 ? (
+    shortlist_seed = seed;
+    shortlist_mode = mode >= 3 ? 2 : mode;
+    shortlist_mode < 0 ? shortlist_mode = 0;
+    shortlist_mode > 2 ? shortlist_mode = 2;
+    shortlist_dummy = pick_candidate_beam(shortlist_mode);
+    seed = shortlist_seed;
+    cand_shortlist_refresh_countdown = max(256, floor(0.025 * srate));
+  );
+) : (
+  cand_shortlist_refresh_countdown = 0;
+);
+
+cand_preview_stop_req > 0 ? (
+  cand_preview_active = 0;
+  cand_preview_stop_req = 0;
+);
+
+(tex_loaded <= 0) || (analysis_ready <= 0) ? cand_preview_active = 0;
+
+cand_preview_req > 0 ? (
+  start_candidate_preview(cand_panel_sel_idx, cand_panel_preview_raw, cand_panel_loop_sel);
+  cand_preview_req = 0;
+);
 
 
 voice_mode = mode >= 3 ? 2 : mode;
@@ -4397,6 +4584,64 @@ wet_only ? (
   spl0 += texL;
   spl1 += texR;
 );
+
+
+candPrevL = 0;
+candPrevR = 0;
+
+(cand_preview_active > 0) && (tex_loaded > 0) && (tex_frames > 1) ? (
+  csrc = cand_preview_start + cand_preview_src_pos + cand_preview_phaseofs;
+  cage = cand_preview_age;
+  csrcpos = cand_preview_src_pos;
+  cenvlen = cand_preview_env_len;
+
+  cand_preview_raw > 0 ? (
+    envv = preview_edge_window(cage, cenvlen);
+  ) : (
+    envv = env_eval(cage, cenvlen, 0) * ola_window(cage, cenvlen, 1, cand_preview_phase);
+  );
+  envv < 0 ? envv = 0;
+
+  cgain = cand_preview_amp * envv;
+
+  cgain > 0 ? (
+    tex_ch > 1 ? (
+      sL = tex_read(csrc, 0);
+      sR = tex_read(csrc, 1);
+      candPrevL = sL * cgain;
+      candPrevR = sR * cgain;
+    ) : (
+      sM = tex_read(csrc, 0);
+      candPrevL = sM * cgain;
+      candPrevR = sM * cgain;
+    );
+  );
+
+  csrcpos += cand_preview_rate;
+  cage += 1;
+
+  (cage >= cenvlen) || (csrcpos >= cand_preview_src_len) ? (
+    cand_preview_active = 0;
+
+    cand_panel_auto_cycle > 0 ? (
+      cand_panel_view_count > 0 ? (
+        next_row = cand_panel_sel_row + 1;
+        next_row >= cand_panel_view_count ? next_row = 0;
+        cand_panel_sel_row = next_row;
+        cand_panel_sel_idx = floor(mem[tmp_idx_base + next_row]);
+        start_candidate_preview(cand_panel_sel_idx, cand_panel_preview_raw, cand_panel_loop_sel);
+      );
+    ) : (cand_preview_loop > 0) ? (
+      start_candidate_preview(cand_preview_ci, cand_panel_preview_raw, cand_panel_loop_sel);
+    );
+  ) : (
+    cand_preview_src_pos = csrcpos;
+    cand_preview_age = cage;
+  );
+);
+
+spl0 += candPrevL;
+spl1 += candPrevR;
 
 @gfx 1120 700
 
@@ -5003,6 +5248,139 @@ function open_param_menu4(p1,p2,p3,p4) local(sel, ccv) (
   sel == 12 ? (param_apply_default(p4); ui_add_undo = 1; ui_button_click = 1;);
 );
 
+
+function cand_phase_color(ph) (
+  ph == phase_att ? (
+    cand_cr = 0.28; cand_cg = 0.84; cand_cb = 0.98;
+  ) : ph == phase_body ? (
+    cand_cr = 0.38; cand_cg = 0.90; cand_cb = 0.52;
+  ) : ph == phase_rel ? (
+    cand_cr = 0.94; cand_cg = 0.72; cand_cb = 0.32;
+  ) : (
+    cand_cr = 0.94; cand_cg = 0.52; cand_cb = 0.94;
+  );
+);
+
+function cand_phase_text(ph, outstr) (
+  ph == phase_att ? strcpy(outstr, "ATT") :
+  ph == phase_body ? strcpy(outstr, "BODY") :
+  ph == phase_rel ? strcpy(outstr, "REL") :
+  ph == phase_deb ? strcpy(outstr, "DEB") :
+  strcpy(outstr, "-");
+);
+
+function cand_scale_text(sc, outstr) (
+  sc == scale_short ? strcpy(outstr, "S") :
+  sc == scale_med ? strcpy(outstr, "M") :
+  strcpy(outstr, "-");
+);
+
+function cand_source_text(src, outstr) (
+  src == 0 ? strcpy(outstr, "LIVE") :
+  src == 1 ? strcpy(outstr, "ATT") :
+  src == 2 ? strcpy(outstr, "BODY") :
+  src == 3 ? strcpy(outstr, "REL") :
+  src == 4 ? strcpy(outstr, "DEB") :
+  strcpy(outstr, "SHORT");
+);
+
+function cand_sort_text(sm, outstr) (
+  sm == 0 ? strcpy(outstr, "TIMELINE") :
+  sm == 1 ? strcpy(outstr, "SCORE") :
+  sm == 2 ? strcpy(outstr, "RANK") :
+  sm == 3 ? strcpy(outstr, "ONSET") :
+  sm == 4 ? strcpy(outstr, "MOTION") :
+  sm == 5 ? strcpy(outstr, "HF") :
+  strcpy(outstr, "NOVELTY");
+);
+
+function cand_shortlist_score(ci) local(k, idx, w) (
+  w = 0;
+  k = 0;
+  loop(beam_width,
+    idx = floor(mem[beam_idx_base + k]);
+    idx == ci ? w = mem[beam_score_base + k];
+    k += 1;
+  );
+  w;
+);
+
+function cand_metric_key(ci, sort_mode_local, source_mode_local) local(base, v) (
+  base = cand_base + ci * cand_stride;
+  sort_mode_local == 0 ? v = mem[base] :
+  sort_mode_local == 1 ? v = (source_mode_local == 5 ? cand_shortlist_score(ci) : mem[base + 6]) :
+  sort_mode_local == 2 ? v = mem[base + 7] :
+  sort_mode_local == 3 ? v = mem[base + 12] :
+  sort_mode_local == 4 ? v = mem[base + 11] :
+  sort_mode_local == 5 ? v = mem[base + 10] :
+  v = mem[base + 18];
+  v;
+);
+
+function cand_match(ci, source_mode_local, scale_mode_local) local(base, ok, ph, sc) (
+  base = cand_base + ci * cand_stride;
+  ok = mem[base + 7] > 0;
+  ph = floor(mem[base + 13] + 0.5);
+  sc = floor(mem[base + 15] + 0.5);
+
+  ok && (
+    source_mode_local == 1 ? ok = ph == phase_att :
+    source_mode_local == 2 ? ok = ph == phase_body :
+    source_mode_local == 3 ? ok = ph == phase_rel :
+    source_mode_local == 4 ? ok = ph == phase_deb;
+  );
+
+  ok && (
+    scale_mode_local == 1 ? ok = sc == scale_short :
+    scale_mode_local == 2 ? ok = sc == scale_med;
+  );
+
+  ok;
+);
+
+function cand_disp_ms(ci) local(sc, frames) (
+  sc = floor(mem[cand_base + ci * cand_stride + 15] + 0.5);
+  frames = sc == scale_short ? ana_win_short : ana_win_med;
+  frames * 1000 / max(1, tex_sr);
+);
+
+function cand_sort_tmp(n, asc) local(gap, i, j, temp_idx, temp_val, prev_val, move_ok, swap_need) (
+  gap = floor(n * 0.5);
+  loop(16,
+    gap > 0 ? (
+      i = gap;
+      loop(max(0, n - gap),
+        temp_idx = mem[tmp_idx_base + i];
+        temp_val = mem[tmp_val_base + i];
+        j = i;
+        move_ok = 1;
+        loop(n,
+          move_ok ? (
+            j >= gap ? (
+              prev_val = mem[tmp_val_base + j - gap];
+              swap_need = asc ? (prev_val > temp_val) : (prev_val < temp_val);
+              swap_need ? (
+                mem[tmp_idx_base + j] = mem[tmp_idx_base + j - gap];
+                mem[tmp_val_base + j] = prev_val;
+                j -= gap;
+              ) : (
+                move_ok = 0;
+              );
+            ) : (
+              move_ok = 0;
+            );
+          );
+        );
+        mem[tmp_idx_base + j] = temp_idx;
+        mem[tmp_val_base + j] = temp_val;
+        i += 1;
+      );
+      gap = floor(gap * 0.5);
+    );
+  );
+);
+
+
 gfx_getchar();
 
 mx = mouse_x;
@@ -5102,6 +5480,38 @@ src_x    = prof_x - src_w - btn_gap;
 mode_x   = src_x - mode_w - btn_gap;
 top_y    = spx(10);
 
+cand_btn_w = spx(126);
+cand_btn_x = pad + spx(64);
+cand_btn_y = top_y;
+cand_draw_w = spx(410);
+cand_draw_x = gfx_w - pad - cand_draw_w;
+cand_draw_y = wf_y - spx(2);
+cand_draw_h = gfx_h - cand_draw_y - pad;
+
+cand_click = 0;
+cand_rclick = 0;
+cand_release = 0;
+cand_wheel = 0;
+cand_lmb = 0;
+
+(cand_panel_open > 0) && (cc_browser_active <= 0) && hit(mx, my, cand_draw_x, cand_draw_y, cand_draw_w, cand_draw_h) ? (
+  cand_click = click;
+  cand_rclick = rclick;
+  cand_release = release;
+  cand_wheel = wheel;
+  cand_lmb = lmb;
+  click = 0;
+  rclick = 0;
+  release = 0;
+  wheel = 0;
+  lmb = 0;
+  rmb = 0;
+  mmb = 0;
+  ui_active_kind = 0;
+  ui_active_id = 0;
+);
+
+
 gfx_r = 0.055; gfx_g = 0.060; gfx_b = 0.078; gfx_a = 1;
 gfx_rect(0, 0, gfx_w, gfx_h, 1);
 
@@ -5113,7 +5523,7 @@ gfx_printf("PTE");
 
 gfx_setfont(1, "Verdana", ft_body);
 gfx_r = 0.80; gfx_g = 0.84; gfx_b = 0.90; gfx_a = 1;
-gfx_x = pad + spx(52); gfx_y = spx(12);
+gfx_x = cand_btn_x + cand_btn_w + spx(10); gfx_y = spx(12);
 file_state == 0 ? (
   gfx_printf("No texture assigned");
 ) : (file_state == 1) ? (
@@ -5130,6 +5540,21 @@ file_state == 0 ? (
     gfx_printf("Loaded %.2fs  •  %g ch  •  %.1fkHz  •  %d/%d live  •  S%d M%d  •  A%d B%d R%d D%d", loaded_sec, tex_ch, tex_sr / 1000, cand_live_count, cand_count, cand_short_live_count, cand_med_live_count, attack_pool_count, body_pool_count, release_pool_count, debris_pool_count);
   );
 );
+
+
+cand_btn_hov = hit(mx, my, cand_btn_x, cand_btn_y, cand_btn_w, btn_h);
+click && cand_btn_hov ? (
+  cand_panel_open = cand_panel_open > 0 ? 0 : 1;
+  cand_panel_open <= 0 ? cand_panel_auto_cycle = 0;
+  ui_button_click = 1;
+);
+rclick && cand_btn_hov ? (
+  cand_panel_open = 1;
+  cand_panel_source = 5;
+  ui_button_click = 1;
+);
+sprintf(#candbtn, cand_preview_active > 0 ? "CANDIDATES • PREVIEW" : "CANDIDATES");
+draw_button(cand_btn_x, cand_btn_y, cand_btn_w, btn_h, cand_panel_open > 0, cand_btn_hov, 0.34, 0.78, 0.88, #candbtn);
 
 // top buttons
 mode_label =
@@ -6056,6 +6481,7 @@ tip_on = 0;
 sprintf(#tip1, "");
 sprintf(#tip2, "");
 
+hover_cand_btn  = hit(mx, my, cand_btn_x, cand_btn_y, cand_btn_w, btn_h);
 hover_mode_btn  = hit(mx, my, mode_x, top_y, mode_w, btn_h);
 hover_prof_btn  = hit(mx, my, prof_x, top_y, prof_w, btn_h);
 hover_src_btn   = hit(mx, my, src_x, top_y, src_w, btn_h);
@@ -6157,6 +6583,10 @@ hover_env_pt == 1 ? (
   tip_on = 1;
   sprintf(#tip1, "Broad spectral-envelope imprint from dry input onto wet texture only.");
   sprintf(#tip2, "Current mix %.0f%%, speed %.0f ms. Shift+wheel adjusts speed. Coarse 4-band shaping, bounded and smoothed.", slider31 * 100, slider32);
+) : hover_cand_btn ? (
+  tip_on = 1;
+  sprintf(#tip1, "Candidate inspector: audition Live, phase pools, or the current shortlist.");
+  sprintf(#tip2, "Left-click toggles the drawer. Right-click jumps straight to Shortlist view.");
 ) : hover_mode_btn ? (
   tip_on = 1;
   slider10 < 0.5 ? (
@@ -6258,6 +6688,383 @@ tip_on ? (
   gfx_drawstr(#tip2);
 );
 
+
+
+
+cand_panel_open > 0 ? (
+  cand_cap =
+    cand_panel_limit_mode == 0 ? 8 :
+    cand_panel_limit_mode == 1 ? 16 :
+    cand_panel_limit_mode == 2 ? 32 :
+    cand_max;
+
+  cand_gather_count = 0;
+  cand_panel_hover_idx = -1;
+  cand_panel_hover_row = -1;
+
+  cand_panel_source == 5 ? (
+    bi = 0;
+    loop(beam_width,
+      ci = floor(mem[beam_idx_base + bi]);
+      ci >= 0 ? (
+        cand_match(ci, 0, cand_panel_scale) ? (
+          mem[tmp_idx_base + cand_gather_count] = ci;
+          mem[tmp_val_base + cand_gather_count] = cand_metric_key(ci, cand_panel_sort, cand_panel_source);
+          cand_gather_count += 1;
+        );
+      );
+      bi += 1;
+    );
+  ) : (
+    ci = 0;
+    loop(cand_count,
+      cand_match(ci, cand_panel_source, cand_panel_scale) ? (
+        mem[tmp_idx_base + cand_gather_count] = ci;
+        mem[tmp_val_base + cand_gather_count] = cand_metric_key(ci, cand_panel_sort, cand_panel_source);
+        cand_gather_count += 1;
+      );
+      ci += 1;
+    );
+  );
+
+  cand_gather_count > 1 ? cand_sort_tmp(cand_gather_count, cand_panel_sort == 0);
+  cand_panel_total_matches = cand_gather_count;
+  cand_panel_view_count = min(cand_gather_count, cand_cap);
+
+  cand_panel_sel_row = -1;
+  si = 0;
+  loop(cand_panel_view_count,
+    floor(mem[tmp_idx_base + si]) == cand_panel_sel_idx ? cand_panel_sel_row = si;
+    si += 1;
+  );
+
+  (cand_panel_view_count > 0) && (cand_panel_sel_row < 0) ? (
+    cand_panel_sel_row = 0;
+    cand_panel_sel_idx = floor(mem[tmp_idx_base + 0]);
+  );
+
+
+  // drawer chrome
+  gfx_r = 0.04; gfx_g = 0.05; gfx_b = 0.08; gfx_a = 0.95;
+  gfx_rect(cand_draw_x, cand_draw_y, cand_draw_w, cand_draw_h, 1);
+  gfx_r = 0.18; gfx_g = 0.21; gfx_b = 0.29; gfx_a = 1;
+  gfx_roundrect(cand_draw_x, cand_draw_y, cand_draw_w, cand_draw_h, spx(8), 1);
+
+  cand_pad = spx(14);
+  cand_hdr_y = cand_draw_y + spx(12);
+  cand_inner_x = cand_draw_x + cand_pad;
+  cand_inner_w = cand_draw_w - cand_pad * 2;
+
+  gfx_setfont(1, "Verdana", ft_panel);
+  gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.99; gfx_a = 1;
+  gfx_x = cand_inner_x; gfx_y = cand_hdr_y;
+  gfx_printf("Candidates");
+
+  gfx_setfont(1, "Verdana", ft_meta);
+  gfx_r = 0.72; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
+  gfx_x = cand_inner_x; gfx_y = cand_hdr_y + spx(18);
+  gfx_printf("Live %d  •  A %d  B %d  R %d  D %d", cand_live_count, attack_pool_count, body_pool_count, release_pool_count, debris_pool_count);
+
+  cand_source_text(cand_panel_source, #candsrc);
+  cand_sort_text(cand_panel_sort, #candsort);
+  cand_panel_limit_mode == 0 ? strcpy(#candcount, "8") :
+  cand_panel_limit_mode == 1 ? strcpy(#candcount, "16") :
+  cand_panel_limit_mode == 2 ? strcpy(#candcount, "32") :
+  strcpy(#candcount, "ALL");
+  cand_panel_scale == 0 ? strcpy(#candscale, "ALL") :
+  cand_panel_scale == 1 ? strcpy(#candscale, "SHORT") :
+  strcpy(#candscale, "MED");
+  gfx_x = cand_inner_x; gfx_y = cand_hdr_y + spx(34);
+  gfx_printf("%s  •  view %d/%d  •  sort %s  •  scale %s  •  cap %s", #candsrc, cand_panel_view_count, cand_panel_total_matches, #candsort, #candscale, #candcount);
+
+  cand_close_w = spx(62);
+  cand_close_h = spx(22);
+  cand_close_x = cand_draw_x + cand_draw_w - cand_pad - cand_close_w;
+  cand_close_y = cand_hdr_y;
+  cand_close_hov = hit(mx, my, cand_close_x, cand_close_y, cand_close_w, cand_close_h);
+  cand_click && cand_close_hov ? (
+    cand_panel_open = 0;
+    cand_panel_auto_cycle = 0;
+  );
+  draw_button(cand_close_x, cand_close_y, cand_close_w, cand_close_h, 0, cand_close_hov, 0.40, 0.22, 0.22, "CLOSE");
+
+  // source tabs
+  cand_tab_y = cand_draw_y + spx(70);
+  cand_tab_gap = spx(5);
+  cand_tab_w = floor((cand_inner_w - cand_tab_gap * 5) / 6);
+  ti = 0;
+  loop(6,
+    tx = cand_inner_x + ti * (cand_tab_w + cand_tab_gap);
+    ti == 0 ? strcpy(#tablbl, "LIVE") :
+    ti == 1 ? strcpy(#tablbl, "ATT") :
+    ti == 2 ? strcpy(#tablbl, "BODY") :
+    ti == 3 ? strcpy(#tablbl, "REL") :
+    ti == 4 ? strcpy(#tablbl, "DEB") :
+    strcpy(#tablbl, "SHORT");
+    tab_hov = hit(mx, my, tx, cand_tab_y, cand_tab_w, spx(22));
+    cand_click && tab_hov ? (
+      cand_panel_source = ti;
+      cand_panel_scroll = 0;
+    );
+    draw_button(tx, cand_tab_y, cand_tab_w, spx(22), cand_panel_source == ti, tab_hov, 0.24, 0.68, 0.76, #tablbl);
+    ti += 1;
+  );
+
+  // control row
+  cand_ctl_y = cand_tab_y + spx(32);
+  cand_sort_w = spx(138);
+  cand_scale_w = spx(90);
+  cand_count_w = spx(90);
+  cand_mode_w = cand_inner_w - cand_sort_w - cand_scale_w - cand_count_w - cand_tab_gap * 3;
+  cand_mode_w < spx(88) ? cand_mode_w = spx(88);
+
+  cand_sort_text(cand_panel_sort, #candsort);
+  sprintf(#candbtn1, "SORT: %s", #candsort);
+  ctl_hov = hit(mx, my, cand_inner_x, cand_ctl_y, cand_sort_w, spx(22));
+  cand_click && ctl_hov ? (
+    cand_panel_sort += 1;
+    cand_panel_sort > 6 ? cand_panel_sort = 0;
+    cand_panel_scroll = 0;
+  );
+  draw_button(cand_inner_x, cand_ctl_y, cand_sort_w, spx(22), 1, ctl_hov, 0.28, 0.56, 0.92, #candbtn1);
+
+  cand_panel_scale == 0 ? strcpy(#candbtn2, "SCALE: ALL") :
+  cand_panel_scale == 1 ? strcpy(#candbtn2, "SCALE: SHORT") :
+  strcpy(#candbtn2, "SCALE: MED");
+  ctl2_x = cand_inner_x + cand_sort_w + cand_tab_gap;
+  ctl_hov = hit(mx, my, ctl2_x, cand_ctl_y, cand_scale_w, spx(22));
+  cand_click && ctl_hov ? (
+    cand_panel_scale += 1;
+    cand_panel_scale > 2 ? cand_panel_scale = 0;
+    cand_panel_scroll = 0;
+  );
+  draw_button(ctl2_x, cand_ctl_y, cand_scale_w, spx(22), 1, ctl_hov, 0.32, 0.70, 0.54, #candbtn2);
+
+  cand_panel_limit_mode == 0 ? strcpy(#candbtn3, "COUNT: 8") :
+  cand_panel_limit_mode == 1 ? strcpy(#candbtn3, "COUNT: 16") :
+  cand_panel_limit_mode == 2 ? strcpy(#candbtn3, "COUNT: 32") :
+  strcpy(#candbtn3, "COUNT: ALL");
+  ctl3_x = ctl2_x + cand_scale_w + cand_tab_gap;
+  ctl_hov = hit(mx, my, ctl3_x, cand_ctl_y, cand_count_w, spx(22));
+  cand_click && ctl_hov ? (
+    cand_panel_limit_mode += 1;
+    cand_panel_limit_mode > 3 ? cand_panel_limit_mode = 0;
+    cand_panel_scroll = 0;
+  );
+  draw_button(ctl3_x, cand_ctl_y, cand_count_w, spx(22), 1, ctl_hov, 0.84, 0.60, 0.26, #candbtn3);
+
+  cand_panel_preview_raw > 0 ? strcpy(#candbtn4, "RAW REGION") : strcpy(#candbtn4, "ENGINE SHAPE");
+  ctl4_x = ctl3_x + cand_count_w + cand_tab_gap;
+  ctl_hov = hit(mx, my, ctl4_x, cand_ctl_y, cand_mode_w, spx(22));
+  cand_click && ctl_hov ? (
+    cand_panel_preview_raw = cand_panel_preview_raw > 0 ? 0 : 1;
+  );
+  draw_button(ctl4_x, cand_ctl_y, cand_mode_w, spx(22), cand_panel_preview_raw > 0, ctl_hov, 0.64, 0.44, 0.94, #candbtn4);
+
+  // list area
+  cand_list_x = cand_inner_x;
+  cand_list_y = cand_ctl_y + spx(34);
+  cand_list_w = cand_inner_w;
+  cand_list_h = cand_draw_h - (cand_list_y - cand_draw_y) - spx(78);
+  cand_row_h = spx(42);
+  cand_vis_rows = floor(cand_list_h / cand_row_h);
+  cand_vis_rows < 4 ? cand_vis_rows = 4;
+  cand_scroll_max = max(0, cand_panel_view_count - cand_vis_rows);
+  cand_panel_scroll = clampg(cand_panel_scroll, 0, cand_scroll_max);
+
+  cand_list_hov = hit(mx, my, cand_list_x, cand_list_y, cand_list_w, cand_list_h);
+  cand_list_hov && (cand_wheel != 0) ? (
+    cand_panel_scroll -= floor(cand_wheel / 120);
+    cand_panel_scroll = clampg(cand_panel_scroll, 0, cand_scroll_max);
+  );
+
+  gfx_r = 0.08; gfx_g = 0.10; gfx_b = 0.14; gfx_a = 1;
+  gfx_rect(cand_list_x, cand_list_y, cand_list_w, cand_list_h, 1);
+  gfx_r = 0.16; gfx_g = 0.18; gfx_b = 0.24; gfx_a = 1;
+  gfx_roundrect(cand_list_x, cand_list_y, cand_list_w, cand_list_h, spx(6), 1);
+
+  cand_panel_view_count <= 0 ? (
+    gfx_setfont(1, "Verdana", ft_small);
+    gfx_r = 0.76; gfx_g = 0.80; gfx_b = 0.88; gfx_a = 1;
+    gfx_x = cand_list_x + spx(12); gfx_y = cand_list_y + spx(12);
+    gfx_drawstr("No candidates in the current scope. Trigger analysis or switch source/filter.");
+  ) : (
+    ri = 0;
+    loop(cand_vis_rows,
+      row_idx = cand_panel_scroll + ri;
+      row_idx < cand_panel_view_count ? (
+        ci = floor(mem[tmp_idx_base + row_idx]);
+        base = cand_base + ci * cand_stride;
+        ph = floor(mem[base + 13] + 0.5);
+        fam = floor(mem[base + 14] + 0.5);
+        sc = floor(mem[base + 15] + 0.5);
+        start_sec = tex_sr > 0 ? mem[base] / tex_sr : 0;
+        cand_row_ms_v = cand_disp_ms(ci);
+        row_y = cand_list_y + ri * cand_row_h;
+        row_hov = hit(mx, my, cand_list_x, row_y, cand_list_w, cand_row_h);
+
+        row_idx == cand_panel_sel_row ? (
+          gfx_r = 0.12; gfx_g = 0.18; gfx_b = 0.24; gfx_a = 1;
+        ) : row_hov ? (
+          gfx_r = 0.10; gfx_g = 0.13; gfx_b = 0.18; gfx_a = 1;
+        ) : (
+          gfx_r = 0.07; gfx_g = 0.09; gfx_b = 0.12; gfx_a = 1;
+        );
+        gfx_rect(cand_list_x + 1, row_y + 1, cand_list_w - 2, cand_row_h - 2, 1);
+
+        cand_phase_color(ph);
+        gfx_r = cand_cr; gfx_g = cand_cg; gfx_b = cand_cb; gfx_a = row_idx == cand_panel_sel_row ? 0.95 : 0.70;
+        gfx_rect(cand_list_x + 2, row_y + 2, spx(4), cand_row_h - 4, 1);
+
+        row_hov ? (
+          cand_panel_hover_idx = ci;
+          cand_panel_hover_row = row_idx;
+        );
+
+        cand_click && row_hov ? (
+          cand_panel_sel_row = row_idx;
+          cand_panel_sel_idx = ci;
+        );
+
+        cand_rclick && row_hov ? (
+          cand_panel_sel_row = row_idx;
+          cand_panel_sel_idx = ci;
+          cand_preview_req = 1;
+        );
+
+        cand_phase_text(ph, #candph);
+        cand_scale_text(sc, #candsc);
+        gfx_setfont(1, "Verdana", ft_small);
+        gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.99; gfx_a = 1;
+        gfx_x = cand_list_x + spx(12); gfx_y = row_y + spx(4);
+        gfx_printf("#%d  %.3fs  %.0fms", ci, start_sec, cand_row_ms_v);
+
+        gfx_setfont(1, "Verdana", ft_meta);
+        gfx_r = 0.72; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
+        gfx_x = cand_list_x + spx(12); gfx_y = row_y + spx(20);
+        gfx_printf("%s  F%d  %s", #candph, fam, #candsc);
+
+        shortlist_w = cand_panel_source == 5 ? cand_shortlist_score(ci) : mem[base + 6];
+        gfx_x = cand_list_x + spx(108); gfx_y = row_y + spx(20);
+        gfx_printf("s %.2f  r %.2f  o %.2f  m %.2f  h %.2f", shortlist_w, mem[base + 7], mem[base + 12] / max(0.000001, max_onset), mem[base + 11] / max(0.000001, max_motion), mem[base + 10] / max(0.000001, max_hf));
+
+        cand_preview_active > 0 && cand_preview_ci == ci ? (
+          gfx_r = 0.98; gfx_g = 0.92; gfx_b = 0.40; gfx_a = 1;
+          gfx_circle(cand_list_x + cand_list_w - spx(14), row_y + cand_row_h * 0.5, spx(4), 1, 1);
+        );
+      );
+      ri += 1;
+    );
+  );
+
+  // waveform overlay for the current candidate set
+  cand_hi_idx = cand_panel_hover_idx >= 0 ? cand_panel_hover_idx : cand_panel_sel_idx;
+  tex_loaded > 0 ? (
+    oi = 0;
+    loop(cand_panel_view_count,
+      ci = floor(mem[tmp_idx_base + oi]);
+      base = cand_base + ci * cand_stride;
+      ph = floor(mem[base + 13] + 0.5);
+      cand_phase_color(ph);
+      cx = wf_x + (mem[base] / max(1, tex_frames)) * wf_w;
+      cx = clampg(cx, wf_x, wf_x + wf_w - 1);
+      tick_h = oi == cand_panel_sel_row ? spx(24) : spx(12);
+      gfx_r = cand_cr; gfx_g = cand_cg; gfx_b = cand_cb; gfx_a = oi == cand_panel_sel_row ? 0.88 : 0.26;
+      gfx_line(cx, wf_y + wf_h - spx(6), cx, wf_y + wf_h - spx(6) - tick_h, 1);
+      oi += 1;
+    );
+
+    cand_hi_idx >= 0 ? (
+      base = cand_base + cand_hi_idx * cand_stride;
+      ph = floor(mem[base + 13] + 0.5);
+      sc = floor(mem[base + 15] + 0.5);
+      span_frames = sc == scale_short ? ana_win_short : ana_win_med;
+      hx1 = wf_x + (mem[base] / max(1, tex_frames)) * wf_w;
+      hx2 = wf_x + ((mem[base] + span_frames) / max(1, tex_frames)) * wf_w;
+      hx1 = clampg(hx1, wf_x, wf_x + wf_w - 1);
+      hx2 = clampg(hx2, wf_x, wf_x + wf_w);
+      hx2 < hx1 + 2 ? hx2 = min(wf_x + wf_w, hx1 + 2);
+
+      cand_phase_color(ph);
+      gfx_r = cand_cr; gfx_g = cand_cg; gfx_b = cand_cb; gfx_a = 0.12;
+      gfx_rect(hx1, wf_y, max(1, hx2 - hx1), wf_h, 1);
+      gfx_a = 0.92;
+      gfx_line(hx1, wf_y, hx1, wf_y + wf_h, 1);
+      gfx_line(hx2, wf_y, hx2, wf_y + wf_h, 1);
+    );
+  );
+
+  cand_panel_sel_row >= 0 ? (
+    cand_panel_sel_row < cand_panel_scroll ? cand_panel_scroll = cand_panel_sel_row;
+    cand_panel_sel_row >= cand_panel_scroll + cand_vis_rows ? cand_panel_scroll = cand_panel_sel_row - cand_vis_rows + 1;
+  );
+
+  // transport
+  cand_foot_y = cand_draw_y + cand_draw_h - spx(34);
+  trans_gap = spx(5);
+  trans_w = floor((cand_inner_w - trans_gap * 5) / 6);
+
+  prev_x = cand_inner_x;
+  play_x = prev_x + trans_w + trans_gap;
+  next_x = play_x + trans_w + trans_gap;
+  auto_x2 = next_x + trans_w + trans_gap;
+  loop_x2 = auto_x2 + trans_w + trans_gap;
+  stop_x2 = loop_x2 + trans_w + trans_gap;
+
+  hovt = hit(mx, my, prev_x, cand_foot_y, trans_w, spx(22));
+  cand_click && hovt ? (
+    cand_panel_view_count > 0 ? (
+      cand_panel_sel_row <= 0 ? cand_panel_sel_row = cand_panel_view_count - 1 : cand_panel_sel_row -= 1;
+      cand_panel_sel_idx = floor(mem[tmp_idx_base + cand_panel_sel_row]);
+      cand_preview_req = 1;
+    );
+  );
+  draw_button(prev_x, cand_foot_y, trans_w, spx(22), 0, hovt, 0.32, 0.60, 0.92, "PREV");
+
+  hovt = hit(mx, my, play_x, cand_foot_y, trans_w, spx(22));
+  cand_click && hovt ? (
+    cand_panel_view_count > 0 ? (
+      cand_panel_sel_row < 0 ? cand_panel_sel_row = 0;
+      cand_panel_sel_idx = floor(mem[tmp_idx_base + cand_panel_sel_row]);
+      cand_preview_req = 1;
+    );
+  );
+  draw_button(play_x, cand_foot_y, trans_w, spx(22), cand_preview_active > 0, hovt, 0.34, 0.84, 0.58, "PLAY");
+
+  hovt = hit(mx, my, next_x, cand_foot_y, trans_w, spx(22));
+  cand_click && hovt ? (
+    cand_panel_view_count > 0 ? (
+      cand_panel_sel_row += 1;
+      cand_panel_sel_row >= cand_panel_view_count ? cand_panel_sel_row = 0;
+      cand_panel_sel_idx = floor(mem[tmp_idx_base + cand_panel_sel_row]);
+      cand_preview_req = 1;
+    );
+  );
+  draw_button(next_x, cand_foot_y, trans_w, spx(22), 0, hovt, 0.32, 0.60, 0.92, "NEXT");
+
+  hovt = hit(mx, my, auto_x2, cand_foot_y, trans_w, spx(22));
+  cand_click && hovt ? (
+    cand_panel_auto_cycle = cand_panel_auto_cycle > 0 ? 0 : 1;
+    cand_panel_auto_cycle > 0 && (cand_preview_active <= 0) ? cand_preview_req = 1;
+  );
+  draw_button(auto_x2, cand_foot_y, trans_w, spx(22), cand_panel_auto_cycle > 0, hovt, 0.88, 0.62, 0.22, "AUTO");
+
+  hovt = hit(mx, my, loop_x2, cand_foot_y, trans_w, spx(22));
+  cand_click && hovt ? cand_panel_loop_sel = cand_panel_loop_sel > 0 ? 0 : 1;
+  draw_button(loop_x2, cand_foot_y, trans_w, spx(22), cand_panel_loop_sel > 0, hovt, 0.74, 0.46, 0.94, "LOOP");
+
+  hovt = hit(mx, my, stop_x2, cand_foot_y, trans_w, spx(22));
+  cand_click && hovt ? (
+    cand_preview_stop_req = 1;
+    cand_panel_auto_cycle = 0;
+  );
+  draw_button(stop_x2, cand_foot_y, trans_w, spx(22), 0, hovt, 0.46, 0.22, 0.22, "STOP");
+
+  gfx_setfont(1, "Verdana", ft_tiny);
+  gfx_r = 0.64; gfx_g = 0.68; gfx_b = 0.76; gfx_a = 1;
+  gfx_x = cand_inner_x; gfx_y = cand_foot_y - spx(16);
+  gfx_drawstr("Right-click a row for instant audition. Preview is read-only; bias/curation comes next.");
+);
 
 
 cc_browser_active ? (

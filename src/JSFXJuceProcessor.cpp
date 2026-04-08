@@ -737,11 +737,16 @@ static std::vector<JsfxFileDecl> parseJsfxFilenameDecls (const char* jsfxText)
 //   mem[base + 2*i + 0] = real
 //   mem[base + 2*i + 1] = imag
 //
+// JSFX real FFTs (fft_real()/ifft_real()) operate on size real values in
+// place, exposing size/2 packed complex bins in the same region, matching the
+// WDL/JSFX convention where the first output pair stores DC and Nyquist.
+//
 // We back these helpers with Cockos/WDL FFT, which is already compiled into
 // the plugin build. In strict mode, semantics match REAPER/JSFX:
-//   - fft()/ifft() operate on WDL's permuted complex-bin order
+//   - fft()/ifft()/fft_real()/ifft_real() operate on WDL's permuted order
 //   - fft_permute() converts FFT output to natural order
 //   - fft_ipermute() converts natural-order bins back to the order ifft() expects
+//   - convolve_c() multiplies complex bins in-place
 //
 // For back-compat with older AOT builds that assumed in-order fft()/ifft() and
 // no-op permute helpers, define ZA_JSFX_FFT_LEGACY_IN_ORDER=1.
@@ -802,17 +807,24 @@ static inline bool isSupportedJsfxFftSize (int64_t n) noexcept
     return n >= kJsfxFftMinSize && n <= kJsfxFftMaxSize && isPowerOfTwo (n);
 }
 
-static inline bool staysWithinJsfxFftPage (int64_t base, int64_t complexCount) noexcept
+static inline bool staysWithinJsfxPage (int64_t base, int64_t spanDoubles) noexcept
 {
-    if (base < 0 || complexCount <= 0)
+    if (base < 0 || spanDoubles <= 0)
         return false;
 
-    const int64_t spanDoubles = 2 * complexCount;
     const int64_t lastIndex = base + spanDoubles - 1;
     if (lastIndex < base)
         return false;
 
     return (base / kJsfxFftPageDoubles) == (lastIndex / kJsfxFftPageDoubles);
+}
+
+static inline bool staysWithinJsfxFftPage (int64_t base, int64_t complexCount) noexcept
+{
+    if (complexCount <= 0 || complexCount > (kJsfxFftPageDoubles / 2))
+        return false;
+
+    return staysWithinJsfxPage (base, 2 * complexCount);
 }
 
 static inline void ensureWdlFftInit() noexcept
@@ -821,7 +833,47 @@ static inline void ensureWdlFftInit() noexcept
     std::call_once (once, [] { WDL_fft_init(); });
 }
 
+static bool prepareJsfxComplexBufferRegion (DSPJSFX_State* st, double baseD, double complexCountD,
+                                            int64_t& base, int& complexCount) noexcept
+{
+    if (st == nullptr)
+        return false;
+
+    const int64_t count = jsfxRoundToIndex (complexCountD);
+    int64_t start = jsfxRoundToIndex (baseD);
+    if (start < 0)
+        start = 0;
+
+    if (count <= 0 || count > (kJsfxFftPageDoubles / 2))
+        return false;
+
+    if (! staysWithinJsfxFftPage (start, count))
+        return false;
+
+    const int64_t needed = start + (2 * count);
+    jsfx_ensure_mem (st, needed);
+    if (st->mem == nullptr || needed > st->memN)
+        return false;
+
+    base = start;
+    complexCount = (int) count;
+    return true;
+}
+
 static bool prepareJsfxFftRegion (DSPJSFX_State* st, double baseD, double sizeD, int64_t& base, int& N) noexcept
+{
+    const int64_t size = jsfxRoundToIndex (sizeD);
+    if (! isSupportedJsfxFftSize (size))
+        return false;
+
+    if (! prepareJsfxComplexBufferRegion (st, baseD, (double) size, base, N))
+        return false;
+
+    ensureWdlFftInit();
+    return true;
+}
+
+static bool prepareJsfxRealFftRegion (DSPJSFX_State* st, double baseD, double sizeD, int64_t& base, int& N) noexcept
 {
     if (st == nullptr)
         return false;
@@ -834,10 +886,10 @@ static bool prepareJsfxFftRegion (DSPJSFX_State* st, double baseD, double sizeD,
     if (! isSupportedJsfxFftSize (size))
         return false;
 
-    if (! staysWithinJsfxFftPage (start, size))
+    if (! staysWithinJsfxPage (start, size))
         return false;
 
-    const int64_t needed = start + (2 * size);
+    const int64_t needed = start + size;
     jsfx_ensure_mem (st, needed);
     if (st->mem == nullptr || needed > st->memN)
         return false;
@@ -927,6 +979,119 @@ extern "C" double jsfx_ifft (DSPJSFX_State* st, double baseD, double sizeD)
     WDL_fft (asWdlComplex (st->mem + base), N, 1);
     return 0.0;
 }
+
+extern "C" double jsfx_fft_real (DSPJSFX_State* st, double baseD, double sizeD)
+{
+    int64_t base = 0;
+    int N = 0;
+    if (! prepareJsfxRealFftRegion (st, baseD, sizeD, base, N))
+        return 0.0;
+
+#if ZA_JSFX_FFT_LEGACY_IN_ORDER
+    if (gJsfxFftScratch.ensure (N / 2) == nullptr)
+        return 0.0;
+#endif
+
+    WDL_real_fft (st->mem + base, N, 0);
+
+#if ZA_JSFX_FFT_LEGACY_IN_ORDER
+    (void) permuteWdlToNaturalInPlace (st->mem + base, N / 2);
+#endif
+
+    return 0.0;
+}
+
+extern "C" double jsfx_ifft_real (DSPJSFX_State* st, double baseD, double sizeD)
+{
+    int64_t base = 0;
+    int N = 0;
+    if (! prepareJsfxRealFftRegion (st, baseD, sizeD, base, N))
+        return 0.0;
+
+#if ZA_JSFX_FFT_LEGACY_IN_ORDER
+    if (! permuteNaturalToWdlInPlace (st->mem + base, N / 2))
+        return 0.0;
+#endif
+
+    WDL_real_fft (st->mem + base, N, 1);
+    return 0.0;
+}
+
+extern "C" double jsfx_convolve_c (DSPJSFX_State* st, double destD, double srcD, double sizeD)
+{
+    int64_t destBase = 0;
+    int64_t srcBase = 0;
+    int N = 0;
+    int srcN = 0;
+    if (! prepareJsfxComplexBufferRegion (st, destD, sizeD, destBase, N))
+        return 0.0;
+    if (! prepareJsfxComplexBufferRegion (st, srcD, sizeD, srcBase, srcN))
+        return 0.0;
+    if (srcN != N)
+        return 0.0;
+
+    auto* dest = asWdlComplex (st->mem + destBase);
+    auto* src = asWdlComplex (st->mem + srcBase);
+
+    const int64_t destEnd = destBase + (2 * (int64_t) N);
+    const int64_t srcEnd = srcBase + (2 * (int64_t) srcN);
+    const bool overlaps = (destBase < srcEnd) && (srcBase < destEnd);
+
+    if (overlaps && destBase != srcBase)
+    {
+        WDL_FFT_COMPLEX* scratch = gJsfxFftScratch.ensure (N);
+        if (scratch == nullptr)
+            return 0.0;
+
+        std::memcpy (scratch, src, (size_t) N * sizeof (WDL_FFT_COMPLEX));
+        src = scratch;
+    }
+
+    for (int i = 0; i < N; ++i)
+    {
+        const auto ar = dest[(size_t) i].re;
+        const auto ai = dest[(size_t) i].im;
+        const auto br = src[(size_t) i].re;
+        const auto bi = src[(size_t) i].im;
+
+        dest[(size_t) i].re = ar * br - ai * bi;
+        dest[(size_t) i].im = ar * bi + ai * br;
+    }
+
+    return 0.0;
+}
+
+extern "C" double jsfx_memcpy (DSPJSFX_State* st, double destD, double srcD, double lengthD)
+{
+    if (st == nullptr)
+        return 0.0;
+
+    int64_t dest = jsfxRoundToIndex (destD);
+    int64_t src = jsfxRoundToIndex (srcD);
+    int64_t length = jsfxRoundToIndex (lengthD);
+
+    if (dest < 0)
+        dest = 0;
+    if (src < 0)
+        src = 0;
+    if (length <= 0)
+        return 0.0;
+
+    const int64_t destEnd = dest + length;
+    const int64_t srcEnd = src + length;
+    if (destEnd < dest || srcEnd < src)
+        return 0.0;
+
+    const int64_t needed = std::max (destEnd, srcEnd);
+    jsfx_ensure_mem (st, needed);
+    if (st->mem == nullptr || needed > st->memN)
+        return 0.0;
+
+    std::memmove (st->mem + dest, st->mem + src, (size_t) length * sizeof (double));
+    return 0.0;
+}
+
+
 
 extern "C" double jsfx_fft_permute (DSPJSFX_State* st, double baseD, double sizeD)
 {

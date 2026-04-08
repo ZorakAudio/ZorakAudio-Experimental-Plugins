@@ -2071,7 +2071,7 @@ def _summarize_loop_mutations(node: Node, user_fn_names: Set[str]) -> _LoopMutat
                 _note_mutated_lvalue(n.args[2], out)
                 return
 
-            if fn in ("memset", "fft", "ifft", "fft_permute", "fft_ipermute", "file_mem"):
+            if fn in ("memset", "memcpy", "fft", "ifft", "fft_real", "ifft_real", "fft_permute", "fft_ipermute", "convolve_c", "file_mem"):
                 out.writes_mem = True
                 return
 
@@ -2437,7 +2437,7 @@ def _collect_section_rw(node: Node, user_fn_names: Set[str], out: _SectionRWInfo
             out.writes_unknown_state = True
             return
 
-        if fn in ("memset", "fft", "ifft", "fft_permute", "fft_ipermute", "file_mem"):
+        if fn in ("memset", "memcpy", "fft", "ifft", "fft_real", "ifft_real", "fft_permute", "fft_ipermute", "convolve_c", "file_mem"):
             out.writes_mem = True
             return
 
@@ -4010,10 +4010,32 @@ class LLVMModuleEmitter:
                 return dest_v
 
 
-            if fn in ("fft", "ifft", "fft_permute", "fft_ipermute"):
-                # JSFX FFT helpers (used by some scripts for spectral/topology work).
-                # We route these to small C++ runtime helpers that operate on st->mem
-                # as an interleaved complex buffer: base[2*i]=re, base[2*i+1]=im.
+            if fn == "memcpy":
+                # JSFX builtin: memcpy(dest, src, length)
+                # Copies length doubles within mem[] (overlap permitted). Returns 0.
+                if len(n.args) != 3:
+                    raise ValueError("memcpy expects 3 args")
+
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                a2 = self.emit_expr(builder, st, n.args[2])
+
+                rt_name = "jsfx_memcpy"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+
+                return builder.call(fdecl, [st, a0, a1, a2])
+
+
+            if fn in ("fft", "ifft", "fft_real", "ifft_real", "fft_permute", "fft_ipermute"):
+                # JSFX FFT helpers. Complex fft()/ifft() use interleaved
+                # real/imag pairs in mem[]. Real fft_real()/ifft_real()
+                # operate on size real samples packed into the same mem region
+                # and expose size/2 complex bins (with DC/Nyquist packed in the
+                # first pair, matching WDL/JSFX semantics).
                 if len(n.args) != 2:
                     raise ValueError(f"{fn} expects 2 args")
 
@@ -4023,6 +4045,8 @@ class LLVMModuleEmitter:
                 rt_name = {
                     "fft": "jsfx_fft",
                     "ifft": "jsfx_ifft",
+                    "fft_real": "jsfx_fft_real",
+                    "ifft_real": "jsfx_ifft_real",
                     "fft_permute": "jsfx_fft_permute",
                     "fft_ipermute": "jsfx_fft_ipermute",
                 }[fn]
@@ -4034,6 +4058,25 @@ class LLVMModuleEmitter:
                     self._buildins[rt_name] = fdecl
 
                 return builder.call(fdecl, [st, a0, a1])
+
+            if fn == "convolve_c":
+                # JSFX builtin: convolve_c(dest, src, size)
+                # Multiplies size complex pairs in dest by src in-place.
+                if len(n.args) != 3:
+                    raise ValueError("convolve_c expects 3 args")
+
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                a2 = self.emit_expr(builder, st, n.args[2])
+
+                rt_name = "jsfx_convolve_c"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+
+                return builder.call(fdecl, [st, a0, a1, a2])
 
             raise ValueError(f"Unknown function call {n.fn}")
 
