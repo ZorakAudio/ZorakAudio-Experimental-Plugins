@@ -1,0 +1,2114 @@
+desc:Contour Grain
+
+// #FILE: Texture {Texture applied to the live input envelope}
+filename:0,Texture
+
+options:gfx_hz=30 maxmem=16000000 ownership=hybrid
+
+slider1:0.75<0,1,0.001>-Mix
+slider2:0<-24,24,0.1>-Texture Gain (dB)
+slider3:0.82<0,1,0.001>-Precision
+slider4:120<20,500,1>-Grain Size (ms)
+slider5:0.22<0,0.95,0.001>-Granular Feedback
+slider6:0.18<0,1,0.001>-Jitter
+slider7:0<-24,24,0.01>-Pitch (st)
+slider8:0<0,1,1{Dry+Wet,Wet Only}>-Output Mode
+slider9:1<0,1,1{Off,On}>-Auto-Reload On File Change
+slider10:0<0,1,1{Off,Reload}>-Reload Texture
+slider11:30<0,720,0.1>-Max Load (s,0=all)
+slider12:8<0.1,2000,0.1>-Env Attack (ms)
+slider13:20<0,1000,0.1>-Env Hold (ms)
+slider14:140<1,4000,0.1>-Env Decay (ms)
+slider15:0.55<0,1,0.001>-Env Sustain
+slider16:180<1,5000,0.1>-Env Release (ms)
+slider17:-36<-72,0,0.1>-Input Threshold (dB)
+
+@init
+ln10 = 2.302585092994046;
+ln2  = 0.6931471805599453;
+PI   = 3.14159265358979323846;
+eps  = 0.000000000001;
+
+seed = 123456789;
+
+tex_base  = 0;
+meta_base = 15000000;
+
+wf_base   = meta_base;
+wf_max_bins = 1200;
+heat_base = wf_base + wf_max_bins * 2 + 64;
+
+cand_base = heat_base + wf_max_bins + 4096;
+cand_max = 1024;
+cand_stride = 7; // start,rms,peak,onset,attack_w,body_w,rank
+
+voice_base = cand_base + cand_max * cand_stride + 4096;
+max_voices = 16;
+v_stride = 8; // active,start,pos,len,rate,amp,envlen,age
+
+fb_max = 65536;
+fbL_base = voice_base + max_voices * v_stride + 4096;
+fbR_base = fbL_base + fb_max + 64;
+
+scope_len = 320;
+scope_in_base = fbR_base + fb_max + 64;
+scope_env_base = scope_in_base + scope_len + 64;
+
+freembuf(scope_env_base + scope_len + 4096);
+
+tex_loaded = 0;
+tex_sig = 0;
+tex_ch = 0;
+tex_sr = srate;
+tex_items = 0;
+tex_frames = 0;
+tex_truncated = 0;
+
+src_ch = 0;
+src_sr = 0;
+src_items = 0;
+src_frames = 0;
+
+wf_bins = 0;
+wf_absmax = 1;
+wf_ready = 0;
+
+cand_count = 0;
+best_cand = 0;
+best_attack = 0;
+best_body = 0;
+cand_rank_peak = 1;
+analysis_ready = 0;
+ana_win = 0;
+ana_hop = 0;
+
+cloud_center = 0;
+cloud_valid = 0;
+last_ci = -1;
+last_grain_start = 0;
+last_grain_len = 0;
+
+file_state = 0;
+last_reload = 0;
+
+env_fast = 0;
+env_slow = 0;
+peak_track = 0.05;
+env_norm = 0;
+onset = 0;
+drive = 0;
+hold_env = 0;
+gate = 0;
+onset_cooldown = 0;
+spawn_countdown = 0;
+
+input_meter = 0;
+wet_meter = 0;
+
+tex_auto_gain = 1;
+tex_norm_rms = 0.18;
+tex_norm_peak = 0.5;
+
+shape_env = 0;
+shape_peak = 0;
+shape_hold_count = 0;
+env_out = 0;
+env_ui_in = 0;
+env_ui_out = 0;
+mat_env = 0;
+prog_ref = 0.08;
+release_hold = 0;
+
+tex_peak_gain = 1;
+tex_raw_peak = 1;
+
+scope_write = 0;
+scope_decim = 64;
+scope_countdown = scope_decim;
+
+fb_write = 0;
+
+ui_lmb_last = 0;
+ui_rmb_last = 0;
+ui_active_kind = 0; // 0 none, 1 slider
+ui_active_id = 0;
+ui_drag_start_x = 0;
+ui_drag_start_val = 0;
+
+vi = 0;
+loop(max_voices,
+  mem[voice_base + vi * v_stride] = 0;
+  vi += 1;
+);
+fi = 0;
+loop(fb_max,
+  mem[fbL_base + fi] = 0;
+  mem[fbR_base + fi] = 0;
+  fi += 1;
+);
+
+si = 0;
+loop(scope_len,
+  mem[scope_in_base + si] = 0;
+  mem[scope_env_base + si] = 0;
+  si += 1;
+);
+
+si = 0;
+loop(scope_len,
+  mem[scope_in_base + si] = 0;
+  mem[scope_env_base + si] = 0;
+  si += 1;
+);
+
+@slider
+mix = slider1;
+tex_gain = exp((slider2 / 20) * ln10);
+precision = slider3;
+
+grain_ms = slider4;
+feedback = slider5;
+jitter = slider6;
+pitch_st = slider7;
+wet_only = slider8 > 0.5;
+auto_reload = slider9 > 0.5;
+
+env_att_ms = slider12;
+env_hold_ms = slider13;
+env_dec_ms = slider14;
+env_sus = slider15;
+env_rel_ms = slider16;
+
+threshold_db = slider17;
+threshold_db < -72 ? threshold_db = -72;
+threshold_db > 0 ? threshold_db = 0;
+threshold_amp = exp((threshold_db / 20) * ln10);
+threshold_amp > 0.999 ? threshold_amp = 0.999;
+threshold_amp < 0 ? threshold_amp = 0;
+threshold_inv = 1 / max(0.000001, 1 - threshold_amp);
+
+grain_ms < 20 ? grain_ms = 20;
+grain_ms > 500 ? grain_ms = 500;
+
+env_att_ms < 0.1 ? env_att_ms = 0.1;
+env_dec_ms < 1 ? env_dec_ms = 1;
+env_rel_ms < 1 ? env_rel_ms = 1;
+env_hold_ms < 0 ? env_hold_ms = 0;
+env_sus < 0 ? env_sus = 0;
+env_sus > 1 ? env_sus = 1;
+
+pitch_cents = pitch_st * 100;
+pitch_jit_cents = pow(jitter, 1.15) * 72;
+amp_jit_db = jitter * 4.5;
+start_jit_att = jitter * 0.08;
+start_jit_body = jitter * 0.20;
+
+fast_atk_ms = 0.5 + (1 - precision) * 4.0;
+fast_rel_ms = 10 + (1 - precision) * 28.0;
+slow_atk_ms = 10 + (1 - precision) * 28.0;
+slow_rel_ms = 80 + (1 - precision) * 220.0;
+peak_rel_ms = 220 + (1 - precision) * 520.0;
+hold_rel_ms = 40 + feedback * 320.0;
+
+fast_atk_c = exp(-1 / max(1, fast_atk_ms * 0.001 * srate));
+fast_rel_c = exp(-1 / max(1, fast_rel_ms * 0.001 * srate));
+slow_atk_c = exp(-1 / max(1, slow_atk_ms * 0.001 * srate));
+slow_rel_c = exp(-1 / max(1, slow_rel_ms * 0.001 * srate));
+peak_rel_c = exp(-1 / max(1, peak_rel_ms * 0.001 * srate));
+hold_rel_c = exp(-1 / max(1, hold_rel_ms * 0.001 * srate));
+
+mat_atk_ms = 1.5 + (1 - precision) * 3.5;
+mat_rel_ms = 18 + (1 - precision) * 70.0;
+prog_atk_ms = 18 + (1 - precision) * 36.0;
+prog_rel_ms = 350 + (1 - precision) * 1000.0;
+mat_atk_c = exp(-1 / max(1, mat_atk_ms * 0.001 * srate));
+mat_rel_c = exp(-1 / max(1, mat_rel_ms * 0.001 * srate));
+prog_atk_c = exp(-1 / max(1, prog_atk_ms * 0.001 * srate));
+prog_rel_c = exp(-1 / max(1, prog_rel_ms * 0.001 * srate));
+
+env_att_c = exp(-1 / max(1, env_att_ms * 0.001 * srate));
+env_dec_c = exp(-1 / max(1, env_dec_ms * 0.001 * srate));
+env_rel_c = exp(-1 / max(1, env_rel_ms * 0.001 * srate));
+env_hold_s = floor(env_hold_ms * 0.001 * srate);
+
+gate_on = 0.03 + (1 - precision) * 0.04;
+gate_off = gate_on * 0.65;
+onset_trig = 0.10 - precision * 0.04;
+onset_trig < 0.04 ? onset_trig = 0.04;
+
+fb_return = feedback * 0.28;
+fb_send = feedback * 0.34;
+fb_delay_ms = grain_ms * (0.45 + feedback * 0.35);
+fb_delay_s = floor(fb_delay_ms * 0.001 * srate);
+fb_delay_s < 32 ? fb_delay_s = 32;
+fb_delay_s >= fb_max ? fb_delay_s = fb_max - 1;
+
+scope_decim = max(24, floor(srate * 0.0012));
+scope_countdown > scope_decim ? scope_countdown = scope_decim;
+scope_countdown < 1 ? scope_countdown = scope_decim;
+
+@block
+reload_now = (slider10 > 0.5) && (last_reload <= 0.5);
+last_reload = slider10;
+reload_now ? (
+  slider10 = 0;
+  sliderchange(slider10);
+);
+
+probe_file = reload_now || (tex_loaded <= 0) || auto_reload;
+probe_file ? (
+  h = file_open(0);
+
+  h > 0 ? (
+    ok = file_riff(h, tmp_ch, tmp_sr);
+
+    ok ? (
+      tmp_ch = max(1, floor(tmp_ch + 0.5));
+      tmp_sr = max(1, floor(tmp_sr + 0.5));
+      items_total = file_avail(h);
+
+      src_ch = tmp_ch;
+      src_sr = tmp_sr;
+      src_items = items_total;
+      src_frames = floor(items_total / max(1, tmp_ch));
+
+      items_total > 0 ? (
+        sig = items_total + tmp_ch * 1000000000 + floor(tmp_sr);
+        need_copy = reload_now || (tex_loaded <= 0) || (sig != tex_sig);
+
+        need_copy ? (
+          file_rewind(h);
+          items_to_copy = items_total;
+          tex_truncated = 0;
+
+          slider11 > 0 ? (
+            max_frames_slider = floor(slider11 * tmp_sr);
+            max_items_slider = max_frames_slider * tmp_ch;
+            max_items_slider < items_to_copy ? (
+              items_to_copy = max_items_slider;
+              tex_truncated = 1;
+            );
+          );
+
+          max_items_mem = meta_base - tex_base - 16384;
+          items_to_copy > max_items_mem ? (
+            items_to_copy = max_items_mem;
+            tex_truncated = 1;
+          );
+
+          copied = file_mem(h, tex_base, items_to_copy);
+
+          copied > 0 ? (
+            tex_loaded = 1;
+            tex_sig = sig;
+            tex_ch = tmp_ch;
+            tex_sr = tmp_sr;
+            tex_items = copied;
+            tex_frames = floor(copied / max(1, tex_ch));
+
+            env_fast = 0;
+            env_slow = 0;
+            peak_track = 0.05;
+            env_norm = 0;
+            onset = 0;
+            drive = 0;
+            hold_env = 0;
+            gate = 0;
+            onset_cooldown = 0;
+            spawn_countdown = 0;
+            cloud_center = 0;
+            cloud_valid = 0;
+            last_ci = -1;
+            last_grain_start = 0;
+            last_grain_len = 0;
+            input_meter = 0;
+            wet_meter = 0;
+            shape_env = 0;
+            shape_peak = 0;
+            shape_hold_count = 0;
+            env_out = 0;
+            env_ui_in = 0;
+            env_ui_out = 0;
+            mat_env = 0;
+            prog_ref = 0.08;
+            release_hold = 0;
+            tex_peak_gain = 1;
+            tex_raw_peak = 1;
+            scope_write = 0;
+            scope_countdown = scope_decim;
+            tex_auto_gain = 1;
+            tex_norm_rms = 0.18;
+            tex_norm_peak = 0.5;
+
+            vi = 0;
+            loop(max_voices,
+              mem[voice_base + vi * v_stride] = 0;
+              vi += 1;
+            );
+            fi = 0;
+            loop(fb_max,
+              mem[fbL_base + fi] = 0;
+              mem[fbR_base + fi] = 0;
+              fi += 1;
+            );
+            fb_write = 0;
+
+            // peak-normalize the imported source material itself so playback
+            // loudness is not dependent on the texture file's gain staging.
+            tex_raw_peak = 0.000001;
+            si = 0;
+            loop(copied,
+              sv = abs(mem[tex_base + si]);
+              sv > tex_raw_peak ? tex_raw_peak = sv;
+              si += 1;
+            );
+            tex_peak_gain = 0.95 / max(0.000001, tex_raw_peak);
+            tex_peak_gain > 64 ? tex_peak_gain = 64;
+            tex_peak_gain < 0.000001 ? tex_peak_gain = 1;
+            si = 0;
+            loop(copied,
+              mem[tex_base + si] *= tex_peak_gain;
+              si += 1;
+            );
+            tex_auto_gain = 1;
+
+            // waveform summary
+            wf_ready = 0;
+            wf_absmax = 0.001;
+
+            wf_bins = floor(tex_frames / 96);
+            wf_bins < 128 ? wf_bins = 128;
+            wf_bins > wf_max_bins ? wf_bins = wf_max_bins;
+            wf_bins > tex_frames ? wf_bins = tex_frames;
+            wf_bins < 16 ? wf_bins = 16;
+
+            frame0 = 0;
+            b = 0;
+            loop(wf_bins,
+              frame1 = floor((b + 1) * tex_frames / max(1, wf_bins));
+              frame1 <= frame0 ? frame1 = frame0 + 1;
+              frame1 > tex_frames ? frame1 = tex_frames;
+
+              span = frame1 - frame0;
+              step = floor(span / 64);
+              step < 1 ? step = 1;
+
+              mn = 0;
+              mxv = 0;
+              first = 1;
+              f = frame0;
+
+              loop(max(1, floor((span + step - 1) / step)),
+                idx = tex_base + f * tex_ch;
+                v = mem[idx];
+                tex_ch > 1 ? v = 0.5 * (v + mem[idx + 1]);
+
+                first ? (
+                  mn = v;
+                  mxv = v;
+                  first = 0;
+                ) : (
+                  v < mn ? mn = v;
+                  v > mxv ? mxv = v;
+                );
+
+                av = abs(v);
+                av > wf_absmax ? wf_absmax = av;
+
+                f += step;
+                f >= frame1 ? f = frame1 - 1;
+              );
+
+              mem[wf_base + b * 2] = mn;
+              mem[wf_base + b * 2 + 1] = mxv;
+              mem[heat_base + b] = 0;
+
+              frame0 = frame1;
+              b += 1;
+            );
+
+            wf_absmax <= 0 ? wf_absmax = 1;
+            wf_ready = 1;
+
+            // analysis
+            analysis_ready = 0;
+            cand_count = 0;
+            cand_rank_peak = 1;
+            best_cand = 0;
+            best_attack = 0;
+            best_body = 0;
+
+            ana_win = floor(tex_sr * 0.022);
+            ana_win < 128 ? ana_win = 128;
+            ana_win > 2048 ? ana_win = 2048;
+            ana_win > tex_frames ? ana_win = tex_frames;
+
+            ana_hop = floor(ana_win * 0.35);
+            ana_hop < 32 ? ana_hop = 32;
+
+            est = (tex_frames >= ana_win) ? (floor((tex_frames - ana_win) / max(1, ana_hop)) + 1) : 0;
+            est > cand_max ? (
+              ana_hop = floor((tex_frames - ana_win) / max(1, cand_max - 1));
+              ana_hop < 1 ? ana_hop = 1;
+              est = (tex_frames >= ana_win) ? (floor((tex_frames - ana_win) / max(1, ana_hop)) + 1) : 0;
+            );
+
+            max_rms = 0.000001;
+            max_peak = 0.000001;
+            max_onset = 0.000001;
+
+            quarter = floor(ana_win * 0.25);
+            quarter < 1 ? quarter = 1;
+
+            pos = 0;
+            ci = 0;
+            loop(est,
+              sumsq = 0;
+              frontsq = 0;
+              peak = 0;
+              n = 0;
+              loop(ana_win,
+                idx = tex_base + (pos + n) * tex_ch;
+                v = mem[idx];
+                tex_ch > 1 ? v = 0.5 * (v + mem[idx + 1]);
+                av = abs(v);
+                sumsq += v * v;
+                n < quarter ? frontsq += v * v;
+                av > peak ? peak = av;
+                n += 1;
+              );
+
+              rms = sqrt(sumsq / max(1, ana_win));
+              front_rms = sqrt(frontsq / max(1, quarter));
+
+              pre_start = pos - quarter;
+              pre_start < 0 ? pre_start = 0;
+              pre_len = pos - pre_start;
+              presq = 0;
+              m = 0;
+              loop(pre_len,
+                idx = tex_base + (pre_start + m) * tex_ch;
+                pv = mem[idx];
+                tex_ch > 1 ? pv = 0.5 * (pv + mem[idx + 1]);
+                presq += pv * pv;
+                m += 1;
+              );
+              pre_rms = pre_len > 0 ? sqrt(presq / max(1, pre_len)) : 0;
+              onset_v = front_rms - pre_rms;
+              onset_v < 0 ? onset_v = 0;
+
+              base = cand_base + cand_count * cand_stride;
+              mem[base] = pos;
+              mem[base + 1] = rms;
+              mem[base + 2] = peak;
+              mem[base + 3] = onset_v;
+              mem[base + 4] = 0;
+              mem[base + 5] = 0;
+              mem[base + 6] = 0;
+
+              rms > max_rms ? max_rms = rms;
+              peak > max_peak ? max_peak = peak;
+              onset_v > max_onset ? max_onset = onset_v;
+
+              pos += ana_hop;
+              cand_count += 1;
+              ci += 1;
+            );
+
+            cand_count <= 0 ? (
+              mem[cand_base] = 0;
+              mem[cand_base + 1] = 0.25;
+              mem[cand_base + 2] = 0.25;
+              mem[cand_base + 3] = 0.05;
+              mem[cand_base + 4] = 1;
+              mem[cand_base + 5] = 1;
+              mem[cand_base + 6] = 1;
+              cand_count = 1;
+              best_cand = 0;
+              best_attack = 0;
+              best_body = 0;
+              cand_rank_peak = 1;
+              analysis_ready = 1;
+            ) : (
+              best_rank = -1;
+              best_attack_w = -1;
+              best_body_w = -1;
+
+              ci = 0;
+              loop(cand_count,
+                base = cand_base + ci * cand_stride;
+                nrms = mem[base + 1] / max_rms;
+                npeak = mem[base + 2] / max_peak;
+                non = mem[base + 3] / max_onset;
+                quiet = nrms < 0.015 ? (nrms / 0.015) : 1;
+
+                attack_w = quiet * (0.60 * non + 0.25 * npeak + 0.15 * sqrt(nrms));
+                body_w = quiet * (0.70 * sqrt(nrms) + 0.20 * (1 - min(1, non)) + 0.10 * npeak);
+                attack_w < 0.001 ? attack_w = 0.001;
+                body_w < 0.001 ? body_w = 0.001;
+                (nrms < 0.008) && (npeak < 0.01) ? (
+                  attack_w *= 0.05;
+                  body_w *= 0.05;
+                );
+                rank = max(attack_w, body_w);
+
+                mem[base + 4] = attack_w;
+                mem[base + 5] = body_w;
+                mem[base + 6] = rank;
+
+                rank > best_rank ? (
+                  best_rank = rank;
+                  best_cand = ci;
+                );
+                attack_w > best_attack_w ? (
+                  best_attack_w = attack_w;
+                  best_attack = ci;
+                );
+                body_w > best_body_w ? (
+                  best_body_w = body_w;
+                  best_body = ci;
+                );
+                rank > cand_rank_peak ? cand_rank_peak = rank;
+
+                hb = floor((mem[base] / max(1, tex_frames - 1)) * (wf_bins - 1));
+                hb < 0 ? hb = 0;
+                hb >= wf_bins ? hb = wf_bins - 1;
+                rank > mem[heat_base + hb] ? mem[heat_base + hb] = rank;
+
+                ci += 1;
+              );
+
+              hb = 0;
+              loop(wf_bins,
+                mem[heat_base + hb] /= max(cand_rank_peak, 0.000001);
+                hb += 1;
+              );
+
+              cloud_center = mem[cand_base + best_body * cand_stride];
+              cloud_valid = 1;
+              analysis_ready = cand_count > 0;
+
+              norm_sum = 0;
+              norm_rms_acc = 0;
+              ci = 0;
+              loop(cand_count,
+                base = cand_base + ci * cand_stride;
+                nw = mem[base + 6];
+                nw > 0 ? (
+                  nw = sqrt(nw / max(cand_rank_peak, 0.000001));
+                  norm_sum += nw;
+                  norm_rms_acc += mem[base + 1] * nw;
+                );
+                ci += 1;
+              );
+              tex_norm_rms = norm_sum > 0 ? (norm_rms_acc / norm_sum) : max_rms;
+              tex_norm_peak = max_peak;
+              tex_auto_gain = 1;
+            );
+
+            file_state = 2;
+          ) : (
+            tex_loaded = 0;
+            tex_items = 0;
+            tex_frames = 0;
+            wf_ready = 0;
+            cand_count = 0;
+            analysis_ready = 0;
+            tex_auto_gain = 1;
+            tex_norm_rms = 0.18;
+            tex_norm_peak = 0.5;
+            shape_env = 0;
+            shape_peak = 0;
+            shape_hold_count = 0;
+            env_out = 0;
+            env_ui_in = 0;
+            env_ui_out = 0;
+            mat_env = 0;
+            prog_ref = 0.08;
+            release_hold = 0;
+            tex_peak_gain = 1;
+            tex_raw_peak = 1;
+            file_state = 3;
+          );
+        ) : (
+          file_state = 2;
+        );
+      ) : (
+        file_state = 1;
+        tex_loaded <= 0 ? (
+          wf_ready = 0;
+          cand_count = 0;
+          analysis_ready = 0;
+        );
+      );
+    ) : (
+      file_state = 1;
+    );
+
+    file_close(h);
+  ) : (
+    tex_loaded <= 0 ? (
+      tex_loaded = 0;
+      tex_sig = 0;
+      tex_ch = 0;
+      tex_sr = srate;
+      tex_items = 0;
+      tex_frames = 0;
+      wf_ready = 0;
+      cand_count = 0;
+      analysis_ready = 0;
+      tex_auto_gain = 1;
+      tex_norm_rms = 0.18;
+      tex_norm_peak = 0.5;
+      shape_env = 0;
+      shape_peak = 0;
+      shape_hold_count = 0;
+      env_out = 0;
+      env_ui_in = 0;
+      env_ui_out = 0;
+      mat_env = 0;
+      prog_ref = 0.08;
+      release_hold = 0;
+      tex_peak_gain = 1;
+      tex_raw_peak = 1;
+    );
+    file_state = 0;
+  );
+) : (
+  tex_loaded > 0 ? file_state = 2 : file_state = 0;
+);
+
+@sample
+function clamp1(v, lo, hi) (
+  v < lo ? v = lo;
+  v > hi ? v = hi;
+  v;
+);
+
+function rand01() (
+  seed = seed * 196314165 + 907633515;
+  seed = seed & 2147483647;
+  seed / 2147483648;
+);
+
+function randSym() (
+  rand01() * 2 - 1;
+);
+
+function softsat(x) local(a) (
+  a = abs(x);
+  x / (1 + a);
+);
+
+function tex_read(frame, ch) local(i0, frac, i1, idx0, idx1, s0, s1, lim) (
+  lim = tex_frames - 2;
+  lim < 0 ? lim = 0;
+  frame < 0 ? frame = 0;
+  frame > lim ? frame = lim;
+  i0 = floor(frame);
+  frac = frame - i0;
+  i1 = i0 + 1;
+  i1 >= tex_frames ? i1 = tex_frames - 1;
+  idx0 = tex_base + i0 * tex_ch + ch;
+  idx1 = tex_base + i1 * tex_ch + ch;
+  s0 = mem[idx0];
+  s1 = mem[idx1];
+  s0 + (s1 - s0) * frac;
+);
+
+function mono_frame(fr) local(idx, v) (
+  fr < 0 ? fr = 0;
+  fr >= tex_frames ? fr = tex_frames - 1;
+  idx = tex_base + fr * tex_ch;
+  v = mem[idx];
+  tex_ch > 1 ? v = 0.5 * (v + mem[idx + 1]);
+  v;
+);
+
+function refine_start(start, span) local(lo, hi, f, best, bestc, vm, v0, vp, cost) (
+  lo = start - span;
+  lo < 1 ? lo = 1;
+  hi = start + span;
+  hi > tex_frames - 2 ? hi = tex_frames - 2;
+  best = start;
+  bestc = 1000000;
+  f = lo;
+  loop(max(1, hi - lo + 1),
+    vm = mono_frame(f - 1);
+    v0 = mono_frame(f);
+    vp = mono_frame(f + 1);
+    cost = abs(v0) + 0.45 * abs(vp - vm);
+    ((vm >= 0) != (v0 >= 0)) ? cost *= 0.82;
+    cost < bestc ? (
+      bestc = cost;
+      best = f;
+    );
+    f += 1;
+  );
+  best;
+);
+
+function claim_voice() local(i, base, free_idx, steal_idx, best_prog, prog) (
+  free_idx = -1;
+  steal_idx = 0;
+  best_prog = -1;
+  i = 0;
+  loop(max_voices,
+    base = voice_base + i * v_stride;
+    mem[base] <= 0 ? (
+      free_idx < 0 ? free_idx = i;
+    ) : (
+      prog = mem[base + 7] / max(1, mem[base + 6]);
+      prog > best_prog ? (
+        best_prog = prog;
+        steal_idx = i;
+      );
+    );
+    i += 1;
+  );
+  free_idx >= 0 ? free_idx : steal_idx;
+);
+
+function pick_candidate(attack_mix) local(i, base, start, basew, dist, contw, repeatw, w, total, rr, acc, chosen, radius, done) (
+  attack_mix = clamp1(attack_mix, 0, 1);
+  total = 0;
+  chosen = attack_mix > 0.5 ? best_attack : best_body;
+  radius = floor(grain_ms * 0.001 * tex_sr * (1.15 + (1 - precision) * 1.8 + feedback * 1.6));
+  radius < 128 ? radius = 128;
+
+  i = 0;
+  loop(cand_count,
+    base = cand_base + i * cand_stride;
+    start = mem[base];
+    basew = mem[base + 5] * (1 - attack_mix) + mem[base + 4] * attack_mix;
+    cloud_valid > 0 ? (
+      dist = abs(start - cloud_center);
+      contw = exp(-dist / radius);
+      attack_mix > 0.5 ? contw = 0.60 + 0.40 * contw : contw = 0.22 + 0.78 * contw;
+    ) : (
+      contw = 1;
+    );
+    repeatw = i == last_ci ? 0.35 : 1;
+    w = basew * contw * repeatw;
+    total += w;
+    i += 1;
+  );
+
+  total > 0 ? (
+    rr = rand01() * total;
+    acc = 0;
+    done = 0;
+    i = 0;
+    loop(cand_count,
+      done <= 0 ? (
+        base = cand_base + i * cand_stride;
+        start = mem[base];
+        basew = mem[base + 5] * (1 - attack_mix) + mem[base + 4] * attack_mix;
+        cloud_valid > 0 ? (
+          dist = abs(start - cloud_center);
+          contw = exp(-dist / radius);
+          attack_mix > 0.5 ? contw = 0.60 + 0.40 * contw : contw = 0.22 + 0.78 * contw;
+        ) : (
+          contw = 1;
+        );
+        repeatw = i == last_ci ? 0.35 : 1;
+        w = basew * contw * repeatw;
+        acc += w;
+        acc >= rr ? (
+          chosen = i;
+          done = 1;
+        );
+      );
+      i += 1;
+    );
+  );
+
+  chosen;
+);
+
+function spawn_grain(attack_mix, amp_env) local(ci, base, start, src_len, env_len, search, slot, vb, max_start, rate, amp, jit_span, cents) (
+  (tex_loaded > 0) && (analysis_ready > 0) ? (
+    ci = pick_candidate(attack_mix);
+    base = cand_base + ci * cand_stride;
+    start = mem[base];
+
+    src_len = floor(grain_ms * 0.001 * tex_sr);
+    env_len = floor(grain_ms * 0.001 * srate);
+
+    attack_mix > 0.55 ? (
+      src_len *= 0.78 + 0.10 * (1 - precision);
+      env_len *= 0.82 + 0.12 * (1 - precision);
+    ) : (
+      src_len *= 1.00 + feedback * 0.20;
+      env_len *= 1.00 + feedback * 0.12;
+    );
+
+    src_len < 32 ? src_len = 32;
+    env_len < 16 ? env_len = 16;
+
+    search = floor((0.001 + (1 - precision) * 0.004) * tex_sr);
+    search < 2 ? search = 2;
+
+    jit_span = floor(src_len * (attack_mix > 0.55 ? start_jit_att : start_jit_body));
+    jit_span > 0 ? start += floor(randSym() * jit_span);
+    start = refine_start(start, search);
+
+    max_start = tex_frames - src_len - 2;
+    max_start < 0 ? max_start = 0;
+    start > max_start ? start = max_start;
+    start < 0 ? start = 0;
+
+    cents = pitch_cents + pitch_jit_cents * randSym();
+    rate = tex_sr / srate * exp((cents / 1200) * ln2);
+    amp_env = clamp1(amp_env, 0, 1);
+    amp = tex_gain * (0.55 + 0.45 * amp_env);
+    amp *= exp((amp_jit_db * randSym() / 20) * ln10);
+    attack_mix > 0.55 ? amp *= 1.04;
+
+    slot = claim_voice();
+    vb = voice_base + slot * v_stride;
+    mem[vb] = 1;
+    mem[vb + 1] = start;
+    mem[vb + 2] = 0;
+    mem[vb + 3] = src_len;
+    mem[vb + 4] = rate;
+    mem[vb + 5] = amp;
+    mem[vb + 6] = env_len;
+    mem[vb + 7] = 0;
+
+    cloud_center = start;
+    cloud_valid = 1;
+    last_ci = ci;
+    last_grain_start = start;
+    last_grain_len = src_len;
+  );
+);
+
+function grain_window(age, envlen) local(t, w) (
+  t = clamp1(age / max(1, envlen - 1), 0, 1);
+  w = sin(PI * t);
+  w * w;
+);
+
+dryL = spl0;
+dryR = spl1;
+raw_in = abs(dryL);
+abs(dryR) > raw_in ? raw_in = abs(dryR);
+
+th_raw = raw_in - threshold_amp;
+th_raw < 0 ? th_raw = 0;
+drive_in = th_raw * threshold_inv;
+drive_in < 0 ? drive_in = 0;
+drive_in > 1 ? drive_in = 1;
+
+drive_in > env_fast ? (
+  env_fast = drive_in + fast_atk_c * (env_fast - drive_in);
+) : (
+  env_fast = drive_in + fast_rel_c * (env_fast - drive_in);
+);
+
+drive_in > env_slow ? (
+  env_slow = drive_in + slow_atk_c * (env_slow - drive_in);
+) : (
+  env_slow = drive_in + slow_rel_c * (env_slow - drive_in);
+);
+
+drive_in > mat_env ? (
+  mat_env = drive_in + mat_atk_c * (mat_env - drive_in);
+) : (
+  mat_env = drive_in + mat_rel_c * (mat_env - drive_in);
+);
+
+mat_env > peak_track ? (
+  peak_track = mat_env;
+) : (
+  peak_track = mat_env + peak_rel_c * (peak_track - mat_env);
+);
+peak_track < 0.010 ? peak_track = 0.010;
+
+drive_in > prog_ref ? (
+  prog_ref = drive_in + prog_atk_c * (prog_ref - drive_in);
+) : (
+  prog_ref = drive_in + prog_rel_c * (prog_ref - drive_in);
+);
+ref_floor = threshold_amp * 0.5 + 0.002;
+ref_floor < 0.002 ? ref_floor = 0.002;
+ref_floor > 0.05 ? ref_floor = 0.05;
+
+peak_track < ref_floor ? peak_track = ref_floor;
+prog_ref < ref_floor ? prog_ref = ref_floor;
+
+env_norm = clamp1(mat_env, 0, 1);
+env_ui_in = clamp1(mat_env / max(ref_floor, prog_ref), 0, 1);
+
+onset = env_fast - env_slow;
+onset < 0 ? onset = 0;
+onset = onset / max(0.030, prog_ref * 0.65 + 0.03) * (1.15 + precision * 1.65);
+onset = clamp1(onset, 0, 1);
+
+env_norm > hold_env ? (
+  hold_env = env_norm;
+) : (
+  hold_env = env_norm + hold_rel_c * (hold_env - env_norm);
+);
+
+drive = env_norm;
+note_off = 0;
+
+gate <= 0 ? (
+  (drive > gate_on) || (onset > onset_trig) ? (
+    gate = 1;
+    just_open = 1;
+  ) : (
+    just_open = 0;
+  );
+) : (
+  drive < gate_off ? (
+    gate = 0;
+    note_off = 1;
+  );
+  just_open = 0;
+);
+
+note_off ? release_hold = env_norm;
+gate > 0 ? release_hold = env_norm;
+
+onset_cooldown > 0 ? onset_cooldown -= 1;
+
+trig_now = 0;
+just_open ? trig_now = 1;
+((onset > onset_trig) && (onset_cooldown <= 0) && (drive > 0.008)) ? (
+  trig_now = 1;
+  onset_cooldown = max(1, floor(0.25 * grain_ms * 0.001 * srate));
+);
+
+shape_in = clamp1(env_norm, 0, 1);
+((trig_now > 0) || (shape_in > shape_peak)) ? (
+  shape_peak = shape_in;
+  drive > shape_peak ? shape_peak = drive;
+  shape_hold_count = env_hold_s;
+);
+
+gate > 0 ? (
+  shape_target = shape_in;
+  shape_hold_count > 0 ? (
+    shape_target < shape_peak ? shape_target = shape_peak;
+    shape_hold_count -= 1;
+  ) : (
+    shape_floor = shape_peak * env_sus;
+    shape_target < shape_floor ? shape_target = shape_floor;
+  );
+
+  shape_target > shape_env ? (
+    shape_env = shape_target + env_att_c * (shape_env - shape_target);
+  ) : (
+    shape_env = shape_target + env_dec_c * (shape_env - shape_target);
+  );
+) : (
+  shape_hold_count = 0;
+  shape_peak = 0;
+  shape_env = env_rel_c * shape_env;
+);
+
+shape_env < 0.000001 ? shape_env = 0;
+shape_env > 1 ? shape_env = 1;
+
+env_out = shape_env;
+ui_out_ref = gate > 0 ? max(ref_floor, prog_ref) : max(ref_floor, release_hold);
+env_ui_out = clamp1(env_out / ui_out_ref, 0, 1);
+scope_countdown -= 1;
+scope_countdown <= 0 ? (
+  mem[scope_in_base + scope_write] = env_ui_in;
+  mem[scope_env_base + scope_write] = env_ui_out;
+  scope_write += 1;
+  scope_write >= scope_len ? scope_write = 0;
+  scope_countdown = scope_decim;
+);
+
+(trig_now > 0) && (tex_loaded > 0) && (analysis_ready > 0) ? (
+  attack_mix = onset * 1.35;
+  attack_mix < 0.65 ? attack_mix = 0.65;
+  attack_mix > 1 ? attack_mix = 1;
+  spawn_grain(attack_mix, max(env_out, env_norm));
+  spawn_countdown = max(1, floor(grain_ms * 0.001 * srate * (0.26 + 0.20 * (1 - precision))));
+);
+
+scheduler_on = (gate > 0) && ((env_out > 0.015) || (onset > onset_trig));
+
+scheduler_on && (tex_loaded > 0) && (analysis_ready > 0) ? (
+  spawn_countdown -= 1;
+  spawn_countdown <= 0 ? (
+    body_mix = onset * 0.28;
+    spawn_grain(body_mix, max(env_out, 0.05));
+
+    hop = floor(grain_ms * 0.001 * srate * (0.52 - 0.28 * precision));
+    hop < 12 ? hop = 12;
+    hop *= 1.10 - 0.70 * env_out;
+    hop *= 1.00 - feedback * 0.20;
+    min_hop = floor(grain_ms * 0.001 * srate * 0.12);
+    min_hop < 1 ? min_hop = 1;
+    hop < min_hop ? hop = min_hop;
+    spawn_countdown = max(1, floor(hop));
+  );
+) : (
+  spawn_countdown = 0;
+);
+
+wetL = 0;
+wetR = 0;
+active_ct = 0;
+
+(tex_loaded > 0) && (tex_frames > 1) ? (
+  vi = 0;
+  loop(max_voices,
+    vb = voice_base + vi * v_stride;
+    mem[vb] > 0 ? (
+      pos = mem[vb + 2];
+      src_len = mem[vb + 3];
+      env_len = mem[vb + 6];
+      age = mem[vb + 7];
+
+      (age >= env_len) || (pos >= src_len) ? (
+        mem[vb] = 0;
+      ) : (
+        src = mem[vb + 1] + pos;
+        w = grain_window(age, env_len);
+        gain = mem[vb + 5] * w;
+
+        tex_ch > 1 ? (
+          sL = tex_read(src, 0);
+          sR = tex_read(src, 1);
+        ) : (
+          sM = tex_read(src, 0);
+          sL = sM;
+          sR = sM;
+        );
+
+        wetL += sL * gain;
+        wetR += sR * gain;
+        active_ct += 1;
+
+        pos += mem[vb + 4];
+        age += 1;
+        mem[vb + 2] = pos;
+        mem[vb + 7] = age;
+        (age >= env_len) || (pos >= src_len) ? mem[vb] = 0;
+      );
+    );
+    vi += 1;
+  );
+);
+
+active_ct > 1 ? (
+  normv = 1 / sqrt(max(1, active_ct * 0.65));
+  wetL *= normv;
+  wetR *= normv;
+);
+
+fb_read = fb_write - fb_delay_s;
+fb_read < 0 ? fb_read += fb_max;
+fbL = mem[fbL_base + fb_read];
+fbR = mem[fbR_base + fb_read];
+
+wetL += fbL * fb_return;
+wetR += fbR * fb_return;
+
+shape = env_out;
+
+wetL *= shape;
+wetR *= shape;
+
+fb_inL = softsat((wetL + fbL * fb_send) * 0.92);
+fb_inR = softsat((wetR + fbR * fb_send) * 0.92);
+mem[fbL_base + fb_write] = fb_inL;
+mem[fbR_base + fb_write] = fb_inR;
+fb_write += 1;
+fb_write >= fb_max ? fb_write = 0;
+
+wet_postL = wetL * mix;
+wet_postR = wetR * mix;
+wet_abs = abs(wet_postL);
+abs(wet_postR) > wet_abs ? wet_abs = abs(wet_postR);
+
+raw_in > input_meter ? (
+  input_meter = raw_in;
+) : (
+  input_meter = raw_in + 0.995 * (input_meter - raw_in);
+);
+
+wet_abs > wet_meter ? (
+  wet_meter = wet_abs;
+) : (
+  wet_meter = wet_abs + 0.995 * (wet_meter - wet_abs);
+);
+
+dry_amt = wet_only ? 0 : (1 - mix);
+wet_amt = mix;
+spl0 = dryL * dry_amt + wetL * wet_amt;
+spl1 = dryR * dry_amt + wetR * wet_amt;
+
+@gfx 1100 680
+function clampg(v, lo, hi) (
+  v < lo ? v = lo;
+  v > hi ? v = hi;
+  v;
+);
+
+function spx(v) (
+  max(1, floor(v * ui_s + 0.5));
+);
+
+function fpx(v) (
+  max(1, floor(v * ui_fs + 0.5));
+);
+
+function hit(mx, my, x, y, w, h) (
+  (mx >= x) && (mx < x + w) && (my >= y) && (my < y + h);
+);
+
+function knob_hit(mx, my, cx, cy, r) local(dx, dy) (
+  dx = mx - cx;
+  dy = my - cy;
+  dx * dx + dy * dy <= r * r;
+);
+
+function draw_panel(x, y, w, h) (
+  gfx_r = 0.085; gfx_g = 0.095; gfx_b = 0.122; gfx_a = 1;
+  gfx_rect(x, y, w, h, 1);
+  gfx_r = 0.16; gfx_g = 0.18; gfx_b = 0.24; gfx_a = 1;
+  gfx_roundrect(x, y, w, h, spx(8), 1);
+);
+
+function draw_button_bg(x, y, w, h, onv, hov, rr, gg, bb) (
+  gfx_r = onv ? rr : rr * 0.40;
+  gfx_g = onv ? gg : gg * 0.40;
+  gfx_b = onv ? bb : bb * 0.40;
+  hov ? (
+    gfx_r += 0.08;
+    gfx_g += 0.08;
+    gfx_b += 0.08;
+  );
+  gfx_a = 1;
+  gfx_rect(x, y, w, h, 1);
+  gfx_r = 0.16; gfx_g = 0.18; gfx_b = 0.23; gfx_a = 1;
+  gfx_roundrect(x, y, w, h, spx(6), 1);
+);
+
+function draw_meter(x, y, w, h, val, rr, gg, bb) local(fillw) (
+  gfx_r = 0.10; gfx_g = 0.12; gfx_b = 0.16; gfx_a = 1;
+  gfx_rect(x, y, w, h, 1);
+  fillw = floor(w * clampg(val, 0, 1));
+  fillw < 1 && val > 0 ? fillw = 1;
+  gfx_r = rr; gfx_g = gg; gfx_b = bb; gfx_a = 1;
+  fillw > 0 ? gfx_rect(x, y, fillw, h, 1);
+  gfx_r = 0.16; gfx_g = 0.18; gfx_b = 0.23; gfx_a = 1;
+  gfx_roundrect(x, y, w, h, spx(4), 1);
+);
+
+function norm_log(v, lo, hi) local(r) (
+  v = clampg(v, lo, hi);
+  r = log(hi / lo);
+  r <= 0 ? 0 : log(v / lo) / r;
+);
+
+function denorm_log(t, lo, hi) local(r) (
+  t = clampg(t, 0, 1);
+  r = log(hi / lo);
+  r <= 0 ? lo : lo * exp(r * t);
+);
+
+function draw_knob_shell(cx, cy, rad, n, rr, gg, bb, hovered, active)
+local(start_ang, end_ang, ang, i, px1, py1, px2, py2) (
+  start_ang = PI * 0.75;
+  end_ang   = PI * 2.25;
+  n = clampg(n, 0, 1);
+  ang = start_ang + (end_ang - start_ang) * n;
+
+  gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.18;
+  gfx_circle(cx + 2, cy + 3, rad, 1, 1);
+
+  gfx_r = 0.11; gfx_g = 0.13; gfx_b = 0.17; gfx_a = 1;
+  gfx_circle(cx, cy, rad + 5, 1, 1);
+
+  i = 0;
+  loop(3,
+    gfx_r = 0.18; gfx_g = 0.20; gfx_b = 0.24; gfx_a = 1;
+    gfx_arc(cx, cy, rad - i, start_ang, end_ang, 1);
+    i += 1;
+  );
+
+  i = 0;
+  loop(3,
+    gfx_r = rr; gfx_g = gg; gfx_b = bb; gfx_a = active ? 1 : (hovered ? 0.96 : 0.86);
+    gfx_arc(cx, cy, rad - i, start_ang, ang, 1);
+    i += 1;
+  );
+
+  active ? (
+    gfx_r = 0.22; gfx_g = 0.26; gfx_b = 0.33;
+  ) : hovered ? (
+    gfx_r = 0.18; gfx_g = 0.21; gfx_b = 0.27;
+  ) : (
+    gfx_r = 0.15; gfx_g = 0.18; gfx_b = 0.23;
+  );
+  gfx_a = 1;
+  gfx_circle(cx, cy, rad - 9, 1, 1);
+
+  gfx_r = 0.30; gfx_g = 0.33; gfx_b = 0.38; gfx_a = 1;
+  gfx_circle(cx, cy, rad - 9, 0, 1);
+
+  px1 = cx + cos(ang) * (rad - 24);
+  py1 = cy + sin(ang) * (rad - 24);
+  px2 = cx + cos(ang) * (rad - 12);
+  py2 = cy + sin(ang) * (rad - 12);
+
+  gfx_r = 0.98; gfx_g = 0.99; gfx_b = 1.00; gfx_a = 1;
+  gfx_line(px1, py1, px2, py2, 1);
+);
+
+function ctrl_norm(id) (
+  id == 1 ? slider1 :
+  id == 2 ? ((slider2 + 24) / 48) :
+  id == 3 ? slider3 :
+  id == 4 ? ((slider17 + 72) / 72) :
+  id == 5 ? norm_log(slider4, 20, 500) :
+  id == 6 ? (slider5 / 0.95) :
+  id == 7 ? slider6 :
+  ((slider7 + 24) / 48);
+);
+
+function ctrl_set(id, t) (
+  t = clampg(t, 0, 1);
+  id == 1 ? (
+    slider1 = t;
+    sliderchange(slider1);
+  ) : id == 2 ? (
+    slider2 = -24 + t * 48;
+    sliderchange(slider2);
+  ) : id == 3 ? (
+    slider3 = t;
+    sliderchange(slider3);
+  ) : id == 4 ? (
+    slider17 = -72 + t * 72;
+    sliderchange(slider17);
+  ) : id == 5 ? (
+    slider4 = denorm_log(t, 20, 500);
+    sliderchange(slider4);
+  ) : id == 6 ? (
+    slider5 = t * 0.95;
+    sliderchange(slider5);
+  ) : id == 7 ? (
+    slider6 = t;
+    sliderchange(slider6);
+  ) : (
+    slider7 = -24 + t * 48;
+    sliderchange(slider7);
+  );
+);
+
+function ctrl_default(id) (
+  id == 1 ? (slider1 = 0.75; sliderchange(slider1);) :
+  id == 2 ? (slider2 = 0; sliderchange(slider2);) :
+  id == 3 ? (slider3 = 0.82; sliderchange(slider3);) :
+  id == 4 ? (slider17 = -36; sliderchange(slider17);) :
+  id == 5 ? (slider4 = 120; sliderchange(slider4);) :
+  id == 6 ? (slider5 = 0.22; sliderchange(slider5);) :
+  id == 7 ? (slider6 = 0.18; sliderchange(slider6);) :
+  (slider7 = 0; sliderchange(slider7););
+);
+
+function env_knob_norm(id) (
+  id == 1 ? norm_log(slider12, 0.1, 2000) :
+  id == 2 ? sqrt(slider13 / 1000) :
+  id == 3 ? norm_log(slider14, 1, 4000) :
+  id == 4 ? slider15 :
+  norm_log(slider16, 1, 5000);
+);
+
+function env_knob_fill_norm(id) (
+  id == 1 ? (slider12 / 2000) :
+  id == 2 ? (slider13 / 1000) :
+  id == 3 ? (slider14 / 4000) :
+  id == 4 ? slider15 :
+  (slider16 / 5000);
+);
+
+function env_knob_set(id, t) (
+  t = clampg(t, 0, 1);
+  id == 1 ? (
+    slider12 = denorm_log(t, 0.1, 2000);
+    sliderchange(slider12);
+  ) : id == 2 ? (
+    slider13 = (t * t) * 1000;
+    slider13 < 0.05 ? slider13 = 0;
+    sliderchange(slider13);
+  ) : id == 3 ? (
+    slider14 = denorm_log(t, 1, 4000);
+    sliderchange(slider14);
+  ) : id == 4 ? (
+    slider15 = t;
+    sliderchange(slider15);
+  ) : (
+    slider16 = denorm_log(t, 1, 5000);
+    sliderchange(slider16);
+  );
+);
+
+function env_knob_default(id) (
+  id == 1 ? (slider12 = 8; sliderchange(slider12);) :
+  id == 2 ? (slider13 = 20; sliderchange(slider13);) :
+  id == 3 ? (slider14 = 140; sliderchange(slider14);) :
+  id == 4 ? (slider15 = 0.55; sliderchange(slider15);) :
+  (slider16 = 180; sliderchange(slider16););
+);
+
+mx = mouse_x;
+my = mouse_y;
+lmb = mouse_cap & 1;
+rmb = mouse_cap & 2;
+wheel = mouse_wheel;
+mouse_wheel = 0;
+
+click = lmb && !ui_lmb_last;
+rclick = rmb && !ui_rmb_last;
+release = !lmb && ui_lmb_last;
+ui_lmb_last = lmb > 0;
+ui_rmb_last = rmb > 0;
+
+base_scale = min(gfx_w / 1100, gfx_h / 680);
+ui_size_class = base_scale < 0.80 ? 0 : base_scale < 1.18 ? 1 : 2;
+ui_s = clampg(base_scale, 0.64, 1.55);
+ui_fs = ui_size_class == 0 ? max(0.84, ui_s * 1.12) : ui_size_class == 1 ? max(0.98, ui_s * 1.02) : min(1.68, ui_s * 1.08);
+
+ft_title = max(ui_size_class == 0 ? 13 : ui_size_class == 1 ? 14 : 16, fpx(ui_size_class == 2 ? 20 : 18));
+ft_panel = max(ui_size_class == 0 ? 11 : 12, fpx(ui_size_class == 2 ? 16 : 14));
+ft_body  = max(ui_size_class == 0 ? 10 : 11, fpx(ui_size_class == 2 ? 14 : 12));
+ft_meta  = max(ui_size_class == 0 ? 9 : 10, fpx(ui_size_class == 2 ? 12 : 10));
+ft_small = max(ui_size_class == 0 ? 9 : 10, fpx(ui_size_class == 2 ? 13 : 11));
+ft_tiny  = max(ui_size_class == 0 ? 8 : 9, fpx(ui_size_class == 2 ? 11 : 9));
+
+pad = spx(18);
+btn_h = max(spx(24), ft_meta + spx(10));
+btn_gap = spx(8);
+
+wave_x = pad;
+wave_y = pad + spx(42);
+wave_w = gfx_w - pad * 2;
+wave_h = ui_size_class == 0 ? spx(180) : ui_size_class == 1 ? spx(210) : spx(244);
+
+panel_y = wave_y + wave_h + spx(24);
+panel_h = gfx_h - panel_y - pad;
+
+ctrl_x = pad;
+ctrl_y = panel_y;
+ctrl_w = floor((gfx_w - pad * 3) * 0.56);
+ctrl_h = panel_h;
+
+side_x = ctrl_x + ctrl_w + pad;
+side_y = panel_y;
+side_w = gfx_w - side_x - pad;
+side_h = panel_h;
+
+btn_w = floor((side_w - btn_gap * 2 - spx(24)) / 3);
+out_x = side_x + spx(12);
+auto_x = out_x + btn_w + btn_gap;
+reload_x = auto_x + btn_w + btn_gap;
+btn_y = side_y + spx(12);
+
+ctrl_grid_x = ctrl_x + spx(14);
+ctrl_grid_y = ctrl_y + spx(56);
+ctrl_col_gap = spx(12);
+ctrl_col_w = floor((ctrl_w - spx(28) - ctrl_col_gap) / 2);
+ctrl_row_h = max(spx(30), ft_meta + spx(16));
+ctrl_row_gap = ui_size_class == 0 ? spx(6) : spx(8);
+
+env_x = side_x + spx(10);
+env_y = btn_y + btn_h + spx(14);
+env_w = side_w - spx(20);
+env_h = side_h - (env_y - side_y) - spx(10);
+
+graph_x = env_x + spx(10);
+graph_y = env_y + spx(28);
+graph_w = env_w - spx(20);
+graph_h = ui_size_class == 0 ? spx(72) : ui_size_class == 1 ? spx(82) : spx(98);
+
+knob_slot_w = graph_w / 5;
+knob_rad = floor(knob_slot_w * (ui_size_class == 0 ? 0.25 : ui_size_class == 1 ? 0.28 : 0.30));
+knob_rad > spx(ui_size_class == 2 ? 34 : 30) ? knob_rad = spx(ui_size_class == 2 ? 34 : 30);
+knob_rad < spx(18) ? knob_rad = spx(18);
+knob_cy = graph_y + graph_h + spx(56);
+
+meter_x = graph_x;
+meter_w = graph_w;
+meter_y = knob_cy + knob_rad + (ui_size_class == 0 ? spx(24) : spx(28));
+
+strcpy(#ui_txt, "");
+strcpy(#ui_lbl, "");
+strcpy(#ui_val, "");
+strcpy(#tip1, "");
+strcpy(#tip2, "");
+strcpy(#menu, "");
+
+// background
+gfx_r = 0.055; gfx_g = 0.060; gfx_b = 0.078; gfx_a = 1;
+gfx_rect(0, 0, gfx_w, gfx_h, 1);
+
+// header
+gfx_setfont(1, "Verdana", ft_title);
+gfx_r = 0.98; gfx_g = 0.91; gfx_b = 0.55; gfx_a = 1;
+gfx_x = pad; gfx_y = spx(10);
+gfx_printf("Contour Grain");
+
+gfx_setfont(1, "Verdana", ft_body);
+gfx_r = 0.80; gfx_g = 0.84; gfx_b = 0.90; gfx_a = 1;
+gfx_x = pad + spx(142); gfx_y = spx(12);
+file_state == 0 ? (
+  gfx_printf("Assign a file to the Texture slot");
+) : file_state == 1 ? (
+  gfx_printf("Waiting for texture file");
+) : file_state == 3 ? (
+  gfx_printf("Load failed. Reduce Max Load or file length");
+) : (
+  loaded_sec = tex_sr > 0 ? tex_frames / tex_sr : 0;
+  src_sec = src_sr > 0 ? src_frames / src_sr : 0;
+  tex_truncated > 0 ? (
+    gfx_printf("Loaded %.2fs of %.2fs   -   %g ch   -   %.1fkHz   -   %d candidates", loaded_sec, src_sec, tex_ch, tex_sr / 1000, cand_count);
+  ) : (
+    gfx_printf("Loaded %.2fs   -   %g ch   -   %.1fkHz   -   %d candidates", loaded_sec, tex_ch, tex_sr / 1000, cand_count);
+  );
+);
+
+// waveform panel
+draw_panel(wave_x, wave_y, wave_w, wave_h);
+mid_y = wave_y + wave_h * 0.5;
+gfx_r = 0.13; gfx_g = 0.17; gfx_b = 0.22; gfx_a = 1;
+gfx_line(wave_x, mid_y, wave_x + wave_w, mid_y, 1);
+
+(tex_loaded > 0) && (wf_ready > 0) && (wf_bins > 0) ? (
+  xstep = wave_w / max(1, wf_bins);
+  scale = (wave_h * 0.44) / max(0.000001, wf_absmax);
+  i = 0;
+  loop(wf_bins,
+    mn = mem[wf_base + i * 2];
+    mxv = mem[wf_base + i * 2 + 1];
+    x = wave_x + i * xstep;
+    x2c = x + max(1, floor(xstep + 0.5));
+    x2c > wave_x + wave_w ? x2c = wave_x + wave_w;
+    bar_w = x2c - x;
+    bar_w < 1 ? bar_w = 1;
+
+    hv = mem[heat_base + i];
+    gfx_r = 0.82 * hv; gfx_g = 0.44 * hv; gfx_b = 0.16 * hv; gfx_a = 0.10 + 0.14 * hv;
+    gfx_rect(x, wave_y + wave_h - spx(18), bar_w, spx(18), 1);
+
+    y1 = mid_y - mxv * scale;
+    y2 = mid_y - mn * scale;
+    y1 < wave_y ? y1 = wave_y;
+    y1 > wave_y + wave_h ? y1 = wave_y + wave_h;
+    y2 < wave_y ? y2 = wave_y;
+    y2 > wave_y + wave_h ? y2 = wave_y + wave_h;
+
+    gfx_r = 0.66; gfx_g = 0.84; gfx_b = 0.94; gfx_a = 0.90;
+    gfx_line(x, y1, x, y2, 1);
+    i += 1;
+  );
+
+  last_grain_len > 0 ? (
+    gx1 = wave_x + (last_grain_start / max(1, tex_frames)) * wave_w;
+    gx2 = wave_x + ((last_grain_start + last_grain_len) / max(1, tex_frames)) * wave_w;
+    gx1 = clampg(gx1, wave_x, wave_x + wave_w - 1);
+    gx2 = clampg(gx2, wave_x, wave_x + wave_w);
+    gx2 < gx1 + 2 ? gx2 = min(wave_x + wave_w, gx1 + 2);
+    gfx_r = 0.86; gfx_g = 0.62; gfx_b = 0.22; gfx_a = 0.12;
+    gfx_rect(gx1, wave_y, max(1, gx2 - gx1), wave_h, 1);
+  );
+
+  vi = 0;
+  loop(max_voices,
+    vb = voice_base + vi * v_stride;
+    mem[vb] > 0 ? (
+      vstart = mem[vb + 1];
+      vlen = mem[vb + 3];
+      vpos = mem[vb + 2];
+      x1 = wave_x + (vstart / max(1, tex_frames)) * wave_w;
+      x2 = wave_x + ((vstart + vlen) / max(1, tex_frames)) * wave_w;
+      px = wave_x + ((vstart + vpos) / max(1, tex_frames)) * wave_w;
+      x1 = clampg(x1, wave_x, wave_x + wave_w - 1);
+      x2 = clampg(x2, wave_x, wave_x + wave_w);
+      px = clampg(px, wave_x, wave_x + wave_w - 1);
+      x2 < x1 + 2 ? x2 = min(wave_x + wave_w, x1 + 2);
+      gfx_r = 0.74; gfx_g = 0.52; gfx_b = 0.98; gfx_a = 0.06;
+      gfx_rect(x1, wave_y, max(1, x2 - x1), wave_h, 1);
+      gfx_a = 0.82;
+      gfx_line(px, wave_y, px, wave_y + wave_h, 1);
+    );
+    vi += 1;
+  );
+) : (
+  gfx_setfont(1, "Verdana", ft_body);
+  gfx_r = 0.76; gfx_g = 0.79; gfx_b = 0.86; gfx_a = 1;
+  gfx_x = wave_x + spx(18); gfx_y = wave_y + spx(18);
+  gfx_drawstr("Load a texture file. The waveform, candidate heat, and cloud markers will appear here.");
+);
+
+// lower panels
+draw_panel(ctrl_x, ctrl_y, ctrl_w, ctrl_h);
+draw_panel(side_x, side_y, side_w, side_h);
+
+// output buttons
+out_hov = hit(mx, my, out_x, btn_y, btn_w, btn_h);
+draw_button_bg(out_x, btn_y, btn_w, btn_h, wet_only > 0, out_hov, 0.22, 0.54, 0.82);
+gfx_setfont(1, "Verdana", ft_meta);
+wet_only > 0 ? strcpy(#ui_txt, "WET ONLY") : strcpy(#ui_txt, "DRY+WET");
+gfx_measurestr(#ui_txt, tw, th);
+gfx_r = 0.95; gfx_g = 0.97; gfx_b = 0.99; gfx_a = 1;
+gfx_x = out_x + (btn_w - tw) * 0.5; gfx_y = btn_y + spx(5);
+gfx_drawstr(#ui_txt);
+click && out_hov ? (
+  slider8 = slider8 > 0.5 ? 0 : 1;
+  sliderchange(slider8);
+);
+
+auto_hov = hit(mx, my, auto_x, btn_y, btn_w, btn_h);
+draw_button_bg(auto_x, btn_y, btn_w, btn_h, slider9 > 0.5, auto_hov, 0.18, 0.62, 0.34);
+slider9 > 0.5 ? (ui_size_class == 0 ? strcpy(#ui_txt, "AUTO ON") : strcpy(#ui_txt, "AUTO RELOAD ON")) : (ui_size_class == 0 ? strcpy(#ui_txt, "AUTO OFF") : strcpy(#ui_txt, "AUTO RELOAD OFF"));
+gfx_measurestr(#ui_txt, tw, th);
+gfx_r = 0.95; gfx_g = 0.97; gfx_b = 0.99; gfx_a = 1;
+gfx_x = auto_x + (btn_w - tw) * 0.5; gfx_y = btn_y + spx(5);
+gfx_drawstr(#ui_txt);
+click && auto_hov ? (
+  slider9 = slider9 > 0.5 ? 0 : 1;
+  sliderchange(slider9);
+);
+
+reload_hov = hit(mx, my, reload_x, btn_y, btn_w, btn_h);
+draw_button_bg(reload_x, btn_y, btn_w, btn_h, 1, reload_hov, 0.54, 0.32, 0.18);
+strcpy(#ui_txt, "RELOAD");
+gfx_measurestr(#ui_txt, tw, th);
+gfx_r = 0.95; gfx_g = 0.97; gfx_b = 0.99; gfx_a = 1;
+gfx_x = reload_x + (btn_w - tw) * 0.5; gfx_y = btn_y + spx(5);
+gfx_drawstr(#ui_txt);
+click && reload_hov ? (
+  slider10 = 1;
+  sliderchange(slider10);
+);
+
+// engine panel
+gfx_setfont(1, "Verdana", ft_panel);
+gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.98; gfx_a = 1;
+gfx_x = ctrl_x + spx(14); gfx_y = ctrl_y + spx(12);
+gfx_drawstr("Engine");
+
+norm_db = log(max(0.000001, tex_peak_gain)) / ln10 * 20;
+gfx_setfont(1, "Verdana", ft_meta);
+gfx_r = 0.74; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
+gfx_x = ctrl_x + spx(14); gfx_y = ctrl_y + spx(30);
+ui_size_class == 0 ? gfx_printf("Peak Norm %+.1f dB   -   Thr %.1f dB   -   peak-normalized source", norm_db, slider17) : ui_size_class == 1 ? gfx_printf("Peak Norm %+.1f dB   -   Threshold %.1f dB   -   source peak-normalized on load", norm_db, slider17) : gfx_printf("Peak Norm %+.1f dB   -   Threshold %.1f dB   -   imported source is peak-normalized before analysis and playback.", norm_db, slider17);
+
+hover_ctrl = 0;
+i = 0;
+loop(8,
+  cid = i + 1;
+  col = floor(i / 4);
+  row = i - col * 4;
+  cx = ctrl_grid_x + col * (ctrl_col_w + ctrl_col_gap);
+  cy = ctrl_grid_y + row * (ctrl_row_h + ctrl_row_gap);
+  cw = ctrl_col_w;
+  over = hit(mx, my, cx, cy, cw, ctrl_row_h);
+  over ? hover_ctrl = cid;
+  n = ctrl_norm(cid);
+
+  cid == 1 ? (
+    strcpy(#ui_lbl, "Mix");
+    sprintf(#ui_val, "%.0f%%", slider1 * 100);
+    cr = 0.88; cg = 0.82; cb = 0.36;
+  ) : cid == 2 ? (
+    strcpy(#ui_lbl, "Trim");
+    sprintf(#ui_val, "%+.1f dB", slider2);
+    cr = 0.32; cg = 0.84; cb = 0.76;
+  ) : cid == 3 ? (
+    strcpy(#ui_lbl, "Precision");
+    sprintf(#ui_val, "%.0f%%", slider3 * 100);
+    cr = 0.96; cg = 0.72; cb = 0.24;
+  ) : cid == 4 ? (
+    strcpy(#ui_lbl, "Threshold");
+    sprintf(#ui_val, "%.1f dB", slider17);
+    cr = 0.92; cg = 0.54; cb = 0.26;
+  ) : cid == 5 ? (
+    strcpy(#ui_lbl, "Grain Size");
+    sprintf(#ui_val, "%.0f ms", slider4);
+    cr = 0.26; cg = 0.70; cb = 0.92;
+  ) : cid == 6 ? (
+    strcpy(#ui_lbl, "Feedback");
+    sprintf(#ui_val, "%.0f%%", slider5 * 100);
+    cr = 0.74; cg = 0.56; cb = 0.96;
+  ) : cid == 7 ? (
+    strcpy(#ui_lbl, "Jitter");
+    sprintf(#ui_val, "%.0f%%", slider6 * 100);
+    cr = 0.94; cg = 0.58; cb = 0.30;
+  ) : (
+    strcpy(#ui_lbl, "Pitch");
+    sprintf(#ui_val, "%+.2f st", slider7);
+    cr = 0.84; cg = 0.46; cb = 0.90;
+  );
+
+  gfx_r = 0.10; gfx_g = 0.12; gfx_b = 0.16; gfx_a = 1;
+  gfx_rect(cx, cy, cw, ctrl_row_h, 1);
+  fill_w = floor((cw - 2) * clampg(n, 0, 1));
+  gfx_r = cr; gfx_g = cg; gfx_b = cb; gfx_a = over ? 0.92 : 0.80;
+  fill_w > 0 ? gfx_rect(cx + 1, cy + 1, fill_w, ctrl_row_h - 2, 1);
+  gfx_r = 0.17; gfx_g = 0.19; gfx_b = 0.24; gfx_a = 1;
+  gfx_roundrect(cx, cy, cw, ctrl_row_h, spx(5), 1);
+
+  gfx_setfont(1, "Verdana", ft_meta);
+  gfx_r = 0.94; gfx_g = 0.96; gfx_b = 0.98; gfx_a = 1;
+  gfx_x = cx + spx(8); gfx_y = cy + spx(6);
+  gfx_drawstr(#ui_lbl);
+  gfx_measurestr(#ui_val, tw, th);
+  gfx_x = cx + cw - tw - spx(8); gfx_y = cy + spx(6);
+  gfx_drawstr(#ui_val);
+
+  i += 1;
+);
+
+gfx_setfont(1, "Verdana", ft_meta);
+gfx_r = 0.64; gfx_g = 0.68; gfx_b = 0.76; gfx_a = 1;
+gfx_x = ctrl_x + spx(14); gfx_y = ctrl_y + ctrl_h - spx(18);
+slider11 > 0 ? (
+  ui_size_class == 0 ? gfx_printf("Max Load %.1f s   -   right-click Reload", slider11) : ui_size_class == 1 ? gfx_printf("Max Load %.1f s   -   right-click Reload to change it", slider11) : gfx_printf("Max Load %.1f s   -   right-click Reload to change it   -   drag bars / wheel / right-click reset.", slider11);
+) : (
+  ui_size_class == 0 ? gfx_drawstr("Max Load All   -   right-click Reload") : ui_size_class == 1 ? gfx_drawstr("Max Load All   -   right-click Reload to change it") : gfx_drawstr("Max Load All   -   right-click Reload to change it   -   drag bars / wheel / right-click reset.");
+);
+
+// response panel inside side panel
+draw_panel(env_x, env_y, env_w, env_h);
+
+gfx_setfont(1, "Verdana", ft_panel);
+gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.98; gfx_a = 1;
+gfx_x = env_x + spx(12); gfx_y = env_y + spx(10);
+gfx_drawstr("Envelope Response");
+
+gfx_setfont(1, "Verdana", ft_meta);
+gfx_r = 0.72; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
+ui_size_class == 0 ? sprintf(#ui_txt, "IN %.0f  OUT %.0f  THR %.1f", env_ui_in * 100, env_ui_out * 100, slider17) : sprintf(#ui_txt, "IN %.0f%%  OUT %.0f%%  THR %.1f dB", env_ui_in * 100, env_ui_out * 100, slider17);
+gfx_measurestr(#ui_txt, tw, th);
+gfx_x = env_x + env_w - tw - spx(12); gfx_y = env_y + spx(12);
+gfx_drawstr(#ui_txt);
+
+gfx_r = 0.10; gfx_g = 0.12; gfx_b = 0.16; gfx_a = 1;
+gfx_rect(graph_x, graph_y, graph_w, graph_h, 1);
+gfx_r = 0.16; gfx_g = 0.18; gfx_b = 0.23; gfx_a = 1;
+gfx_roundrect(graph_x, graph_y, graph_w, graph_h, spx(5), 1);
+
+grid_y = graph_y;
+loop(4,
+  gfx_r = 0.13; gfx_g = 0.15; gfx_b = 0.19; gfx_a = 1;
+  gfx_line(graph_x, grid_y, graph_x + graph_w, grid_y, 1);
+  grid_y += graph_h / 3;
+);
+
+grid_x = graph_x;
+loop(5,
+  gfx_r = 0.13; gfx_g = 0.15; gfx_b = 0.19; gfx_a = 1;
+  gfx_line(grid_x, graph_y, grid_x, graph_y + graph_h, 1);
+  grid_x += graph_w / 4;
+);
+
+hover_env_graph = hit(mx, my, graph_x, graph_y, graph_w, graph_h);
+
+scope_pts = floor(min(scope_len, graph_w));
+scope_step = scope_len / max(1, scope_pts - 1);
+graph_b = graph_y + graph_h - 1;
+pi = 0;
+prev_valid = 0;
+loop(scope_pts,
+  readf = scope_write + pi * scope_step;
+  readi = floor(readf);
+  readi >= scope_len ? readi -= scope_len * floor(readi / scope_len);
+  inv = mem[scope_in_base + readi];
+  outv = mem[scope_env_base + readi];
+  px = graph_x + pi * graph_w / max(1, scope_pts - 1);
+  py_in = graph_b - clampg(inv, 0, 1) * (graph_h - 2);
+  py_out = graph_b - clampg(outv, 0, 1) * (graph_h - 2);
+
+  gfx_r = 0.42; gfx_g = 0.46; gfx_b = 0.52; gfx_a = 0.24;
+  gfx_line(px, graph_b, px, py_in, 1);
+
+  prev_valid ? (
+    gfx_r = 0.34; gfx_g = 0.82; gfx_b = 0.98; gfx_a = 0.92;
+    gfx_line(prev_px, prev_py, px, py_out, 1);
+  );
+  prev_px = px;
+  prev_py = py_out;
+  prev_valid = 1;
+  pi += 1;
+);
+
+// env knobs
+hover_knob = 0;
+ki = 0;
+loop(5,
+  kid = ki + 1;
+  kcx = graph_x + knob_slot_w * (ki + 0.5);
+  knob_hit(mx, my, kcx, knob_cy, knob_rad + spx(10)) ? hover_knob = kid;
+
+  kid == 1 ? (
+    kn = env_knob_norm(1);
+    kr = 0.28; kg = 0.76; kb = 0.96;
+    slider12 < 100 ? sprintf(#ui_val, "%.1f", slider12) : sprintf(#ui_val, "%.0f", slider12);
+    ui_size_class == 0 ? strcpy(#ui_lbl, "ATT") : strcpy(#ui_lbl, "ATTACK");
+    strcpy(#ui_txt, "ms");
+  ) : kid == 2 ? (
+    kn = env_knob_norm(2);
+    kr = 0.32; kg = 0.86; kb = 0.82;
+    slider13 > 0 ? (slider13 < 100 ? sprintf(#ui_val, "%.1f", slider13) : sprintf(#ui_val, "%.0f", slider13)) : strcpy(#ui_val, "Off");
+    strcpy(#ui_lbl, "HOLD");
+    slider13 > 0 ? strcpy(#ui_txt, "ms") : strcpy(#ui_txt, "");
+  ) : kid == 3 ? (
+    kn = env_knob_norm(3);
+    kr = 0.94; kg = 0.72; kb = 0.26;
+    slider14 < 100 ? sprintf(#ui_val, "%.1f", slider14) : sprintf(#ui_val, "%.0f", slider14);
+    ui_size_class == 0 ? strcpy(#ui_lbl, "DEC") : strcpy(#ui_lbl, "DECAY");
+    strcpy(#ui_txt, "ms");
+  ) : kid == 4 ? (
+    kn = env_knob_norm(4);
+    kr = 0.40; kg = 0.90; kb = 0.48;
+    sprintf(#ui_val, "%.0f%%", slider15 * 100);
+    ui_size_class == 0 ? strcpy(#ui_lbl, "SUS") : strcpy(#ui_lbl, "SUSTAIN");
+    strcpy(#ui_txt, "");
+  ) : (
+    kn = env_knob_norm(5);
+    kr = 0.76; kg = 0.56; kb = 0.96;
+    slider16 < 100 ? sprintf(#ui_val, "%.1f", slider16) : sprintf(#ui_val, "%.0f", slider16);
+    ui_size_class == 0 ? strcpy(#ui_lbl, "REL") : strcpy(#ui_lbl, "RELEASE");
+    strcpy(#ui_txt, "ms");
+  );
+
+  draw_knob_shell(kcx, knob_cy, knob_rad, env_knob_fill_norm(kid), kr, kg, kb, hover_knob == kid, (ui_active_kind == 2) && (ui_active_id == kid));
+
+  gfx_setfont(1, "Verdana", ft_small);
+  gfx_measurestr(#ui_val, tw, th);
+  gfx_r = 0.98; gfx_g = 0.99; gfx_b = 1.00; gfx_a = 1;
+  gfx_x = kcx - tw * 0.5; gfx_y = knob_cy - spx(7);
+  gfx_drawstr(#ui_val);
+
+  gfx_setfont(1, "Verdana", ft_tiny);
+  gfx_measurestr(#ui_txt, tw, th);
+  gfx_r = 0.74; gfx_g = 0.80; gfx_b = 0.86; gfx_a = 1;
+  gfx_x = kcx - tw * 0.5; gfx_y = knob_cy + spx(8);
+  gfx_drawstr(#ui_txt);
+
+  gfx_setfont(1, "Verdana", ft_tiny);
+  gfx_measurestr(#ui_lbl, tw, th);
+  gfx_r = 0.82; gfx_g = 0.86; gfx_b = 0.92; gfx_a = 1;
+  gfx_x = kcx - tw * 0.5; gfx_y = knob_cy + knob_rad + spx(12);
+  gfx_drawstr(#ui_lbl);
+
+  ki += 1;
+);
+
+// meters and status
+input_disp = clampg(env_ui_in, 0, 1);
+resp_disp = clampg(env_ui_out, 0, 1);
+wet_disp = 1 - exp(-2.4 * wet_meter);
+raw_disp = 1 - exp(-4.0 * input_meter);
+
+gfx_setfont(1, "Verdana", ft_meta);
+gfx_r = 0.82; gfx_g = 0.86; gfx_b = 0.92; gfx_a = 1;
+gfx_x = meter_x; gfx_y = meter_y;
+gfx_drawstr("Raw Input");
+draw_meter(meter_x, meter_y + spx(14), meter_w, spx(12), raw_disp, 0.46, 0.48, 0.54);
+
+gfx_x = meter_x; gfx_y = meter_y + spx(28);
+gfx_drawstr("Thresholded Input");
+draw_meter(meter_x, meter_y + spx(40), meter_w, spx(12), input_disp, 0.32, 0.68, 0.90);
+
+gfx_x = meter_x; gfx_y = meter_y + spx(56);
+gfx_drawstr("Response / Wet");
+draw_meter(meter_x, meter_y + spx(68), meter_w, spx(12), max(resp_disp, wet_disp * 0.8), 0.34, 0.88, 0.52);
+
+gfx_r = 0.74; gfx_g = 0.78; gfx_b = 0.86; gfx_a = 1;
+gfx_x = meter_x; gfx_y = meter_y + spx(88);
+ui_size_class == 0 ? gfx_printf("Act %d   -   Detect %.0f%%   -   Wet %.0f%%", active_ct, env_ui_in * 100, wet_disp * 100) : gfx_printf("Active %d   -   Detect %.0f%%   -   Onset %.0f%%   -   Wet %.0f%%", active_ct, env_ui_in * 100, onset * 100, wet_disp * 100);
+gfx_x = meter_x; gfx_y = meter_y + spx(102);
+ui_size_class == 0 ? gfx_printf("Thr %.1f dB trims quiet tails before full response.", slider17) : ui_size_class == 1 ? gfx_printf("Threshold %.1f dB trims quiet tails so the panel can still hit full response at real peaks.", slider17) : gfx_printf("Threshold %.1f dB focuses the detector so swells and long tails stop pinning full-scale at both ends.", slider17);
+
+// control interaction
+click && (ui_active_kind == 0) && (hover_ctrl > 0) ? (
+  ui_active_kind = 1;
+  ui_active_id = hover_ctrl;
+  ui_drag_start_x = mx;
+  ui_drag_start_val = ctrl_norm(hover_ctrl);
+);
+
+wheel != 0 && (hover_ctrl > 0) ? (
+  step = (wheel / 120.0) * ((mouse_cap & 8) ? 0.010 : 0.028) * ((mouse_cap & 4) ? 2.0 : 1.0);
+  ctrl_set(hover_ctrl, ctrl_norm(hover_ctrl) + step);
+);
+
+(ui_active_kind == 1) && lmb ? (
+  delta_n = (mx - ui_drag_start_x) / ((mouse_cap & 8) ? 520 : ((mouse_cap & 4) ? 120 : 240));
+  ctrl_set(ui_active_id, ui_drag_start_val + delta_n);
+);
+
+(ui_active_kind == 1) && release ? (
+  ui_active_kind = 0;
+  ui_active_id = 0;
+);
+
+// knob interaction
+click && (ui_active_kind == 0) && (hover_knob > 0) ? (
+  ui_active_kind = 2;
+  ui_active_id = hover_knob;
+  ui_drag_start_y = my;
+  ui_drag_start_val = env_knob_norm(hover_knob);
+);
+
+wheel != 0 && (hover_knob > 0) ? (
+  step = (wheel / 120.0) * ((mouse_cap & 8) ? 0.010 : 0.024) * ((mouse_cap & 4) ? 2.0 : 1.0);
+  env_knob_set(hover_knob, env_knob_norm(hover_knob) + step);
+);
+
+(ui_active_kind == 2) && lmb ? (
+  delta_n = (ui_drag_start_y - my) / ((mouse_cap & 8) ? 520 : ((mouse_cap & 4) ? 120 : 240));
+  env_knob_set(ui_active_id, ui_drag_start_val + delta_n);
+);
+
+(ui_active_kind == 2) && release ? (
+  ui_active_kind = 0;
+  ui_active_id = 0;
+);
+
+// right-click menus for controls
+rclick && (hover_ctrl > 0) ? (
+  hover_ctrl == 1 ? strcpy(#menu, "Mix|Reset 75%|Dry 0%|Wet 100%") :
+  hover_ctrl == 2 ? strcpy(#menu, "Trim|Reset 0 dB|-12 dB|+12 dB") :
+  hover_ctrl == 3 ? strcpy(#menu, "Precision|Reset 82%|Loose 25%|Tight 100%") :
+  hover_ctrl == 4 ? strcpy(#menu, "Threshold|Reset -36 dB|-60 dB|-48 dB|-36 dB|-24 dB|-12 dB|0 dB") :
+  hover_ctrl == 5 ? strcpy(#menu, "Grain Size|Reset 120 ms|Short 40 ms|Medium 120 ms|Long 260 ms") :
+  hover_ctrl == 6 ? strcpy(#menu, "Feedback|Reset 22%|Off|50%|95%") :
+  hover_ctrl == 7 ? strcpy(#menu, "Jitter|Reset 18%|Off|35%|70%") :
+  strcpy(#menu, "Pitch|Reset 0 st|-12 st|+12 st|+24 st");
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu);
+
+  hover_ctrl == 1 ? (
+    sel == 2 ? ctrl_default(1);
+    sel == 3 ? ctrl_set(1, 0);
+    sel == 4 ? ctrl_set(1, 1);
+  ) : hover_ctrl == 2 ? (
+    sel == 2 ? ctrl_default(2);
+    sel == 3 ? (slider2 = -12; sliderchange(slider2););
+    sel == 4 ? (slider2 = 12; sliderchange(slider2););
+  ) : hover_ctrl == 3 ? (
+    sel == 2 ? ctrl_default(3);
+    sel == 3 ? (slider3 = 0.25; sliderchange(slider3););
+    sel == 4 ? (slider3 = 1; sliderchange(slider3););
+  ) : hover_ctrl == 4 ? (
+    sel == 2 ? ctrl_default(4);
+    sel == 3 ? (slider17 = -60; sliderchange(slider17););
+    sel == 4 ? (slider17 = -48; sliderchange(slider17););
+    sel == 5 ? (slider17 = -36; sliderchange(slider17););
+    sel == 6 ? (slider17 = -24; sliderchange(slider17););
+    sel == 7 ? (slider17 = -12; sliderchange(slider17););
+    sel == 8 ? (slider17 = 0; sliderchange(slider17););
+  ) : hover_ctrl == 5 ? (
+    sel == 2 ? ctrl_default(5);
+    sel == 3 ? (slider4 = 40; sliderchange(slider4););
+    sel == 4 ? (slider4 = 120; sliderchange(slider4););
+    sel == 5 ? (slider4 = 260; sliderchange(slider4););
+  ) : hover_ctrl == 6 ? (
+    sel == 2 ? ctrl_default(6);
+    sel == 3 ? (slider5 = 0; sliderchange(slider5););
+    sel == 4 ? (slider5 = 0.50; sliderchange(slider5););
+    sel == 5 ? (slider5 = 0.95; sliderchange(slider5););
+  ) : hover_ctrl == 7 ? (
+    sel == 2 ? ctrl_default(7);
+    sel == 3 ? (slider6 = 0; sliderchange(slider6););
+    sel == 4 ? (slider6 = 0.35; sliderchange(slider6););
+    sel == 5 ? (slider6 = 0.70; sliderchange(slider6););
+  ) : (
+    sel == 2 ? ctrl_default(8);
+    sel == 3 ? (slider7 = -12; sliderchange(slider7););
+    sel == 4 ? (slider7 = 12; sliderchange(slider7););
+    sel == 5 ? (slider7 = 24; sliderchange(slider7););
+  );
+);
+
+rclick && (hover_knob > 0) ? (
+  hover_knob == 1 ? strcpy(#menu, "Attack|Reset 8 ms|1 ms|8 ms|40 ms|180 ms") :
+  hover_knob == 2 ? strcpy(#menu, "Hold|Reset 20 ms|Off|10 ms|40 ms|120 ms") :
+  hover_knob == 3 ? strcpy(#menu, "Decay|Reset 140 ms|30 ms|140 ms|400 ms|1200 ms") :
+  hover_knob == 4 ? strcpy(#menu, "Sustain|Reset 55%|0%|35%|70%|100%") :
+  strcpy(#menu, "Release|Reset 180 ms|40 ms|180 ms|500 ms|1500 ms");
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu);
+
+  hover_knob == 1 ? (
+    sel == 2 ? env_knob_default(1);
+    sel == 3 ? (slider12 = 1; sliderchange(slider12););
+    sel == 4 ? (slider12 = 8; sliderchange(slider12););
+    sel == 5 ? (slider12 = 40; sliderchange(slider12););
+    sel == 6 ? (slider12 = 180; sliderchange(slider12););
+  ) : hover_knob == 2 ? (
+    sel == 2 ? env_knob_default(2);
+    sel == 3 ? (slider13 = 0; sliderchange(slider13););
+    sel == 4 ? (slider13 = 10; sliderchange(slider13););
+    sel == 5 ? (slider13 = 40; sliderchange(slider13););
+    sel == 6 ? (slider13 = 120; sliderchange(slider13););
+  ) : hover_knob == 3 ? (
+    sel == 2 ? env_knob_default(3);
+    sel == 3 ? (slider14 = 30; sliderchange(slider14););
+    sel == 4 ? (slider14 = 140; sliderchange(slider14););
+    sel == 5 ? (slider14 = 400; sliderchange(slider14););
+    sel == 6 ? (slider14 = 1200; sliderchange(slider14););
+  ) : hover_knob == 4 ? (
+    sel == 2 ? env_knob_default(4);
+    sel == 3 ? (slider15 = 0; sliderchange(slider15););
+    sel == 4 ? (slider15 = 0.35; sliderchange(slider15););
+    sel == 5 ? (slider15 = 0.70; sliderchange(slider15););
+    sel == 6 ? (slider15 = 1; sliderchange(slider15););
+  ) : (
+    sel == 2 ? env_knob_default(5);
+    sel == 3 ? (slider16 = 40; sliderchange(slider16););
+    sel == 4 ? (slider16 = 180; sliderchange(slider16););
+    sel == 5 ? (slider16 = 500; sliderchange(slider16););
+    sel == 6 ? (slider16 = 1500; sliderchange(slider16););
+  );
+);
+
+// button right-click menus
+rclick && out_hov ? (
+  strcpy(#menu, "Output|Dry+Wet|Wet Only");
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu);
+  sel == 2 ? (slider8 = 0; sliderchange(slider8););
+  sel == 3 ? (slider8 = 1; sliderchange(slider8););
+);
+
+rclick && auto_hov ? (
+  strcpy(#menu, "Auto Reload|On|Off");
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu);
+  sel == 2 ? (slider9 = 1; sliderchange(slider9););
+  sel == 3 ? (slider9 = 0; sliderchange(slider9););
+);
+
+rclick && reload_hov ? (
+  strcpy(#menu, "Reload|Reload Now|Max Load: All|Max Load: 5 s|Max Load: 30 s|Max Load: 120 s");
+  gfx_x = mx; gfx_y = my;
+  sel = gfx_showmenu(#menu);
+  sel == 2 ? (slider10 = 1; sliderchange(slider10););
+  sel == 3 ? (slider11 = 0; sliderchange(slider11););
+  sel == 4 ? (slider11 = 5; sliderchange(slider11););
+  sel == 5 ? (slider11 = 30; sliderchange(slider11););
+  sel == 6 ? (slider11 = 120; sliderchange(slider11););
+);
+
+// tooltips
+tip_on = 0;
+hover_wave = hit(mx, my, wave_x, wave_y, wave_w, wave_h);
+
+hover_ctrl == 1 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Mix crossfades the original input against the textured output.");
+  wet_only > 0 ? strcpy(#tip2, "In Wet Only mode this becomes post-engine wet amount.") : strcpy(#tip2, "0% = dry. 100% = full wet. Default is 75%.");
+) : hover_ctrl == 2 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Trim is post peak-normalize wet gain.");
+  strcpy(#tip2, "The imported source is peak-normalized on load. Use Trim only for creative balancing.");
+) : hover_ctrl == 3 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Precision tightens onset bias, detector timing, and cloud continuity.");
+  strcpy(#tip2, "Higher values pin the texture harder to the input contour.");
+) : hover_ctrl == 4 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Threshold sets the absolute input floor that the detector reacts to.");
+  strcpy(#tip2, "Raise it for loud SFX so tails and swells stop reading like full-scale at the edges.");
+) : hover_ctrl == 5 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Grain Size sets the nominal slice and feedback delay scale.");
+  strcpy(#tip2, "Smaller is tighter. Larger is smoother and more smeared.");
+) : hover_ctrl == 6 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Granular Feedback recirculates the wet texture through a short delay cloud.");
+  strcpy(#tip2, "Low values glue. High values build a tail without reintroducing the old mode jungle.");
+) : hover_ctrl == 7 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Jitter randomizes pitch, level, and start position around the chosen grain.");
+  strcpy(#tip2, "Attack-biased grains keep less start jitter so contour lock stays sharp.");
+) : hover_ctrl == 8 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Pitch shifts the texture source globally in semitones.");
+  strcpy(#tip2, "This affects every grain before wet/dry mixing.");
+) : hover_knob == 1 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Attack sets how quickly the response opens after a trigger.");
+  strcpy(#tip2, "This is now a circular ADSR control so the envelope surface stays compact.");
+) : hover_knob == 2 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Hold freezes the recent peak before the response decays.");
+  strcpy(#tip2, "Useful for sticky impacts and for keeping very short gaps from tearing the texture apart.");
+) : hover_knob == 3 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Decay governs the fall from held peak toward the Sustain floor while the gate stays open.");
+  strcpy(#tip2, "Short decay = tighter texture. Long decay = smoother carried body.");
+) : hover_knob == 4 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Sustain sets the minimum held response as a fraction of the last trigger peak.");
+  strcpy(#tip2, "0% = no held floor. 100% = flat hold until release.");
+) : hover_knob == 5 ? (
+  tip_on = 1;
+  strcpy(#tip1, "Release sets the fade after the gate closes.");
+  strcpy(#tip2, "This is the main control for how long the texture hangs on after the source drops away.");
+) : hover_env_graph ? (
+  tip_on = 1;
+  strcpy(#tip1, "Grey trace = thresholded input follow. Blue trace = final response.");
+  strcpy(#tip2, "The panel is normalized to the current above-threshold reference, so true peaks can now hit 100%.");
+) : out_hov ? (
+  tip_on = 1;
+  strcpy(#tip1, "Output mode toggles between Dry+Wet and Wet Only.");
+  strcpy(#tip2, "Right-click opens the mode menu.");
+) : auto_hov ? (
+  tip_on = 1;
+  strcpy(#tip1, "Auto Reload polls the texture slot for changes.");
+  strcpy(#tip2, "Leave it off if you only want manual reloads.");
+) : reload_hov ? (
+  tip_on = 1;
+  strcpy(#tip1, "Reload rescans and recopies the current texture file using the JSFX slot.");
+  strcpy(#tip2, "Right-click also sets Max Load so that control no longer clutters the main surface.");
+) : hover_wave ? (
+  tip_on = 1;
+  strcpy(#tip1, "Waveform, candidate heat, and current grain cloud.");
+  strcpy(#tip2, "Orange = stronger candidates. Purple spans = active grains. Gold = last grain region.");
+);
+
+tip_on ? (
+  gfx_setfont(1, "Verdana", ft_meta);
+  gfx_measurestr(#tip1, tip_tw1, tip_th1);
+  gfx_measurestr(#tip2, tip_tw2, tip_th2);
+  tip_pad = spx(8);
+  tip_w = max(tip_tw1, tip_tw2) + tip_pad * 2;
+  tip_h = tip_th1 + tip_th2 + tip_pad * 2 + spx(2);
+
+  tip_x = mx + spx(16);
+  tip_y = my + spx(18);
+  tip_x + tip_w > gfx_w - pad ? tip_x = gfx_w - pad - tip_w;
+  tip_y + tip_h > gfx_h - pad ? tip_y = my - tip_h - spx(14);
+  tip_x < pad ? tip_x = pad;
+  tip_y < pad ? tip_y = pad;
+
+  gfx_r = 0.07; gfx_g = 0.09; gfx_b = 0.12; gfx_a = 0.96;
+  gfx_rect(tip_x, tip_y, tip_w, tip_h, 1);
+  gfx_r = 0.22; gfx_g = 0.26; gfx_b = 0.34; gfx_a = 1;
+  gfx_roundrect(tip_x, tip_y, tip_w, tip_h, spx(6), 1);
+
+  gfx_r = 0.96; gfx_g = 0.97; gfx_b = 0.99; gfx_a = 1;
+  gfx_x = tip_x + tip_pad; gfx_y = tip_y + tip_pad;
+  gfx_drawstr(#tip1);
+
+  gfx_r = 0.76; gfx_g = 0.80; gfx_b = 0.88; gfx_a = 1;
+  gfx_x = tip_x + tip_pad; gfx_y = tip_y + tip_pad + tip_th1 + spx(2);
+  gfx_drawstr(#tip2);
+);
+

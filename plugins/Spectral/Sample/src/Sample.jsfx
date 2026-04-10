@@ -1,0 +1,586 @@
+desc:Load-and-Go Psycho MultiSampler (multi-file slot API prototype)
+tags:instrument sampler
+
+// Slot 0 is the load-and-go sample bank.
+// Use the filename slot UI for this effect and choose Open Multiple... on slot 0.
+filename:0,sample.wav
+
+slider1:0<0,1,1{idle,rescan}>Rescan slot 0
+slider2:2<0.1,50,0.1>Attack (ms)
+slider3:150<5,5000,1>Release (ms)
+slider4:0<-1,1,0.01>Tone Bias (-soft / +hard)
+slider5:0.35<0,1,0.01>Liveness
+slider6:0.25<0,1,0.01>Truth (0=matched / 1=raw)
+slider7:-9<-30,12,0.1>Output (dB)
+@init
+/*
+Multi-file slot API used here:
+  h     = file_open_multi(slot[, mode]);
+  count = file_multi_count(h);
+  ok    = file_multi_select(h, index);
+
+After selecting an entry, the normal file APIs operate on the currently selected file:
+  file_riff(h, nch, srate);
+  file_avail(h);
+  file_mem(h, memIndex, length);
+  file_rewind(h);
+  file_close(h);
+
+This version does exactly that:
+- open one multi-file handle from filename slot 0
+- count the selected files
+- select each file by index
+- inspect the selected file via file_riff()/file_avail()
+- read decoded PCM via file_mem()
+
+No bank/zoning metadata is required. Load files, rescan, play.
+*/
+
+function clamp(x lo hi)
+(
+  min(hi, max(lo, x));
+);
+
+function clamp01(x)
+(
+  clamp(x, 0, 1);
+);
+
+function lerp(a b t)
+(
+  a + (b-a)*t;
+);
+
+function db2amp(db)
+(
+  exp(db * 0.11512925464970229);
+);
+
+function midi_ratio(semi)
+(
+  exp(semi * 0.0577622650466621);
+);
+
+function cents_ratio(cents)
+(
+  exp(cents * 0.000577622650466621);
+);
+
+function mono_frame(ptr nch frame) local(base)
+(
+  base = ptr + frame * nch;
+  nch >= 2 ? 0.5 * (base[0] + base[1]) : base[0];
+);
+
+function recent_penalty(sample_id) local(i pen)
+(
+  pen = 0;
+  i = 0;
+  while (i < RECENT_LEN) (
+    recent_base[i] == sample_id ? pen += (RECENT_LEN - i);
+    i += 1;
+  );
+  pen;
+);
+
+function push_recent(sample_id) local(i)
+(
+  i = RECENT_LEN - 1;
+  while (i > 0) (
+    recent_base[i] = recent_base[i-1];
+    i -= 1;
+  );
+  recent_base[0] = sample_id;
+);
+
+function estimate_pitch(sm) local(
+  ptr nch sr frames attack
+  start win endp i
+  x prevsign signcur
+  last_cross interval
+  sumint sumint2 cnt
+  mu var relvar freq note conf
+)
+(
+  ptr    = sm[SM_PTR]   | 0;
+  nch    = max(1, sm[SM_NCH] | 0);
+  sr     = sm[SM_SR];
+  frames = sm[SM_FRAMES] | 0;
+  attack = sm[SM_ATTACK] | 0;
+
+  note = 60;
+  conf = 0;
+
+  start = attack + min(64, max(8, floor(frames * 0.02)));
+  win   = min(2048, frames - start - 1);
+
+  win > 256 ? (
+    last_cross = -1;
+    sumint = 0;
+    sumint2 = 0;
+    cnt = 0;
+
+    x = mono_frame(ptr, nch, start);
+    prevsign = x >= 0 ? 1 : -1;
+
+    i = start + 1;
+    endp = start + win;
+    while (i < endp) (
+      x = mono_frame(ptr, nch, i);
+      signcur = x >= 0 ? 1 : -1;
+
+      signcur != prevsign ? (
+        last_cross >= 0 ? (
+          interval = i - last_cross;
+          interval > 1 ? (
+            sumint += interval;
+            sumint2 += interval * interval;
+            cnt += 1;
+          );
+        );
+        last_cross = i;
+        prevsign = signcur;
+      );
+
+      i += 1;
+    );
+
+    cnt >= 8 ? (
+      mu = sumint / cnt;
+      var = max(0, sumint2 / cnt - mu * mu);
+      relvar = sqrt(var) / max(mu, 0.000001);
+      freq = sr / max(2 * mu, 1);
+
+      (freq >= 30 && freq <= 4000) ? (
+        note = 69 + 17.31234049066756 * log(freq / 440);
+        conf = clamp01(1 - relvar * 4);
+      );
+    );
+  );
+
+  sm[SM_PITCHNOTE] = note;
+  sm[SM_PITCHCONF] = conf;
+);
+
+function analyze_sample(sm) local(
+  ptr nch sr frames scan i x ax prev
+  peak sumsq sumabs sumdiff rms edge
+  thresh attack attack_ms sharp
+  target_rms norm
+)
+(
+  ptr    = sm[SM_PTR]   | 0;
+  nch    = max(1, sm[SM_NCH] | 0);
+  sr     = sm[SM_SR];
+  frames = sm[SM_FRAMES] | 0;
+
+  peak = 0;
+  sumsq = 0;
+  sumabs = 0;
+  sumdiff = 0;
+  prev = 0;
+
+  scan = min(frames, max(256, floor(sr * 0.10)));
+
+  i = 0;
+  while (i < scan) (
+    x = mono_frame(ptr, nch, i);
+    ax = abs(x);
+    peak = max(peak, ax);
+    sumsq += x * x;
+    sumabs += ax;
+    i > 0 ? sumdiff += abs(x - prev);
+    prev = x;
+    i += 1;
+  );
+
+  rms = sqrt(sumsq / max(scan, 1));
+  edge = clamp01((sumdiff / max(sumabs, 0.000001)) * 0.6);
+
+  thresh = max(peak * 0.12, rms * 1.8);
+  attack = -1;
+  i = 0;
+  while (i < scan && attack < 0) (
+    abs(mono_frame(ptr, nch, i)) >= thresh ? attack = i;
+    i += 1;
+  );
+  attack < 0 ? attack = 0;
+
+  attack_ms = 1000 * attack / max(sr, 1);
+  sharp = clamp01((1 - min(1, attack_ms / 60)) * 0.65 + edge * 0.35);
+
+  target_rms = 0.12;
+  norm = clamp(target_rms / max(rms, 0.000001), 0.25, 4.0);
+
+  sm[SM_RMS]    = rms;
+  sm[SM_PEAK]   = peak;
+  sm[SM_EDGE]   = edge;
+  sm[SM_ATTACK] = attack;
+  sm[SM_SHARP]  = sharp;
+  sm[SM_NORM]   = norm;
+  sm[SM_LENMS]  = 1000 * frames / max(sr, 1);
+
+  estimate_pitch(sm);
+);
+
+function reset_voices() local(i v)
+(
+  i = 0;
+  while (i < MAX_VOICES) (
+    v = voice_base + i * VC_STRIDE;
+    v[VC_ACTIVE] = 0;
+    v[VC_GAIN] = 0;
+    v[VC_TGT] = 0;
+    v[VC_RELEASE] = 0;
+    v[VC_AGE] = 0;
+    i += 1;
+  );
+);
+
+function reset_bank_state() local(i)
+(
+  sample_count = 0;
+  bank_pitchiness = 0;
+  next_audio = AUDIO_BASE;
+  i = 0;
+  while (i < RECENT_LEN) (
+    recent_base[i] = -1;
+    i += 1;
+  );
+  reset_voices();
+);
+
+function load_one_selected_file(handle sample_index) local(
+  ok istext nch sr avail words frames read_words sm
+)
+(
+  ok = file_multi_select(handle, sample_index);
+  ok ? (
+    istext = file_text(handle);
+    !istext ? (
+      nch = 0;
+      sr = 0;
+      file_riff(handle, nch, sr);
+
+      (nch > 0 && sr > 1000) ? (
+        avail = max(0, file_avail(handle) | 0);
+        words = avail - (avail % max(nch, 1));
+        frames = floor(words / max(nch, 1));
+
+        (frames > 1 && (next_audio + words + 8) < MEM_LIMIT) ? (
+          read_words = file_mem(handle, next_audio, words);
+          read_words = max(0, read_words | 0);
+          read_words -= (read_words % max(nch, 1));
+          frames = floor(read_words / max(nch, 1));
+
+          frames > 1 ? (
+            sm = sample_meta_base + sample_count * SM_STRIDE;
+            sm[SM_PTR]      = next_audio;
+            sm[SM_NCH]      = nch;
+            sm[SM_SR]       = sr;
+            sm[SM_FRAMES]   = frames;
+            sm[SM_LASTUSED] = -1000000;
+            analyze_sample(sm);
+            sample_count += 1;
+            next_audio += read_words + 8;
+          );
+        );
+      );
+    );
+  );
+);
+
+function load_bank() local(
+  bank count i sm spread_step spread_root pitch_sum
+)
+(
+  reset_bank_state();
+
+  bank = file_open_multi(0);
+  bank >= 0 ? (
+    count = min(MAX_SAMPLES, max(0, file_multi_count(bank) | 0));
+
+    i = 0;
+    while (i < count) (
+      load_one_selected_file(bank, i);
+      i += 1;
+    );
+
+    file_close(bank);
+  );
+
+  sample_count > 0 ? (
+    spread_step = sample_count > 1 ? (ROOT_HIGH - ROOT_LOW) / (sample_count - 1) : 0;
+    pitch_sum = 0;
+    i = 0;
+    while (i < sample_count) (
+      sm = sample_meta_base + i * SM_STRIDE;
+      spread_root = ROOT_LOW + i * spread_step;
+      sm[SM_ROOT] = sm[SM_PITCHCONF] > 0.55 ? clamp(sm[SM_PITCHNOTE], 0, 127) : spread_root;
+      pitch_sum += sm[SM_PITCHCONF];
+      i += 1;
+    );
+    bank_pitchiness = clamp01(pitch_sum / sample_count);
+  );
+
+  bank_loaded = sample_count > 0;
+  freembuf(next_audio);
+);
+
+function choose_sample(note velnorm) local(
+  i sm best best_score score
+  keyw keyerr tone_t toneerr
+  rep transpen
+)
+(
+  best = 0;
+  best_score = 1e12;
+
+  keyw = 0.2 + bank_pitchiness * 2.8;
+  tone_t = clamp01(0.5 + slider4 * 0.35 + (velnorm - 0.5) * 0.45);
+
+  i = 0;
+  while (i < sample_count) (
+    sm = sample_meta_base + i * SM_STRIDE;
+    keyerr = abs(note - sm[SM_ROOT]);
+    transpen = max(0, keyerr - 7) * (0.2 + bank_pitchiness * 1.6);
+    toneerr = abs(sm[SM_SHARP] - tone_t);
+    rep = recent_penalty(i) * (0.25 + slider5 * 1.75);
+
+    score = keyerr * keyw + transpen + toneerr * 3.0 + rep;
+    score += rand(1) * slider5 * 0.75;
+
+    score < best_score ? (
+      best_score = score;
+      best = i;
+    );
+
+    i += 1;
+  );
+
+  best;
+);
+
+function alloc_voice() local(i v found best best_age)
+(
+  found = -1;
+  best = 0;
+  best_age = 1e12;
+
+  i = 0;
+  while (i < MAX_VOICES) (
+    v = voice_base + i * VC_STRIDE;
+    v[VC_ACTIVE] <= 0 ? (
+      found = i;
+      i = MAX_VOICES;
+    ) : (
+      v[VC_AGE] < best_age ? (
+        best_age = v[VC_AGE];
+        best = i;
+      );
+      i += 1;
+    );
+  );
+
+  found >= 0 ? found : best;
+);
+
+function start_voice(note vel chan) local(
+  velnorm sid sm voice_idx v
+  root srcsr norm gain
+  driftcents pre jmax startpos
+)
+(
+  sample_count <= 0 ? 0 : (
+    velnorm = vel / 127;
+    sid = choose_sample(note, velnorm);
+    sm = sample_meta_base + sid * SM_STRIDE;
+
+    voice_idx = alloc_voice();
+    v = voice_base + voice_idx * VC_STRIDE;
+
+    note_counter += 1;
+
+    root  = sm[SM_ROOT];
+    srcsr = sm[SM_SR];
+    norm  = sm[SM_NORM];
+    gain  = (0.08 + 0.92 * (velnorm ^ 1.4)) * lerp(norm, 1, truth_mix);
+    gain  = min(gain, 2.0);
+
+    driftcents = (rand(1) - 0.5) * slider5 * 6;
+    pre  = min(sm[SM_ATTACK], 12);
+    jmax = floor(slider5 * min(24, 4 + sm[SM_ATTACK] * 0.25));
+    startpos = floor(sm[SM_ATTACK] - pre + (rand(1) - 0.5) * jmax);
+    startpos = clamp(startpos, 0, max(0, sm[SM_FRAMES] - 2));
+
+    v[VC_ACTIVE]  = 1;
+    v[VC_NOTE]    = note;
+    v[VC_CHAN]    = chan;
+    v[VC_SAMPLE]  = sid;
+    v[VC_POS]     = startpos;
+    v[VC_RATE]    = (srcsr / srate) * midi_ratio(note - root) * cents_ratio(driftcents);
+    v[VC_GAIN]    = 0;
+    v[VC_TGT]     = gain;
+    v[VC_ASTEP]   = gain / max(1, attack_samps);
+    v[VC_RSTEP]   = 0;
+    v[VC_RELEASE] = 0;
+    v[VC_AGE]     = note_counter;
+
+    sm[SM_LASTUSED] = note_counter;
+    push_recent(sid);
+  );
+);
+
+function release_voice(note chan) local(i v)
+(
+  i = 0;
+  while (i < MAX_VOICES) (
+    v = voice_base + i * VC_STRIDE;
+    (v[VC_ACTIVE] > 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan) ? (
+      v[VC_RELEASE] = 1;
+      v[VC_RSTEP] = -max(v[VC_GAIN], 0.000001) / max(1, release_samps);
+    );
+    i += 1;
+  );
+);
+
+MAX_SAMPLES = 64;
+MAX_VOICES  = 16;
+RECENT_LEN  = 8;
+AUDIO_BASE = 4096;
+MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
+ROOT_LOW    = 36;
+ROOT_HIGH   = 84;
+
+SM_PTR      = 0;
+SM_NCH      = 1;
+SM_SR       = 2;
+SM_FRAMES   = 3;
+SM_ATTACK   = 4;
+SM_RMS      = 5;
+SM_PEAK     = 6;
+SM_EDGE     = 7;
+SM_SHARP    = 8;
+SM_PITCHNOTE= 9;
+SM_PITCHCONF= 10;
+SM_ROOT     = 11;
+SM_NORM     = 12;
+SM_LASTUSED = 13;
+SM_LENMS    = 14;
+SM_FLAGS    = 15;
+SM_STRIDE   = 16;
+
+VC_ACTIVE   = 0;
+VC_NOTE     = 1;
+VC_CHAN     = 2;
+VC_SAMPLE   = 3;
+VC_POS      = 4;
+VC_RATE     = 5;
+VC_GAIN     = 6;
+VC_TGT      = 7;
+VC_ASTEP    = 8;
+VC_RSTEP    = 9;
+VC_RELEASE  = 10;
+VC_AGE      = 11;
+VC_STRIDE   = 16;
+
+sample_meta_base = 0;
+voice_base = sample_meta_base + MAX_SAMPLES * SM_STRIDE;
+recent_base = voice_base + MAX_VOICES * VC_STRIDE;
+
+note_counter = 0;
+bank_loaded = 0;
+truth_mix = 0;
+out_trim = 1;
+attack_samps = 64;
+release_samps = 2048;
+
+reset_bank_state();
+
+@slider
+attack_samps = max(1, floor(slider2 * srate * 0.001));
+release_samps = max(1, floor(slider3 * srate * 0.001));
+truth_mix = clamp01(slider6);
+out_trim = db2amp(slider7);
+
+(!bank_loaded || ((slider1 | 0) > 0)) ? (
+  load_bank();
+  slider1 = 0;
+  sliderchange(1);
+);
+
+@block
+while (midirecv(offset, msg1, msg23)) (
+  status = msg1 & 240;
+  chan   = msg1 & 15;
+  note   = msg23 & 127;
+  vel    = (msg23 / 256) & 127;
+
+  (status == 144 && vel > 0) ? (
+    bank_loaded ? start_voice(note, vel, chan) : midisend(offset, msg1, msg23);
+  ) : (
+    (status == 128 || (status == 144 && vel == 0)) ? (
+      bank_loaded ? release_voice(note, chan) : midisend(offset, msg1, msg23);
+    ) : (
+      midisend(offset, msg1, msg23);
+    );
+  );
+);
+
+@sample
+outL = 0;
+outR = 0;
+
+i = 0;
+while (i < MAX_VOICES) (
+  v = voice_base + i * VC_STRIDE;
+
+  v[VC_ACTIVE] > 0 ? (
+    sid = v[VC_SAMPLE] | 0;
+    sm  = sample_meta_base + sid * SM_STRIDE;
+    frames = sm[SM_FRAMES] | 0;
+    pos = v[VC_POS];
+    ip = pos | 0;
+
+    ip < (frames - 1) ? (
+      frac = pos - ip;
+      ptr = sm[SM_PTR] | 0;
+      nch = max(1, sm[SM_NCH] | 0);
+      ip1 = ip + 1;
+      p0 = ptr + ip * nch;
+      p1 = ptr + ip1 * nch;
+
+      nch >= 2 ? (
+        l = p0[0] + (p1[0] - p0[0]) * frac;
+        r = p0[1] + (p1[1] - p0[1]) * frac;
+      ) : (
+        x = p0[0] + (p1[0] - p0[0]) * frac;
+        l = x;
+        r = x;
+      );
+
+      v[VC_RELEASE] > 0 ? (
+        v[VC_GAIN] += v[VC_RSTEP];
+      ) : (
+        v[VC_GAIN] < v[VC_TGT] ? v[VC_GAIN] = min(v[VC_TGT], v[VC_GAIN] + v[VC_ASTEP]);
+      );
+
+      g = v[VC_GAIN];
+      g > 0 ? (
+        outL += l * g;
+        outR += r * g;
+        v[VC_POS] = pos + v[VC_RATE];
+        v[VC_POS] >= (frames - 1) ? v[VC_ACTIVE] = 0;
+      ) : (
+        v[VC_ACTIVE] = 0;
+      );
+    ) : (
+      v[VC_ACTIVE] = 0;
+    );
+  );
+
+  i += 1;
+);
+
+spl0 += outL * out_trim;
+spl1 += outR * out_trim;

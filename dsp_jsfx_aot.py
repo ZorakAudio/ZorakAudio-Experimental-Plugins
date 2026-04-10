@@ -1072,6 +1072,8 @@ def parse_pin_hints(jsfx_text: str) -> Dict[str, Optional[int]]:
 
 _OPTIONS_LINE_RE = re.compile(r"^\s*options\s*:\s*(.*)$", re.IGNORECASE)
 
+JSFX_DEFAULT_MEMTOP_SLOTS = 8 * 1024 * 1024
+
 GFX_VAR_FLAG_TO_GFX = 1
 GFX_VAR_FLAG_FROM_GFX = 2
 
@@ -1096,6 +1098,19 @@ def parse_jsfx_options(jsfx_text: str) -> Dict[str, str]:
             if key:
                 opts[key] = value
     return opts
+
+
+def resolve_jsfx_memtop_slots(options: Dict[str, str]) -> int:
+    raw = str(options.get("maxmem", "") or "").strip()
+    if not raw:
+        return JSFX_DEFAULT_MEMTOP_SLOTS
+
+    try:
+        slots = int(float(raw))
+    except Exception:
+        return JSFX_DEFAULT_MEMTOP_SLOTS
+
+    return slots if slots > 0 else JSFX_DEFAULT_MEMTOP_SLOTS
 
 
 @dataclass
@@ -2018,6 +2033,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
     sym = SymTable(user_vars)
 
     emitter = LLVMModuleEmitter(sym)
+    emitter.jsfx_memtop_slots = resolve_jsfx_memtop_slots(options)
     emitter.loop_hoists = loop_hoists
     emitter.declare_user_functions(fn_defs)
 
@@ -2067,6 +2083,7 @@ _PURE_HOIST_CALLS: Set[str] = {
     "min", "max",
     "sin", "cos", "sqrt", "fabs", "floor", "ceil",
     "pow", "exp", "log", "tan", "log10",
+    "__memtop",
 }
 
 _SLIDER_VAR_RE = re.compile(r"^slider([1-9][0-9]?)$")
@@ -2192,7 +2209,8 @@ def _summarize_loop_mutations(node: Node, user_fn_names: Set[str]) -> _LoopMutat
                 "slider", "spl",
                 "midisend", "rand",
                 "freembuf", "sliderchange", "slider_automate",
-                "file_open", "file_close", "file_rewind", "file_seek", "file_avail", "file_text",
+                "file_open", "file_open_multi", "file_close", "file_rewind", "file_seek", "file_avail", "file_text",
+                "file_multi_count", "file_multi_select",
                 "sprintf", "printf",
                 "strcpy", "strcat", "strcmp", "strlen",
                 "str_getchar", "str_setchar",
@@ -2955,6 +2973,7 @@ class LLVMModuleEmitter:
         self._str_lits: Dict[str, int] = {}
         self._next_str_id: int = 0
         self._str_handle_base: int = (1 << 40)
+        self.jsfx_memtop_slots: int = JSFX_DEFAULT_MEMTOP_SLOTS
 
     def _intern_string(self, s: str) -> int:
         # Return a stable nonzero handle for this literal.
@@ -3713,12 +3732,26 @@ class LLVMModuleEmitter:
                 ret = builder.call(self.fn_midisend, [st, a0, a1, a2, a3])
                 return self._to_f64(builder, ret)
 
+            if fn == "__memtop":
+                if len(n.args) != 0:
+                    raise ValueError("__memtop expects 0 args")
+                return self._const_f64(float(self.jsfx_memtop_slots))
+
             # ------------------------------------------------------------
             # File I/O (DSP-JSFX runtime)
             #
             # REAPER JSFX provides file_*() APIs. In DSP-JSFX we keep the API
             # surface, but route it to host-provided non-blocking runtime
             # helpers (disk I/O happens off the audio thread).
+            #
+            # Host extension for multi-file slots:
+            #   h  = file_open_multi(slot[, mode])
+            #   n  = file_multi_count(h)
+            #   ok = file_multi_select(h, zero_based_index)
+            #
+            # file_multi_select() switches which selected file subsequent
+            # file_avail/file_var/file_mem/file_riff/file_text/file_seek/
+            # file_rewind calls operate on for that handle.
             # ------------------------------------------------------------
             if fn == "file_open":
                 if len(n.args) < 1 or len(n.args) > 2:
@@ -3727,6 +3760,20 @@ class LLVMModuleEmitter:
                 a1 = self.emit_expr(builder, st, n.args[1]) if len(n.args) == 2 else self._const_f64(0.0)
 
                 rt_name = "jsfx_file_open"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+                return builder.call(fdecl, [st, a0, a1])
+
+            if fn == "file_open_multi":
+                if len(n.args) < 1 or len(n.args) > 2:
+                    raise ValueError("file_open_multi expects 1 or 2 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1]) if len(n.args) == 2 else self._const_f64(0.0)
+
+                rt_name = "jsfx_file_open_multi"
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double])
@@ -3808,6 +3855,31 @@ class LLVMModuleEmitter:
                     fdecl = ir.Function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, a0, a1, a2])
+
+            if fn == "file_multi_count":
+                if len(n.args) != 1:
+                    raise ValueError("file_multi_count expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                rt_name = "jsfx_file_multi_count"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+                return builder.call(fdecl, [st, a0])
+
+            if fn == "file_multi_select":
+                if len(n.args) != 2:
+                    raise ValueError("file_multi_select expects 2 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                rt_name = "jsfx_file_multi_select"
+                fdecl = self._buildins.get(rt_name)
+                if fdecl is None:
+                    fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double])
+                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    self._buildins[rt_name] = fdecl
+                return builder.call(fdecl, [st, a0, a1])
 
             if fn == "file_var":
                 if len(n.args) != 2:

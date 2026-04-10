@@ -1378,6 +1378,18 @@ public:
         Error        = 5,
     };
 
+    enum class FileLoadMode : int32_t
+    {
+        SeparateEntries    = 0,
+        AppendAsSingleFile = 1,
+    };
+
+    struct FileSelectionState
+    {
+        std::vector<juce::String> paths;
+        FileLoadMode loadMode = FileLoadMode::SeparateEntries;
+    };
+
     struct CachedFileData
     {
         bool isText = false;
@@ -1408,6 +1420,7 @@ public:
 
         // UI/state thread only (guarded by filePathMutex)
         std::vector<juce::String> currentPaths;
+        FileLoadMode loadMode = FileLoadMode::SeparateEntries;
 
         std::atomic<FileState> state { FileState::Unassigned };
         std::atomic<uint64_t> generation { 0 };
@@ -1444,6 +1457,7 @@ public:
             name = std::move (other.name);
             description = std::move (other.description);
             currentPaths = std::move (other.currentPaths);
+            loadMode = other.loadMode;
 
             state.store (other.state.load (std::memory_order_relaxed), std::memory_order_relaxed);
             generation.store (other.generation.load (std::memory_order_relaxed), std::memory_order_relaxed);
@@ -1465,6 +1479,7 @@ public:
             other.pendingGeneration.store (0, std::memory_order_relaxed);
             other.errorCode.store (0, std::memory_order_relaxed);
             other.activeGeneration = 0;
+            other.loadMode = FileLoadMode::SeparateEntries;
 
             return *this;
         }
@@ -1482,6 +1497,7 @@ public:
     {
         int slot = -1;
         std::vector<juce::File> files;
+        FileLoadMode mode = FileLoadMode::SeparateEntries;
         uint64_t generation = 0;
     };
 
@@ -2143,11 +2159,13 @@ public:
                 std::lock_guard<std::mutex> lk (filePathMutex);
                 for (int i = 0; i < (int) fileSlots.size(); ++i)
                 {
-                    const auto& paths = fileSlots[(size_t) i].currentPaths;
+                    const auto& slot = fileSlots[(size_t) i];
+                    const auto& paths = slot.currentPaths;
+                    const auto loadMode = slot.loadMode;
                     if (paths.empty())
                         continue;
 
-                    if (paths.size() == 1)
+                    if (paths.size() == 1 && loadMode == FileLoadMode::SeparateEntries)
                     {
                         files.setProperty ("f" + juce::String (i), paths.front(), nullptr);
                         continue;
@@ -2155,6 +2173,9 @@ public:
 
                     juce::ValueTree slotTree ("SLOT");
                     slotTree.setProperty ("index", i, nullptr);
+
+                    if (loadMode == FileLoadMode::AppendAsSingleFile)
+                        slotTree.setProperty ("mode", "appendEach", nullptr);
 
                     for (const auto& path : paths)
                     {
@@ -2175,28 +2196,28 @@ public:
 
         {
             juce::String lastDir;
-            std::vector<juce::String> recentPaths;
+            std::vector<FileSelectionState> recentSelections;
 
             {
                 std::lock_guard<std::mutex> lk (filePathMutex);
                 lastDir = lastFileDialogDirectory;
-                recentPaths = recentFilePaths;
+                recentSelections = recentFileSelections;
             }
 
-            if (lastDir.isNotEmpty() || ! recentPaths.empty())
+            if (lastDir.isNotEmpty() || ! recentSelections.empty())
             {
                 juce::ValueTree fileUi ("FILE_UI");
 
                 if (lastDir.isNotEmpty())
                     fileUi.setProperty ("lastDir", lastDir, nullptr);
 
-                for (const auto& path : recentPaths)
+                for (const auto& selection : recentSelections)
                 {
-                    if (path.isEmpty())
+                    if (selection.paths.empty())
                         continue;
 
                     juce::ValueTree recent ("RECENT");
-                    recent.setProperty ("path", path, nullptr);
+                    writeSelectionToValueTree (selection, recent);
                     fileUi.addChild (recent, -1, nullptr);
                 }
 
@@ -2226,23 +2247,23 @@ public:
             apvts->replaceState (tree);
             requestEmergencyMidiCleanup();
 
-            clearRememberedFileUiState();
+            loadPersistentFileUiState();
 
             if (files.isValid() && ! fileDecls.empty())
             {
                 for (const auto& d : fileDecls)
                 {
-                    const auto savedPaths = getSavedFileSlotPaths (files, d.index0);
-                    if (savedPaths.empty())
+                    const auto savedSelection = getSavedFileSlotSelection (files, d.index0);
+                    if (savedSelection.paths.empty())
                     {
                         clearFileSlot (d.index0);
                         continue;
                     }
 
                     std::vector<juce::File> savedFiles;
-                    savedFiles.reserve (savedPaths.size());
+                    savedFiles.reserve (savedSelection.paths.size());
 
-                    for (const auto& path : savedPaths)
+                    for (const auto& path : savedSelection.paths)
                     {
                         if (path.isEmpty())
                             continue;
@@ -2253,12 +2274,12 @@ public:
                     if (savedFiles.empty())
                         clearFileSlot (d.index0);
                     else
-                        setFileSlotPaths (d.index0, savedFiles);
+                        setFileSlotPathsWithMode (d.index0, savedFiles, savedSelection.loadMode);
                 }
             }
 
             if (fileUi.isValid())
-                restoreFileUiState (fileUi);
+                restoreFileUiState (fileUi, true, true);
         }
     }
 
@@ -2331,7 +2352,8 @@ public:
     juce::String exportCorrectnessArtifacts() const { return "Correctness monitor disabled at build time"; }
    #endif
 
-    static juce::String summariseSelectedFilePaths (const std::vector<juce::String>& paths)
+    static juce::String summariseSelectedFilePaths (const std::vector<juce::String>& paths,
+                                                    FileLoadMode loadMode = FileLoadMode::SeparateEntries)
     {
         if (paths.empty())
             return "(none)";
@@ -2343,15 +2365,25 @@ public:
         if (paths.size() == 1)
             return lead;
 
-        return lead + " (+" + juce::String ((int) paths.size() - 1) + ")";
+        const auto extraCount = juce::String ((int) paths.size() - 1);
+        if (loadMode == FileLoadMode::AppendAsSingleFile)
+            return "Appended: " + lead + " (+" + extraCount + ")";
+
+        return lead + " (+" + extraCount + ")";
     }
 
-    static juce::String buildSelectedFileTooltip (const std::vector<juce::String>& paths, int maxLines = 10)
+    static juce::String buildSelectedFileTooltip (const std::vector<juce::String>& paths,
+                                                  FileLoadMode loadMode = FileLoadMode::SeparateEntries,
+                                                  int maxLines = 10)
     {
         if (paths.empty())
             return {};
 
         juce::String out;
+
+        if (loadMode == FileLoadMode::AppendAsSingleFile && paths.size() > 1)
+            out << "Import Multiple (Append Each) -> single runtime file\n";
+
         const int limit = juce::jmin ((int) paths.size(), maxLines);
 
         for (int i = 0; i < limit; ++i)
@@ -2368,13 +2400,34 @@ public:
         return out;
     }
 
+    FileLoadMode getFileSlotLoadMode (int slotIndex0) const
+    {
+        if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size())
+            return FileLoadMode::SeparateEntries;
+
+        std::lock_guard<std::mutex> lk (filePathMutex);
+        return fileSlots[(size_t) slotIndex0].loadMode;
+    }
+
+    FileSelectionState getFileSlotSelectionState (int slotIndex0) const
+    {
+        FileSelectionState selection;
+        if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size())
+            return selection;
+
+        std::lock_guard<std::mutex> lk (filePathMutex);
+        selection.paths = fileSlots[(size_t) slotIndex0].currentPaths;
+        selection.loadMode = fileSlots[(size_t) slotIndex0].loadMode;
+        return selection;
+    }
+
     juce::String getFileSlotDisplayText (int slotIndex0) const
     {
         if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size())
             return {};
 
-        const auto paths = getFileSlotPaths (slotIndex0);
-        const auto summary = summariseSelectedFilePaths (paths);
+        const auto selection = getFileSlotSelectionState (slotIndex0);
+        const auto summary = summariseSelectedFilePaths (selection.paths, selection.loadMode);
         const auto stt = fileSlots[(size_t) slotIndex0].state.load();
 
         switch (stt)
@@ -2402,7 +2455,8 @@ public:
 
     juce::String getFileSlotTooltip (int slotIndex0) const
     {
-        return buildSelectedFileTooltip (getFileSlotPaths (slotIndex0));
+        const auto selection = getFileSlotSelectionState (slotIndex0);
+        return buildSelectedFileTooltip (selection.paths, selection.loadMode);
     }
 
     bool hasFileSlotSelection (int slotIndex0) const
@@ -2410,22 +2464,16 @@ public:
         return ! getFileSlotPaths (slotIndex0).empty();
     }
 
-    bool fileSlotContainsPath (int slotIndex0, const juce::String& path) const
+    bool fileSlotMatchesSelection (int slotIndex0, const FileSelectionState& selection) const
     {
-        if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size() || path.isEmpty())
+        if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size())
             return false;
 
-        std::lock_guard<std::mutex> lk (filePathMutex);
-        const auto& currentPaths = fileSlots[(size_t) slotIndex0].currentPaths;
-
-        return std::any_of (currentPaths.begin(), currentPaths.end(),
-                            [&path] (const juce::String& existing)
-                            {
-                                return existing.compareIgnoreCase (path) == 0;
-                            });
+        const auto currentSelection = getFileSlotSelectionState (slotIndex0);
+        return selectionsEqualIgnoreCase (currentSelection, selection);
     }
 
-    juce::File getPreferredFileChooserStartDirectory (int slotIndex0) const
+    juce::File getPreferredFileChooserStartDirectory (int slotIndex0, bool preferLastDialogDirectory = false) const
     {
         std::vector<juce::String> currentPaths;
         juce::String lastDir;
@@ -2439,35 +2487,83 @@ public:
             lastDir = lastFileDialogDirectory;
         }
 
-        if (! currentPaths.empty())
+        auto resolveLastDialogDirectory = [&lastDir]() -> juce::File
         {
-            const auto dir = juce::File (currentPaths.front()).getParentDirectory();
-            if (dir.isDirectory())
+            if (lastDir.isEmpty())
+                return {};
+
+            const auto dir = juce::File (lastDir);
+            return dir.isDirectory() ? dir : juce::File();
+        };
+
+        auto resolveSlotDirectory = [&currentPaths]() -> juce::File
+        {
+            for (auto it = currentPaths.rbegin(); it != currentPaths.rend(); ++it)
+            {
+                const auto dir = juce::File (*it).getParentDirectory();
+                if (dir.isDirectory())
+                    return dir;
+            }
+
+            return {};
+        };
+
+        if (preferLastDialogDirectory)
+        {
+            if (const auto dir = resolveLastDialogDirectory(); dir.isDirectory())
                 return dir;
         }
 
-        if (lastDir.isNotEmpty())
-        {
-            const auto dir = juce::File (lastDir);
-            if (dir.isDirectory())
-                return dir;
-        }
+        if (const auto dir = resolveSlotDirectory(); dir.isDirectory())
+            return dir;
+
+        if (const auto dir = resolveLastDialogDirectory(); dir.isDirectory())
+            return dir;
 
         return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
     }
 
-    std::vector<juce::String> getRecentFilePaths() const
+    std::vector<FileSelectionState> getRecentFileSelections() const
     {
         std::lock_guard<std::mutex> lk (filePathMutex);
-        return recentFilePaths;
+        return recentFileSelections;
     }
 
     void setFileSlotPath (int slotIndex0, const juce::File& file, bool shouldRememberForUi = true)
     {
-        setFileSlotPaths (slotIndex0, std::vector<juce::File> { file }, shouldRememberForUi);
+        setFileSlotPathsWithMode (slotIndex0,
+                                  std::vector<juce::File> { file },
+                                  FileLoadMode::SeparateEntries,
+                                  shouldRememberForUi);
+    }
+
+    void setFileSlotSelection (int slotIndex0,
+                               const FileSelectionState& selection,
+                               bool shouldRememberForUi = true)
+    {
+        std::vector<juce::File> files;
+        files.reserve (selection.paths.size());
+
+        for (const auto& path : selection.paths)
+        {
+            if (path.isEmpty())
+                continue;
+
+            files.emplace_back (path);
+        }
+
+        setFileSlotPathsWithMode (slotIndex0, files, selection.loadMode, shouldRememberForUi);
     }
 
     void setFileSlotPaths (int slotIndex0, const std::vector<juce::File>& files, bool shouldRememberForUi = true)
+    {
+        setFileSlotPathsWithMode (slotIndex0, files, FileLoadMode::SeparateEntries, shouldRememberForUi);
+    }
+
+    void setFileSlotPathsWithMode (int slotIndex0,
+                                   const std::vector<juce::File>& files,
+                                   FileLoadMode loadMode,
+                                   bool shouldRememberForUi = true)
     {
         if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size())
             return;
@@ -2501,13 +2597,22 @@ public:
             return;
         }
 
+        if (shouldRememberForUi)
         {
             std::lock_guard<std::mutex> lk (filePathMutex);
             slot.currentPaths = fullPaths;
-
-            if (shouldRememberForUi)
-                rememberFilePathsLocked (normalisedFiles);
+            slot.loadMode = loadMode;
+            rememberFileSelectionLocked (normalisedFiles, loadMode);
         }
+        else
+        {
+            std::lock_guard<std::mutex> lk (filePathMutex);
+            slot.currentPaths = fullPaths;
+            slot.loadMode = loadMode;
+        }
+
+        if (shouldRememberForUi)
+            savePersistentFileUiState();
 
         // Cancel any pending, not-yet-promoted data.
         if (auto* oldPending = slot.pending.exchange (nullptr))
@@ -2529,6 +2634,7 @@ public:
             FileLoadRequest req;
             req.slot = slotIndex0;
             req.files = normalisedFiles;
+            req.mode = loadMode;
             req.generation = gen;
             enqueueFileLoad (std::move (req));
         }
@@ -2549,6 +2655,7 @@ public:
         {
             std::lock_guard<std::mutex> lk (filePathMutex);
             slot.currentPaths.clear();
+            slot.loadMode = FileLoadMode::SeparateEntries;
         }
 
         if (auto* oldPending = slot.pending.exchange (nullptr))
@@ -3252,27 +3359,132 @@ public:
 private:
     static constexpr int kMaxRecentFiles = 10;
 
-    static void pushRecentPathToFront (std::vector<juce::String>& recentPaths, const juce::String& fullPath)
+    using SavedFileSlotSelection = FileSelectionState;
+    using RecentFileSelection = FileSelectionState;
+
+    static bool stringEqualsIgnoreCase (const juce::String& a, const juce::String& b)
     {
-        if (fullPath.isEmpty())
-            return;
-
-        recentPaths.erase (std::remove_if (recentPaths.begin(), recentPaths.end(),
-                                           [&fullPath] (const juce::String& existing)
-                                           {
-                                               return existing.compareIgnoreCase (fullPath) == 0;
-                                           }),
-                           recentPaths.end());
-
-        recentPaths.insert (recentPaths.begin(), fullPath);
-
-        if ((int) recentPaths.size() > kMaxRecentFiles)
-            recentPaths.resize ((size_t) kMaxRecentFiles);
+        return a.compareIgnoreCase (b) == 0;
     }
 
-    static std::vector<juce::String> getSavedFileSlotPaths (const juce::ValueTree& files, int slotIndex0)
+    static bool pathsEqualIgnoreCase (const std::vector<juce::String>& a, const std::vector<juce::String>& b)
     {
-        std::vector<juce::String> out;
+        if (a.size() != b.size())
+            return false;
+
+        for (size_t i = 0; i < a.size(); ++i)
+            if (! stringEqualsIgnoreCase (a[i], b[i]))
+                return false;
+
+        return true;
+    }
+
+    static bool selectionsEqualIgnoreCase (const FileSelectionState& a, const FileSelectionState& b)
+    {
+        return a.loadMode == b.loadMode
+            && pathsEqualIgnoreCase (a.paths, b.paths);
+    }
+
+    static FileLoadMode fileLoadModeFromToken (const juce::String& modeToken)
+    {
+        if (modeToken.equalsIgnoreCase ("appendEach") || modeToken.equalsIgnoreCase ("append"))
+            return FileLoadMode::AppendAsSingleFile;
+
+        return FileLoadMode::SeparateEntries;
+    }
+
+    static juce::String fileLoadModeToToken (FileLoadMode loadMode)
+    {
+        return loadMode == FileLoadMode::AppendAsSingleFile ? juce::String ("appendEach")
+                                                            : juce::String ("separate");
+    }
+
+    static void normaliseSelectionPaths (FileSelectionState& selection)
+    {
+        selection.paths.erase (std::remove_if (selection.paths.begin(), selection.paths.end(),
+                                               [] (const juce::String& path)
+                                               {
+                                                   return path.isEmpty();
+                                               }),
+                               selection.paths.end());
+    }
+
+    static FileSelectionState getSelectionFromValueTree (const juce::ValueTree& tree)
+    {
+        FileSelectionState out;
+        out.loadMode = fileLoadModeFromToken (tree.getProperty ("mode").toString());
+
+        const auto singlePath = tree.getProperty ("path").toString();
+        if (singlePath.isNotEmpty())
+            out.paths.push_back (singlePath);
+
+        for (int pathIndex = 0; pathIndex < tree.getNumChildren(); ++pathIndex)
+        {
+            const auto pathTree = tree.getChild (pathIndex);
+            if (! pathTree.hasType ("PATH"))
+                continue;
+
+            const auto path = pathTree.getProperty ("path").toString();
+            if (path.isEmpty())
+                continue;
+
+            out.paths.push_back (path);
+        }
+
+        normaliseSelectionPaths (out);
+        return out;
+    }
+
+    static void writeSelectionToValueTree (const FileSelectionState& selection, juce::ValueTree& tree)
+    {
+        FileSelectionState normalised = selection;
+        normaliseSelectionPaths (normalised);
+
+        if (normalised.paths.empty())
+            return;
+
+        if (normalised.loadMode != FileLoadMode::SeparateEntries || normalised.paths.size() > 1)
+            tree.setProperty ("mode", fileLoadModeToToken (normalised.loadMode), nullptr);
+
+        if (normalised.paths.size() == 1)
+        {
+            tree.setProperty ("path", normalised.paths.front(), nullptr);
+            return;
+        }
+
+        for (const auto& path : normalised.paths)
+        {
+            juce::ValueTree pathTree ("PATH");
+            pathTree.setProperty ("path", path, nullptr);
+            tree.addChild (pathTree, -1, nullptr);
+        }
+    }
+
+    static void pushRecentSelectionToFront (std::vector<RecentFileSelection>& recentSelections,
+                                            const RecentFileSelection& selection)
+    {
+        FileSelectionState normalised = selection;
+        normaliseSelectionPaths (normalised);
+
+        if (normalised.paths.empty())
+            return;
+
+        recentSelections.erase (std::remove_if (recentSelections.begin(), recentSelections.end(),
+                                                [&normalised] (const RecentFileSelection& existing)
+                                                {
+                                                    return selectionsEqualIgnoreCase (existing, normalised);
+                                                }),
+                                recentSelections.end());
+
+        recentSelections.insert (recentSelections.begin(), normalised);
+
+        if ((int) recentSelections.size() > kMaxRecentFiles)
+            recentSelections.resize ((size_t) kMaxRecentFiles);
+    }
+
+    static SavedFileSlotSelection getSavedFileSlotSelection (const juce::ValueTree& files, int slotIndex0)
+    {
+        SavedFileSlotSelection out;
 
         for (int i = 0; i < files.getNumChildren(); ++i)
         {
@@ -3283,27 +3495,11 @@ private:
             if ((int) slotTree.getProperty ("index", -1) != slotIndex0)
                 continue;
 
-            const auto singlePath = slotTree.getProperty ("path").toString();
-            if (singlePath.isNotEmpty())
-                out.push_back (singlePath);
-
-            for (int pathIndex = 0; pathIndex < slotTree.getNumChildren(); ++pathIndex)
-            {
-                const auto pathTree = slotTree.getChild (pathIndex);
-                if (! pathTree.hasType ("PATH"))
-                    continue;
-
-                const auto path = pathTree.getProperty ("path").toString();
-                if (path.isEmpty())
-                    continue;
-
-                out.push_back (path);
-            }
-
+            out = getSelectionFromValueTree (slotTree);
             break;
         }
 
-        if (! out.empty())
+        if (! out.paths.empty())
             return out;
 
         const juce::Identifier key ("f" + juce::String (slotIndex0));
@@ -3311,20 +3507,42 @@ private:
         {
             const auto path = files.getProperty (key).toString();
             if (path.isNotEmpty())
-                out.push_back (path);
+                out.paths.push_back (path);
         }
 
         return out;
+    }
+
+    static juce::String getPersistentFileUiStateBaseName (const juce::String& pluginName)
+    {
+        auto baseName = juce::File::createLegalFileName (pluginName);
+        if (baseName.isEmpty())
+            baseName = "JSFX";
+
+        return baseName;
+    }
+
+    juce::File getPersistentFileUiStateFile() const
+    {
+        return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                    .getChildFile ("ZorakAudio")
+                    .getChildFile ("JSFXFileUiState")
+                    .getChildFile (getPersistentFileUiStateBaseName (getName()) + "_recent.xml");
+    }
+
+    juce::String getPersistentFileUiStateLockName() const
+    {
+        return "ZA_JSFX_FILE_UI_" + getPersistentFileUiStateBaseName (getName());
     }
 
     void clearRememberedFileUiState()
     {
         std::lock_guard<std::mutex> lk (filePathMutex);
         lastFileDialogDirectory.clear();
-        recentFilePaths.clear();
+        recentFileSelections.clear();
     }
 
-    void rememberFilePathsLocked (const std::vector<juce::File>& files)
+    void rememberFileSelectionLocked (const std::vector<juce::File>& files, FileLoadMode loadMode)
     {
         if (files.empty())
             return;
@@ -3339,14 +3557,69 @@ private:
             }
         }
 
-        for (auto it = files.rbegin(); it != files.rend(); ++it)
-            pushRecentPathToFront (recentFilePaths, it->getFullPathName());
+        RecentFileSelection selection;
+        selection.loadMode = loadMode;
+        selection.paths.reserve (files.size());
+
+        for (const auto& file : files)
+        {
+            const auto fullPath = file.getFullPathName();
+            if (fullPath.isEmpty())
+                continue;
+
+            selection.paths.push_back (fullPath);
+        }
+
+        pushRecentSelectionToFront (recentFileSelections, selection);
     }
 
-    void restoreFileUiState (const juce::ValueTree& fileUi)
+    void savePersistentFileUiState() const
+    {
+        juce::String lastDir;
+        std::vector<RecentFileSelection> recentSelections;
+
+        {
+            std::lock_guard<std::mutex> lk (filePathMutex);
+            lastDir = lastFileDialogDirectory;
+            recentSelections = recentFileSelections;
+        }
+
+        juce::ValueTree fileUi ("FILE_UI");
+        if (lastDir.isNotEmpty())
+            fileUi.setProperty ("lastDir", lastDir, nullptr);
+
+        for (const auto& selection : recentSelections)
+        {
+            if (selection.paths.empty())
+                continue;
+
+            juce::ValueTree recent ("RECENT");
+            writeSelectionToValueTree (selection, recent);
+            fileUi.addChild (recent, -1, nullptr);
+        }
+
+        std::unique_ptr<juce::XmlElement> xml (fileUi.createXml());
+        if (xml == nullptr)
+            return;
+
+        const auto stateFile = getPersistentFileUiStateFile();
+        stateFile.getParentDirectory().createDirectory();
+
+        juce::InterProcessLock fileLock (getPersistentFileUiStateLockName());
+        if (! fileLock.enter (1500))
+            return;
+
+        const auto ok = stateFile.replaceWithText (xml->toString(), false, false, "\n");
+        juce::ignoreUnused (ok);
+        fileLock.exit();
+    }
+
+    void restoreFileUiState (const juce::ValueTree& fileUi,
+                             bool mergeWithExisting = false,
+                             bool saveAsPersistent = false)
     {
         juce::String restoredLastDir = fileUi.getProperty ("lastDir").toString();
-        std::vector<juce::String> restoredRecent;
+        std::vector<RecentFileSelection> restoredRecent;
         restoredRecent.reserve ((size_t) juce::jmax (0, fileUi.getNumChildren()));
 
         for (int i = 0; i < fileUi.getNumChildren(); ++i)
@@ -3355,32 +3628,110 @@ private:
             if (! recent.hasType ("RECENT"))
                 continue;
 
-            const auto path = recent.getProperty ("path").toString();
-            if (path.isEmpty())
+            auto selection = getSelectionFromValueTree (recent);
+            if (selection.paths.empty())
                 continue;
 
             const bool alreadySeen = std::any_of (restoredRecent.begin(), restoredRecent.end(),
-                                                  [&path] (const juce::String& existing)
+                                                  [&selection] (const RecentFileSelection& existing)
                                                   {
-                                                      return existing.compareIgnoreCase (path) == 0;
+                                                      return selectionsEqualIgnoreCase (existing, selection);
                                                   });
             if (alreadySeen)
                 continue;
 
-            restoredRecent.push_back (path);
+            restoredRecent.push_back (std::move (selection));
 
             if ((int) restoredRecent.size() >= kMaxRecentFiles)
                 break;
         }
 
-        if (restoredLastDir.isEmpty() && ! restoredRecent.empty())
-            restoredLastDir = juce::File (restoredRecent.front()).getParentDirectory().getFullPathName();
+        if (restoredLastDir.isEmpty())
+        {
+            for (const auto& selection : restoredRecent)
+            {
+                if (selection.paths.empty())
+                    continue;
 
-        std::lock_guard<std::mutex> lk (filePathMutex);
-        lastFileDialogDirectory = restoredLastDir;
-        recentFilePaths = std::move (restoredRecent);
+                const auto dir = juce::File (selection.paths.front()).getParentDirectory();
+                if (dir.isDirectory())
+                {
+                    restoredLastDir = dir.getFullPathName();
+                    break;
+                }
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lk (filePathMutex);
+
+            if (! mergeWithExisting)
+            {
+                lastFileDialogDirectory = restoredLastDir;
+                recentFileSelections = std::move (restoredRecent);
+            }
+            else
+            {
+                if (lastFileDialogDirectory.isEmpty())
+                    lastFileDialogDirectory = restoredLastDir;
+
+                if (recentFileSelections.empty())
+                {
+                    recentFileSelections = std::move (restoredRecent);
+                }
+                else
+                {
+                    for (const auto& selection : restoredRecent)
+                    {
+                        const bool alreadySeen = std::any_of (recentFileSelections.begin(), recentFileSelections.end(),
+                                                              [&selection] (const RecentFileSelection& existing)
+                                                              {
+                                                                  return selectionsEqualIgnoreCase (existing, selection);
+                                                              });
+                        if (alreadySeen)
+                            continue;
+
+                        recentFileSelections.push_back (selection);
+                        if ((int) recentFileSelections.size() >= kMaxRecentFiles)
+                            break;
+                    }
+                }
+
+                if (lastFileDialogDirectory.isEmpty() && ! recentFileSelections.empty())
+                {
+                    const auto dir = juce::File (recentFileSelections.front().paths.front()).getParentDirectory();
+                    if (dir.isDirectory())
+                        lastFileDialogDirectory = dir.getFullPathName();
+                }
+            }
+        }
+
+        if (saveAsPersistent)
+            savePersistentFileUiState();
     }
 
+    void loadPersistentFileUiState()
+    {
+        const auto stateFile = getPersistentFileUiStateFile();
+        if (! stateFile.existsAsFile())
+            return;
+
+        juce::InterProcessLock fileLock (getPersistentFileUiStateLockName());
+        if (! fileLock.enter (1500))
+            return;
+
+        std::unique_ptr<juce::XmlElement> xml (juce::parseXML (stateFile));
+        fileLock.exit();
+
+        if (xml == nullptr)
+            return;
+
+        const auto tree = juce::ValueTree::fromXml (*xml);
+        if (! tree.isValid())
+            return;
+
+        restoreFileUiState (tree, false, false);
+    }
 
     void initFileRuntime()
     {
@@ -3414,6 +3765,8 @@ private:
             fileLoadExit.store (false);
             fileLoadThread = std::thread ([this] { fileLoaderThreadMain(); });
         }
+
+        loadPersistentFileUiState();
 
         // Auto-load defaults if the filename token looks like a path and resolves.
         for (const auto& d : fileDecls)
@@ -3528,7 +3881,7 @@ private:
             if (req.slot < 0 || req.slot >= (int) fileSlots.size())
                 continue;
 
-            auto data = loadFilesToMemory (req.files);
+            auto data = loadFilesToMemory (req.files, req.mode);
 
             auto& slot = fileSlots[(size_t) req.slot];
 
@@ -3552,10 +3905,300 @@ private:
         }
     }
 
-    std::unique_ptr<CachedFileSet> loadFilesToMemory (const std::vector<juce::File>& files)
+    std::unique_ptr<CachedFileData> convertAudioDataToFormat (const CachedFileData& src,
+                                                               int dstChannels,
+                                                               double dstSampleRate)
+    {
+        if (src.isText || src.channels <= 0 || src.sampleRate <= 0.0)
+            return nullptr;
+
+        dstChannels = juce::jlimit (1, 64, dstChannels);
+        if (dstSampleRate <= 0.0)
+            dstSampleRate = src.sampleRate;
+
+        auto out = std::make_unique<CachedFileData>();
+        out->isText = false;
+        out->channels = dstChannels;
+        out->sampleRate = dstSampleRate;
+
+        if (src.frames <= 0)
+        {
+            out->frames = 0;
+            return out;
+        }
+
+        const auto scaledFrames = (double) src.frames * dstSampleRate / src.sampleRate;
+        out->frames = juce::jmax<int64_t> (1, (int64_t) std::llround (scaledFrames));
+
+        const int64_t totalItems64 = out->frames * (int64_t) dstChannels;
+        if (totalItems64 <= 0
+            || totalItems64 > (int64_t) (std::numeric_limits<size_t>::max() / sizeof (double)))
+            return nullptr;
+
+        out->items.resize ((size_t) totalItems64);
+
+        auto sampleForDestChannelAtFrame = [&src, dstChannels] (int64_t frameIndex, int dstChannel) -> double
+        {
+            if (src.frames <= 0)
+                return 0.0;
+
+            frameIndex = juce::jlimit<int64_t> (0, src.frames - 1, frameIndex);
+            const auto base = (size_t) (frameIndex * src.channels);
+
+            if (dstChannels == 1)
+            {
+                double sum = 0.0;
+                for (int ch = 0; ch < src.channels; ++ch)
+                    sum += src.items[base + (size_t) ch];
+
+                return sum / (double) juce::jmax (1, src.channels);
+            }
+
+            if (src.channels == 1)
+                return src.items[base];
+
+            if (dstChannel < src.channels)
+                return src.items[base + (size_t) dstChannel];
+
+            return src.items[base + (size_t) (src.channels - 1)];
+        };
+
+        const bool needsResample = std::abs (src.sampleRate - dstSampleRate) > 1.0e-9;
+
+        for (int64_t frame = 0; frame < out->frames; ++frame)
+        {
+            const double srcPos = needsResample
+                                      ? ((double) frame * src.sampleRate) / dstSampleRate
+                                      : (double) frame;
+
+            const int64_t pos0 = juce::jlimit<int64_t> (0, src.frames - 1, (int64_t) std::floor (srcPos));
+            const int64_t pos1 = juce::jmin (src.frames - 1, pos0 + 1);
+            const double frac = juce::jlimit (0.0, 1.0, srcPos - (double) pos0);
+            const auto dstBase = (size_t) (frame * dstChannels);
+
+            for (int ch = 0; ch < dstChannels; ++ch)
+            {
+                const double s0 = sampleForDestChannelAtFrame (pos0, ch);
+                const double s1 = sampleForDestChannelAtFrame (pos1, ch);
+                out->items[dstBase + (size_t) ch] = s0 + (s1 - s0) * frac;
+            }
+        }
+
+        return out;
+    }
+
+    static juce::File createAppendImportTempFile (const juce::String& suffix)
+    {
+        auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                       .getChildFile ("ZorakAudio")
+                       .getChildFile ("JSFXAppendImportCache");
+        dir.createDirectory();
+        return dir.getNonexistentChildFile ("append_import_", suffix, false);
+    }
+
+    static bool writeAudioDataToWriter (juce::AudioFormatWriter& writer, const CachedFileData& data)
+    {
+        if (data.isText || data.channels <= 0)
+            return false;
+
+        const int channels = juce::jlimit (1, 64, data.channels);
+        const int64_t availableFrames = (int64_t) data.items.size() / (int64_t) channels;
+        const int64_t frames = juce::jmax<int64_t> (0, juce::jmin (data.frames, availableFrames));
+
+        if (frames <= 0)
+            return true;
+
+        constexpr int kChunkFrames = 8192;
+        juce::AudioBuffer<float> buffer (channels, kChunkFrames);
+
+        for (int64_t frameBase = 0; frameBase < frames; frameBase += kChunkFrames)
+        {
+            const int framesThisChunk = (int) juce::jmin<int64_t> (kChunkFrames, frames - frameBase);
+
+            for (int ch = 0; ch < channels; ++ch)
+            {
+                auto* dst = buffer.getWritePointer (ch);
+                for (int i = 0; i < framesThisChunk; ++i)
+                {
+                    const auto srcIndex = (size_t) ((frameBase + (int64_t) i) * (int64_t) channels + (int64_t) ch);
+                    dst[i] = (float) data.items[srcIndex];
+                }
+            }
+
+            if (! writer.writeFromAudioSampleBuffer (buffer, 0, framesThisChunk))
+                return false;
+        }
+
+        return true;
+    }
+
+    juce::File buildAppendedSingleImportFile (const std::vector<juce::File>& files)
+    {
+        if (files.empty())
+            return {};
+
+        bool sawAudio = false;
+        bool sawText = false;
+        bool haveAudioReference = false;
+        int referenceChannels = 0;
+        double referenceSampleRate = 0.0;
+
+        juce::File outFile;
+        std::unique_ptr<juce::AudioFormatWriter> writer;
+        std::unique_ptr<juce::FileOutputStream> textStream;
+        juce::WavAudioFormat wavFormat;
+        juce::StringPairArray metadata;
+
+        for (const auto& file : files)
+        {
+            if (! file.existsAsFile())
+            {
+                if (outFile.exists())
+                    outFile.deleteFile();
+                return {};
+            }
+
+            auto data = loadFileToMemory (file);
+            if (! data)
+            {
+                if (outFile.exists())
+                    outFile.deleteFile();
+                return {};
+            }
+
+            if (data->isText)
+            {
+                if (sawAudio)
+                {
+                    if (outFile.exists())
+                        outFile.deleteFile();
+                    return {};
+                }
+
+                sawText = true;
+
+                if (! outFile.existsAsFile())
+                {
+                    outFile = createAppendImportTempFile (".txt");
+                    textStream.reset (outFile.createOutputStream().release());
+                    if (textStream == nullptr || ! textStream->openedOk())
+                    {
+                        if (outFile.exists())
+                            outFile.deleteFile();
+                        return {};
+                    }
+                }
+
+                const auto content = file.loadFileAsString();
+                if (content.isNotEmpty())
+                {
+                    textStream->writeText (content, false, false, nullptr);
+                    if (! content.endsWithChar ('\n'))
+                        textStream->writeText ("\n", false, false, nullptr);
+                }
+
+                continue;
+            }
+
+            if (sawText || data->channels <= 0 || data->sampleRate <= 0.0)
+            {
+                if (outFile.exists())
+                    outFile.deleteFile();
+                return {};
+            }
+
+            sawAudio = true;
+
+            if (! haveAudioReference)
+            {
+                haveAudioReference = true;
+                referenceChannels = data->channels;
+                referenceSampleRate = data->sampleRate;
+
+                outFile = createAppendImportTempFile (".wav");
+                auto stream = outFile.createOutputStream();
+                if (stream == nullptr)
+                {
+                    if (outFile.exists())
+                        outFile.deleteFile();
+                    return {};
+                }
+
+                auto* rawStream = stream.release();
+                writer.reset (wavFormat.createWriterFor (rawStream,
+                                                         referenceSampleRate,
+                                                         (unsigned int) referenceChannels,
+                                                         32,
+                                                         metadata,
+                                                         0));
+                if (writer == nullptr)
+                {
+                    delete rawStream;
+                    if (outFile.exists())
+                        outFile.deleteFile();
+                    return {};
+                }
+            }
+            else if (data->channels != referenceChannels
+                     || std::abs (data->sampleRate - referenceSampleRate) > 1.0e-9)
+            {
+                data = convertAudioDataToFormat (*data, referenceChannels, referenceSampleRate);
+                if (! data)
+                {
+                    if (outFile.exists())
+                        outFile.deleteFile();
+                    return {};
+                }
+            }
+
+            if (writer == nullptr || ! writeAudioDataToWriter (*writer, *data))
+            {
+                if (outFile.exists())
+                    outFile.deleteFile();
+                return {};
+            }
+        }
+
+        if (textStream != nullptr)
+            textStream->flush();
+
+        if (writer != nullptr)
+            writer->flush();
+
+        writer.reset();
+        textStream.reset();
+
+        if (! outFile.existsAsFile())
+            return {};
+
+        return outFile;
+    }
+
+    std::unique_ptr<CachedFileSet> loadFilesToMemory (const std::vector<juce::File>& files,
+                                                       FileLoadMode loadMode)
     {
         if (files.empty())
             return nullptr;
+
+        if (loadMode == FileLoadMode::AppendAsSingleFile)
+        {
+            const auto appendedImportFile = buildAppendedSingleImportFile (files);
+            if (! appendedImportFile.existsAsFile())
+                return nullptr;
+
+            auto data = loadFileToMemory (appendedImportFile);
+            appendedImportFile.deleteFile();
+
+            if (! data)
+                return nullptr;
+
+            auto out = std::make_unique<CachedFileSet>();
+            CachedFileEntry entry;
+            entry.path = files.front().getFullPathName();
+            entry.data = std::move (data);
+            out->entries.push_back (std::move (entry));
+            return out;
+        }
 
         auto out = std::make_unique<CachedFileSet>();
         out->entries.reserve (files.size());
@@ -4294,7 +4937,7 @@ int64_t jsfxDeclaredMaxMem = 0;
 
     mutable std::mutex filePathMutex;
     juce::String lastFileDialogDirectory;
-    std::vector<juce::String> recentFilePaths;
+    std::vector<RecentFileSelection> recentFileSelections;
 
     std::mutex fileLoadMutex;
     std::condition_variable fileLoadCv;
@@ -4381,13 +5024,13 @@ public:
             row.choose = std::make_unique<FileChooseButton> ("Open...");
             row.clear = std::make_unique<juce::TextButton> ("Clear");
 
-            row.choose->setTooltip ("Left-click to open one file. Right-click for Open Multiple and recent files.");
+            row.choose->setTooltip ("Left-click to open one file. Right-click for Open Multiple, Import Multiple (Append Each), and recent files.");
             row.clear->setTooltip ("Clear the current file selection");
 
             const int slot = d.index0;
             auto* chooseButton = row.choose.get();
 
-            row.choose->onClick = [this, slot] { browseForFileSlot (slot); };
+            row.choose->onClick = [this, slot] { browseForFileSlot (slot, FileBrowseMode::OpenSingle); };
             row.choose->onPopupClick = [this, slot, chooseButton]
             {
                 if (chooseButton != nullptr)
@@ -4514,6 +5157,13 @@ public:
     }
 
 private:
+    enum class FileBrowseMode
+    {
+        OpenSingle,
+        OpenMultipleReplace,
+        ImportMultipleAppendEach,
+    };
+
     static juce::String shortenPathForMenu (const juce::String& path, int maxChars = 64)
     {
         if (path.length() <= maxChars)
@@ -4524,24 +5174,67 @@ private:
         return path.substring (0, head) + "..." + path.substring (path.length() - tail);
     }
 
-    static juce::String formatRecentMenuLabel (const juce::String& fullPath)
+    static juce::String formatRecentMenuLabel (const JSFXJuceProcessor::FileSelectionState& selection)
     {
-        const juce::File f (fullPath);
-        auto label = f.getFileName();
-        const auto dir = f.getParentDirectory().getFullPathName();
+        if (selection.paths.empty())
+            return {};
 
+        const juce::File leadFile (selection.paths.front());
+        auto label = leadFile.getFileName();
+        if (label.isEmpty())
+            label = selection.paths.front();
+
+        if (selection.paths.size() > 1)
+        {
+            const auto extraCount = juce::String ((int) selection.paths.size() - 1);
+            if (selection.loadMode == JSFXJuceProcessor::FileLoadMode::AppendAsSingleFile)
+                label = "Appended: " + label + " (+" + extraCount + ")";
+            else
+                label = "Multiple: " + label + " (+" + extraCount + ")";
+        }
+
+        const auto dir = leadFile.getParentDirectory().getFullPathName();
         if (dir.isNotEmpty())
             label << "  [" << shortenPathForMenu (dir) << "]";
 
         return label;
     }
 
-    void browseForFileSlot (int slot, bool allowMultiple = false)
+    static bool recentSelectionExistsOnDisk (const JSFXJuceProcessor::FileSelectionState& selection)
     {
-        const auto startDir = proc.getPreferredFileChooserStartDirectory (slot);
+        if (selection.paths.empty())
+            return false;
 
-        activeFileChooser = std::make_unique<juce::FileChooser> (allowMultiple ? ("Select files for slot " + juce::String (slot))
-                                                                               : ("Select file for slot " + juce::String (slot)),
+        for (const auto& path : selection.paths)
+            if (! juce::File (path).existsAsFile())
+                return false;
+
+        return true;
+    }
+
+    void browseForFileSlot (int slot, FileBrowseMode mode = FileBrowseMode::OpenSingle)
+    {
+        const bool allowMultiple = (mode != FileBrowseMode::OpenSingle);
+        const bool appendEach = (mode == FileBrowseMode::ImportMultipleAppendEach);
+        const auto startDir = proc.getPreferredFileChooserStartDirectory (slot, appendEach);
+
+        juce::String chooserTitle = "Select file for slot " + juce::String (slot);
+        switch (mode)
+        {
+            case FileBrowseMode::OpenSingle:
+                chooserTitle = "Select file for slot " + juce::String (slot);
+                break;
+            case FileBrowseMode::OpenMultipleReplace:
+                chooserTitle = "Select files for slot " + juce::String (slot);
+                break;
+            case FileBrowseMode::ImportMultipleAppendEach:
+                chooserTitle = "Import files to append into one slot file " + juce::String (slot);
+                break;
+            default:
+                break;
+        }
+
+        activeFileChooser = std::make_unique<juce::FileChooser> (chooserTitle,
                                                                  startDir,
                                                                  "*");
 
@@ -4552,7 +5245,7 @@ private:
             flags |= juce::FileBrowserComponent::canSelectMultipleItems;
 
         activeFileChooser->launchAsync (flags,
-                                        [safeThis, slot, allowMultiple] (const juce::FileChooser& chooser)
+                                        [safeThis, slot, allowMultiple, appendEach] (const juce::FileChooser& chooser)
                                         {
                                             if (safeThis == nullptr)
                                                 return;
@@ -4576,7 +5269,12 @@ private:
                                             }
 
                                             if (! selectedFiles.empty())
-                                                safeThis->proc.setFileSlotPaths (slot, selectedFiles);
+                                            {
+                                                if (appendEach)
+                                                    safeThis->proc.setFileSlotPathsWithMode (slot, selectedFiles, JSFXJuceProcessor::FileLoadMode::AppendAsSingleFile);
+                                                else
+                                                    safeThis->proc.setFileSlotPaths (slot, selectedFiles);
+                                            }
 
                                             safeThis->activeFileChooser.reset();
                                         });
@@ -4588,34 +5286,35 @@ private:
         {
             kBrowseMenuId = 1,
             kBrowseMultiMenuId = 2,
-            kClearMenuId = 3,
+            kBrowseAppendMenuId = 3,
+            kClearMenuId = 4,
             kRecentMenuBaseId = 1000,
         };
 
         const bool hasSelection = proc.hasFileSlotSelection (slot);
-        const auto recentPaths = proc.getRecentFilePaths();
+        const auto recentSelections = proc.getRecentFileSelections();
 
         juce::PopupMenu menu;
         menu.addItem (kBrowseMenuId, "Open...");
         menu.addItem (kBrowseMultiMenuId, "Open Multiple...");
+        menu.addItem (kBrowseAppendMenuId, "Import Multiple (Append Each)...");
         menu.addItem (kClearMenuId, "Clear", hasSelection);
         menu.addSeparator();
         menu.addSectionHeader ("Open Recent");
 
-        if (recentPaths.empty())
+        if (recentSelections.empty())
         {
             menu.addItem (kRecentMenuBaseId, "No recent files", false);
         }
         else
         {
-            for (size_t i = 0; i < recentPaths.size(); ++i)
+            for (size_t i = 0; i < recentSelections.size(); ++i)
             {
-                const auto& path = recentPaths[i];
-                const juce::File recentFile (path);
-                const bool exists = recentFile.existsAsFile();
-                const bool isCurrent = proc.fileSlotContainsPath (slot, path);
+                const auto& selection = recentSelections[i];
+                const bool exists = recentSelectionExistsOnDisk (selection);
+                const bool isCurrent = proc.fileSlotMatchesSelection (slot, selection);
 
-                auto label = formatRecentMenuLabel (path);
+                auto label = formatRecentMenuLabel (selection);
                 if (! exists)
                     label << " (missing)";
 
@@ -4627,20 +5326,26 @@ private:
         menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target)
                                                      .withMousePosition()
                                                      .withDeletionCheck (*this),
-                            [safeThis, slot, recentPaths] (int result)
+                            [safeThis, slot, recentSelections] (int result)
                             {
                                 if (safeThis == nullptr || result == 0)
                                     return;
 
                                 if (result == kBrowseMenuId)
                                 {
-                                    safeThis->browseForFileSlot (slot, false);
+                                    safeThis->browseForFileSlot (slot, FileBrowseMode::OpenSingle);
                                     return;
                                 }
 
                                 if (result == kBrowseMultiMenuId)
                                 {
-                                    safeThis->browseForFileSlot (slot, true);
+                                    safeThis->browseForFileSlot (slot, FileBrowseMode::OpenMultipleReplace);
+                                    return;
+                                }
+
+                                if (result == kBrowseAppendMenuId)
+                                {
+                                    safeThis->browseForFileSlot (slot, FileBrowseMode::ImportMultipleAppendEach);
                                     return;
                                 }
 
@@ -4651,8 +5356,8 @@ private:
                                 }
 
                                 const int recentIndex = result - kRecentMenuBaseId;
-                                if (recentIndex >= 0 && recentIndex < (int) recentPaths.size())
-                                    safeThis->proc.setFileSlotPath (slot, juce::File (recentPaths[(size_t) recentIndex]));
+                                if (recentIndex >= 0 && recentIndex < (int) recentSelections.size())
+                                    safeThis->proc.setFileSlotSelection (slot, recentSelections[(size_t) recentIndex]);
                             });
     }
 

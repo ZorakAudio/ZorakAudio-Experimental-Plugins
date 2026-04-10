@@ -1,0 +1,1078 @@
+desc:TextureXY
+
+// TextureXY - stripped-down XY-driven texture instrument forked conceptually from Texture.
+// Draw a path. Release to play it. X steers Stable -> Wild.
+// Y steers Soft -> Active. X/Y motion derivatives inject macro and micro instability.
+
+filename:0,Texture
+
+in_pin:none
+out_pin:Left Output
+out_pin:Right Output
+options:gfx_hz=60 maxmem=32000000 ownership=hybrid
+
+slider1:0<-24,24,0.1>-Pitch (st)
+slider2:85<20,320,1>-Grain (ms)
+slider3:1.00<0.10,4,0.01:log!>-Travel
+slider4:-6<-24,12,0.1>-Level (dB)
+slider5:0<0,2,1{OneShot,Loop,PingPong}>-Playback
+
+@init
+ext_noinit = 1;
+gfx_ext_retina = 1;
+
+PI = 3.14159265358979323846;
+ln10 = 2.302585092994046;
+ln2 = 0.6931471805599453;
+
+eps = 0.000000000001;
+seed = 123456789;
+
+max_points = 1024;
+x_base = 0;
+y_base = x_base + max_points;
+t_base = y_base + max_points;
+
+wf_base = t_base + max_points + 4096;
+wf_max_bins = 1200;
+
+tex_base = wf_base + wf_max_bins * 2 + 4096;
+meta_base = 31500000;
+
+voice_base = meta_base;
+max_voices = 32;
+v_stride = 7; // active, src_pos, src_step, ampL, ampR, phase, phase_step
+
+function clamp(v, lo, hi)
+(
+  v < lo ? lo : v > hi ? hi : v;
+);
+
+function lerp(a, b, t)
+(
+  a + (b - a) * t;
+);
+
+function rand01()
+(
+  seed = (seed * 1103515245 + 12345) & $x7fffffff;
+  seed / 2147483647;
+);
+
+function randSym()
+(
+  rand01() * 2 - 1;
+);
+
+function wrap01(v)
+(
+  v -= floor(v);
+  v;
+);
+
+function db_to_gain(db)
+(
+  exp((db / 20) * ln10);
+);
+
+function semitone_to_ratio(st)
+(
+  exp((st / 12) * ln2);
+);
+
+function wrap_src_pos(p)
+local(fr)
+(
+  fr = max(1, tex_frames - 1);
+  p < 0 ? (
+    p += fr * (1 + floor(-p / fr));
+  );
+  p >= fr ? (
+    p -= fr * floor(p / fr);
+  );
+  p;
+);
+
+function src_read(pos, ch)
+local(fr, i0, i1, frac, idx0, idx1, s0, s1)
+(
+  fr = max(1, tex_frames - 1);
+  tex_loaded <= 0 || tex_frames <= 1 ? 0 : (
+    pos = wrap_src_pos(pos);
+    i0 = floor(pos);
+    frac = pos - i0;
+    i1 = i0 + 1;
+    i1 >= fr ? i1 -= fr;
+
+    ch >= tex_ch ? ch = 0;
+    idx0 = tex_base + i0 * tex_ch + ch;
+    idx1 = tex_base + i1 * tex_ch + ch;
+    s0 = mem[idx0];
+    s1 = mem[idx1];
+    s0 + (s1 - s0) * frac;
+  );
+);
+
+function reset_motion_state()
+(
+  motion_valid = 0;
+  prev_motion_x = prev_motion_y = 0;
+  prev_vx = prev_vy = 0;
+  prev_ax = prev_ay = 0;
+  cur_vx = cur_vy = 0;
+  cur_ax = cur_ay = 0;
+  cur_jx = cur_jy = 0;
+  speed_feat = 0;
+  ax_feat = ay_feat = 0;
+  jx_feat = jy_feat = 0;
+  acc_feat = jerk_feat = 0;
+  pitch_drift_state = 0;
+  amp_drift_state = 0;
+);
+
+function hard_set_motion(nx, ny, nspeed)
+(
+  sm_x = clamp(nx, 0, 1);
+  sm_y = clamp(ny, 0, 1);
+  sm_speed = clamp(nspeed, 0, 1);
+  view_x = sm_x;
+  view_y = sm_y;
+  view_speed = sm_speed;
+  motion_valid = 0;
+);
+
+function start_playback()
+(
+  point_count > 0 ? (
+    drawing = 0;
+    playback_active = 1;
+    play_phase = 0;
+    play_dir = 1;
+    snap_pending = 1;
+  );
+);
+
+function stop_playback()
+(
+  playback_active = 0;
+  snap_pending = 0;
+  motion_valid = 0;
+);
+
+function add_point(px, py, pt)
+(
+  point_count < max_points ? (
+    x_base[point_count] = clamp(px, 0, 1);
+    y_base[point_count] = clamp(py, 0, 1);
+    t_base[point_count] = max(0, pt);
+    point_count += 1;
+  );
+);
+
+
+function add_release_point(nx, ny, now, px, py)
+local(elapsed, lastx, lasty, need_add)
+(
+  point_count <= 0 ? (
+    add_point(nx, ny, 0);
+  ) : (
+    elapsed = max(now - draw_start_time, 0);
+    lastx = x_base[point_count-1];
+    lasty = y_base[point_count-1];
+    need_add = (abs(nx - lastx) > 0.0005) || (abs(ny - lasty) > 0.0005) || ((elapsed - t_base[point_count-1]) > 0.0005);
+    need_add ? (
+      add_point(nx, ny, elapsed);
+      last_add_px = px;
+      last_add_py = py;
+      last_add_time = elapsed;
+    );
+  );
+);
+
+function reset_gesture()
+local(i)
+(
+  point_count = 0;
+  drawing = 0;
+  playback_active = 0;
+  play_phase = 0;
+  play_dir = 1;
+  gesture_duration = 1;
+  live_x_target = 0.5;
+  live_y_target = 0.5;
+  live_speed_target = 0;
+  sm_x = 0.5;
+  sm_y = 0.5;
+  sm_speed = 0;
+  view_x = sm_x;
+  view_y = sm_y;
+  view_speed = 0;
+  scan01 = 0;
+  snap_pending = 0;
+  reset_motion_state();
+
+  i = 0;
+  loop(max_voices,
+    mem[voice_base + i * v_stride] = 0;
+    i += 1;
+  );
+  next_voice = 0;
+  spawn_countdown = 0;
+);
+
+function begin_draw(nx, ny, now, px, py)
+(
+  drawing = 1;
+  playback_active = 0;
+  play_phase = 0;
+  play_dir = 1;
+  snap_pending = 0;
+  point_count = 0;
+  draw_start_time = now;
+  last_add_time = 0;
+  last_add_px = px;
+  last_add_py = py;
+  last_live_time = now;
+  last_live_x = nx;
+  last_live_y = ny;
+  live_x_target = nx;
+  live_y_target = ny;
+  live_speed_target = 0;
+  add_point(nx, ny, 0);
+);
+
+function update_draw(nx, ny, now, px, py)
+local(dx, dy, dt, speed_raw, dist_px, elapsed)
+(
+  dt = max(now - last_live_time, 0.0001);
+  dx = nx - last_live_x;
+  dy = ny - last_live_y;
+  speed_raw = sqrt(dx*dx + dy*dy) / dt;
+
+  live_x_target = clamp(nx, 0, 1);
+  live_y_target = clamp(ny, 0, 1);
+  live_speed_target = clamp(speed_raw * 0.18, 0, 1);
+
+  last_live_x = nx;
+  last_live_y = ny;
+  last_live_time = now;
+
+  dx = px - last_add_px;
+  dy = py - last_add_py;
+  dist_px = sqrt(dx*dx + dy*dy);
+  elapsed = now - draw_start_time;
+
+  (dist_px >= min_pt_dist) || ((elapsed - last_add_time) >= 0.04) ? (
+    add_point(nx, ny, elapsed);
+    last_add_px = px;
+    last_add_py = py;
+    last_add_time = elapsed;
+  );
+);
+
+function end_draw()
+local(i, invdur)
+(
+  drawing ? (
+    drawing = 0;
+
+    point_count <= 0 ? (
+      gesture_duration = 1;
+      playback_active = 0;
+    ) : (
+      gesture_duration = max(t_base[point_count-1], 0.001);
+      point_count == 1 ? (
+        gesture_duration = 0.5;
+        t_base[0] = 0;
+      ) : (
+        invdur = 1 / gesture_duration;
+        i = 0;
+        loop(point_count,
+          t_base[i] *= invdur;
+          i += 1;
+        );
+      );
+      play_phase = 0;
+      play_dir = 1;
+      scan01 = 0;
+      start_playback();
+    );
+  );
+);
+
+function sample_gesture(ph)
+local(i, t0, t1, a, x0, y0, x1, y1, dt, dx, dy, found)
+(
+  ph = clamp(ph, 0, 1);
+  point_count <= 0 ? (
+    sample_x = 0.5;
+    sample_y = 0.5;
+    sample_speed = 0;
+  ) : point_count == 1 ? (
+    sample_x = x_base[0];
+    sample_y = y_base[0];
+    sample_speed = 0;
+  ) : (
+    found = 0;
+    i = 0;
+    loop(point_count - 1,
+      !found ? (
+        t0 = t_base[i];
+        t1 = t_base[i+1];
+        ((ph >= t0) && (ph <= t1)) || ((i == point_count - 2) && (ph >= t1)) ? (
+          a = (t1 > t0) ? ((ph - t0) / max(t1 - t0, 0.000001)) : 0;
+          x0 = x_base[i];
+          y0 = y_base[i];
+          x1 = x_base[i+1];
+          y1 = y_base[i+1];
+          sample_x = lerp(x0, x1, a);
+          sample_y = lerp(y0, y1, a);
+          dt = max((t1 - t0) * gesture_duration, 0.0001);
+          dx = x1 - x0;
+          dy = y1 - y0;
+          sample_speed = clamp((sqrt(dx*dx + dy*dy) / dt) * 0.18, 0, 1);
+          found = 1;
+        );
+      );
+      i += 1;
+    );
+
+    !found ? (
+      sample_x = x_base[point_count-1];
+      sample_y = y_base[point_count-1];
+      sample_speed = 0;
+    );
+  );
+);
+
+function build_waveform()
+local(frame0, frame1, span, step, b, f, idx, v, mn, mx, first, av, bpk, wf_meanpk_acc)
+(
+  wf_ready = 0;
+  wf_bins = 0;
+  wf_absmax = 1;
+  tex_loaded > 0 && tex_frames > 0 ? (
+    wf_absmax = 0.001;
+    wf_meanpk_acc = 0;
+
+    wf_bins = floor(tex_frames / 64);
+    wf_bins < 128 ? wf_bins = 128;
+    wf_bins > wf_max_bins ? wf_bins = wf_max_bins;
+    wf_bins > tex_frames ? wf_bins = tex_frames;
+    wf_bins < 16 ? wf_bins = 16;
+
+    frame0 = 0;
+    b = 0;
+    loop(wf_bins,
+      frame1 = floor((b + 1) * tex_frames / wf_bins);
+      frame1 <= frame0 ? frame1 = frame0 + 1;
+      frame1 > tex_frames ? frame1 = tex_frames;
+
+      span = frame1 - frame0;
+      step = floor(span / 64);
+      step < 1 ? step = 1;
+
+      mn = 0;
+      mx = 0;
+      first = 1;
+      f = frame0;
+      loop(max(1, floor((span + step - 1) / step)),
+        idx = tex_base + f * tex_ch;
+        v = mem[idx];
+        tex_ch > 1 ? v = 0.5 * (v + mem[idx + 1]);
+        first ? (
+          mn = v;
+          mx = v;
+          first = 0;
+        ) : (
+          v < mn ? mn = v;
+          v > mx ? mx = v;
+        );
+        av = abs(v);
+        av > wf_absmax ? wf_absmax = av;
+        f += step;
+        f >= frame1 ? f = frame1 - 1;
+      );
+
+      mem[wf_base + b * 2] = mn;
+      mem[wf_base + b * 2 + 1] = mx;
+      bpk = max(abs(mn), abs(mx));
+      wf_meanpk_acc += bpk;
+
+      frame0 = frame1;
+      b += 1;
+    );
+    wf_ready = 1;
+  );
+);
+
+function spawn_grain()
+local(slot, vb, chaos, activity, speed_l, ax_l, ay_l, jx_l, jy_l, acc_l, jerk_l, len_ms, len_samp, scan_center, wander_frames, start, pitch_cents, step, amp, amp_micro, pan, amp_scale, width, l_gain, r_gain)
+(
+  tex_loaded > 0 && tex_frames > 1 ? (
+    chaos = clamp(sm_x, 0, 1);
+    activity = clamp(sm_y, 0, 1);
+    speed_l = speed_feat;
+    ax_l = ax_feat;
+    ay_l = ay_feat;
+    jx_l = jx_feat;
+    jy_l = jy_feat;
+    acc_l = acc_feat;
+    jerk_l = jerk_feat;
+
+    len_ms = grain_ms * lerp(1.25, 0.60, activity);
+    len_ms *= 1 + randSym() * (0.10 + 0.22 * chaos * ax_l);
+    len_ms < 8 ? len_ms = 8;
+    len_samp = max(8, floor(len_ms * 0.001 * srate));
+
+    scan_center = scan01 * (tex_frames - 1);
+    wander_frames = tex_frames * (0.002 + 0.020 * chaos * chaos + 0.012 * speed_l + 0.010 * acc_l);
+    start = scan_center + randSym() * wander_frames;
+
+    pitch_cents = pitch_st * 100;
+    pitch_cents += pitch_drift_state * (10 + 40 * chaos);
+    pitch_cents += randSym() * (2 + 20 * chaos * ay_l + 38 * chaos * jy_l);
+    step = semitone_to_ratio(pitch_cents / 100) * (tex_sr / srate);
+
+    amp_scale = lerp(0.10, 0.75, activity);
+    amp = amp_scale * (1 + amp_drift_state * (0.12 + 0.24 * chaos));
+    amp_micro = 1 + randSym() * (0.05 + 0.22 * chaos * ax_l + 0.12 * chaos * jx_l);
+    amp *= amp_micro;
+    amp < 0.02 ? amp = 0.02;
+
+    pan = clamp(randSym() * (0.10 + 0.45 * chaos * speed_l), -1, 1);
+    width = sqrt(0.5 * (1 - pan));
+    l_gain = amp * width;
+    width = sqrt(0.5 * (1 + pan));
+    r_gain = amp * width;
+
+    slot = next_voice;
+    next_voice += 1;
+    next_voice >= max_voices ? next_voice = 0;
+    vb = voice_base + slot * v_stride;
+
+    mem[vb    ] = 1;
+    mem[vb + 1] = start;
+    mem[vb + 2] = step;
+    mem[vb + 3] = l_gain;
+    mem[vb + 4] = r_gain;
+    mem[vb + 5] = 0;
+    mem[vb + 6] = 1 / len_samp;
+  );
+);
+
+
+function sync_params()
+(
+  pitch_st = slider1;
+  grain_ms = slider2;
+  travel = slider3;
+  out_gain = db_to_gain(slider4);
+  play_mode = floor(slider5 + 0.5);
+
+  control_follow = 1 - exp(-1 / max(1, 0.012 * srate));
+  feature_follow = 1 - exp(-1 / max(1, 0.020 * srate));
+  drift_follow = 1 - exp(-1 / max(1, 0.090 * srate));
+);
+
+function reset_source_state()
+(
+  tex_loaded = 0;
+  tex_sig = 0;
+  tex_ch = 0;
+  tex_sr = srate;
+  tex_items = 0;
+  tex_frames = 0;
+  src_ch = 0;
+  src_sr = 0;
+  src_items = 0;
+  src_frames = 0;
+  wf_ready = 0;
+  wf_bins = 0;
+);
+
+function ui_button(id, x, y, w, h, label_str, accent)
+local(hot, click, active)
+(
+  hot = (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + h);
+  click = 0;
+
+  mouse_pressed && hot ? drag_item = id;
+  active = drag_item == id;
+  mouse_released && active && hot ? click = 1;
+  active && !mouse_down ? drag_item = 0;
+
+  accent ? gfx_set(0.12, 0.20, 0.17, 0.96) : gfx_set(0.12, 0.14, 0.18, 0.96);
+  hot ? gfx_set(accent ? 0.14 : 0.15, accent ? 0.28 : 0.18, accent ? 0.22 : 0.22, 0.98);
+  gfx_rect(x, y, w, h);
+  gfx_set(accent ? 0.18 : 0.54, accent ? 0.82 : 0.62, accent ? 0.70 : 0.74, hot ? 0.70 : 0.38);
+  gfx_roundrect(x, y, w, h, 8, 1);
+
+  gfx_setfont(2, "Arial", 11, 'b');
+  gfx_set(0.94, 0.98, 1.00, 1);
+  gfx_measurestr(label_str, tw, th);
+  gfx_x = x + (w - tw) * 0.5;
+  gfx_y = y + (h - th) * 0.5 - 1;
+  gfx_drawstr(label_str);
+
+  click;
+);
+
+function ui_hslider(id, x, y, w, label_str, val, minv, maxv, step, mode)
+local(hot, active, norm, fillw, handle_x, newv)
+(
+  newv = val;
+  hot = (mx >= x) && (mx <= x + w) && (my >= y) && (my <= y + 34);
+  mouse_pressed && hot ? drag_item = id;
+  active = drag_item == id;
+  active && mouse_down ? (
+    norm = clamp((mx - x) / max(1, w), 0, 1);
+    newv = minv + norm * (maxv - minv);
+    step > 0 ? newv = floor((newv - minv) / step + 0.5) * step + minv;
+    newv = clamp(newv, minv, maxv);
+  );
+  active && !mouse_down ? drag_item = 0;
+
+  gfx_setfont(2, "Arial", 11, 'b');
+  gfx_set(0.70, 0.78, 0.88, 1);
+  gfx_x = x; gfx_y = y; gfx_drawstr(label_str);
+
+  mode == 0 ? sprintf(#ui_slider_val, "%.1f st", newv);
+  mode == 1 ? sprintf(#ui_slider_val, "%d ms", floor(newv + 0.5));
+  mode == 2 ? sprintf(#ui_slider_val, "%.2fx", newv);
+  mode == 3 ? sprintf(#ui_slider_val, "%.1f dB", newv);
+
+  gfx_set(0.82, 0.88, 0.96, 1);
+  gfx_measurestr(#ui_slider_val, tw, th);
+  gfx_x = x + w - tw;
+  gfx_y = y;
+  gfx_drawstr(#ui_slider_val);
+
+  track_y = y + 18;
+  track_h = 8;
+  gfx_set(0.10, 0.11, 0.15, 1);
+  gfx_rect(x, track_y, w, track_h);
+  gfx_set(0.24, 0.28, 0.34, 0.55);
+  gfx_roundrect(x, track_y, w, track_h, 4, 1);
+
+  norm = (newv - minv) / max(0.000001, maxv - minv);
+  fillw = norm * w;
+  gfx_set(0.18, 0.82, 0.70, active ? 0.84 : 0.68);
+  gfx_rect(x, track_y, fillw, track_h);
+  handle_x = x + fillw;
+  gfx_set(0.95, 0.98, 1.0, 1);
+  gfx_circle(handle_x, track_y + track_h * 0.5, 6, 1, 1);
+  gfx_set(0.05, 0.06, 0.08, 1);
+  gfx_circle(handle_x, track_y + track_h * 0.5, 2, 1, 1);
+
+  newv;
+);
+
+sync_params();
+reset_source_state();
+reset_gesture();
+min_pt_dist = 7;
+ui_force_reload = 0;
+prev_mouse_down = 0;
+prev_mouse_rdown = 0;
+drag_item = 0;
+source_status = 0;
+
+@slider
+sync_params();
+
+@block
+reload_now = ui_force_reload;
+ui_force_reload = 0;
+
+h = file_open(0);
+source_status = 0;
+
+h > 0 ? (
+  ok = file_riff(h, tmp_ch, tmp_sr);
+  ok ? (
+    tmp_ch = max(1, floor(tmp_ch + 0.5));
+    tmp_sr = max(1, floor(tmp_sr + 0.5));
+    items_total = file_avail(h);
+
+    src_ch = tmp_ch;
+    src_sr = tmp_sr;
+    src_items = items_total;
+    src_frames = floor(items_total / tmp_ch);
+
+    items_total > 0 ? (
+      sig = items_total + tmp_ch * 1000000000 + floor(tmp_sr);
+      need_copy = 0;
+      (sig != tex_sig) ? need_copy = 1;
+      reload_now ? need_copy = 1;
+      tex_loaded <= 0 ? need_copy = 1;
+
+      need_copy ? (
+        file_rewind(h);
+        items_to_copy = items_total;
+        max_items_mem = meta_base - tex_base - 16384;
+        items_to_copy > max_items_mem ? items_to_copy = max_items_mem;
+        copied = file_mem(h, tex_base, items_to_copy);
+
+        copied > 0 ? (
+          tex_loaded = 1;
+          tex_sig = sig;
+          tex_ch = tmp_ch;
+          tex_sr = tmp_sr;
+          tex_items = copied;
+          tex_frames = floor(copied / tex_ch);
+          build_waveform();
+          reset_motion_state();
+          spawn_countdown = 0;
+          source_status = 1;
+        ) : (
+          reset_source_state();
+          source_status = -2;
+        );
+      ) : (
+        source_status = 1;
+      );
+    ) : (
+      reset_source_state();
+      source_status = -1;
+    );
+  ) : (
+    reset_source_state();
+    source_status = -3;
+  );
+) : (
+  reset_source_state();
+  source_status = 0;
+);
+
+@sample
+outL = 0;
+outR = 0;
+
+control_active = 0;
+snap_now = snap_pending;
+snap_pending = 0;
+
+drawing ? (
+  control_active = 1;
+  target_x = live_x_target;
+  target_y = live_y_target;
+  target_speed = live_speed_target;
+  scan01 = wrap01(scan01 + (travel * (0.55 + 0.90 * target_y)) / srate);
+) : playback_active && (point_count > 0) ? (
+  control_active = 1;
+  sample_gesture(play_phase);
+  target_x = sample_x;
+  target_y = sample_y;
+  target_speed = sample_speed;
+  scan01 = play_phase;
+
+  phase_step = travel / max(gesture_duration * srate, 1);
+
+  play_mode == 1 ? (
+    play_phase += phase_step;
+    play_phase >= 1 ? (
+      play_phase -= floor(play_phase);
+      snap_pending = 1;
+    );
+  ) : play_mode == 0 ? (
+    play_phase += phase_step;
+    play_phase >= 1 ? (
+      play_phase = 1;
+      playback_active = 0;
+    );
+  ) : (
+    play_phase += phase_step * play_dir;
+    play_phase > 1 ? (
+      play_phase = 2 - play_phase;
+      play_dir = -1;
+    );
+    play_phase < 0 ? (
+      play_phase = -play_phase;
+      play_dir = 1;
+    );
+    play_phase = clamp(play_phase, 0, 1);
+  );
+) : (
+  target_x = sm_x;
+  target_y = sm_y;
+  target_speed = 0;
+);
+
+snap_now && control_active ? (
+  hard_set_motion(target_x, target_y, target_speed);
+);
+
+sm_x += (target_x - sm_x) * control_follow;
+sm_y += (target_y - sm_y) * control_follow;
+sm_speed += (target_speed - sm_speed) * control_follow;
+view_x = sm_x;
+view_y = sm_y;
+view_speed = sm_speed;
+
+control_active ? (
+  dt = 1 / srate;
+  !motion_valid ? (
+    prev_motion_x = sm_x;
+    prev_motion_y = sm_y;
+    prev_vx = prev_vy = 0;
+    prev_ax = prev_ay = 0;
+    cur_vx = cur_vy = 0;
+    cur_ax = cur_ay = 0;
+    cur_jx = cur_jy = 0;
+    motion_valid = 1;
+  );
+
+  cur_vx = (sm_x - prev_motion_x) / dt;
+  cur_vy = (sm_y - prev_motion_y) / dt;
+  cur_ax = (cur_vx - prev_vx) / dt;
+  cur_ay = (cur_vy - prev_vy) / dt;
+  cur_jx = (cur_ax - prev_ax) / dt;
+  cur_jy = (cur_ay - prev_ay) / dt;
+
+  prev_motion_x = sm_x;
+  prev_motion_y = sm_y;
+  prev_vx = cur_vx;
+  prev_vy = cur_vy;
+  prev_ax = cur_ax;
+  prev_ay = cur_ay;
+
+  raw_speed = clamp(sqrt(cur_vx * cur_vx + cur_vy * cur_vy) * 0.20, 0, 1);
+  raw_ax = clamp(abs(cur_ax) * 0.010, 0, 1);
+  raw_ay = clamp(abs(cur_ay) * 0.010, 0, 1);
+  raw_jx = clamp(abs(cur_jx) * 0.00030, 0, 1);
+  raw_jy = clamp(abs(cur_jy) * 0.00030, 0, 1);
+  raw_acc = clamp(sqrt(cur_ax * cur_ax + cur_ay * cur_ay) * 0.008, 0, 1);
+  raw_jerk = clamp(sqrt(cur_jx * cur_jx + cur_jy * cur_jy) * 0.00022, 0, 1);
+
+  speed_feat += (raw_speed - speed_feat) * feature_follow;
+  ax_feat += (raw_ax - ax_feat) * feature_follow;
+  ay_feat += (raw_ay - ay_feat) * feature_follow;
+  jx_feat += (raw_jx - jx_feat) * feature_follow;
+  jy_feat += (raw_jy - jy_feat) * feature_follow;
+  acc_feat += (raw_acc - acc_feat) * feature_follow;
+  jerk_feat += (raw_jerk - jerk_feat) * feature_follow;
+
+  pitch_target = clamp(cur_ay * 0.0025, -1, 1);
+  amp_target = clamp(cur_ax * 0.0025, -1, 1);
+  pitch_drift_state += (pitch_target - pitch_drift_state) * drift_follow;
+  amp_drift_state += (amp_target - amp_drift_state) * drift_follow;
+) : (
+  motion_valid = 0;
+  speed_feat += (0 - speed_feat) * feature_follow;
+  ax_feat += (0 - ax_feat) * feature_follow;
+  ay_feat += (0 - ay_feat) * feature_follow;
+  jx_feat += (0 - jx_feat) * feature_follow;
+  jy_feat += (0 - jy_feat) * feature_follow;
+  acc_feat += (0 - acc_feat) * feature_follow;
+  jerk_feat += (0 - jerk_feat) * feature_follow;
+  pitch_drift_state += (0 - pitch_drift_state) * drift_follow;
+  amp_drift_state += (0 - amp_drift_state) * drift_follow;
+);
+
+spawn_countdown -= 1;
+(control_active && tex_loaded > 0 && tex_frames > 1) ? (
+  spawn_countdown <= 0 ? (
+    spawn_grain();
+    gps = 2.5 + sm_y * sm_y * 26 + speed_feat * 18;
+    gps *= 0.90 + 0.40 * travel;
+    interval = srate / max(1, gps);
+    interval *= 1 + randSym() * (0.04 + 0.35 * sm_x * acc_feat + 0.25 * sm_x * jerk_feat);
+    interval < 1 ? interval = 1;
+    spawn_countdown = floor(interval);
+  );
+) : (
+  spawn_countdown = max(spawn_countdown, 0);
+);
+
+i = 0;
+loop(max_voices,
+  vb = voice_base + i * v_stride;
+  mem[vb] > 0 ? (
+    ph = mem[vb + 5];
+    ph >= 1 ? (
+      mem[vb] = 0;
+    ) : (
+      env = 0.5 - 0.5 * cos(2 * PI * ph);
+      pos = mem[vb + 1];
+      sL = src_read(pos, 0);
+      tex_ch > 1 ? sR = src_read(pos, 1) : sR = sL;
+      outL += sL * env * mem[vb + 3];
+      outR += sR * env * mem[vb + 4];
+      mem[vb + 1] = pos + mem[vb + 2];
+      mem[vb + 5] = ph + mem[vb + 6];
+    );
+  );
+  i += 1;
+);
+
+spl0 = outL * out_gain;
+spl1 = outR * out_gain;
+
+@gfx 1180 780
+mx = mouse_x;
+my = mouse_y;
+mouse_down = mouse_cap & 1;
+mouse_pressed = mouse_down && !prev_mouse_down;
+mouse_released = !mouse_down && prev_mouse_down;
+rdown = mouse_cap & 2;
+rpressed = rdown && !prev_mouse_rdown;
+prev_mouse_down = mouse_down;
+prev_mouse_rdown = rdown;
+now = time_precise();
+gfx_getchar();
+
+margin = 18;
+header_h = 64;
+panel_w = 300;
+pad_x = margin;
+pad_y = header_h + 16;
+pad_w = gfx_w - panel_w - margin * 3;
+pad_w < 320 ? pad_w = 320;
+pad_h = gfx_h - pad_y - 146;
+pad_h < 260 ? pad_h = 260;
+wave_x = pad_x;
+wave_y = pad_y + pad_h + 14;
+wave_w = pad_w;
+wave_h = gfx_h - wave_y - margin;
+panel_x = pad_x + pad_w + margin;
+panel_y = pad_y;
+panel_h = gfx_h - panel_y - margin;
+
+gfx_set(0.05, 0.06, 0.08, 1);
+gfx_rect(0, 0, gfx_w, gfx_h);
+gfx_set(0.07, 0.08, 0.11, 1);
+gfx_rect(0, 0, gfx_w, header_h);
+
+gfx_setfont(1, "Arial", 22, 'b');
+gfx_set(0.94, 0.98, 1.0, 1);
+gfx_x = margin; gfx_y = 10; gfx_drawstr("TextureXY");
+gfx_setfont(2, "Arial", 12, 0);
+gfx_set(0.62, 0.70, 0.80, 1);
+gfx_x = margin; gfx_y = 36; gfx_drawstr("Draw a motion. Release to play it. X = Stable -> Wild. Y = Soft -> Active.");
+
+gfx_setfont(2, "Arial", 11, 'b');
+source_status == 1 ? (
+  loaded_sec = tex_sr > 0 ? tex_frames / tex_sr : 0;
+  tex_ch > 1 ? sprintf(#src_txt, "Source loaded: %.2fs stereo @ %.1fkHz", loaded_sec, tex_sr / 1000)
+             : sprintf(#src_txt, "Source loaded: %.2fs mono @ %.1fkHz", loaded_sec, tex_sr / 1000);
+  gfx_set(0.18, 0.82, 0.70, 1);
+) : (
+  strcpy(#src_txt, "Choose a source in the Texture file slot, then press Reload.");
+  gfx_set(0.92, 0.74, 0.44, 1);
+);
+gfx_x = gfx_w - 420; gfx_y = 16; gfx_drawstr(#src_txt);
+
+// Pad interaction
+pad_hot = (mx >= pad_x) && (mx <= pad_x + pad_w) && (my >= pad_y) && (my <= pad_y + pad_h) && (drag_item == 0);
+
+rpressed && pad_hot ? (
+  reset_gesture();
+);
+
+mouse_pressed && pad_hot ? (
+  nx = clamp((mx - pad_x) / max(1, pad_w), 0, 1);
+  ny = clamp(1 - (my - pad_y) / max(1, pad_h), 0, 1);
+  begin_draw(nx, ny, now, mx, my);
+);
+
+drawing && mouse_down ? (
+  nx = clamp((mx - pad_x) / max(1, pad_w), 0, 1);
+  ny = clamp(1 - (my - pad_y) / max(1, pad_h), 0, 1);
+  update_draw(nx, ny, now, mx, my);
+);
+mouse_released && drawing ? (
+  nx = clamp((mx - pad_x) / max(1, pad_w), 0, 1);
+  ny = clamp(1 - (my - pad_y) / max(1, pad_h), 0, 1);
+  add_release_point(nx, ny, now, mx, my);
+  end_draw();
+);
+
+// Pad frame
+gfx_set(0.09, 0.10, 0.13, 1);
+gfx_rect(pad_x, pad_y, pad_w, pad_h);
+gfx_set(0.24, 0.28, 0.34, 0.34);
+gfx_roundrect(pad_x, pad_y, pad_w, pad_h, 10, 1);
+
+gfx_set(0.16, 0.20, 0.25, 0.6);
+i = 1;
+loop(7,
+  gx = pad_x + (pad_w / 8) * i;
+  gy = pad_y + (pad_h / 8) * i;
+  gfx_line(gx, pad_y + 1, gx, pad_y + pad_h - 1, 1);
+  gfx_line(pad_x + 1, gy, pad_x + pad_w - 1, gy, 1);
+  i += 1;
+);
+
+// Axis labels
+gfx_setfont(2, "Arial", 11, 'b');
+gfx_set(0.72, 0.80, 0.90, 1);
+gfx_x = pad_x + 10; gfx_y = pad_y + pad_h + 4; gfx_drawstr("Stable");
+gfx_measurestr("Wild", tw, th);
+gfx_x = pad_x + pad_w - tw - 10; gfx_y = pad_y + pad_h + 4; gfx_drawstr("Wild");
+gfx_measurestr("Active", tw, th);
+gfx_x = pad_x - tw - 8; gfx_y = pad_y + 4; gfx_drawstr("Active");
+gfx_measurestr("Soft", tw, th);
+gfx_x = pad_x - tw - 8; gfx_y = pad_y + pad_h - th - 4; gfx_drawstr("Soft");
+
+// Gesture path
+point_count > 0 ? (
+  gfx_set(0.18, 0.82, 0.70, 0.85);
+  i = 0;
+  loop(point_count - 1,
+    x0 = pad_x + x_base[i] * pad_w;
+    y0 = pad_y + (1 - y_base[i]) * pad_h;
+    x1 = pad_x + x_base[i+1] * pad_w;
+    y1 = pad_y + (1 - y_base[i+1]) * pad_h;
+    gfx_line(x0, y0, x1, y1, 1);
+    i += 1;
+  );
+);
+
+// Current point marker
+marker_x = pad_x + clamp(view_x, 0, 1) * pad_w;
+marker_y = pad_y + (1 - clamp(view_y, 0, 1)) * pad_h;
+gfx_set(0.95, 0.98, 1.0, 0.22);
+gfx_circle(marker_x, marker_y, 14, 1, 1);
+gfx_set(0.95, 0.98, 1.0, 1);
+gfx_circle(marker_x, marker_y, 6, 1, 1);
+gfx_set(0.07, 0.08, 0.10, 1);
+gfx_circle(marker_x, marker_y, 2, 1, 1);
+
+// Waveform strip
+gfx_set(0.09, 0.10, 0.13, 1);
+gfx_rect(wave_x, wave_y, wave_w, wave_h);
+gfx_set(0.24, 0.28, 0.34, 0.34);
+gfx_roundrect(wave_x, wave_y, wave_w, wave_h, 10, 1);
+
+wf_ready && (wf_bins > 0) ? (
+  mid_y = wave_y + wave_h * 0.5;
+  gfx_set(0.18, 0.82, 0.70, 0.72);
+  b = 0;
+  loop(wf_bins,
+    mn = mem[wf_base + b * 2];
+    mxv = mem[wf_base + b * 2 + 1];
+    xx = wave_x + b * wave_w / max(1, wf_bins - 1);
+    yy0 = mid_y - (mxv / max(0.0001, wf_absmax)) * (wave_h * 0.42);
+    yy1 = mid_y - (mn / max(0.0001, wf_absmax)) * (wave_h * 0.42);
+    gfx_line(xx, yy0, xx, yy1, 1);
+    b += 1;
+  );
+
+  scan_x = wave_x + clamp(scan01, 0, 1) * wave_w;
+  gfx_set(0.95, 0.98, 1.0, 0.95);
+  gfx_line(scan_x, wave_y + 6, scan_x, wave_y + wave_h - 6, 1);
+) : (
+  gfx_setfont(2, "Arial", 12, 0);
+  gfx_set(0.64, 0.70, 0.78, 1);
+  gfx_x = wave_x + 12; gfx_y = wave_y + wave_h * 0.5 - 8;
+  gfx_drawstr("No source loaded.");
+);
+
+// Right panel
+gfx_set(0.08, 0.09, 0.12, 1);
+gfx_rect(panel_x, panel_y, panel_w, panel_h);
+gfx_set(0.24, 0.28, 0.34, 0.34);
+gfx_roundrect(panel_x, panel_y, panel_w, panel_h, 10, 1);
+
+gfx_setfont(2, "Arial", 13, 'b');
+gfx_set(0.92, 0.97, 1.0, 1);
+gfx_x = panel_x + 14; gfx_y = panel_y + 12; gfx_drawstr("Controls");
+
+gfx_setfont(2, "Arial", 11, 0);
+gfx_set(0.66, 0.74, 0.84, 1);
+gfx_x = panel_x + 14; gfx_y = panel_y + 34; gfx_drawstr("Pitch stays anchored here. Pad motion creates the instability.");
+
+sx = panel_x + 14;
+sw = panel_w - 28;
+sy = panel_y + 64;
+
+newv = ui_hslider(101, sx, sy, sw, "Pitch", slider1, -24, 24, 0.1, 0);
+abs(newv - slider1) > 0.000001 ? (
+  slider1 = newv;
+  sliderchange(slider1);
+  sync_params();
+);
+sy += 54;
+newv = ui_hslider(102, sx, sy, sw, "Grain", slider2, 20, 320, 1, 1);
+abs(newv - slider2) > 0.000001 ? (
+  slider2 = newv;
+  sliderchange(slider2);
+  sync_params();
+);
+sy += 54;
+newv = ui_hslider(103, sx, sy, sw, "Travel", slider3, 0.10, 4, 0.01, 2);
+abs(newv - slider3) > 0.000001 ? (
+  slider3 = newv;
+  sliderchange(slider3);
+  sync_params();
+);
+sy += 54;
+newv = ui_hslider(104, sx, sy, sw, "Level", slider4, -24, 12, 0.1, 3);
+abs(newv - slider4) > 0.000001 ? (
+  slider4 = newv;
+  sliderchange(slider4);
+  sync_params();
+);
+sy += 60;
+
+gfx_setfont(2, "Arial", 12, 'b');
+gfx_set(0.92, 0.97, 1.0, 1);
+gfx_x = sx; gfx_y = sy; gfx_drawstr("Playback");
+sy += 22;
+
+bw = (sw - 12) / 3;
+ui_button(210, sx, sy, bw, 28, "OneShot", play_mode == 0) ? (
+  slider5 = 0;
+  sliderchange(slider5);
+  sync_params();
+);
+ui_button(211, sx + bw + 6, sy, bw, 28, "Loop", play_mode == 1) ? (
+  slider5 = 1;
+  sliderchange(slider5);
+  sync_params();
+);
+ui_button(212, sx + (bw + 6) * 2, sy, bw, 28, "PingPong", play_mode == 2) ? (
+  slider5 = 2;
+  sliderchange(slider5);
+  sync_params();
+);
+sy += 38;
+
+play_mode == 0 ? strcpy(#mode_desc, "Plays from start once, then stops.");
+play_mode == 1 ? strcpy(#mode_desc, "Repeats from start. Wrap snaps cleanly.");
+play_mode == 2 ? strcpy(#mode_desc, "Bounces end-to-end without wrap jumps.");
+
+gfx_setfont(2, "Arial", 11, 0);
+gfx_set(0.70, 0.78, 0.88, 1);
+gfx_x = sx; gfx_y = sy; gfx_drawstr(#mode_desc);
+sy += 42;
+
+bw = (sw - 12) / 3;
+ui_button(201, sx, sy, bw, 28, "Clear", 0) ? reset_gesture();
+playback_active ? strcpy(#play_btn, "Stop") : strcpy(#play_btn, "Play");
+ui_button(203, sx + bw + 6, sy, bw, 28, #play_btn, playback_active) ? (
+  playback_active ? stop_playback() : start_playback();
+);
+ui_button(202, sx + (bw + 6) * 2, sy, bw, 28, "Reload", 1) ? ui_force_reload = 1;
+sy += 46;
+
+gfx_setfont(2, "Arial", 12, 'b');
+gfx_set(0.92, 0.97, 1.0, 1);
+gfx_x = sx; gfx_y = sy; gfx_drawstr("Pad semantics");
+sy += 24;
+
+gfx_setfont(2, "Arial", 11, 0);
+gfx_set(0.70, 0.78, 0.88, 1);
+gfx_x = sx; gfx_y = sy; gfx_drawstr("X position  -> stable to wild"); sy += 18;
+gfx_x = sx; gfx_y = sy; gfx_drawstr("Y position  -> soft to active"); sy += 18;
+gfx_x = sx; gfx_y = sy; gfx_drawstr("Fast motion -> more grains"); sy += 18;
+gfx_x = sx; gfx_y = sy; gfx_drawstr("X accel/jerk -> level + timing jitter"); sy += 18;
+gfx_x = sx; gfx_y = sy; gfx_drawstr("Y accel     -> pitch drift"); sy += 18;
+gfx_x = sx; gfx_y = sy; gfx_drawstr("Y jerk      -> micro pitch jitter");
+
+
+// Footer hint
+gfx_setfont(2, "Arial", 11, 0);
+gfx_set(0.58, 0.66, 0.76, 1);
+gfx_x = pad_x; gfx_y = gfx_h - 18; gfx_drawstr("Left-drag to draw. Release to play in the selected mode. Right-click in the pad to clear.");

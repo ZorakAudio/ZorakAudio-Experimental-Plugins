@@ -1,0 +1,1050 @@
+desc:PsychoConvolve (IR slot 0)
+
+// #FILE: IR {Convolution IR File}
+filename:0,IRFile
+
+options:gfx_hz=30 maxmem=32000000 ownership=hybrid
+
+slider1:35<0,100,0.1>--Wet (%)
+slider2:0<-100,100,0.1>--Body
+slider3:35<0,100,0.1>--Clarity
+slider4:40<0,100,0.1>--Envelopment
+slider5:50<0,100,0.1>--Distance
+slider6:10<-100,100,0.1>--Air
+slider7:20<0,100,0.1>--Somatic
+slider8:100<0,200,0.1>--Output (%)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+
+function clamp(x lo hi)
+(
+  x < lo ? lo : x > hi ? hi : x;
+);
+
+function db2amp(db)
+(
+  exp(log(10) * db / 20);
+);
+
+function bell_log(f fc bw)
+local(v)
+(
+  f <= 0 || fc <= 0 ? 0 :
+  (
+    v = log(f / fc) / log(2);
+    exp(-0.5 * (v / bw) * (v / bw));
+  );
+);
+
+function addbuf(dest src len)
+local(i)
+(
+  i = 0;
+  while (i < len) (
+    dest[i] += src[i];
+    i += 1;
+  );
+);
+
+function prepare_bin_tables()
+local(i f)
+(
+  i = 0;
+  while (i < PART_LEN) (
+    f = i * srate / FFT_N;
+    bin_body[i] = bell_log(f, 140, 1.30);
+    bin_mud[i]  = bell_log(f, 430, 1.05);
+    bin_pres[i] = bell_log(f, 2400, 0.90);
+    bin_air[i]  = 1 / (1 + pow(4200 / max(f, 1), 4));
+    bin_side[i] = 1 / (1 + pow(180 / max(f, 1), 4));
+    i += 1;
+  );
+
+  nyq_f = 0.5 * srate;
+  nyq_body = bell_log(nyq_f, 140, 1.30);
+  nyq_mud  = bell_log(nyq_f, 430, 1.05);
+  nyq_pres = bell_log(nyq_f, 2400, 0.90);
+  nyq_air  = 1 / (1 + pow(4200 / max(nyq_f, 1), 4));
+  nyq_side = 1 / (1 + pow(180 / max(nyq_f, 1), 4));
+);
+
+function clear_runtime_state()
+(
+  memset(base_xl, 0, SPEC_BANK_ITEMS);
+  memset(base_xr, 0, SPEC_BANK_ITEMS);
+
+  memset(overlap_l, 0, PART_LEN);
+  memset(overlap_r, 0, PART_LEN);
+  memset(wet_block_l, 0, PART_LEN);
+  memset(wet_block_r, 0, PART_LEN);
+  memset(in_block_l, 0, PART_LEN);
+  memset(in_block_r, 0, PART_LEN);
+  memset(dry_delay_l, 0, PART_LEN);
+  memset(dry_delay_r, 0, PART_LEN);
+
+  hist_head = 0;
+  block_fill = 0;
+  out_pos = 0;
+
+  wet_guard = 1;
+  side_lp = 0;
+  soma_lp1 = 0;
+  soma_lp2 = 0;
+  fast_env = 0;
+  slow_env = 0;
+  trans_env = 0;
+);
+
+function clear_ir_state()
+(
+  raw_loaded = 0;
+  ir_ready = 0;
+  ir_frames = 0;
+  ir_used_frames = 0;
+  ir_peak = 0;
+  ir_src_channels = 0;
+  ir_src_rate = 0;
+  ir_tail_sec = 0;
+  ir_er_db = 0;
+  ir_early_samps = 0;
+  ir_norm = 1;
+  num_parts = 0;
+  clear_runtime_state();
+);
+
+function load_raw_ir()
+local(h nch src_sr avail_items max_src_frames read_items ratio out_frames i pos i0 i1 frac idx0 idx1 l0 l1 r0 r1 pv)
+(
+  clear_ir_state();
+
+  probe_present = 0;
+  probe_avail = 0;
+  probe_nch = 0;
+  probe_sr = 0;
+
+  h = file_open(0);
+
+  h > 0 ? (
+    nch = 0;
+    src_sr = 0;
+    file_riff(h, nch, src_sr);
+
+    nch < 1 ? nch = 1;
+    src_sr <= 0 ? src_sr = srate;
+
+    ir_src_channels = nch;
+    ir_src_rate = src_sr;
+
+    avail_items = file_avail(h);
+    avail_items < 0 ? avail_items = 0;
+
+    probe_present = 1;
+    probe_avail = avail_items;
+    probe_nch = nch;
+    probe_sr = src_sr;
+
+    max_src_frames = floor(min(avail_items / max(nch, 1), LOADBUF_ITEMS / max(nch, 1)));
+    max_src_frames > 0 ? (
+      read_items = max_src_frames * nch;
+      file_mem(h, base_load, read_items);
+
+      ratio = src_sr / max(srate, 1);
+      ratio <= 0 ? ratio = 1;
+
+      out_frames = floor((max_src_frames - 1) / ratio);
+      out_frames < 1 ? out_frames = min(max_src_frames, MAX_RAW_SAMPS);
+      out_frames > MAX_RAW_SAMPS ? out_frames = MAX_RAW_SAMPS;
+
+      pv = 0;
+      i = 0;
+      while (i < out_frames) (
+        pos = i * ratio;
+        i0 = floor(pos);
+        i1 = min(i0 + 1, max_src_frames - 1);
+        frac = pos - i0;
+
+        idx0 = i0 * nch;
+        idx1 = i1 * nch;
+
+        l0 = base_load[idx0];
+        l1 = base_load[idx1];
+
+        nch > 1 ? (
+          r0 = base_load[idx0 + 1];
+          r1 = base_load[idx1 + 1];
+        ) : (
+          r0 = l0;
+          r1 = l1;
+        );
+
+        raw_l[i] = l0 + (l1 - l0) * frac;
+        raw_r[i] = r0 + (r1 - r0) * frac;
+
+        pv = max(pv, abs(raw_l[i]));
+        pv = max(pv, abs(raw_r[i]));
+
+        i += 1;
+      );
+
+      ir_frames = out_frames;
+      ir_peak = pv;
+      raw_loaded = out_frames > 0;
+    );
+
+    file_close(h);
+  );
+);
+
+function build_partitioned_ir()
+local(keep thr early_ms early_samps early_gain late_gain total_e early_e late_e i e part part_ofs part_l part_r idx late_frac time_w fade l r w body_g mud_g pres_g air_g side_g mre mim sre sim sg off w0 w1 rms)
+(
+  ir_ready = 0;
+  raw_loaded ? (
+    memset(base_hl, 0, SPEC_BANK_ITEMS);
+    memset(base_hr, 0, SPEC_BANK_ITEMS);
+
+    thr = max(1e-12, ir_peak * db2amp(-78));
+    keep = ir_frames;
+    while (keep > 1 && max(abs(raw_l[keep - 1]), abs(raw_r[keep - 1])) < thr) (
+      keep -= 1;
+    );
+
+    keep < 1 ? keep = 1;
+    keep > MAX_RAW_SAMPS ? keep = MAX_RAW_SAMPS;
+
+    ir_used_frames = keep;
+    num_parts = floor((ir_used_frames + PART_LEN - 1) / PART_LEN);
+    num_parts < 1 ? num_parts = 1;
+    num_parts > MAX_PARTS ? (
+      num_parts = MAX_PARTS;
+      ir_used_frames = min(ir_used_frames, PART_LEN * MAX_PARTS);
+    );
+
+    early_ms = 22 + 46 * (1 - dist);
+    early_samps = floor(early_ms * 0.001 * srate);
+    early_samps < 1 ? early_samps = 1;
+    early_samps > ir_used_frames ? early_samps = ir_used_frames;
+    ir_early_samps = early_samps;
+
+    early_gain = 1.15 + 0.25 * clarity - 0.45 * dist;
+    late_gain  = 0.90 + 0.55 * dist - 0.20 * clarity;
+
+    total_e = 0;
+    early_e = 0;
+    late_e  = 0;
+
+    i = 0;
+    while (i < ir_used_frames) (
+      e = raw_l[i] * raw_l[i] + raw_r[i] * raw_r[i];
+      total_e += e;
+      i < early_samps ? early_e += e : late_e += e;
+      i += 1;
+    );
+
+    rms = sqrt(max(total_e / max(1, ir_used_frames * 2), 1e-18));
+
+    ir_norm = min(8, 0.35 / max(rms, 1e-6));
+    ir_norm = min(ir_norm, 0.95 / max(ir_peak, 1e-6));
+    ir_norm = max(ir_norm, 0.05);
+
+    ir_er_db = log((early_e + 1e-18) / (late_e + 1e-18)) / log(10) * 10;
+    ir_tail_sec = ir_used_frames / max(srate, 1);
+
+    part = 0;
+    while (part < num_parts) (
+      part_ofs = part * PART_LEN;
+      part_l = base_hl + part * FFT_N;
+      part_r = base_hr + part * FFT_N;
+
+      memset(part_l, 0, FFT_N);
+      memset(part_r, 0, FFT_N);
+
+      i = 0;
+      while (i < PART_LEN) (
+        idx = part_ofs + i;
+        idx < ir_used_frames ? (
+          late_frac = clamp((idx - early_samps) / max(1, ir_used_frames - early_samps), 0, 1);
+          time_w = idx < early_samps ? early_gain : late_gain;
+          time_w *= 1 + max(body, 0) * 0.10 * late_frac;
+          time_w *= 1 - clarity * 0.15 * late_frac;
+
+          fade = 1;
+          idx > ir_used_frames - 64 ? fade = clamp((ir_used_frames - idx) / 64, 0, 1);
+
+          l = raw_l[idx] * ir_norm * time_w * fade;
+          r = raw_r[idx] * ir_norm * time_w * fade;
+
+          part_l[i] = l;
+          part_r[i] = r;
+        );
+        i += 1;
+      );
+
+      fft_real(part_l, FFT_N);
+      fft_permute(part_l, PART_LEN);
+      fft_real(part_r, FFT_N);
+      fft_permute(part_r, PART_LEN);
+
+      late_frac = clamp((part_ofs + PART_LEN * 0.5 - early_samps) / max(1, ir_used_frames - early_samps), 0, 1);
+
+      w0 = 1 + body * 0.30 - clarity * 0.10 * late_frac;
+      w1 = 1 + body * (0.10 * nyq_body) + clarity * (0.10 * nyq_pres + 0.35 * nyq_air * (1 - late_frac)) + air * (0.40 * nyq_air) - dist * (0.24 * nyq_air * late_frac);
+
+      part_l[0] *= clamp(w0, 0.15, 2.5);
+      part_r[0] *= clamp(w0, 0.15, 2.5);
+      part_l[1] *= clamp(w1, 0.15, 2.5);
+      part_r[1] *= clamp(w1, 0.15, 2.5);
+
+      mre = 0.5 * (part_l[1] + part_r[1]);
+      sre = 0.5 * (part_l[1] - part_r[1]);
+      sg = 1 + envlp * (0.20 + 0.35 * late_frac) * nyq_side;
+      part_l[1] = mre + sre * sg;
+      part_r[1] = mre - sre * sg;
+
+      i = 1;
+      while (i < PART_LEN) (
+        off = i * 2;
+
+        body_g = bin_body[i];
+        mud_g  = bin_mud[i];
+        pres_g = bin_pres[i];
+        air_g  = bin_air[i];
+        side_g = bin_side[i];
+
+        w = 1
+          + body * (0.45 * body_g + 0.16 * mud_g * late_frac)
+          + clarity * (0.18 * pres_g + 0.08 * air_g * (1 - late_frac) - 0.42 * mud_g * (0.35 + 0.65 * late_frac))
+          + air * (0.42 * air_g + 0.12 * pres_g * (1 - 0.5 * late_frac))
+          - dist * (0.10 * pres_g * late_frac + 0.28 * air_g * late_frac);
+
+        w = clamp(w, 0.15, 2.5);
+
+        part_l[off] *= w;
+        part_l[off + 1] *= w;
+        part_r[off] *= w;
+        part_r[off + 1] *= w;
+
+        mre = 0.5 * (part_l[off] + part_r[off]);
+        mim = 0.5 * (part_l[off + 1] + part_r[off + 1]);
+        sre = 0.5 * (part_l[off] - part_r[off]);
+        sim = 0.5 * (part_l[off + 1] - part_r[off + 1]);
+
+        sg = 1 + envlp * (0.20 + 0.35 * late_frac) * side_g;
+
+        part_l[off] = mre + sre * sg;
+        part_l[off + 1] = mim + sim * sg;
+        part_r[off] = mre - sre * sg;
+        part_r[off + 1] = mim - sim * sg;
+
+        i += 1;
+      );
+
+      part += 1;
+    );
+
+    clear_runtime_state();
+    ir_ready = 1;
+  );
+);
+
+function process_convolution_block()
+local(xl xr hl hr part hist_idx i sc)
+(
+  ir_ready ? (
+    memcpy(fft_in_l, in_block_l, PART_LEN);
+    memcpy(fft_in_r, in_block_r, PART_LEN);
+
+    memset(fft_in_l + PART_LEN, 0, PART_LEN);
+    memset(fft_in_r + PART_LEN, 0, PART_LEN);
+
+    fft_real(fft_in_l, FFT_N);
+    fft_permute(fft_in_l, PART_LEN);
+    fft_real(fft_in_r, FFT_N);
+    fft_permute(fft_in_r, PART_LEN);
+
+    xl = base_xl + hist_head * FFT_N;
+    xr = base_xr + hist_head * FFT_N;
+    memcpy(xl, fft_in_l, FFT_N);
+    memcpy(xr, fft_in_r, FFT_N);
+
+    memcpy(acc_l, xl, FFT_N);
+    convolve_c(acc_l, base_hl, PART_LEN);
+
+    memcpy(acc_r, xr, FFT_N);
+    convolve_c(acc_r, base_hr, PART_LEN);
+
+    hist_idx = hist_head - 1;
+    hist_idx < 0 ? hist_idx += num_parts;
+
+    part = 1;
+    while (part < num_parts) (
+      memcpy(tmp_l, base_xl + hist_idx * FFT_N, FFT_N);
+      convolve_c(tmp_l, base_hl + part * FFT_N, PART_LEN);
+      addbuf(acc_l, tmp_l, FFT_N);
+
+      memcpy(tmp_r, base_xr + hist_idx * FFT_N, FFT_N);
+      convolve_c(tmp_r, base_hr + part * FFT_N, PART_LEN);
+      addbuf(acc_r, tmp_r, FFT_N);
+
+      hist_idx -= 1;
+      hist_idx < 0 ? hist_idx += num_parts;
+
+      part += 1;
+    );
+
+    fft_ipermute(acc_l, PART_LEN);
+    ifft_real(acc_l, FFT_N);
+    fft_ipermute(acc_r, PART_LEN);
+    ifft_real(acc_r, FFT_N);
+
+    sc = 1 / FFT_N;
+    i = 0;
+    while (i < PART_LEN) (
+      wet_block_l[i] = overlap_l[i] + acc_l[i] * sc;
+      wet_block_r[i] = overlap_r[i] + acc_r[i] * sc;
+
+      overlap_l[i] = acc_l[i + PART_LEN] * sc;
+      overlap_r[i] = acc_r[i + PART_LEN] * sc;
+      i += 1;
+    );
+
+    hist_head += 1;
+    hist_head >= num_parts ? hist_head = 0;
+  );
+);
+
+function probe_ir_slot()
+local(h nch src_sr avail present)
+(
+  present = 0;
+  nch = 0;
+  src_sr = 0;
+  avail = 0;
+
+  h = file_open(0);
+  h > 0 ? (
+    present = 1;
+    file_riff(h, nch, src_sr);
+    avail = max(0, file_avail(h));
+    file_close(h);
+  );
+
+  (present != probe_present) || (avail != probe_avail) || (nch != probe_nch) || (src_sr != probe_sr) ? (
+    probe_present = present;
+    probe_avail = avail;
+    probe_nch = nch;
+    probe_sr = src_sr;
+    need_reload = 1;
+    need_rebuild = 1;
+    !present ? clear_ir_state();
+  );
+);
+
+function ui_in_rect(x y w h)
+(
+  mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + h;
+);
+
+function ui_draw_box(x y w h rr gg bb aa br bg bb2 ba)
+(
+  gfx_set(rr, gg, bb, aa);
+  gfx_rect(x, y, w, h);
+  gfx_set(br, bg, bb2, ba);
+  gfx_roundrect(x, y, w, h, 6, 1);
+);
+
+function ui_draw_center_text(x y w h font rr gg bb aa str)
+(
+  gfx_setfont(font);
+  gfx_set(rr, gg, bb, aa);
+  gfx_x = x;
+  gfx_y = y;
+  gfx_drawstr(str, 1|4|256, x + w, y + h);
+);
+
+function ui_draw_left_text(x y w h font rr gg bb aa str)
+(
+  gfx_setfont(font);
+  gfx_set(rr, gg, bb, aa);
+  gfx_x = x;
+  gfx_y = y + h * 0.5 - gfx_texth * 0.5;
+  gfx_drawstr(str);
+);
+
+function ui_draw_right_text(x y w h font rr gg bb aa str)
+(
+  gfx_setfont(font);
+  gfx_set(rr, gg, bb, aa);
+  gfx_x = x;
+  gfx_y = y;
+  gfx_drawstr(str, 2|4|256, x + w, y + h);
+);
+
+function ui_fmt_pct(str v)
+(
+  sprintf(str, "%.0f%%", v);
+);
+
+function ui_fmt_signed(str v)
+(
+  sprintf(str, "%+.0f", v);
+);
+
+function ui_knob_handle(id x y r v vmin vmax defv)
+local(bit dx dy over range step nv)
+(
+  bit = 2 ^ (id - 1);
+  dx = mouse_x - x;
+  dy = mouse_y - y;
+  over = dx * dx + dy * dy <= (r + 8) * (r + 8);
+
+  over ? ui_hover = id;
+
+  over && !ui_drag_id && (mouse_cap & 1) && !ui_prev_lmb ? (
+    ui_drag_id = id;
+    ui_drag_sy = mouse_y;
+    ui_drag_start = v;
+  );
+
+  over && (mouse_cap & 2) && !ui_prev_rmb ? (
+    abs(v - defv) > 1e-12 ? (
+      v = defv;
+      ui_change_mask |= bit;
+    );
+  );
+
+  over && abs(ui_wheel) >= 1 ? (
+    range = max(vmax - vmin, 1e-9);
+    step = range * 0.02;
+    mouse_cap & 8 ? step *= 0.25;
+    nv = clamp(v + (ui_wheel / 120) * step, vmin, vmax);
+    abs(nv - v) > 1e-12 ? (
+      v = nv;
+      ui_change_mask |= bit;
+    );
+    ui_wheel = 0;
+  );
+
+  (ui_drag_id == id) && (mouse_cap & 1) ? (
+    range = max(vmax - vmin, 1e-9);
+    step = range / 180;
+    mouse_cap & 8 ? step *= 0.25;
+    nv = clamp(ui_drag_start - (mouse_y - ui_drag_sy) * step, vmin, vmax);
+    abs(nv - v) > 1e-12 ? (
+      v = nv;
+      ui_change_mask |= bit;
+    );
+  );
+
+  v;
+);
+
+function ui_draw_knob(id x y r v vmin vmax)
+local(t a0 a1 ang px py active)
+(
+  t = clamp((v - vmin) / max(vmax - vmin, 1e-9), 0, 1);
+  a0 = 0.75 * $pi;
+  a1 = 2.25 * $pi;
+  ang = a0 + (a1 - a0) * t;
+  active = (ui_hover == id) || (ui_drag_id == id);
+
+  active ? (
+    gfx_set(0.18, 0.32, 0.60, 0.18);
+    gfx_circle(x, y, r + 8, 1, 1);
+  );
+
+  gfx_set(0.12, 0.13, 0.16, 1);
+  gfx_circle(x, y, r + 1, 1, 1);
+  gfx_set(0.06, 0.07, 0.09, 1);
+  gfx_circle(x, y, r * 0.72, 1, 1);
+
+  gfx_set(0.28, 0.30, 0.34, 0.90);
+  gfx_arc(x, y, r - 2, a0, a1, 1);
+  gfx_set(0.36, 0.62, 1.00, active ? 1 : 0.88);
+  gfx_arc(x, y, r - 2, a0, ang, 1);
+
+  px = x + cos(ang) * (r - 8);
+  py = y + sin(ang) * (r - 8);
+  gfx_set(0.94, 0.96, 1.00, 1);
+  gfx_line(x, y, px, py, 1);
+  gfx_circle(x, y, 2.2, 1, 1);
+  gfx_set(0.13, 0.14, 0.16, 1);
+  gfx_circle(x, y, 1.2, 1, 1);
+);
+
+function ui_draw_knob_text(id x y w labelstr valstr)
+local(active vr vg vb)
+(
+  active = (ui_hover == id) || (ui_drag_id == id);
+  ui_draw_center_text(x, y, w, ui_label_h, 3, 0.64, 0.67, 0.73, 0.95, labelstr);
+  vr = active ? 0.88 : 0.77;
+  vg = active ? 0.94 : 0.84;
+  vb = 1.00;
+  ui_draw_center_text(x, y + ui_label_h, w, ui_value_h, 5, vr, vg, vb, 1, valstr);
+);
+
+function ui_draw_waveform(x y w h)
+local(iw mid half gx px s0 s1 i p amp peak splitx trimx)
+(
+  iw = max(1, floor(w));
+  ui_draw_box(x, y, iw, h, 0.07, 0.09, 0.12, 1, 0.18, 0.21, 0.28, 1);
+  gfx_gradrect(x + 1, y + 1, iw - 2, h - 2, 0.05, 0.07, 0.10, 0.65, 0, 0, 0, 0, 0.0002, 0.0003, 0.0006, 0);
+
+  mid = y + h * 0.5;
+  half = h * 0.42;
+
+  gfx_set(0.20, 0.24, 0.30, 0.35);
+  i = 1;
+  while (i < 8) (
+    gx = x + iw * i / 8;
+    gfx_line(gx, y + 5, gx, y + h - 5, 0);
+    i += 1;
+  );
+
+  gfx_set(0.21, 0.36, 0.70, 0.28);
+  gfx_line(x + 5, mid, x + iw - 5, mid, 1);
+
+  raw_loaded && ir_frames > 0 ? (
+    peak = max(ir_peak, 1e-9);
+    px = 0;
+    while (px < iw) (
+      s0 = floor(px * ir_frames / iw);
+      s1 = floor((px + 1) * ir_frames / iw);
+      s1 <= s0 ? s1 = s0 + 1;
+      s1 > ir_frames ? s1 = ir_frames;
+      p = 0;
+      i = s0;
+      while (i < s1) (
+        amp = max(abs(raw_l[i]), abs(raw_r[i]));
+        amp > p ? p = amp;
+        i += 1;
+      );
+      p = clamp(p / peak, 0, 1);
+      amp = p * half;
+      gfx_set(0.35, 0.63, 1.00, 0.16);
+      gfx_line(x + px, mid - amp, x + px, mid + amp, 0);
+      gfx_set(0.50, 0.76, 1.00, 0.45);
+      gfx_line(x + px, mid - amp * 0.35, x + px, mid + amp * 0.35, 0);
+      px += 1;
+    );
+
+    ir_ready ? (
+      splitx = x + iw * clamp(ir_early_samps / max(ir_frames, 1), 0, 1);
+      trimx = x + iw * clamp(ir_used_frames / max(ir_frames, 1), 0, 1);
+      gfx_set(0.95, 0.97, 1.00, 0.75);
+      gfx_line(splitx, y + 6, splitx, y + h - 6, 1);
+      gfx_set(0.95, 0.97, 1.00, 0.34);
+      gfx_line(trimx, y + 6, trimx, y + h - 6, 1);
+    );
+  ) : (
+    gfx_setfont(5);
+    gfx_set(0.55, 0.60, 0.68, 0.75);
+    gfx_x = x;
+    gfx_y = y;
+    gfx_drawstr("NO IR IN SLOT 0", 1|4|256, x + iw, y + h);
+  );
+);
+
+ext_noinit = 0;
+gfx_ext_retina = 1.0;
+
+FFT_N = 2048;
+PART_LEN = FFT_N * 0.5;
+MAX_PARTS = 256;
+MAX_RAW_SAMPS = PART_LEN * MAX_PARTS;
+SPEC_BANK_ITEMS = FFT_N * MAX_PARTS;
+
+PAGE = 65536;
+LOADBUF_ITEMS = 1048576;
+
+base_rawl = 0;
+base_rawr = 4 * PAGE;
+base_hl   = 8 * PAGE;
+base_hr   = 16 * PAGE;
+base_xl   = 24 * PAGE;
+base_xr   = 32 * PAGE;
+base_work = 40 * PAGE;
+base_load = 41 * PAGE;
+
+raw_l = base_rawl;
+raw_r = base_rawr;
+
+fft_in_l   = base_work + 0 * FFT_N;
+fft_in_r   = base_work + 1 * FFT_N;
+acc_l      = base_work + 2 * FFT_N;
+acc_r      = base_work + 3 * FFT_N;
+tmp_l      = base_work + 4 * FFT_N;
+tmp_r      = base_work + 5 * FFT_N;
+overlap_l  = base_work + 6 * FFT_N;
+overlap_r  = base_work + 7 * FFT_N;
+in_block_l = base_work + 8 * FFT_N;
+in_block_r = base_work + 9 * FFT_N;
+wet_block_l= base_work + 10 * FFT_N;
+wet_block_r= base_work + 11 * FFT_N;
+dry_delay_l= base_work + 12 * FFT_N;
+dry_delay_r= base_work + 13 * FFT_N;
+
+bin_body = base_work + 14 * FFT_N;
+bin_mud  = bin_body + PART_LEN;
+bin_pres = bin_mud + PART_LEN;
+bin_air  = bin_pres + PART_LEN;
+bin_side = bin_air + PART_LEN;
+
+freembuf(base_load + LOADBUF_ITEMS);
+
+hist_head = 0;
+block_fill = 0;
+out_pos = 0;
+
+need_reload = 1;
+need_rebuild = 1;
+raw_loaded = 0;
+ir_ready = 0;
+
+last_srate = 0;
+body_prev = 100000;
+clarity_prev = 100000;
+envlp_prev = 100000;
+dist_prev = 100000;
+air_prev = 100000;
+
+probe_present = -1;
+probe_avail = -1;
+probe_nch = -1;
+probe_sr = -1;
+slot_poll_accum = 0;
+
+ui_prev_lmb = 0;
+ui_prev_rmb = 0;
+ui_drag_id = 0;
+ui_drag_touch_mask = 0;
+ui_drag_start = 0;
+ui_drag_sy = 0;
+ui_wheel = 0;
+ui_change_mask = 0;
+ui_hover = 0;
+ui_label_h = 12;
+ui_value_h = 16;
+
+@slider
+
+wet_mix = clamp(slider1 * 0.01, 0, 1);
+dry_gain = cos(wet_mix * $pi * 0.5);
+wet_gain = sin(wet_mix * $pi * 0.5);
+
+body = clamp(slider2 * 0.01, -1, 1);
+clarity = clamp(slider3 * 0.01, 0, 1);
+envlp = clamp(slider4 * 0.01, 0, 1);
+dist = clamp(slider5 * 0.01, 0, 1);
+air = clamp(slider6 * 0.01, -1, 1);
+somatic = clamp(slider7 * 0.01, 0, 1);
+out_gain = max(0, slider8 * 0.01);
+
+side_lp_a = 1 - exp(-2 * $pi * 180 / max(srate, 1));
+som_lp1_a = 1 - exp(-2 * $pi * 180 / max(srate, 1));
+som_lp2_a = 1 - exp(-2 * $pi * 55 / max(srate, 1));
+
+fast_a = 1 - exp(-1 / (0.002 * max(srate, 1)));
+fast_r = 1 - exp(-1 / (0.035 * max(srate, 1)));
+slow_a = 1 - exp(-1 / (0.080 * max(srate, 1)));
+guard_a = 1 - exp(-1 / (0.015 * max(srate, 1)));
+
+lfo_inc1 = 2 * $pi * 0.041 / max(srate, 1);
+lfo_inc2 = 2 * $pi * 0.067 / max(srate, 1);
+
+(body != body_prev) || (clarity != clarity_prev) || (envlp != envlp_prev) || (dist != dist_prev) || (air != air_prev) ? (
+  need_rebuild = 1;
+);
+
+body_prev = body;
+clarity_prev = clarity;
+envlp_prev = envlp;
+dist_prev = dist;
+air_prev = air;
+
+@block
+
+last_srate != srate ? (
+  last_srate = srate;
+  prepare_bin_tables();
+  need_reload = 1;
+  need_rebuild = 1;
+);
+
+slot_poll_accum += samplesblock;
+slot_poll_accum >= max(64, srate * 0.25) ? (
+  slot_poll_accum = 0;
+  probe_ir_slot();
+);
+
+(need_reload || need_rebuild) ? (
+  ir_ready = 0;
+  need_reload ? load_raw_ir();
+  raw_loaded && need_rebuild ? build_partitioned_ir();
+  need_reload = 0;
+  need_rebuild = 0;
+);
+
+new_pdc = ir_ready ? PART_LEN : 0;
+new_pdc != cur_pdc ? (
+  cur_pdc = new_pdc;
+  pdc_delay = cur_pdc;
+);
+pdc_bot_ch = 0;
+pdc_top_ch = 2;
+
+@sample
+
+in_l = spl0;
+in_r = spl1;
+
+abs_in = max(abs(in_l), abs(in_r));
+fast_env += (abs_in - fast_env) * (abs_in > fast_env ? fast_a : fast_r);
+slow_env += (abs_in - slow_env) * slow_a;
+trans_env = max(0, fast_env - slow_env);
+
+drift_p1 += lfo_inc1;
+drift_p1 > 2 * $pi ? drift_p1 -= 2 * $pi;
+drift_p2 += lfo_inc2;
+drift_p2 > 2 * $pi ? drift_p2 -= 2 * $pi;
+
+ir_ready ? (
+  dry_l = dry_delay_l[out_pos];
+  dry_r = dry_delay_r[out_pos];
+
+  wet_l = wet_block_l[out_pos];
+  wet_r = wet_block_r[out_pos];
+
+  dry_delay_l[out_pos] = in_l;
+  dry_delay_r[out_pos] = in_r;
+
+  in_block_l[block_fill] = in_l;
+  in_block_r[block_fill] = in_r;
+
+  wet_guard_tgt = clamp(1 / (1 + clarity * 6 * trans_env), 0.20, 1);
+  wet_guard += (wet_guard_tgt - wet_guard) * guard_a;
+
+  wet_l *= wet_guard;
+  wet_r *= wet_guard;
+
+  wet_m = 0.5 * (wet_l + wet_r);
+  wet_s = 0.5 * (wet_l - wet_r);
+
+  side_lp += (wet_s - side_lp) * side_lp_a;
+  side_hi = wet_s - side_lp;
+
+  drift = envlp * 0.018 * sin(drift_p1) * (0.6 + 0.4 * sin(drift_p2));
+  wet_s = side_lp * (1 - 0.45 * envlp) + side_hi * (1 + 0.70 * envlp + drift);
+
+  wet_l = wet_m + wet_s;
+  wet_r = wet_m - wet_s;
+
+  soma_lp1 += (wet_m - soma_lp1) * som_lp1_a;
+  soma_lp2 += (wet_m - soma_lp2) * som_lp2_a;
+  soma_band = soma_lp1 - soma_lp2;
+  soma_drive = soma_band * (1 + 1.5 * somatic);
+  soma_drive = soma_drive / (1 + abs(soma_drive));
+  soma_out = soma_drive * (0.18 * somatic) * (1 + 0.25 * max(body, 0));
+
+  wet_l += soma_out;
+  wet_r += soma_out;
+
+  out_l = dry_l * dry_gain + wet_l * wet_gain;
+  out_r = dry_r * dry_gain + wet_r * wet_gain;
+
+  spl0 = out_l * out_gain;
+  spl1 = out_r * out_gain;
+
+  out_pos += 1;
+  out_pos >= PART_LEN ? out_pos = 0;
+
+  block_fill += 1;
+  block_fill >= PART_LEN ? (
+    process_convolution_block();
+    block_fill = 0;
+  );
+) : (
+  spl0 = in_l * out_gain;
+  spl1 = in_r * out_gain;
+);
+
+@gfx 520 390
+
+gfx_getchar(65537);
+
+font_scale = min(gfx_w / 520, gfx_h / 390);
+font_scale = clamp(font_scale, 0.78, 1.40);
+
+gfx_setfont(1, "Arial", max(10, floor(18 * font_scale)), 'b');
+gfx_setfont(2, "Arial", max(9, floor(12 * font_scale)));
+gfx_setfont(3, "Arial", max(8, floor(10 * font_scale)), 'b');
+gfx_setfont(4, "Arial", max(8, floor(11 * font_scale)));
+gfx_setfont(5, "Arial", max(10, floor(14 * font_scale)), 'b');
+
+ui_label_h = max(10, floor(12 * font_scale));
+ui_value_h = max(12, floor(16 * font_scale));
+
+ui_wheel = mouse_wheel;
+mouse_wheel = 0;
+ui_change_mask = 0;
+ui_hover = 0;
+ui_released = ui_prev_lmb && !(mouse_cap & 1) && ui_drag_id != 0;
+
+pad = max(10, floor(12 * font_scale));
+gap = max(8, floor(10 * font_scale));
+head_h = max(24, floor(28 * font_scale));
+wave_h = max(96, floor(126 * font_scale));
+wave_h > gfx_h * 0.45 ? wave_h = floor(gfx_h * 0.45);
+stat_h = max(22, floor(28 * font_scale));
+
+wave_x = pad;
+wave_y = pad + head_h + gap;
+wave_w = max(120, gfx_w - pad * 2);
+stat_y = wave_y + wave_h + gap;
+knob_top = stat_y + stat_h + max(12, floor(16 * font_scale));
+
+col_w = max(60, (gfx_w - pad * 2) / 4);
+r = floor(min(col_w * 0.24, 28 * font_scale));
+r < 16 ? r = 16;
+avail_knob_h = max(120, gfx_h - knob_top - pad);
+row_sep = avail_knob_h * 0.5;
+row_sep < r * 2.4 + 14 ? row_sep = r * 2.4 + 14;
+row_sep > 98 * font_scale ? row_sep = 98 * font_scale;
+row1_y = knob_top + r + 2;
+row2_y = row1_y + row_sep;
+row2_y + r + ui_label_h + ui_value_h + 10 > gfx_h - pad ? (
+  row2_y = gfx_h - pad - r - ui_label_h - ui_value_h - 10;
+  row1_y = max(knob_top + r + 2, row2_y - row_sep);
+);
+
+c1 = pad + col_w * 0.5;
+c2 = pad + col_w * 1.5;
+c3 = pad + col_w * 2.5;
+c4 = pad + col_w * 3.5;
+
+slot_w = max(64, floor(78 * font_scale));
+state_w = max(82, floor(96 * font_scale));
+reload_w = max(70, floor(80 * font_scale));
+slot_x = wave_x;
+state_x = slot_x + slot_w + gap;
+reload_x = wave_x + wave_w - reload_w;
+detail_x = state_x + state_w + gap;
+detail_w = reload_x - gap - detail_x;
+reload_hover = ui_in_rect(reload_x, stat_y, reload_w, stat_h);
+
+reload_hover && !ui_prev_lmb && (mouse_cap & 1) ? (
+  need_reload = 1;
+  need_rebuild = 1;
+);
+
+slider2 = ui_knob_handle(2, c1, row1_y, r, slider2, -100, 100, 0);
+slider3 = ui_knob_handle(3, c2, row1_y, r, slider3, 0, 100, 35);
+slider4 = ui_knob_handle(4, c3, row1_y, r, slider4, 0, 100, 40);
+slider5 = ui_knob_handle(5, c4, row1_y, r, slider5, 0, 100, 50);
+slider6 = ui_knob_handle(6, c1, row2_y, r, slider6, -100, 100, 10);
+slider7 = ui_knob_handle(7, c2, row2_y, r, slider7, 0, 100, 20);
+slider8 = ui_knob_handle(8, c3, row2_y, r, slider8, 0, 200, 100);
+slider1 = ui_knob_handle(1, c4, row2_y, r, slider1, 0, 100, 35);
+
+ui_released ? (
+  ui_total_mask = ui_drag_touch_mask | ui_change_mask;
+  ui_total_mask ? (
+    slider_automate(ui_total_mask, 1);
+    sliderchange(-1);
+  );
+  ui_drag_id = 0;
+  ui_drag_touch_mask = 0;
+) : (
+  ui_change_mask ? (
+    (ui_drag_id != 0) && (mouse_cap & 1) ? (
+      ui_drag_touch_mask |= ui_change_mask;
+      slider_automate(ui_change_mask);
+    ) : (
+      slider_automate(ui_change_mask, 1);
+      sliderchange(-1);
+    );
+  );
+);
+
+gfx_set(0.05, 0.06, 0.08, 1);
+gfx_rect(0, 0, gfx_w, gfx_h);
+gfx_gradrect(0, 0, gfx_w, gfx_h, 0.03, 0.04, 0.06, 0.22, 0, 0, 0, 0, 0.00004, 0.00005, 0.00008, 0);
+
+slot_present = (probe_present > 0) || raw_loaded;
+ir_ready ? (
+  state_r = 0.36; state_g = 0.62; state_b = 1.00; strcpy(#state, "LOADED");
+) : raw_loaded ? (
+  state_r = 0.60; state_g = 0.74; state_b = 1.00; strcpy(#state, "BUILDING");
+) : slot_present ? (
+  state_r = 0.70; state_g = 0.74; state_b = 0.82; strcpy(#state, "PRESENT");
+) : (
+  state_r = 0.48; state_g = 0.50; state_b = 0.56; strcpy(#state, "EMPTY");
+);
+
+ui_draw_box(pad, pad, gfx_w - pad * 2, head_h, 0.10, 0.11, 0.13, 1, 0.17, 0.20, 0.24, 1);
+gfx_set(0.28, 0.52, 0.98, 0.90);
+gfx_rect(pad, pad, gfx_w - pad * 2, 2);
+gfx_set(state_r, state_g, state_b, 1);
+gfx_rect(pad + 10, pad + 7, head_h - 14, head_h - 14);
+ui_draw_left_text(pad + 10 + head_h - 14 + 10, pad, gfx_w * 0.55, head_h, 1, 0.91, 0.93, 0.97, 1, "PsychoConvolve");
+ui_draw_right_text(pad + 12, pad, gfx_w - pad * 2 - 24, head_h, 4, 0.58, 0.62, 0.70, 1, "IR SLOT 0");
+
+ui_draw_waveform(wave_x, wave_y, wave_w, wave_h);
+
+ui_draw_box(slot_x, stat_y, slot_w, stat_h, 0.11, 0.12, 0.15, 1, 0.18, 0.21, 0.26, 1);
+ui_draw_center_text(slot_x, stat_y, slot_w, stat_h, 3, 0.78, 0.82, 0.90, 1, "SLOT 0");
+
+ui_draw_box(state_x, stat_y, state_w, stat_h, 0.10 + state_r * 0.12, 0.11 + state_g * 0.10, 0.14 + state_b * 0.08, 1, state_r, state_g, state_b, 1);
+ui_draw_center_text(state_x, stat_y, state_w, stat_h, 3, 0.95, 0.97, 1.00, 1, #state);
+
+reload_hover ? (
+  reload_br = 0.36; reload_bg = 0.62; reload_bb = 1.00; reload_fill = 0.18;
+) : (
+  reload_br = 0.22; reload_bg = 0.26; reload_bb = 0.32; reload_fill = 0.11;
+);
+ui_draw_box(reload_x, stat_y, reload_w, stat_h, reload_fill, reload_fill + 0.01, reload_fill + 0.03, 1, reload_br, reload_bg, reload_bb, 1);
+ui_draw_center_text(reload_x, stat_y, reload_w, stat_h, 3, 0.86, 0.90, 0.96, 1, "RELOAD");
+
+detail_w > 30 ? (
+  ui_draw_box(detail_x, stat_y, detail_w, stat_h, 0.08, 0.10, 0.12, 1, 0.16, 0.19, 0.24, 1);
+  ir_ready ? (
+    sprintf(#detail, "%d ch  |  %.1f kHz  |  %.2f s used  |  ER %.1f dB", ir_src_channels, ir_src_rate * 0.001, ir_used_frames / max(srate, 1), ir_er_db);
+  ) : raw_loaded ? (
+    sprintf(#detail, "%d ch  |  %.1f kHz  |  %.2f s in memory", ir_src_channels, ir_src_rate * 0.001, ir_frames / max(srate, 1));
+  ) : slot_present ? (
+    strcpy(#detail, "File present in slot 0");
+  ) : (
+    strcpy(#detail, "Awaiting IR in slot 0");
+  );
+  ui_draw_left_text(detail_x + 10, stat_y, detail_w - 20, stat_h, 4, 0.74, 0.78, 0.84, 1, #detail);
+);
+
+ui_draw_knob(2, c1, row1_y, r, slider2, -100, 100);
+ui_draw_knob(3, c2, row1_y, r, slider3, 0, 100);
+ui_draw_knob(4, c3, row1_y, r, slider4, 0, 100);
+ui_draw_knob(5, c4, row1_y, r, slider5, 0, 100);
+ui_draw_knob(6, c1, row2_y, r, slider6, -100, 100);
+ui_draw_knob(7, c2, row2_y, r, slider7, 0, 100);
+ui_draw_knob(8, c3, row2_y, r, slider8, 0, 200);
+ui_draw_knob(1, c4, row2_y, r, slider1, 0, 100);
+
+txt_w = col_w * 0.84;
+ui_fmt_signed(#v1, slider2); ui_draw_knob_text(2, c1 - txt_w * 0.5, row1_y + r + 6, txt_w, "BODY", #v1);
+ui_fmt_pct(#v2, slider3); ui_draw_knob_text(3, c2 - txt_w * 0.5, row1_y + r + 6, txt_w, "CLARITY", #v2);
+ui_fmt_pct(#v3, slider4); ui_draw_knob_text(4, c3 - txt_w * 0.5, row1_y + r + 6, txt_w, "ENVELOP", #v3);
+ui_fmt_pct(#v4, slider5); ui_draw_knob_text(5, c4 - txt_w * 0.5, row1_y + r + 6, txt_w, "DISTANCE", #v4);
+ui_fmt_signed(#v5, slider6); ui_draw_knob_text(6, c1 - txt_w * 0.5, row2_y + r + 6, txt_w, "AIR", #v5);
+ui_fmt_pct(#v6, slider7); ui_draw_knob_text(7, c2 - txt_w * 0.5, row2_y + r + 6, txt_w, "SOMATIC", #v6);
+ui_fmt_pct(#v7, slider8); ui_draw_knob_text(8, c3 - txt_w * 0.5, row2_y + r + 6, txt_w, "OUTPUT", #v7);
+ui_fmt_pct(#v8, slider1); ui_draw_knob_text(1, c4 - txt_w * 0.5, row2_y + r + 6, txt_w, "WET", #v8);
+
+strcpy(#help, "SHIFT fine  |  RMB reset  |  WHEEL trim");
+ui_draw_left_text(pad, gfx_h - pad - ui_label_h, gfx_w * 0.55, ui_label_h, 4, 0.40, 0.43, 0.48, 1, #help);
+
+ui_prev_lmb = mouse_cap & 1;
+ui_prev_rmb = mouse_cap & 2;
