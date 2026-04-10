@@ -1390,22 +1390,33 @@ public:
         std::vector<double> items;
     };
 
+    struct CachedFileEntry
+    {
+        juce::String path;
+        std::unique_ptr<CachedFileData> data;
+    };
+
+    struct CachedFileSet
+    {
+        std::vector<CachedFileEntry> entries;
+    };
+
     struct FileSlot
     {
         juce::String name;
         juce::String description;
 
         // UI/state thread only (guarded by filePathMutex)
-        juce::String currentPath;
+        std::vector<juce::String> currentPaths;
 
         std::atomic<FileState> state { FileState::Unassigned };
         std::atomic<uint64_t> generation { 0 };
         std::atomic<uint64_t> pendingGeneration { 0 };
-        std::atomic<CachedFileData*> pending { nullptr };
+        std::atomic<CachedFileSet*> pending { nullptr };
         std::atomic<int> errorCode { 0 };
 
         // Audio thread only
-        std::unique_ptr<CachedFileData> active;
+        std::unique_ptr<CachedFileSet> active;
         uint64_t activeGeneration = 0;
 
         FileSlot() = default;
@@ -1432,7 +1443,7 @@ public:
 
             name = std::move (other.name);
             description = std::move (other.description);
-            currentPath = std::move (other.currentPath);
+            currentPaths = std::move (other.currentPaths);
 
             state.store (other.state.load (std::memory_order_relaxed), std::memory_order_relaxed);
             generation.store (other.generation.load (std::memory_order_relaxed), std::memory_order_relaxed);
@@ -1463,13 +1474,14 @@ public:
     {
         int slot = -1;
         uint64_t boundGeneration = 0;
+        int currentFileIndex = 0;
         int64_t cursor = 0; // item cursor (not frames)
     };
 
     struct FileLoadRequest
     {
         int slot = -1;
-        juce::File file;
+        std::vector<juce::File> files;
         uint64_t generation = 0;
     };
 
@@ -2121,7 +2133,9 @@ public:
     {
         auto tree = apvts->copyState();
 
-        // Persist file slot paths (non-parameter state).
+        // Persist file slot paths (non-parameter state). Legacy single-file
+        // slots keep the old fN property format; multi-file selections are
+        // stored as SLOT/PATH child nodes.
         if (! fileDecls.empty())
         {
             juce::ValueTree files ("FILES");
@@ -2129,12 +2143,65 @@ public:
                 std::lock_guard<std::mutex> lk (filePathMutex);
                 for (int i = 0; i < (int) fileSlots.size(); ++i)
                 {
-                    const auto path = fileSlots[(size_t) i].currentPath;
-                    if (path.isNotEmpty())
-                        files.setProperty ("f" + juce::String (i), path, nullptr);
+                    const auto& paths = fileSlots[(size_t) i].currentPaths;
+                    if (paths.empty())
+                        continue;
+
+                    if (paths.size() == 1)
+                    {
+                        files.setProperty ("f" + juce::String (i), paths.front(), nullptr);
+                        continue;
+                    }
+
+                    juce::ValueTree slotTree ("SLOT");
+                    slotTree.setProperty ("index", i, nullptr);
+
+                    for (const auto& path : paths)
+                    {
+                        if (path.isEmpty())
+                            continue;
+
+                        juce::ValueTree pathTree ("PATH");
+                        pathTree.setProperty ("path", path, nullptr);
+                        slotTree.addChild (pathTree, -1, nullptr);
+                    }
+
+                    if (slotTree.getNumChildren() > 0)
+                        files.addChild (slotTree, -1, nullptr);
                 }
             }
             tree.addChild (files, -1, nullptr);
+        }
+
+        {
+            juce::String lastDir;
+            std::vector<juce::String> recentPaths;
+
+            {
+                std::lock_guard<std::mutex> lk (filePathMutex);
+                lastDir = lastFileDialogDirectory;
+                recentPaths = recentFilePaths;
+            }
+
+            if (lastDir.isNotEmpty() || ! recentPaths.empty())
+            {
+                juce::ValueTree fileUi ("FILE_UI");
+
+                if (lastDir.isNotEmpty())
+                    fileUi.setProperty ("lastDir", lastDir, nullptr);
+
+                for (const auto& path : recentPaths)
+                {
+                    if (path.isEmpty())
+                        continue;
+
+                    juce::ValueTree recent ("RECENT");
+                    recent.setProperty ("path", path, nullptr);
+                    fileUi.addChild (recent, -1, nullptr);
+                }
+
+                tree.addChild (fileUi, -1, nullptr);
+            }
         }
 
         std::unique_ptr<juce::XmlElement> xml (tree.createXml());
@@ -2152,24 +2219,46 @@ public:
             if (files.isValid())
                 tree.removeChild (files, nullptr);
 
+            auto fileUi = tree.getChildWithName ("FILE_UI");
+            if (fileUi.isValid())
+                tree.removeChild (fileUi, nullptr);
+
             apvts->replaceState (tree);
             requestEmergencyMidiCleanup();
+
+            clearRememberedFileUiState();
 
             if (files.isValid() && ! fileDecls.empty())
             {
                 for (const auto& d : fileDecls)
                 {
-                    const juce::Identifier key ("f" + juce::String (d.index0));
-                    if (! files.hasProperty (key))
+                    const auto savedPaths = getSavedFileSlotPaths (files, d.index0);
+                    if (savedPaths.empty())
+                    {
+                        clearFileSlot (d.index0);
                         continue;
+                    }
 
-                    const auto path = files.getProperty (key).toString();
-                    if (path.isEmpty())
+                    std::vector<juce::File> savedFiles;
+                    savedFiles.reserve (savedPaths.size());
+
+                    for (const auto& path : savedPaths)
+                    {
+                        if (path.isEmpty())
+                            continue;
+
+                        savedFiles.emplace_back (path);
+                    }
+
+                    if (savedFiles.empty())
                         clearFileSlot (d.index0);
                     else
-                        setFileSlotPath (d.index0, juce::File (path));
+                        setFileSlotPaths (d.index0, savedFiles);
                 }
             }
+
+            if (fileUi.isValid())
+                restoreFileUiState (fileUi);
         }
     }
 
@@ -2242,53 +2331,182 @@ public:
     juce::String exportCorrectnessArtifacts() const { return "Correctness monitor disabled at build time"; }
    #endif
 
+    static juce::String summariseSelectedFilePaths (const std::vector<juce::String>& paths)
+    {
+        if (paths.empty())
+            return "(none)";
+
+        auto lead = juce::File (paths.front()).getFileName();
+        if (lead.isEmpty())
+            lead = paths.front();
+
+        if (paths.size() == 1)
+            return lead;
+
+        return lead + " (+" + juce::String ((int) paths.size() - 1) + ")";
+    }
+
+    static juce::String buildSelectedFileTooltip (const std::vector<juce::String>& paths, int maxLines = 10)
+    {
+        if (paths.empty())
+            return {};
+
+        juce::String out;
+        const int limit = juce::jmin ((int) paths.size(), maxLines);
+
+        for (int i = 0; i < limit; ++i)
+        {
+            if (i > 0)
+                out << "\n";
+
+            out << paths[(size_t) i];
+        }
+
+        if ((int) paths.size() > limit)
+            out << "\n… +" << juce::String ((int) paths.size() - limit) << " more";
+
+        return out;
+    }
+
     juce::String getFileSlotDisplayText (int slotIndex0) const
     {
         if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size())
             return {};
 
-        juce::String path;
-        {
-            std::lock_guard<std::mutex> lk (filePathMutex);
-            path = fileSlots[(size_t) slotIndex0].currentPath;
-        }
-
+        const auto paths = getFileSlotPaths (slotIndex0);
+        const auto summary = summariseSelectedFilePaths (paths);
         const auto stt = fileSlots[(size_t) slotIndex0].state.load();
-        const auto shortName = path.isNotEmpty() ? juce::File (path).getFileName() : juce::String ("(none)");
 
         switch (stt)
         {
             case FileState::Unassigned:   return "(none)";
-            case FileState::Loading:      return "Loading… " + shortName;
-            case FileState::ReadyActive:  return shortName;
-            case FileState::ReadyPending: return "Ready… " + shortName;
+            case FileState::Loading:      return "Loading… " + summary;
+            case FileState::ReadyActive:  return summary;
+            case FileState::ReadyPending: return "Ready… " + summary;
             case FileState::PendingClear: return "(clearing)";
-            case FileState::Error:        return "Error: " + shortName;
+            case FileState::Error:        return "Error: " + summary;
             default:                      break;
         }
 
-        return shortName;
+        return summary;
     }
 
-    juce::String getFileSlotPath (int slotIndex0) const
+    std::vector<juce::String> getFileSlotPaths (int slotIndex0) const
     {
         if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size())
             return {};
 
         std::lock_guard<std::mutex> lk (filePathMutex);
-        return fileSlots[(size_t) slotIndex0].currentPath;
+        return fileSlots[(size_t) slotIndex0].currentPaths;
     }
 
-    void setFileSlotPath (int slotIndex0, const juce::File& file)
+    juce::String getFileSlotTooltip (int slotIndex0) const
+    {
+        return buildSelectedFileTooltip (getFileSlotPaths (slotIndex0));
+    }
+
+    bool hasFileSlotSelection (int slotIndex0) const
+    {
+        return ! getFileSlotPaths (slotIndex0).empty();
+    }
+
+    bool fileSlotContainsPath (int slotIndex0, const juce::String& path) const
+    {
+        if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size() || path.isEmpty())
+            return false;
+
+        std::lock_guard<std::mutex> lk (filePathMutex);
+        const auto& currentPaths = fileSlots[(size_t) slotIndex0].currentPaths;
+
+        return std::any_of (currentPaths.begin(), currentPaths.end(),
+                            [&path] (const juce::String& existing)
+                            {
+                                return existing.compareIgnoreCase (path) == 0;
+                            });
+    }
+
+    juce::File getPreferredFileChooserStartDirectory (int slotIndex0) const
+    {
+        std::vector<juce::String> currentPaths;
+        juce::String lastDir;
+
+        {
+            std::lock_guard<std::mutex> lk (filePathMutex);
+
+            if (slotIndex0 >= 0 && slotIndex0 < (int) fileSlots.size())
+                currentPaths = fileSlots[(size_t) slotIndex0].currentPaths;
+
+            lastDir = lastFileDialogDirectory;
+        }
+
+        if (! currentPaths.empty())
+        {
+            const auto dir = juce::File (currentPaths.front()).getParentDirectory();
+            if (dir.isDirectory())
+                return dir;
+        }
+
+        if (lastDir.isNotEmpty())
+        {
+            const auto dir = juce::File (lastDir);
+            if (dir.isDirectory())
+                return dir;
+        }
+
+        return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+    }
+
+    std::vector<juce::String> getRecentFilePaths() const
+    {
+        std::lock_guard<std::mutex> lk (filePathMutex);
+        return recentFilePaths;
+    }
+
+    void setFileSlotPath (int slotIndex0, const juce::File& file, bool shouldRememberForUi = true)
+    {
+        setFileSlotPaths (slotIndex0, std::vector<juce::File> { file }, shouldRememberForUi);
+    }
+
+    void setFileSlotPaths (int slotIndex0, const std::vector<juce::File>& files, bool shouldRememberForUi = true)
     {
         if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size())
             return;
 
+        if (files.empty())
+        {
+            clearFileSlot (slotIndex0);
+            return;
+        }
+
         auto& slot = fileSlots[(size_t) slotIndex0];
+
+        std::vector<juce::File> normalisedFiles;
+        std::vector<juce::String> fullPaths;
+        normalisedFiles.reserve (files.size());
+        fullPaths.reserve (files.size());
+
+        for (const auto& file : files)
+        {
+            const auto fullPath = file.getFullPathName();
+            if (fullPath.isEmpty())
+                continue;
+
+            normalisedFiles.push_back (file);
+            fullPaths.push_back (fullPath);
+        }
+
+        if (normalisedFiles.empty())
+        {
+            clearFileSlot (slotIndex0);
+            return;
+        }
 
         {
             std::lock_guard<std::mutex> lk (filePathMutex);
-            slot.currentPath = file.getFullPathName();
+            slot.currentPaths = fullPaths;
+
+            if (shouldRememberForUi)
+                rememberFilePathsLocked (normalisedFiles);
         }
 
         // Cancel any pending, not-yet-promoted data.
@@ -2297,14 +2515,22 @@ public:
 
         slot.errorCode.store (0);
 
-        // Bump generation and request a new load (or mark error if the file doesn't exist).
+        // Bump generation and request a new load (or mark error if any file does not exist).
         const uint64_t gen = slot.generation.fetch_add (1) + 1;
         slot.pendingGeneration.store (gen);
 
-        if (file.existsAsFile())
+        const bool allExist = std::all_of (normalisedFiles.begin(), normalisedFiles.end(),
+                                           [] (const juce::File& file) { return file.existsAsFile(); });
+
+        if (allExist)
         {
             slot.state.store (FileState::Loading);
-            enqueueFileLoad ({ slotIndex0, file, gen });
+
+            FileLoadRequest req;
+            req.slot = slotIndex0;
+            req.files = normalisedFiles;
+            req.generation = gen;
+            enqueueFileLoad (std::move (req));
         }
         else
         {
@@ -2322,7 +2548,7 @@ public:
 
         {
             std::lock_guard<std::mutex> lk (filePathMutex);
-            slot.currentPath.clear();
+            slot.currentPaths.clear();
         }
 
         if (auto* oldPending = slot.pending.exchange (nullptr))
@@ -2336,11 +2562,78 @@ public:
     }
 
 
+
     // ------------------------------------------------------------
     // DSP runtime hooks for JSFX file_*() builtins
+    //
+    // DSP-JSFX host extension for multi-file slots:
+    //   h  = file_open_multi(slot[, mode]);
+    //   n  = file_multi_count(h);
+    //   ok = file_multi_select(h, zeroBasedIndex);
+    //
+    // file_open() remains backward-compatible and simply starts on entry 0.
+    // file_multi_select() changes which selected file the handle exposes to
+    // file_avail/file_var/file_mem/file_riff/file_text/file_seek/file_rewind.
+    // Selecting a new entry resets the item cursor to 0. Invalid indices
+    // return 0 and leave the previous selection unchanged.
     // ------------------------------------------------------------
 
-    double rt_file_open (DSPJSFX_State* state, double indexOrSlot, double mode) noexcept
+    FileHandle* getRuntimeFileHandle (double handle) noexcept
+    {
+        const int64_t hid = (int64_t) (handle + 1.0e-5);
+        if (hid <= 0)
+            return nullptr;
+
+        const int idx = (int) (hid - 1);
+        if (idx < 0 || idx >= (int) fileHandles.size())
+            return nullptr;
+
+        auto& h = fileHandles[(size_t) idx];
+        if (h.slot < 0 || h.slot >= (int) fileSlots.size())
+            return nullptr;
+
+        return &h;
+    }
+
+    FileSlot* getBoundFileSlotForHandle (FileHandle& h) noexcept
+    {
+        if (h.slot < 0 || h.slot >= (int) fileSlots.size())
+            return nullptr;
+
+        auto& slot = fileSlots[(size_t) h.slot];
+        if (h.boundGeneration != slot.activeGeneration)
+        {
+            h.boundGeneration = slot.activeGeneration;
+            h.currentFileIndex = 0;
+            h.cursor = 0;
+        }
+
+        return &slot;
+    }
+
+    const CachedFileSet* getActiveFileSetForHandle (FileHandle& h) noexcept
+    {
+        auto* slot = getBoundFileSlotForHandle (h);
+        return slot != nullptr ? slot->active.get() : nullptr;
+    }
+
+    const CachedFileData* getSelectedFileDataForHandle (FileHandle& h) noexcept
+    {
+        const auto* fileSet = getActiveFileSetForHandle (h);
+        if (fileSet == nullptr || fileSet->entries.empty())
+            return nullptr;
+
+        if (h.currentFileIndex < 0 || h.currentFileIndex >= (int) fileSet->entries.size())
+        {
+            h.currentFileIndex = 0;
+            h.cursor = 0;
+        }
+
+        const auto& entry = fileSet->entries[(size_t) h.currentFileIndex];
+        return entry.data.get();
+    }
+
+    double rt_file_open_common (DSPJSFX_State* state, double indexOrSlot, double mode) noexcept
     {
         juce::ignoreUnused (mode);
         juce::ignoreUnused (state);
@@ -2378,23 +2671,31 @@ public:
         auto& h = fileHandles[(size_t) handleIdx];
         h.slot = (int) slotIndex;
         h.boundGeneration = fileSlots[(size_t) slotIndex].activeGeneration;
+        h.currentFileIndex = 0;
         h.cursor = 0;
 
         return (double) (handleIdx + 1);
+    }
+
+    double rt_file_open (DSPJSFX_State* state, double indexOrSlot, double mode) noexcept
+    {
+        return rt_file_open_common (state, indexOrSlot, mode);
+    }
+
+    double rt_file_open_multi (DSPJSFX_State* state, double indexOrSlot, double mode) noexcept
+    {
+        return rt_file_open_common (state, indexOrSlot, mode);
     }
 
     double rt_file_close (DSPJSFX_State* state, double handle) noexcept
     {
         juce::ignoreUnused (state);
 
-        const int64_t hid = (int64_t) (handle + 1.0e-5);
-        if (hid <= 0)
+        auto* h = getRuntimeFileHandle (handle);
+        if (h == nullptr)
             return 0.0;
 
-        const int idx = (int) (hid - 1);
-        if (idx < 0 || idx >= (int) fileHandles.size())
-            return 0.0;
-
+        const int idx = (int) (h - fileHandles.data());
         fileHandles[(size_t) idx] = {};
         freeFileHandles.push_back (idx);
         return 0.0;
@@ -2404,27 +2705,12 @@ public:
     {
         juce::ignoreUnused (state);
 
-        const int64_t hid = (int64_t) (handle + 1.0e-5);
-        if (hid <= 0)
+        auto* h = getRuntimeFileHandle (handle);
+        if (h == nullptr)
             return 0.0;
 
-        const int idx = (int) (hid - 1);
-        if (idx < 0 || idx >= (int) fileHandles.size())
-            return 0.0;
-
-        auto& h = fileHandles[(size_t) idx];
-        if (h.slot < 0 || h.slot >= (int) fileSlots.size())
-            return 0.0;
-
-        // If the slot has swapped to a new file since open, restart at the beginning.
-        const auto& slot = fileSlots[(size_t) h.slot];
-        if (h.boundGeneration != slot.activeGeneration)
-        {
-            h.boundGeneration = slot.activeGeneration;
-            h.cursor = 0;
-        }
-
-        h.cursor = 0;
+        (void) getBoundFileSlotForHandle (*h);
+        h->cursor = 0;
         return 0.0;
     }
 
@@ -2432,29 +2718,14 @@ public:
     {
         juce::ignoreUnused (state);
 
-        const int64_t hid = (int64_t) (handle + 1.0e-5);
-        if (hid <= 0)
+        auto* h = getRuntimeFileHandle (handle);
+        if (h == nullptr)
             return 0.0;
 
-        const int idx = (int) (hid - 1);
-        if (idx < 0 || idx >= (int) fileHandles.size())
-            return 0.0;
-
-        auto& h = fileHandles[(size_t) idx];
-        if (h.slot < 0 || h.slot >= (int) fileSlots.size())
-            return 0.0;
-
-        const auto& slot = fileSlots[(size_t) h.slot];
-        if (h.boundGeneration != slot.activeGeneration)
-        {
-            h.boundGeneration = slot.activeGeneration;
-            h.cursor = 0;
-        }
-
-        const auto* data = slot.active.get();
+        const auto* data = getSelectedFileDataForHandle (*h);
         if (! data)
         {
-            h.cursor = 0;
+            h->cursor = 0;
             return 0.0;
         }
 
@@ -2466,38 +2737,23 @@ public:
         if (off > maxItems)
             off = maxItems;
 
-        h.cursor = off;
-        return (double) h.cursor;
+        h->cursor = off;
+        return (double) h->cursor;
     }
 
     double rt_file_avail (DSPJSFX_State* state, double handle) noexcept
     {
         juce::ignoreUnused (state);
 
-        const int64_t hid = (int64_t) (handle + 1.0e-5);
-        if (hid <= 0)
+        auto* h = getRuntimeFileHandle (handle);
+        if (h == nullptr)
             return 0.0;
 
-        const int idx = (int) (hid - 1);
-        if (idx < 0 || idx >= (int) fileHandles.size())
-            return 0.0;
-
-        auto& h = fileHandles[(size_t) idx];
-        if (h.slot < 0 || h.slot >= (int) fileSlots.size())
-            return 0.0;
-
-        const auto& slot = fileSlots[(size_t) h.slot];
-        if (h.boundGeneration != slot.activeGeneration)
-        {
-            h.boundGeneration = slot.activeGeneration;
-            h.cursor = 0;
-        }
-
-        const auto* data = slot.active.get();
+        const auto* data = getSelectedFileDataForHandle (*h);
         if (! data)
             return 0.0;
 
-        const int64_t remaining = (int64_t) data->items.size() - h.cursor;
+        const int64_t remaining = (int64_t) data->items.size() - h->cursor;
         if (data->isText)
             return remaining > 0 ? 1.0 : 0.0;
 
@@ -2508,26 +2764,11 @@ public:
     {
         juce::ignoreUnused (state);
 
-        const int64_t hid = (int64_t) (handle + 1.0e-5);
-        if (hid <= 0)
+        auto* h = getRuntimeFileHandle (handle);
+        if (h == nullptr)
             return 0.0;
 
-        const int idx = (int) (hid - 1);
-        if (idx < 0 || idx >= (int) fileHandles.size())
-            return 0.0;
-
-        auto& h = fileHandles[(size_t) idx];
-        if (h.slot < 0 || h.slot >= (int) fileSlots.size())
-            return 0.0;
-
-        const auto& slot = fileSlots[(size_t) h.slot];
-        if (h.boundGeneration != slot.activeGeneration)
-        {
-            h.boundGeneration = slot.activeGeneration;
-            h.cursor = 0;
-        }
-
-        const auto* data = slot.active.get();
+        const auto* data = getSelectedFileDataForHandle (*h);
         return (data && data->isText) ? 1.0 : 0.0;
     }
 
@@ -2535,26 +2776,11 @@ public:
     {
         juce::ignoreUnused (state);
 
-        const int64_t hid = (int64_t) (handle + 1.0e-5);
-        if (hid <= 0)
+        auto* h = getRuntimeFileHandle (handle);
+        if (h == nullptr)
             return 0.0;
 
-        const int idx = (int) (hid - 1);
-        if (idx < 0 || idx >= (int) fileHandles.size())
-            return 0.0;
-
-        auto& h = fileHandles[(size_t) idx];
-        if (h.slot < 0 || h.slot >= (int) fileSlots.size())
-            return 0.0;
-
-        const auto& slot = fileSlots[(size_t) h.slot];
-        if (h.boundGeneration != slot.activeGeneration)
-        {
-            h.boundGeneration = slot.activeGeneration;
-            h.cursor = 0;
-        }
-
-        const auto* data = slot.active.get();
+        const auto* data = getSelectedFileDataForHandle (*h);
         if (! data || data->isText || data->channels <= 0)
         {
             if (outNch) *outNch = 0.0;
@@ -2571,43 +2797,22 @@ public:
     {
         juce::ignoreUnused (state);
 
-        const int64_t hid = (int64_t) (handle + 1.0e-5);
-        if (hid <= 0)
+        auto* h = getRuntimeFileHandle (handle);
+        if (h == nullptr)
         {
             if (outVar) *outVar = 0.0;
             return 0.0;
         }
 
-        const int idx = (int) (hid - 1);
-        if (idx < 0 || idx >= (int) fileHandles.size())
+        const auto* data = getSelectedFileDataForHandle (*h);
+        if (! data || h->cursor < 0 || h->cursor >= (int64_t) data->items.size())
         {
             if (outVar) *outVar = 0.0;
             return 0.0;
         }
 
-        auto& h = fileHandles[(size_t) idx];
-        if (h.slot < 0 || h.slot >= (int) fileSlots.size())
-        {
-            if (outVar) *outVar = 0.0;
-            return 0.0;
-        }
-
-        const auto& slot = fileSlots[(size_t) h.slot];
-        if (h.boundGeneration != slot.activeGeneration)
-        {
-            h.boundGeneration = slot.activeGeneration;
-            h.cursor = 0;
-        }
-
-        const auto* data = slot.active.get();
-        if (! data || h.cursor < 0 || h.cursor >= (int64_t) data->items.size())
-        {
-            if (outVar) *outVar = 0.0;
-            return 0.0;
-        }
-
-        const double v = data->items[(size_t) h.cursor];
-        ++h.cursor;
+        const double v = data->items[(size_t) h->cursor];
+        ++h->cursor;
 
         if (outVar)
             *outVar = v;
@@ -2616,28 +2821,11 @@ public:
 
     double rt_file_mem (DSPJSFX_State* state, double handle, double destIndex, double length) noexcept
     {
-        juce::ignoreUnused (state);
-
-        const int64_t hid = (int64_t) (handle + 1.0e-5);
-        if (hid <= 0)
+        auto* h = getRuntimeFileHandle (handle);
+        if (h == nullptr)
             return 0.0;
 
-        const int idx = (int) (hid - 1);
-        if (idx < 0 || idx >= (int) fileHandles.size())
-            return 0.0;
-
-        auto& h = fileHandles[(size_t) idx];
-        if (h.slot < 0 || h.slot >= (int) fileSlots.size())
-            return 0.0;
-
-        auto& slot = fileSlots[(size_t) h.slot];
-        if (h.boundGeneration != slot.activeGeneration)
-        {
-            h.boundGeneration = slot.activeGeneration;
-            h.cursor = 0;
-        }
-
-        auto* data = slot.active.get();
+        const auto* data = getSelectedFileDataForHandle (*h);
         if (! data)
             return 0.0;
 
@@ -2646,7 +2834,7 @@ public:
         if (dst < 0) dst = 0;
         if (len <= 0) return 0.0;
 
-        const int64_t avail = (int64_t) data->items.size() - h.cursor;
+        const int64_t avail = (int64_t) data->items.size() - h->cursor;
         if (avail <= 0)
             return 0.0;
 
@@ -2665,13 +2853,47 @@ public:
             return 0.0;
 
         double* mem = state->mem;
-        const double* src = data->items.data() + h.cursor;
+        const double* src = data->items.data() + h->cursor;
 
         std::memcpy (mem + dst, src, (size_t) clamped * sizeof (double));
         noteTrackedJsfxMemUsed (state, dst + clamped);
-        h.cursor += clamped;
+        h->cursor += clamped;
         return (double) clamped;
     }
+
+    double rt_file_multi_count (DSPJSFX_State* state, double handle) noexcept
+    {
+        juce::ignoreUnused (state);
+
+        auto* h = getRuntimeFileHandle (handle);
+        if (h == nullptr)
+            return 0.0;
+
+        const auto* fileSet = getActiveFileSetForHandle (*h);
+        return fileSet != nullptr ? (double) fileSet->entries.size() : 0.0;
+    }
+
+    double rt_file_multi_select (DSPJSFX_State* state, double handle, double fileIndex) noexcept
+    {
+        juce::ignoreUnused (state);
+
+        auto* h = getRuntimeFileHandle (handle);
+        if (h == nullptr)
+            return 0.0;
+
+        const auto* fileSet = getActiveFileSetForHandle (*h);
+        if (fileSet == nullptr || fileSet->entries.empty())
+            return 0.0;
+
+        const int64_t requestedIndex = (int64_t) std::floor (fileIndex + 1.0e-5);
+        if (requestedIndex < 0 || requestedIndex >= (int64_t) fileSet->entries.size())
+            return 0.0;
+
+        h->currentFileIndex = (int) requestedIndex;
+        h->cursor = 0;
+        return 1.0;
+    }
+
 
 
     // ------------------------------------------------------------
@@ -3028,6 +3250,138 @@ public:
     }
 
 private:
+    static constexpr int kMaxRecentFiles = 10;
+
+    static void pushRecentPathToFront (std::vector<juce::String>& recentPaths, const juce::String& fullPath)
+    {
+        if (fullPath.isEmpty())
+            return;
+
+        recentPaths.erase (std::remove_if (recentPaths.begin(), recentPaths.end(),
+                                           [&fullPath] (const juce::String& existing)
+                                           {
+                                               return existing.compareIgnoreCase (fullPath) == 0;
+                                           }),
+                           recentPaths.end());
+
+        recentPaths.insert (recentPaths.begin(), fullPath);
+
+        if ((int) recentPaths.size() > kMaxRecentFiles)
+            recentPaths.resize ((size_t) kMaxRecentFiles);
+    }
+
+    static std::vector<juce::String> getSavedFileSlotPaths (const juce::ValueTree& files, int slotIndex0)
+    {
+        std::vector<juce::String> out;
+
+        for (int i = 0; i < files.getNumChildren(); ++i)
+        {
+            const auto slotTree = files.getChild (i);
+            if (! slotTree.hasType ("SLOT"))
+                continue;
+
+            if ((int) slotTree.getProperty ("index", -1) != slotIndex0)
+                continue;
+
+            const auto singlePath = slotTree.getProperty ("path").toString();
+            if (singlePath.isNotEmpty())
+                out.push_back (singlePath);
+
+            for (int pathIndex = 0; pathIndex < slotTree.getNumChildren(); ++pathIndex)
+            {
+                const auto pathTree = slotTree.getChild (pathIndex);
+                if (! pathTree.hasType ("PATH"))
+                    continue;
+
+                const auto path = pathTree.getProperty ("path").toString();
+                if (path.isEmpty())
+                    continue;
+
+                out.push_back (path);
+            }
+
+            break;
+        }
+
+        if (! out.empty())
+            return out;
+
+        const juce::Identifier key ("f" + juce::String (slotIndex0));
+        if (files.hasProperty (key))
+        {
+            const auto path = files.getProperty (key).toString();
+            if (path.isNotEmpty())
+                out.push_back (path);
+        }
+
+        return out;
+    }
+
+    void clearRememberedFileUiState()
+    {
+        std::lock_guard<std::mutex> lk (filePathMutex);
+        lastFileDialogDirectory.clear();
+        recentFilePaths.clear();
+    }
+
+    void rememberFilePathsLocked (const std::vector<juce::File>& files)
+    {
+        if (files.empty())
+            return;
+
+        for (const auto& file : files)
+        {
+            const auto parent = file.getParentDirectory();
+            if (parent.isDirectory())
+            {
+                lastFileDialogDirectory = parent.getFullPathName();
+                break;
+            }
+        }
+
+        for (auto it = files.rbegin(); it != files.rend(); ++it)
+            pushRecentPathToFront (recentFilePaths, it->getFullPathName());
+    }
+
+    void restoreFileUiState (const juce::ValueTree& fileUi)
+    {
+        juce::String restoredLastDir = fileUi.getProperty ("lastDir").toString();
+        std::vector<juce::String> restoredRecent;
+        restoredRecent.reserve ((size_t) juce::jmax (0, fileUi.getNumChildren()));
+
+        for (int i = 0; i < fileUi.getNumChildren(); ++i)
+        {
+            const auto recent = fileUi.getChild (i);
+            if (! recent.hasType ("RECENT"))
+                continue;
+
+            const auto path = recent.getProperty ("path").toString();
+            if (path.isEmpty())
+                continue;
+
+            const bool alreadySeen = std::any_of (restoredRecent.begin(), restoredRecent.end(),
+                                                  [&path] (const juce::String& existing)
+                                                  {
+                                                      return existing.compareIgnoreCase (path) == 0;
+                                                  });
+            if (alreadySeen)
+                continue;
+
+            restoredRecent.push_back (path);
+
+            if ((int) restoredRecent.size() >= kMaxRecentFiles)
+                break;
+        }
+
+        if (restoredLastDir.isEmpty() && ! restoredRecent.empty())
+            restoredLastDir = juce::File (restoredRecent.front()).getParentDirectory().getFullPathName();
+
+        std::lock_guard<std::mutex> lk (filePathMutex);
+        lastFileDialogDirectory = restoredLastDir;
+        recentFilePaths = std::move (restoredRecent);
+    }
+
+
     void initFileRuntime()
     {
         if (fileDecls.empty())
@@ -3069,7 +3423,7 @@ private:
 
             const auto f = resolveFileToken (d.defaultPath);
             if (f.existsAsFile())
-                setFileSlotPath (d.index0, f);
+                setFileSlotPath (d.index0, f, false);
         }
     }
 
@@ -3104,7 +3458,7 @@ private:
             const auto stt = slot.state.load();
             if (stt == FileState::ReadyPending)
             {
-                CachedFileData* p = slot.pending.exchange (nullptr);
+                CachedFileSet* p = slot.pending.exchange (nullptr);
                 if (p != nullptr)
                 {
                     slot.active.reset (p);
@@ -3174,7 +3528,7 @@ private:
             if (req.slot < 0 || req.slot >= (int) fileSlots.size())
                 continue;
 
-            auto data = loadFileToMemory (req.file);
+            auto data = loadFilesToMemory (req.files);
 
             auto& slot = fileSlots[(size_t) req.slot];
 
@@ -3198,6 +3552,32 @@ private:
         }
     }
 
+    std::unique_ptr<CachedFileSet> loadFilesToMemory (const std::vector<juce::File>& files)
+    {
+        if (files.empty())
+            return nullptr;
+
+        auto out = std::make_unique<CachedFileSet>();
+        out->entries.reserve (files.size());
+
+        for (const auto& file : files)
+        {
+            if (! file.existsAsFile())
+                return nullptr;
+
+            auto data = loadFileToMemory (file);
+            if (! data)
+                return nullptr;
+
+            CachedFileEntry entry;
+            entry.path = file.getFullPathName();
+            entry.data = std::move (data);
+            out->entries.push_back (std::move (entry));
+        }
+
+        return out;
+    }
+
     std::unique_ptr<CachedFileData> loadFileToMemory (const juce::File& file)
     {
         const auto ext = file.getFileExtension().toLowerCase();
@@ -3209,6 +3589,7 @@ private:
 
         return nullptr;
     }
+
 
     std::unique_ptr<CachedFileData> loadAudioFile (const juce::File& file)
     {
@@ -3912,6 +4293,8 @@ int64_t jsfxDeclaredMaxMem = 0;
     std::vector<int> freeFileHandles;
 
     mutable std::mutex filePathMutex;
+    juce::String lastFileDialogDirectory;
+    std::vector<juce::String> recentFilePaths;
 
     std::mutex fileLoadMutex;
     std::condition_variable fileLoadCv;
@@ -3944,6 +4327,34 @@ int64_t jsfxDeclaredMaxMem = 0;
 class FilteredPanel final : public juce::Component, private juce::Timer
 {
 public:
+    class FileChooseButton final : public juce::TextButton
+    {
+    public:
+        using juce::TextButton::TextButton;
+
+        std::function<void()> onPopupClick;
+
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            if (e.mods.isPopupMenu())
+            {
+                if (onPopupClick)
+                    onPopupClick();
+                return;
+            }
+
+            juce::TextButton::mouseDown (e);
+        }
+
+        void mouseUp (const juce::MouseEvent& e) override
+        {
+            if (e.mods.isPopupMenu())
+                return;
+
+            juce::TextButton::mouseUp (e);
+        }
+    };
+
     explicit FilteredPanel (JSFXJuceProcessor& p)
         : proc (p)
     {
@@ -3965,42 +4376,22 @@ public:
             row.filePath->setText (proc.getFileSlotDisplayText (d.index0), juce::dontSendNotification);
             row.filePath->setJustificationType (juce::Justification::centredLeft);
             row.filePath->setColour (juce::Label::textColourId, juce::Colours::white);
-            row.filePath->setTooltip (proc.getFileSlotPath (d.index0));
+            row.filePath->setTooltip (proc.getFileSlotTooltip (d.index0));
 
-            row.choose = std::make_unique<juce::TextButton> ("Choose…");
+            row.choose = std::make_unique<FileChooseButton> ("Open...");
             row.clear = std::make_unique<juce::TextButton> ("Clear");
 
+            row.choose->setTooltip ("Left-click to open one file. Right-click for Open Multiple and recent files.");
+            row.clear->setTooltip ("Clear the current file selection");
+
             const int slot = d.index0;
+            auto* chooseButton = row.choose.get();
 
-            row.choose->onClick = [this, slot]
+            row.choose->onClick = [this, slot] { browseForFileSlot (slot); };
+            row.choose->onPopupClick = [this, slot, chooseButton]
             {
-                const auto currentPath = proc.getFileSlotPath (slot);
-
-                juce::File startDir;
-                if (currentPath.isNotEmpty())
-                    startDir = juce::File (currentPath).getParentDirectory();
-                else
-                    startDir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
-
-                activeFileChooser = std::make_unique<juce::FileChooser> ("Select file for slot " + juce::String (slot),
-                                                                         startDir,
-                                                                         "*");
-
-                juce::Component::SafePointer<FilteredPanel> safeThis (this);
-
-                activeFileChooser->launchAsync (juce::FileBrowserComponent::openMode
-                                                  | juce::FileBrowserComponent::canSelectFiles,
-                                                [safeThis, slot] (const juce::FileChooser& chooser)
-                                                {
-                                                    if (safeThis == nullptr)
-                                                        return;
-
-                                                    const auto f = chooser.getResult();
-                                                    if (f.existsAsFile())
-                                                        safeThis->proc.setFileSlotPath (slot, f);
-
-                                                    safeThis->activeFileChooser.reset();
-                                                });
+                if (chooseButton != nullptr)
+                    showRecentMenuForFileSlot (slot, *chooseButton);
             };
 
             row.clear->onClick = [this, slot] { proc.clearFileSlot (slot); };
@@ -4123,6 +4514,148 @@ public:
     }
 
 private:
+    static juce::String shortenPathForMenu (const juce::String& path, int maxChars = 64)
+    {
+        if (path.length() <= maxChars)
+            return path;
+
+        const int head = juce::jmax (10, (maxChars - 3) / 2);
+        const int tail = juce::jmax (10, maxChars - 3 - head);
+        return path.substring (0, head) + "..." + path.substring (path.length() - tail);
+    }
+
+    static juce::String formatRecentMenuLabel (const juce::String& fullPath)
+    {
+        const juce::File f (fullPath);
+        auto label = f.getFileName();
+        const auto dir = f.getParentDirectory().getFullPathName();
+
+        if (dir.isNotEmpty())
+            label << "  [" << shortenPathForMenu (dir) << "]";
+
+        return label;
+    }
+
+    void browseForFileSlot (int slot, bool allowMultiple = false)
+    {
+        const auto startDir = proc.getPreferredFileChooserStartDirectory (slot);
+
+        activeFileChooser = std::make_unique<juce::FileChooser> (allowMultiple ? ("Select files for slot " + juce::String (slot))
+                                                                               : ("Select file for slot " + juce::String (slot)),
+                                                                 startDir,
+                                                                 "*");
+
+        juce::Component::SafePointer<FilteredPanel> safeThis (this);
+
+        int flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+        if (allowMultiple)
+            flags |= juce::FileBrowserComponent::canSelectMultipleItems;
+
+        activeFileChooser->launchAsync (flags,
+                                        [safeThis, slot, allowMultiple] (const juce::FileChooser& chooser)
+                                        {
+                                            if (safeThis == nullptr)
+                                                return;
+
+                                            std::vector<juce::File> selectedFiles;
+
+                                            if (allowMultiple)
+                                            {
+                                                const auto results = chooser.getResults();
+                                                selectedFiles.reserve ((size_t) results.size());
+
+                                                for (const auto& file : results)
+                                                    if (file.existsAsFile())
+                                                        selectedFiles.push_back (file);
+                                            }
+                                            else
+                                            {
+                                                const auto file = chooser.getResult();
+                                                if (file.existsAsFile())
+                                                    selectedFiles.push_back (file);
+                                            }
+
+                                            if (! selectedFiles.empty())
+                                                safeThis->proc.setFileSlotPaths (slot, selectedFiles);
+
+                                            safeThis->activeFileChooser.reset();
+                                        });
+    }
+
+    void showRecentMenuForFileSlot (int slot, juce::Component& target)
+    {
+        enum
+        {
+            kBrowseMenuId = 1,
+            kBrowseMultiMenuId = 2,
+            kClearMenuId = 3,
+            kRecentMenuBaseId = 1000,
+        };
+
+        const bool hasSelection = proc.hasFileSlotSelection (slot);
+        const auto recentPaths = proc.getRecentFilePaths();
+
+        juce::PopupMenu menu;
+        menu.addItem (kBrowseMenuId, "Open...");
+        menu.addItem (kBrowseMultiMenuId, "Open Multiple...");
+        menu.addItem (kClearMenuId, "Clear", hasSelection);
+        menu.addSeparator();
+        menu.addSectionHeader ("Open Recent");
+
+        if (recentPaths.empty())
+        {
+            menu.addItem (kRecentMenuBaseId, "No recent files", false);
+        }
+        else
+        {
+            for (size_t i = 0; i < recentPaths.size(); ++i)
+            {
+                const auto& path = recentPaths[i];
+                const juce::File recentFile (path);
+                const bool exists = recentFile.existsAsFile();
+                const bool isCurrent = proc.fileSlotContainsPath (slot, path);
+
+                auto label = formatRecentMenuLabel (path);
+                if (! exists)
+                    label << " (missing)";
+
+                menu.addItem (kRecentMenuBaseId + (int) i, label, exists, isCurrent);
+            }
+        }
+
+        juce::Component::SafePointer<FilteredPanel> safeThis (this);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target)
+                                                     .withMousePosition()
+                                                     .withDeletionCheck (*this),
+                            [safeThis, slot, recentPaths] (int result)
+                            {
+                                if (safeThis == nullptr || result == 0)
+                                    return;
+
+                                if (result == kBrowseMenuId)
+                                {
+                                    safeThis->browseForFileSlot (slot, false);
+                                    return;
+                                }
+
+                                if (result == kBrowseMultiMenuId)
+                                {
+                                    safeThis->browseForFileSlot (slot, true);
+                                    return;
+                                }
+
+                                if (result == kClearMenuId)
+                                {
+                                    safeThis->proc.clearFileSlot (slot);
+                                    return;
+                                }
+
+                                const int recentIndex = result - kRecentMenuBaseId;
+                                if (recentIndex >= 0 && recentIndex < (int) recentPaths.size())
+                                    safeThis->proc.setFileSlotPath (slot, juce::File (recentPaths[(size_t) recentIndex]));
+                            });
+    }
+
     static constexpr int kRowHeight = 30;
     static constexpr int kRowGap = 6;
     static constexpr int kRowPitch = kRowHeight + kRowGap;
@@ -4156,10 +4689,9 @@ private:
             if (row.filePath->getText() != text)
                 row.filePath->setText (text, juce::dontSendNotification);
 
-            const auto path = proc.getFileSlotPath (row.fileIndex0);
-            row.filePath->setTooltip (path);
+            row.filePath->setTooltip (proc.getFileSlotTooltip (row.fileIndex0));
 
-            const bool hasPath = path.isNotEmpty();
+            const bool hasPath = proc.hasFileSlotSelection (row.fileIndex0);
             if (row.clear != nullptr)
                 row.clear->setEnabled (hasPath);
         }
@@ -4185,7 +4717,7 @@ private:
 
         // File rows
         std::unique_ptr<juce::Label> filePath;
-        std::unique_ptr<juce::TextButton> choose;
+        std::unique_ptr<FileChooseButton> choose;
         std::unique_ptr<juce::TextButton> clear;
     };
 
@@ -4229,6 +4761,21 @@ public:
         juce::Font getLabelFont (juce::Label&) override
         {
             return pickFont (14.0f);
+        }
+
+        juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override
+        {
+            return pickFont (juce::jlimit (12.0f, 16.0f, (float) buttonHeight * 0.55f));
+        }
+
+        juce::Font getComboBoxFont (juce::ComboBox&) override
+        {
+            return pickFont (14.0f);
+        }
+
+        juce::Font getPopupMenuFont() override
+        {
+            return pickFont (13.5f);
         }
 
         void drawTooltip (juce::Graphics& g, const juce::String& text, int width, int height) override
@@ -6688,6 +7235,14 @@ extern "C" double jsfx_file_open (DSPJSFX_State* state, double indexOrSlot, doub
     return -1.0;
 }
 
+extern "C" double jsfx_file_open_multi (DSPJSFX_State* state, double indexOrSlot, double mode)
+{
+    if (auto* owner = ownerFromState (state))
+        return owner->rt_file_open_multi (state, indexOrSlot, mode);
+
+    return -1.0;
+}
+
 extern "C" double jsfx_file_close (DSPJSFX_State* state, double handle)
 {
     if (auto* owner = ownerFromState (state))
@@ -6751,6 +7306,22 @@ extern "C" double jsfx_file_mem (DSPJSFX_State* state, double handle, double des
 {
     if (auto* owner = ownerFromState (state))
         return owner->rt_file_mem (state, handle, destIndex, length);
+
+    return 0.0;
+}
+
+extern "C" double jsfx_file_multi_count (DSPJSFX_State* state, double handle)
+{
+    if (auto* owner = ownerFromState (state))
+        return owner->rt_file_multi_count (state, handle);
+
+    return 0.0;
+}
+
+extern "C" double jsfx_file_multi_select (DSPJSFX_State* state, double handle, double fileIndex)
+{
+    if (auto* owner = ownerFromState (state))
+        return owner->rt_file_multi_select (state, handle, fileIndex);
 
     return 0.0;
 }
