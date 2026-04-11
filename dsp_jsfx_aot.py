@@ -7,14 +7,14 @@ DSP-JSFX -> LLVM IR (llvmlite) compiler front-end.
 Contract (DSP-JSFX):
 - Sections: @init, @slider, @block, @sample (any may be missing)
 - DSP-first AOT subset: no @gfx compilation. Basic textual import preprocessing is supported.
-- Strings are accepted as lightweight handles with literal/dynamic runtime support for MIDI helpers.
-- MIDI builtins midirecv()/midisend() plus buf/str/sysEx variants are supported in @block and @sample.
+- Strings are accepted as opaque handles for compatibility helpers.
+- MIDI builtins midirecv()/midisend() are supported in @block and @sample.
 - Type: everything is double.
 - Variables: spl0..spl63, slider1..slider64, user vars (persistent), builtins:
     - mem  (numeric base pointer index = 0.0)
     - srate (read/write state field)
     - samplesblock (read/write state field; host should set before @block)
-    - MIDI calls: midirecv()/midisend() short-message forms, plus midirecv_buf()/midisend_buf(), midirecv_str()/midisend_str(), and midisyx().
+    - MIDI calls: midirecv(offset,msg1,msg2,msg3), midisend(offset,msg1,msg2,msg3)
 - Memory:
     - mem[...] is heap-backed (double*).
     - Pointer-style indexing is allowed: a[b] == mem[(int)a + (int)b].
@@ -212,17 +212,6 @@ class Lexer:
                             out.append(quote)
                         elif esc == "\\":
                             out.append("\\")
-                        elif esc in ("x", "X"):
-                            hex1 = self._peek()
-                            hex2 = self._peek(1)
-                            if (re.fullmatch(r"[0-9A-Fa-f]", hex1) is not None and
-                                    re.fullmatch(r"[0-9A-Fa-f]", hex2) is not None):
-                                out.append(chr(int(hex1 + hex2, 16)))
-                                self._adv(2)
-                            else:
-                                out.append(esc)
-                        elif esc == "0":
-                            out.append("\0")
                         else:
                             # Unknown escapes: keep the escaped character verbatim.
                             out.append(esc)
@@ -933,7 +922,7 @@ def extract_sections(jsfx_text: str) -> Dict[str, Tuple[str, int]]:
 # Symbol table (stable var indices)
 # -----------------------------
 
-BUILTIN_NAMES = {"mem", "srate", "samplesblock", "midi_bus", "ext_midi_bus"}
+BUILTIN_NAMES = {"mem", "srate", "samplesblock"}
 
 @dataclass(frozen=True)
 class SymRef:
@@ -975,12 +964,6 @@ class SymTable:
 
         if name == "samplesblock":
             return SymRef("builtin", 2)
-
-        if name == "midi_bus":
-            return SymRef("builtin", 3)
-
-        if name == "ext_midi_bus":
-            return SymRef("builtin", 4)
 
         if name not in self.vars:
             raise ValueError(f"Unknown variable {name!r} (not declared by analysis)")
@@ -1308,10 +1291,6 @@ def analyze_gfx_var_sync(jsfx_text: str, user_vars: Dict[str, int]) -> Dict[str,
     }
 
 
-MIDI_RECV_FUNCTIONS: Set[str] = {"midirecv", "midirecv_buf", "midirecv_str"}
-MIDI_SEND_FUNCTIONS: Set[str] = {"midisend", "midisend_buf", "midisend_str", "midisyx"}
-
-
 def detect_midi_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Dict[str, bool]:
     uses_midirecv = False
     uses_midisend = False
@@ -1329,9 +1308,9 @@ def detect_midi_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, Functi
         if isinstance(n, Assign):
             rec(n.target); rec(n.value); return
         if isinstance(n, Call):
-            if n.fn in MIDI_RECV_FUNCTIONS:
+            if n.fn == 'midirecv':
                 uses_midirecv = True
-            elif n.fn in MIDI_SEND_FUNCTIONS:
+            elif n.fn == 'midisend':
                 uses_midisend = True
             for a in n.args:
                 rec(a)
@@ -2087,7 +2066,6 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
         "pin_hints": pin_hints,
         "midi": midi_caps,
         "plugin_kind": plugin_kind,
-        "string_literals": emitter.get_string_literals_meta(),
         "has_sample_section": has_sample_work,
         "gfx_var_sync_mode": gfx_var_sync_mode,
         "gfx_var_flags": gfx_var_flags,
@@ -2204,21 +2182,8 @@ def _summarize_loop_mutations(node: Node, user_fn_names: Set[str]) -> _LoopMutat
                 return
 
             if fn == "midirecv":
-                for a in n.args[:(3 if len(n.args) == 3 else 4)]:
+                for a in n.args[:4]:
                     _note_mutated_lvalue(a, out)
-                return
-
-            if fn == "midirecv_buf":
-                if len(n.args) >= 1:
-                    _note_mutated_lvalue(n.args[0], out)
-                out.writes_mem = True
-                return
-
-            if fn == "midirecv_str":
-                if len(n.args) >= 1:
-                    _note_mutated_lvalue(n.args[0], out)
-                if len(n.args) >= 2:
-                    _note_mutated_lvalue(n.args[1], out)
                 return
 
             if fn == "file_var" and len(n.args) >= 2:
@@ -2242,7 +2207,7 @@ def _summarize_loop_mutations(node: Node, user_fn_names: Set[str]) -> _LoopMutat
 
             if fn.startswith("gfx_") or fn in (
                 "slider", "spl",
-                "midisend", "midisend_buf", "midisend_str", "midisyx", "rand",
+                "midisend", "rand",
                 "freembuf", "sliderchange", "slider_automate",
                 "file_open", "file_open_multi", "file_close", "file_rewind", "file_seek", "file_avail", "file_text",
                 "file_multi_count", "file_multi_select",
@@ -2568,23 +2533,8 @@ def _collect_section_rw(node: Node, user_fn_names: Set[str], out: _SectionRWInfo
     if isinstance(node, Call):
         fn = node.fn
         if fn == "midirecv":
-            for a in node.args[:(3 if len(node.args) == 3 else 4)]:
+            for a in node.args[:4]:
                 _collect_section_lvalue_rw(a, user_fn_names, out)
-            return
-        if fn == "midirecv_buf":
-            if len(node.args) >= 1:
-                _collect_section_lvalue_rw(node.args[0], user_fn_names, out)
-            if len(node.args) >= 2:
-                _collect_section_rw(node.args[1], user_fn_names, out)
-            if len(node.args) >= 3:
-                _collect_section_rw(node.args[2], user_fn_names, out)
-            out.writes_mem = True
-            return
-        if fn == "midirecv_str":
-            if len(node.args) >= 1:
-                _collect_section_lvalue_rw(node.args[0], user_fn_names, out)
-            if len(node.args) >= 2:
-                _collect_section_lvalue_rw(node.args[1], user_fn_names, out)
             return
         if fn == "file_var":
             if len(node.args) >= 1:
@@ -2908,7 +2858,6 @@ class LLVMModuleEmitter:
 
         self.double = ir.DoubleType()
         self.i1 = ir.IntType(1)
-        self.i8 = ir.IntType(8)
         self.i32 = ir.IntType(32)
         self.i64 = ir.IntType(64)
 
@@ -2938,9 +2887,6 @@ class LLVMModuleEmitter:
         # 27: uint32_t randIndex (0 means uninitialized; mirrors EEL2 __idx)
         # 28: int64_t sliderVisibleMask (bitmask, 1=visible)
         # 29: int32_t sliderVisibilityInit
-        # 30: void* runtimeOpaque
-        # 31: double midi_bus
-        # 32: double ext_midi_bus
         self.var_cap = max(1, (max(sym.vars.values()) + 1) if sym.vars else 1)
         self.midi_event_ty = ir.LiteralStructType([self.i32, self.i32, self.i32, self.i32])
 
@@ -2975,9 +2921,6 @@ class LLVMModuleEmitter:
             self.i32,
             self.i64,
             self.i32,
-            self.i8.as_pointer(),
-            self.double,
-            self.double,
         ])
         self.state_ptr = self.state_ty.as_pointer()
 
@@ -2995,55 +2938,10 @@ class LLVMModuleEmitter:
             ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer()]),
             name="jsfx_midirecv"
         )
-        self.fn_midirecv_msg23 = ir.Function(
-            self.module,
-            ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer()]),
-            name="jsfx_midirecv_msg23"
-        )
-        self.fn_midirecv_buf = ir.Function(
-            self.module,
-            ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer(), self.double, self.double]),
-            name="jsfx_midirecv_buf"
-        )
-        self.fn_midirecv_str = ir.Function(
-            self.module,
-            ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer(), self.double.as_pointer()]),
-            name="jsfx_midirecv_str"
-        )
         self.fn_midisend = ir.Function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double]),
             name="jsfx_midisend"
-        )
-        self.fn_midisend_msg23 = ir.Function(
-            self.module,
-            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
-            name="jsfx_midisend_msg23"
-        )
-        self.fn_midisend_buf = ir.Function(
-            self.module,
-            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
-            name="jsfx_midisend_buf"
-        )
-        self.fn_midisend_str = ir.Function(
-            self.module,
-            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
-            name="jsfx_midisend_str"
-        )
-        self.fn_midisyx = ir.Function(
-            self.module,
-            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
-            name="jsfx_midisyx"
-        )
-        self.fn_strlen = ir.Function(
-            self.module,
-            ir.FunctionType(self.i32, [self.state_ptr, self.double]),
-            name="jsfx_strlen"
-        )
-        self.fn_str_getchar = ir.Function(
-            self.module,
-            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
-            name="jsfx_str_getchar"
         )
         self.fn_sliderchange = ir.Function(
             self.module,
@@ -3087,12 +2985,6 @@ class LLVMModuleEmitter:
         self._next_str_id += 1
         self._str_lits[s] = hid
         return hid
-
-    def get_string_literals_meta(self) -> List[Dict[str, Any]]:
-        items: List[Dict[str, Any]] = []
-        for s, handle in sorted(self._str_lits.items(), key=lambda kv: kv[1]):
-            items.append({"handle": int(handle), "text": s})
-        return items
 
     def _const_f64(self, v: float) -> ir.Constant:
         return ir.Constant(self.double, float(v))
@@ -3157,15 +3049,8 @@ class LLVMModuleEmitter:
         if ref.kind == "builtin":
             if ref.index == 0:  # mem constant
                 raise ValueError("mem has no address")
-            builtin_field_map = {
-                1: 5,   # srate
-                2: 6,   # samplesblock
-                3: 31,  # midi_bus
-                4: 32,  # ext_midi_bus
-            }
-            field = builtin_field_map.get(ref.index)
-            if field is None:
-                raise ValueError(f"Unsupported builtin slot index {ref.index}")
+            # srate field 5, samplesblock field 6
+            field = 5 if ref.index == 1 else 6
             fld = ir.Constant(self.i32, field)
             return builder.gep(st, [zero, fld], inbounds=True)
 
@@ -3828,93 +3713,23 @@ class LLVMModuleEmitter:
 
 
             if fn == "midirecv":
-                if len(n.args) == 4:
-                    out_offset = self._get_midirecv_lvalue_ptr(builder, st, n.args[0])
-                    out_msg1 = self._get_midirecv_lvalue_ptr(builder, st, n.args[1])
-                    out_msg2 = self._get_midirecv_lvalue_ptr(builder, st, n.args[2])
-                    out_msg3 = self._get_midirecv_lvalue_ptr(builder, st, n.args[3])
-                    ret = builder.call(self.fn_midirecv, [st, out_offset, out_msg1, out_msg2, out_msg3])
-                    return self._to_f64(builder, ret)
-                if len(n.args) == 3:
-                    out_offset = self._get_midirecv_lvalue_ptr(builder, st, n.args[0])
-                    out_msg1 = self._get_midirecv_lvalue_ptr(builder, st, n.args[1])
-                    out_msg23 = self._get_midirecv_lvalue_ptr(builder, st, n.args[2])
-                    ret = builder.call(self.fn_midirecv_msg23, [st, out_offset, out_msg1, out_msg23])
-                    return self._to_f64(builder, ret)
-                raise ValueError("midirecv expects 3 or 4 args")
-
-            if fn == "midirecv_buf":
-                if len(n.args) != 3:
-                    raise ValueError("midirecv_buf expects 3 args")
+                if len(n.args) != 4:
+                    raise ValueError("midirecv expects 4 args")
                 out_offset = self._get_midirecv_lvalue_ptr(builder, st, n.args[0])
-                buf = self.emit_expr(builder, st, n.args[1])
-                maxlen = self.emit_expr(builder, st, n.args[2])
-                ret = builder.call(self.fn_midirecv_buf, [st, out_offset, buf, maxlen])
-                return self._to_f64(builder, ret)
-
-            if fn == "midirecv_str":
-                if len(n.args) != 2:
-                    raise ValueError("midirecv_str expects 2 args")
-                out_offset = self._get_midirecv_lvalue_ptr(builder, st, n.args[0])
-                out_str = self._get_midirecv_lvalue_ptr(builder, st, n.args[1])
-                ret = builder.call(self.fn_midirecv_str, [st, out_offset, out_str])
+                out_msg1 = self._get_midirecv_lvalue_ptr(builder, st, n.args[1])
+                out_msg2 = self._get_midirecv_lvalue_ptr(builder, st, n.args[2])
+                out_msg3 = self._get_midirecv_lvalue_ptr(builder, st, n.args[3])
+                ret = builder.call(self.fn_midirecv, [st, out_offset, out_msg1, out_msg2, out_msg3])
                 return self._to_f64(builder, ret)
 
             if fn == "midisend":
-                if len(n.args) == 4:
-                    a0 = self.emit_expr(builder, st, n.args[0])
-                    a1 = self.emit_expr(builder, st, n.args[1])
-                    a2 = self.emit_expr(builder, st, n.args[2])
-                    a3 = self.emit_expr(builder, st, n.args[3])
-                    ret = builder.call(self.fn_midisend, [st, a0, a1, a2, a3])
-                    return self._to_f64(builder, ret)
-                if len(n.args) == 3:
-                    a0 = self.emit_expr(builder, st, n.args[0])
-                    a1 = self.emit_expr(builder, st, n.args[1])
-                    a2 = self.emit_expr(builder, st, n.args[2])
-                    ret = builder.call(self.fn_midisend_msg23, [st, a0, a1, a2])
-                    return self._to_f64(builder, ret)
-                raise ValueError("midisend expects 3 or 4 args")
-
-            if fn == "midisend_buf":
-                if len(n.args) != 3:
-                    raise ValueError("midisend_buf expects 3 args")
+                if len(n.args) != 4:
+                    raise ValueError("midisend expects 4 args")
                 a0 = self.emit_expr(builder, st, n.args[0])
                 a1 = self.emit_expr(builder, st, n.args[1])
                 a2 = self.emit_expr(builder, st, n.args[2])
-                ret = builder.call(self.fn_midisend_buf, [st, a0, a1, a2])
-                return self._to_f64(builder, ret)
-
-            if fn == "midisend_str":
-                if len(n.args) != 2:
-                    raise ValueError("midisend_str expects 2 args")
-                a0 = self.emit_expr(builder, st, n.args[0])
-                a1 = self.emit_expr(builder, st, n.args[1])
-                ret = builder.call(self.fn_midisend_str, [st, a0, a1])
-                return self._to_f64(builder, ret)
-
-            if fn == "midisyx":
-                if len(n.args) != 3:
-                    raise ValueError("midisyx expects 3 args")
-                a0 = self.emit_expr(builder, st, n.args[0])
-                a1 = self.emit_expr(builder, st, n.args[1])
-                a2 = self.emit_expr(builder, st, n.args[2])
-                ret = builder.call(self.fn_midisyx, [st, a0, a1, a2])
-                return self._to_f64(builder, ret)
-
-            if fn == "strlen":
-                if len(n.args) != 1:
-                    raise ValueError("strlen expects 1 arg")
-                a0 = self.emit_expr(builder, st, n.args[0])
-                ret = builder.call(self.fn_strlen, [st, a0])
-                return self._to_f64(builder, ret)
-
-            if fn == "str_getchar":
-                if len(n.args) != 2:
-                    raise ValueError("str_getchar expects 2 args")
-                a0 = self.emit_expr(builder, st, n.args[0])
-                a1 = self.emit_expr(builder, st, n.args[1])
-                ret = builder.call(self.fn_str_getchar, [st, a0, a1])
+                a3 = self.emit_expr(builder, st, n.args[3])
+                ret = builder.call(self.fn_midisend, [st, a0, a1, a2, a3])
                 return self._to_f64(builder, ret)
 
             if fn == "__memtop":
@@ -4911,9 +4726,6 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    uint32_t randIndex;")
     lines.append("    int64_t sliderVisibleMask;")
     lines.append("    int32_t sliderVisibilityInit;")
-    lines.append("    void* runtimeOpaque;")
-    lines.append("    double midi_bus;")
-    lines.append("    double ext_midi_bus;")
     lines.append("} DSPJSFX_State;")
     lines.append("")
 
@@ -4955,30 +4767,6 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("};")
     lines.append("")
 
-    string_literals_meta: List[Dict[str, Any]] = list(meta.get("string_literals") or [])
-    literal_count = len(string_literals_meta)
-    lines.append("/* String literals (opaque runtime handles used by MIDI/string helpers) */")
-    lines.append("typedef struct DSPJSFX_StringLiteralDesc { int64_t handle; int32_t length; const uint8_t* data; } DSPJSFX_StringLiteralDesc;")
-    lines.append(f"#define DSPJSFX_STRING_LITERALS_COUNT {literal_count}")
-    if literal_count <= 0:
-        lines.append("static const uint8_t DSPJSFX_STRING_LITERAL_BYTES_0[1] = { 0 };")
-        lines.append("static const DSPJSFX_StringLiteralDesc DSPJSFX_STRING_LITERALS[1] = {")
-        lines.append("    { 0LL, 0, DSPJSFX_STRING_LITERAL_BYTES_0 },")
-        lines.append("};")
-    else:
-        for i, item in enumerate(string_literals_meta):
-            raw = bytes((ord(ch) & 0xff) for ch in str(item.get("text", "")))
-            raw_size = len(raw) if len(raw) > 0 else 1
-            byte_list = ", ".join(f"0x{b:02x}" for b in raw) if raw else "0"
-            lines.append(f"static const uint8_t DSPJSFX_STRING_LITERAL_BYTES_{i}[{raw_size}] = {{ {byte_list} }};")
-        lines.append(f"static const DSPJSFX_StringLiteralDesc DSPJSFX_STRING_LITERALS[{literal_count}] = {{")
-        for i, item in enumerate(string_literals_meta):
-            raw = bytes((ord(ch) & 0xff) for ch in str(item.get("text", "")))
-            handle = int(item.get("handle", 0))
-            lines.append(f"    {{ {handle}LL, {len(raw)}, DSPJSFX_STRING_LITERAL_BYTES_{i} }},")
-        lines.append("};")
-    lines.append("")
-
     lines.append("/* Sections */")
     lines.append("void jsfx_init(DSPJSFX_State* st);")
     lines.append("void jsfx_slider(DSPJSFX_State* st);")
@@ -4997,16 +4785,7 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("   Even if you never exceed memN, the symbol must exist. */")
     lines.append("void jsfx_ensure_mem(DSPJSFX_State* st, int64_t needed);")
     lines.append("int jsfx_midirecv(DSPJSFX_State* st, double* offset, double* msg1, double* msg2, double* msg3);")
-    lines.append("int jsfx_midirecv_msg23(DSPJSFX_State* st, double* offset, double* msg1, double* msg23);")
-    lines.append("int jsfx_midirecv_buf(DSPJSFX_State* st, double* offset, double buf, double maxlen);")
-    lines.append("int jsfx_midirecv_str(DSPJSFX_State* st, double* offset, double* strSlot);")
     lines.append("int jsfx_midisend(DSPJSFX_State* st, double offset, double msg1, double msg2, double msg3);")
-    lines.append("int jsfx_midisend_msg23(DSPJSFX_State* st, double offset, double msg1, double msg23);")
-    lines.append("int jsfx_midisend_buf(DSPJSFX_State* st, double offset, double buf, double len);")
-    lines.append("int jsfx_midisend_str(DSPJSFX_State* st, double offset, double strHandle);")
-    lines.append("int jsfx_midisyx(DSPJSFX_State* st, double offset, double msgptr, double len);")
-    lines.append("int jsfx_strlen(DSPJSFX_State* st, double strHandle);")
-    lines.append("int jsfx_str_getchar(DSPJSFX_State* st, double strHandle, double index);")
     lines.append("int jsfx_sliderchange(DSPJSFX_State* st, double sliderMask);")
     lines.append("int jsfx_slider_automate(DSPJSFX_State* st, double sliderMask, double endTouch);")
     lines.append("double jsfx_slider_next_chg(DSPJSFX_State* st, double sliderIndex, double* outValue);")
