@@ -334,7 +334,7 @@ function choose_sample(note velnorm) local(
 )
 (
   best = 0;
-  best_score = 1e12;
+  best_score = 100000000000;
 
   keyw = 0.2 + bank_pitchiness * 2.8;
   tone_t = clamp01(0.5 + slider4 * 0.35 + (velnorm - 0.5) * 0.45);

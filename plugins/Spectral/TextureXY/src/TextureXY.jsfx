@@ -16,6 +16,7 @@ slider2:85<20,320,1>-Grain (ms)
 slider3:1.00<0.10,4,0.01:log!>-Travel
 slider4:-6<-24,12,0.1>-Level (dB)
 slider5:0<0,2,1{OneShot,Loop,PingPong}>-Playback
+slider6:0<0,1,1{Naive,Smart}>-Picking
 
 @init
 ext_noinit = 1;
@@ -42,6 +43,30 @@ meta_base = 31500000;
 voice_base = meta_base;
 max_voices = 32;
 v_stride = 7; // active, src_pos, src_step, ampL, ampR, phase, phase_step
+
+analysis_base = voice_base + max_voices * v_stride + 1024;
+max_windows = 4096;
+win_stride = 12; // start,rms,peak,flux,zc,edge,slope,hf,motion,onset,scale,contrast
+active_base = analysis_base + max_windows * win_stride + 1024;
+max_active = 4096;
+active_stride = 2; // start, norm_rms
+cand_base = active_base + max_active * active_stride + 1024;
+max_candidates = 3072;
+cand_stride = 17; // start,nrms,npeak,nflux,nzc,nctr,nedge,nslope,nhf,nmotion,nonset,score,rank,phase,family,scale,novelty
+attack_pool_base = cand_base + max_candidates * cand_stride + 1024;
+body_pool_base = attack_pool_base + max_candidates + 256;
+release_pool_base = body_pool_base + max_candidates + 256;
+debris_pool_base = release_pool_base + max_candidates + 256;
+recent_base = debris_pool_base + max_candidates + 1024;
+recent_max = 16;
+sort_tmp_base = recent_base + recent_max + 1024;
+
+phase_att = 1;
+phase_body = 2;
+phase_rel = 3;
+phase_deb = 4;
+scale_short = 1;
+scale_med = 2;
 
 function clamp(v, lo, hi)
 (
@@ -159,36 +184,6 @@ function stop_playback()
   motion_valid = 0;
 );
 
-function add_point(px, py, pt)
-(
-  point_count < max_points ? (
-    x_base[point_count] = clamp(px, 0, 1);
-    y_base[point_count] = clamp(py, 0, 1);
-    t_base[point_count] = max(0, pt);
-    point_count += 1;
-  );
-);
-
-
-function add_release_point(nx, ny, now, px, py)
-local(elapsed, lastx, lasty, need_add)
-(
-  point_count <= 0 ? (
-    add_point(nx, ny, 0);
-  ) : (
-    elapsed = max(now - draw_start_time, 0);
-    lastx = x_base[point_count-1];
-    lasty = y_base[point_count-1];
-    need_add = (abs(nx - lastx) > 0.0005) || (abs(ny - lasty) > 0.0005) || ((elapsed - t_base[point_count-1]) > 0.0005);
-    need_add ? (
-      add_point(nx, ny, elapsed);
-      last_add_px = px;
-      last_add_py = py;
-      last_add_time = elapsed;
-    );
-  );
-);
-
 function reset_gesture()
 local(i)
 (
@@ -209,6 +204,9 @@ local(i)
   view_speed = 0;
   scan01 = 0;
   snap_pending = 0;
+  smart_pick_phase = 0;
+  smart_pick_scale = scale_med;
+  smart_pick_family = 0;
   reset_motion_state();
 
   i = 0;
@@ -218,6 +216,16 @@ local(i)
   );
   next_voice = 0;
   spawn_countdown = 0;
+);
+
+function add_point(px, py, pt)
+(
+  point_count < max_points ? (
+    x_base[point_count] = clamp(px, 0, 1);
+    y_base[point_count] = clamp(py, 0, 1);
+    t_base[point_count] = max(0, pt);
+    point_count += 1;
+  );
 );
 
 function begin_draw(nx, ny, now, px, py)
@@ -238,6 +246,7 @@ function begin_draw(nx, ny, now, px, py)
   live_x_target = nx;
   live_y_target = ny;
   live_speed_target = 0;
+  hard_set_motion(nx, ny, 0);
   add_point(nx, ny, 0);
 );
 
@@ -406,8 +415,1062 @@ local(frame0, frame1, span, step, b, f, idx, v, mn, mx, first, av, bpk, wf_meanp
   );
 );
 
+
+function sort_records_by_start(base, stride, count)
+local(gap, i, j, k, move, tmp_start, prev_start)
+(
+  count > 1 ? (
+    gap = floor(count * 0.5);
+    gap < 1 ? gap = 1;
+    loop(32,
+      gap > 0 ? (
+        i = gap;
+        loop(max(0, count - gap),
+          k = 0;
+          loop(stride,
+            mem[sort_tmp_base + k] = mem[base + i * stride + k];
+            k += 1;
+          );
+          tmp_start = mem[sort_tmp_base];
+          j = i;
+          move = 1;
+          loop(count,
+            move ? (
+              j >= gap ? (
+                prev_start = mem[base + (j - gap) * stride];
+                prev_start > tmp_start ? (
+                  k = 0;
+                  loop(stride,
+                    mem[base + j * stride + k] = mem[base + (j - gap) * stride + k];
+                    k += 1;
+                  );
+                  j -= gap;
+                ) : (
+                  move = 0;
+                );
+              ) : (
+                move = 0;
+              );
+            );
+          );
+          k = 0;
+          loop(stride,
+            mem[base + j * stride + k] = mem[sort_tmp_base + k];
+            k += 1;
+          );
+          i += 1;
+        );
+        gap = floor(gap * 0.5);
+      );
+    );
+  );
+);
+
+function nearest_sorted_index(list_base, stride, count, pos)
+local(lo, hi, mid, v, probe, best_idx, best_dist, idx, d)
+(
+  count <= 0 ? 0 : (
+    lo = 0;
+    hi = count - 1;
+    loop(24,
+      hi > lo ? (
+        mid = floor((lo + hi) * 0.5);
+        v = mem[list_base + mid * stride];
+        v < pos ? lo = mid + 1 : hi = mid;
+      );
+    );
+    probe = clamp(lo, 0, count - 1);
+    best_idx = probe;
+    best_dist = abs(mem[list_base + probe * stride] - pos);
+
+    idx = probe - 1;
+    idx >= 0 ? (
+      d = abs(mem[list_base + idx * stride] - pos);
+      d < best_dist ? (
+        best_dist = d;
+        best_idx = idx;
+      );
+    );
+
+    idx = probe + 1;
+    idx < count ? (
+      d = abs(mem[list_base + idx * stride] - pos);
+      d < best_dist ? best_idx = idx;
+    );
+
+    best_idx;
+  );
+);
+
+function nearest_active_start(pos)
+local(idx)
+(
+  pos = clamp(pos, 0, max(0, tex_frames - 1));
+  active_count <= 0 ? pos : (
+    idx = nearest_sorted_index(active_base, active_stride, active_count, pos);
+    mem[active_base + idx * active_stride];
+  );
+);
+
+function skip_blank_start(pos)
+local(ns, keep_dist)
+(
+  pos = clamp(pos, 0, max(0, tex_frames - 1));
+  active_count <= 0 ? pos : (
+    ns = nearest_active_start(pos);
+    keep_dist = analysis_hop * 0.75;
+    keep_dist < analysis_win * 0.35 ? keep_dist = analysis_win * 0.35;
+    abs(ns - pos) <= keep_dist ? pos : ns;
+  );
+);
+
+function recent_weight(ci)
+local(j, ri, idx, agew, w)
+(
+  w = 1;
+  j = 0;
+  loop(recent_max,
+    ri = recent_head - 1 - j;
+    ri < 0 ? ri += recent_max;
+    idx = floor(mem[recent_base + ri]);
+    idx == ci ? (
+      agew = j / max(1, recent_max - 1);
+      w *= 0.18 + 0.82 * agew;
+    );
+    j += 1;
+  );
+  w;
+);
+
+function phase_pool_base(ph)
+(
+  ph == phase_att ? attack_pool_base : ph == phase_body ? body_pool_base : ph == phase_rel ? release_pool_base : debris_pool_base;
+);
+
+function phase_pool_count(ph)
+(
+  ph == phase_att ? attack_pool_count : ph == phase_body ? body_pool_count : ph == phase_rel ? release_pool_count : debris_pool_count;
+);
+
+function phase_transition_weight(prev_phase, cur_phase)
+local(w)
+(
+  w = 1;
+  prev_phase == phase_att ? (
+    cur_phase == phase_att ? w = 0.45 :
+    cur_phase == phase_body ? w = 1.25 :
+    cur_phase == phase_rel ? w = 0.62 :
+    w = 0.86;
+  ) : prev_phase == phase_body ? (
+    cur_phase == phase_att ? w = 0.34 :
+    cur_phase == phase_body ? w = 1.10 :
+    cur_phase == phase_rel ? w = 0.88 :
+    w = 0.74;
+  ) : prev_phase == phase_rel ? (
+    cur_phase == phase_att ? w = 0.22 :
+    cur_phase == phase_body ? w = 0.78 :
+    cur_phase == phase_rel ? w = 0.96 :
+    w = 1.12;
+  ) : prev_phase == phase_deb ? (
+    cur_phase == phase_att ? w = 0.58 :
+    cur_phase == phase_body ? w = 1.04 :
+    cur_phase == phase_rel ? w = 0.82 :
+    w = 0.46;
+  );
+  w;
+);
+
+function remember_candidate(ci)
+local(base)
+(
+  ci >= 0 ? (
+    base = cand_base + ci * cand_stride;
+    smart_pick_phase = floor(mem[base + 13] + 0.5);
+    smart_pick_family = floor(mem[base + 14] + 0.5);
+    smart_pick_scale = floor(mem[base + 15] + 0.5);
+    last_phase = smart_pick_phase;
+    last_family = smart_pick_family;
+    last_cand = ci;
+    mem[recent_base + recent_head] = ci;
+    recent_head += 1;
+    recent_head >= recent_max ? recent_head = 0;
+  );
+);
+
+function smart_desired_phases()
+(
+  desired_phase = phase_body;
+  desired_phase2 = phase_att;
+  desired_scale = scale_med;
+
+  activity_drive = clamp(sm_y, 0, 1);
+  chaos_drive = clamp(sm_x, 0, 1);
+  onset_drive = clamp(0.55 * speed_feat + 0.35 * acc_feat + 0.10 * jerk_feat, 0, 1);
+
+  desired_scale = (activity_drive + 0.35 * onset_drive + 0.25 * chaos_drive) > 0.78 ? scale_short : scale_med;
+
+  activity_drive > 0.74 ? (
+    onset_drive > 0.22 ? (
+      desired_phase = phase_att;
+      desired_phase2 = phase_body;
+    ) : (
+      desired_phase = phase_body;
+      desired_phase2 = phase_att;
+    );
+  ) : activity_drive > 0.42 ? (
+    desired_phase = phase_body;
+    desired_phase2 = chaos_drive > 0.58 ? phase_att : phase_rel;
+  ) : chaos_drive > 0.64 ? (
+    desired_phase = phase_deb;
+    desired_phase2 = phase_rel;
+  ) : (
+    desired_phase = phase_rel;
+    desired_phase2 = phase_body;
+  );
+);
+
+function smart_candidate_weight(ci, pos)
+local(base, cpos, nrms, npeak, nflux, nzc, nctr, nedge, nslope, nhf, nmotion, nonset, score, rank, phase, family, scale_v, novelty, weight, local_w, dist_norm, energy, energy_target, energy_w, text_w, novel_w, phase_w, trans_w, scale_w, repeat_w, fam_w, compat, compat_w, pbase, drms, dflux, dctr, dmotion, dnov, dphase, chaos_drive, activity_drive, smart_radius_frames)
+(
+  weight = 0;
+  ci >= 0 ? (
+    base = cand_base + ci * cand_stride;
+    rank = mem[base + 12];
+    rank > 0 ? (
+      chaos_drive = clamp(sm_x, 0, 1);
+      activity_drive = clamp(sm_y, 0, 1);
+      smart_radius_frames = analysis_win_med * (1.10 + 3.20 * chaos_drive + 1.10 * activity_drive + 1.20 * speed_feat);
+      smart_radius_frames < analysis_win_short * 2 ? smart_radius_frames = analysis_win_short * 2;
+
+      cpos = mem[base];
+      nrms = mem[base + 1];
+      npeak = mem[base + 2];
+      nflux = mem[base + 3];
+      nzc = mem[base + 4];
+      nctr = mem[base + 5];
+      nedge = mem[base + 6];
+      nslope = mem[base + 7];
+      nhf = mem[base + 8];
+      nmotion = mem[base + 9];
+      nonset = mem[base + 10];
+      score = mem[base + 11];
+      phase = floor(mem[base + 13] + 0.5);
+      family = floor(mem[base + 14] + 0.5);
+      scale_v = floor(mem[base + 15] + 0.5);
+      novelty = mem[base + 16];
+
+      dist_norm = abs(cpos - pos) / max(1, smart_radius_frames);
+      local_w = 1 - min(1, dist_norm);
+      local_w = 0.12 + 0.88 * local_w * local_w;
+
+      weight = (0.12 + 0.88 * rank) * (0.16 + 0.84 * sqrt(score));
+      weight *= local_w;
+
+      phase == desired_phase ? (
+        phase_w = 1.16 + 0.42 * activity_drive;
+      ) : phase == desired_phase2 ? (
+        phase_w = 0.94 + 0.30 * chaos_drive;
+      ) : (
+        phase_w = 0.60 + 0.28 * chaos_drive;
+      );
+      last_phase > 0 ? (
+        trans_w = phase_transition_weight(last_phase, phase);
+        phase_w *= lerp(trans_w, 1, chaos_drive * 0.78);
+      );
+      weight *= phase_w;
+
+      scale_w = desired_scale == scale_v ? (1.06 + 0.16 * chaos_drive) : (0.88 + 0.14 * chaos_drive);
+      weight *= scale_w;
+
+      repeat_w = recent_weight(ci);
+      weight *= 0.32 + 0.68 * repeat_w;
+
+      energy = 0.50 * nrms + 0.22 * nmotion + 0.18 * nonset + 0.10 * npeak;
+      energy_target = 0.14 + 0.76 * activity_drive;
+      energy_w = 1 - abs(energy - energy_target);
+      energy_w < 0 ? energy_w = 0;
+      weight *= 0.34 + 0.66 * energy_w;
+
+      text_w = lerp(1.12 - 0.30 * (0.58 * nhf + 0.42 * nedge), 0.86 + 0.76 * (0.58 * nhf + 0.42 * nedge), chaos_drive);
+      text_w < 0.35 ? text_w = 0.35;
+      weight *= text_w;
+
+      novel_w = 1 - abs(novelty - chaos_drive);
+      novel_w < 0 ? novel_w = 0;
+      weight *= 0.40 + 0.60 * novel_w;
+
+      last_family > 0 ? (
+        fam_diff = abs(family - last_family);
+        fam_diff <= 0 ? fam_w = 1 : fam_diff == 1 ? fam_w = 0.86 : fam_diff == 2 ? fam_w = 0.72 : fam_w = 0.56;
+        fam_w = lerp(fam_w, 1, chaos_drive * 0.82);
+        weight *= fam_w;
+      );
+
+      last_cand >= 0 ? (
+        pbase = cand_base + last_cand * cand_stride;
+        drms = abs(nrms - mem[pbase + 1]);
+        dflux = abs(nflux - mem[pbase + 3]);
+        dctr = abs(nctr - mem[pbase + 5]);
+        dmotion = abs(nmotion - mem[pbase + 9]);
+        dnov = abs(novelty - mem[pbase + 16]);
+        dphase = phase == floor(mem[pbase + 13] + 0.5) ? 0 : 0.18;
+        compat = exp(-(2.4 * drms + 2.0 * dflux + 1.7 * dctr + 1.8 * dmotion + 0.7 * dnov + dphase));
+        compat_w = lerp(compat, 1, chaos_drive * 0.88);
+        compat_w < 0.28 ? compat_w = 0.28;
+        weight *= compat_w;
+      );
+    );
+  );
+  weight;
+);
+
+function pick_smart_start(pos)
+local(primary_phase, secondary_phase, search_all, total, rr, acc, chosen, chosen_base, i, idx, w, best_w, best_idx, pbase, pcount)
+(
+  smart_pick_phase = 0;
+  smart_pick_scale = scale_med;
+  smart_pick_family = 0;
+
+  pos = clamp(pos, 0, max(0, tex_frames - 1));
+  cand_count <= 0 ? skip_blank_start(pos) : (
+    smart_desired_phases();
+    primary_phase = desired_phase;
+    secondary_phase = desired_phase2;
+    total = 0;
+    chosen = -1;
+    best_w = -1;
+    best_idx = nearest_sorted_index(cand_base, cand_stride, cand_count, pos);
+
+    pcount = phase_pool_count(primary_phase) + (secondary_phase != primary_phase ? phase_pool_count(secondary_phase) : 0);
+    search_all = pcount <= 0;
+
+    search_all ? (
+      i = 0;
+      loop(cand_count,
+        w = smart_candidate_weight(i, pos);
+        total += w;
+        w > best_w ? (
+          best_w = w;
+          best_idx = i;
+        );
+        i += 1;
+      );
+    ) : (
+      pbase = phase_pool_base(primary_phase);
+      pcount = phase_pool_count(primary_phase);
+      i = 0;
+      loop(pcount,
+        idx = floor(mem[pbase + i]);
+        w = smart_candidate_weight(idx, pos);
+        total += w;
+        w > best_w ? (
+          best_w = w;
+          best_idx = idx;
+        );
+        i += 1;
+      );
+
+      secondary_phase != primary_phase ? (
+        pbase = phase_pool_base(secondary_phase);
+        pcount = phase_pool_count(secondary_phase);
+        i = 0;
+        loop(pcount,
+          idx = floor(mem[pbase + i]);
+          w = smart_candidate_weight(idx, pos);
+          total += w;
+          w > best_w ? (
+            best_w = w;
+            best_idx = idx;
+          );
+          i += 1;
+        );
+      );
+    );
+
+    total <= 0.000001 ? (
+      chosen = best_idx;
+    ) : (
+      rr = rand01() * total;
+      acc = 0;
+      search_all ? (
+        i = 0;
+        loop(cand_count,
+          chosen < 0 ? (
+            w = smart_candidate_weight(i, pos);
+            acc += w;
+            acc >= rr ? chosen = i;
+          );
+          i += 1;
+        );
+      ) : (
+        pbase = phase_pool_base(primary_phase);
+        pcount = phase_pool_count(primary_phase);
+        i = 0;
+        loop(pcount,
+          chosen < 0 ? (
+            idx = floor(mem[pbase + i]);
+            w = smart_candidate_weight(idx, pos);
+            acc += w;
+            acc >= rr ? chosen = idx;
+          );
+          i += 1;
+        );
+
+        (chosen < 0) && (secondary_phase != primary_phase) ? (
+          pbase = phase_pool_base(secondary_phase);
+          pcount = phase_pool_count(secondary_phase);
+          i = 0;
+          loop(pcount,
+            chosen < 0 ? (
+              idx = floor(mem[pbase + i]);
+              w = smart_candidate_weight(idx, pos);
+              acc += w;
+              acc >= rr ? chosen = idx;
+            );
+            i += 1;
+          );
+        );
+      );
+      chosen < 0 ? chosen = best_idx;
+    );
+
+    chosen_base = cand_base + chosen * cand_stride;
+    remember_candidate(chosen);
+    mem[chosen_base];
+  );
+);
+
+function analyze_source_candidates()
+local(short_budget, med_budget, short_est, med_est, short_count, med_count, f0, cur_win, third_n, q1n, q2n, q3n, sumsq, peak, flux, zc, hf_proxy, prevv, preva, first, n, front_sumsq, back_sumsq, q0sq, q1sq, q2sq, q3sq, rms, fluxn, zcn, hfn, front_rms, back_rms, slope, rms0, rms1, rms2, rms3, motion, ctx_len, pre_start, pre_len, pre_sumsq, m, prev_ctx_rms, onset, fm1, fp1, idxm, idx0, idxp, vm, v0, vp, edge0, base, w, ctr, max_ctr_l, thresh_rms, thresh_peak, startf, nrms, npeak, nflux, nzc, nctr, nedge, nslope_p, nslope_n, quiet_gate, zc_shape, score, valid, prev_score, next_score, contrast, score_peak_l, mean_nrms, mean_nflux, mean_nhf, mean_nmotion, mean_nctr, mean_nslope, mean_nonset, cand_n, novelty, novelty_peak, phase, family, attack_sc, body_sc, release_sc, debris_sc, slope_neutral, nslope, nhf, nmotion, nonset, rankn)
+(
+  win_count = 0;
+  active_count = 0;
+  cand_count = 0;
+  attack_pool_count = 0;
+  body_pool_count = 0;
+  release_pool_count = 0;
+  debris_pool_count = 0;
+  analysis_ready = 0;
+  analysis_win = 0;
+  analysis_hop = 0;
+  analysis_win_short = 0;
+  analysis_hop_short = 0;
+  analysis_win_med = 0;
+  analysis_hop_med = 0;
+  analysis_max_rms = 0.000001;
+  analysis_max_peak = 0.000001;
+  analysis_max_flux = 0.000001;
+  analysis_max_zc = 0.000001;
+  analysis_max_edge = 0.000001;
+  analysis_max_hf = 0.000001;
+  analysis_max_motion = 0.000001;
+  analysis_max_onset = 0.000001;
+  analysis_max_slope_pos = 0.000001;
+  analysis_max_slope_neg = 0.000001;
+  analysis_max_ctr = 0.000001;
+  analysis_score_peak = 0.000001;
+  analysis_novel_peak = 0.000001;
+  best_cand = -1;
+
+  tex_loaded > 0 && tex_frames > 0 ? (
+    analysis_win_short = floor(tex_sr * 0.018 + 0.5);
+    analysis_win_short < 128 ? analysis_win_short = 128;
+    analysis_win_short > 2048 ? analysis_win_short = 2048;
+    analysis_win_short > tex_frames ? analysis_win_short = tex_frames;
+
+    analysis_win_med = floor(tex_sr * 0.040 + 0.5);
+    analysis_win_med < 256 ? analysis_win_med = 256;
+    analysis_win_med > 4096 ? analysis_win_med = 4096;
+    analysis_win_med > tex_frames ? analysis_win_med = tex_frames;
+
+    analysis_hop_short = floor(analysis_win_short * 0.30 + 0.5);
+    analysis_hop_short < 32 ? analysis_hop_short = 32;
+    analysis_hop_med = floor(analysis_win_med * 0.25 + 0.5);
+    analysis_hop_med < 64 ? analysis_hop_med = 64;
+
+    short_budget = floor(max_windows * 0.58);
+    short_budget < 1 ? short_budget = 1;
+    med_budget = max_windows - short_budget;
+    med_budget < 1 ? med_budget = 1;
+
+    short_est = (tex_frames >= analysis_win_short) ? (floor((tex_frames - analysis_win_short) / analysis_hop_short) + 1) : 0;
+    short_est > short_budget ? (
+      analysis_hop_short = floor((tex_frames - analysis_win_short) / max(1, short_budget - 1));
+      analysis_hop_short < 1 ? analysis_hop_short = 1;
+    );
+
+    med_est = (tex_frames >= analysis_win_med) ? (floor((tex_frames - analysis_win_med) / analysis_hop_med) + 1) : 0;
+    med_est > med_budget ? (
+      analysis_hop_med = floor((tex_frames - analysis_win_med) / max(1, med_budget - 1));
+      analysis_hop_med < 1 ? analysis_hop_med = 1;
+    );
+
+    analysis_win = analysis_win_med;
+    analysis_hop = analysis_hop_med;
+
+    // Short windows
+    short_count = (tex_frames >= analysis_win_short) ? (floor((tex_frames - analysis_win_short) / analysis_hop_short) + 1) : 0;
+    short_count > short_budget ? short_count = short_budget;
+    f0 = 0;
+    w = 0;
+    loop(short_count,
+      cur_win = analysis_win_short;
+      sumsq = 0;
+      peak = 0;
+      flux = 0;
+      zc = 0;
+      hf_proxy = 0;
+      prevv = 0;
+      preva = 0;
+      first = 1;
+      n = 0;
+
+      third_n = floor(cur_win / 3);
+      third_n < 1 ? third_n = 1;
+      q1n = floor(cur_win * 0.25);
+      q2n = floor(cur_win * 0.50);
+      q3n = floor(cur_win * 0.75);
+      q1n < 1 ? q1n = 1;
+      q2n <= q1n ? q2n = q1n + 1;
+      q3n <= q2n ? q3n = q2n + 1;
+      q3n >= cur_win ? q3n = cur_win - 1;
+
+      front_sumsq = 0;
+      back_sumsq = 0;
+      q0sq = 0;
+      q1sq = 0;
+      q2sq = 0;
+      q3sq = 0;
+
+      loop(cur_win,
+        idx0 = tex_base + (f0 + n) * tex_ch;
+        v0 = mem[idx0];
+        tex_ch > 1 ? v0 = 0.5 * (v0 + mem[idx0 + 1]);
+        av = abs(v0);
+        sumsq += v0 * v0;
+        av > peak ? peak = av;
+
+        n < third_n ? front_sumsq += v0 * v0;
+        n >= cur_win - third_n ? back_sumsq += v0 * v0;
+
+        n < q1n ? (
+          q0sq += v0 * v0;
+        ) : n < q2n ? (
+          q1sq += v0 * v0;
+        ) : n < q3n ? (
+          q2sq += v0 * v0;
+        ) : (
+          q3sq += v0 * v0;
+        );
+
+        first ? (
+          prevv = v0;
+          preva = av;
+          first = 0;
+        ) : (
+          flux += abs(av - preva);
+          hf_proxy += abs(v0 - prevv);
+          ((v0 >= 0) != (prevv >= 0)) ? zc += 1;
+          prevv = v0;
+          preva = av;
+        );
+
+        n += 1;
+      );
+
+      rms = sqrt(sumsq / max(1, cur_win));
+      fluxn = flux / max(1, cur_win);
+      zcn = zc / max(1, cur_win);
+      hfn = hf_proxy / max(1, cur_win);
+
+      front_rms = sqrt(front_sumsq / max(1, third_n));
+      back_rms = sqrt(back_sumsq / max(1, third_n));
+      slope = back_rms - front_rms;
+
+      rms0 = sqrt(q0sq / max(1, q1n));
+      rms1 = sqrt(q1sq / max(1, q2n - q1n));
+      rms2 = sqrt(q2sq / max(1, q3n - q2n));
+      rms3 = sqrt(q3sq / max(1, cur_win - q3n));
+      motion = (abs(rms1 - rms0) + abs(rms2 - rms1) + abs(rms3 - rms2)) / 3;
+
+      ctx_len = third_n;
+      pre_start = f0 - ctx_len;
+      pre_start < 0 ? pre_start = 0;
+      pre_len = f0 - pre_start;
+      pre_sumsq = 0;
+      m = 0;
+      loop(pre_len,
+        idx0 = tex_base + (pre_start + m) * tex_ch;
+        v0 = mem[idx0];
+        tex_ch > 1 ? v0 = 0.5 * (v0 + mem[idx0 + 1]);
+        pre_sumsq += v0 * v0;
+        m += 1;
+      );
+      prev_ctx_rms = pre_len > 0 ? sqrt(pre_sumsq / max(1, pre_len)) : 0;
+      onset = front_rms - prev_ctx_rms;
+      onset < 0 ? onset = 0;
+
+      fm1 = f0 > 0 ? (f0 - 1) : f0;
+      fp1 = f0 < tex_frames - 1 ? (f0 + 1) : f0;
+      idxm = tex_base + fm1 * tex_ch;
+      idx0 = tex_base + f0 * tex_ch;
+      idxp = tex_base + fp1 * tex_ch;
+      vm = mem[idxm];
+      v0 = mem[idx0];
+      vp = mem[idxp];
+      tex_ch > 1 ? (
+        vm = 0.5 * (vm + mem[idxm + 1]);
+        v0 = 0.5 * (v0 + mem[idx0 + 1]);
+        vp = 0.5 * (vp + mem[idxp + 1]);
+      );
+      edge0 = abs(v0) + 0.5 * abs(vp - vm);
+
+      base = analysis_base + win_count * win_stride;
+      mem[base    ] = f0;
+      mem[base + 1] = rms;
+      mem[base + 2] = peak;
+      mem[base + 3] = fluxn;
+      mem[base + 4] = zcn;
+      mem[base + 5] = edge0;
+      mem[base + 6] = slope;
+      mem[base + 7] = hfn;
+      mem[base + 8] = motion;
+      mem[base + 9] = onset;
+      mem[base +10] = scale_short;
+      mem[base +11] = 0;
+
+      rms > analysis_max_rms ? analysis_max_rms = rms;
+      peak > analysis_max_peak ? analysis_max_peak = peak;
+      fluxn > analysis_max_flux ? analysis_max_flux = fluxn;
+      zcn > analysis_max_zc ? analysis_max_zc = zcn;
+      edge0 > analysis_max_edge ? analysis_max_edge = edge0;
+      hfn > analysis_max_hf ? analysis_max_hf = hfn;
+      motion > analysis_max_motion ? analysis_max_motion = motion;
+      onset > analysis_max_onset ? analysis_max_onset = onset;
+      slope > analysis_max_slope_pos ? analysis_max_slope_pos = slope;
+      (-slope) > analysis_max_slope_neg ? analysis_max_slope_neg = -slope;
+
+      f0 += analysis_hop_short;
+      win_count += 1;
+      w += 1;
+    );
+
+    // Medium windows
+    med_count = (tex_frames >= analysis_win_med) ? (floor((tex_frames - analysis_win_med) / analysis_hop_med) + 1) : 0;
+    med_count > med_budget ? med_count = med_budget;
+    f0 = 0;
+    w = 0;
+    loop(med_count,
+      cur_win = analysis_win_med;
+      sumsq = 0;
+      peak = 0;
+      flux = 0;
+      zc = 0;
+      hf_proxy = 0;
+      prevv = 0;
+      preva = 0;
+      first = 1;
+      n = 0;
+
+      third_n = floor(cur_win / 3);
+      third_n < 1 ? third_n = 1;
+      q1n = floor(cur_win * 0.25);
+      q2n = floor(cur_win * 0.50);
+      q3n = floor(cur_win * 0.75);
+      q1n < 1 ? q1n = 1;
+      q2n <= q1n ? q2n = q1n + 1;
+      q3n <= q2n ? q3n = q2n + 1;
+      q3n >= cur_win ? q3n = cur_win - 1;
+
+      front_sumsq = 0;
+      back_sumsq = 0;
+      q0sq = 0;
+      q1sq = 0;
+      q2sq = 0;
+      q3sq = 0;
+
+      loop(cur_win,
+        idx0 = tex_base + (f0 + n) * tex_ch;
+        v0 = mem[idx0];
+        tex_ch > 1 ? v0 = 0.5 * (v0 + mem[idx0 + 1]);
+        av = abs(v0);
+        sumsq += v0 * v0;
+        av > peak ? peak = av;
+
+        n < third_n ? front_sumsq += v0 * v0;
+        n >= cur_win - third_n ? back_sumsq += v0 * v0;
+
+        n < q1n ? (
+          q0sq += v0 * v0;
+        ) : n < q2n ? (
+          q1sq += v0 * v0;
+        ) : n < q3n ? (
+          q2sq += v0 * v0;
+        ) : (
+          q3sq += v0 * v0;
+        );
+
+        first ? (
+          prevv = v0;
+          preva = av;
+          first = 0;
+        ) : (
+          flux += abs(av - preva);
+          hf_proxy += abs(v0 - prevv);
+          ((v0 >= 0) != (prevv >= 0)) ? zc += 1;
+          prevv = v0;
+          preva = av;
+        );
+
+        n += 1;
+      );
+
+      rms = sqrt(sumsq / max(1, cur_win));
+      fluxn = flux / max(1, cur_win);
+      zcn = zc / max(1, cur_win);
+      hfn = hf_proxy / max(1, cur_win);
+
+      front_rms = sqrt(front_sumsq / max(1, third_n));
+      back_rms = sqrt(back_sumsq / max(1, third_n));
+      slope = back_rms - front_rms;
+
+      rms0 = sqrt(q0sq / max(1, q1n));
+      rms1 = sqrt(q1sq / max(1, q2n - q1n));
+      rms2 = sqrt(q2sq / max(1, q3n - q2n));
+      rms3 = sqrt(q3sq / max(1, cur_win - q3n));
+      motion = (abs(rms1 - rms0) + abs(rms2 - rms1) + abs(rms3 - rms2)) / 3;
+
+      ctx_len = third_n;
+      pre_start = f0 - ctx_len;
+      pre_start < 0 ? pre_start = 0;
+      pre_len = f0 - pre_start;
+      pre_sumsq = 0;
+      m = 0;
+      loop(pre_len,
+        idx0 = tex_base + (pre_start + m) * tex_ch;
+        v0 = mem[idx0];
+        tex_ch > 1 ? v0 = 0.5 * (v0 + mem[idx0 + 1]);
+        pre_sumsq += v0 * v0;
+        m += 1;
+      );
+      prev_ctx_rms = pre_len > 0 ? sqrt(pre_sumsq / max(1, pre_len)) : 0;
+      onset = front_rms - prev_ctx_rms;
+      onset < 0 ? onset = 0;
+
+      fm1 = f0 > 0 ? (f0 - 1) : f0;
+      fp1 = f0 < tex_frames - 1 ? (f0 + 1) : f0;
+      idxm = tex_base + fm1 * tex_ch;
+      idx0 = tex_base + f0 * tex_ch;
+      idxp = tex_base + fp1 * tex_ch;
+      vm = mem[idxm];
+      v0 = mem[idx0];
+      vp = mem[idxp];
+      tex_ch > 1 ? (
+        vm = 0.5 * (vm + mem[idxm + 1]);
+        v0 = 0.5 * (v0 + mem[idx0 + 1]);
+        vp = 0.5 * (vp + mem[idxp + 1]);
+      );
+      edge0 = abs(v0) + 0.5 * abs(vp - vm);
+
+      base = analysis_base + win_count * win_stride;
+      mem[base    ] = f0;
+      mem[base + 1] = rms;
+      mem[base + 2] = peak;
+      mem[base + 3] = fluxn;
+      mem[base + 4] = zcn;
+      mem[base + 5] = edge0;
+      mem[base + 6] = slope;
+      mem[base + 7] = hfn;
+      mem[base + 8] = motion;
+      mem[base + 9] = onset;
+      mem[base +10] = scale_med;
+      mem[base +11] = 0;
+
+      rms > analysis_max_rms ? analysis_max_rms = rms;
+      peak > analysis_max_peak ? analysis_max_peak = peak;
+      fluxn > analysis_max_flux ? analysis_max_flux = fluxn;
+      zcn > analysis_max_zc ? analysis_max_zc = zcn;
+      edge0 > analysis_max_edge ? analysis_max_edge = edge0;
+      hfn > analysis_max_hf ? analysis_max_hf = hfn;
+      motion > analysis_max_motion ? analysis_max_motion = motion;
+      onset > analysis_max_onset ? analysis_max_onset = onset;
+      slope > analysis_max_slope_pos ? analysis_max_slope_pos = slope;
+      (-slope) > analysis_max_slope_neg ? analysis_max_slope_neg = -slope;
+
+      f0 += analysis_hop_med;
+      win_count += 1;
+      w += 1;
+    );
+
+    max_ctr_l = 0.000001;
+    w = 0;
+    loop(win_count,
+      base = analysis_base + w * win_stride;
+      rms = mem[base + 1];
+      prev_score = w > 0 ? mem[analysis_base + (w - 1) * win_stride + 1] : rms;
+      next_score = w < win_count - 1 ? mem[analysis_base + (w + 1) * win_stride + 1] : rms;
+      ctr = abs(rms - 0.5 * (prev_score + next_score));
+      mem[base + 11] = ctr;
+      ctr > max_ctr_l ? max_ctr_l = ctr;
+      w += 1;
+    );
+    analysis_max_ctr = max_ctr_l;
+
+    thresh_rms = max(0.0012, analysis_max_rms * 0.08);
+    thresh_peak = max(0.0040, analysis_max_peak * 0.06);
+    score_peak_l = 0.000001;
+
+    w = 0;
+    loop(win_count,
+      base = analysis_base + w * win_stride;
+      startf = mem[base];
+      rms = mem[base + 1];
+      peak = mem[base + 2];
+      fluxn = mem[base + 3];
+      zcn = mem[base + 4];
+      edge0 = mem[base + 5];
+      slope = mem[base + 6];
+      hfn = mem[base + 7];
+      motion = mem[base + 8];
+      onset = mem[base + 9];
+      contrast = mem[base + 11];
+
+      nrms = rms / max(0.000001, analysis_max_rms);
+      npeak = peak / max(0.000001, analysis_max_peak);
+      nflux = fluxn / max(0.000001, analysis_max_flux);
+      nzc = zcn / max(0.000001, analysis_max_zc);
+      nctr = contrast / max(0.000001, analysis_max_ctr);
+      nedge = edge0 / max(0.000001, analysis_max_edge);
+      nslope_p = max(0, slope) / max(0.000001, analysis_max_slope_pos);
+      nslope_n = max(0, -slope) / max(0.000001, analysis_max_slope_neg);
+      nslope = slope >= 0 ? nslope_p : -nslope_n;
+      nhf = hfn / max(0.000001, analysis_max_hf);
+      nmotion = motion / max(0.000001, analysis_max_motion);
+      nonset = onset / max(0.000001, analysis_max_onset);
+
+      active_ok = (rms >= thresh_rms) || (peak >= thresh_peak);
+      active_ok && (active_count < max_active) ? (
+        mem[active_base + active_count * active_stride    ] = startf;
+        mem[active_base + active_count * active_stride + 1] = nrms;
+        active_count += 1;
+      );
+
+      quiet_gate = nrms < 0.025 ? (nrms / 0.025) : 1;
+      quiet_gate < 0 ? quiet_gate = 0;
+      quiet_gate > 1 ? quiet_gate = 1;
+      zc_shape = 1 - abs(nzc - 0.35) / 0.35;
+      zc_shape < 0 ? zc_shape = 0;
+      zc_shape > 1 ? zc_shape = 1;
+
+      score = quiet_gate * (
+        0.24 * nflux +
+        0.18 * nctr +
+        0.10 * npeak +
+        0.10 * sqrt(nrms) +
+        0.08 * zc_shape +
+        0.10 * nmotion +
+        0.08 * nonset +
+        0.04 * nslope_p +
+        0.04 * nhf +
+        0.04 * (1 - min(1, nedge))
+      );
+      score < 0.001 ? score = 0.001;
+
+      valid =
+        (nrms > 0.020) &&
+        (npeak > 0.018) &&
+        ((nflux > 0.030) || (nctr > 0.028) || (nmotion > 0.040) || (nonset > 0.050)) &&
+        (score > 0.035);
+      (nzc > 0.92) && (nflux < 0.08) && (nctr < 0.05) ? valid = 0;
+      nedge > 0.92 ? valid = 0;
+      (nhf > 0.96) && (nmotion < 0.04) && (nonset < 0.03) ? valid = 0;
+
+      valid && (cand_count < max_candidates) ? (
+        base2 = cand_base + cand_count * cand_stride;
+        mem[base2    ] = startf;
+        mem[base2 + 1] = nrms;
+        mem[base2 + 2] = npeak;
+        mem[base2 + 3] = nflux;
+        mem[base2 + 4] = nzc;
+        mem[base2 + 5] = nctr;
+        mem[base2 + 6] = nedge;
+        mem[base2 + 7] = nslope;
+        mem[base2 + 8] = nhf;
+        mem[base2 + 9] = nmotion;
+        mem[base2 +10] = nonset;
+        mem[base2 +11] = score;
+        mem[base2 +12] = 0;
+        mem[base2 +13] = 0;
+        mem[base2 +14] = 0;
+        mem[base2 +15] = mem[base + 10];
+        mem[base2 +16] = 0;
+        score > score_peak_l ? (
+          score_peak_l = score;
+          best_cand = cand_count;
+        );
+        cand_count += 1;
+      );
+
+      w += 1;
+    );
+
+    active_count > 1 ? sort_records_by_start(active_base, active_stride, active_count);
+    cand_count > 1 ? sort_records_by_start(cand_base, cand_stride, cand_count);
+    analysis_score_peak = score_peak_l;
+
+    cand_count > 0 ? (
+      mean_nrms = 0;
+      mean_nflux = 0;
+      mean_nhf = 0;
+      mean_nmotion = 0;
+      mean_nctr = 0;
+      mean_nslope = 0;
+      mean_nonset = 0;
+      cand_n = 0;
+
+      w = 0;
+      loop(cand_count,
+        base = cand_base + w * cand_stride;
+        mem[base + 12] = mem[base + 11] / max(0.000001, analysis_score_peak);
+        mean_nrms += mem[base + 1];
+        mean_nflux += mem[base + 3];
+        mean_nhf += mem[base + 8];
+        mean_nmotion += mem[base + 9];
+        mean_nctr += mem[base + 5];
+        mean_nslope += mem[base + 7];
+        mean_nonset += mem[base + 10];
+        cand_n += 1;
+        w += 1;
+      );
+
+      mean_nrms /= max(1, cand_n);
+      mean_nflux /= max(1, cand_n);
+      mean_nhf /= max(1, cand_n);
+      mean_nmotion /= max(1, cand_n);
+      mean_nctr /= max(1, cand_n);
+      mean_nslope /= max(1, cand_n);
+      mean_nonset /= max(1, cand_n);
+
+      novelty_peak = 0.000001;
+      w = 0;
+      loop(cand_count,
+        base = cand_base + w * cand_stride;
+        novelty = sqrt(
+          0.28 * (mem[base + 1] - mean_nrms) * (mem[base + 1] - mean_nrms) +
+          0.22 * (mem[base + 3] - mean_nflux) * (mem[base + 3] - mean_nflux) +
+          0.20 * (mem[base + 8] - mean_nhf) * (mem[base + 8] - mean_nhf) +
+          0.22 * (mem[base + 9] - mean_nmotion) * (mem[base + 9] - mean_nmotion) +
+          0.16 * (mem[base + 5] - mean_nctr) * (mem[base + 5] - mean_nctr) +
+          0.10 * (mem[base + 7] - mean_nslope) * (mem[base + 7] - mean_nslope) +
+          0.14 * (mem[base + 10] - mean_nonset) * (mem[base + 10] - mean_nonset)
+        );
+        mem[base + 16] = novelty;
+        novelty > novelty_peak ? novelty_peak = novelty;
+        w += 1;
+      );
+      analysis_novel_peak = novelty_peak;
+
+      w = 0;
+      loop(cand_count,
+        base = cand_base + w * cand_stride;
+        mem[base + 16] /= max(0.000001, analysis_novel_peak);
+
+        nrms = mem[base + 1];
+        npeak = mem[base + 2];
+        nflux = mem[base + 3];
+        nzc = mem[base + 4];
+        nctr = mem[base + 5];
+        nedge = mem[base + 6];
+        nslope = mem[base + 7];
+        nhf = mem[base + 8];
+        nmotion = mem[base + 9];
+        nonset = mem[base + 10];
+        rankn = mem[base + 12];
+        slope_neutral = 1 - abs(nslope);
+        slope_neutral < 0 ? slope_neutral = 0;
+        nslope_p = max(0, nslope);
+        nslope_n = max(0, -nslope);
+
+        attack_sc = 0.42 * nonset + 0.22 * nslope_p + 0.16 * nflux + 0.12 * nctr + 0.08 * npeak + 0.06 * mem[base + 16];
+        body_sc = 0.30 * nmotion + 0.22 * slope_neutral + 0.14 * sqrt(nrms) + 0.12 * nctr + 0.12 * rankn + 0.10 * (1 - min(1, nedge)) + 0.03 * mem[base + 16];
+        release_sc = 0.38 * nslope_n + 0.22 * (1 - nonset) + 0.16 * nmotion + 0.14 * (1 - min(1, nedge)) + 0.10 * rankn + 0.04 * mem[base + 16];
+        debris_sc = 0.40 * nhf + 0.18 * nzc + 0.16 * nflux + 0.12 * (1 - sqrt(nrms)) + 0.14 * (1 - min(1, nedge)) + 0.08 * mem[base + 16];
+
+        phase = phase_att;
+        score = attack_sc;
+        body_sc > score ? (
+          phase = phase_body;
+          score = body_sc;
+        );
+        release_sc > score ? (
+          phase = phase_rel;
+          score = release_sc;
+        );
+        debris_sc > score ? (
+          phase = phase_deb;
+          score = debris_sc;
+        );
+        mem[base + 13] = phase;
+
+        phase == phase_att ? (
+          family = 1;
+          nslope_p > 0.46 ? family += 1;
+          nonset > 0.44 ? family += 2;
+          nhf > 0.54 ? family += 4;
+        ) : phase == phase_body ? (
+          family = 1;
+          nrms > 0.46 ? family += 1;
+          nmotion > 0.42 ? family += 2;
+          nctr > 0.44 ? family += 4;
+        ) : phase == phase_rel ? (
+          family = 1;
+          nslope_n > 0.40 ? family += 1;
+          nmotion > 0.34 ? family += 2;
+          (1 - min(1, nedge)) > 0.44 ? family += 4;
+        ) : (
+          family = 1;
+          nhf > 0.50 ? family += 1;
+          nzc > 0.48 ? family += 2;
+          nonset > 0.38 ? family += 4;
+        );
+        mem[base + 14] = family;
+
+        phase == phase_att ? (
+          mem[attack_pool_base + attack_pool_count] = w;
+          attack_pool_count += 1;
+        ) : phase == phase_body ? (
+          mem[body_pool_base + body_pool_count] = w;
+          body_pool_count += 1;
+        ) : phase == phase_rel ? (
+          mem[release_pool_base + release_pool_count] = w;
+          release_pool_count += 1;
+        ) : (
+          mem[debris_pool_base + debris_pool_count] = w;
+          debris_pool_count += 1;
+        );
+
+        w += 1;
+      );
+    );
+
+    recent_head = 0;
+    w = 0;
+    loop(recent_max,
+      mem[recent_base + w] = -1;
+      w += 1;
+    );
+    last_phase = 0;
+    last_family = 0;
+    last_cand = -1;
+    smart_pick_phase = 0;
+    smart_pick_scale = scale_med;
+    smart_pick_family = 0;
+    analysis_ready = (active_count > 0) || (cand_count > 0);
+  );
+);
+
 function spawn_grain()
-local(slot, vb, chaos, activity, speed_l, ax_l, ay_l, jx_l, jy_l, acc_l, jerk_l, len_ms, len_samp, scan_center, wander_frames, start, pitch_cents, step, amp, amp_micro, pan, amp_scale, width, l_gain, r_gain)
+local(slot, vb, chaos, activity, speed_l, ax_l, ay_l, jx_l, jy_l, acc_l, jerk_l, len_ms, len_samp, scan_center, base_start, wander_frames, start, pitch_cents, step, amp, amp_micro, pan, amp_scale, width, l_gain, r_gain, cscale, cphase)
 (
   tex_loaded > 0 && tex_frames > 1 ? (
     chaos = clamp(sm_x, 0, 1);
@@ -426,8 +1489,21 @@ local(slot, vb, chaos, activity, speed_l, ax_l, ay_l, jx_l, jy_l, acc_l, jerk_l,
     len_samp = max(8, floor(len_ms * 0.001 * srate));
 
     scan_center = scan01 * (tex_frames - 1);
-    wander_frames = tex_frames * (0.002 + 0.020 * chaos * chaos + 0.012 * speed_l + 0.010 * acc_l);
-    start = scan_center + randSym() * wander_frames;
+    pick_mode == 1 ? (
+      base_start = pick_smart_start(scan_center);
+      cscale = smart_pick_scale;
+      cphase = smart_pick_phase;
+      wander_frames = (cscale == scale_short ? analysis_win_short : analysis_win_med) * (0.18 + 0.72 * chaos + 0.55 * speed_l + 0.40 * acc_l);
+      cphase == phase_body ? wander_frames *= 1.10;
+      cphase == phase_deb ? wander_frames *= 0.72;
+      cphase == phase_att ? wander_frames *= 0.86;
+      cphase == phase_rel ? wander_frames *= 0.94;
+    ) : (
+      base_start = skip_blank_start(scan_center);
+      wander_frames = tex_frames * (0.002 + 0.020 * chaos * chaos + 0.012 * speed_l + 0.010 * acc_l);
+    );
+    start = base_start + randSym() * wander_frames;
+    start = skip_blank_start(start);
 
     pitch_cents = pitch_st * 100;
     pitch_cents += pitch_drift_state * (10 + 40 * chaos);
@@ -461,7 +1537,6 @@ local(slot, vb, chaos, activity, speed_l, ax_l, ay_l, jx_l, jy_l, acc_l, jerk_l,
   );
 );
 
-
 function sync_params()
 (
   pitch_st = slider1;
@@ -469,6 +1544,7 @@ function sync_params()
   travel = slider3;
   out_gain = db_to_gain(slider4);
   play_mode = floor(slider5 + 0.5);
+  pick_mode = floor(slider6 + 0.5);
 
   control_follow = 1 - exp(-1 / max(1, 0.012 * srate));
   feature_follow = 1 - exp(-1 / max(1, 0.020 * srate));
@@ -476,6 +1552,7 @@ function sync_params()
 );
 
 function reset_source_state()
+local(i)
 (
   tex_loaded = 0;
   tex_sig = 0;
@@ -489,6 +1566,46 @@ function reset_source_state()
   src_frames = 0;
   wf_ready = 0;
   wf_bins = 0;
+  win_count = 0;
+  active_count = 0;
+  cand_count = 0;
+  attack_pool_count = 0;
+  body_pool_count = 0;
+  release_pool_count = 0;
+  debris_pool_count = 0;
+  analysis_ready = 0;
+  analysis_win = 0;
+  analysis_hop = 0;
+  analysis_win_short = 0;
+  analysis_hop_short = 0;
+  analysis_win_med = 0;
+  analysis_hop_med = 0;
+  analysis_max_rms = 0.000001;
+  analysis_max_peak = 0.000001;
+  analysis_max_flux = 0.000001;
+  analysis_max_zc = 0.000001;
+  analysis_max_edge = 0.000001;
+  analysis_max_hf = 0.000001;
+  analysis_max_motion = 0.000001;
+  analysis_max_onset = 0.000001;
+  analysis_max_slope_pos = 0.000001;
+  analysis_max_slope_neg = 0.000001;
+  analysis_max_ctr = 0.000001;
+  analysis_score_peak = 0.000001;
+  analysis_novel_peak = 0.000001;
+  best_cand = -1;
+  recent_head = 0;
+  last_phase = 0;
+  last_family = 0;
+  last_cand = -1;
+  smart_pick_phase = 0;
+  smart_pick_scale = scale_med;
+  smart_pick_family = 0;
+  i = 0;
+  loop(recent_max,
+    mem[recent_base + i] = -1;
+    i += 1;
+  );
 );
 
 function ui_button(id, x, y, w, h, label_str, accent)
@@ -622,6 +1739,7 @@ h > 0 ? (
           tex_items = copied;
           tex_frames = floor(copied / tex_ch);
           build_waveform();
+          analyze_source_candidates();
           reset_motion_state();
           spawn_countdown = 0;
           source_status = 1;
@@ -849,7 +1967,7 @@ gfx_set(0.94, 0.98, 1.0, 1);
 gfx_x = margin; gfx_y = 10; gfx_drawstr("TextureXY");
 gfx_setfont(2, "Arial", 12, 0);
 gfx_set(0.62, 0.70, 0.80, 1);
-gfx_x = margin; gfx_y = 36; gfx_drawstr("Draw a motion. Release to play it. X = Stable -> Wild. Y = Soft -> Active.");
+gfx_x = margin; gfx_y = 36; gfx_drawstr("Draw a motion. Release to play.");
 
 gfx_setfont(2, "Arial", 11, 'b');
 source_status == 1 ? (
@@ -884,7 +2002,7 @@ drawing && mouse_down ? (
 mouse_released && drawing ? (
   nx = clamp((mx - pad_x) / max(1, pad_w), 0, 1);
   ny = clamp(1 - (my - pad_y) / max(1, pad_h), 0, 1);
-  add_release_point(nx, ny, now, mx, my);
+  update_draw(nx, ny, now, mx, my);
   end_draw();
 );
 
@@ -929,15 +2047,13 @@ point_count > 0 ? (
   );
 );
 
-// Current point marker
-marker_x = pad_x + clamp(view_x, 0, 1) * pad_w;
-marker_y = pad_y + (1 - clamp(view_y, 0, 1)) * pad_h;
-gfx_set(0.95, 0.98, 1.0, 0.22);
-gfx_circle(marker_x, marker_y, 14, 1, 1);
-gfx_set(0.95, 0.98, 1.0, 1);
-gfx_circle(marker_x, marker_y, 6, 1, 1);
-gfx_set(0.07, 0.08, 0.10, 1);
-gfx_circle(marker_x, marker_y, 2, 1, 1);
+!drawing ? (
+  cx = pad_x + clamp(view_x, 0, 1) * pad_w;
+  cy = pad_y + (1 - clamp(view_y, 0, 1)) * pad_h;
+  gfx_set(0.95, 0.97, 1.00, 0.08);
+  gfx_line(cx, pad_y + 1, cx, pad_y + pad_h - 1, 1);
+  gfx_line(pad_x + 1, cy, pad_x + pad_w - 1, cy, 1);
+);
 
 // Waveform strip
 gfx_set(0.09, 0.10, 0.13, 1);
@@ -1059,17 +2175,30 @@ sy += 46;
 
 gfx_setfont(2, "Arial", 12, 'b');
 gfx_set(0.92, 0.97, 1.0, 1);
-gfx_x = sx; gfx_y = sy; gfx_drawstr("Pad semantics");
-sy += 24;
+gfx_x = sx; gfx_y = sy; gfx_drawstr("Source picking");
+sy += 22;
 
+bw2 = (sw - 6) * 0.5;
+ui_button(220, sx, sy, bw2, 28, "Naive", pick_mode == 0) ? (
+  slider6 = 0;
+  sliderchange(slider6);
+  sync_params();
+);
+ui_button(221, sx + bw2 + 6, sy, bw2, 28, "Smart", pick_mode == 1) ? (
+  slider6 = 1;
+  sliderchange(slider6);
+  sync_params();
+);
+sy += 38;
+
+pick_mode == 0 ? strcpy(#pick_desc, "Follows the scan path, while skipping silence and dead gaps.")
+               : strcpy(#pick_desc, "Texture-style smart picking: multi-scale descriptors, phase pools, and coherence-aware candidate choice.");
 gfx_setfont(2, "Arial", 11, 0);
 gfx_set(0.70, 0.78, 0.88, 1);
-gfx_x = sx; gfx_y = sy; gfx_drawstr("X position  -> stable to wild"); sy += 18;
-gfx_x = sx; gfx_y = sy; gfx_drawstr("Y position  -> soft to active"); sy += 18;
-gfx_x = sx; gfx_y = sy; gfx_drawstr("Fast motion -> more grains"); sy += 18;
-gfx_x = sx; gfx_y = sy; gfx_drawstr("X accel/jerk -> level + timing jitter"); sy += 18;
-gfx_x = sx; gfx_y = sy; gfx_drawstr("Y accel     -> pitch drift"); sy += 18;
-gfx_x = sx; gfx_y = sy; gfx_drawstr("Y jerk      -> micro pitch jitter");
+gfx_x = sx; gfx_y = sy; gfx_drawstr(#pick_desc);
+sy += 18;
+sprintf(#pick_stats, "%d active | %d smart | A%d B%d R%d D%d", active_count, cand_count, attack_pool_count, body_pool_count, release_pool_count, debris_pool_count);
+gfx_x = sx; gfx_y = sy; gfx_drawstr(#pick_stats);
 
 
 // Footer hint
