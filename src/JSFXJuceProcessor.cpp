@@ -86,6 +86,12 @@
   static const uint8_t DSPJSFX_GFX_VAR_FLAGS[1] = { 0 };
 #endif
 
+#ifndef DSPJSFX_STRING_LITERALS_COUNT
+  typedef struct DSPJSFX_StringLiteralDesc { int64_t handle; int32_t length; const uint8_t* data; } DSPJSFX_StringLiteralDesc;
+  #define DSPJSFX_STRING_LITERALS_COUNT 0
+  static const DSPJSFX_StringLiteralDesc DSPJSFX_STRING_LITERALS[1] = { { 0, 0, nullptr } };
+#endif
+
 // ---- You must provide this symbol for AOT (declared in the generated header)
 extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed);
 
@@ -1189,6 +1195,7 @@ extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed)
 namespace
 {
 static constexpr int kInitialMidiQueueCapacity = 512;
+static constexpr int64_t kJsfxDynamicStringHandleBase = (int64_t) 1 << 48;
 
 static inline int jsfxRoundToInt (double v) noexcept
 {
@@ -1200,6 +1207,12 @@ static inline int jsfxRoundToInt (double v) noexcept
 static inline int jsfxClampMidiByte (double v) noexcept
 {
     return juce::jlimit (0, 255, jsfxRoundToInt (v));
+}
+
+static inline int64_t jsfxClampMemIndex (double v) noexcept
+{
+    const int64_t idx = jsfxRoundToIndex (v);
+    return juce::jmax<int64_t> ((int64_t) 0, idx);
 }
 
 static inline int jsfxClampMidiOffset (const DSPJSFX_State* st, double v) noexcept
@@ -1216,37 +1229,274 @@ static inline int jsfxShortMessageLength (int statusByte) noexcept
     return juce::jmin (3, len);
 }
 
-static juce::MidiMessage makeJsfxMidiMessage (int msg1, int msg2, int msg3)
+struct JsfxRuntimeMidiEvent
 {
-    const juce::uint8 data[3] = { (juce::uint8) (msg1 & 0xff), (juce::uint8) (msg2 & 0xff), (juce::uint8) (msg3 & 0xff) };
-    return juce::MidiMessage (data, jsfxShortMessageLength (msg1), 0.0);
+    int sampleOffset = 0;
+    int bus = 0;
+    int length = 0;
+    std::array<juce::uint8, 3> shortBytes { { 0, 0, 0 } };
+    std::vector<juce::uint8> longBytes;
+
+    void assign (const juce::uint8* src, int len)
+    {
+        length = 0;
+        shortBytes = { { 0, 0, 0 } };
+        longBytes.clear();
+
+        if (src == nullptr || len <= 0)
+            return;
+
+        if (len <= 3)
+        {
+            length = len;
+            for (int i = 0; i < len; ++i)
+                shortBytes[(size_t) i] = src[i];
+            return;
+        }
+
+        longBytes.assign (src, src + len);
+        length = (int) longBytes.size();
+    }
+
+    const juce::uint8* data() const noexcept
+    {
+        if (length <= 0)
+            return nullptr;
+        return length <= 3 ? shortBytes.data() : longBytes.data();
+    }
+
+    bool isSysEx() const noexcept
+    {
+        const auto* bytes = data();
+        if (bytes == nullptr || length <= 0)
+            return false;
+        return bytes[0] == (juce::uint8) 0xF0 || (length > 1 && bytes[length - 1] == (juce::uint8) 0xF7);
+    }
+};
+
+struct JsfxMidiRuntime
+{
+    std::vector<JsfxRuntimeMidiEvent> midiInEvents;
+    std::vector<JsfxRuntimeMidiEvent> midiOutEvents;
+    int midiInReadIndex = 0;
+    std::unordered_map<int64_t, std::string> dynamicStrings;
+    int64_t nextDynamicStringHandle = kJsfxDynamicStringHandleBase;
+
+    void beginBlock()
+    {
+        midiInEvents.clear();
+        midiOutEvents.clear();
+        midiInReadIndex = 0;
+    }
+
+    void resetAll()
+    {
+        beginBlock();
+        dynamicStrings.clear();
+        nextDynamicStringHandle = kJsfxDynamicStringHandleBase;
+    }
+
+    void reserveQueues (size_t minCapacity)
+    {
+        if (midiInEvents.capacity() < minCapacity)
+            midiInEvents.reserve (minCapacity);
+        if (midiOutEvents.capacity() < minCapacity)
+            midiOutEvents.reserve (minCapacity);
+    }
+};
+
+static inline JsfxMidiRuntime* getJsfxMidiRuntime (DSPJSFX_State* st) noexcept
+{
+    return (st != nullptr) ? static_cast<JsfxMidiRuntime*> (st->runtimeOpaque) : nullptr;
 }
 
-static void stableSortMidiEventsByOffset (DSPJSFX_MidiEvent* events, int count) noexcept
+static inline const JsfxMidiRuntime* getJsfxMidiRuntime (const DSPJSFX_State* st) noexcept
 {
-    if (events == nullptr || count <= 1)
+    return (st != nullptr) ? static_cast<const JsfxMidiRuntime*> (st->runtimeOpaque) : nullptr;
+}
+
+static inline int64_t jsfxStringHandleFromDouble (double v) noexcept
+{
+    if (! std::isfinite (v))
+        return 0;
+    return (int64_t) std::llround (v);
+}
+
+static const DSPJSFX_StringLiteralDesc* findJsfxStringLiteralDesc (int64_t handle) noexcept
+{
+   #if DSPJSFX_STRING_LITERALS_COUNT > 0
+    for (int i = 0; i < (int) DSPJSFX_STRING_LITERALS_COUNT; ++i)
+    {
+        if (DSPJSFX_STRING_LITERALS[i].handle == handle)
+            return &DSPJSFX_STRING_LITERALS[i];
+    }
+   #else
+    juce::ignoreUnused (handle);
+   #endif
+    return nullptr;
+}
+
+static inline void jsfxSetCurrentMidiBus (DSPJSFX_State* st, int bus) noexcept
+{
+    if (st == nullptr)
         return;
 
-    for (int i = 1; i < count; ++i)
+    if (st->ext_midi_bus == 0.0)
+        st->midi_bus = 0.0;
+    else
+        st->midi_bus = (double) juce::jlimit (0, 15, bus);
+}
+
+static inline int jsfxGetCurrentMidiBus (const DSPJSFX_State* st) noexcept
+{
+    if (st == nullptr || st->ext_midi_bus == 0.0)
+        return 0;
+    return juce::jlimit (0, 15, jsfxRoundToInt (st->midi_bus));
+}
+
+static const juce::uint8* jsfxGetStringBytes (const DSPJSFX_State* st, double strHandle, int& outLength) noexcept
+{
+    outLength = 0;
+
+    const int64_t handle = jsfxStringHandleFromDouble (strHandle);
+    if (handle == 0)
+        return nullptr;
+
+    if (const auto* lit = findJsfxStringLiteralDesc (handle); lit != nullptr)
     {
-        const auto key = events[i];
-        int j = i - 1;
-        while (j >= 0 && events[j].sampleOffset > key.sampleOffset)
+        outLength = juce::jmax (0, (int) lit->length);
+        return lit->data;
+    }
+
+    if (const auto* rt = getJsfxMidiRuntime (st); rt != nullptr)
+    {
+        const auto it = rt->dynamicStrings.find (handle);
+        if (it != rt->dynamicStrings.end())
         {
-            events[j + 1] = events[j];
-            --j;
+            outLength = (int) it->second.size();
+            return reinterpret_cast<const juce::uint8*> (it->second.data());
         }
-        events[j + 1] = key;
+    }
+
+    return nullptr;
+}
+
+static std::string* jsfxGetMutableStringForSlot (DSPJSFX_State* st, double* slot) noexcept
+{
+    if (st == nullptr || slot == nullptr)
+        return nullptr;
+
+    auto* rt = getJsfxMidiRuntime (st);
+    if (rt == nullptr)
+        return nullptr;
+
+    try
+    {
+        const int64_t handle = jsfxStringHandleFromDouble (*slot);
+        if (const auto it = rt->dynamicStrings.find (handle); it != rt->dynamicStrings.end())
+            return &it->second;
+
+        const int64_t newHandle = rt->nextDynamicStringHandle++;
+        auto result = rt->dynamicStrings.emplace (newHandle, std::string());
+        *slot = (double) newHandle;
+        return &result.first->second;
+    }
+    catch (...)
+    {
+        return nullptr;
     }
 }
 
-static inline bool midiEventsAlreadySortedByOffset (const DSPJSFX_MidiEvent* events, int count) noexcept
+static bool jsfxAssignStringBytes (DSPJSFX_State* st, double* slot, const juce::uint8* data, int len) noexcept
 {
-    if (events == nullptr || count <= 1)
+    auto* dst = jsfxGetMutableStringForSlot (st, slot);
+    if (dst == nullptr)
+        return false;
+
+    try
+    {
+        if (data == nullptr || len <= 0)
+            dst->clear();
+        else
+            dst->assign (reinterpret_cast<const char*> (data), (size_t) len);
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+static bool jsfxReadBytesFromMem (const DSPJSFX_State* st, double bufIndex, int len, std::vector<juce::uint8>& out)
+{
+    out.clear();
+
+    if (st == nullptr || st->mem == nullptr || len <= 0)
+        return false;
+
+    const int64_t base = jsfxClampMemIndex (bufIndex);
+    const int64_t end = base + len;
+    if (end < base || end > st->memN)
+        return false;
+
+    out.resize ((size_t) len);
+    for (int i = 0; i < len; ++i)
+        out[(size_t) i] = (juce::uint8) jsfxClampMidiByte (st->mem[base + i]);
+
+    return true;
+}
+
+static int jsfxWriteBytesToMem (DSPJSFX_State* st, double bufIndex, const juce::uint8* data, int len) noexcept
+{
+    if (st == nullptr || data == nullptr || len <= 0)
+        return 0;
+
+    const int64_t base = jsfxClampMemIndex (bufIndex);
+    const int64_t end = base + len;
+    if (end < base)
+        return 0;
+
+    jsfx_ensure_mem (st, end);
+    if (st->mem == nullptr || end > st->memN)
+        return 0;
+
+    for (int i = 0; i < len; ++i)
+        st->mem[base + i] = (double) data[i];
+
+    noteTrackedJsfxMemUsed (st, end);
+    return len;
+}
+
+static inline bool jsfxLooksLikeSysEx (const juce::uint8* bytes, int len) noexcept
+{
+    if (bytes == nullptr || len <= 0)
+        return false;
+    return len > 3 || bytes[0] == (juce::uint8) 0xF0 || bytes[len - 1] == (juce::uint8) 0xF7;
+}
+
+static int jsfxPrepareVariableMidiBytes (std::vector<juce::uint8>& bytes, bool forceSysEx)
+{
+    if (bytes.empty())
+        return 0;
+
+    if (forceSysEx || jsfxLooksLikeSysEx (bytes.data(), (int) bytes.size()))
+    {
+        if (bytes.front() != (juce::uint8) 0xF0)
+            bytes.insert (bytes.begin(), (juce::uint8) 0xF0);
+        if (bytes.back() != (juce::uint8) 0xF7)
+            bytes.push_back ((juce::uint8) 0xF7);
+    }
+
+    return (int) bytes.size();
+}
+
+static bool runtimeMidiEventsAlreadySortedByOffset (const std::vector<JsfxRuntimeMidiEvent>& events) noexcept
+{
+    if (events.size() <= 1)
         return true;
 
-    int prev = events[0].sampleOffset;
-    for (int i = 1; i < count; ++i)
+    int prev = events.front().sampleOffset;
+    for (size_t i = 1; i < events.size(); ++i)
     {
         const int cur = events[i].sampleOffset;
         if (cur < prev)
@@ -1254,6 +1504,66 @@ static inline bool midiEventsAlreadySortedByOffset (const DSPJSFX_MidiEvent* eve
         prev = cur;
     }
     return true;
+}
+
+static void stableSortRuntimeMidiEventsByOffset (std::vector<JsfxRuntimeMidiEvent>& events)
+{
+    std::stable_sort (events.begin(), events.end(),
+                      [] (const JsfxRuntimeMidiEvent& a, const JsfxRuntimeMidiEvent& b)
+                      {
+                          return a.sampleOffset < b.sampleOffset;
+                      });
+}
+
+static bool jsfxQueueOutputEvent (DSPJSFX_State* st, int sampleOffset, int bus, const juce::uint8* data, int len)
+{
+    if (st == nullptr || data == nullptr || len <= 0)
+        return false;
+
+    auto* rt = getJsfxMidiRuntime (st);
+    if (rt == nullptr)
+        return false;
+
+    try
+    {
+        JsfxRuntimeMidiEvent ev;
+        ev.sampleOffset = juce::jmax (0, sampleOffset);
+        ev.bus = juce::jlimit (0, 15, bus);
+        ev.assign (data, len);
+        if (ev.length <= 0 || ev.data() == nullptr)
+            return false;
+
+        rt->midiOutEvents.push_back (std::move (ev));
+        st->midiOutCount = (int32_t) rt->midiOutEvents.size();
+        return true;
+    }
+    catch (...)
+    {
+        ++st->midiOutDropped;
+        return false;
+    }
+}
+
+static bool jsfxQueueOutputEvent (DSPJSFX_State* st, const JsfxRuntimeMidiEvent& ev)
+{
+    return jsfxQueueOutputEvent (st, ev.sampleOffset, ev.bus, ev.data(), ev.length);
+}
+
+static const JsfxRuntimeMidiEvent* jsfxPopInputEvent (DSPJSFX_State* st) noexcept
+{
+    if (st == nullptr)
+        return nullptr;
+
+    auto* rt = getJsfxMidiRuntime (st);
+    if (rt == nullptr)
+        return nullptr;
+
+    if (rt->midiInReadIndex < 0 || rt->midiInReadIndex >= (int) rt->midiInEvents.size())
+        return nullptr;
+
+    const auto* ev = &rt->midiInEvents[(size_t) rt->midiInReadIndex++];
+    st->midiInReadIndex = rt->midiInReadIndex;
+    return ev;
 }
 
 static void appendAllNotesOffMessages (juce::MidiBuffer& midiMessages, int sampleOffset)
@@ -1269,39 +1579,212 @@ static void appendAllNotesOffMessages (juce::MidiBuffer& midiMessages, int sampl
 
 extern "C" int jsfx_midirecv (DSPJSFX_State* st, double* offset, double* msg1, double* msg2, double* msg3)
 {
-    if (st == nullptr || st->midiIn == nullptr)
+    if (st == nullptr)
         return 0;
 
-    if (st->midiInReadIndex < 0 || st->midiInReadIndex >= st->midiInCount)
+    while (const auto* ev = jsfxPopInputEvent (st))
+    {
+        jsfxSetCurrentMidiBus (st, ev->bus);
+
+        if (ev->length > 3 || ev->isSysEx())
+        {
+            (void) jsfxQueueOutputEvent (st, *ev);
+            continue;
+        }
+
+        const auto* bytes = ev->data();
+        if (bytes == nullptr || ev->length <= 0)
+            continue;
+
+        if (offset != nullptr) *offset = (double) ev->sampleOffset;
+        if (msg1 != nullptr) *msg1 = (double) bytes[0];
+        if (msg2 != nullptr) *msg2 = (double) (ev->length > 1 ? bytes[1] : 0);
+        if (msg3 != nullptr) *msg3 = (double) (ev->length > 2 ? bytes[2] : 0);
+        return 1;
+    }
+
+    return 0;
+}
+
+extern "C" int jsfx_midirecv_msg23 (DSPJSFX_State* st, double* offset, double* msg1, double* msg23)
+{
+    double m2 = 0.0;
+    double m3 = 0.0;
+    if (! jsfx_midirecv (st, offset, msg1, &m2, &m3))
         return 0;
 
-    const auto& ev = st->midiIn[st->midiInReadIndex++];
-    if (offset != nullptr) *offset = (double) ev.sampleOffset;
-    if (msg1 != nullptr) *msg1 = (double) ev.msg1;
-    if (msg2 != nullptr) *msg2 = (double) ev.msg2;
-    if (msg3 != nullptr) *msg3 = (double) ev.msg3;
+    if (msg23 != nullptr)
+        *msg23 = m2 + (256.0 * m3);
     return 1;
+}
+
+extern "C" int jsfx_midirecv_buf (DSPJSFX_State* st, double* offset, double buf, double maxlen)
+{
+    if (st == nullptr)
+        return 0;
+
+    const int maxLen = juce::jmax (0, jsfxRoundToInt (maxlen));
+    if (maxLen <= 0)
+        return 0;
+
+    while (const auto* ev = jsfxPopInputEvent (st))
+    {
+        jsfxSetCurrentMidiBus (st, ev->bus);
+
+        const auto* bytes = ev->data();
+        if (bytes == nullptr || ev->length <= 0)
+            continue;
+
+        if (ev->length > maxLen)
+        {
+            (void) jsfxQueueOutputEvent (st, *ev);
+            continue;
+        }
+
+        if (offset != nullptr)
+            *offset = (double) ev->sampleOffset;
+        return jsfxWriteBytesToMem (st, buf, bytes, ev->length);
+    }
+
+    return 0;
+}
+
+extern "C" int jsfx_midirecv_str (DSPJSFX_State* st, double* offset, double* outStr)
+{
+    if (st == nullptr || outStr == nullptr)
+        return 0;
+
+    while (const auto* ev = jsfxPopInputEvent (st))
+    {
+        jsfxSetCurrentMidiBus (st, ev->bus);
+
+        const auto* bytes = ev->data();
+        if (bytes == nullptr || ev->length <= 0)
+            continue;
+
+        if (! jsfxAssignStringBytes (st, outStr, bytes, ev->length))
+            return 0;
+
+        if (offset != nullptr)
+            *offset = (double) ev->sampleOffset;
+        return ev->length;
+    }
+
+    return 0;
 }
 
 extern "C" int jsfx_midisend (DSPJSFX_State* st, double offset, double msg1, double msg2, double msg3)
 {
-    if (st == nullptr || st->midiOut == nullptr || st->midiOutCapacity <= 0)
+    if (st == nullptr)
         return 0;
 
-    if (st->midiOutCount >= st->midiOutCapacity)
+    const int status = jsfxClampMidiByte (msg1);
+    const juce::uint8 raw[3] = {
+        (juce::uint8) status,
+        (juce::uint8) jsfxClampMidiByte (msg2),
+        (juce::uint8) jsfxClampMidiByte (msg3)
+    };
+    const int len = jsfxShortMessageLength (status);
+
+    if (! jsfxQueueOutputEvent (st, jsfxClampMidiOffset (st, offset), jsfxGetCurrentMidiBus (st), raw, len))
+        return 0;
+    return status;
+}
+
+extern "C" int jsfx_midisend_msg23 (DSPJSFX_State* st, double offset, double msg1, double msg23)
+{
+    const int packed = jsfxRoundToInt (msg23);
+    const int msg2 = packed & 0xff;
+    const int msg3 = (packed >> 8) & 0xff;
+    return jsfx_midisend (st, offset, msg1, (double) msg2, (double) msg3);
+}
+
+extern "C" int jsfx_midisend_buf (DSPJSFX_State* st, double offset, double buf, double len)
+{
+    const int requestedLen = juce::jmax (0, jsfxRoundToInt (len));
+    if (st == nullptr || requestedLen <= 0)
+        return 0;
+
+    std::vector<juce::uint8> bytes;
+    if (! jsfxReadBytesFromMem (st, buf, requestedLen, bytes))
+        return 0;
+
+    const int actualLen = jsfxPrepareVariableMidiBytes (bytes, false);
+    if (actualLen <= 0)
+        return 0;
+
+    return jsfxQueueOutputEvent (st, jsfxClampMidiOffset (st, offset), jsfxGetCurrentMidiBus (st), bytes.data(), actualLen)
+             ? actualLen
+             : 0;
+}
+
+extern "C" int jsfx_midisend_str (DSPJSFX_State* st, double offset, double strHandle)
+{
+    if (st == nullptr)
+        return 0;
+
+    int len = 0;
+    const auto* src = jsfxGetStringBytes (st, strHandle, len);
+    if (src == nullptr || len <= 0)
+        return 0;
+
+    try
+    {
+        std::vector<juce::uint8> bytes (src, src + len);
+        const int actualLen = jsfxPrepareVariableMidiBytes (bytes, false);
+        if (actualLen <= 0)
+            return 0;
+
+        return jsfxQueueOutputEvent (st, jsfxClampMidiOffset (st, offset), jsfxGetCurrentMidiBus (st), bytes.data(), actualLen)
+                 ? actualLen
+                 : 0;
+    }
+    catch (...)
     {
         ++st->midiOutDropped;
         return 0;
     }
-
-    auto& ev = st->midiOut[st->midiOutCount++];
-    ev.sampleOffset = jsfxClampMidiOffset (st, offset);
-    ev.msg1 = jsfxClampMidiByte (msg1);
-    ev.msg2 = jsfxClampMidiByte (msg2);
-    ev.msg3 = jsfxClampMidiByte (msg3);
-    return 1;
 }
 
+extern "C" int jsfx_midisyx (DSPJSFX_State* st, double offset, double msgptr, double len)
+{
+    const int requestedLen = juce::jmax (0, jsfxRoundToInt (len));
+    if (st == nullptr || requestedLen <= 0)
+        return 0;
+
+    std::vector<juce::uint8> bytes;
+    if (! jsfxReadBytesFromMem (st, msgptr, requestedLen, bytes))
+        return 0;
+
+    const int actualLen = jsfxPrepareVariableMidiBytes (bytes, true);
+    if (actualLen <= 0)
+        return 0;
+
+    return jsfxQueueOutputEvent (st, jsfxClampMidiOffset (st, offset), jsfxGetCurrentMidiBus (st), bytes.data(), actualLen)
+             ? actualLen
+             : 0;
+}
+
+extern "C" int jsfx_strlen (DSPJSFX_State* st, double strHandle)
+{
+    int len = 0;
+    (void) jsfxGetStringBytes (st, strHandle, len);
+    return len;
+}
+
+extern "C" int jsfx_str_getchar (DSPJSFX_State* st, double strHandle, double index)
+{
+    int len = 0;
+    const auto* bytes = jsfxGetStringBytes (st, strHandle, len);
+    if (bytes == nullptr || len <= 0)
+        return 0;
+
+    const int64_t idx = jsfxRoundToIndex (index);
+    if (idx < 0 || idx >= len)
+        return 0;
+
+    return (int) bytes[(size_t) idx];
+}
 
 extern "C" int jsfx_sliderchange (DSPJSFX_State* st, double sliderMask)
 {
@@ -1880,6 +2363,7 @@ public:
         endAllDspGestures();
         internalSliderPendingMask = 0;
         resetGfxSliderPreviewState();
+        midiRuntime.beginBlock();
         st.midiInCount = 0;
         st.midiInReadIndex = 0;
         st.midiOutCount = 0;
@@ -1891,6 +2375,7 @@ public:
         endAllDspGestures();
         internalSliderPendingMask = 0;
         resetGfxSliderPreviewState();
+        midiRuntime.beginBlock();
         st.midiInCount = 0;
         st.midiInReadIndex = 0;
         st.midiOutCount = 0;
@@ -4399,6 +4884,7 @@ private:
 
         st.mem  = memKeep;
         st.memN = memNKeep;
+        midiRuntime.resetAll();
         bindMidiRuntimeBuffers();
 
         gMemOwner[&st] = st.mem;
@@ -4417,19 +4903,24 @@ private:
         st.midiOutCapacity = (int32_t) midiOutStorage.size();
         st.midiOutCount = 0;
 
+        st.runtimeOpaque = &midiRuntime;
+        st.midi_bus = 0.0;
+        st.ext_midi_bus = 0.0;
         st.currentSampleRate = st.srate;
         st.currentBlockSize = 0;
     }
 
     void prepareMidiRuntime (int samplesPerBlockExpected)
     {
-        juce::ignoreUnused (samplesPerBlockExpected);
+        const int reserveHint = juce::jmax (kInitialMidiQueueCapacity, samplesPerBlockExpected > 0 ? samplesPerBlockExpected : 0);
 
         if ((int) midiInStorage.size() < kInitialMidiQueueCapacity)
             midiInStorage.resize ((size_t) kInitialMidiQueueCapacity);
         if ((int) midiOutStorage.size() < kInitialMidiQueueCapacity)
             midiOutStorage.resize ((size_t) kInitialMidiQueueCapacity);
 
+        midiRuntime.reserveQueues ((size_t) reserveHint);
+        midiRuntime.resetAll();
         bindMidiRuntimeBuffers();
     }
 
@@ -4448,61 +4939,67 @@ private:
         st.midiInCountLastBlock = 0;
         st.midiOutCountLastBlock = 0;
 
-        if (st.midiIn == nullptr || st.midiInCapacity <= 0)
-            return;
+        midiRuntime.beginBlock();
+        midiRuntime.reserveQueues ((size_t) kInitialMidiQueueCapacity);
 
         for (const auto metadata : midiMessages)
         {
             const auto msg = metadata.getMessage();
-            if (msg.isSysEx())
-                continue;
-
-            if (st.midiInCount >= st.midiInCapacity)
-            {
-                ++st.midiInDropped;
-                continue;
-            }
-
             const auto* raw = msg.getRawData();
-            const int rawSize = juce::jmin (msg.getRawDataSize(), 3);
+            const int rawSize = msg.getRawDataSize();
             if (raw == nullptr || rawSize <= 0)
                 continue;
 
-            auto& ev = st.midiIn[st.midiInCount++];
-            ev.sampleOffset = juce::jlimit (0, juce::jmax (0, numSamples - 1), metadata.samplePosition);
-            ev.msg1 = (int) (juce::uint8) raw[0];
-            ev.msg2 = (rawSize > 1) ? (int) (juce::uint8) raw[1] : 0;
-            ev.msg3 = (rawSize > 2) ? (int) (juce::uint8) raw[2] : 0;
+            try
+            {
+                JsfxRuntimeMidiEvent ev;
+                ev.sampleOffset = juce::jlimit (0, juce::jmax (0, numSamples - 1), metadata.samplePosition);
+                ev.bus = 0;
+                ev.assign (reinterpret_cast<const juce::uint8*> (raw), rawSize);
+                if (ev.length <= 0 || ev.data() == nullptr)
+                    continue;
+                midiRuntime.midiInEvents.push_back (std::move (ev));
+            }
+            catch (...)
+            {
+                ++st.midiInDropped;
+            }
         }
 
+        midiRuntime.midiInReadIndex = 0;
+        st.midiInCount = (int32_t) midiRuntime.midiInEvents.size();
         st.midiInCountLastBlock = st.midiInCount;
         st.midiInPeak = juce::jmax (st.midiInPeak, st.midiInCount);
     }
 
     void flushMidiFromState (juce::MidiBuffer& midiMessages)
     {
-        if (st.midiOut == nullptr || st.midiOutCount <= 0)
+        if (midiRuntime.midiOutEvents.empty())
             return;
 
-        if (! midiEventsAlreadySortedByOffset (st.midiOut, st.midiOutCount))
-            stableSortMidiEventsByOffset (st.midiOut, st.midiOutCount);
+        if (! runtimeMidiEventsAlreadySortedByOffset (midiRuntime.midiOutEvents))
+            stableSortRuntimeMidiEventsByOffset (midiRuntime.midiOutEvents);
 
+        st.midiOutCount = (int32_t) midiRuntime.midiOutEvents.size();
         st.midiOutCountLastBlock = st.midiOutCount;
         st.midiOutPeak = juce::jmax (st.midiOutPeak, st.midiOutCount);
 
-        midiMessages.ensureSize ((size_t) juce::jmax (128, st.midiOutCount * 8));
+        size_t totalBytes = 0;
+        for (const auto& ev : midiRuntime.midiOutEvents)
+            totalBytes += (size_t) juce::jmax (1, ev.length);
 
-        for (int i = 0; i < st.midiOutCount; ++i)
+        midiMessages.ensureSize ((size_t) juce::jmax ((int64_t) 128, (int64_t) totalBytes * 2));
+
+        for (const auto& ev : midiRuntime.midiOutEvents)
         {
-            const auto& ev = st.midiOut[i];
-            const juce::uint8 raw[3] = {
-                (juce::uint8) (ev.msg1 & 0xff),
-                (juce::uint8) (ev.msg2 & 0xff),
-                (juce::uint8) (ev.msg3 & 0xff)
-            };
-            midiMessages.addEvent (raw, jsfxShortMessageLength (ev.msg1), ev.sampleOffset);
+            const auto* raw = ev.data();
+            if (raw == nullptr || ev.length <= 0)
+                continue;
+
+            midiMessages.addEvent (raw, ev.length, juce::jmax (0, ev.sampleOffset));
         }
 
+        midiRuntime.midiOutEvents.clear();
         st.midiOutCount = 0;
     }
 
@@ -4771,6 +5268,7 @@ private:
         return clamp01f (std::log (std::abs (inside)) / logBase);
     }
     DSPJSFX_State st {};
+    JsfxMidiRuntime midiRuntime;
     std::vector<DSPJSFX_MidiEvent> midiInStorage;
     std::vector<DSPJSFX_MidiEvent> midiOutStorage;
     std::atomic<bool> pendingEmergencyMidiCleanup { false };
