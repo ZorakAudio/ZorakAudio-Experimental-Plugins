@@ -918,6 +918,27 @@ public:
     NSEEL_addfunc_varparm_ex("spl",      1, 0, NSEEL_PProc_THIS, &eel_spl,      nullptr);
     NSEEL_addfunc_varparm_ex("freembuf", 1, 0, NSEEL_PProc_THIS, &eel_freembuf, nullptr);
 
+    // Inert file_* stubs for @gfx.
+    //
+    // The @gfx interpreter compiles @init alongside @gfx so shared helper
+    // functions remain visible to UI code. Some samplers define their
+    // DSP-owned file slot loading helpers in @init and only mirror the
+    // resulting state into @gfx via vars/mem. Registering harmless "no file"
+    // builtins here lets those scripts compile and run without giving the
+    // lightweight @gfx VM direct ownership of host file I/O.
+    NSEEL_addfunc_varparm_ex("file_open",         1, 0, NSEEL_PProc_THIS, &eel_file_open,         nullptr);
+    NSEEL_addfunc_varparm_ex("file_open_multi",   1, 0, NSEEL_PProc_THIS, &eel_file_open_multi,   nullptr);
+    NSEEL_addfunc_varparm_ex("file_close",        1, 0, NSEEL_PProc_THIS, &eel_file_close,        nullptr);
+    NSEEL_addfunc_varparm_ex("file_rewind",       1, 0, NSEEL_PProc_THIS, &eel_file_rewind,       nullptr);
+    NSEEL_addfunc_varparm_ex("file_seek",         2, 0, NSEEL_PProc_THIS, &eel_file_seek,         nullptr);
+    NSEEL_addfunc_varparm_ex("file_avail",        1, 0, NSEEL_PProc_THIS, &eel_file_avail,        nullptr);
+    NSEEL_addfunc_varparm_ex("file_text",         1, 0, NSEEL_PProc_THIS, &eel_file_text,         nullptr);
+    NSEEL_addfunc_varparm_ex("file_riff",         3, 0, NSEEL_PProc_THIS, &eel_file_riff,         nullptr);
+    NSEEL_addfunc_varparm_ex("file_var",          2, 0, NSEEL_PProc_THIS, &eel_file_var,          nullptr);
+    NSEEL_addfunc_varparm_ex("file_mem",          3, 0, NSEEL_PProc_THIS, &eel_file_mem,          nullptr);
+    NSEEL_addfunc_varparm_ex("file_multi_count",  1, 0, NSEEL_PProc_THIS, &eel_file_multi_count,  nullptr);
+    NSEEL_addfunc_varparm_ex("file_multi_select", 2, 0, NSEEL_PProc_THIS, &eel_file_multi_select, nullptr);
+
   }
 
   static uint64_t sliderMaskFromArg(GfxVm* self, EEL_F* argPtr, double argValue)
@@ -1625,6 +1646,118 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
       NSEEL_VM_setramsize(self->m_vm, (unsigned int)n);
 
     self->memSize = (int)n;
+    return 0.0;
+  }
+
+  // -------------------------------------------------------------------
+  // Inert DSP file_* stubs for the lightweight @gfx VM.
+  //
+  // The DSP runtime owns real file slot loading and mirrors the resulting data
+  // into @gfx-visible vars/mem. These implementations deliberately expose
+  // "missing file" behaviour so shared @init helper chains that mention
+  // file_open()/file_open_multi()/... can compile and execute safely inside the
+  // @gfx interpreter without performing file I/O.
+  // -------------------------------------------------------------------
+  static EEL_F NSEEL_CGEN_CALL eel_file_open(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+    (void)np;
+    (void)parms;
+    return -1.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_file_open_multi(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+    (void)np;
+    (void)parms;
+    return -1.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_file_close(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+    (void)np;
+    (void)parms;
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_file_rewind(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+    (void)np;
+    (void)parms;
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_file_seek(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+    (void)np;
+    (void)parms;
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_file_avail(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+    (void)np;
+    (void)parms;
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_file_text(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+    (void)np;
+    (void)parms;
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_file_riff(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+
+    if (np >= 2 && parms[1] != nullptr)
+      *parms[1] = 0.0;
+
+    if (np >= 3 && parms[2] != nullptr)
+      *parms[2] = 0.0;
+
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_file_var(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+
+    if (np >= 2 && parms[1] != nullptr)
+      *parms[1] = 0.0;
+
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_file_mem(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+    (void)np;
+    (void)parms;
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_file_multi_count(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+    (void)np;
+    (void)parms;
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_file_multi_select(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void)opaque;
+    (void)np;
+    (void)parms;
     return 0.0;
   }
 

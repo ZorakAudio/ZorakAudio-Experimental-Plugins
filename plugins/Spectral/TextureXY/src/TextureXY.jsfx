@@ -95,6 +95,11 @@ function wrap01(v)
   v;
 );
 
+function pix(v)
+(
+  floor(v) + 0.5;
+);
+
 function db_to_gain(db)
 (
   exp((db / 20) * ln10);
@@ -173,7 +178,46 @@ function start_playback()
     playback_active = 1;
     play_phase = 0;
     play_dir = 1;
+    scan_frame = 0;
+    scan_dir = 1;
+    scan01 = 0;
     snap_pending = 1;
+  );
+);
+
+function advance_scan_transport(mode_local)
+local(step_frames, lim)
+(
+  tex_frames > 1 ? (
+    lim = max(1, tex_frames - 1);
+    step_frames = max(0.0001, travel) * tex_sr / srate;
+
+    mode_local == 2 ? (
+      scan_frame += step_frames * scan_dir;
+      scan_frame > lim ? (
+        scan_frame = lim - (scan_frame - lim);
+        scan_dir = -1;
+      );
+      scan_frame < 0 ? (
+        scan_frame = -scan_frame;
+        scan_dir = 1;
+      );
+      scan_frame = clamp(scan_frame, 0, lim);
+    ) : mode_local == 1 ? (
+      scan_frame = wrap_src_pos(scan_frame + step_frames);
+      scan_dir = 1;
+    ) : (
+      scan_frame += step_frames;
+      scan_frame > lim ? scan_frame = lim;
+      scan_frame < 0 ? scan_frame = 0;
+      scan_dir = 1;
+    );
+
+    scan01 = clamp(scan_frame / lim, 0, 1);
+  ) : (
+    scan_frame = 0;
+    scan_dir = 1;
+    scan01 = 0;
   );
 );
 
@@ -203,6 +247,8 @@ local(i)
   view_y = sm_y;
   view_speed = 0;
   scan01 = 0;
+  scan_frame = 0;
+  scan_dir = 1;
   snap_pending = 0;
   smart_pick_phase = 0;
   smart_pick_scale = scale_med;
@@ -246,6 +292,9 @@ function begin_draw(nx, ny, now, px, py)
   live_x_target = nx;
   live_y_target = ny;
   live_speed_target = 0;
+  scan_frame = 0;
+  scan_dir = 1;
+  scan01 = 0;
   hard_set_motion(nx, ny, 0);
   add_point(nx, ny, 0);
 );
@@ -1601,6 +1650,9 @@ local(i)
   smart_pick_phase = 0;
   smart_pick_scale = scale_med;
   smart_pick_family = 0;
+  scan_frame = 0;
+  scan_dir = 1;
+  scan01 = 0;
   i = 0;
   loop(recent_max,
     mem[recent_base + i] = -1;
@@ -1685,6 +1737,89 @@ local(hot, active, norm, fillw, handle_x, newv)
   newv;
 );
 
+
+function draw_pad_visual(x, y, w, h)
+local(i, gx, gy, pc, sx0, sy0, sx1, sy1, cx, cy)
+(
+  gfx_set(0.09, 0.10, 0.13, 1);
+  gfx_rect(x, y, w, h);
+  gfx_set(0.24, 0.28, 0.34, 0.34);
+  gfx_roundrect(x, y, w, h, 10, 1);
+
+  gfx_set(0.16, 0.20, 0.25, 0.6);
+  i = 1;
+  loop(7,
+    gx = x + (w / 8) * i;
+    gy = y + (h / 8) * i;
+    gfx_line(gx, y + 1, gx, y + h - 1, 1);
+    gfx_line(x + 1, gy, x + w - 1, gy, 1);
+    i += 1;
+  );
+
+  pc = floor(point_count + 0.5);
+  pc < 0 ? pc = 0;
+  pc > max_points ? pc = max_points;
+
+  pc > 0 ? (
+    gfx_set(0.18, 0.82, 0.70, 0.85);
+    sx0 = x + x_base[0] * w;
+    sy0 = y + (1 - y_base[0]) * h;
+    i = 1;
+    loop(pc - 1,
+      sx1 = x + x_base[i] * w;
+      sy1 = y + (1 - y_base[i]) * h;
+      gfx_line(sx0, sy0, sx1, sy1, 1);
+      sx0 = sx1;
+      sy0 = sy1;
+      i += 1;
+    );
+  );
+
+  !drawing ? (
+    cx = pix(x + clamp(view_x, 0, 1) * w);
+    cy = pix(y + (1 - clamp(view_y, 0, 1)) * h);
+    gfx_set(0.95, 0.97, 1.00, 0.08);
+    gfx_line(cx, y + 1, cx, y + h - 1, 1);
+    gfx_line(x + 1, cy, x + w - 1, cy, 1);
+  );
+);
+
+function draw_wave_visual(x, y, w, h)
+local(mid_y, b, mn, mxv, xx, yy0, yy1, scan_x, absmax_local)
+(
+  gfx_set(0.09, 0.10, 0.13, 1);
+  gfx_rect(x, y, w, h);
+  gfx_set(0.24, 0.28, 0.34, 0.34);
+  gfx_roundrect(x, y, w, h, 10, 1);
+
+  wf_ready && (wf_bins > 0) ? (
+    mid_y = y + h * 0.5;
+    absmax_local = max(0.0001, wf_absmax);
+
+    gfx_set(0.18, 0.82, 0.70, 0.72);
+    b = 0;
+    loop(wf_bins,
+      mn = mem[wf_base + b * 2];
+      mxv = mem[wf_base + b * 2 + 1];
+      xx = x + b * w / max(1, wf_bins - 1);
+      yy0 = mid_y - (mxv / absmax_local) * (h * 0.42);
+      yy1 = mid_y - (mn / absmax_local) * (h * 0.42);
+      gfx_line(xx, yy0, xx, yy1, 1);
+      b += 1;
+    );
+
+    scan_x = pix(x + clamp(scan01, 0, 1) * w);
+    gfx_set(0.95, 0.98, 1.0, 0.95);
+    gfx_line(scan_x, y + 6, scan_x, y + h - 6, 1);
+  ) : (
+    gfx_setfont(2, "Arial", 12, 0);
+    gfx_set(0.64, 0.70, 0.78, 1);
+    gfx_x = x + 12; gfx_y = y + h * 0.5 - 8;
+    gfx_drawstr("No source loaded.");
+  );
+);
+
+
 sync_params();
 reset_source_state();
 reset_gesture();
@@ -1741,6 +1876,9 @@ h > 0 ? (
           build_waveform();
           analyze_source_candidates();
           reset_motion_state();
+          scan_frame = 0;
+          scan_dir = 1;
+          scan01 = 0;
           spawn_countdown = 0;
           source_status = 1;
         ) : (
@@ -1776,14 +1914,12 @@ drawing ? (
   target_x = live_x_target;
   target_y = live_y_target;
   target_speed = live_speed_target;
-  scan01 = wrap01(scan01 + (travel * (0.55 + 0.90 * target_y)) / srate);
 ) : playback_active && (point_count > 0) ? (
   control_active = 1;
   sample_gesture(play_phase);
   target_x = sample_x;
   target_y = sample_y;
   target_speed = sample_speed;
-  scan01 = play_phase;
 
   phase_step = travel / max(gesture_duration * srate, 1);
 
@@ -1815,6 +1951,18 @@ drawing ? (
   target_x = sm_x;
   target_y = sm_y;
   target_speed = 0;
+);
+
+control_active ? (
+  advance_scan_transport(drawing ? 1 : play_mode);
+) : (
+  tex_frames > 1 ? (
+    scan01 = clamp(scan_frame / max(1, tex_frames - 1), 0, 1);
+  ) : (
+    scan_frame = 0;
+    scan_dir = 1;
+    scan01 = 0;
+  );
 );
 
 snap_now && control_active ? (
@@ -1927,6 +2075,7 @@ loop(max_voices,
 spl0 = outL * out_gain;
 spl1 = outR * out_gain;
 
+
 @gfx 1180 780
 mx = mouse_x;
 my = mouse_y;
@@ -2006,21 +2155,8 @@ mouse_released && drawing ? (
   end_draw();
 );
 
-// Pad frame
-gfx_set(0.09, 0.10, 0.13, 1);
-gfx_rect(pad_x, pad_y, pad_w, pad_h);
-gfx_set(0.24, 0.28, 0.34, 0.34);
-gfx_roundrect(pad_x, pad_y, pad_w, pad_h, 10, 1);
-
-gfx_set(0.16, 0.20, 0.25, 0.6);
-i = 1;
-loop(7,
-  gx = pad_x + (pad_w / 8) * i;
-  gy = pad_y + (pad_h / 8) * i;
-  gfx_line(gx, pad_y + 1, gx, pad_y + pad_h - 1, 1);
-  gfx_line(pad_x + 1, gy, pad_x + pad_w - 1, gy, 1);
-  i += 1;
-);
+// Pad frame + visuals
+draw_pad_visual(pad_x, pad_y, pad_w, pad_h);
 
 // Axis labels
 gfx_setfont(2, "Arial", 11, 'b');
@@ -2033,57 +2169,8 @@ gfx_x = pad_x - tw - 8; gfx_y = pad_y + 4; gfx_drawstr("Active");
 gfx_measurestr("Soft", tw, th);
 gfx_x = pad_x - tw - 8; gfx_y = pad_y + pad_h - th - 4; gfx_drawstr("Soft");
 
-// Gesture path
-point_count > 0 ? (
-  gfx_set(0.18, 0.82, 0.70, 0.85);
-  i = 0;
-  loop(point_count - 1,
-    x0 = pad_x + x_base[i] * pad_w;
-    y0 = pad_y + (1 - y_base[i]) * pad_h;
-    x1 = pad_x + x_base[i+1] * pad_w;
-    y1 = pad_y + (1 - y_base[i+1]) * pad_h;
-    gfx_line(x0, y0, x1, y1, 1);
-    i += 1;
-  );
-);
-
-!drawing ? (
-  cx = pad_x + clamp(view_x, 0, 1) * pad_w;
-  cy = pad_y + (1 - clamp(view_y, 0, 1)) * pad_h;
-  gfx_set(0.95, 0.97, 1.00, 0.08);
-  gfx_line(cx, pad_y + 1, cx, pad_y + pad_h - 1, 1);
-  gfx_line(pad_x + 1, cy, pad_x + pad_w - 1, cy, 1);
-);
-
 // Waveform strip
-gfx_set(0.09, 0.10, 0.13, 1);
-gfx_rect(wave_x, wave_y, wave_w, wave_h);
-gfx_set(0.24, 0.28, 0.34, 0.34);
-gfx_roundrect(wave_x, wave_y, wave_w, wave_h, 10, 1);
-
-wf_ready && (wf_bins > 0) ? (
-  mid_y = wave_y + wave_h * 0.5;
-  gfx_set(0.18, 0.82, 0.70, 0.72);
-  b = 0;
-  loop(wf_bins,
-    mn = mem[wf_base + b * 2];
-    mxv = mem[wf_base + b * 2 + 1];
-    xx = wave_x + b * wave_w / max(1, wf_bins - 1);
-    yy0 = mid_y - (mxv / max(0.0001, wf_absmax)) * (wave_h * 0.42);
-    yy1 = mid_y - (mn / max(0.0001, wf_absmax)) * (wave_h * 0.42);
-    gfx_line(xx, yy0, xx, yy1, 1);
-    b += 1;
-  );
-
-  scan_x = wave_x + clamp(scan01, 0, 1) * wave_w;
-  gfx_set(0.95, 0.98, 1.0, 0.95);
-  gfx_line(scan_x, wave_y + 6, scan_x, wave_y + wave_h - 6, 1);
-) : (
-  gfx_setfont(2, "Arial", 12, 0);
-  gfx_set(0.64, 0.70, 0.78, 1);
-  gfx_x = wave_x + 12; gfx_y = wave_y + wave_h * 0.5 - 8;
-  gfx_drawstr("No source loaded.");
-);
+draw_wave_visual(wave_x, wave_y, wave_w, wave_h);
 
 // Right panel
 gfx_set(0.08, 0.09, 0.12, 1);
@@ -2162,7 +2249,11 @@ play_mode == 2 ? strcpy(#mode_desc, "Bounces end-to-end without wrap jumps.");
 gfx_setfont(2, "Arial", 11, 0);
 gfx_set(0.70, 0.78, 0.88, 1);
 gfx_x = sx; gfx_y = sy; gfx_drawstr(#mode_desc);
-sy += 42;
+sy += 18;
+gfx_setfont(2, "Arial", 10, 0);
+gfx_set(0.58, 0.66, 0.76, 1);
+gfx_x = sx; gfx_y = sy; gfx_drawstr("Travel = source scrub speed. 1.0x = realtime source motion.");
+sy += 24;
 
 bw = (sw - 12) / 3;
 ui_button(201, sx, sy, bw, 28, "Clear", 0) ? reset_gesture();
