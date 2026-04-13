@@ -443,7 +443,7 @@ struct DrawCmd
   // Common
   juce::Colour colour { 0xff000000 };
 
-  // Rect / round-rect
+  // Rect / round-rect / text bounds
   float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
   bool fill = true;
   float cornerRadius = 0.0f;
@@ -454,6 +454,8 @@ struct DrawCmd
   // Text
   juce::Font font;
   juce::String text;
+  bool useTextBounds = false;
+  juce::Justification textJustification = juce::Justification::topLeft;
 
   // Circle / arc
   float radius = 0.0f;
@@ -537,8 +539,11 @@ public:
     gfx_g     = get_var("gfx_g");
     gfx_b     = get_var("gfx_b");
     gfx_a     = get_var("gfx_a");
+    gfx_a2    = get_var("gfx_a2");
     gfx_clear = get_var("gfx_clear");
     gfx_mode  = get_var("gfx_mode");
+    gfx_dest  = get_var("gfx_dest");
+    gfx_texth = get_var("gfx_texth");
 
     mouse_x     = get_var("mouse_x");
     mouse_y     = get_var("mouse_y");
@@ -560,6 +565,10 @@ public:
     *gfx_g = 1.0;
     *gfx_b = 1.0;
     *gfx_a = 1.0;
+    if (gfx_a2)    *gfx_a2 = 1.0;
+    if (gfx_mode)  *gfx_mode = 0.0;
+    if (gfx_dest)  *gfx_dest = -1.0;
+    if (gfx_texth) *gfx_texth = 0.0;
     *gfx_clear = 0.0; // default clear-to-black (JSFX-style). Set gfx_clear=-1 to disable.
 
     if (srate_var) *srate_var = 44100.0;
@@ -581,11 +590,16 @@ public:
 
   juce::Colour getCurrentColour() const
   {
-    const float r = gfx_r ? (float)*gfx_r : 1.0f;
-    const float g = gfx_g ? (float)*gfx_g : 1.0f;
-    const float b = gfx_b ? (float)*gfx_b : 1.0f;
-    const float a = gfx_a ? (float)*gfx_a : 1.0f;
-    return juce::Colour::fromFloatRGBA(r, g, b, a);
+    const float r = gfx_r ? (float) *gfx_r : 1.0f;
+    const float g = gfx_g ? (float) *gfx_g : 1.0f;
+    const float b = gfx_b ? (float) *gfx_b : 1.0f;
+    const float a = (gfx_a ? (float) *gfx_a : 1.0f) * (gfx_a2 ? (float) *gfx_a2 : 1.0f);
+    return juce::Colour::fromFloatRGBA(r, g, b, juce::jlimit(0.0f, 1.0f, a));
+  }
+
+  bool isDrawingToMainFramebuffer() const
+  {
+    return !gfx_dest || *gfx_dest < 0.0;
   }
 
   // -------------------------------------------------------------------
@@ -886,7 +900,7 @@ public:
     // Register into the global EEL function table.
     // Signature required: EEL_F (NSEEL_CGEN_CALL *)(void* opaque, INT_PTR np, EEL_F** parms)
     // want_exact=0 => varargs with minimum parameter count.
-    NSEEL_addfunc_varparm_ex("gfx_set",        3, 0, NSEEL_PProc_THIS, &eel_gfx_set,        nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_set",        1, 0, NSEEL_PProc_THIS, &eel_gfx_set,        nullptr);
     NSEEL_addfunc_varparm_ex("gfx_rect",       4, 0, NSEEL_PProc_THIS, &eel_gfx_rect,       nullptr);
     NSEEL_addfunc_varparm_ex("gfx_rectto",     2, 0, NSEEL_PProc_THIS, &eel_gfx_rectto,     nullptr);
     NSEEL_addfunc_varparm_ex("gfx_circle",     3, 0, NSEEL_PProc_THIS, &eel_gfx_circle,     nullptr);
@@ -965,17 +979,15 @@ public:
   static EEL_F NSEEL_CGEN_CALL eel_gfx_set(void* opaque, INT_PTR np, EEL_F** parms)
   {
     auto* self = (GfxVm*)opaque;
-    if (!self || np < 3) return 0.0;
+    if (!self || np < 1) return 0.0;
 
-    const float r = (float)*parms[0];
-    const float g = (float)*parms[1];
-    const float b = (float)*parms[2];
-    const float a = (np >= 4) ? (float)*parms[3] : 1.0f;
-
-    if (self->gfx_r) *self->gfx_r = r;
-    if (self->gfx_g) *self->gfx_g = g;
-    if (self->gfx_b) *self->gfx_b = b;
-    if (self->gfx_a) *self->gfx_a = a;
+    if (self->gfx_r) *self->gfx_r = *parms[0];
+    if (self->gfx_g) *self->gfx_g = (np > 1) ? *parms[1] : *parms[0];
+    if (self->gfx_b) *self->gfx_b = (np > 2) ? *parms[2] : *parms[0];
+    if (self->gfx_a) *self->gfx_a = (np > 3) ? *parms[3] : 1.0;
+    if (self->gfx_mode) *self->gfx_mode = (np > 4) ? *parms[4] : 0.0;
+    if (np > 5 && self->gfx_dest) *self->gfx_dest = *parms[5];
+    if (self->gfx_a2) *self->gfx_a2 = (np > 6) ? *parms[6] : 1.0;
 
     return 0.0;
   }
@@ -984,16 +996,22 @@ public:
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 4) return 0.0;
+    if (!self->isDrawingToMainFramebuffer()) return 0.0;
+
+    const float w = (float) std::floor(*parms[2]);
+    const float h = (float) std::floor(*parms[3]);
+    if (!(w > 0.0f) || !(h > 0.0f))
+      return 0.0;
 
     self->setImageDirty();
 
     DrawCmd cmd;
     cmd.type = DrawCmd::Type::Rect;
     cmd.colour = self->getCurrentColour();
-    cmd.x = (float)*parms[0];
-    cmd.y = (float)*parms[1];
-    cmd.w = (float)*parms[2];
-    cmd.h = (float)*parms[3];
+    cmd.x = (float) std::floor(*parms[0]);
+    cmd.y = (float) std::floor(*parms[1]);
+    cmd.w = w;
+    cmd.h = h;
     cmd.fill = (np >= 5) ? (*parms[4] != 0.0) : true;
 
     self->commands.push_back(std::move(cmd));
@@ -1004,13 +1022,14 @@ public:
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 2) return 0.0;
+    if (!self->isDrawingToMainFramebuffer()) return 0.0;
 
     self->setImageDirty();
 
-    const float x1 = (float)(self->gfx_x ? *self->gfx_x : 0.0);
-    const float y1 = (float)(self->gfx_y ? *self->gfx_y : 0.0);
-    const float x2 = (float)*parms[0];
-    const float y2 = (float)*parms[1];
+    const float x1 = (float) std::floor(self->gfx_x ? *self->gfx_x : 0.0);
+    const float y1 = (float) std::floor(self->gfx_y ? *self->gfx_y : 0.0);
+    const float x2 = (float) std::floor(*parms[0]);
+    const float y2 = (float) std::floor(*parms[1]);
 
     DrawCmd cmd;
     cmd.type = DrawCmd::Type::Rect;
@@ -1019,9 +1038,11 @@ public:
     cmd.y = std::min(y1, y2);
     cmd.w = std::fabs(x2 - x1);
     cmd.h = std::fabs(y2 - y1);
-    cmd.fill = (np >= 3) ? (*parms[2] != 0.0) : true;
+    cmd.fill = true;
     self->commands.push_back(std::move(cmd));
 
+    if (self->gfx_x) *self->gfx_x = *parms[0];
+    if (self->gfx_y) *self->gfx_y = *parms[1];
     return 0.0;
   }
 
@@ -1029,23 +1050,19 @@ public:
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 4) return 0.0;
+    if (!self->isDrawingToMainFramebuffer()) return 0.0;
 
     self->setImageDirty();
 
     DrawCmd cmd;
     cmd.type = DrawCmd::Type::Line;
     cmd.colour = self->getCurrentColour();
-    cmd.x = (float)*parms[0];
-    cmd.y = (float)*parms[1];
-    cmd.x2 = (float)*parms[2];
-    cmd.y2 = (float)*parms[3];
+    cmd.x = (float) std::floor(*parms[0]);
+    cmd.y = (float) std::floor(*parms[1]);
+    cmd.x2 = (float) std::floor(*parms[2]);
+    cmd.y2 = (float) std::floor(*parms[3]);
 
     self->commands.push_back(std::move(cmd));
-
-    // Update pen position (JSFX convention)
-    if (self->gfx_x) *self->gfx_x = cmd.x2;
-    if (self->gfx_y) *self->gfx_y = cmd.y2;
-
     return 0.0;
   }
 
@@ -1053,13 +1070,14 @@ public:
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 2) return 0.0;
+    if (!self->isDrawingToMainFramebuffer()) return 0.0;
 
     self->setImageDirty();
 
-    const float x1 = (float)(self->gfx_x ? *self->gfx_x : 0.0);
-    const float y1 = (float)(self->gfx_y ? *self->gfx_y : 0.0);
-    const float x2 = (float)*parms[0];
-    const float y2 = (float)*parms[1];
+    const float x1 = (float) std::floor(self->gfx_x ? *self->gfx_x : 0.0);
+    const float y1 = (float) std::floor(self->gfx_y ? *self->gfx_y : 0.0);
+    const float x2 = (float) std::floor(*parms[0]);
+    const float y2 = (float) std::floor(*parms[1]);
 
     DrawCmd cmd;
     cmd.type = DrawCmd::Type::Line;
@@ -1071,8 +1089,8 @@ public:
 
     self->commands.push_back(std::move(cmd));
 
-    if (self->gfx_x) *self->gfx_x = x2;
-    if (self->gfx_y) *self->gfx_y = y2;
+    if (self->gfx_x) *self->gfx_x = *parms[0];
+    if (self->gfx_y) *self->gfx_y = *parms[1];
     return 0.0;
   }
 
@@ -1081,37 +1099,140 @@ public:
     auto* self = (GfxVm*)opaque;
     if (!self || np < 1) return 0.0;
 
-    const int fontId = (int)(*parms[0] + 0.5);
+    const int fontId = (int) std::floor(*parms[0] + 0.5);
 
     juce::String fontName = juce::Font::getDefaultSansSerifFontName();
-    float fontSize = 12.0f;
+    float fontSize = 10.0f;
     int styleFlags = juce::Font::plain;
 
     if (np >= 2)
     {
-      // parms[1] is a string handle
       EEL_STRING_MUTEXLOCK_SCOPE;
       const char* fn = EEL_STRING_GET_FOR_INDEX(*parms[1], nullptr);
-      if (fn && *fn) fontName = juce::String(fn);
+      if (fn && *fn)
+        fontName = juce::String::fromUTF8(fn);
+      else
+        fontName = "Arial";
     }
+
     if (np >= 3)
-      fontSize = (float)*parms[2];
+      fontSize = std::max(1.0f, (float) *parms[2]);
 
     if (np >= 4)
     {
-      const int flags = (int)(*parms[3] + 0.5);
-      // JSFX flags are not 1:1 with JUCE; map a few common ones.
-      // Bit 1 often used for bold, bit 2 for italic in many scripts.
-      if (flags & 1) styleFlags |= juce::Font::bold;
-      if (flags & 2) styleFlags |= juce::Font::italic;
+      unsigned int packedFlags = (unsigned int) std::llround(*parms[3]);
+      while (packedFlags != 0u)
+      {
+        switch (std::toupper((int) (packedFlags & 0xffu)))
+        {
+          case 'B': styleFlags |= juce::Font::bold; break;
+          case 'I': styleFlags |= juce::Font::italic; break;
+          default: break;
+        }
+        packedFlags >>= 8u;
+      }
     }
 
     juce::Font f(fontName, fontSize, styleFlags);
     self->fonts[fontId] = f;
     self->currentFontId = fontId;
     self->currentFont = f;
+    if (self->gfx_texth)
+      *self->gfx_texth = (EEL_F) std::max(1.0f, f.getHeight());
 
-    return 0.0;
+    return 1.0;
+  }
+
+
+  static juce::Justification textJustificationFromFlags(int flags)
+  {
+    const bool right = (flags & 0x0002) != 0;
+    const bool hcenter = (flags & 0x0001) != 0;
+    const bool bottom = (flags & 0x0008) != 0;
+    const bool vcenter = (flags & 0x0004) != 0;
+
+    if (hcenter && vcenter) return juce::Justification::centred;
+    if (hcenter && bottom)  return juce::Justification::centredBottom;
+    if (hcenter)            return juce::Justification::centredTop;
+    if (right && vcenter)   return juce::Justification::centredRight;
+    if (right && bottom)    return juce::Justification::bottomRight;
+    if (right)              return juce::Justification::topRight;
+    if (vcenter)            return juce::Justification::centredLeft;
+    if (bottom)             return juce::Justification::bottomLeft;
+    return juce::Justification::topLeft;
+  }
+
+  static int countTextLines(const juce::String& text)
+  {
+    int lines = 1;
+    for (int i = 0; i < text.length(); ++i)
+      if (text[i] == '\n')
+        ++lines;
+    return lines;
+  }
+
+  static float measureTextWidth(const juce::Font& font, const juce::String& text)
+  {
+    juce::StringArray split;
+    split.addLines(text);
+    if (split.isEmpty())
+      return font.getStringWidthFloat(text);
+
+    float width = 0.0f;
+    for (int i = 0; i < split.size(); ++i)
+      width = std::max(width, font.getStringWidthFloat(split[i]));
+    return width;
+  }
+
+  static void updateTextPenPosition(GfxVm* self, const juce::String& text)
+  {
+    if (!self)
+      return;
+
+    const double x0 = self->gfx_x ? *self->gfx_x : 0.0;
+    const double y0 = self->gfx_y ? *self->gfx_y : 0.0;
+
+    juce::StringArray split;
+    split.addLines(text);
+    const int numLines = std::max(1, split.size());
+    const juce::String lastLine = split.isEmpty() ? text : split[numLines - 1];
+    const float advance = self->currentFont.getStringWidthFloat(lastLine);
+
+    if (self->gfx_x)
+      *self->gfx_x = x0 + advance;
+    if (self->gfx_y)
+      *self->gfx_y = y0 + (double) ((numLines - 1) * self->currentFont.getHeight());
+  }
+
+  static EEL_F emitTextCommand(GfxVm* self, const juce::String& text, INT_PTR np, EEL_F** parms)
+  {
+    if (!self)
+      return 0.0;
+    if (!self->isDrawingToMainFramebuffer())
+      return np > 0 ? *parms[0] : 0.0;
+
+    self->setImageDirty();
+
+    DrawCmd cmd;
+    cmd.type = DrawCmd::Type::Text;
+    cmd.colour = self->getCurrentColour();
+    cmd.font = self->currentFont;
+    cmd.text = text;
+    cmd.x = (float) std::floor(self->gfx_x ? *self->gfx_x : 0.0);
+    cmd.y = (float) std::floor(self->gfx_y ? *self->gfx_y : 0.0);
+
+    if (np >= 4)
+    {
+      const int flags = (int) std::llround(*parms[1]);
+      cmd.useTextBounds = true;
+      cmd.w = std::max(0.0f, (float) std::floor(*parms[2] - cmd.x));
+      cmd.h = std::max(cmd.font.getHeight(), (float) std::floor(*parms[3] - cmd.y));
+      cmd.textJustification = textJustificationFromFlags(flags);
+    }
+
+    self->commands.push_back(cmd);
+    updateTextPenPosition(self, text);
+    return np > 0 ? *parms[0] : 0.0;
   }
 
   static EEL_F NSEEL_CGEN_CALL eel_gfx_drawstr(void* opaque, INT_PTR np, EEL_F** parms)
@@ -1119,26 +1240,10 @@ public:
     auto* self = (GfxVm*)opaque;
     if (!self || np < 1) return 0.0;
 
-    self->setImageDirty();
-
     EEL_STRING_MUTEXLOCK_SCOPE;
     const char* str = EEL_STRING_GET_FOR_INDEX(*parms[0], nullptr);
-
-    DrawCmd cmd;
-    cmd.type = DrawCmd::Type::Text;
-    cmd.colour = self->getCurrentColour();
-    cmd.font = self->currentFont;
-    cmd.text = juce::String::fromUTF8(str ? str : "");
-    cmd.x = (float)(self->gfx_x ? *self->gfx_x : 0.0);
-    cmd.y = (float)(self->gfx_y ? *self->gfx_y : 0.0);
-
-    self->commands.push_back(cmd);
-
-    // Advance pen position by string width (approx)
-    const float advance = cmd.font.getStringWidthFloat(cmd.text);
-    if (self->gfx_x) *self->gfx_x = (double)(cmd.x + advance);
-
-    return 0.0;
+    const juce::String text = juce::String::fromUTF8(str ? str : "");
+    return emitTextCommand(self, text, np, parms);
   }
 
   
@@ -1147,8 +1252,6 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_printf(void* opaque, INT_PTR np, EEL_F** pa
 {
   auto* self = (GfxVm*)opaque;
   if (!self || np < 1) return 0.0;
-
-    self->setImageDirty();
 
   juce::String textToDraw;
   {
@@ -1171,7 +1274,6 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_printf(void* opaque, INT_PTR np, EEL_F** pa
         continue;
       }
 
-      // %%
       if (fmt[i + 1] == '%')
       {
         out.push_back('%');
@@ -1182,15 +1284,12 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_printf(void* opaque, INT_PTR np, EEL_F** pa
       const size_t specStart = i;
       size_t j = i + 1;
 
-      // flags
       while (fmt[j] != '\0' && std::strchr("-+0 #", fmt[j]) != nullptr)
         ++j;
 
-      // width
       while (fmt[j] != '\0' && std::isdigit((unsigned char)fmt[j]))
         ++j;
 
-      // precision
       if (fmt[j] == '.')
       {
         ++j;
@@ -1198,7 +1297,6 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_printf(void* opaque, INT_PTR np, EEL_F** pa
           ++j;
       }
 
-      // length modifiers (ignored, but consumed so "%lld" etc doesn't break parsing)
       if (fmt[j] == 'h' || fmt[j] == 'l' || fmt[j] == 'L')
       {
         const char first = fmt[j];
@@ -1211,12 +1309,10 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_printf(void* opaque, INT_PTR np, EEL_F** pa
 
       if (spec == '\0')
       {
-        // Unterminated format specifier: append the rest verbatim and stop.
         out.append(fmt + specStart);
         break;
       }
 
-      // Include conversion letter
       ++j;
 
       const std::string oneFmt(fmt + specStart, fmt + j);
@@ -1254,34 +1350,18 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_printf(void* opaque, INT_PTR np, EEL_F** pa
       }
       else
       {
-        // Treat everything else as floating-point
         ::snprintf(buf, sizeof(buf), oneFmt.c_str(), v);
         ++argIndex;
       }
 
       out.append(buf);
-
-      // Continue parsing at the end of this format specifier.
       i = j - 1;
     }
 
     textToDraw = juce::String::fromUTF8(out.c_str(), (int)out.size());
   }
 
-  DrawCmd cmd;
-  cmd.type = DrawCmd::Type::Text;
-  cmd.colour = self->getCurrentColour();
-  cmd.font = self->currentFont;
-  cmd.text = textToDraw;
-  cmd.x = (float)(self->gfx_x ? *self->gfx_x : 0.0);
-  cmd.y = (float)(self->gfx_y ? *self->gfx_y : 0.0);
-
-  self->commands.push_back(cmd);
-
-  const float advance = cmd.font.getStringWidthFloat(cmd.text);
-  if (self->gfx_x) *self->gfx_x = (double)(cmd.x + advance);
-
-  return 0.0;
+  return emitTextCommand(self, textToDraw, 1, parms);
 }
 
 static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F** parms)
@@ -1293,17 +1373,13 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     const char* str = EEL_STRING_GET_FOR_INDEX(*parms[0], nullptr);
     const juce::String text = juce::String::fromUTF8(str ? str : "");
 
-    const float w = self->currentFont.getStringWidthFloat(text);
-    const float h = self->currentFont.getHeight();
+    const float w = measureTextWidth(self->currentFont, text);
+    const float h = (float) countTextLines(text) * self->currentFont.getHeight();
 
-    if (self->gfx_x) *self->gfx_x = (double)w;
-    if (self->gfx_y) *self->gfx_y = (double)h;
+    if (np >= 2 && parms[1]) *parms[1] = (EEL_F) w;
+    if (np >= 3 && parms[2]) *parms[2] = (EEL_F) h;
 
-    // JSFX compatibility: allow gfx_measurestr(str, w, h)
-    if (np >= 2 && parms[1]) *parms[1] = (EEL_F)w;
-    if (np >= 3 && parms[2]) *parms[2] = (EEL_F)h;
-
-    return (EEL_F)w;
+    return *parms[0];
   }
 
 
@@ -1378,16 +1454,17 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 3) return 0.0;
+    if (!self->isDrawingToMainFramebuffer()) return 0.0;
 
     self->setImageDirty();
 
     DrawCmd cmd;
     cmd.type   = DrawCmd::Type::Circle;
     cmd.colour = self->getCurrentColour();
-    cmd.x      = (float)*parms[0];
-    cmd.y      = (float)*parms[1];
-    cmd.radius = (float)*parms[2];
-    cmd.fill   = (np >= 4) ? (*parms[3] != 0.0) : true;
+    cmd.x      = (float) *parms[0];
+    cmd.y      = (float) *parms[1];
+    cmd.radius = (float) *parms[2];
+    cmd.fill   = (np >= 4) ? (*parms[3] > 0.5) : false;
 
     self->commands.push_back(std::move(cmd));
     return 0.0;
@@ -1397,6 +1474,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 5) return 0.0;
+    if (!self->isDrawingToMainFramebuffer()) return 0.0;
 
     self->setImageDirty();
 
@@ -1423,6 +1501,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 5) return 0.0;
+    if (!self->isDrawingToMainFramebuffer()) return 0.0;
 
     self->setImageDirty();
 
@@ -1454,6 +1533,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 6) return 0.0;
+    if (!self->isDrawingToMainFramebuffer()) return 0.0;
 
     self->setImageDirty();
 
@@ -1775,8 +1855,11 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   EEL_F* gfx_g = nullptr;
   EEL_F* gfx_b = nullptr;
   EEL_F* gfx_a = nullptr;
+  EEL_F* gfx_a2 = nullptr;
   EEL_F* gfx_clear = nullptr;
   EEL_F* gfx_mode = nullptr;
+  EEL_F* gfx_dest = nullptr;
+  EEL_F* gfx_texth = nullptr;
 
     double frameCounter = 0.0;
 
@@ -2049,17 +2132,30 @@ static inline void paintCommands(juce::Graphics& g, const std::vector<DrawCmd>& 
     switch (cmd.type)
     {
       case DrawCmd::Type::Rect:
-        if (cmd.fill) g.fillRect(cmd.x, cmd.y, cmd.w, cmd.h);
-        else          g.drawRect(cmd.x, cmd.y, cmd.w, cmd.h, 1.0f);
+      {
+        if (cmd.fill)
+          g.fillRect(cmd.x, cmd.y, cmd.w, cmd.h);
+        else
+          g.drawRect(cmd.x, cmd.y, std::max(0.0f, cmd.w - 1.0f), std::max(0.0f, cmd.h - 1.0f), 1.0f);
         break;
+      }
       case DrawCmd::Type::Line:
         g.drawLine(cmd.x, cmd.y, cmd.x2, cmd.y2, 1.0f);
         break;
       case DrawCmd::Type::Text:
         g.setFont(cmd.font);
-        // JSFX draws text with top-left at (gfx_x,gfx_y)
-        g.drawText(cmd.text, (int)cmd.x, (int)cmd.y, 10000, (int)cmd.font.getHeight() + 4,
-                   juce::Justification::topLeft, false);
+        if (cmd.useTextBounds)
+        {
+          g.drawText(cmd.text,
+                     juce::Rectangle<int>((int) cmd.x, (int) cmd.y, (int) cmd.w, (int) cmd.h),
+                     cmd.textJustification,
+                     false);
+        }
+        else
+        {
+          g.drawText(cmd.text, (int) cmd.x, (int) cmd.y, 10000, (int) cmd.font.getHeight() + 4,
+                     juce::Justification::topLeft, false);
+        }
         break;
       case DrawCmd::Type::Circle:
       {
