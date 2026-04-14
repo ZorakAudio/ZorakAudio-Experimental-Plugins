@@ -1,4 +1,4 @@
-desc:Load-and-Go Psycho MultiSampler (auto-rescan + GFX + ADSR)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + stretch + weight)
 tags:instrument sampler ui
 
 // Slot 0 is the load-and-go sample bank.
@@ -18,6 +18,9 @@ slider10:0.30<0,1,0.001>--Truth (0=matched / 1=raw)
 slider11:-9<-24,12,0.1>--Output (dB)
 slider12:0<-24,24,0.01>--Pitch (semitones)
 slider13:0<0,1,1{random,sequence}>--Sequence mode
+slider14:1<1,4,0.001>--Stretch (x)
+slider15:0<0,1,0.001>--Weight
+slider16:0<0,2,1{auto,punch,off}>--Transient mode
 @init
 /*
 Multi-file slot API used here:
@@ -82,6 +85,14 @@ function env_curve01(t) local(k d)
   d <= 0 ? clamp01(t) : (1 - exp(-k * clamp01(t))) / d;
 );
 
+function stretch_window(age gsize) local(t tri)
+(
+  t = clamp01((age + 0.5) / max(gsize, 1));
+  tri = 1 - abs(2 * t - 1);
+  tri = clamp01(tri);
+  tri * tri * (3 - 2 * tri);
+);
+
 function lerp(a b t)
 (
   a + (b-a)*t;
@@ -100,6 +111,141 @@ function midi_ratio(semi)
 function cents_ratio(cents)
 (
   exp(cents * 0.000577622650466621);
+);
+
+function cc_to_u01(cc)
+(
+  clamp01(cc / 127);
+);
+
+function cc_to_s11(cc)
+(
+  clamp((cc / 63.5) - 1, -1, 1);
+);
+
+function cc_to_ratio(cc)
+(
+  cc <= 63 ? (cc / 63) : (1 + ((cc - 64) / 63) * 3);
+);
+
+function m2e_apply_cc(base ccnum ccval) local(off)
+(
+  off = ccnum - base;
+
+  off == 0  ? m2e_env_raw = cc_to_u01(ccval);
+  off == 5  ? m2e_rigid_abs_raw = cc_to_u01(ccval);
+  off == 6  ? m2e_rigid_rel_raw = cc_to_u01(ccval);
+  off == 17 ? m2e_impact_raw = cc_to_u01(ccval);
+  off == 18 ? m2e_pan_raw = cc_to_u01(ccval);
+  off == 19 ? m2e_entropy_raw = cc_to_u01(ccval);
+  off == 20 ? m2e_axis_v_raw = cc_to_s11(ccval);
+  off == 21 ? m2e_axis_acc_raw = cc_to_s11(ccval);
+  off == 24 ? m2e_lat_v_raw = cc_to_s11(ccval);
+  off == 28 ? m2e_lat_amp_raw = cc_to_u01(ccval);
+  off == 29 ? m2e_micro_raw = cc_to_u01(ccval);
+  off == 31 ? m2e_meso_raw = cc_to_u01(ccval);
+  off == 32 ? m2e_macro_raw = cc_to_u01(ccval);
+  off == 33 ? m2e_excite_raw = cc_to_u01(ccval);
+  off == 34 ? m2e_activity_raw = cc_to_ratio(ccval);
+
+  m2e_rigid_raw = 0.5 * (m2e_rigid_abs_raw + m2e_rigid_rel_raw);
+);
+
+function m2e_decode_snapshot(base) local(i cc)
+(
+  i = 0;
+  while (i < M2E_LANE_COUNT) (
+    (m2e_clock_samps - m2e_cc_age_base[base + i]) <= (m2e_detect_window_samps * 4) ? (
+      cc = clamp(m2e_cc_val_base[base + i], 0, 127);
+      m2e_apply_cc(base, base + i, cc);
+    );
+    i += 1;
+  );
+);
+
+function m2e_detect_base(now_samps) local(base k age count g0 g1 g2 g3 best best_count)
+(
+  best = -1;
+  best_count = 0;
+
+  base = M2E_BASE_MIN;
+  while (base <= M2E_BASE_MAX) (
+    count = 0;
+    g0 = 0; g1 = 0; g2 = 0; g3 = 0;
+
+    k = 0;
+    while (k < M2E_LANE_COUNT) (
+      age = now_samps - m2e_cc_age_base[base + k];
+      age <= m2e_detect_window_samps ? (
+        count += 1;
+        k <= 4 ? g0 = 1;
+        (k >= 15 && k <= 19) ? g1 = 1;
+        (k >= 20 && k <= 28) ? g2 = 1;
+        k >= 29 ? g3 = 1;
+      );
+      k += 1;
+    );
+
+    (g0 && g1 && g2 && g3 && (count > best_count)) ? (
+      best_count = count;
+      best = base;
+    );
+
+    base += 1;
+  );
+
+  m2e_detect_count = best_count;
+  best_count >= M2E_DETECT_MIN ? best : -1;
+);
+
+function m2e_reset() local(i)
+(
+  i = 0;
+  while (i < 128) (
+    m2e_cc_age_base[i] = -1000000000;
+    m2e_cc_val_base[i] = 0;
+    i += 1;
+  );
+
+  m2e_base = -1;
+  m2e_detect_count = 0;
+  m2e_active = 0;
+  m2e_last_msg_samps = -1000000000;
+  m2e_last_any_cc_samps = -1000000000;
+  m2e_target = 0;
+  m2e_mix = 0;
+
+  m2e_env_raw = 0.5;
+  m2e_rigid_abs_raw = 0;
+  m2e_rigid_rel_raw = 0;
+  m2e_rigid_raw = 0;
+  m2e_impact_raw = 0;
+  m2e_pan_raw = 0.5;
+  m2e_entropy_raw = 0;
+  m2e_axis_v_raw = 0;
+  m2e_axis_acc_raw = 0;
+  m2e_lat_v_raw = 0;
+  m2e_lat_amp_raw = 0;
+  m2e_micro_raw = 0;
+  m2e_meso_raw = 0;
+  m2e_macro_raw = 0;
+  m2e_excite_raw = 0;
+  m2e_activity_raw = 1;
+
+  m2e_env_s = m2e_env_raw;
+  m2e_rigid_s = m2e_rigid_raw;
+  m2e_impact_s = m2e_impact_raw;
+  m2e_pan_s = m2e_pan_raw;
+  m2e_entropy_s = m2e_entropy_raw;
+  m2e_axis_v_s = m2e_axis_v_raw;
+  m2e_axis_acc_s = m2e_axis_acc_raw;
+  m2e_lat_v_s = m2e_lat_v_raw;
+  m2e_lat_amp_s = m2e_lat_amp_raw;
+  m2e_micro_s = m2e_micro_raw;
+  m2e_meso_s = m2e_meso_raw;
+  m2e_macro_s = m2e_macro_raw;
+  m2e_excite_s = m2e_excite_raw;
+  m2e_activity_s = m2e_activity_raw;
 );
 
 function mono_frame(ptr nch frame) local(base)
@@ -230,7 +376,7 @@ function estimate_pitch(sm) local(
 function analyze_sample(sm) local(
   ptr nch sr frames scan i x ax prev lp hf prevhf
   peak sumsq sumabs sumdiff brightsum roughsum rms bright edge
-  thresh attack attack_ms sharp
+  thresh attack attack_ms sharp transrich
   target_rms norm
   lpcoef
 )
@@ -287,6 +433,7 @@ function analyze_sample(sm) local(
 
   attack_ms = 1000 * attack / max(sr, 1);
   sharp = clamp01((1 - min(1, attack_ms / 70)) * 0.72 + edge * 0.28);
+  transrich = clamp01(sharp * 0.64 + edge * 0.18 + (1 - min(1, attack_ms / 55)) * 0.24 + bright * 0.06);
 
   target_rms = 0.12;
   norm = clamp(target_rms / max(rms, 0.000001), 0.25, 4.0);
@@ -299,23 +446,53 @@ function analyze_sample(sm) local(
   sm[SM_NORM]   = norm;
   sm[SM_LENMS]  = 1000 * frames / max(sr, 1);
   sm[SM_BRIGHT] = bright;
+  sm[SM_FLAGS]  = transrich;
 
   estimate_pitch(sm);
 );
 
-function reset_voices() local(i v)
+function reset_voices() local(i j v)
 (
   i = 0;
   while (i < MAX_VOICES) (
     v = voice_base + i * VC_STRIDE;
-    v[VC_ACTIVE] = 0;
-    v[VC_BASE] = 0;
-    v[VC_ENV] = 0;
+    j = 0;
+    while (j < VC_STRIDE) (
+      v[j] = 0;
+      j += 1;
+    );
     v[VC_STAGE] = ENV_OFF;
-    v[VC_AGE] = 0;
     i += 1;
   );
 );
+
+function reset_weight_buffers() local(i)
+(
+  weight_ap1_pos = 0;
+  weight_ap2_pos = 0;
+  weight_er_pos = 0;
+  weight_in_lp_l = 0;
+  weight_in_lp_r = 0;
+  weight_wet_lp_l = 0;
+  weight_wet_lp_r = 0;
+
+  i = 0;
+  while (i < AP_BUF_LEN) (
+    weight_ap1_l_base[i] = 0;
+    weight_ap1_r_base[i] = 0;
+    weight_ap2_l_base[i] = 0;
+    weight_ap2_r_base[i] = 0;
+    i += 1;
+  );
+
+  i = 0;
+  while (i < ER_BUF_LEN) (
+    weight_er_l_base[i] = 0;
+    weight_er_r_base[i] = 0;
+    i += 1;
+  );
+);
+
 
 function reset_bank_state() local(i)
 (
@@ -333,6 +510,8 @@ function reset_bank_state() local(i)
     i += 1;
   );
   reset_voices();
+  reset_weight_buffers();
+  transient_guard_s = 0;
 );
 
 function load_one_selected_file(handle sample_index) local(
@@ -560,7 +739,9 @@ function alloc_voice() local(i v found best best_age)
 function start_voice(note vel chan) local(
   velnorm sid sm voice_idx v
   srcsr norm gain env0 lively
-  driftcents pre jmax startpos softskip gain_jit_db
+  driftcents pre jmax startpos softskip gain_jit_db raw_rate base_rate
+  transrich transprot translock hold_ms trans_hold_src trans_hold_out attack_preroll
+  j gk gb
 )
 (
   sample_count <= 0 ? 0 : (
@@ -570,6 +751,12 @@ function start_voice(note vel chan) local(
 
     voice_idx = alloc_voice();
     v = voice_base + voice_idx * VC_STRIDE;
+
+    j = 0;
+    while (j < VC_STRIDE) (
+      v[j] = 0;
+      j += 1;
+    );
 
     note_counter += 1;
     last_note = note;
@@ -583,27 +770,58 @@ function start_voice(note vel chan) local(
     gain *= db2amp(gain_jit_db);
     gain  = min(gain, 2.0);
 
+    transrich = clamp01(sm[SM_FLAGS]);
+    transprot = 0;
+    transient_mode == 1 ? transprot = 1
+    : transient_mode == 2 ? transprot = 0
+    : transprot = clamp01((transrich - 0.38) / 0.44);
+    translock = transprot >= 0.22 ? 1 : 0;
+
     driftcents = (rand(1) - 0.5) * (0.25 + lively * lively * 10.0);
-    pre  = min(sm[SM_ATTACK], 8 + lively * 8);
-    jmax = floor((0.25 + lively * 1.75) * min(16, 2 + sm[SM_ATTACK] * 0.08));
-    softskip = max(0, -slider7) * min(16, 2 + sm[SM_ATTACK] * 0.06);
-    startpos = floor(sm[SM_ATTACK] - pre + (rand(1) - 0.5) * jmax + softskip);
+
+    translock ? (
+      attack_preroll = min(sm[SM_ATTACK], max(0, floor(srcsr * (0.00035 + 0.00045 * transprot))));
+      jmax = floor(lively * (1 - transprot) * min(4, 1 + sm[SM_ATTACK] * 0.02));
+      startpos = floor(sm[SM_ATTACK] - attack_preroll + (rand(1) - 0.5) * jmax);
+    ) : (
+      pre  = min(sm[SM_ATTACK], 8 + lively * 8);
+      jmax = floor((0.25 + lively * 1.75) * min(16, 2 + sm[SM_ATTACK] * 0.08));
+      softskip = max(0, -slider7) * min(16, 2 + sm[SM_ATTACK] * 0.06);
+      startpos = floor(sm[SM_ATTACK] - pre + (rand(1) - 0.5) * jmax + softskip);
+    );
+
     startpos = clamp(startpos, 0, max(0, sm[SM_FRAMES] - 2));
+    raw_rate = (srcsr / srate) * midi_ratio(pitch_semi) * cents_ratio(driftcents);
+    base_rate = raw_rate / max(stretch_ratio, 1.0);
+
+    hold_ms = translock ? (lerp(3.5, 9.5, transprot) + stretch_norm * lerp(0.0, 2.5, transprot)) : 0;
+    hold_ms = min(hold_ms, sm[SM_LENMS] * 0.22);
+    trans_hold_src = translock ? min(max(0, sm[SM_FRAMES] - 2 - startpos), floor(srcsr * hold_ms * 0.001)) : 0;
+    trans_hold_out = translock ? clamp(floor(trans_hold_src / max(abs(raw_rate), 0.000001)), 0, 4096) : 0;
 
     v[VC_ACTIVE] = 1;
     v[VC_NOTE]   = note;
     v[VC_CHAN]   = chan;
     v[VC_SAMPLE] = sid;
     v[VC_POS]    = startpos;
-    v[VC_RATE]   = (srcsr / srate) * midi_ratio(pitch_semi) * cents_ratio(driftcents);
+    v[VC_RATE]   = base_rate;
     v[VC_BASE]   = gain;
-    env0 = attack_samps <= 1 ? 1 : 0;
+    env0 = (attack_samps <= 1 || (translock && attack_samps <= floor(0.010 * srate))) ? 1 : 0;
     v[VC_ENV]    = env0;
     v[VC_ASTEP]  = attack_coef;
     v[VC_DSTEP]  = decay_coef;
     v[VC_RSTEP]  = release_coef;
-    v[VC_STAGE]  = attack_samps <= 1 ? ENV_DECAY : ENV_ATTACK;
+    v[VC_STAGE]  = env0 >= 1 ? ENV_DECAY : ENV_ATTACK;
     v[VC_AGE]    = note_counter;
+    v[VC_TLEFT]  = trans_hold_out;
+    v[VC_TPROT]  = transprot;
+    v[VC_GTIMER] = max(1, trans_hold_out);
+    v[VC_GMODE]  = 0;
+    v[VC_OHOP]   = 0;
+    v[VC_GSIZE]  = 0;
+    v[VC_NEXTSRC]= 0;
+    v[VC_SRCHOP] = 0;
+    v[VC_CANSPAWN] = 0;
 
     sm[SM_LASTUSED] = note_counter;
     push_recent(sid);
@@ -623,6 +841,7 @@ function release_voice(note chan) local(i v)
       ) : (
         v[VC_STAGE] = ENV_RELEASE;
         v[VC_RSTEP] = release_coef;
+        v[VC_CANSPAWN] = 0;
       );
     );
     i += 1;
@@ -871,11 +1090,11 @@ function draw_tooltip_box() local(tw1 th1 tw2 th2 tw th pad bx by bw bh)
 MAX_SAMPLES = 64;
 MAX_VOICES  = 16;
 RECENT_LEN  = 8;
-AUDIO_BASE  = 4096;
-MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
 ROOT_LOW    = 36;
 ROOT_HIGH   = 84;
 SIG_PEEK_WORDS = 48;
+AP_BUF_LEN  = 4096;
+ER_BUF_LEN  = 24576;
 
 SM_PTR      = 0;
 SM_NCH      = 1;
@@ -909,7 +1128,24 @@ VC_DSTEP    = 9;
 VC_RSTEP    = 10;
 VC_STAGE    = 11;
 VC_AGE      = 12;
-VC_STRIDE   = 16;
+VC_GMODE    = 13;
+VC_OHOP     = 14;
+VC_GSIZE    = 15;
+VC_GTIMER   = 16;
+VC_NEXTSRC  = 17;
+VC_SRCHOP   = 18;
+VC_CANSPAWN = 19;
+VC_TLEFT    = 20;
+VC_TPROT    = 21;
+VC_GBASE    = 22;
+
+VG_ACTIVE   = 0;
+VG_AGE      = 1;
+VG_SRC      = 2;
+VG_STRIDE   = 4;
+NUM_GRAINS  = 4;
+
+VC_STRIDE   = VC_GBASE + NUM_GRAINS * VG_STRIDE;
 
 ENV_OFF     = 0;
 ENV_ATTACK  = 1;
@@ -935,11 +1171,33 @@ MASK_S10 = 512;
 MASK_S11 = 1024;
 MASK_S12 = 2048;
 MASK_S13 = 4096;
+MASK_S14 = 8192;
+MASK_S15 = 16384;
+MASK_S16 = 32768;
+
+M2E_LANE_COUNT = 35;
+M2E_BASE_MIN   = 20;
+M2E_BASE_MAX   = 20;
+M2E_DETECT_MIN = 10;
+M2E_CHAN       = 0;
 
 sample_meta_base = 0;
 voice_base = sample_meta_base + MAX_SAMPLES * SM_STRIDE;
 recent_base = voice_base + MAX_VOICES * VC_STRIDE;
 sig_scratch_base = recent_base + RECENT_LEN + 32;
+
+m2e_cc_age_base = sig_scratch_base + SIG_PEEK_WORDS + 64;
+m2e_cc_val_base = m2e_cc_age_base + 128;
+
+weight_ap1_l_base = m2e_cc_val_base + 128 + 64;
+weight_ap1_r_base = weight_ap1_l_base + AP_BUF_LEN;
+weight_ap2_l_base = weight_ap1_r_base + AP_BUF_LEN;
+weight_ap2_r_base = weight_ap2_l_base + AP_BUF_LEN;
+weight_er_l_base  = weight_ap2_r_base + AP_BUF_LEN;
+weight_er_r_base  = weight_er_l_base + ER_BUF_LEN;
+
+AUDIO_BASE  = weight_er_r_base + ER_BUF_LEN + 256;
+MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
 
 note_counter = 0;
 bank_loaded = 0;
@@ -951,6 +1209,10 @@ out_trim = 1;
 pitch_semi = 0;
 sequence_mode = 0;
 seq_cursor = 0;
+stretch_ratio = 1;
+stretch_norm = 0;
+stretch_grain_samps = 1024;
+stretch_hop_samps = 256;
 attack_samps = 64;
 decay_samps = 2048;
 sustain_level = 0.8;
@@ -958,6 +1220,29 @@ release_samps = 2048;
 attack_coef = 1;
 decay_coef = 1;
 release_coef = 0;
+weight_amt = 0;
+weight_mix = 0;
+weight_body = 0;
+weight_sat = 0;
+weight_in_coeff = 0.02;
+weight_wet_coeff = 0.01;
+weight_ap_g1 = 0.2;
+weight_ap_g2 = 0.2;
+weight_ap1_len = 192;
+weight_ap2_len = 384;
+weight_tap1 = 384;
+weight_tap2 = 672;
+weight_tap3 = 960;
+weight_tap4 = 1536;
+weight_tap5 = 2256;
+weight_tap6 = 3264;
+weight_ap1_pos = 0;
+weight_ap2_pos = 0;
+weight_er_pos = 0;
+weight_in_lp_l = 0;
+weight_in_lp_r = 0;
+weight_wet_lp_l = 0;
+weight_wet_lp_r = 0;
 
 slot_signature_loaded = -999999;
 pending_signature = -999999;
@@ -991,12 +1276,20 @@ tone_lp_r = 0;
 focus_lp_l = 0;
 focus_lp_r = 0;
 
+
 tone_lp_coeff = 0.04;
 focus_lp_coeff = 0.08;
 env_att_coeff = 0.12;
 env_rel_coeff = 0.01;
+m2e_smooth_coeff = 0.002;
+m2e_mode_coeff = 0.001;
+m2e_detect_window_samps = 24000;
+m2e_timeout_samps = 96000;
+m2e_clock_samps = 0;
+transient_guard_s = 0;
 
 reset_bank_state();
+m2e_reset();
 
 @slider
 attack_samps = max(1, floor(slider2 * srate * 0.001));
@@ -1010,12 +1303,41 @@ truth_mix = clamp01(slider10);
 out_trim = db2amp(slider11);
 pitch_semi = clamp(slider12, -24, 24);
 sequence_mode = (slider13 | 0) ? 1 : 0;
+stretch_ratio = clamp(slider14, 1, 4);
+stretch_norm = clamp01((stretch_ratio - 1) / 3);
+weight_amt = clamp01(slider15);
+transient_mode = clamp(slider16 | 0, 0, 2);
 poll_interval_samps = max(1024, floor(0.35 * srate));
+
+stretch_grain_samps = clamp(floor(srate * lerp(0.024, 0.070, stretch_norm)), 192, 4096);
+stretch_hop_samps = max(24, floor(stretch_grain_samps * lerp(0.34, 0.22, stretch_norm)));
+
+weight_scale = 1 + stretch_norm * 1.8;
+weight_ap1_len = clamp(floor(srate * (0.0032 * weight_scale)), 16, AP_BUF_LEN - 1);
+weight_ap2_len = clamp(floor(srate * (0.0066 * weight_scale)), 24, AP_BUF_LEN - 1);
+weight_tap1 = clamp(floor(srate * (0.0085 * weight_scale)), 1, ER_BUF_LEN - 1);
+weight_tap2 = clamp(floor(srate * (0.0135 * weight_scale)), 1, ER_BUF_LEN - 1);
+weight_tap3 = clamp(floor(srate * (0.0205 * weight_scale)), 1, ER_BUF_LEN - 1);
+weight_tap4 = clamp(floor(srate * (0.0315 * weight_scale)), 1, ER_BUF_LEN - 1);
+weight_tap5 = clamp(floor(srate * (0.0470 * weight_scale)), 1, ER_BUF_LEN - 1);
+weight_tap6 = clamp(floor(srate * (0.0680 * weight_scale)), 1, ER_BUF_LEN - 1);
+
+weight_mix = weight_amt * (0.10 + 0.42 * max(stretch_norm, 0.35));
+weight_body = weight_amt * (0.02 + 0.10 * max(stretch_norm, 0.25));
+weight_sat = weight_amt * (0.01 + 0.05 * stretch_norm);
+weight_ap_g1 = clamp(0.10 + weight_amt * (0.28 + 0.10 * stretch_norm), 0, 0.72);
+weight_ap_g2 = clamp(0.08 + weight_amt * (0.25 + 0.14 * stretch_norm), 0, 0.72);
+weight_in_coeff = clamp((1400 - 700 * stretch_norm) / max(srate, 1), 0.002, 0.12);
+weight_wet_coeff = clamp((900 - 350 * stretch_norm) / max(srate, 1), 0.001, 0.08);
 
 tone_lp_coeff = clamp(1900 / max(srate, 1), 0.005, 0.18);
 focus_lp_coeff = clamp(4400 / max(srate, 1), 0.01, 0.40);
 env_att_coeff = clamp(1200 / max(srate, 1), 0.02, 0.5);
 env_rel_coeff = clamp(60 / max(srate, 1), 0.001, 0.12);
+m2e_smooth_coeff = clamp(42 / max(srate, 1), 0.0006, 0.02);
+m2e_mode_coeff = clamp(24 / max(srate, 1), 0.0004, 0.02);
+m2e_detect_window_samps = max(1024, floor(0.75 * srate));
+m2e_timeout_samps = max(2048, floor(1.7 * srate));
 
 ((slider1 | 0) > 0) ? (
   force_rescan_flag = 1;
@@ -1024,6 +1346,8 @@ env_rel_coeff = clamp(60 / max(srate, 1), 0.001, 0.12);
 );
 
 @block
+m2e_clock_samps += samplesblock;
+
 force_rescan_flag ? (
   poll_slot(1);
   force_rescan_flag = 0;
@@ -1042,16 +1366,48 @@ while (midirecv(offset, msg1, msg23)) (
   note   = msg23 & 127;
   vel    = (msg23 / 256) & 127;
 
-  (status == 144 && vel > 0) ? (
-    bank_loaded ? start_voice(note, vel, chan) : midisend(offset, msg1, msg23);
+  status == 176 ? (
+    (chan == M2E_CHAN) ? (
+      ccnum = note;
+      ccval = vel;
+      m2e_cc_age_base[ccnum] = m2e_clock_samps;
+      m2e_cc_val_base[ccnum] = ccval;
+      m2e_last_any_cc_samps = m2e_clock_samps;
+
+      (m2e_base >= 0 && ccnum >= m2e_base && ccnum < (m2e_base + M2E_LANE_COUNT)) ? (
+        m2e_last_msg_samps = m2e_clock_samps;
+        m2e_apply_cc(m2e_base, ccnum, ccval);
+      );
+    );
+    midisend(offset, msg1, msg23);
   ) : (
-    (status == 128 || (status == 144 && vel == 0)) ? (
-      bank_loaded ? release_voice(note, chan) : midisend(offset, msg1, msg23);
+    (status == 144 && vel > 0) ? (
+      bank_loaded ? start_voice(note, vel, chan) : midisend(offset, msg1, msg23);
     ) : (
-      midisend(offset, msg1, msg23);
+      (status == 128 || (status == 144 && vel == 0)) ? (
+        bank_loaded ? release_voice(note, chan) : midisend(offset, msg1, msg23);
+      ) : (
+        midisend(offset, msg1, msg23);
+      );
     );
   );
 );
+
+cand_base = m2e_detect_base(m2e_clock_samps);
+cand_base >= 0 ? (
+  (m2e_base != cand_base || !m2e_active) ? (
+    m2e_base = cand_base;
+    m2e_decode_snapshot(m2e_base);
+  );
+  m2e_active = 1;
+  m2e_last_msg_samps = m2e_clock_samps;
+);
+
+(m2e_active && ((m2e_clock_samps - m2e_last_msg_samps) > m2e_timeout_samps)) ? (
+  m2e_active = 0;
+);
+
+m2e_target = m2e_active ? 1 : 0;
 
 rescan_pending ? (
   (!voices_busy() || rescan_force) ? (
@@ -1065,6 +1421,7 @@ rescan_pending ? (
 @sample
 outL = 0;
 outR = 0;
+punch_bus = 0;
 
 i = 0;
 while (i < MAX_VOICES) (
@@ -1074,26 +1431,189 @@ while (i < MAX_VOICES) (
     sid = v[VC_SAMPLE] | 0;
     sm  = sample_meta_base + sid * SM_STRIDE;
     frames = sm[SM_FRAMES] | 0;
-    pos = v[VC_POS];
-    ip = pos | 0;
+    ptr = sm[SM_PTR] | 0;
+    nch = max(1, sm[SM_NCH] | 0);
 
-    ip < (frames - 1) ? (
-      frac = pos - ip;
-      ptr = sm[SM_PTR] | 0;
-      nch = max(1, sm[SM_NCH] | 0);
-      ip1 = ip + 1;
-      p0 = ptr + ip * nch;
-      p1 = ptr + ip1 * nch;
+    l = 0;
+    r = 0;
+    got_sig = 0;
 
-      nch >= 2 ? (
-        l = p0[0] + (p1[0] - p0[0]) * frac;
-        r = p0[1] + (p1[1] - p0[1]) * frac;
+    tleft = max(0, floor(v[VC_TLEFT]));
+
+    (v[VC_GMODE] > 0 && tleft > 0) ? (
+      pos = v[VC_POS];
+      ip = pos | 0;
+
+      ip < (frames - 1) ? (
+        frac = pos - ip;
+        ip1 = ip + 1;
+        p0 = ptr + ip * nch;
+        p1 = ptr + ip1 * nch;
+
+        nch >= 2 ? (
+          l = p0[0] + (p1[0] - p0[0]) * frac;
+          r = p0[1] + (p1[1] - p0[1]) * frac;
+        ) : (
+          x = p0[0] + (p1[0] - p0[0]) * frac;
+          l = x;
+          r = x;
+        );
+
+        got_sig = 1;
+        pos += v[VC_RATE];
+        v[VC_POS] = pos;
+        tleft -= 1;
+        v[VC_TLEFT] = max(0, tleft);
+        tleft <= 0 ? (
+          v[VC_NEXTSRC] = pos;
+          v[VC_GTIMER] = 0;
+        );
+        pos >= (frames - 1) ? (
+          v[VC_CANSPAWN] = 0;
+          v[VC_ACTIVE] = 0;
+        );
       ) : (
-        x = p0[0] + (p1[0] - p0[0]) * frac;
-        l = x;
-        r = x;
+        v[VC_CANSPAWN] = 0;
+        v[VC_ACTIVE] = 0;
       );
+    ) : (
+      v[VC_GMODE] > 0 ? (
+        hop = max(1, floor(v[VC_OHOP]));
+        gsize = max(hop + 1, floor(v[VC_GSIZE]));
+        timer = v[VC_GTIMER];
+        spawn_guard = 0;
 
+        while (timer <= 0 && v[VC_CANSPAWN] > 0 && spawn_guard < NUM_GRAINS) (
+          gslot = -1;
+          oldest = 0;
+          oldest_age = -1;
+
+          gk = 0;
+          while (gk < NUM_GRAINS) (
+            gb = v + VC_GBASE + gk * VG_STRIDE;
+            gb[VG_ACTIVE] <= 0 ? (
+              gslot = gk;
+              gk = NUM_GRAINS;
+            ) : (
+              gb[VG_AGE] > oldest_age ? (
+                oldest_age = gb[VG_AGE];
+                oldest = gk;
+              );
+              gk += 1;
+            );
+          );
+
+          gslot < 0 ? gslot = oldest;
+
+          gb = v + VC_GBASE + gslot * VG_STRIDE;
+          gb[VG_ACTIVE] = 1;
+          gb[VG_AGE] = 0;
+          gb[VG_SRC] = v[VC_NEXTSRC];
+
+          timer += hop;
+          v[VC_NEXTSRC] += v[VC_SRCHOP];
+          v[VC_NEXTSRC] >= (frames - 2) ? v[VC_CANSPAWN] = 0;
+
+          spawn_guard += 1;
+        );
+
+        v[VC_GTIMER] = timer - 1;
+
+        sumL = 0;
+        sumR = 0;
+        sumW = 0;
+        activeg = 0;
+
+        gk = 0;
+        while (gk < NUM_GRAINS) (
+          gb = v + VC_GBASE + gk * VG_STRIDE;
+
+          gb[VG_ACTIVE] > 0 ? (
+            age = gb[VG_AGE];
+
+            age < gsize ? (
+              srcp = gb[VG_SRC] + age * v[VC_RATE];
+
+              srcp < (frames - 1) ? (
+                ip = srcp | 0;
+                frac = srcp - ip;
+                ip1 = ip + 1;
+                p0 = ptr + ip * nch;
+                p1 = ptr + ip1 * nch;
+
+                nch >= 2 ? (
+                  sl = p0[0] + (p1[0] - p0[0]) * frac;
+                  sr = p0[1] + (p1[1] - p0[1]) * frac;
+                ) : (
+                  sx = p0[0] + (p1[0] - p0[0]) * frac;
+                  sl = sx;
+                  sr = sx;
+                );
+
+                w = stretch_window(age, gsize);
+                sumL += sl * w;
+                sumR += sr * w;
+                sumW += w;
+              );
+
+              age += 1;
+              gb[VG_AGE] = age;
+              ((age >= gsize) || (srcp >= (frames - 1))) ? (
+                gb[VG_ACTIVE] = 0;
+              ) : (
+                activeg += 1;
+              );
+            ) : (
+              gb[VG_ACTIVE] = 0;
+            );
+          );
+
+          gk += 1;
+        );
+
+        sumW > 0 ? (
+          l = sumL / sumW;
+          r = sumR / sumW;
+          got_sig = 1;
+        );
+
+        (!v[VC_CANSPAWN] && activeg <= 0 && sumW <= 0) ? v[VC_ACTIVE] = 0;
+      ) : (
+        pos = v[VC_POS];
+        ip = pos | 0;
+
+        ip < (frames - 1) ? (
+          frac = pos - ip;
+          ip1 = ip + 1;
+          p0 = ptr + ip * nch;
+          p1 = ptr + ip1 * nch;
+
+          nch >= 2 ? (
+            l = p0[0] + (p1[0] - p0[0]) * frac;
+            r = p0[1] + (p1[1] - p0[1]) * frac;
+          ) : (
+            x = p0[0] + (p1[0] - p0[0]) * frac;
+            l = x;
+            r = x;
+          );
+
+          got_sig = 1;
+          play_rate = v[VC_RATE];
+          (tleft > 0 && stretch_ratio > 1.01 && v[VC_TPROT] > 0) ? (
+            holdn = clamp01(tleft / max(1, v[VC_GTIMER]));
+            holdn = holdn * holdn;
+            play_rate *= 1 + (stretch_ratio - 1) * holdn * v[VC_TPROT];
+          );
+          v[VC_POS] = pos + play_rate;
+          v[VC_POS] >= (frames - 1) ? v[VC_ACTIVE] = 0;
+          tleft > 0 ? v[VC_TLEFT] = tleft - 1;
+        ) : (
+          v[VC_ACTIVE] = 0;
+        );
+      );
+    );
+
+    v[VC_ACTIVE] > 0 ? (
       stage = v[VC_STAGE] | 0;
       env = v[VC_ENV];
 
@@ -1130,16 +1650,13 @@ while (i < MAX_VOICES) (
       v[VC_ENV] = env;
 
       g = v[VC_BASE] * env;
-      g > 0 ? (
+      (g > 0 && got_sig) ? (
         outL += l * g;
         outR += r * g;
-        v[VC_POS] = pos + v[VC_RATE];
-        v[VC_POS] >= (frames - 1) ? v[VC_ACTIVE] = 0;
+        (v[VC_TLEFT] > 0) ? punch_bus = max(punch_bus, v[VC_TPROT]);
       ) : (
-        v[VC_ACTIVE] = 0;
+        (g <= 0 || !got_sig) ? v[VC_ACTIVE] = 0;
       );
-    ) : (
-      v[VC_ACTIVE] = 0;
     );
   );
 
@@ -1150,6 +1667,79 @@ midm = abs(0.5 * (outL + outR));
 mix_fast += (midm - mix_fast) * (midm > mix_fast ? env_att_coeff : env_rel_coeff);
 mix_slow += (midm - mix_slow) * env_rel_coeff;
 transient = clamp01((mix_fast - mix_slow) * 10);
+transient_guard = clamp01(max(punch_bus, transient * (0.72 + 0.28 * punch_bus)));
+transient_guard_s += (transient_guard - transient_guard_s) * (transient_guard > transient_guard_s ? 0.12 : 0.02);
+
+m2e_mix += (m2e_target - m2e_mix) * m2e_mode_coeff;
+m2e_env_s += (m2e_env_raw - m2e_env_s) * m2e_smooth_coeff;
+m2e_rigid_s += (m2e_rigid_raw - m2e_rigid_s) * m2e_smooth_coeff;
+m2e_impact_s += (m2e_impact_raw - m2e_impact_s) * m2e_smooth_coeff;
+m2e_pan_s += (m2e_pan_raw - m2e_pan_s) * m2e_smooth_coeff;
+m2e_entropy_s += (m2e_entropy_raw - m2e_entropy_s) * m2e_smooth_coeff;
+m2e_axis_v_s += (m2e_axis_v_raw - m2e_axis_v_s) * m2e_smooth_coeff;
+m2e_axis_acc_s += (m2e_axis_acc_raw - m2e_axis_acc_s) * m2e_smooth_coeff;
+m2e_lat_v_s += (m2e_lat_v_raw - m2e_lat_v_s) * m2e_smooth_coeff;
+m2e_lat_amp_s += (m2e_lat_amp_raw - m2e_lat_amp_s) * m2e_smooth_coeff;
+m2e_micro_s += (m2e_micro_raw - m2e_micro_s) * m2e_smooth_coeff;
+m2e_meso_s += (m2e_meso_raw - m2e_meso_s) * m2e_smooth_coeff;
+m2e_macro_s += (m2e_macro_raw - m2e_macro_s) * m2e_smooth_coeff;
+m2e_excite_s += (m2e_excite_raw - m2e_excite_s) * m2e_smooth_coeff;
+m2e_activity_s += (m2e_activity_raw - m2e_activity_s) * m2e_smooth_coeff;
+
+m2e_depth = m2e_mix * (0.22 + 0.78 * max(0.18, slider9));
+m2e_depth *= (1 - 0.35 * m2e_rigid_s);
+m2e_depth = clamp01(m2e_depth);
+m2e_activity_hi = clamp01((m2e_activity_s - 1) / 3);
+
+m2e_tone_bias =
+  ((m2e_excite_s - 0.5) * 0.18
+  + (m2e_micro_s - 0.5) * 0.10
+  + (m2e_meso_s - 0.5) * 0.05
+  - (m2e_macro_s - 0.5) * 0.12
+  + (m2e_env_s - 0.5) * 0.06) * m2e_depth;
+
+m2e_focus_bias =
+  (m2e_impact_s * 0.22
+  + abs(m2e_axis_acc_s) * 0.10
+  + abs(m2e_axis_v_s) * 0.04
+  + m2e_excite_s * 0.06
+  - m2e_macro_s * 0.06) * m2e_depth;
+
+m2e_width_bias =
+  (m2e_lat_amp_s * 0.24
+  + m2e_activity_hi * 0.12
+  + m2e_excite_s * 0.10
+  - m2e_rigid_s * 0.08
+  - m2e_entropy_s * 0.04) * m2e_depth;
+
+m2e_pan_bias =
+  (((m2e_pan_s - 0.5) * 2) * 0.20
+  + m2e_lat_v_s * 0.08
+  + m2e_axis_v_s * 0.04) * m2e_depth;
+
+m2e_body_bias =
+  ((m2e_env_s - 0.5) * 0.10
+  + m2e_impact_s * 0.08
+  + m2e_excite_s * 0.06
+  - m2e_macro_s * 0.04) * m2e_depth;
+
+m2e_sat_mix =
+  (m2e_impact_s * 0.26
+  + m2e_excite_s * 0.18
+  + abs(m2e_axis_acc_s) * 0.08
+  + m2e_meso_s * 0.06) * m2e_depth;
+m2e_sat_mix = min(clamp01(m2e_sat_mix), 0.22);
+
+trans_mode_mix = 0.6;
+transient_mode == 1 ? trans_mode_mix = 1
+: transient_mode == 2 ? trans_mode_mix = 0;
+m2e_transient_damp = clamp(1 - transient_guard_s * (0.52 + 0.28 * trans_mode_mix), 0.12, 1);
+m2e_tone_bias *= 0.48 + 0.52 * m2e_transient_damp;
+m2e_focus_bias *= 0.18 + 0.82 * m2e_transient_damp * m2e_transient_damp;
+m2e_width_bias *= 0.62 + 0.38 * m2e_transient_damp;
+m2e_pan_bias *= 0.30 + 0.70 * m2e_transient_damp;
+m2e_body_bias *= 0.56 + 0.44 * m2e_transient_damp;
+m2e_sat_mix *= 0.16 + 0.84 * m2e_transient_damp * m2e_transient_damp;
 
 tone_lp_l += (outL - tone_lp_l) * tone_lp_coeff;
 tone_lp_r += (outR - tone_lp_r) * tone_lp_coeff;
@@ -1161,22 +1751,104 @@ tone_hp_r = outR - tone_lp_r;
 focus_hp_l = outL - focus_lp_l;
 focus_hp_r = outR - focus_lp_r;
 
-tone_amt = slider6;
-focus_amt = slider7;
-width_amt = slider8;
+tone_amt = clamp(slider6 + m2e_tone_bias, -1, 1);
+focus_amt = clamp(slider7 + m2e_focus_bias, -1, 1);
+width_amt = clamp(slider8 + m2e_width_bias, 0, 1);
 
 outL += tone_amt * (tone_hp_l * 0.17 - tone_lp_l * 0.035);
 outR += tone_amt * (tone_hp_r * 0.17 - tone_lp_r * 0.035);
 
-focus_mix = focus_amt * (0.05 + transient * 0.11);
+focus_mix = focus_amt * (0.05 + transient * (0.11 + 0.08 * m2e_impact_s * m2e_depth));
 outL += focus_hp_l * focus_mix;
 outR += focus_hp_r * focus_mix;
 
 mid = 0.5 * (outL + outR);
 side = 0.5 * (outL - outR);
 side *= 1 + width_amt * 0.22;
+side += mid * m2e_pan_bias * 0.45;
+mid *= 1 + m2e_body_bias;
 outL = mid + side;
 outR = mid - side;
+
+satL = outL - (outL * outL * outL) * 0.1666666667;
+satR = outR - (outR * outR * outR) * 0.1666666667;
+outL = lerp(outL, satL, m2e_sat_mix);
+outR = lerp(outR, satR, m2e_sat_mix);
+
+weight_amt > 0.0001 ? (
+  wmid = 0.5 * (outL + outR);
+  wside = 0.5 * (outL - outR);
+
+  weight_in_src_l = outL * 0.74 + wmid * 0.42 - wside * 0.06;
+  weight_in_src_r = outR * 0.74 + wmid * 0.42 + wside * 0.06;
+
+  weight_in_lp_l += (weight_in_src_l - weight_in_lp_l) * weight_in_coeff;
+  weight_in_lp_r += (weight_in_src_r - weight_in_lp_r) * weight_in_coeff;
+
+  ap_idx = weight_ap1_pos;
+  ap_del = weight_ap1_l_base[ap_idx];
+  ap1L = -weight_ap_g1 * weight_in_lp_l + ap_del;
+  weight_ap1_l_base[ap_idx] = weight_in_lp_l + weight_ap_g1 * ap1L;
+  ap_del = weight_ap1_r_base[ap_idx];
+  ap1R = -weight_ap_g1 * weight_in_lp_r + ap_del;
+  weight_ap1_r_base[ap_idx] = weight_in_lp_r + weight_ap_g1 * ap1R;
+  weight_ap1_pos += 1;
+  weight_ap1_pos >= weight_ap1_len ? weight_ap1_pos = 0;
+
+  ap_idx = weight_ap2_pos;
+  ap_del = weight_ap2_l_base[ap_idx];
+  ap2L = -weight_ap_g2 * ap1L + ap_del;
+  weight_ap2_l_base[ap_idx] = ap1L + weight_ap_g2 * ap2L;
+  ap_del = weight_ap2_r_base[ap_idx];
+  ap2R = -weight_ap_g2 * ap1R + ap_del;
+  weight_ap2_r_base[ap_idx] = ap1R + weight_ap_g2 * ap2R;
+  weight_ap2_pos += 1;
+  weight_ap2_pos >= weight_ap2_len ? weight_ap2_pos = 0;
+
+  er_idx = weight_er_pos;
+  weight_er_l_base[er_idx] = ap2L;
+  weight_er_r_base[er_idx] = ap2R;
+
+  rd1 = er_idx - weight_tap1; rd1 < 0 ? rd1 += ER_BUF_LEN;
+  rd2 = er_idx - weight_tap2; rd2 < 0 ? rd2 += ER_BUF_LEN;
+  rd3 = er_idx - weight_tap3; rd3 < 0 ? rd3 += ER_BUF_LEN;
+  rd4 = er_idx - weight_tap4; rd4 < 0 ? rd4 += ER_BUF_LEN;
+  rd5 = er_idx - weight_tap5; rd5 < 0 ? rd5 += ER_BUF_LEN;
+  rd6 = er_idx - weight_tap6; rd6 < 0 ? rd6 += ER_BUF_LEN;
+
+  dl1 = weight_er_l_base[rd1]; dr1 = weight_er_r_base[rd1];
+  dl2 = weight_er_l_base[rd2]; dr2 = weight_er_r_base[rd2];
+  dl3 = weight_er_l_base[rd3]; dr3 = weight_er_r_base[rd3];
+  dl4 = weight_er_l_base[rd4]; dr4 = weight_er_r_base[rd4];
+  dl5 = weight_er_l_base[rd5]; dr5 = weight_er_r_base[rd5];
+  dl6 = weight_er_l_base[rd6]; dr6 = weight_er_r_base[rd6];
+
+  dm3 = 0.5 * (dl3 + dr3);
+  dm6 = 0.5 * (dl6 + dr6);
+
+  wetL = dl1 * 0.29 + dr2 * 0.22 + dm3 * 0.19 + dl4 * 0.14 + dr5 * 0.10 + dm6 * 0.07;
+  wetR = dr1 * 0.29 + dl2 * 0.22 + dm3 * 0.19 + dr4 * 0.14 + dl5 * 0.10 + dm6 * 0.07;
+
+  weight_er_pos += 1;
+  weight_er_pos >= ER_BUF_LEN ? weight_er_pos = 0;
+
+  weight_wet_lp_l += (wetL - weight_wet_lp_l) * weight_wet_coeff;
+  weight_wet_lp_r += (wetR - weight_wet_lp_r) * weight_wet_coeff;
+
+  wet_damp = 0.52 + 0.22 * stretch_norm;
+  wetL = lerp(wetL, weight_wet_lp_l, wet_damp);
+  wetR = lerp(wetR, weight_wet_lp_r, wet_damp);
+
+  weight_duck = clamp(1 - transient_guard_s * (0.64 + 0.20 * trans_mode_mix + 0.08 * weight_amt), 0.14, 1);
+  bloom = 0.5 * (weight_wet_lp_l + weight_wet_lp_r) * weight_body * (0.42 + 0.58 * weight_duck);
+  outL += wetL * weight_mix * weight_duck + bloom;
+  outR += wetR * weight_mix * weight_duck + bloom;
+
+  heavySatL = outL - (outL * outL * outL) * 0.11;
+  heavySatR = outR - (outR * outR * outR) * 0.11;
+  outL = lerp(outL, heavySatL, weight_sat * (0.42 + 0.58 * weight_duck));
+  outR = lerp(outR, heavySatR, weight_sat * (0.42 + 0.58 * weight_duck));
+);
 
 spl0 += outL * out_trim;
 spl1 += outR * out_trim;
@@ -1238,6 +1910,26 @@ rescan_pending ? (
   rescan_force ? sprintf(#ui_buf, "Rescan now") : sprintf(#ui_buf, "Rescan queued")
 ) : sprintf(#ui_buf, "Auto-rescan live");
 gfx_drawstr(#ui_buf);
+
+m2e_lamp_x = gfx_w - 332;
+m2e_lamp_y = y0 + 16;
+m2e_recent = (m2e_clock_samps - m2e_last_any_cc_samps) <= m2e_detect_window_samps ? 1 : 0;
+m2e_on = m2e_mix > 0.02 ? 1 : 0;
+gfx_r = m2e_on ? 0.54 : (m2e_recent ? 0.76 : 0.20);
+gfx_g = m2e_on ? 0.64 : (m2e_recent ? 0.54 : 0.20);
+gfx_b = m2e_on ? 0.96 : (m2e_recent ? 0.22 : 0.22);
+gfx_a = 1;
+gfx_circle(m2e_lamp_x, m2e_lamp_y + 12, 8, 1);
+gfx_r = 0.85; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+gfx_x = m2e_lamp_x + 16; gfx_y = m2e_lamp_y + 2;
+m2e_on ? sprintf(#ui_buf, "FluxBridge live") : (m2e_recent ? sprintf(#ui_buf, "FluxBridge detect") : sprintf(#ui_buf, "FluxBridge idle"));
+gfx_drawstr(#ui_buf);
+gfx_r = 0.72; gfx_g = 0.77; gfx_b = 0.84; gfx_a = 1;
+gfx_x = m2e_lamp_x + 16; gfx_y = m2e_lamp_y + 36;
+m2e_base >= 0 ? sprintf(#ui_buf, "CC %d-%d", m2e_base, m2e_base + M2E_LANE_COUNT - 1) : sprintf(#ui_buf, "Auto motion follow");
+gfx_drawstr(#ui_buf);
+
+pt_in(m2e_lamp_x - 8, m2e_lamp_y - 2, 160, 40) ? ui_hover_id = 1003;
 pt_in(lamp_x - 8, lamp_y - 2, 150, 40) ? ui_hover_id = 1002;
 
 // Panels
@@ -1426,58 +2118,80 @@ seq_btn_x = right_x + right_w - 96;
 seq_btn_y = right_y + 10;
 seq_btn_w = 78;
 seq_btn_h = 28;
+trans_btn_x = seq_btn_x - 92;
+trans_btn_y = seq_btn_y;
+trans_btn_w = 82;
+trans_btn_h = 28;
+
+ui_button(402, trans_btn_x, trans_btn_y, trans_btn_w, trans_btn_h) ? (
+  slider16 = ((slider16 | 0) + 1) % 3;
+  gfx_slider_mask |= MASK_S16;
+);
 ui_button(401, seq_btn_x, seq_btn_y, seq_btn_w, seq_btn_h) ? (
   slider13 = 1 - (slider13 | 0);
   gfx_slider_mask |= MASK_S13;
 );
 gfx_setfont(1, "Arial", 12, 0);
 gfx_r = 0.92; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
+gfx_x = trans_btn_x + 13; gfx_y = trans_btn_y + 8;
+(slider16 | 0) == 1 ? gfx_drawstr("Punch") : ((slider16 | 0) == 2 ? gfx_drawstr("Off") : gfx_drawstr("Auto"));
 gfx_x = seq_btn_x + 11; gfx_y = seq_btn_y + 8;
 (slider13 | 0) ? gfx_drawstr("Sequence") : gfx_drawstr("Random");
 
 gfx_setfont(1, "Arial", 13, 0);
 gfx_r = 0.66; gfx_g = 0.74; gfx_b = 0.84; gfx_a = 1;
 gfx_x = right_x + 14; gfx_y = right_y + 40;
-gfx_drawstr("Pitch, tone, width, lively, truth, level.");
+gfx_drawstr("Pitch + stretch + transient lock + FluxBridge.");
 
-kb_r = 24;
+kb_r_top = 22;
+kb_r_bot = 20;
 row1_y = right_y + 118;
 row2_y = right_y + 286;
-top1x = right_x + 42;
-top2x = right_x + 110;
-top3x = right_x + 178;
-top4x = right_x + 246;
-bot1x = right_x + 60;
-bot2x = right_x + 150;
-bot3x = right_x + 240;
+top1x = right_x + 38;
+top2x = right_x + 106;
+top3x = right_x + 174;
+top4x = right_x + 242;
+bot1x = right_x + 34;
+bot2x = right_x + 89;
+bot3x = right_x + 144;
+bot4x = right_x + 199;
+bot5x = right_x + 254;
 
-nv = ui_knob(307, top1x, row1_y, kb_r, slider12, -24, 24, 0, 0.021); abs(nv - slider12) > 0.0000001 ? (slider12 = nv; gfx_slider_mask |= MASK_S12;);
+nv = ui_knob(307, top1x, row1_y, kb_r_top, slider12, -24, 24, 0, 0.021); abs(nv - slider12) > 0.0000001 ? (slider12 = nv; gfx_slider_mask |= MASK_S12;);
 gfx_x = top1x - 18; gfx_y = row1_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Pitch");
 sprintf(#ui_buf, "%+.1f", slider12); gfx_x = top1x - 16; gfx_y = row1_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
-nv = ui_knob(301, top2x, row1_y, kb_r, slider6, -1, 1, 0, 0.020); abs(nv - slider6) > 0.0000001 ? (slider6 = nv; gfx_slider_mask |= MASK_S6;);
-gfx_x = top2x - 20; gfx_y = row1_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Color");
-sprintf(#ui_buf, "%.2f", slider6); gfx_x = top2x - 14; gfx_y = row1_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+nv = ui_knob(308, top2x, row1_y, kb_r_top, slider14, 1, 4, 1, 0.018); abs(nv - slider14) > 0.0000001 ? (slider14 = nv; gfx_slider_mask |= MASK_S14;);
+gfx_x = top2x - 22; gfx_y = row1_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Stretch");
+sprintf(#ui_buf, "%.2fx", slider14); gfx_x = top2x - 18; gfx_y = row1_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
-nv = ui_knob(302, top3x, row1_y, kb_r, slider7, -1, 1, 0, 0.020); abs(nv - slider7) > 0.0000001 ? (slider7 = nv; gfx_slider_mask |= MASK_S7;);
-gfx_x = top3x - 20; gfx_y = row1_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Focus");
-sprintf(#ui_buf, "%.2f", slider7); gfx_x = top3x - 14; gfx_y = row1_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+nv = ui_knob(301, top3x, row1_y, kb_r_top, slider6, -1, 1, 0, 0.020); abs(nv - slider6) > 0.0000001 ? (slider6 = nv; gfx_slider_mask |= MASK_S6;);
+gfx_x = top3x - 20; gfx_y = row1_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Color");
+sprintf(#ui_buf, "%.2f", slider6); gfx_x = top3x - 14; gfx_y = row1_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
-nv = ui_knob(303, top4x, row1_y, kb_r, slider8, 0, 1, 0.18, 0.018); abs(nv - slider8) > 0.0000001 ? (slider8 = nv; gfx_slider_mask |= MASK_S8;);
-gfx_x = top4x - 18; gfx_y = row1_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Width");
-sprintf(#ui_buf, "%.2f", slider8); gfx_x = top4x - 14; gfx_y = row1_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+nv = ui_knob(302, top4x, row1_y, kb_r_top, slider7, -1, 1, 0, 0.020); abs(nv - slider7) > 0.0000001 ? (slider7 = nv; gfx_slider_mask |= MASK_S7;);
+gfx_x = top4x - 20; gfx_y = row1_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Focus");
+sprintf(#ui_buf, "%.2f", slider7); gfx_x = top4x - 14; gfx_y = row1_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
-nv = ui_knob(304, bot1x, row2_y, kb_r + 2, slider9, 0, 1, 0.22, 0.018); abs(nv - slider9) > 0.0000001 ? (slider9 = nv; gfx_slider_mask |= MASK_S9;);
-gfx_x = bot1x - 24; gfx_y = row2_y + 42; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Lively");
-sprintf(#ui_buf, "%.2f", slider9); gfx_x = bot1x - 14; gfx_y = row2_y - 56; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+nv = ui_knob(303, bot1x, row2_y, kb_r_bot, slider8, 0, 1, 0.18, 0.018); abs(nv - slider8) > 0.0000001 ? (slider8 = nv; gfx_slider_mask |= MASK_S8;);
+gfx_x = bot1x - 18; gfx_y = row2_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Width");
+sprintf(#ui_buf, "%.2f", slider8); gfx_x = bot1x - 14; gfx_y = row2_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
-nv = ui_knob(305, bot2x, row2_y, kb_r + 2, slider10, 0, 1, 0.30, 0.018); abs(nv - slider10) > 0.0000001 ? (slider10 = nv; gfx_slider_mask |= MASK_S10;);
-gfx_x = bot2x - 18; gfx_y = row2_y + 42; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Truth");
-sprintf(#ui_buf, "%.2f", slider10); gfx_x = bot2x - 14; gfx_y = row2_y - 56; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+nv = ui_knob(304, bot2x, row2_y, kb_r_bot, slider9, 0, 1, 0.22, 0.018); abs(nv - slider9) > 0.0000001 ? (slider9 = nv; gfx_slider_mask |= MASK_S9;);
+gfx_x = bot2x - 22; gfx_y = row2_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Lively");
+sprintf(#ui_buf, "%.2f", slider9); gfx_x = bot2x - 14; gfx_y = row2_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
-nv = ui_knob(306, bot3x, row2_y, kb_r + 2, slider11, -24, 12, -9, 0.018); abs(nv - slider11) > 0.0000001 ? (slider11 = nv; gfx_slider_mask |= MASK_S11;);
-gfx_x = bot3x - 10; gfx_y = row2_y + 42; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Out");
-sprintf(#ui_buf, "%.1f", slider11); gfx_x = bot3x - 14; gfx_y = row2_y - 56; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+nv = ui_knob(305, bot3x, row2_y, kb_r_bot, slider10, 0, 1, 0.30, 0.018); abs(nv - slider10) > 0.0000001 ? (slider10 = nv; gfx_slider_mask |= MASK_S10;);
+gfx_x = bot3x - 18; gfx_y = row2_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Truth");
+sprintf(#ui_buf, "%.2f", slider10); gfx_x = bot3x - 14; gfx_y = row2_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+
+nv = ui_knob(309, bot4x, row2_y, kb_r_bot, slider15, 0, 1, 0, 0.018); abs(nv - slider15) > 0.0000001 ? (slider15 = nv; gfx_slider_mask |= MASK_S15;);
+gfx_x = bot4x - 20; gfx_y = row2_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Weight");
+sprintf(#ui_buf, "%.2f", slider15); gfx_x = bot4x - 14; gfx_y = row2_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+
+nv = ui_knob(306, bot5x, row2_y, kb_r_bot, slider11, -24, 12, -9, 0.018); abs(nv - slider11) > 0.0000001 ? (slider11 = nv; gfx_slider_mask |= MASK_S11;);
+gfx_x = bot5x - 10; gfx_y = row2_y + 38; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("Out");
+sprintf(#ui_buf, "%.1f", slider11); gfx_x = bot5x - 14; gfx_y = row2_y - 52; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
 hint_x = right_x + 18; hint_y = right_y + right_h - 76; hint_w = right_w - 36; hint_h = 56;
 gfx_r = 0.10; gfx_g = 0.12; gfx_b = 0.16; gfx_a = 1;
@@ -1488,10 +2202,10 @@ pt_in(hint_x, hint_y, hint_w, hint_h) ? ui_hover_id = 1401;
 
 gfx_setfont(1, "Arial", 12, 0);
 gfx_x = hint_x + 12; gfx_y = hint_y + 8; gfx_r = 0.83; gfx_g = 0.89; gfx_b = 0.96; gfx_a = 1;
-gfx_drawstr("Any MIDI note now hits the full bank.");
+gfx_drawstr("Transient = Auto / Punch / Off.");
 gfx_x = hint_x + 12; gfx_y = hint_y + 23; gfx_r = 0.62; gfx_g = 0.71; gfx_b = 0.82; gfx_a = 1;
-gfx_drawstr("Random = weighted all-bank choice. Sequence = deterministic walk.");
-gfx_x = hint_x + 12; gfx_y = hint_y + 38; gfx_drawstr("Wheel nudges; right-click or double-click resets.");
+gfx_drawstr("Stretch is tape-style; Weight blooms after the hit.");
+gfx_x = hint_x + 12; gfx_y = hint_y + 38; gfx_drawstr("Wheel nudges; RMB/dbl-click resets.");
 
 rescan_flash > 0 ? rescan_flash = max(0, rescan_flash - 0.035);
 rescan_flash > 0 ? (
@@ -1508,6 +2222,10 @@ ui_hover_id == 1001 ? (
 ui_hover_id == 1002 ? (
   sprintf(#tip_title, "Auto-rescan status");
   sprintf(#tip_body, "Green means a bank is loaded. The text below shows whether a rescan is live or queued.");
+);
+ui_hover_id == 1003 ? (
+  sprintf(#tip_title, "FluxBridge M2E");
+  sprintf(#tip_body, "Listens for the FluxBridge Receiver CC burst on MIDI channel 1 / channel 0 status bytes. When detected, the sampler adds subtle motion-driven tone, focus, width, pan, and body contour, but transient-rich hits are protected so the attack stays intact.");
 );
 ui_hover_id == 1100 ? (
   sprintf(#tip_title, "Bank status");
@@ -1533,7 +2251,7 @@ ui_hover_id >= 5000 ? (
   hov_sid = ui_hover_id - 5000;
   sm = sample_meta_base + hov_sid * SM_STRIDE;
   sprintf(#tip_title, "Sample %d", hov_sid + 1);
-  sprintf(#tip_body, "Root %.0f | Bright %.2f | Focus %.2f | Len %.0f ms", sm[SM_ROOT], sm[SM_BRIGHT], sm[SM_SHARP], sm[SM_LENMS]);
+  sprintf(#tip_body, "Root %.0f | Bright %.2f | Focus %.2f | Punch %.2f | Len %.0f ms", sm[SM_ROOT], sm[SM_BRIGHT], sm[SM_SHARP], sm[SM_FLAGS], sm[SM_LENMS]);
 );
 ui_hover_id == 1300 ? (
   sprintf(#tip_title, "Envelope section");
@@ -1545,11 +2263,11 @@ ui_hover_id == 1301 ? (
 );
 ui_hover_id == 1400 ? (
   sprintf(#tip_title, "Playback controls");
-  sprintf(#tip_body, "Pitch is now independent of MIDI note. The rest stay restrained and mix-safe rather than exaggerated.");
+  sprintf(#tip_body, "Pitch is global tape-style transpose, Stretch slows the bank down in the same natural rate path, Transient keeps the hit locked, and Weight adds a short ER-style thickener. FluxBridge still adds subtle motion-follow modulation on top when detected.");
 );
 ui_hover_id == 1401 ? (
-  sprintf(#tip_title, "Hidden stock sliders");
-  sprintf(#tip_body, "Every mapped parameter still lives on a normal JSFX slider for automation and state recall. Random hits the whole bank, Sequence walks it deterministically.");
+  sprintf(#tip_title, "Playback notes");
+  sprintf(#tip_body, "Stretch is now tape-style slowdown, so higher values make the bank slower and lower instead of granular and robotic. Pitch stacks on the same rate path, Transient keeps the hit intact, Weight adds body after the hit, Random hits the whole bank, and Sequence walks it deterministically.");
 );
 ui_hover_id == 201 ? (
   sprintf(#tip_title, "Attack");
@@ -1581,7 +2299,7 @@ ui_hover_id == 303 ? (
 );
 ui_hover_id == 304 ? (
   sprintf(#tip_title, "Liveliness");
-  sprintf(#tip_body, "Current %.2f. Controls start-position jitter, tiny detune drift, gain micro-variation, and how adventurous Random mode becomes. Wheel adjusts; right-click or double-click resets.", slider9);
+  sprintf(#tip_body, "Current %.2f. Controls start-position jitter, tiny detune drift, gain micro-variation, Random-mode adventurousness, and the depth of auto FluxBridge motion when present. Wheel adjusts; right-click or double-click resets.", slider9);
 );
 ui_hover_id == 305 ? (
   sprintf(#tip_title, "Truth");
@@ -1589,11 +2307,19 @@ ui_hover_id == 305 ? (
 );
 ui_hover_id == 306 ? (
   sprintf(#tip_title, "Output");
-  sprintf(#tip_body, "Current %.1f dB. Final output trim after the macro stage. Wheel adjusts; right-click or double-click resets.", slider11);
+  sprintf(#tip_body, "Current %.1f dB. Final output trim after the macro and Weight stages. Wheel adjusts; right-click or double-click resets.", slider11);
 );
 ui_hover_id == 307 ? (
   sprintf(#tip_title, "Pitch");
-  sprintf(#tip_body, "Current %+.1f semitones. This is the global transpose now; incoming MIDI note no longer decides which bank entry can play.", slider12);
+  sprintf(#tip_body, "Current %+.1f semitones. Global tape-style transpose. Stretch uses the same natural speed path, so the two controls stack instead of fighting each other.", slider12);
+);
+ui_hover_id == 308 ? (
+  sprintf(#tip_title, "Stretch");
+  sprintf(#tip_body, "Current %.2fx. Tape-style slowdown, not granular stretch. Higher values make the bank slower and lower, while Transient mode keeps the front edge from turning to mush.", slider14);
+);
+ui_hover_id == 309 ? (
+  sprintf(#tip_title, "Weight");
+  sprintf(#tip_body, "Current %.2f. Short ER-style thickener with damping and body bloom. In transient modes it ducks around the first hit so heavy attacks stay punchy.", slider15);
 );
 ui_hover_id == 401 ? (
   sprintf(#tip_title, "Random / Sequence");
@@ -1601,6 +2327,16 @@ ui_hover_id == 401 ? (
     sprintf(#tip_body, "Sequence mode walks through every loaded file in order, one trigger at a time.");
   ) : (
     sprintf(#tip_body, "Random mode chooses from the whole bank every trigger, with anti-repeat weighting and subtle descriptor matching.");
+  );
+);
+ui_hover_id == 402 ? (
+  sprintf(#tip_title, "Transient mode");
+  (slider16 | 0) == 1 ? (
+    sprintf(#tip_body, "Punch mode hard-locks playback to the detected onset, keeps the first hit closer to raw speed before the slowdown takes over, and damps FluxBridge/Weight around the hit so heavy transients stay raw.");
+  ) : (slider16 | 0) == 2 ? (
+    sprintf(#tip_body, "Off disables transient locking. Start-position liveliness, stretch smear, and motion shaping are left fully free.");
+  ) : (
+    sprintf(#tip_body, "Auto infers whether a sample is transient-rich and only locks punch when the onset looks sharp enough to benefit.");
   );
 );
 
