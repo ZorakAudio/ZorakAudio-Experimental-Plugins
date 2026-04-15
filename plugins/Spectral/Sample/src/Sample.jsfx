@@ -97,12 +97,13 @@ function env_curve01(t) local(k d)
   d <= 0 ? clamp01(t) : (1 - exp(-k * clamp01(t))) / d;
 );
 
-function stretch_window(age gsize) local(t tri)
+function stretch_window(age gsize) local(n denom)
 (
-  t = clamp01((age + 0.5) / max(gsize, 1));
-  tri = 1 - abs(2 * t - 1);
-  tri = clamp01(tri);
-  tri * tri * (3 - 2 * tri);
+  // Periodic Hann window for COLA-friendly grain overlap.
+  // With a 25%% hop (4x overlap), the summed window is constant.
+  n = clamp(age, 0, max(0, gsize - 1));
+  denom = max(gsize, 1);
+  0.5 - 0.5 * cos(6.283185307179586 * n / denom);
 );
 
 function lerp(a b t)
@@ -1181,7 +1182,9 @@ function start_voice(note vel chan) local(
     v[VC_GMODE]    = (playmode == 2) ? 1 : 0;
     v[VC_OHOP]     = hybrid_hop_samps;
     v[VC_GSIZE]    = hybrid_grain_samps;
-    v[VC_GTIMER]   = max(1, trans_hold_out + floor(hybrid_hop_samps * 0.6));
+    // Start the granular layer as soon as transient protection clears so the
+    // OLA field can fill before the direct path runs out.
+    v[VC_GTIMER]   = max(1, trans_hold_out + 1);
     v[VC_NEXTSRC]  = max(bodystart, min(startpos, bodyend - 1));
     v[VC_SRCHOP]   = max(0.25, abs(base_rate) * hybrid_hop_samps);
     v[VC_CANSPAWN] = (playmode == 2 && granular_amt > 0.0001) ? 1 : 0;
@@ -1197,6 +1200,8 @@ function start_voice(note vel chan) local(
     v[VC_MODE]     = playmode;
     v[VC_STRETCH]  = voice_stretch;
     v[VC_THOLD]    = max(1, trans_hold_out);
+    v[VC_RHLEFT]   = 0;
+    v[VC_RHLEN]    = max(1, release_handoff_samps);
 
     sm[SM_LASTUSED] = note_counter;
     push_recent(sid);
@@ -1219,9 +1224,9 @@ function release_voice(note chan) local(i v donor donor_sm donor_tail)
         v[VC_HLEFT] = 0;
         v[VC_TLEFT] = 0;
         (v[VC_GMODE] > 0) ? (
-          v[VC_CANSPAWN] = v[VC_GMIX] > 0.0001 ? 1 : 0;
-          v[VC_POS] < v[VC_TAILSTART] ? v[VC_POS] = v[VC_TAILSTART];
-          v[VC_NEXTSRC] < v[VC_TAILSTART] ? v[VC_NEXTSRC] = v[VC_TAILSTART];
+          v[VC_CANSPAWN] = (v[VC_GMIX] > 0.0001 || v[VC_TAILMIX] > 0.0001) ? 1 : 0;
+          v[VC_RHLEN] = max(1, release_handoff_samps);
+          v[VC_RHLEFT] = v[VC_RHLEN];
           donor = v[VC_DONOR] | 0;
           donor_sm = sample_meta_base + donor * SM_STRIDE;
           donor_tail = clamp(donor_sm[SM_TAILSTART], 0, max(0, donor_sm[SM_FRAMES] - 2));
@@ -1229,6 +1234,7 @@ function release_voice(note chan) local(i v donor donor_sm donor_tail)
           v[VC_GTIMER] = min(v[VC_GTIMER], 1);
         ) : (
           v[VC_CANSPAWN] = 0;
+          v[VC_RHLEFT] = 0;
         );
       );
     );
@@ -1541,7 +1547,9 @@ VC_STRETCH   = 29;
 VC_THOLD     = 30;
 VC_BODYEND   = 31;
 VC_HLEFT     = 32;
-VC_GBASE     = 33;
+VC_RHLEFT    = 33;
+VC_RHLEN     = 34;
+VC_GBASE     = 35;
 
 VG_ACTIVE    = 0;
 VG_AGE       = 1;
@@ -1641,6 +1649,7 @@ decay_samps = 2048;
 sustain_level = 0.8;
 release_samps = 2048;
 hold_samps = 0;
+release_handoff_samps = 256;
 attack_coef = 1;
 decay_coef = 1;
 release_coef = 0;
@@ -1740,9 +1749,11 @@ poll_interval_samps = max(1024, floor(0.35 * srate));
 stretch_grain_samps = clamp(floor(srate * lerp(0.024, 0.070, stretch_norm)), 192, 4096);
 stretch_hop_samps = max(24, floor(stretch_grain_samps * lerp(0.34, 0.22, stretch_norm)));
 hybrid_grain_samps = clamp(floor(srate * lerp(0.028, 0.090, granular_amt) * lerp(1.0, 1.30, stretch_norm)), 160, 4096);
-hybrid_hop_samps = max(20, floor(hybrid_grain_samps * lerp(0.34, 0.16, granular_amt)));
+hybrid_grain_samps = max(160, 4 * floor(hybrid_grain_samps / 4));
+hybrid_hop_samps = max(20, floor(hybrid_grain_samps * 0.25));
 hybrid_body_jitter = max(6, floor(hybrid_grain_samps * (0.04 + 0.18 * slider9)));
 hybrid_tail_jitter = max(24, floor(hybrid_grain_samps * (0.16 + 0.28 * tail_borrow + 0.10 * slider9)));
+release_handoff_samps = clamp(floor(min(release_samps * 0.30, max(srate * 0.020, hybrid_grain_samps * 0.70))), 32, floor(srate * 0.090));
 
 weight_scale = 1 + stretch_norm * 1.8;
 weight_ap1_len = clamp(floor(srate * (0.0032 * weight_scale)), 16, AP_BUF_LEN - 1);
@@ -1867,9 +1878,17 @@ while (i < MAX_VOICES) (
 
     stage = v[VC_STAGE] | 0;
     tleft = max(0, floor(v[VC_TLEFT]));
+    rel_handoff_left = max(0, floor(v[VC_RHLEFT]));
+    rel_handoff_len = max(1, floor(v[VC_RHLEN]));
+    rel_handoff_mix = 1 - rel_handoff_left / rel_handoff_len;
     body_start = max(0, floor(v[VC_BODYSTART]));
     tailstart = clamp(floor(v[VC_TAILSTART]), body_start, max(body_start, frames - 2));
     body_end = clamp(floor(v[VC_BODYEND]), body_start + 1, max(body_start + 1, frames - 2));
+
+    (v[VC_GMODE] > 0 && stage == ENV_RELEASE && rel_handoff_left <= 0) ? (
+      v[VC_POS] < tailstart ? v[VC_POS] = tailstart;
+      v[VC_NEXTSRC] < tailstart ? v[VC_NEXTSRC] = tailstart;
+    );
 
     rawL = 0;
     rawR = 0;
@@ -1931,8 +1950,9 @@ while (i < MAX_VOICES) (
     );
 
     // Hybrid mode overlays granular body/tail material after the protected head.
-    (v[VC_GMODE] > 0 && v[VC_GMIX] > 0.0001) ? (
-      stage == ENV_RELEASE ? (
+    hybrid_release_only = (stage == ENV_RELEASE && v[VC_TAILMIX] > 0.0001);
+    (v[VC_GMODE] > 0 && (v[VC_GMIX] > 0.0001 || hybrid_release_only)) ? (
+      (stage == ENV_RELEASE && rel_handoff_left <= 0) ? (
         v[VC_NEXTSRC] < tailstart ? v[VC_NEXTSRC] = tailstart;
       );
 
@@ -1966,7 +1986,7 @@ while (i < MAX_VOICES) (
           gslot < 0 ? gslot = oldest;
           gb = v + VC_GBASE + gslot * VG_STRIDE;
 
-          source_exhausted = !direct_alive && stage != ENV_RELEASE;
+          source_exhausted = !direct_alive && !(stage == ENV_RELEASE && rel_handoff_left > 0);
           gsid = sid;
           gsm = sm;
           gframes = frames;
@@ -1976,7 +1996,7 @@ while (i < MAX_VOICES) (
           ghist_lo = body_start;
           ghist_hi = max(body_start + 1, body_end);
 
-          stage == ENV_RELEASE ? (
+          (stage == ENV_RELEASE && rel_handoff_left <= 0) ? (
             donor_blend = clamp01(v[VC_TAILMIX]);
             self_lo = tailstart;
             self_hi = max(self_lo + 1, frames - 2);
@@ -2197,8 +2217,12 @@ while (i < MAX_VOICES) (
         );
 
         sumW > 0 ? (
-          grainL = sumL / sumW;
-          grainR = sumR / sumW;
+          // Do not normalize by the instantaneous overlap sum. That cancels the
+          // window fade whenever only one grain is active and makes seams obvious.
+          // Instead, target the COLA sum for a periodic Hann window at 25%% hop.
+          ola_norm = max(2.0, sumW);
+          grainL = sumL / ola_norm;
+          grainR = sumR / ola_norm;
           got_grain = 1;
         );
       );
@@ -2235,6 +2259,11 @@ while (i < MAX_VOICES) (
     );
 
     stage == ENV_RELEASE ? (
+      rel_handoff_left > 0 ? (
+        rel_handoff_left -= 1;
+        v[VC_RHLEFT] = rel_handoff_left;
+        rel_handoff_mix = 1 - rel_handoff_left / rel_handoff_len;
+      );
       env *= v[VC_RSTEP];
       env <= 0.00005 ? (
         env = 0;
@@ -2252,7 +2281,10 @@ while (i < MAX_VOICES) (
       tail_phase = clamp01((v[VC_POS] - tailstart) / max(1, frames - tailstart));
       prebody_mix = (stage == ENV_ATTACK || stage == ENV_HOLD) ? 0 : 1;
       mix = clamp(v[VC_GMIX] * prebody_mix * (0.18 + 0.18 * tail_phase + (stage == ENV_RELEASE ? 0.40 : 0)), 0, 0.90);
-      stage == ENV_RELEASE ? mix = max(mix, 0.28 + 0.42 * v[VC_TAILMIX] * v[VC_GMIX]);
+      stage == ENV_RELEASE ? (
+        rel_release_mix = clamp01(0.10 + 0.22 * rel_handoff_mix + 0.68 * v[VC_TAILMIX]);
+        mix = max(mix, rel_release_mix);
+      );
       l = lerp(rawL, grainL, mix);
       r = lerp(rawR, grainR, mix);
       got_sig = 1;
@@ -2855,10 +2887,10 @@ pt_in(hint_x, hint_y, hint_w, hint_h) ? ui_hover_id = 1401;
 
 gfx_setfont(1, "Arial", 12, 0);
 gfx_x = hint_x + 12; gfx_y = hint_y + 8; gfx_r = 0.83; gfx_g = 0.89; gfx_b = 0.96; gfx_a = 1;
-gfx_drawstr("Hybrid = head direct, sustain in body, release in tail.");
+gfx_drawstr("Hybrid = head direct, sustain in body, release crossfades into tail.");
 gfx_x = hint_x + 12; gfx_y = hint_y + 24; gfx_r = 0.62; gfx_g = 0.71; gfx_b = 0.82; gfx_a = 1;
 gfx_drawstr("Mode cycles Raw / Tape / Hybrid. Hold delays handoff.");
-gfx_x = hint_x + 12; gfx_y = hint_y + 40; gfx_drawstr("Hybrid roams body grains and widens to same-phase matches before obvious repeats.");
+gfx_x = hint_x + 12; gfx_y = hint_y + 40; gfx_drawstr("Hybrid now uses smoother Hann OLA grains and widens to same-phase matches before obvious repeats.");
 
 rescan_flash > 0 ? rescan_flash = max(0, rescan_flash - 0.035);
 rescan_flash > 0 ? (
@@ -2908,11 +2940,11 @@ ui_hover_id >= 5000 ? (
 );
 ui_hover_id == 1300 ? (
   sprintf(#tip_title, "Envelope section");
-  sprintf(#tip_body, "AHDSR is curved instead of linear. Sustain is body-only in Hybrid, Release switches to tail, and Hold delays the handoff from punch to granular sustain.");
+  sprintf(#tip_body, "AHDSR is curved instead of linear. Sustain is body-only in Hybrid, Release now begins at note-off and crossfades into the tail instead of hard-jumping there, and Hold delays the handoff from punch to granular sustain.");
 );
 ui_hover_id == 1301 ? (
   sprintf(#tip_title, "AHDSR graph");
-  sprintf(#tip_body, "The graph shows AHDSR. In Hybrid mode the held note lives in the detected body window, while note-off jumps into the tail window for release.");
+  sprintf(#tip_body, "The graph shows AHDSR. In Hybrid mode the held note lives in the detected body window, while note-off begins Release immediately and then eases into the tail window instead of dropping there in one step.");
 );
 ui_hover_id == 1400 ? (
   sprintf(#tip_title, "Playback controls");
@@ -2940,7 +2972,7 @@ ui_hover_id == 203 ? (
 );
 ui_hover_id == 204 ? (
   sprintf(#tip_title, "Release");
-  sprintf(#tip_body, "Current %.0f ms. Log-scaled time control with curved fade-out. In Hybrid, note-off hands playback to the detected tail so Release shapes the tail instead of body sustain. Wheel adjusts; right-click or double-click resets.", slider5);
+  sprintf(#tip_body, "Current %.0f ms. Log-scaled time control with curved fade-out. In Hybrid, note-off starts Release immediately and then crossfades from body into the detected tail so the level does not fall off a cliff. Wheel adjusts; right-click or double-click resets.", slider5);
 );
 ui_hover_id == 301 ? (
   sprintf(#tip_title, "Color");
@@ -2980,7 +3012,7 @@ ui_hover_id == 309 ? (
 );
 ui_hover_id == 310 ? (
   sprintf(#tip_title, "Granular body");
-  sprintf(#tip_body, "Current %.2f. Only used in Hybrid mode. Low values keep the direct sample dominant; high values let segmented body grains take over more. The grain picker now avoids recently used starts and widens to matched same-phase body donors before it repeats obvious material.", slider18);
+  sprintf(#tip_body, "Current %.2f. Only used in Hybrid mode. Low values keep the direct sample dominant; high values let segmented body grains take over more. Hybrid grains now use a COLA-friendly Hann overlap with fixed quarter-hop spacing, so transitions are smoother and less robotic while the picker still avoids recently used starts and widens to matched same-phase body donors before it repeats obvious material.", slider18);
 );
 ui_hover_id == 311 ? (
   sprintf(#tip_title, "Tail borrow");
