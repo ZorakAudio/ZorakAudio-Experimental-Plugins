@@ -27,6 +27,7 @@ slider19:0.35<0,1,0.001>--Tail borrow
 slider20:20<0,2000,1>--Hold (ms)
 slider21:0<0,1,1{stereo,mono}>--Mono Source
 slider22:0<0,1,0.001>--Dynamics
+slider23:0<0,1,1{classic,gaussian}>--Onset align mode
 @init
 /*
 Multi-file slot API used here:
@@ -611,7 +612,7 @@ function estimate_pitch(sm) local(
   sm[SM_PITCHCONF] = conf;
 );
 
-function analyze_sample(sm) local(
+function analyze_sample_classic(sm) local(
   ptr nch sr frames scan i x ax prev lp hf prevhf
   peak sumsq sumabs sumdiff brightsum roughsum rms bright edge
   thresh attack attack_ms sharp transrich
@@ -723,6 +724,218 @@ function analyze_sample(sm) local(
   estimate_pitch(sm);
 );
 
+function analyze_sample_gauss(sm) local(
+  ptr nch sr frames
+  onset_scan hop onset_lpcoef nov_count i j x ax lp hf env_prev hf_prev env_now hf_now cnt nov novsum
+  peaki peakv mean_nov smoothv starti peakthr lowthr onset_conf onset_rise onset_rise_ms
+  fallback_scan fallback_peak fallback_sumsq fallback_rms thresh attack fallback_attack
+  feat_lo feat_hi scan prev prevhf lpcoef
+  peak sumsq sumabs sumdiff brightsum roughsum rms bright edge
+  sharp transrich
+  target_rms norm head_ms head_end tail_start tail_thresh tail_minlen
+  step chunkabs found
+)
+(
+  ptr    = sm[SM_PTR]   | 0;
+  nch    = max(1, sm[SM_NCH] | 0);
+  sr     = sm[SM_SR];
+  frames = sm[SM_FRAMES] | 0;
+
+  onset_scan = min(frames, max(4096, floor(sr * 2.00)));
+  hop = max(1, floor(sr * 0.00075));
+  hop = max(hop, floor((onset_scan + ONSET_SCRATCH_MAX - 1) / max(1, ONSET_SCRATCH_MAX)));
+  onset_lpcoef = clamp(2200 / max(sr, 1), 0.015, 0.40);
+
+  lp = 0;
+  env_prev = 0;
+  hf_prev = 0;
+  nov_count = 0;
+  novsum = 0;
+
+  i = 0;
+  while (i < onset_scan && nov_count < ONSET_SCRATCH_MAX) (
+    env_now = 0;
+    hf_now = 0;
+    cnt = 0;
+    j = 0;
+    while (j < hop && (i + j) < onset_scan) (
+      x = mono_frame(ptr, nch, i + j);
+      ax = abs(x);
+      lp += (x - lp) * onset_lpcoef;
+      hf = x - lp;
+      env_now += ax;
+      hf_now += abs(hf);
+      cnt += 1;
+      j += 1;
+    );
+    env_now /= max(cnt, 1);
+    hf_now /= max(cnt, 1);
+    nov = max(0, hf_now - hf_prev * 0.90) + 0.32 * max(0, env_now - env_prev * 0.94);
+    nov += 0.10 * max(0, hf_now - env_now * 0.22);
+    onset_raw_base[nov_count] = nov;
+    novsum += nov;
+    env_prev = env_now;
+    hf_prev = hf_now;
+    nov_count += 1;
+    i += hop;
+  );
+
+  peaki = 0;
+  peakv = 0;
+  i = 0;
+  while (i < nov_count) (
+    smoothv = (
+      onset_raw_base[clamp(i - 3, 0, max(0, nov_count - 1))] +
+      onset_raw_base[clamp(i - 2, 0, max(0, nov_count - 1))] * 6 +
+      onset_raw_base[clamp(i - 1, 0, max(0, nov_count - 1))] * 15 +
+      onset_raw_base[i] * 20 +
+      onset_raw_base[clamp(i + 1, 0, max(0, nov_count - 1))] * 15 +
+      onset_raw_base[clamp(i + 2, 0, max(0, nov_count - 1))] * 6 +
+      onset_raw_base[clamp(i + 3, 0, max(0, nov_count - 1))]
+    ) * 0.015625;
+    onset_smooth_base[i] = smoothv;
+    smoothv > peakv ? (
+      peakv = smoothv;
+      peaki = i;
+    );
+    i += 1;
+  );
+
+  fallback_scan = min(frames, onset_scan);
+  fallback_peak = 0;
+  fallback_sumsq = 0;
+  i = 0;
+  while (i < fallback_scan) (
+    x = mono_frame(ptr, nch, i);
+    ax = abs(x);
+    fallback_peak = max(fallback_peak, ax);
+    fallback_sumsq += x * x;
+    i += 1;
+  );
+  fallback_rms = sqrt(fallback_sumsq / max(fallback_scan, 1));
+  thresh = max(fallback_peak * 0.12, fallback_rms * 1.8);
+  fallback_attack = -1;
+  i = 0;
+  while (i < fallback_scan && fallback_attack < 0) (
+    abs(mono_frame(ptr, nch, i)) >= thresh ? fallback_attack = i;
+    i += 1;
+  );
+  fallback_attack < 0 ? fallback_attack = 0;
+
+  mean_nov = nov_count > 0 ? (novsum / nov_count) : 0;
+  onset_conf = peakv > 0 ? clamp01((peakv - mean_nov * 1.35) / max(peakv, 0.000001)) : 0;
+  starti = peaki;
+  peakthr = peakv * (0.18 + 0.08 * (1 - onset_conf));
+  while (starti > 0 && onset_smooth_base[starti - 1] >= peakthr) (
+    starti -= 1;
+  );
+  lowthr = peakv * 0.10;
+  while (starti > 0 && onset_smooth_base[starti - 1] > lowthr && (peaki - starti) < 8) (
+    starti -= 1;
+  );
+
+  attack = floor(starti * hop);
+  (onset_conf < 0.12 || peakv <= 0.00001) ? attack = fallback_attack;
+  attack = clamp(attack, 0, max(0, frames - 2));
+
+  onset_rise = max(hop, (peaki - starti) * hop);
+  onset_rise_ms = 1000 * onset_rise / max(sr, 1);
+
+  feat_lo = max(0, attack - min(attack, floor(sr * 0.008)));
+  feat_hi = min(frames, attack + max(256, floor(sr * 0.18)));
+  scan = max(1, feat_hi - feat_lo);
+  lpcoef = clamp(1400 / max(sr, 1), 0.01, 0.35);
+
+  peak = 0;
+  sumsq = 0;
+  sumabs = 0;
+  sumdiff = 0;
+  brightsum = 0;
+  roughsum = 0;
+  lp = 0;
+  prev = mono_frame(ptr, nch, feat_lo);
+  prevhf = 0;
+
+  i = feat_lo;
+  while (i < feat_hi) (
+    x = mono_frame(ptr, nch, i);
+    ax = abs(x);
+    peak = max(peak, ax);
+    sumsq += x * x;
+    sumabs += ax;
+    i > feat_lo ? sumdiff += abs(x - prev);
+
+    lp += (x - lp) * lpcoef;
+    hf = x - lp;
+    brightsum += abs(hf);
+    i > feat_lo ? roughsum += abs(hf - prevhf);
+
+    prev = x;
+    prevhf = hf;
+    i += 1;
+  );
+
+  rms = sqrt(sumsq / max(scan, 1));
+  bright = clamp01((brightsum / max(sumabs, 0.000001) - 0.08) * 2.1);
+  edge = clamp01((roughsum / max(brightsum, 0.000001)) * 0.34);
+
+  sharp = clamp01((1 - min(1, onset_rise_ms / 18)) * 0.58 + edge * 0.24 + onset_conf * 0.18);
+  transrich = clamp01(sharp * 0.58 + edge * 0.14 + onset_conf * 0.18 + bright * 0.10);
+
+  head_ms = 4 + transrich * 30 + min(14, onset_rise_ms * 0.32);
+  head_end = clamp(attack + floor(sr * head_ms * 0.001), attack + 8, max(attack + 8, frames - 2));
+  head_end = clamp(head_end, 0, max(0, frames - 2));
+
+  tail_thresh = max(rms * (0.46 + 0.22 * transrich), peak * (0.040 + 0.020 * bright));
+  step = max(1, floor(frames / 1024));
+  tail_start = max(head_end + 16, frames - 2);
+  found = 0;
+  i = frames - 1;
+  while (i > head_end + step && !found) (
+    chunkabs = 0;
+    cnt = 0;
+    j = 0;
+    while (j < step && (i - j) >= 0) (
+      chunkabs += abs(mono_frame(ptr, nch, i - j));
+      cnt += 1;
+      j += 1;
+    );
+    (chunkabs / max(cnt, 1)) > tail_thresh ? (
+      tail_start = clamp(i + step * 2, head_end + 16, max(head_end + 16, frames - 2));
+      found = 1;
+    );
+    i -= step;
+  );
+
+  tail_minlen = min(max(floor(sr * (0.08 + 0.04 * (1 - transrich))), 192), max(192, floor(frames * 0.34)));
+  !found ? tail_start = clamp(floor(frames * (0.60 + 0.14 * (1 - transrich))), head_end + 16, max(head_end + 16, frames - 2));
+  tail_start = min(tail_start, max(head_end + 16, frames - tail_minlen));
+  tail_start <= (head_end + 8) ? tail_start = min(max(head_end + 24, floor(frames * 0.72)), max(head_end + 24, frames - 2));
+  tail_start = clamp(tail_start, min(head_end + 1, max(0, frames - 2)), max(0, frames - 2));
+
+  target_rms = 0.12;
+  norm = clamp(target_rms / max(rms, 0.000001), 0.25, 4.0);
+
+  sm[SM_RMS]    = rms;
+  sm[SM_PEAK]   = peak;
+  sm[SM_EDGE]   = edge;
+  sm[SM_ATTACK] = attack;
+  sm[SM_SHARP]  = sharp;
+  sm[SM_NORM]   = norm;
+  sm[SM_LENMS]  = 1000 * frames / max(sr, 1);
+  sm[SM_BRIGHT] = bright;
+  sm[SM_FLAGS]  = transrich;
+  sm[SM_HEADEND] = head_end;
+  sm[SM_TAILSTART] = tail_start;
+
+  estimate_pitch(sm);
+);
+
+function analyze_sample(sm)
+(
+  onset_mode_active ? analyze_sample_gauss(sm) : analyze_sample_classic(sm);
+);
+
 function reset_voices() local(i j v)
 (
   i = 0;
@@ -827,24 +1040,13 @@ function load_one_selected_file(handle sample_index) local(
   );
 );
 
-function load_bank() local(
-  bank count i sm spread_step spread_root pitch_sum bright_sum sharp_sum
+function refresh_bank_stats() local(
+  i sm spread_step spread_root pitch_sum bright_sum sharp_sum
 )
 (
-  reset_bank_state();
-
-  bank = file_open_multi(0);
-  bank >= 0 ? (
-    count = min(MAX_SAMPLES, max(0, file_multi_count(bank) | 0));
-
-    i = 0;
-    while (i < count) (
-      load_one_selected_file(bank, i);
-      i += 1;
-    );
-
-    file_close(bank);
-  );
+  bank_pitchiness = 0;
+  bank_brightness = 0;
+  bank_sharpness = 0;
 
   sample_count > 0 ? (
     spread_step = sample_count > 1 ? (ROOT_HIGH - ROOT_LOW) / (sample_count - 1) : 0;
@@ -867,6 +1069,52 @@ function load_bank() local(
   );
 
   bank_loaded = sample_count > 0;
+);
+
+function reanalyze_bank() local(i sm)
+(
+  i = 0;
+  while (i < RECENT_LEN) (
+    recent_base[i] = -1;
+    i += 1;
+  );
+  reset_grain_histories();
+  reset_weight_buffers();
+  transient_guard_s = 0;
+  seq_cursor = 0;
+  last_sid = -1;
+
+  i = 0;
+  while (i < sample_count) (
+    sm = sample_meta_base + i * SM_STRIDE;
+    analyze_sample(sm);
+    i += 1;
+  );
+
+  refresh_bank_stats();
+  rescan_flash = 1;
+);
+
+function load_bank() local(
+  bank count i
+)
+(
+  reset_bank_state();
+
+  bank = file_open_multi(0);
+  bank >= 0 ? (
+    count = min(MAX_SAMPLES, max(0, file_multi_count(bank) | 0));
+
+    i = 0;
+    while (i < count) (
+      load_one_selected_file(bank, i);
+      i += 1;
+    );
+
+    file_close(bank);
+  );
+
+  refresh_bank_stats();
   seq_cursor = 0;
   rescan_flash = 1;
   freembuf(next_audio);
@@ -1084,6 +1332,7 @@ function start_voice(note vel chan) local(
   srcsr norm gain env0 lively playmode voice_stretch voice_stretch_norm
   driftcents raw_rate base_rate
   transrich transprot translock hold_ms trans_hold_src trans_hold_out attack_preroll
+  attack_norm pre_avail pre_keep align_guard align_jit
   j jmax pre startpos softskip gain_jit_db
   bodystart bodyend tailstart donor_tail min_body_span remain voice_hold_samps
 )
@@ -1129,15 +1378,32 @@ function start_voice(note vel chan) local(
 
     driftcents = (rand(1) - 0.5) * (0.25 + lively * lively * 10.0);
 
-    translock ? (
-      attack_preroll = min(sm[SM_ATTACK], max(0, floor(srcsr * (0.00035 + 0.00045 * transprot))));
-      jmax = floor(lively * (1 - transprot) * min(4, 1 + sm[SM_ATTACK] * 0.02));
-      startpos = floor(sm[SM_ATTACK] - attack_preroll + (rand(1) - 0.5) * jmax);
+    onset_mode_active ? (
+      attack_norm = curve_norm(slider2, 0.1, 500, CURVE_TIME);
+      pre_avail = max(0, sm[SM_ATTACK]);
+      pre_keep = floor(pre_avail * attack_norm);
+
+      translock ? (
+        align_guard = min(pre_avail, max(0, floor(srcsr * (0.00020 + 0.00035 * transprot))));
+        align_jit = floor(lively * (1 - transprot) * max(1, min(6, 1 + pre_avail * 0.035)));
+        startpos = floor(sm[SM_ATTACK] - pre_keep - align_guard + (rand(1) - 0.5) * align_jit);
+      ) : (
+        pre  = min(pre_avail, floor(2 + attack_norm * min(64, 8 + pre_avail * 0.18)));
+        jmax = floor((0.35 + lively * 2.05) * max(2, min(18, 2 + pre_avail * 0.08)));
+        softskip = max(0, -slider7) * min(16, 2 + pre_avail * 0.06);
+        startpos = floor(sm[SM_ATTACK] - max(pre_keep, pre) + (rand(1) - 0.5) * jmax + softskip);
+      );
     ) : (
-      pre  = min(sm[SM_ATTACK], 8 + lively * 8);
-      jmax = floor((0.25 + lively * 1.75) * min(16, 2 + sm[SM_ATTACK] * 0.08));
-      softskip = max(0, -slider7) * min(16, 2 + sm[SM_ATTACK] * 0.06);
-      startpos = floor(sm[SM_ATTACK] - pre + (rand(1) - 0.5) * jmax + softskip);
+      translock ? (
+        attack_preroll = min(sm[SM_ATTACK], max(0, floor(srcsr * (0.00035 + 0.00045 * transprot))));
+        jmax = floor(lively * (1 - transprot) * min(4, 1 + sm[SM_ATTACK] * 0.02));
+        startpos = floor(sm[SM_ATTACK] - attack_preroll + (rand(1) - 0.5) * jmax);
+      ) : (
+        pre  = min(sm[SM_ATTACK], 8 + lively * 8);
+        jmax = floor((0.25 + lively * 1.75) * min(16, 2 + sm[SM_ATTACK] * 0.08));
+        softskip = max(0, -slider7) * min(16, 2 + sm[SM_ATTACK] * 0.06);
+        startpos = floor(sm[SM_ATTACK] - pre + (rand(1) - 0.5) * jmax + softskip);
+      );
     );
 
     startpos = clamp(startpos, 0, max(0, sm[SM_FRAMES] - 2));
@@ -1526,6 +1792,7 @@ RECENT_LEN  = 8;
 ROOT_LOW    = 36;
 ROOT_HIGH   = 84;
 SIG_PEEK_WORDS = 48;
+ONSET_SCRATCH_MAX = 2048;
 AP_BUF_LEN  = 4096;
 ER_BUF_LEN  = 24576;
 GRAIN_HIST_LEN = 6;
@@ -1635,6 +1902,7 @@ MASK_S19 = 262144;
 MASK_S20 = 524288;
 MASK_S21 = 1048576;
 MASK_S22 = 2097152;
+MASK_S23 = 4194304;
 
 M2E_LANE_COUNT = 35;
 M2E_BASE_FIXED = 20;
@@ -1650,8 +1918,10 @@ grain_hist_sid_base = recent_base + RECENT_LEN + 32;
 grain_hist_pos_base = grain_hist_sid_base + MAX_VOICES * GRAIN_HIST_LEN;
 grain_hist_phase_base = grain_hist_pos_base + MAX_VOICES * GRAIN_HIST_LEN;
 sig_scratch_base = grain_hist_phase_base + MAX_VOICES * GRAIN_HIST_LEN + 32;
+onset_raw_base = sig_scratch_base + SIG_PEEK_WORDS + 64;
+onset_smooth_base = onset_raw_base + ONSET_SCRATCH_MAX;
 
-m2e_cc_age_base = sig_scratch_base + SIG_PEEK_WORDS + 64;
+m2e_cc_age_base = onset_smooth_base + ONSET_SCRATCH_MAX + 32;
 m2e_cc_val_base = m2e_cc_age_base + 128;
 
 weight_ap1_l_base = m2e_cc_val_base + 128 + 64;
@@ -1692,6 +1962,7 @@ release_samps = 2048;
 hold_samps = 0;
 mono_source = 0;
 dynamics_amt = 0;
+onset_mode_active = 0;
 dyn_drive = 1;
 dyn_thresh = 0.98;
 dyn_ratio = 1;
@@ -1792,6 +2063,7 @@ release_samps = max(1, floor(slider5 * srate * 0.001));
 hold_samps = max(0, floor(slider20 * srate * 0.001));
 mono_source = (slider21 | 0) ? 1 : 0;
 dynamics_amt = clamp01(slider22);
+onset_mode_target = clamp(slider23 | 0, 0, 1);
 attack_coef = attack_samps <= 1 ? 1 : (1 - exp(-6.90775527898214 / attack_samps));
 decay_coef = decay_samps <= 1 ? 1 : (1 - exp(-6.90775527898214 / decay_samps));
 release_coef = release_samps <= 1 ? 0 : exp(-6.90775527898214 / release_samps);
@@ -1856,6 +2128,14 @@ dyn_gain_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.120 * srate)));
 dyn_lim_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.0015 * srate)));
 dyn_lim_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.070 * srate)));
 dyn_ceiling = 0.985 - 0.01 * dynamics_amt;
+
+(onset_mode_target != onset_mode_active) ? (
+  onset_mode_active = onset_mode_target;
+  sample_count > 0 ? (
+    release_all_voices_transport(1);
+    reanalyze_bank();
+  );
+);
 
 ((slider1 | 0) > 0) ? (
   force_rescan_flag = 1;
@@ -2948,7 +3228,7 @@ gfx_drawstr("Playback");
 
 right_inner_x = right_x + 14;
 right_inner_w = max(160, right_w - 28);
-pt_in(right_x, right_y, right_w, 112) ? ui_hover_id = 1400;
+pt_in(right_x, right_y, right_w, 150) ? ui_hover_id = 1400;
 
 btn_gap_x = 10;
 btn_gap_y = 8;
@@ -2956,11 +3236,14 @@ btn_w = floor((right_inner_w - btn_gap_x) * 0.5);
 btn_h = 30;
 btn_y1 = right_y + 42;
 btn_y2 = btn_y1 + btn_h + btn_gap_y;
+btn_y3 = btn_y2 + btn_h + btn_gap_y;
 
 mode_btn_x = right_inner_x;
 trans_btn_x = right_inner_x + btn_w + btn_gap_x;
 seq_btn_x = right_inner_x;
 mono_btn_x = right_inner_x + btn_w + btn_gap_x;
+onset_btn_x = right_inner_x;
+onset_btn_w = right_inner_w;
 
 ui_button(403, mode_btn_x, btn_y1, btn_w, btn_h) ? (
   slider17 = ((slider17 | 0) + 1) % 3;
@@ -2978,6 +3261,10 @@ ui_button(404, mono_btn_x, btn_y2, btn_w, btn_h) ? (
   slider21 = 1 - (slider21 | 0);
   gfx_slider_mask |= MASK_S21;
 );
+ui_button(405, onset_btn_x, btn_y3, onset_btn_w, btn_h) ? (
+  slider23 = 1 - (slider23 | 0);
+  gfx_slider_mask |= MASK_S23;
+);
 
 gfx_setfont(1, "Arial", 11, 0);
 gfx_r = 0.92; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
@@ -2994,7 +3281,10 @@ draw_center_buf(seq_btn_x, btn_y2 + 9, btn_w);
 (slider21 | 0) ? sprintf(#ui_buf, "Mono Source") : sprintf(#ui_buf, "Stereo Source");
 draw_center_buf(mono_btn_x, btn_y2 + 9, btn_w);
 
-knob_panel_top = btn_y2 + btn_h + 22;
+(slider23 | 0) ? sprintf(#ui_buf, "Gaussian Onset") : sprintf(#ui_buf, "Classic Onset");
+draw_center_buf(onset_btn_x, btn_y3 + 9, onset_btn_w);
+
+knob_panel_top = btn_y3 + btn_h + 18;
 knob_panel_bottom = right_y + right_h - 18;
 knob_area_h = max(140, knob_panel_bottom - knob_panel_top);
 knob_count = 12;
@@ -3187,19 +3477,19 @@ ui_hover_id >= 5000 ? (
 );
 ui_hover_id == 1300 ? (
   sprintf(#tip_title, "Envelope section");
-  sprintf(#tip_body, "AHDSR is curved instead of linear. Sustain is body-only in Hybrid, Release now begins at note-off and crossfades into the tail instead of hard-jumping there, and Hold delays the handoff from punch to granular sustain.");
+  onset_mode_active ? sprintf(#tip_body, "AHDSR is curved instead of linear. Gaussian onset alignment now anchors sample starts for tighter cross-material punch, Sustain is body-only in Hybrid, Release begins at note-off and crossfades into the tail instead of hard-jumping there, and Hold delays the handoff from punch to granular sustain.") : sprintf(#tip_body, "AHDSR is curved instead of linear. Sustain is body-only in Hybrid, Release now begins at note-off and crossfades into the tail instead of hard-jumping there, and Hold delays the handoff from punch to granular sustain.");
 );
 ui_hover_id == 1301 ? (
   sprintf(#tip_title, "AHDSR graph");
-  sprintf(#tip_body, "The graph shows AHDSR. In Hybrid mode the held note lives in the detected body window, while note-off begins Release immediately and then eases into the tail window instead of dropping there in one step.");
+  onset_mode_active ? sprintf(#tip_body, "The graph shows AHDSR. In Gaussian Onset mode the detected onset anchors the source start, Attack also decides how much pre-onset lead-in stays before that anchor, held notes live in the body window, and note-off begins Release immediately before easing into the tail.") : sprintf(#tip_body, "The graph shows AHDSR. In Hybrid mode the held note lives in the detected body window, while note-off begins Release immediately and then eases into the tail window instead of dropping there in one step.");
 );
 ui_hover_id == 1400 ? (
   sprintf(#tip_title, "Playback controls");
-  sprintf(#tip_body, "Top buttons switch Playback mode, Transient handling, Random versus Sequence triggering, and Mono Source. The knob grid below automatically reflows to fit the panel width so labels and values stay readable.");
+  sprintf(#tip_body, "Top buttons switch Playback mode, Transient handling, Random versus Sequence triggering, Mono Source, and the new Classic versus Gaussian onset-start path. The knob grid below automatically reflows to fit the panel width so labels and values stay readable.");
 );
 ui_hover_id == 201 ? (
   sprintf(#tip_title, "Attack");
-  sprintf(#tip_body, "Current %.1f ms. Log-scaled time control with curved rise. Attack is envelope rise only; Hold separately controls how long the hit stays at full level. Wheel adjusts; right-click or double-click resets.", slider2);
+  onset_mode_active ? sprintf(#tip_body, "Current %.1f ms. Log-scaled time control with curved rise. In Gaussian Onset mode the same normalized Attack setting also decides how much of the pre-onset lead-in is kept before the detected onset anchor: low Attack starts closer to the hit for more punch, higher Attack preserves more lead-in. Wheel adjusts; right-click or double-click resets.", slider2) : sprintf(#tip_body, "Current %.1f ms. Log-scaled time control with curved rise. Attack is envelope rise only; Hold separately controls how long the hit stays at full level. Wheel adjusts; right-click or double-click resets.", slider2);
 );
 ui_hover_id == 202 ? (
   sprintf(#tip_title, "Decay");
@@ -3276,17 +3566,17 @@ ui_hover_id == 401 ? (
 ui_hover_id == 402 ? (
   sprintf(#tip_title, "Transient mode");
   (slider16 | 0) == 1 ? (
-    sprintf(#tip_body, "Punch mode hard-locks playback to the detected onset, keeps the first hit closer to raw speed before slowdown or hybrid grains take over, and damps FluxBridge and Weight around the hit so heavy transients stay raw.");
+    onset_mode_active ? sprintf(#tip_body, "Punch mode hard-locks playback to the Gaussian-detected onset, keeps the first hit closer to raw speed before slowdown or hybrid grains take over, and damps FluxBridge and Weight around the hit so heavy transients stay raw.") : sprintf(#tip_body, "Punch mode hard-locks playback to the detected onset, keeps the first hit closer to raw speed before slowdown or hybrid grains take over, and damps FluxBridge and Weight around the hit so heavy transients stay raw.");
   ) : (slider16 | 0) == 2 ? (
     sprintf(#tip_body, "Off disables transient locking. Start-position liveliness, head protection, and hybrid punch preservation are left fully free.");
   ) : (
-    sprintf(#tip_body, "Auto infers whether a sample is transient-rich and only protects the head when the onset looks sharp enough to benefit.");
+    onset_mode_active ? sprintf(#tip_body, "Auto infers whether a sample is transient-rich and, with Gaussian Onset active, anchors the start consistently across different materials before deciding how much of the head to protect.") : sprintf(#tip_body, "Auto infers whether a sample is transient-rich and only protects the head when the onset looks sharp enough to benefit.");
   );
 );
 ui_hover_id == 403 ? (
   sprintf(#tip_title, "Playback mode");
   (slider17 | 0) == 2 ? (
-    sprintf(#tip_body, "Hybrid mode keeps the selected sample head direct, uses the body phase for held sustain, and now widens to matched same-phase body donors before repeating obvious grains. Borrow still pushes the tail and release toward donor tails after note-off.");
+    onset_mode_active ? sprintf(#tip_body, "Hybrid mode keeps the selected sample head direct, uses Gaussian-onset-aligned body phase for held sustain, and widens to matched same-phase body donors before repeating obvious grains. Borrow still pushes the tail and release toward donor tails after note-off.") : sprintf(#tip_body, "Hybrid mode keeps the selected sample head direct, uses the body phase for held sustain, and now widens to matched same-phase body donors before repeating obvious grains. Borrow still pushes the tail and release toward donor tails after note-off.");
   ) : (slider17 | 0) == 1 ? (
     sprintf(#tip_body, "Tape mode is the current natural slowdown path: slower, lower, heavier, with transient protection on top.");
   ) : (
@@ -3299,6 +3589,14 @@ ui_hover_id == 404 ? (
     sprintf(#tip_body, "On. Each loaded file is summed to mono before playback, grains, Weight, Width, and the rest of the macro chain. Good when you want tighter center energy and consistent donor blending from mixed stereo libraries.");
   ) : (
     sprintf(#tip_body, "Off. Sources keep their original channel layout before the macro chain. Turn Mono Source on when you want every file centered before widening and weighting are added back downstream.");
+  );
+);
+ui_hover_id == 405 ? (
+  sprintf(#tip_title, "Onset start path");
+  (slider23 | 0) ? (
+    sprintf(#tip_body, "Gaussian Onset mode uses a smoothed onset detector to anchor different samples to their real hit point. Attack then doubles as pre-onset inclusion: low Attack keeps very little lead-in for punchier starts, higher Attack preserves more of what comes before the hit. Hybrid uses the same onset-relative body and tail phases when borrowing donor grains.");
+  ) : (
+    sprintf(#tip_body, "Classic Onset mode keeps the original simpler start detector and the old start-position behavior. Use Gaussian Onset when you want different materials to line up harder around the hit.");
   );
 );
 
