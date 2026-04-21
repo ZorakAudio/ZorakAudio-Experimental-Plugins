@@ -22,6 +22,23 @@
 #include <chrono>
 #include <type_traits>
 
+#if JUCE_WINDOWS
+ // Keep Win32's min/max macros out of JUCE/std headers.
+ // Without this, including the native file-dialog headers before PluginMarkdownHelp.h
+ // breaks expressions such as std::min(...) / std::max(...) on MSVC.
+ #ifndef NOMINMAX
+  #define NOMINMAX 1
+ #endif
+ #include <windows.h>
+ #include <shobjidl.h>
+ #ifdef min
+  #undef min
+ #endif
+ #ifdef max
+  #undef max
+ #endif
+#endif
+
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -3178,6 +3195,18 @@ public:
         return favoriteFileSelections;
     }
 
+    std::vector<juce::String> getFavoriteCategories() const
+    {
+        std::lock_guard<std::mutex> lk (filePathMutex);
+        auto categories = favoriteCategories;
+
+        for (const auto& favorite : favoriteFileSelections)
+            addFavoriteCategoryToList (categories, favorite.category);
+
+        sortFavoriteCategories (categories);
+        return categories;
+    }
+
     juce::String getSuggestedFavoriteNameForSelection (const FileSelectionState& selection) const
     {
         FileSelectionState normalised = selection;
@@ -3204,14 +3233,14 @@ public:
         if (normalised.paths.empty())
             return {};
 
-        const auto fallbackCategory = makeDefaultFavoriteCategory (normalised);
-
         std::lock_guard<std::mutex> lk (filePathMutex);
         for (const auto& favorite : favoriteFileSelections)
             if (selectionsEqualIgnoreCase (favorite.selection, normalised))
                 return sanitiseFavoriteCategory (favorite.category);
 
-        return fallbackCategory;
+        // Do not infer a new category from filenames/directories. Categories are
+        // user-created labels now; a new favorite defaults to Uncategorized.
+        return {};
     }
 
     bool addFavoriteSelection (const FileSelectionState& selection,
@@ -3230,6 +3259,9 @@ public:
 
             const auto resolvedName = sanitiseFavoriteName (requestedName, normalised);
             const auto resolvedCategory = sanitiseFavoriteCategory (requestedCategory);
+
+            if (resolvedCategory.isNotEmpty())
+                changed = addFavoriteCategoryToList (favoriteCategories, resolvedCategory) || changed;
 
             auto it = std::find_if (favoriteFileSelections.begin(), favoriteFileSelections.end(),
                                     [&normalised] (const FavoriteFileSelection& existing)
@@ -3294,6 +3326,9 @@ public:
                 const auto resolvedName = sanitiseFavoriteName (requestedName, favorite.selection);
                 const auto resolvedCategory = sanitiseFavoriteCategory (requestedCategory);
 
+                if (resolvedCategory.isNotEmpty())
+                    changed = addFavoriteCategoryToList (favoriteCategories, resolvedCategory) || changed;
+
                 if (favorite.name != resolvedName)
                 {
                     favorite.name = resolvedName;
@@ -3329,6 +3364,122 @@ public:
                                           });
             changed = (newEnd != favoriteFileSelections.end());
             favoriteFileSelections.erase (newEnd, favoriteFileSelections.end());
+        }
+
+        if (changed)
+            savePersistentFileUiState();
+
+        return changed;
+    }
+
+    bool addFavoriteCategory (const juce::String& requestedCategory)
+    {
+        bool changed = false;
+
+        {
+            std::lock_guard<std::mutex> lk (filePathMutex);
+            changed = addFavoriteCategoryToList (favoriteCategories, requestedCategory);
+        }
+
+        if (changed)
+            savePersistentFileUiState();
+
+        return changed;
+    }
+
+    bool addFavoriteSubCategory (const juce::String& requestedParentCategory,
+                                 const juce::String& requestedChildCategory)
+    {
+        const auto parent = sanitiseFavoriteCategory (requestedParentCategory);
+        const auto child = sanitiseFavoriteCategory (requestedChildCategory);
+
+        if (child.isEmpty())
+            return false;
+
+        juce::String fullCategory;
+        if (parent.isNotEmpty())
+            fullCategory = parent + "/" + child;
+        else
+            fullCategory = child;
+
+        return addFavoriteCategory (fullCategory);
+    }
+
+    bool renameFavoriteCategory (const juce::String& requestedOldCategory,
+                                 const juce::String& requestedNewCategory)
+    {
+        const auto oldCategory = sanitiseFavoriteCategory (requestedOldCategory);
+        const auto newCategory = sanitiseFavoriteCategory (requestedNewCategory);
+
+        if (oldCategory.isEmpty() || newCategory.isEmpty() || stringEqualsIgnoreCase (oldCategory, newCategory))
+            return false;
+
+        bool changed = false;
+
+        {
+            std::lock_guard<std::mutex> lk (filePathMutex);
+
+            std::vector<juce::String> remappedCategories;
+            remappedCategories.reserve (favoriteCategories.size() + 1);
+
+            for (const auto& category : favoriteCategories)
+            {
+                const auto remapped = remapFavoriteCategoryPath (category, oldCategory, newCategory);
+                changed = (! stringEqualsIgnoreCase (category, remapped)) || changed;
+                addFavoriteCategoryToList (remappedCategories, remapped);
+            }
+
+            for (auto& favorite : favoriteFileSelections)
+            {
+                const auto remapped = remapFavoriteCategoryPath (favorite.category, oldCategory, newCategory);
+                if (! stringEqualsIgnoreCase (favorite.category, remapped))
+                {
+                    favorite.category = remapped;
+                    changed = true;
+                }
+
+                addFavoriteCategoryToList (remappedCategories, favorite.category);
+            }
+
+            addFavoriteCategoryToList (remappedCategories, newCategory);
+            sortFavoriteCategories (remappedCategories);
+            favoriteCategories = std::move (remappedCategories);
+        }
+
+        if (changed)
+            savePersistentFileUiState();
+
+        return changed;
+    }
+
+    bool removeFavoriteCategory (const juce::String& requestedCategory)
+    {
+        const auto category = sanitiseFavoriteCategory (requestedCategory);
+        if (category.isEmpty())
+            return false;
+
+        bool changed = false;
+
+        {
+            std::lock_guard<std::mutex> lk (filePathMutex);
+
+            auto newEnd = std::remove_if (favoriteCategories.begin(), favoriteCategories.end(),
+                                          [&category] (const juce::String& existing)
+                                          {
+                                              return favoriteCategoryMatchesOrIsChild (existing, category);
+                                          });
+
+            changed = (newEnd != favoriteCategories.end());
+            favoriteCategories.erase (newEnd, favoriteCategories.end());
+
+            for (auto& favorite : favoriteFileSelections)
+            {
+                if (favoriteCategoryMatchesOrIsChild (favorite.category, category))
+                {
+                    favorite.category.clear();
+                    changed = true;
+                }
+            }
         }
 
         if (changed)
@@ -4749,6 +4900,163 @@ private:
         return text.trim();
     }
 
+    static std::vector<juce::String> splitFavoriteCategoryPath (juce::String text)
+    {
+        text = normaliseFavoriteUserText (text).replaceCharacter ('\\', '/');
+
+        std::vector<juce::String> parts;
+        juce::String current;
+
+        for (int i = 0; i < text.length(); ++i)
+        {
+            const auto c = text[i];
+            if (c == '/')
+            {
+                auto part = normaliseFavoriteUserText (current);
+                if (part.isNotEmpty())
+                    parts.push_back (part);
+
+                current.clear();
+                continue;
+            }
+
+            current << juce::String::charToString (c);
+        }
+
+        auto part = normaliseFavoriteUserText (current);
+        if (part.isNotEmpty())
+            parts.push_back (part);
+
+        return parts;
+    }
+
+    static juce::String normaliseFavoriteCategoryPath (const juce::String& requestedCategory)
+    {
+        const auto parts = splitFavoriteCategoryPath (requestedCategory);
+        juce::StringArray out;
+
+        for (const auto& part : parts)
+            if (part.isNotEmpty())
+                out.add (part);
+
+        return out.joinIntoString ("/");
+    }
+
+    static bool categoryExistsInList (const std::vector<juce::String>& categories,
+                                      const juce::String& category)
+    {
+        const auto normalised = normaliseFavoriteCategoryPath (category);
+        if (normalised.isEmpty())
+            return false;
+
+        return std::any_of (categories.begin(), categories.end(),
+                            [&normalised] (const juce::String& existing)
+                            {
+                                return stringEqualsIgnoreCase (normaliseFavoriteCategoryPath (existing), normalised);
+                            });
+    }
+
+    static void sortFavoriteCategories (std::vector<juce::String>& categories)
+    {
+        for (auto& category : categories)
+            category = normaliseFavoriteCategoryPath (category);
+
+        categories.erase (std::remove_if (categories.begin(), categories.end(),
+                                          [] (const juce::String& category)
+                                          {
+                                              return category.trim().isEmpty();
+                                          }),
+                          categories.end());
+
+        std::stable_sort (categories.begin(), categories.end(),
+                          [] (const juce::String& a, const juce::String& b)
+                          {
+                              const auto aa = normaliseFavoriteCategoryPath (a);
+                              const auto bb = normaliseFavoriteCategoryPath (b);
+
+                              const bool aIsParentOfB = bb.startsWithIgnoreCase (aa + "/");
+                              const bool bIsParentOfA = aa.startsWithIgnoreCase (bb + "/");
+
+                              if (aIsParentOfB != bIsParentOfA)
+                                  return aIsParentOfB;
+
+                              return aa.compareIgnoreCase (bb) < 0;
+                          });
+
+        categories.erase (std::unique (categories.begin(), categories.end(),
+                                       [] (const juce::String& a, const juce::String& b)
+                                       {
+                                           return stringEqualsIgnoreCase (normaliseFavoriteCategoryPath (a),
+                                                                         normaliseFavoriteCategoryPath (b));
+                                       }),
+                          categories.end());
+    }
+
+    static bool addFavoriteCategoryToList (std::vector<juce::String>& categories,
+                                           const juce::String& requestedCategory)
+    {
+        const auto parts = splitFavoriteCategoryPath (requestedCategory);
+        if (parts.empty())
+            return false;
+
+        bool changed = false;
+        juce::String current;
+
+        for (const auto& part : parts)
+        {
+            if (current.isNotEmpty())
+                current << "/";
+
+            current << part;
+
+            if (! categoryExistsInList (categories, current))
+            {
+                categories.push_back (current);
+                changed = true;
+            }
+        }
+
+        if (changed)
+            sortFavoriteCategories (categories);
+
+        return changed;
+    }
+
+    static bool favoriteCategoryMatchesOrIsChild (const juce::String& requestedCategory,
+                                                  const juce::String& requestedParentCategory)
+    {
+        const auto category = normaliseFavoriteCategoryPath (requestedCategory);
+        const auto parent = normaliseFavoriteCategoryPath (requestedParentCategory);
+
+        if (category.isEmpty() || parent.isEmpty())
+            return false;
+
+        if (stringEqualsIgnoreCase (category, parent))
+            return true;
+
+        return category.startsWithIgnoreCase (parent + "/");
+    }
+
+    static juce::String remapFavoriteCategoryPath (const juce::String& requestedCategory,
+                                                   const juce::String& requestedOldCategory,
+                                                   const juce::String& requestedNewCategory)
+    {
+        const auto category = normaliseFavoriteCategoryPath (requestedCategory);
+        const auto oldCategory = normaliseFavoriteCategoryPath (requestedOldCategory);
+        const auto newCategory = normaliseFavoriteCategoryPath (requestedNewCategory);
+
+        if (category.isEmpty() || oldCategory.isEmpty() || newCategory.isEmpty())
+            return category;
+
+        if (stringEqualsIgnoreCase (category, oldCategory))
+            return newCategory;
+
+        if (category.startsWithIgnoreCase (oldCategory + "/"))
+            return normaliseFavoriteCategoryPath (newCategory + category.substring (oldCategory.length()));
+
+        return category;
+    }
+
     static juce::String trimFavoriteNameEdges (juce::String text)
     {
         text = normaliseFavoriteUserText (text);
@@ -4916,7 +5224,7 @@ private:
 
     static juce::String sanitiseFavoriteCategory (const juce::String& requestedCategory)
     {
-        return normaliseFavoriteUserText (requestedCategory);
+        return normaliseFavoriteCategoryPath (requestedCategory);
     }
 
     static FavoriteFileSelection getFavoriteFromValueTree (const juce::ValueTree& tree)
@@ -5054,6 +5362,7 @@ private:
         lastFileDialogDirectory.clear();
         recentFileSelections.clear();
         favoriteFileSelections.clear();
+        favoriteCategories.clear();
     }
 
     void rememberFileSelectionLocked (const std::vector<juce::File>& files, FileLoadMode loadMode)
@@ -5092,12 +5401,19 @@ private:
         juce::String lastDir;
         std::vector<RecentFileSelection> recentSelections;
         std::vector<FavoriteFileSelection> favoriteSelections;
+        std::vector<juce::String> categories;
 
         {
             std::lock_guard<std::mutex> lk (filePathMutex);
             lastDir = lastFileDialogDirectory;
             recentSelections = recentFileSelections;
             favoriteSelections = favoriteFileSelections;
+            categories = favoriteCategories;
+
+            for (const auto& favorite : favoriteSelections)
+                addFavoriteCategoryToList (categories, favorite.category);
+
+            sortFavoriteCategories (categories);
         }
 
         juce::ValueTree fileUi ("FILE_UI");
@@ -5112,6 +5428,17 @@ private:
             juce::ValueTree recent ("RECENT");
             writeSelectionToValueTree (selection, recent);
             fileUi.addChild (recent, -1, nullptr);
+        }
+
+        for (const auto& category : categories)
+        {
+            const auto name = sanitiseFavoriteCategory (category);
+            if (name.isEmpty())
+                continue;
+
+            juce::ValueTree categoryTree ("CATEGORY");
+            categoryTree.setProperty ("name", name, nullptr);
+            fileUi.addChild (categoryTree, -1, nullptr);
         }
 
         for (const auto& favorite : favoriteSelections)
@@ -5147,8 +5474,10 @@ private:
         juce::String restoredLastDir = fileUi.getProperty ("lastDir").toString();
         std::vector<RecentFileSelection> restoredRecent;
         std::vector<FavoriteFileSelection> restoredFavorites;
+        std::vector<juce::String> restoredCategories;
         restoredRecent.reserve ((size_t) juce::jmax (0, fileUi.getNumChildren()));
         restoredFavorites.reserve ((size_t) juce::jmax (0, fileUi.getNumChildren()));
+        restoredCategories.reserve ((size_t) juce::jmax (0, fileUi.getNumChildren()));
 
         for (int i = 0; i < fileUi.getNumChildren(); ++i)
         {
@@ -5182,6 +5511,8 @@ private:
                 if (favorite.selection.paths.empty())
                     continue;
 
+                addFavoriteCategoryToList (restoredCategories, favorite.category);
+
                 const bool alreadySeen = std::any_of (restoredFavorites.begin(), restoredFavorites.end(),
                                                       [&favorite] (const FavoriteFileSelection& existing)
                                                       {
@@ -5192,9 +5523,14 @@ private:
 
                 restoredFavorites.push_back (std::move (favorite));
             }
+            else if (child.hasType ("CATEGORY"))
+            {
+                addFavoriteCategoryToList (restoredCategories, child.getProperty ("name").toString());
+            }
         }
 
         sortFavoritesNewestFirst (restoredFavorites);
+        sortFavoriteCategories (restoredCategories);
 
         if (restoredLastDir.isEmpty())
         {
@@ -5236,6 +5572,7 @@ private:
                 lastFileDialogDirectory = restoredLastDir;
                 recentFileSelections = std::move (restoredRecent);
                 favoriteFileSelections = std::move (restoredFavorites);
+                favoriteCategories = std::move (restoredCategories);
             }
             else
             {
@@ -5298,7 +5635,14 @@ private:
                     }
                 }
 
+                for (const auto& category : restoredCategories)
+                    addFavoriteCategoryToList (favoriteCategories, category);
+
+                for (const auto& favorite : favoriteFileSelections)
+                    addFavoriteCategoryToList (favoriteCategories, favorite.category);
+
                 sortFavoritesNewestFirst (favoriteFileSelections);
+                sortFavoriteCategories (favoriteCategories);
 
                 if (lastFileDialogDirectory.isEmpty() && ! recentFileSelections.empty())
                 {
@@ -6584,6 +6928,7 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     juce::String lastFileDialogDirectory;
     std::vector<RecentFileSelection> recentFileSelections;
     std::vector<FavoriteFileSelection> favoriteFileSelections;
+    std::vector<juce::String> favoriteCategories;
 
     std::mutex fileLoadMutex;
     std::condition_variable fileLoadCv;
@@ -6735,9 +7080,6 @@ public:
         favoriteNamePrompt = std::make_unique<FavoriteNamePromptOverlay>();
         favoriteNamePrompt->setVisible (false);
 
-        fileBrowsePrompt = std::make_unique<FileBrowsePromptOverlay>();
-        fileBrowsePrompt->setVisible (false);
-
         if (hasFileRows)
             startTimerHz (10);
     }
@@ -6761,8 +7103,7 @@ public:
 
     bool hasBlockingPromptOpen() const noexcept
     {
-        return (favoriteNamePrompt != nullptr && favoriteNamePrompt->isPromptOpen())
-            || (fileBrowsePrompt != nullptr && fileBrowsePrompt->isPromptOpen());
+        return favoriteNamePrompt != nullptr && favoriteNamePrompt->isPromptOpen();
     }
 
     bool handleBlockingPromptKeyPress (const juce::KeyPress& key)
@@ -6772,13 +7113,6 @@ public:
             favoriteNamePrompt->handleKeyPressFromHost (key);
             return true;
         }
-
-        if (fileBrowsePrompt != nullptr && fileBrowsePrompt->isPromptOpen())
-        {
-            fileBrowsePrompt->handleKeyPressFromHost (key);
-            return true;
-        }
-
         return false;
     }
 
@@ -6789,13 +7123,6 @@ public:
             favoriteNamePrompt->handleKeyStateFromHost (isKeyDown);
             return true;
         }
-
-        if (fileBrowsePrompt != nullptr && fileBrowsePrompt->isPromptOpen())
-        {
-            fileBrowsePrompt->handleKeyStateFromHost (isKeyDown);
-            return true;
-        }
-
         return false;
     }
 
@@ -6859,6 +7186,22 @@ private:
         ImportMultipleAppendEach,
     };
 
+    enum class FileBrowseFilter
+    {
+        CommonMedia,
+        Wave,
+        Flac,
+        Mp3,
+        AllFiles,
+    };
+
+    struct FileBrowseFilterSpec
+    {
+        FileBrowseFilter filter = FileBrowseFilter::CommonMedia;
+        juce::String label;
+        juce::String patterns;
+    };
+
     class FavoriteNamePromptOverlay final : public juce::Component
     {
     public:
@@ -6906,6 +7249,7 @@ private:
             setWantsKeyboardFocus (true);
             setMouseClickGrabsKeyboardFocus (true);
             setFocusContainerType (juce::Component::FocusContainerType::keyboardFocusContainer);
+            setAlwaysOnTop (true);
 
             nameLabel.setText ("Name", juce::dontSendNotification);
             nameLabel.setJustificationType (juce::Justification::centredLeft);
@@ -6922,22 +7266,17 @@ private:
             nameEditor.onReturnKey = [this] { dismissPrompt (true); };
             nameEditor.onEscapeKey = [this] { dismissPrompt (false); };
 
-            categoryEditor.setMultiLine (false);
-            categoryEditor.setReturnKeyStartsNewLine (false);
-            categoryEditor.setWantsKeyboardFocus (true);
-            categoryEditor.setMouseClickGrabsKeyboardFocus (true);
-            categoryEditor.setTextToShowWhenEmpty ("Optional category (leave blank for Uncategorized)",
-                                                   juce::Colours::white.withAlpha (0.45f));
-            categoryEditor.onReturnKey = [this] { dismissPrompt (true); };
-            categoryEditor.onEscapeKey = [this] { dismissPrompt (false); };
+            categoryCombo.setEditableText (false);
+            categoryCombo.setJustificationType (juce::Justification::centredLeft);
+            categoryCombo.setTextWhenNoChoicesAvailable ("Uncategorized");
 
             okButton.onClick = [this] { dismissPrompt (true); };
             cancelButton.onClick = [this] { dismissPrompt (false); };
 
             addAndMakeVisible (nameLabel);
-            addAndMakeVisible (categoryLabel);
             addAndMakeVisible (nameEditor);
-            addAndMakeVisible (categoryEditor);
+            addAndMakeVisible (categoryLabel);
+            addAndMakeVisible (categoryCombo);
             addAndMakeVisible (okButton);
             addAndMakeVisible (cancelButton);
         }
@@ -6946,39 +7285,63 @@ private:
         {
             if (isCurrentlyModal())
                 exitModalState (0);
+
+            if (isOnDesktop())
+                removeFromDesktop();
         }
 
         void showPrompt (const juce::String& titleToUse,
                          const juce::String& messageToUse,
+                         const juce::String& nameLabelToUse,
                          const juce::String& initialName,
                          const juce::String& fallbackNameToUse,
                          const juce::String& initialCategory,
+                         const std::vector<juce::String>& categoryChoices,
+                         bool shouldShowCategorySelector,
+                         juce::Component* anchorComponent,
                          std::function<void(juce::String, juce::String)> onConfirmCallback)
         {
             title = titleToUse;
             message = messageToUse;
             fallbackName = fallbackNameToUse;
             onConfirm = std::move (onConfirmCallback);
+            showCategorySelector = shouldShowCategorySelector;
 
-            if (auto* parent = getParentComponent())
-                setBounds (parent->getLocalBounds());
+            nameLabel.setText (nameLabelToUse.isNotEmpty() ? nameLabelToUse : "Name", juce::dontSendNotification);
+            rebuildCategoryCombo (categoryChoices, initialCategory);
 
             nameEditor.setText (initialName, juce::dontSendNotification);
-            categoryEditor.setText (initialCategory, juce::dontSendNotification);
+            okButton.setButtonText (showCategorySelector ? "Save" : "OK");
+
+            categoryLabel.setVisible (showCategorySelector);
+            categoryCombo.setVisible (showCategorySelector);
+
+            if (isCurrentlyModal())
+                exitModalState (0);
+
+            if (getParentComponent() != nullptr)
+                getParentComponent()->removeChildComponent (this);
+
+            const auto size = getDialogSize();
+            setSize (size.x, size.y);
+
+            if (! isOnDesktop())
+                addToDesktop (juce::ComponentPeer::windowIsTemporary);
+
+            setBounds (calculateDesktopBounds (anchorComponent, size));
             setVisible (true);
 
-            if (! isCurrentlyModal())
-                enterModalState (true);
-
+            enterModalState (true);
             toFront (true);
             grabKeyboardFocus();
             resized();
 
             juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<FavoriteNamePromptOverlay> (this)]
             {
-                if (safe == nullptr)
+                if (safe == nullptr || ! safe->isVisible())
                     return;
 
+                safe->toFront (true);
                 safe->nameEditor.grabKeyboardFocus();
                 safe->nameEditor.selectAll();
             });
@@ -7047,7 +7410,7 @@ private:
 
             auto callback = std::move (onConfirm);
             auto chosenName = normalisePromptUserText (nameEditor.getText());
-            const auto chosenCategory = normalisePromptUserText (categoryEditor.getText());
+            const auto chosenCategory = showCategorySelector ? getSelectedCategory() : juce::String();
 
             if (chosenName.isEmpty())
                 chosenName = normalisePromptUserText (fallbackName);
@@ -7056,6 +7419,9 @@ private:
 
             if (isCurrentlyModal())
                 exitModalState (0);
+
+            if (isOnDesktop())
+                removeFromDesktop();
 
             onConfirm = {};
 
@@ -7068,18 +7434,17 @@ private:
             if (! isVisible())
                 return;
 
-            g.fillAll (juce::Colours::black.withAlpha (0.55f));
+            const auto dialogBounds = getLocalBounds().toFloat().reduced (0.5f);
 
-            const auto dialogBounds = getDialogBounds().toFloat();
-            g.setColour (juce::Colours::darkgrey.brighter (0.35f));
+            g.setColour (juce::Colours::darkgrey.brighter (0.30f));
             g.fillRoundedRectangle (dialogBounds, 8.0f);
 
-            g.setColour (juce::Colours::black.withAlpha (0.65f));
-            g.drawRoundedRectangle (dialogBounds.reduced (0.5f), 8.0f, 1.0f);
+            g.setColour (juce::Colours::black.withAlpha (0.70f));
+            g.drawRoundedRectangle (dialogBounds, 8.0f, 1.0f);
 
-            auto textArea = getDialogBounds().reduced (16, 12);
+            auto textArea = getLocalBounds().reduced (16, 12);
             const auto titleArea = textArea.removeFromTop (22);
-            const auto messageArea = textArea.removeFromTop (40);
+            const auto messageArea = textArea.removeFromTop (showCategorySelector ? 40 : 34);
 
             g.setColour (juce::Colours::white);
             g.setFont (15.0f);
@@ -7092,21 +7457,19 @@ private:
 
         void resized() override
         {
-            const auto dialogBounds = getDialogBounds().reduced (16, 12);
-
-            auto content = dialogBounds;
+            auto content = getLocalBounds().reduced (16, 12);
             content.removeFromTop (22);
-            content.removeFromTop (40);
+            content.removeFromTop (showCategorySelector ? 40 : 34);
 
             nameLabel.setBounds (content.removeFromTop (18));
             nameEditor.setBounds (content.removeFromTop (28));
 
-            content.removeFromTop (8);
-
-            categoryLabel.setBounds (content.removeFromTop (18));
-            categoryEditor.setBounds (content.removeFromTop (28));
-
-            content.removeFromTop (12);
+            if (showCategorySelector)
+            {
+                content.removeFromTop (8);
+                categoryLabel.setBounds (content.removeFromTop (18));
+                categoryCombo.setBounds (content.removeFromTop (28));
+            }
 
             auto buttons = content.removeFromBottom (28);
             const int buttonW = 88;
@@ -7116,21 +7479,10 @@ private:
             okButton.setBounds (buttons.removeFromRight (buttonW));
         }
 
-        void parentSizeChanged() override
+        void inputAttemptWhenModal() override
         {
-            if (auto* parent = getParentComponent())
-                setBounds (parent->getLocalBounds());
-        }
-
-        void parentHierarchyChanged() override
-        {
-            parentSizeChanged();
-        }
-
-        void mouseDown (const juce::MouseEvent& e) override
-        {
-            if (! getDialogBounds().contains (e.getPosition()))
-                dismissPrompt (false);
+            toFront (true);
+            nameEditor.grabKeyboardFocus();
         }
 
     private:
@@ -7141,18 +7493,12 @@ private:
                 if (focused == &nameEditor)
                     return &nameEditor;
 
-                if (focused == &categoryEditor)
-                    return &categoryEditor;
-
                 if (auto* editor = focused->findParentComponentOfClass<PromptTextEditor>())
                 {
-                    if (editor == &nameEditor || editor == &categoryEditor)
+                    if (editor == &nameEditor)
                         return editor;
                 }
             }
-
-            if (categoryEditor.hasKeyboardFocus (true))
-                return &categoryEditor;
 
             if (nameEditor.hasKeyboardFocus (true))
                 return &nameEditor;
@@ -7160,11 +7506,179 @@ private:
             return nullptr;
         }
 
-        juce::Rectangle<int> getDialogBounds() const
+        static bool promptStringEqualsIgnoreCase (const juce::String& a,
+                                                    const juce::String& b)
         {
-            const int width = juce::jmin (460, juce::jmax (320, getWidth() - 48));
-            const int height = 238;
-            return juce::Rectangle<int> (width, height).withCentre (getLocalBounds().getCentre());
+            return a.compareIgnoreCase (b) == 0;
+        }
+
+        static std::vector<juce::String> splitPromptCategoryPath (juce::String text)
+        {
+            text = normalisePromptUserText (text).replaceCharacter ('\\', '/');
+
+            std::vector<juce::String> parts;
+            juce::String current;
+
+            for (int i = 0; i < text.length(); ++i)
+            {
+                const auto c = text[i];
+                if (c == '/')
+                {
+                    auto part = normalisePromptUserText (current);
+                    if (part.isNotEmpty())
+                        parts.push_back (part);
+
+                    current.clear();
+                    continue;
+                }
+
+                current << juce::String::charToString (c);
+            }
+
+            auto part = normalisePromptUserText (current);
+            if (part.isNotEmpty())
+                parts.push_back (part);
+
+            return parts;
+        }
+
+        static juce::String normalisePromptCategoryPath (const juce::String& requestedCategory)
+        {
+            const auto parts = splitPromptCategoryPath (requestedCategory);
+            juce::StringArray out;
+
+            for (const auto& part : parts)
+                if (part.isNotEmpty())
+                    out.add (part);
+
+            return out.joinIntoString ("/");
+        }
+
+        static void sortPromptCategories (std::vector<juce::String>& categories)
+        {
+            for (auto& category : categories)
+                category = normalisePromptCategoryPath (category);
+
+            categories.erase (std::remove_if (categories.begin(), categories.end(),
+                                              [] (const juce::String& category)
+                                              {
+                                                  return category.trim().isEmpty();
+                                              }),
+                              categories.end());
+
+            std::stable_sort (categories.begin(), categories.end(),
+                              [] (const juce::String& a, const juce::String& b)
+                              {
+                                  const auto aa = normalisePromptCategoryPath (a);
+                                  const auto bb = normalisePromptCategoryPath (b);
+
+                                  const bool aIsParentOfB = bb.startsWithIgnoreCase (aa + "/");
+                                  const bool bIsParentOfA = aa.startsWithIgnoreCase (bb + "/");
+
+                                  if (aIsParentOfB != bIsParentOfA)
+                                      return aIsParentOfB;
+
+                                  return aa.compareIgnoreCase (bb) < 0;
+                              });
+
+            categories.erase (std::unique (categories.begin(), categories.end(),
+                                           [] (const juce::String& a, const juce::String& b)
+                                           {
+                                               return promptStringEqualsIgnoreCase (normalisePromptCategoryPath (a),
+                                                                                   normalisePromptCategoryPath (b));
+                                           }),
+                              categories.end());
+        }
+
+        juce::String getSelectedCategory() const
+        {
+            const int index = categoryCombo.getSelectedId() - 1;
+            if (index >= 0 && index < (int) categoryItems.size())
+                return categoryItems[(size_t) index];
+
+            return {};
+        }
+
+        void rebuildCategoryCombo (const std::vector<juce::String>& categoryChoices,
+                                   const juce::String& initialCategory)
+        {
+            categoryItems.clear();
+            categoryCombo.clear (juce::dontSendNotification);
+
+            auto addChoice = [this] (const juce::String& category)
+            {
+                const auto normalised = normalisePromptCategoryPath (category);
+
+                if (normalised.isEmpty())
+                    return;
+
+                const bool exists = std::any_of (categoryItems.begin(), categoryItems.end(),
+                                                 [&normalised] (const juce::String& existing)
+                                                 {
+                                                     return promptStringEqualsIgnoreCase (existing, normalised);
+                                                 });
+
+                if (! exists)
+                    categoryItems.push_back (normalised);
+            };
+
+            for (const auto& category : categoryChoices)
+                addChoice (category);
+
+            addChoice (initialCategory);
+
+            sortPromptCategories (categoryItems);
+
+            categoryCombo.addItem ("Uncategorized", 1);
+            std::vector<juce::String> withUncategorised;
+            withUncategorised.push_back ({});
+
+            int itemId = 2;
+            for (const auto& category : categoryItems)
+            {
+                categoryCombo.addItem (category, itemId++);
+                withUncategorised.push_back (category);
+            }
+
+            categoryItems = std::move (withUncategorised);
+
+            const auto normalisedInitial = normalisePromptCategoryPath (initialCategory);
+            int selectedId = 1;
+
+            for (int i = 0; i < (int) categoryItems.size(); ++i)
+            {
+                if (promptStringEqualsIgnoreCase (categoryItems[(size_t) i], normalisedInitial))
+                {
+                    selectedId = i + 1;
+                    break;
+                }
+            }
+
+            categoryCombo.setSelectedId (selectedId, juce::dontSendNotification);
+        }
+
+        juce::Point<int> getDialogSize() const noexcept
+        {
+            return { 480, showCategorySelector ? 238 : 182 };
+        }
+
+        juce::Rectangle<int> calculateDesktopBounds (juce::Component* anchorComponent,
+                                                     juce::Point<int> size) const
+        {
+            juce::Rectangle<int> anchor;
+
+            if (anchorComponent != nullptr)
+                anchor = anchorComponent->localAreaToGlobal (anchorComponent->getLocalBounds());
+
+            if (anchor.isEmpty())
+                anchor = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
+
+            auto bounds = juce::Rectangle<int> (size.x, size.y).withCentre (anchor.getCentre());
+
+            if (const auto* display = juce::Desktop::getInstance().getDisplays().getDisplayForRect (bounds))
+                bounds = bounds.constrainedWithin (display->userArea);
+
+            return bounds;
         }
 
         juce::String title;
@@ -7174,378 +7688,11 @@ private:
         juce::Label nameLabel;
         juce::Label categoryLabel;
         PromptTextEditor nameEditor;
-        PromptTextEditor categoryEditor;
+        juce::ComboBox categoryCombo;
         juce::TextButton okButton { "Save" };
         juce::TextButton cancelButton { "Cancel" };
-    };
-
-    class FileBrowsePromptOverlay final : public juce::Component,
-                                          private juce::FileBrowserListener
-    {
-    public:
-        FileBrowsePromptOverlay()
-        {
-            setVisible (false);
-            setInterceptsMouseClicks (true, true);
-            setWantsKeyboardFocus (true);
-            setMouseClickGrabsKeyboardFocus (true);
-            setFocusContainerType (juce::Component::FocusContainerType::keyboardFocusContainer);
-
-            filterLabel.setText ("Filter", juce::dontSendNotification);
-            filterLabel.setJustificationType (juce::Justification::centredLeft);
-            filterLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.90f));
-
-            filterCombo.setJustificationType (juce::Justification::centredLeft);
-            filterCombo.onChange = [this] { applySelectedFilter(); };
-
-            okButton.onClick = [this] { dismissPrompt (true); };
-            cancelButton.onClick = [this] { dismissPrompt (false); };
-
-            addFilterOption ("Common Media", "*.wav;*.wave;*.flac;*.mp3;*.WAV;*.WAVE;*.FLAC;*.MP3");
-            addFilterOption ("Wave", "*.wav;*.wave;*.WAV;*.WAVE");
-            addFilterOption ("Flac", "*.flac;*.FLAC");
-            addFilterOption ("MP3", "*.mp3;*.MP3");
-            addFilterOption ("* (*)", "*");
-
-            for (size_t i = 0; i < filters.size(); ++i)
-                filterCombo.addItem (filters[i].label, (int) i + 1);
-
-            addAndMakeVisible (filterLabel);
-            addAndMakeVisible (filterCombo);
-            addAndMakeVisible (okButton);
-            addAndMakeVisible (cancelButton);
-        }
-
-        ~FileBrowsePromptOverlay() override
-        {
-            releaseBrowser();
-
-            if (isCurrentlyModal())
-                exitModalState (0);
-        }
-
-        void showPrompt (const juce::String& titleToUse,
-                         const juce::String& actionTextToUse,
-                         const juce::File& initialFileOrDirectory,
-                         bool allowMultipleSelection,
-                         std::function<void(std::vector<juce::File>)> onConfirmCallback)
-        {
-            title = titleToUse;
-            actionText = actionTextToUse.isNotEmpty() ? actionTextToUse : "Open";
-            allowMultiple = allowMultipleSelection;
-            onConfirm = std::move (onConfirmCallback);
-            startLocation = chooseStartLocation (initialFileOrDirectory);
-
-            filterCombo.setSelectedId (1, juce::dontSendNotification);
-            okButton.setButtonText (actionText);
-            rebuildBrowser();
-            updateOpenButtonState();
-
-            if (auto* parent = getParentComponent())
-                setBounds (parent->getLocalBounds());
-
-            setVisible (true);
-
-            if (! isCurrentlyModal())
-                enterModalState (true);
-
-            toFront (true);
-            grabKeyboardFocus();
-            resized();
-
-            juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<FileBrowsePromptOverlay> (this)]
-            {
-                if (safe == nullptr || ! safe->isVisible())
-                    return;
-
-                if (safe->browser != nullptr)
-                    safe->browser->grabKeyboardFocus();
-                else
-                    safe->grabKeyboardFocus();
-            });
-        }
-
-        bool isPromptOpen() const noexcept
-        {
-            return isVisible();
-        }
-
-        bool handleKeyPressFromHost (const juce::KeyPress& key)
-        {
-            if (! isVisible())
-                return false;
-
-            if (key == juce::KeyPress::escapeKey)
-            {
-                dismissPrompt (false);
-                return true;
-            }
-
-            if (key == juce::KeyPress::returnKey)
-            {
-                if (browser != nullptr && browser->currentFileIsValid())
-                    dismissPrompt (true);
-                return true;
-            }
-
-            if (browser != nullptr && browser->keyPressed (key))
-                return true;
-
-            return true;
-        }
-
-        bool handleKeyStateFromHost (bool /*isKeyDown*/)
-        {
-            return isVisible();
-        }
-
-        bool keyPressed (const juce::KeyPress& key) override
-        {
-            return handleKeyPressFromHost (key);
-        }
-
-        bool keyStateChanged (bool isKeyDown) override
-        {
-            return handleKeyStateFromHost (isKeyDown);
-        }
-
-        void dismissPrompt (bool shouldConfirm)
-        {
-            if (! isVisible())
-                return;
-
-            auto callback = std::move (onConfirm);
-            auto selectedFiles = shouldConfirm ? gatherSelectedFiles() : std::vector<juce::File> {};
-
-            setVisible (false);
-
-            if (isCurrentlyModal())
-                exitModalState (0);
-
-            onConfirm = {};
-
-            if (shouldConfirm && callback && ! selectedFiles.empty())
-                callback (selectedFiles);
-        }
-
-        void paint (juce::Graphics& g) override
-        {
-            if (! isVisible())
-                return;
-
-            g.fillAll (juce::Colours::black.withAlpha (0.55f));
-
-            const auto dialogBounds = getDialogBounds().toFloat();
-            g.setColour (juce::Colours::darkgrey.brighter (0.22f));
-            g.fillRoundedRectangle (dialogBounds, 8.0f);
-
-            g.setColour (juce::Colours::black.withAlpha (0.65f));
-            g.drawRoundedRectangle (dialogBounds.reduced (0.5f), 8.0f, 1.0f);
-
-            auto textArea = getDialogBounds().reduced (16, 12);
-            const auto titleArea = textArea.removeFromTop (24);
-
-            g.setColour (juce::Colours::white);
-            g.setFont (15.0f);
-            g.drawText (title, titleArea, juce::Justification::centredLeft, true);
-        }
-
-        void resized() override
-        {
-            const auto dialogBounds = getDialogBounds().reduced (16, 12);
-
-            auto content = dialogBounds;
-            content.removeFromTop (28);
-
-            auto filterRow = content.removeFromTop (28);
-            filterLabel.setBounds (filterRow.removeFromLeft (52));
-            filterRow.removeFromLeft (8);
-            filterCombo.setBounds (filterRow.removeFromLeft (juce::jmin (280, filterRow.getWidth())));
-
-            content.removeFromTop (10);
-
-            auto buttons = content.removeFromBottom (30);
-            const int buttonW = 92;
-            cancelButton.setBounds (buttons.removeFromRight (buttonW));
-            buttons.removeFromRight (8);
-            okButton.setBounds (buttons.removeFromRight (buttonW));
-
-            content.removeFromBottom (10);
-
-            if (browser != nullptr)
-                browser->setBounds (content);
-        }
-
-        void parentSizeChanged() override
-        {
-            if (auto* parent = getParentComponent())
-                setBounds (parent->getLocalBounds());
-        }
-
-        void parentHierarchyChanged() override
-        {
-            parentSizeChanged();
-        }
-
-        void mouseDown (const juce::MouseEvent& e) override
-        {
-            if (! getDialogBounds().contains (e.getPosition()))
-                dismissPrompt (false);
-        }
-
-    private:
-        struct FilterOption
-        {
-            juce::String label;
-            juce::String pattern;
-            std::unique_ptr<juce::WildcardFileFilter> filter;
-        };
-
-        static juce::File chooseStartLocation (juce::File initialFileOrDirectory)
-        {
-            if (initialFileOrDirectory.existsAsFile() || initialFileOrDirectory.isDirectory())
-                return initialFileOrDirectory;
-
-            const auto parent = initialFileOrDirectory.getParentDirectory();
-            if (parent.isDirectory())
-                return parent;
-
-            return juce::File::getSpecialLocation (juce::File::userHomeDirectory);
-        }
-
-        void addFilterOption (const juce::String& label, const juce::String& pattern)
-        {
-            FilterOption option;
-            option.label = label;
-            option.pattern = pattern;
-            option.filter = std::make_unique<juce::WildcardFileFilter> (pattern, "*", label);
-            filters.push_back (std::move (option));
-        }
-
-        int getSelectedFilterIndex() const noexcept
-        {
-            const int itemIndex = filterCombo.getSelectedItemIndex();
-            if (itemIndex >= 0 && itemIndex < (int) filters.size())
-                return itemIndex;
-
-            return 0;
-        }
-
-        const juce::FileFilter* getSelectedFilter() const noexcept
-        {
-            if (filters.empty())
-                return nullptr;
-
-            return filters[(size_t) getSelectedFilterIndex()].filter.get();
-        }
-
-        void releaseBrowser()
-        {
-            if (browser != nullptr)
-            {
-                browser->removeListener (this);
-                removeChildComponent (browser.get());
-                browser.reset();
-            }
-        }
-
-        void rebuildBrowser()
-        {
-            releaseBrowser();
-
-            int flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
-            if (allowMultiple)
-                flags |= juce::FileBrowserComponent::canSelectMultipleItems;
-
-            browser = std::make_unique<juce::FileBrowserComponent> (flags,
-                                                                    startLocation,
-                                                                    getSelectedFilter(),
-                                                                    nullptr);
-            browser->addListener (this);
-            browser->setFilenameBoxLabel (allowMultiple ? "Files" : "File");
-            addAndMakeVisible (*browser);
-            browser->toBack();
-            browser->grabKeyboardFocus();
-            resized();
-        }
-
-        void applySelectedFilter()
-        {
-            if (browser == nullptr)
-                return;
-
-            browser->setFileFilter (getSelectedFilter());
-            browser->refresh();
-            updateOpenButtonState();
-        }
-
-        std::vector<juce::File> gatherSelectedFiles() const
-        {
-            std::vector<juce::File> files;
-
-            if (browser == nullptr)
-                return files;
-
-            const int count = browser->getNumSelectedFiles();
-            files.reserve ((size_t) juce::jmax (0, count));
-
-            for (int i = 0; i < count; ++i)
-            {
-                const auto file = browser->getSelectedFile (i);
-                if (file.existsAsFile())
-                    files.push_back (file);
-            }
-
-            return files;
-        }
-
-        void updateOpenButtonState()
-        {
-            okButton.setEnabled (browser != nullptr && browser->currentFileIsValid());
-        }
-
-        void selectionChanged() override
-        {
-            updateOpenButtonState();
-        }
-
-        void fileClicked (const juce::File&, const juce::MouseEvent&) override
-        {
-            updateOpenButtonState();
-        }
-
-        void fileDoubleClicked (const juce::File& file) override
-        {
-            if (file.existsAsFile())
-                dismissPrompt (true);
-            else
-                updateOpenButtonState();
-        }
-
-        void browserRootChanged (const juce::File& newRoot) override
-        {
-            startLocation = newRoot;
-            updateOpenButtonState();
-        }
-
-        juce::Rectangle<int> getDialogBounds() const
-        {
-            const int width = juce::jmin (920, juce::jmax (560, getWidth() - 64));
-            const int height = juce::jmin (700, juce::jmax (420, getHeight() - 72));
-            return juce::Rectangle<int> (width, height).withCentre (getLocalBounds().getCentre());
-        }
-
-        juce::String title;
-        juce::String actionText;
-        juce::File startLocation;
-        bool allowMultiple = false;
-        std::function<void(std::vector<juce::File>)> onConfirm;
-        juce::Label filterLabel;
-        juce::ComboBox filterCombo;
-        std::unique_ptr<juce::FileBrowserComponent> browser;
-        std::vector<FilterOption> filters;
-        juce::TextButton okButton { "Open" };
-        juce::TextButton cancelButton { "Cancel" };
+        std::vector<juce::String> categoryItems;
+        bool showCategorySelector = true;
     };
 
     static juce::String shortenPathForMenu (const juce::String& path, int maxChars = 64)
@@ -7673,11 +7820,6 @@ private:
         attachPromptToHost (favoriteNamePrompt.get());
     }
 
-    void attachFileBrowsePromptToHost()
-    {
-        attachPromptToHost (fileBrowsePrompt.get());
-    }
-
     void showFavoriteNamePrompt (const juce::String& title,
                                  const juce::String& message,
                                  const juce::String& initialText,
@@ -7688,91 +7830,350 @@ private:
         if (favoriteNamePrompt == nullptr)
             return;
 
-        attachFavoritePromptToHost();
         favoriteNamePrompt->showPrompt (title,
                                         message,
+                                        "Name",
                                         initialText,
                                         fallbackName,
                                         initialCategory,
+                                        proc.getFavoriteCategories(),
+                                        true,
+                                        findModalPromptHost(),
                                         std::move (onConfirm));
     }
 
-    void showFileBrowsePrompt (const juce::String& title,
-                               const juce::String& actionText,
-                               const juce::File& startLocation,
-                               bool allowMultiple,
-                               std::function<void(std::vector<juce::File>)> onConfirm)
+    void showCategoryNamePrompt (const juce::String& title,
+                                 const juce::String& message,
+                                 const juce::String& initialText,
+                                 const juce::String& fallbackName,
+                                 std::function<void(juce::String)> onConfirm)
     {
-        if (fileBrowsePrompt == nullptr)
+        if (favoriteNamePrompt == nullptr)
             return;
 
-        attachFileBrowsePromptToHost();
-        fileBrowsePrompt->showPrompt (title,
-                                      actionText,
-                                      startLocation,
-                                      allowMultiple,
-                                      std::move (onConfirm));
+        favoriteNamePrompt->showPrompt (title,
+                                        message,
+                                        "Category",
+                                        initialText,
+                                        fallbackName,
+                                        {},
+                                        {},
+                                        false,
+                                        findModalPromptHost(),
+                                        [callback = std::move (onConfirm)] (juce::String chosenName, juce::String)
+                                        {
+                                            if (callback)
+                                                callback (chosenName);
+                                        });
     }
 
-    void browseForFileSlot (int slot, FileBrowseMode mode = FileBrowseMode::OpenSingle)
+    static const std::vector<FileBrowseFilterSpec>& getFileBrowseFilterSpecs()
+    {
+        static const std::vector<FileBrowseFilterSpec> specs
+        {
+            { FileBrowseFilter::CommonMedia, "Common Media", "*.wav;*.wave;*.flac;*.mp3" },
+            { FileBrowseFilter::Wave,        "Wave",         "*.wav;*.wave" },
+            { FileBrowseFilter::Flac,        "Flac",         "*.flac" },
+            { FileBrowseFilter::Mp3,         "MP3",          "*.mp3" },
+            { FileBrowseFilter::AllFiles,    "* (*)",        "*" },
+        };
+
+        return specs;
+    }
+
+    static FileBrowseFilterSpec getFileBrowseFilterSpec (FileBrowseFilter filter)
+    {
+        const auto& specs = getFileBrowseFilterSpecs();
+
+        for (const auto& spec : specs)
+            if (spec.filter == filter)
+                return spec;
+
+        return specs.front();
+    }
+
+#if JUCE_WINDOWS
+    bool browseForFileSlotWithWindowsNativeDialog (int slot,
+                                                   FileBrowseMode mode,
+                                                   FileBrowseFilter defaultFilter,
+                                                   const juce::String& chooserTitle,
+                                                   const juce::File& startDir)
+    {
+        const bool allowMultiple = (mode != FileBrowseMode::OpenSingle);
+        const bool appendEach = (mode == FileBrowseMode::ImportMultipleAppendEach);
+
+        HRESULT coInit = CoInitializeEx (nullptr, COINIT_APARTMENTTHREADED);
+        const bool shouldUninitCom = SUCCEEDED (coInit);
+
+        if (FAILED (coInit) && coInit != RPC_E_CHANGED_MODE)
+            return false;
+
+        IFileOpenDialog* dialog = nullptr;
+        HRESULT hr = CoCreateInstance (CLSID_FileOpenDialog,
+                                       nullptr,
+                                       CLSCTX_INPROC_SERVER,
+                                       IID_PPV_ARGS (&dialog));
+
+        if (FAILED (hr) || dialog == nullptr)
+        {
+            if (shouldUninitCom)
+                CoUninitialize();
+
+            return false;
+        }
+
+        auto releaseDialog = [&]
+        {
+            dialog->Release();
+
+            if (shouldUninitCom)
+                CoUninitialize();
+        };
+
+        DWORD options = 0;
+        if (SUCCEEDED (dialog->GetOptions (&options)))
+        {
+            options |= FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST;
+
+            if (allowMultiple)
+                options |= FOS_ALLOWMULTISELECT;
+
+            dialog->SetOptions (options);
+        }
+
+        std::vector<std::wstring> filterLabels;
+        std::vector<std::wstring> filterPatterns;
+        std::vector<COMDLG_FILTERSPEC> filterSpecs;
+
+        const auto& specs = getFileBrowseFilterSpecs();
+        filterLabels.reserve (specs.size());
+        filterPatterns.reserve (specs.size());
+        filterSpecs.reserve (specs.size());
+
+        UINT defaultFilterIndex = 1;
+        for (size_t i = 0; i < specs.size(); ++i)
+        {
+            const auto& spec = specs[i];
+            auto label = spec.label;
+
+            if (spec.filter == FileBrowseFilter::CommonMedia)
+                label << " (*.wav;*.wave;*.flac;*.mp3)";
+            else if (spec.filter == FileBrowseFilter::Wave)
+                label << " (*.wav;*.wave)";
+            else if (spec.filter == FileBrowseFilter::Flac)
+                label << " (*.flac)";
+            else if (spec.filter == FileBrowseFilter::Mp3)
+                label << " (*.mp3)";
+
+            filterLabels.push_back (std::wstring (label.toWideCharPointer()));
+            filterPatterns.push_back (std::wstring (spec.patterns.toWideCharPointer()));
+
+            if (spec.filter == defaultFilter)
+                defaultFilterIndex = (UINT) i + 1;
+        }
+
+        for (size_t i = 0; i < specs.size(); ++i)
+            filterSpecs.push_back ({ filterLabels[i].c_str(), filterPatterns[i].c_str() });
+
+        if (! filterSpecs.empty())
+        {
+            dialog->SetFileTypes ((UINT) filterSpecs.size(), filterSpecs.data());
+            dialog->SetFileTypeIndex (defaultFilterIndex);
+        }
+
+        const std::wstring title (chooserTitle.toWideCharPointer());
+        dialog->SetTitle (title.c_str());
+
+        if (startDir.isDirectory())
+        {
+            IShellItem* folder = nullptr;
+            const std::wstring folderPath (startDir.getFullPathName().toWideCharPointer());
+
+            if (SUCCEEDED (SHCreateItemFromParsingName (folderPath.c_str(), nullptr, IID_PPV_ARGS (&folder)))
+                && folder != nullptr)
+            {
+                dialog->SetFolder (folder);
+                folder->Release();
+            }
+        }
+
+        HWND owner = nullptr;
+        if (auto* host = findModalPromptHost())
+            if (auto* peer = host->getPeer())
+                owner = static_cast<HWND> (peer->getNativeHandle());
+
+        hr = dialog->Show (owner);
+
+        if (hr == HRESULT_FROM_WIN32 (ERROR_CANCELLED))
+        {
+            releaseDialog();
+            return true;
+        }
+
+        if (FAILED (hr))
+        {
+            releaseDialog();
+            return false;
+        }
+
+        std::vector<juce::File> selectedFiles;
+
+        auto appendShellItem = [&selectedFiles] (IShellItem* item)
+        {
+            if (item == nullptr)
+                return;
+
+            PWSTR path = nullptr;
+            if (SUCCEEDED (item->GetDisplayName (SIGDN_FILESYSPATH, &path)) && path != nullptr)
+            {
+                const juce::File selectedFile { juce::String (path) };
+                if (selectedFile.existsAsFile())
+                    selectedFiles.push_back (selectedFile);
+
+                CoTaskMemFree (path);
+            }
+        };
+
+        if (allowMultiple)
+        {
+            IShellItemArray* results = nullptr;
+            if (SUCCEEDED (dialog->GetResults (&results)) && results != nullptr)
+            {
+                DWORD count = 0;
+                if (SUCCEEDED (results->GetCount (&count)))
+                {
+                    selectedFiles.reserve ((size_t) count);
+
+                    for (DWORD i = 0; i < count; ++i)
+                    {
+                        IShellItem* item = nullptr;
+                        if (SUCCEEDED (results->GetItemAt (i, &item)) && item != nullptr)
+                        {
+                            appendShellItem (item);
+                            item->Release();
+                        }
+                    }
+                }
+
+                results->Release();
+            }
+        }
+        else
+        {
+            IShellItem* result = nullptr;
+            if (SUCCEEDED (dialog->GetResult (&result)) && result != nullptr)
+            {
+                appendShellItem (result);
+                result->Release();
+            }
+        }
+
+        releaseDialog();
+
+        if (selectedFiles.empty())
+            return true;
+
+        if (appendEach)
+            proc.setFileSlotPathsWithMode (slot, selectedFiles, JSFXJuceProcessor::FileLoadMode::AppendAsSingleFile);
+        else
+            proc.setFileSlotPaths (slot, selectedFiles);
+
+        return true;
+    }
+#endif
+
+    void browseForFileSlot (int slot,
+                            FileBrowseMode mode = FileBrowseMode::OpenSingle,
+                            FileBrowseFilter filter = FileBrowseFilter::CommonMedia)
     {
         const bool allowMultiple = (mode != FileBrowseMode::OpenSingle);
         const bool appendEach = (mode == FileBrowseMode::ImportMultipleAppendEach);
         const auto startDir = proc.getPreferredFileChooserStartDirectory (slot, appendEach);
+        const auto filterSpec = getFileBrowseFilterSpec (filter);
 
         juce::String chooserTitle = "Select file for slot " + juce::String (slot);
-        juce::String chooserAction = "Open";
         switch (mode)
         {
             case FileBrowseMode::OpenSingle:
                 chooserTitle = "Select file for slot " + juce::String (slot);
-                chooserAction = "Open";
                 break;
             case FileBrowseMode::OpenMultipleReplace:
                 chooserTitle = "Select files for slot " + juce::String (slot);
-                chooserAction = "Open";
                 break;
             case FileBrowseMode::ImportMultipleAppendEach:
                 chooserTitle = "Import files to append into one slot file " + juce::String (slot);
-                chooserAction = "Import";
                 break;
             default:
                 break;
         }
 
-        juce::Component::SafePointer<FilteredPanel> safeThis (this);
-        showFileBrowsePrompt (chooserTitle,
-                              chooserAction,
-                              startDir,
-                              allowMultiple,
-                              [safeThis, slot, appendEach] (std::vector<juce::File> selectedFiles)
-                              {
-                                  if (safeThis == nullptr || selectedFiles.empty())
-                                      return;
+        chooserTitle << " - " << filterSpec.label;
 
-                                  if (appendEach)
-                                      safeThis->proc.setFileSlotPathsWithMode (slot, selectedFiles, JSFXJuceProcessor::FileLoadMode::AppendAsSingleFile);
-                                  else
-                                      safeThis->proc.setFileSlotPaths (slot, selectedFiles);
-                              });
+       #if JUCE_WINDOWS
+        if (browseForFileSlotWithWindowsNativeDialog (slot, mode, filter, chooserTitle, startDir))
+            return;
+       #endif
+
+        int flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+        if (allowMultiple)
+            flags |= juce::FileBrowserComponent::canSelectMultipleItems;
+
+        activeFileChooser = std::make_unique<juce::FileChooser> (chooserTitle,
+                                                                 startDir,
+                                                                 filterSpec.patterns,
+                                                                 true,
+                                                                 false,
+                                                                 findModalPromptHost());
+
+        juce::Component::SafePointer<FilteredPanel> safeThis (this);
+        activeFileChooser->launchAsync (flags,
+                                        [safeThis, slot, appendEach, allowMultiple] (const juce::FileChooser& chooser)
+                                        {
+                                            if (safeThis == nullptr)
+                                                return;
+
+                                            std::vector<juce::File> selectedFiles;
+
+                                            if (allowMultiple)
+                                            {
+                                                const auto results = chooser.getResults();
+                                                selectedFiles.reserve ((size_t) results.size());
+
+                                                for (const auto& file : results)
+                                                    if (file.existsAsFile())
+                                                        selectedFiles.push_back (file);
+                                            }
+                                            else
+                                            {
+                                                const auto file = chooser.getResult();
+                                                if (file.existsAsFile())
+                                                    selectedFiles.push_back (file);
+                                            }
+
+                                            if (! selectedFiles.empty())
+                                            {
+                                                if (appendEach)
+                                                    safeThis->proc.setFileSlotPathsWithMode (slot, selectedFiles, JSFXJuceProcessor::FileLoadMode::AppendAsSingleFile);
+                                                else
+                                                    safeThis->proc.setFileSlotPaths (slot, selectedFiles);
+                                            }
+
+                                            juce::MessageManager::callAsync ([safeThis]
+                                            {
+                                                if (safeThis != nullptr)
+                                                    safeThis->activeFileChooser.reset();
+                                            });
+                                        });
     }
 
     void showRecentMenuForFileSlot (int slot, juce::Component& target)
     {
         enum
         {
-            kBrowseMenuId = 1,
-            kBrowseMultiMenuId = 2,
-            kBrowseAppendMenuId = 3,
-            kAddFavoriteMenuId = 4,
-            kClearMenuId = 5,
-        };
-
-        struct FavoriteCategoryBucket
-        {
-            juce::String key;
-            juce::String displayName;
-            std::vector<JSFXJuceProcessor::FavoriteFileSelection> favorites;
+            kAddFavoriteMenuId = 1,
+            kClearMenuId = 2,
+            kAddCategoryMenuId = 3,
+            kFirstDynamicMenuId = 100,
         };
 
         const auto currentSelection = proc.getFileSlotSelectionState (slot);
@@ -7781,16 +8182,43 @@ private:
         const auto suggestedFavoriteCategory = proc.getSuggestedFavoriteCategoryForSelection (currentSelection);
         const auto recentSelections = proc.getRecentFileSelections();
         const auto favoriteSelections = proc.getFavoriteFileSelections();
+        const auto categoryChoices = proc.getFavoriteCategories();
 
-        juce::PopupMenu favoritesMenu;
-        juce::PopupMenu recentMenu;
+        int nextMenuId = kFirstDynamicMenuId;
 
+        std::unordered_map<int, std::pair<FileBrowseMode, FileBrowseFilter>> browseItems;
         std::unordered_map<int, JSFXJuceProcessor::FavoriteFileSelection> favoriteLoadItems;
         std::unordered_map<int, JSFXJuceProcessor::FavoriteFileSelection> favoriteEditItems;
         std::unordered_map<int, JSFXJuceProcessor::FavoriteFileSelection> favoriteRemoveItems;
         std::unordered_map<int, JSFXJuceProcessor::FileSelectionState> recentLoadItems;
+        std::unordered_map<int, juce::String> categoryAddSubItems;
+        std::unordered_map<int, juce::String> categoryRenameItems;
+        std::unordered_map<int, juce::String> categoryRemoveItems;
 
-        int nextMenuId = 1000;
+        auto addBrowseSubMenu = [&] (juce::PopupMenu& parentMenu,
+                                     const juce::String& label,
+                                     FileBrowseMode mode)
+        {
+            juce::PopupMenu browseMenu;
+            int defaultResult = 0;
+
+            for (const auto& spec : getFileBrowseFilterSpecs())
+            {
+                const int id = nextMenuId++;
+                browseItems.emplace (id, std::make_pair (mode, spec.filter));
+
+                if (spec.filter == FileBrowseFilter::CommonMedia)
+                    defaultResult = id;
+
+                auto itemLabel = spec.label;
+                if (spec.filter == FileBrowseFilter::CommonMedia)
+                    itemLabel << " (default)";
+
+                browseMenu.addItem (id, itemLabel);
+            }
+
+            parentMenu.addSubMenu (label, browseMenu, true, juce::Image(), false, defaultResult);
+        };
 
         auto addFavoriteEntryToMenu = [&] (juce::PopupMenu& parentMenu,
                                            const JSFXJuceProcessor::FavoriteFileSelection& favorite)
@@ -7846,76 +8274,91 @@ private:
             parentMenu.addSubMenu (label, favoriteSub, true, juce::Image(), isCurrent, loadId);
         };
 
+        juce::PopupMenu favoritesMenu;
+
+        std::vector<JSFXJuceProcessor::FavoriteFileSelection> uncategorisedFavorites;
+        for (const auto& favorite : favoriteSelections)
+        {
+            if (favorite.category.trim().isEmpty())
+                uncategorisedFavorites.push_back (favorite);
+        }
+
         if (favoriteSelections.empty())
         {
             favoritesMenu.addItem (nextMenuId++, "No favorites", false);
         }
+        else if (categoryChoices.empty())
+        {
+            for (const auto& favorite : favoriteSelections)
+                addFavoriteEntryToMenu (favoritesMenu, favorite);
+        }
         else
         {
-            const bool hasNamedCategories = std::any_of (favoriteSelections.begin(), favoriteSelections.end(),
-                                                         [] (const JSFXJuceProcessor::FavoriteFileSelection& favorite)
-                                                         {
-                                                             return favorite.category.trim().isNotEmpty();
-                                                         });
-
-            if (! hasNamedCategories)
+            if (! uncategorisedFavorites.empty())
             {
-                for (const auto& favorite : favoriteSelections)
-                    addFavoriteEntryToMenu (favoritesMenu, favorite);
+                juce::PopupMenu uncategorisedMenu;
+                for (const auto& favorite : uncategorisedFavorites)
+                    addFavoriteEntryToMenu (uncategorisedMenu, favorite);
+
+                favoritesMenu.addSubMenu (formatFavoriteCategoryMenuLabel (juce::String(), (int) uncategorisedFavorites.size()),
+                                          uncategorisedMenu,
+                                          true);
             }
-            else
+
+            for (const auto& category : categoryChoices)
             {
-                std::vector<FavoriteCategoryBucket> categoryBuckets;
-
+                std::vector<JSFXJuceProcessor::FavoriteFileSelection> matchingFavorites;
                 for (const auto& favorite : favoriteSelections)
-                {
-                    const auto displayName = favorite.category.trim();
-                    const auto key = displayName.toLowerCase();
+                    if (favorite.category.compareIgnoreCase (category) == 0)
+                        matchingFavorites.push_back (favorite);
 
-                    auto it = std::find_if (categoryBuckets.begin(), categoryBuckets.end(),
-                                            [&key] (const FavoriteCategoryBucket& bucket)
-                                            {
-                                                return bucket.key == key;
-                                            });
+                if (matchingFavorites.empty())
+                    continue;
 
-                    if (it == categoryBuckets.end())
-                    {
-                        FavoriteCategoryBucket bucket;
-                        bucket.key = key;
-                        bucket.displayName = displayName;
-                        categoryBuckets.push_back (std::move (bucket));
-                        it = std::prev (categoryBuckets.end());
-                    }
+                juce::PopupMenu categoryMenu;
+                for (const auto& favorite : matchingFavorites)
+                    addFavoriteEntryToMenu (categoryMenu, favorite);
 
-                    it->favorites.push_back (favorite);
-                }
-
-                std::stable_sort (categoryBuckets.begin(), categoryBuckets.end(),
-                                  [] (const FavoriteCategoryBucket& a, const FavoriteCategoryBucket& b)
-                                  {
-                                      const bool aUncategorised = a.key.isEmpty();
-                                      const bool bUncategorised = b.key.isEmpty();
-
-                                      if (aUncategorised != bUncategorised)
-                                          return aUncategorised;
-
-                                      return a.displayName.compareIgnoreCase (b.displayName) < 0;
-                                  });
-
-                for (const auto& bucket : categoryBuckets)
-                {
-                    juce::PopupMenu categoryMenu;
-                    for (const auto& favorite : bucket.favorites)
-                        addFavoriteEntryToMenu (categoryMenu, favorite);
-
-                    favoritesMenu.addSubMenu (formatFavoriteCategoryMenuLabel (bucket.displayName,
-                                                                              (int) bucket.favorites.size()),
-                                              categoryMenu,
-                                              true);
-                }
+                favoritesMenu.addSubMenu (formatFavoriteCategoryMenuLabel (category, (int) matchingFavorites.size()),
+                                          categoryMenu,
+                                          true);
             }
         }
 
+        juce::PopupMenu categoriesMenu;
+        categoriesMenu.addItem (kAddCategoryMenuId, "Add Category...");
+
+        if (categoryChoices.empty())
+        {
+            categoriesMenu.addSeparator();
+            categoriesMenu.addItem (nextMenuId++, "No categories yet", false);
+        }
+        else
+        {
+            categoriesMenu.addSeparator();
+
+            for (const auto& category : categoryChoices)
+            {
+                juce::PopupMenu categoryMenu;
+
+                const int addSubId = nextMenuId++;
+                const int renameId = nextMenuId++;
+                const int removeId = nextMenuId++;
+
+                categoryAddSubItems.emplace (addSubId, category);
+                categoryRenameItems.emplace (renameId, category);
+                categoryRemoveItems.emplace (removeId, category);
+
+                categoryMenu.addItem (addSubId, "Add Sub-Category...");
+                categoryMenu.addSeparator();
+                categoryMenu.addItem (renameId, "Rename Category...");
+                categoryMenu.addItem (removeId, "Remove Category (uncategorize favorites)");
+
+                categoriesMenu.addSubMenu (category, categoryMenu, true);
+            }
+        }
+
+        juce::PopupMenu recentMenu;
         if (recentSelections.empty())
         {
             recentMenu.addItem (nextMenuId++, "No recent files", false);
@@ -7939,12 +8382,13 @@ private:
         }
 
         juce::PopupMenu menu;
-        menu.addItem (kBrowseMenuId, "Open...");
-        menu.addItem (kBrowseMultiMenuId, "Open Multiple...");
-        menu.addItem (kBrowseAppendMenuId, "Import Multiple (Append Each)...");
+        addBrowseSubMenu (menu, "Open...", FileBrowseMode::OpenSingle);
+        addBrowseSubMenu (menu, "Open Multiple...", FileBrowseMode::OpenMultipleReplace);
+        addBrowseSubMenu (menu, "Import Multiple (Append Each)...", FileBrowseMode::ImportMultipleAppendEach);
         menu.addItem (kAddFavoriteMenuId, "Add to Favorites...", hasSelection);
         menu.addItem (kClearMenuId, "Clear", hasSelection);
         menu.addSeparator();
+        menu.addSubMenu ("Categories", categoriesMenu, true);
         menu.addSubMenu ("Favorites", favoritesMenu, true);
         menu.addSubMenu ("Open Recent", recentMenu, true);
 
@@ -7957,36 +8401,28 @@ private:
                              currentSelection,
                              suggestedFavoriteName,
                              suggestedFavoriteCategory,
+                             browseItems,
                              favoriteLoadItems,
                              favoriteEditItems,
                              favoriteRemoveItems,
-                             recentLoadItems] (int result)
+                             recentLoadItems,
+                             categoryAddSubItems,
+                             categoryRenameItems,
+                             categoryRemoveItems] (int result)
                             {
                                 if (safeThis == nullptr || result == 0)
                                     return;
 
-                                if (result == kBrowseMenuId)
+                                if (const auto browseIt = browseItems.find (result); browseIt != browseItems.end())
                                 {
-                                    safeThis->browseForFileSlot (slot, FileBrowseMode::OpenSingle);
-                                    return;
-                                }
-
-                                if (result == kBrowseMultiMenuId)
-                                {
-                                    safeThis->browseForFileSlot (slot, FileBrowseMode::OpenMultipleReplace);
-                                    return;
-                                }
-
-                                if (result == kBrowseAppendMenuId)
-                                {
-                                    safeThis->browseForFileSlot (slot, FileBrowseMode::ImportMultipleAppendEach);
+                                    safeThis->browseForFileSlot (slot, browseIt->second.first, browseIt->second.second);
                                     return;
                                 }
 
                                 if (result == kAddFavoriteMenuId)
                                 {
                                     safeThis->showFavoriteNamePrompt ("Add to Favorites",
-                                                                      "Name this favorite and optionally assign a category. Spaces and punctuation are preserved; clear the category field to keep it uncategorized.",
+                                                                      "Name this favorite and choose a category from the drop-down. Categories are user-created; new favorites default to Uncategorized.",
                                                                       suggestedFavoriteName,
                                                                       suggestedFavoriteName,
                                                                       suggestedFavoriteCategory,
@@ -8004,6 +8440,56 @@ private:
                                 if (result == kClearMenuId)
                                 {
                                     safeThis->proc.clearFileSlot (slot);
+                                    return;
+                                }
+
+                                if (result == kAddCategoryMenuId)
+                                {
+                                    safeThis->showCategoryNamePrompt ("Add Category",
+                                                                      "Create a new Favorites category. Use / in the name if you want to create nested levels directly.",
+                                                                      {},
+                                                                      {},
+                                                                      [safeThis] (juce::String category)
+                                                                      {
+                                                                          if (safeThis != nullptr)
+                                                                              safeThis->proc.addFavoriteCategory (category);
+                                                                      });
+                                    return;
+                                }
+
+                                if (const auto categoryIt = categoryAddSubItems.find (result); categoryIt != categoryAddSubItems.end())
+                                {
+                                    const auto parentCategory = categoryIt->second;
+                                    safeThis->showCategoryNamePrompt ("Add Sub-Category",
+                                                                      "Create a sub-category under: " + parentCategory,
+                                                                      {},
+                                                                      {},
+                                                                      [safeThis, parentCategory] (juce::String childCategory)
+                                                                      {
+                                                                          if (safeThis != nullptr)
+                                                                              safeThis->proc.addFavoriteSubCategory (parentCategory, childCategory);
+                                                                      });
+                                    return;
+                                }
+
+                                if (const auto categoryIt = categoryRenameItems.find (result); categoryIt != categoryRenameItems.end())
+                                {
+                                    const auto category = categoryIt->second;
+                                    safeThis->showCategoryNamePrompt ("Rename Category",
+                                                                      "Rename this category. Favorites and sub-categories underneath it will be moved with it.",
+                                                                      category,
+                                                                      category,
+                                                                      [safeThis, category] (juce::String newCategory)
+                                                                      {
+                                                                          if (safeThis != nullptr)
+                                                                              safeThis->proc.renameFavoriteCategory (category, newCategory);
+                                                                      });
+                                    return;
+                                }
+
+                                if (const auto categoryIt = categoryRemoveItems.find (result); categoryIt != categoryRemoveItems.end())
+                                {
+                                    safeThis->proc.removeFavoriteCategory (categoryIt->second);
                                     return;
                                 }
 
@@ -8027,7 +8513,7 @@ private:
                                                                 : safeThis->proc.getSuggestedFavoriteNameForSelection (favorite.selection);
 
                                     safeThis->showFavoriteNamePrompt ("Edit Favorite",
-                                                                      "Change the display name and optionally move this favorite into a category. Spaces and punctuation are preserved; clear the category field to keep it uncategorized.",
+                                                                      "Change the display name and choose a category from the drop-down. Use the Categories menu to add or rename categories.",
                                                                       fallbackName,
                                                                       fallbackName,
                                                                       favorite.category,
@@ -8121,7 +8607,6 @@ private:
     bool hasFileRows = false;
     std::unique_ptr<juce::FileChooser> activeFileChooser;
     std::unique_ptr<FavoriteNamePromptOverlay> favoriteNamePrompt;
-    std::unique_ptr<FileBrowsePromptOverlay> fileBrowsePrompt;
 };
 
 // ============================================================
