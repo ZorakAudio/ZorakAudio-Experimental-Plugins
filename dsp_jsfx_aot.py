@@ -27,7 +27,7 @@ Contract (DSP-JSFX):
 Language subset:
 - Statements: if/else, while, expression statements.
 - Expressions: numbers, identifiers, unary + - !, binary + - * /,
-  comparisons, short-circuit && ||, ternary ?:, assignments (=, +=, -=, *=, /=),
+  comparisons, short-circuit && ||, ternary ?:, assignments (=, +=, -=, *=, /=, %=, ^=, |=, &=, ~=),
   parentheses, sequence blocks: ( a; b; c; ) returning last expr value.
 - loop(count, body) expression: repeats body count times, returns last value (or 0).
 
@@ -80,7 +80,7 @@ class Tok:
 
 _MULTI_OPS = [
     "==","!=","<=",">=",
-    "+=","-=","*=","/=",
+    "+=","-=","*=","/=","%=","^=","|=","&=","~=",
     "&&","||",
     "<<", ">>",
 ]
@@ -368,7 +368,7 @@ class FunctionDef(Node):
 
 # Higher number = tighter binding.
 _PRECEDENCE: Dict[str, int] = {
-    "=": 1, "+=": 1, "-=": 1, "*=": 1, "/=": 1,
+    "=": 1, "+=": 1, "-=": 1, "*=": 1, "/=": 1, "%=": 1, "^=": 1, "|=": 1, "&=": 1, "~=": 1,
     "?": 2,  # handled specially, but used as threshold
     "||": 3, "|": 3,
     "&&": 4,
@@ -386,7 +386,7 @@ _PRECEDENCE.update({
 })
 
 _TERNARY_PREC = 2
-_RIGHT_ASSOC = {"=", "+=", "-=", "*=", "/="}
+_RIGHT_ASSOC = {"=", "+=", "-=", "*=", "/=", "%=", "^=", "|=", "&=", "~="}
 
 
 
@@ -3802,6 +3802,23 @@ class LLVMModuleEmitter:
                 out = builder.fmul(cur, rhs)
             elif n.op == "/=":
                 out = builder.fdiv(cur, rhs)
+            elif n.op == "%=":
+                li = self._to_i32(builder, cur)
+                ri = self._to_i32(builder, rhs)
+                out = self._to_f64(builder, builder.srem(li, ri))
+            elif n.op == "^=":
+                fdecl = self._declare_math("pow")
+                out = builder.call(fdecl, [cur, rhs])
+            elif n.op in ("|=", "&=", "~="):
+                li = self._to_i32(builder, cur)
+                ri = self._to_i32(builder, rhs)
+                if n.op == "|=":
+                    oi = builder.or_(li, ri)
+                elif n.op == "&=":
+                    oi = builder.and_(li, ri)
+                else:
+                    oi = builder.xor(li, ri)
+                out = self._to_f64(builder, oi)
             else:
                 raise ValueError(f"Unsupported assign op {n.op}")
 
