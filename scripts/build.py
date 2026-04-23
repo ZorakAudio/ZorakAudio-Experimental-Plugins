@@ -572,6 +572,13 @@ def main() -> None:
             jsfx_obj, _, jsfx_meta_path, _ = build_jsfx_aot(repo_root, cmake_build, slug, spec.entry_path)
             jsfx_meta = json.loads(jsfx_meta_path.read_text(encoding="utf-8")) if jsfx_meta_path.exists() else {}
             jsfx_caps = derive_jsfx_plugin_capabilities(jsfx_meta)
+            comm_meta = dict(jsfx_meta.get("comm") or {})
+            print(
+                "    JSFX comm inferred:",
+                f"gmem={1 if comm_meta.get('uses_gmem') else 0}",
+                f"msg={1 if comm_meta.get('uses_msg') else 0}",
+                f"msg_buffers={1 if comm_meta.get('uses_msg_buffers') else 0}",
+            )
 
         cmake_args = [
             "cmake",

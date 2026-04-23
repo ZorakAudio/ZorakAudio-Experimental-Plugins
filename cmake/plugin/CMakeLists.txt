@@ -173,6 +173,11 @@ else()
     PRIVATE
       "${ZA_ROOT}/src/JSFXJuceProcessor.cpp"
       "${ZA_ROOT}/src/NSEELHostStubs.cpp"
+      "${ZA_ROOT}/src/DspJsfxRuntime.cpp"
+      "${ZA_ROOT}/src/DspJsfxRuntimeBuiltins.cpp"
+      "${ZA_ROOT}/src/DspJsfxMessageBus.cpp"
+      "${ZA_ROOT}/src/DspJsfxGmem.cpp"
+      "${ZA_ROOT}/src/DspJsfxSharedMemory.cpp"
       "${PLUGIN_JSFX_OBJ}"
   )
 
@@ -209,6 +214,7 @@ else()
     PRIVATE
       EEL_TARGET_PORTABLE=1
       WDL_FFT_REALSIZE=8
+      DSPJSFX_IPC_ENABLE=1
 
       EELSCRIPT_NO_FILE=1
       EELSCRIPT_NO_NET=1
@@ -274,4 +280,7 @@ if(ZA_ENABLE_CLAP)
     CLAP_ID "${CLAP_ID}"
     CLAP_FEATURES ${_clap_features}
   )
+endif()
+if(PLUGIN_TYPE STREQUAL "jsfx" AND UNIX AND NOT APPLE)
+  target_link_libraries(${PLUGIN_SLUG} PRIVATE rt)
 endif()

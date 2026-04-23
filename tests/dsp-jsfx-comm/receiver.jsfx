@@ -1,0 +1,13 @@
+@init
+instance_set_name("receiver");
+msg_subscribe("test");
+last_counter = 0;
+
+@block
+while (msg_recv("test", src, tag, a, b, c, d)) (
+  tag == 1 ? last_counter = a;
+);
+
+@sample
+spl0 = last_counter * 0.000001;
+spl1 = spl0;

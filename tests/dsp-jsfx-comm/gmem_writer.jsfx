@@ -1,0 +1,6 @@
+@init
+gmem_attach_size("shared_counter", 128);
+
+@block
+gmem[0] += 1;
+gmem[1] = samplesblock;

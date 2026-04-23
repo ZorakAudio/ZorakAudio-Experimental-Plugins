@@ -1,0 +1,8 @@
+@init
+instance_set_name("sender");
+msg_advertise("test", 1);
+counter = 0;
+
+@block
+counter += 1;
+msg_send("test", 1, counter, samplesblock, 0, 0);

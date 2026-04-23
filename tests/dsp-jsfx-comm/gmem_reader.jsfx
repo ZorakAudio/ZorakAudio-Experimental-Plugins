@@ -1,0 +1,6 @@
+@init
+gmem_attach("shared_counter");
+last_value = 0;
+
+@block
+last_value = gmem[0];

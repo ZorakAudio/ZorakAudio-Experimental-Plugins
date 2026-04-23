@@ -933,7 +933,7 @@ def extract_sections(jsfx_text: str) -> Dict[str, Tuple[str, int]]:
 # Symbol table (stable var indices)
 # -----------------------------
 
-BUILTIN_NAMES = {"mem", "srate", "samplesblock", "midi_bus", "ext_midi_bus"}
+BUILTIN_NAMES = {"mem", "gmem", "srate", "samplesblock", "midi_bus", "ext_midi_bus"}
 
 @dataclass(frozen=True)
 class SymRef:
@@ -969,6 +969,9 @@ class SymTable:
         if name == "mem":
             # numeric base index of heap is always 0.0
             return SymRef("builtin", 0)
+
+        if name == "gmem":
+            return SymRef("builtin", 5)
 
         if name == "srate":
             return SymRef("builtin", 1)
@@ -1310,6 +1313,158 @@ def analyze_gfx_var_sync(jsfx_text: str, user_vars: Dict[str, int]) -> Dict[str,
 
 MIDI_RECV_FUNCTIONS: Set[str] = {"midirecv", "midirecv_buf", "midirecv_str"}
 MIDI_SEND_FUNCTIONS: Set[str] = {"midisend", "midisend_buf", "midisend_str", "midisyx"}
+GMEM_SETUP_FUNCTIONS: Set[str] = {"gmem_attach", "gmem_attach_size"}
+GMEM_BULK_FUNCTIONS: Set[str] = {"gmem_get", "gmem_put", "gmem_fill", "gmem_zero", "gmem_copy"}
+GMEM_QUERY_FUNCTIONS: Set[str] = {"gmem_size", "gmem_seq", "gmem_page"}
+COMM_SETUP_FUNCTIONS: Set[str] = {"comm_join", "msg_subscribe", "msg_unsubscribe", "msg_advertise", "instance_set_name"}
+COMM_BLOCK_FUNCTIONS: Set[str] = {
+    "msg_send", "msg_sendto", "msg_recv",
+    "msg_send_buf", "msg_sendto_buf", "msg_recv_buf",
+    "msg_avail", "msg_kind", "msg_length", "msg_dropped", "msg_clear",
+    "msg_peer_count", "msg_peer_id", "msg_peer_name", "msg_peer_uid", "msg_peer_caps", "msg_peer_alive",
+}
+COMM_MISC_FUNCTIONS: Set[str] = {"instance_id", "instance_uid", "instance_get_name"}
+COMM_IMPURE_FUNCTIONS: Set[str] = COMM_SETUP_FUNCTIONS | COMM_BLOCK_FUNCTIONS | COMM_MISC_FUNCTIONS | GMEM_SETUP_FUNCTIONS | GMEM_BULK_FUNCTIONS | GMEM_QUERY_FUNCTIONS
+COMM_SEND_FUNCTIONS: Set[str] = {"msg_send", "msg_sendto", "msg_send_buf", "msg_sendto_buf"}
+COMM_RECV_FUNCTIONS: Set[str] = {"msg_recv", "msg_recv_buf"}
+COMM_DISCOVERY_FUNCTIONS: Set[str] = {"msg_peer_count", "msg_peer_id", "msg_peer_name", "msg_peer_uid", "msg_peer_caps", "msg_peer_alive"}
+
+
+def detect_comm_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Dict[str, Any]:
+    uses_msg = False
+    uses_gmem = False
+    uses_msg_buffers = False
+    channels_static: Set[str] = set()
+    gmem_names_static: Set[str] = set()
+
+    def note_literal_arg(target: Set[str], args: List[Node], idx: int) -> None:
+        if 0 <= idx < len(args) and isinstance(args[idx], StrLit):
+            target.add(args[idx].value)
+
+    def rec(n: Node) -> None:
+        nonlocal uses_msg, uses_gmem, uses_msg_buffers
+        if isinstance(n, (Num, StrLit, Var)):
+            return
+        if isinstance(n, Index):
+            if isinstance(n.base, Var) and n.base.name == "gmem":
+                uses_gmem = True
+            rec(n.base); rec(n.index); return
+        if isinstance(n, Unary):
+            rec(n.a); return
+        if isinstance(n, Binary):
+            rec(n.l); rec(n.r); return
+        if isinstance(n, Assign):
+            if isinstance(n.target, Index) and isinstance(n.target.base, Var) and n.target.base.name == "gmem":
+                uses_gmem = True
+            rec(n.target); rec(n.value); return
+        if isinstance(n, Call):
+            fn = n.fn
+            if fn in COMM_SEND_FUNCTIONS or fn in COMM_RECV_FUNCTIONS or fn in COMM_DISCOVERY_FUNCTIONS or fn in {"msg_subscribe", "msg_unsubscribe", "msg_advertise", "msg_avail", "msg_kind", "msg_length", "msg_dropped", "msg_clear", "instance_id", "instance_uid", "instance_get_name", "instance_set_name", "comm_join"}:
+                uses_msg = True
+            if fn in {"msg_send_buf", "msg_sendto_buf", "msg_recv_buf"}:
+                uses_msg_buffers = True
+            if fn in GMEM_SETUP_FUNCTIONS | GMEM_BULK_FUNCTIONS | GMEM_QUERY_FUNCTIONS:
+                uses_gmem = True
+            if fn in {"msg_subscribe", "msg_unsubscribe", "msg_advertise", "msg_send", "msg_send_buf", "msg_recv", "msg_recv_buf", "msg_avail", "msg_kind", "msg_dropped", "msg_clear", "msg_peer_count", "msg_peer_id"}:
+                note_literal_arg(channels_static, n.args, 0)
+            if fn in {"msg_sendto", "msg_sendto_buf"}:
+                note_literal_arg(channels_static, n.args, 1)
+            if fn in {"gmem_attach", "gmem_attach_size"}:
+                note_literal_arg(gmem_names_static, n.args, 0)
+            for a in n.args:
+                rec(a)
+            return
+        if isinstance(n, Loop):
+            rec(n.count); rec(n.body); return
+        if isinstance(n, Ternary):
+            rec(n.cond); rec(n.then); rec(n.els); return
+        if isinstance(n, Seq):
+            for it in n.items: rec(it)
+            return
+        if isinstance(n, If):
+            rec(n.cond); rec(n.then)
+            if n.els: rec(n.els)
+            return
+        if isinstance(n, While):
+            rec(n.cond); rec(n.body); return
+        if isinstance(n, FunctionDef):
+            rec(n.body); return
+        raise TypeError(type(n))
+
+    for prog in programs.values():
+        for st in prog:
+            rec(st)
+    for f in fn_defs.values():
+        rec(f.body)
+
+    return {
+        "uses_comm": uses_msg or uses_gmem,
+        "uses_msg": uses_msg,
+        "uses_gmem": uses_gmem,
+        "uses_msg_buffers": uses_msg_buffers,
+        "channels_static": sorted(channels_static),
+        "gmem_names_static": sorted(gmem_names_static),
+    }
+
+
+def validate_builtin_sections(programs: Dict[str, List[Node]]) -> None:
+    block_only = {
+        "msg_send", "msg_sendto", "msg_recv",
+        "msg_send_buf", "msg_sendto_buf", "msg_recv_buf",
+        "msg_avail", "msg_kind", "msg_length", "msg_dropped", "msg_clear",
+        "msg_peer_count", "msg_peer_id", "msg_peer_name", "msg_peer_uid", "msg_peer_caps", "msg_peer_alive",
+        "gmem_get", "gmem_put", "gmem_fill", "gmem_zero", "gmem_copy",
+    }
+    init_or_block = {"msg_subscribe", "msg_unsubscribe", "msg_advertise", "instance_set_name", "instance_get_name", "instance_uid", "gmem_attach", "gmem_attach_size"}
+    init_only = {"comm_join"}
+    init_slider_block = {"instance_id"}
+
+    def fail(node: Node, message: str) -> None:
+        raise SyntaxError(f"{message} at {node.span.line}:{node.span.col}")
+
+    def rec(section: str, n: Node) -> None:
+        if isinstance(n, (Num, StrLit, Var)):
+            return
+        if isinstance(n, Index):
+            rec(section, n.base); rec(section, n.index); return
+        if isinstance(n, Unary):
+            rec(section, n.a); return
+        if isinstance(n, Binary):
+            rec(section, n.l); rec(section, n.r); return
+        if isinstance(n, Assign):
+            rec(section, n.target); rec(section, n.value); return
+        if isinstance(n, Call):
+            fn = n.fn
+            if fn in block_only and section != "block":
+                fail(n, f"{fn}() is only valid in @block")
+            if fn in init_or_block and section not in ("init", "block"):
+                fail(n, f"{fn}() is only valid in @init or @block")
+            if fn in init_only and section != "init":
+                fail(n, f"{fn}() is only valid in @init")
+            if fn in init_slider_block and section not in ("init", "slider", "block"):
+                fail(n, f"{fn}() is only valid in @init, @slider, or @block")
+            for a in n.args:
+                rec(section, a)
+            return
+        if isinstance(n, Loop):
+            rec(section, n.count); rec(section, n.body); return
+        if isinstance(n, Ternary):
+            rec(section, n.cond); rec(section, n.then); rec(section, n.els); return
+        if isinstance(n, Seq):
+            for it in n.items: rec(section, it)
+            return
+        if isinstance(n, If):
+            rec(section, n.cond); rec(section, n.then)
+            if n.els is not None:
+                rec(section, n.els)
+            return
+        if isinstance(n, While):
+            rec(section, n.cond); rec(section, n.body); return
+        raise TypeError(type(n))
+
+    for section, nodes in programs.items():
+        for node in nodes:
+            rec(section, node)
 
 
 def detect_midi_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Dict[str, bool]:
@@ -1997,6 +2152,7 @@ def prepare_jsfx_pipeline(jsfx_text: str,
 
     fn_defs, programs = extract_function_defs(programs)
     programs, fn_defs = lower_user_functions(programs, fn_defs)
+    validate_builtin_sections(programs)
     lowered_programs = {sec: list(nodes) for sec, nodes in programs.items()}
 
     opt_events: Optional[List[Dict[str, Any]]] = [] if collect_opt_report else None
@@ -2050,6 +2206,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
     pin_hints = parse_pin_hints(jsfx_text)
     io_channels = infer_spl_io(programs, fn_defs, pin_hints=pin_hints)
     midi_caps = detect_midi_usage(programs, fn_defs)
+    comm_caps = detect_comm_usage(programs, fn_defs)
 
     sym = SymTable(user_vars)
 
@@ -2086,6 +2243,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
         "io_channels": io_channels,
         "pin_hints": pin_hints,
         "midi": midi_caps,
+        "comm": comm_caps,
         "plugin_kind": plugin_kind,
         "string_literals": emitter.get_string_literals_meta(),
         "has_sample_section": has_sample_work,
@@ -2228,6 +2386,33 @@ def _summarize_loop_mutations(node: Node, user_fn_names: Set[str]) -> _LoopMutat
             if fn == "file_riff" and len(n.args) >= 3:
                 _note_mutated_lvalue(n.args[1], out)
                 _note_mutated_lvalue(n.args[2], out)
+                return
+
+            if fn == "msg_recv":
+                for a in n.args[1:7]:
+                    _note_mutated_lvalue(a, out)
+                out.writes_unknown_state = True
+                return
+
+            if fn == "msg_recv_buf":
+                for a in n.args[1:3]:
+                    _note_mutated_lvalue(a, out)
+                out.writes_mem = True
+                out.writes_unknown_state = True
+                return
+
+            if fn in ("instance_uid", "instance_get_name") and len(n.args) >= 1:
+                _note_mutated_lvalue(n.args[0], out)
+                out.writes_unknown_state = True
+                return
+
+            if fn in ("msg_peer_name", "msg_peer_uid") and len(n.args) >= 2:
+                _note_mutated_lvalue(n.args[1], out)
+                out.writes_unknown_state = True
+                return
+
+            if fn in COMM_IMPURE_FUNCTIONS:
+                out.writes_unknown_state = True
                 return
 
             if fn in ("memset", "memcpy", "fft", "ifft", "fft_real", "ifft_real", "fft_permute", "fft_ipermute", "convolve_c", "file_mem"):
@@ -2604,11 +2789,44 @@ def _collect_section_rw(node: Node, user_fn_names: Set[str], out: _SectionRWInfo
             for a in node.args[3:]:
                 _collect_section_rw(a, user_fn_names, out)
             return
+        if fn == "msg_recv":
+            if len(node.args) >= 1:
+                _collect_section_rw(node.args[0], user_fn_names, out)
+            for a in node.args[1:7]:
+                _collect_section_lvalue_rw(a, user_fn_names, out)
+            out.writes_unknown_state = True
+            return
+        if fn == "msg_recv_buf":
+            if len(node.args) >= 1:
+                _collect_section_rw(node.args[0], user_fn_names, out)
+            for a in node.args[1:3]:
+                _collect_section_lvalue_rw(a, user_fn_names, out)
+            for a in node.args[3:]:
+                _collect_section_rw(a, user_fn_names, out)
+            out.writes_mem = True
+            out.writes_unknown_state = True
+            return
+        if fn in ("instance_uid", "instance_get_name"):
+            for a in node.args[:1]:
+                _collect_section_lvalue_rw(a, user_fn_names, out)
+            out.writes_unknown_state = True
+            return
+        if fn in ("msg_peer_name", "msg_peer_uid"):
+            if len(node.args) >= 1:
+                _collect_section_rw(node.args[0], user_fn_names, out)
+            if len(node.args) >= 2:
+                _collect_section_lvalue_rw(node.args[1], user_fn_names, out)
+            out.writes_unknown_state = True
+            return
 
         for a in node.args:
             _collect_section_rw(a, user_fn_names, out)
 
         if fn in user_fn_names:
+            out.writes_unknown_state = True
+            return
+
+        if fn in COMM_IMPURE_FUNCTIONS:
             out.writes_unknown_state = True
             return
 
@@ -3034,6 +3252,191 @@ class LLVMModuleEmitter:
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
             name="jsfx_midisyx"
+        )
+        self.fn_instance_id = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr]),
+            name="jsfx_instance_id"
+        )
+        self.fn_instance_uid = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer()]),
+            name="jsfx_instance_uid"
+        )
+        self.fn_instance_set_name = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double]),
+            name="jsfx_instance_set_name"
+        )
+        self.fn_instance_get_name = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer()]),
+            name="jsfx_instance_get_name"
+        )
+        self.fn_comm_join = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double]),
+            name="jsfx_comm_join"
+        )
+        self.fn_gmem_attach = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double]),
+            name="jsfx_gmem_attach"
+        )
+        self.fn_gmem_attach_size = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
+            name="jsfx_gmem_attach_size"
+        )
+        self.fn_gmem_size = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr]),
+            name="jsfx_gmem_size"
+        )
+        self.fn_gmem_load = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double]),
+            name="jsfx_gmem_load"
+        )
+        self.fn_gmem_store = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double, self.double]),
+            name="jsfx_gmem_store"
+        )
+        self.fn_gmem_get = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
+            name="jsfx_gmem_get"
+        )
+        self.fn_gmem_put = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
+            name="jsfx_gmem_put"
+        )
+        self.fn_gmem_fill = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
+            name="jsfx_gmem_fill"
+        )
+        self.fn_gmem_zero = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
+            name="jsfx_gmem_zero"
+        )
+        self.fn_gmem_copy = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
+            name="jsfx_gmem_copy"
+        )
+        self.fn_gmem_seq = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double]),
+            name="jsfx_gmem_seq"
+        )
+        self.fn_gmem_page = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double]),
+            name="jsfx_gmem_page"
+        )
+        self.fn_msg_subscribe = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double]),
+            name="jsfx_msg_subscribe"
+        )
+        self.fn_msg_unsubscribe = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double]),
+            name="jsfx_msg_unsubscribe"
+        )
+        self.fn_msg_advertise = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
+            name="jsfx_msg_advertise"
+        )
+        self.fn_msg_send = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double, self.double, self.double]),
+            name="jsfx_msg_send"
+        )
+        self.fn_msg_sendto = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double, self.double, self.double, self.double]),
+            name="jsfx_msg_sendto"
+        )
+        self.fn_msg_avail = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double]),
+            name="jsfx_msg_avail"
+        )
+        self.fn_msg_kind = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double]),
+            name="jsfx_msg_kind"
+        )
+        self.fn_msg_recv = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer()]),
+            name="jsfx_msg_recv"
+        )
+        self.fn_msg_send_buf = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double]),
+            name="jsfx_msg_send_buf"
+        )
+        self.fn_msg_sendto_buf = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double, self.double]),
+            name="jsfx_msg_sendto_buf"
+        )
+        self.fn_msg_recv_buf = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double.as_pointer(), self.double.as_pointer(), self.double, self.double]),
+            name="jsfx_msg_recv_buf"
+        )
+        self.fn_msg_length = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr]),
+            name="jsfx_msg_length"
+        )
+        self.fn_msg_dropped = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double]),
+            name="jsfx_msg_dropped"
+        )
+        self.fn_msg_clear = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double]),
+            name="jsfx_msg_clear"
+        )
+        self.fn_msg_peer_count = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double, self.double]),
+            name="jsfx_msg_peer_count"
+        )
+        self.fn_msg_peer_id = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double]),
+            name="jsfx_msg_peer_id"
+        )
+        self.fn_msg_peer_name = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double.as_pointer()]),
+            name="jsfx_msg_peer_name"
+        )
+        self.fn_msg_peer_uid = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double.as_pointer()]),
+            name="jsfx_msg_peer_uid"
+        )
+        self.fn_msg_peer_caps = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double]),
+            name="jsfx_msg_peer_caps"
+        )
+        self.fn_msg_peer_alive = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double]),
+            name="jsfx_msg_peer_alive"
         )
         self.fn_strlen = ir.Function(
             self.module,
@@ -3502,14 +3905,22 @@ class LLVMModuleEmitter:
     def _to_f64(self, builder, x_i32):
         return builder.sitofp(x_i32, self.double)
 
-    def _get_midirecv_lvalue_ptr(self, builder: ir.IRBuilder, st: ir.Value, node: Node) -> ir.Value:
+    def _is_gmem_index(self, node: Node) -> bool:
+        return isinstance(node, Index) and isinstance(node.base, Var) and node.base.name == "gmem"
+
+    def _get_out_lvalue_ptr(self, builder: ir.IRBuilder, st: ir.Value, node: Node, api_name: str) -> ir.Value:
         if isinstance(node, Var):
-            if node.name == "mem":
-                raise ValueError("midirecv output arguments must be assignable variables or mem[] slots")
+            if node.name in ("mem", "gmem"):
+                raise ValueError(f"{api_name} output arguments must be assignable variables or mem[] slots")
             return self._get_slot_ptr(builder, st, node.name)
         if isinstance(node, Index):
+            if self._is_gmem_index(node):
+                raise ValueError(f"{api_name} output arguments must be assignable variables or mem[] slots")
             return self._mem_elem_ptr(builder, st, node.base, node.index)
-        raise ValueError("midirecv output arguments must be assignable variables or mem[] slots")
+        raise ValueError(f"{api_name} output arguments must be assignable variables or mem[] slots")
+
+    def _get_midirecv_lvalue_ptr(self, builder: ir.IRBuilder, st: ir.Value, node: Node) -> ir.Value:
+        return self._get_out_lvalue_ptr(builder, st, node, "midirecv")
 
     def _emit_slider_mask_arg(self, builder: ir.IRBuilder, st: ir.Value, arg: Node) -> ir.Value:
         # JSFX sliderchange()/slider_automate() accept either a direct slider
@@ -3657,6 +4068,8 @@ class LLVMModuleEmitter:
         if isinstance(n, Var):
             if n.name == "mem":
                 return self._const_f64(0.0)
+            if n.name == "gmem":
+                raise ValueError("gmem may only be used as gmem[index]")
 
             # common JSFX constants (expand if needed)
             if n.name == "$pi":
@@ -3675,6 +4088,9 @@ class LLVMModuleEmitter:
 
         # indexing
         if isinstance(n, Index):
+            if self._is_gmem_index(n):
+                idx = self.emit_expr(builder, st, n.index)
+                return builder.call(self.fn_gmem_load, [st, idx])
             # a[b] == mem[(int)a + (int)b]; mem itself is base 0.
             ptr = self._mem_elem_ptr(builder, st, n.base, n.index)
             return builder.load(ptr)
@@ -3769,6 +4185,40 @@ class LLVMModuleEmitter:
                 ptr = self._get_slot_ptr(builder, st, n.target.name)  # works for locals too
                 in_range = ir.Constant(self.i1, 1)
 
+            elif isinstance(n.target, Index) and self._is_gmem_index(n.target):
+                idx = self.emit_expr(builder, st, n.target.index)
+                cur = builder.call(self.fn_gmem_load, [st, idx]) if n.op != "=" else None
+                if n.op == "=":
+                    out = rhs
+                elif n.op == "+=":
+                    out = builder.fadd(cur, rhs)
+                elif n.op == "-=":
+                    out = builder.fsub(cur, rhs)
+                elif n.op == "*=":
+                    out = builder.fmul(cur, rhs)
+                elif n.op == "/=":
+                    out = builder.fdiv(cur, rhs)
+                elif n.op == "%=":
+                    li = self._to_i32(builder, cur)
+                    ri = self._to_i32(builder, rhs)
+                    out = self._to_f64(builder, builder.srem(li, ri))
+                elif n.op == "^=":
+                    fdecl = self._declare_math("pow")
+                    out = builder.call(fdecl, [cur, rhs])
+                elif n.op in ("|=", "&=", "~="):
+                    li = self._to_i32(builder, cur)
+                    ri = self._to_i32(builder, rhs)
+                    if n.op == "|=":
+                        oi = builder.or_(li, ri)
+                    elif n.op == "&=":
+                        oi = builder.and_(li, ri)
+                    else:
+                        oi = builder.xor(li, ri)
+                    out = self._to_f64(builder, oi)
+                else:
+                    raise ValueError(f"Unsupported assign op {n.op}")
+                return builder.call(self.fn_gmem_store, [st, idx, out])
+
             elif isinstance(n.target, Index):
                 ptr = self._mem_elem_ptr(builder, st, n.target.base, n.target.index)
                 in_range = ir.Constant(self.i1, 1)
@@ -3843,6 +4293,261 @@ class LLVMModuleEmitter:
                 val = builder.load(ptr)
                 return builder.select(in_range, val, self._const_f64(0.0))
 
+            if fn == "instance_id":
+                if len(n.args) != 0:
+                    raise ValueError("instance_id expects 0 args")
+                return builder.call(self.fn_instance_id, [st])
+
+            if fn == "instance_uid":
+                if len(n.args) != 1:
+                    raise ValueError("instance_uid expects 1 arg")
+                out_str = self._get_out_lvalue_ptr(builder, st, n.args[0], "instance_uid")
+                ret = builder.call(self.fn_instance_uid, [st, out_str])
+                return self._to_f64(builder, ret)
+
+            if fn == "instance_set_name":
+                if len(n.args) != 1:
+                    raise ValueError("instance_set_name expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                ret = builder.call(self.fn_instance_set_name, [st, a0])
+                return self._to_f64(builder, ret)
+
+            if fn == "instance_get_name":
+                if len(n.args) != 1:
+                    raise ValueError("instance_get_name expects 1 arg")
+                out_str = self._get_out_lvalue_ptr(builder, st, n.args[0], "instance_get_name")
+                ret = builder.call(self.fn_instance_get_name, [st, out_str])
+                return self._to_f64(builder, ret)
+
+            if fn == "comm_join":
+                if len(n.args) != 1:
+                    raise ValueError("comm_join expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                ret = builder.call(self.fn_comm_join, [st, a0])
+                return self._to_f64(builder, ret)
+
+            if fn == "gmem_attach":
+                if len(n.args) != 1:
+                    raise ValueError("gmem_attach expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                ret = builder.call(self.fn_gmem_attach, [st, a0])
+                return self._to_f64(builder, ret)
+
+            if fn == "gmem_attach_size":
+                if len(n.args) != 2:
+                    raise ValueError("gmem_attach_size expects 2 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                ret = builder.call(self.fn_gmem_attach_size, [st, a0, a1])
+                return self._to_f64(builder, ret)
+
+            if fn == "gmem_size":
+                if len(n.args) != 0:
+                    raise ValueError("gmem_size expects 0 args")
+                return builder.call(self.fn_gmem_size, [st])
+
+            if fn == "gmem_get":
+                if len(n.args) != 3:
+                    raise ValueError("gmem_get expects 3 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                a2 = self.emit_expr(builder, st, n.args[2])
+                ret = builder.call(self.fn_gmem_get, [st, a0, a1, a2])
+                return self._to_f64(builder, ret)
+
+            if fn == "gmem_put":
+                if len(n.args) != 3:
+                    raise ValueError("gmem_put expects 3 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                a2 = self.emit_expr(builder, st, n.args[2])
+                ret = builder.call(self.fn_gmem_put, [st, a0, a1, a2])
+                return self._to_f64(builder, ret)
+
+            if fn == "gmem_fill":
+                if len(n.args) != 3:
+                    raise ValueError("gmem_fill expects 3 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                a2 = self.emit_expr(builder, st, n.args[2])
+                ret = builder.call(self.fn_gmem_fill, [st, a0, a1, a2])
+                return self._to_f64(builder, ret)
+
+            if fn == "gmem_zero":
+                if len(n.args) != 2:
+                    raise ValueError("gmem_zero expects 2 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                ret = builder.call(self.fn_gmem_zero, [st, a0, a1])
+                return self._to_f64(builder, ret)
+
+            if fn == "gmem_copy":
+                if len(n.args) != 3:
+                    raise ValueError("gmem_copy expects 3 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                a2 = self.emit_expr(builder, st, n.args[2])
+                ret = builder.call(self.fn_gmem_copy, [st, a0, a1, a2])
+                return self._to_f64(builder, ret)
+
+            if fn == "gmem_seq":
+                if len(n.args) != 1:
+                    raise ValueError("gmem_seq expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                return builder.call(self.fn_gmem_seq, [st, a0])
+
+            if fn == "gmem_page":
+                if len(n.args) != 1:
+                    raise ValueError("gmem_page expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                return builder.call(self.fn_gmem_page, [st, a0])
+
+            if fn == "msg_subscribe":
+                if len(n.args) != 1:
+                    raise ValueError("msg_subscribe expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                ret = builder.call(self.fn_msg_subscribe, [st, a0])
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_unsubscribe":
+                if len(n.args) != 1:
+                    raise ValueError("msg_unsubscribe expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                ret = builder.call(self.fn_msg_unsubscribe, [st, a0])
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_advertise":
+                if len(n.args) != 2:
+                    raise ValueError("msg_advertise expects 2 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                ret = builder.call(self.fn_msg_advertise, [st, a0, a1])
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_send":
+                if len(n.args) != 6:
+                    raise ValueError("msg_send expects 6 args")
+                argv = [st] + [self.emit_expr(builder, st, a) for a in n.args]
+                ret = builder.call(self.fn_msg_send, argv)
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_sendto":
+                if len(n.args) != 7:
+                    raise ValueError("msg_sendto expects 7 args")
+                argv = [st] + [self.emit_expr(builder, st, a) for a in n.args]
+                ret = builder.call(self.fn_msg_sendto, argv)
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_avail":
+                if len(n.args) != 1:
+                    raise ValueError("msg_avail expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                return builder.call(self.fn_msg_avail, [st, a0])
+
+            if fn == "msg_kind":
+                if len(n.args) != 1:
+                    raise ValueError("msg_kind expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                return builder.call(self.fn_msg_kind, [st, a0])
+
+            if fn == "msg_recv":
+                if len(n.args) != 7:
+                    raise ValueError("msg_recv expects 7 args")
+                chan = self.emit_expr(builder, st, n.args[0])
+                out_src = self._get_out_lvalue_ptr(builder, st, n.args[1], "msg_recv")
+                out_tag = self._get_out_lvalue_ptr(builder, st, n.args[2], "msg_recv")
+                out_a = self._get_out_lvalue_ptr(builder, st, n.args[3], "msg_recv")
+                out_b = self._get_out_lvalue_ptr(builder, st, n.args[4], "msg_recv")
+                out_c = self._get_out_lvalue_ptr(builder, st, n.args[5], "msg_recv")
+                out_d = self._get_out_lvalue_ptr(builder, st, n.args[6], "msg_recv")
+                ret = builder.call(self.fn_msg_recv, [st, chan, out_src, out_tag, out_a, out_b, out_c, out_d])
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_send_buf":
+                if len(n.args) != 4:
+                    raise ValueError("msg_send_buf expects 4 args")
+                argv = [st] + [self.emit_expr(builder, st, a) for a in n.args]
+                ret = builder.call(self.fn_msg_send_buf, argv)
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_sendto_buf":
+                if len(n.args) != 5:
+                    raise ValueError("msg_sendto_buf expects 5 args")
+                argv = [st] + [self.emit_expr(builder, st, a) for a in n.args]
+                ret = builder.call(self.fn_msg_sendto_buf, argv)
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_recv_buf":
+                if len(n.args) != 5:
+                    raise ValueError("msg_recv_buf expects 5 args")
+                chan = self.emit_expr(builder, st, n.args[0])
+                out_src = self._get_out_lvalue_ptr(builder, st, n.args[1], "msg_recv_buf")
+                out_tag = self._get_out_lvalue_ptr(builder, st, n.args[2], "msg_recv_buf")
+                dst = self.emit_expr(builder, st, n.args[3])
+                maxlen = self.emit_expr(builder, st, n.args[4])
+                ret = builder.call(self.fn_msg_recv_buf, [st, chan, out_src, out_tag, dst, maxlen])
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_length":
+                if len(n.args) != 0:
+                    raise ValueError("msg_length expects 0 args")
+                return builder.call(self.fn_msg_length, [st])
+
+            if fn == "msg_dropped":
+                if len(n.args) != 1:
+                    raise ValueError("msg_dropped expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                return builder.call(self.fn_msg_dropped, [st, a0])
+
+            if fn == "msg_clear":
+                if len(n.args) != 1:
+                    raise ValueError("msg_clear expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                ret = builder.call(self.fn_msg_clear, [st, a0])
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_peer_count":
+                if len(n.args) != 2:
+                    raise ValueError("msg_peer_count expects 2 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                return builder.call(self.fn_msg_peer_count, [st, a0, a1])
+
+            if fn == "msg_peer_id":
+                if len(n.args) != 3:
+                    raise ValueError("msg_peer_id expects 3 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a1 = self.emit_expr(builder, st, n.args[1])
+                a2 = self.emit_expr(builder, st, n.args[2])
+                return builder.call(self.fn_msg_peer_id, [st, a0, a1, a2])
+
+            if fn == "msg_peer_name":
+                if len(n.args) != 2:
+                    raise ValueError("msg_peer_name expects 2 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                out_str = self._get_out_lvalue_ptr(builder, st, n.args[1], "msg_peer_name")
+                ret = builder.call(self.fn_msg_peer_name, [st, a0, out_str])
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_peer_uid":
+                if len(n.args) != 2:
+                    raise ValueError("msg_peer_uid expects 2 args")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                out_str = self._get_out_lvalue_ptr(builder, st, n.args[1], "msg_peer_uid")
+                ret = builder.call(self.fn_msg_peer_uid, [st, a0, out_str])
+                return self._to_f64(builder, ret)
+
+            if fn == "msg_peer_caps":
+                if len(n.args) != 1:
+                    raise ValueError("msg_peer_caps expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                return builder.call(self.fn_msg_peer_caps, [st, a0])
+
+            if fn == "msg_peer_alive":
+                if len(n.args) != 1:
+                    raise ValueError("msg_peer_alive expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                return builder.call(self.fn_msg_peer_alive, [st, a0])
 
             if fn == "midirecv":
                 if len(n.args) == 4:
@@ -4861,6 +5566,10 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     accepts_midi_input = 1 if midi_meta.get("accepts_midi_input") else 0
     produces_midi_output = 1 if midi_meta.get("produces_midi_output") else 0
     plugin_kind = str(meta.get("plugin_kind", "audio_effect") or "audio_effect")
+    comm_meta: Dict[str, Any] = dict(meta.get("comm", {}) or {})
+    uses_gmem = 1 if comm_meta.get("uses_gmem") else 0
+    uses_msg = 1 if comm_meta.get("uses_msg") else 0
+    uses_msg_buffers = 1 if comm_meta.get("uses_msg_buffers") else 0
 
     in_ch = max(0, min(64, in_ch))
     out_ch = max(0, min(64, out_ch))
@@ -4880,6 +5589,10 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append(f"#define DSPJSFX_OUTPUT_CHANNELS {out_ch}")
     lines.append(f"#define DSPJSFX_PROCESS_CHANNELS {proc_ch}")
     lines.append(f"#define DSPJSFX_USES_MIDI {uses_midi}")
+    lines.append(f"#define DSPJSFX_USES_GMEM {uses_gmem}")
+    lines.append(f"#define DSPJSFX_USES_MSG {uses_msg}")
+    lines.append(f"#define DSPJSFX_USES_MSG_BUFFERS {uses_msg_buffers}")
+    lines.append("#define DSPJSFX_COMM_API_VERSION 1")
     lines.append(f"#define DSPJSFX_ACCEPTS_MIDI_INPUT {accepts_midi_input}")
     lines.append(f"#define DSPJSFX_PRODUCES_MIDI_OUTPUT {produces_midi_output}")
     lines.append(f"#define DSPJSFX_HAS_SAMPLE_SECTION {1 if meta.get('has_sample_section', False) else 0}")
@@ -5027,6 +5740,43 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("int jsfx_sliderchange(DSPJSFX_State* st, double sliderMask);")
     lines.append("int jsfx_slider_automate(DSPJSFX_State* st, double sliderMask, double endTouch);")
     lines.append("double jsfx_slider_next_chg(DSPJSFX_State* st, double sliderIndex, double* outValue);")
+    lines.append("double jsfx_instance_id(DSPJSFX_State* st);")
+    lines.append("int jsfx_instance_uid(DSPJSFX_State* st, double* outStr);")
+    lines.append("int jsfx_instance_set_name(DSPJSFX_State* st, double strHandle);")
+    lines.append("int jsfx_instance_get_name(DSPJSFX_State* st, double* outStr);")
+    lines.append("int jsfx_comm_join(DSPJSFX_State* st, double domainHandle);")
+    lines.append("int jsfx_gmem_attach(DSPJSFX_State* st, double nameHandle);")
+    lines.append("int jsfx_gmem_attach_size(DSPJSFX_State* st, double nameHandle, double cells);")
+    lines.append("double jsfx_gmem_size(DSPJSFX_State* st);")
+    lines.append("double jsfx_gmem_load(DSPJSFX_State* st, double idx);")
+    lines.append("double jsfx_gmem_store(DSPJSFX_State* st, double idx, double value);")
+    lines.append("int jsfx_gmem_get(DSPJSFX_State* st, double dstBase, double srcIdx, double count);")
+    lines.append("int jsfx_gmem_put(DSPJSFX_State* st, double dstIdx, double srcBase, double count);")
+    lines.append("int jsfx_gmem_fill(DSPJSFX_State* st, double dstIdx, double value, double count);")
+    lines.append("int jsfx_gmem_zero(DSPJSFX_State* st, double dstIdx, double count);")
+    lines.append("int jsfx_gmem_copy(DSPJSFX_State* st, double dstIdx, double srcIdx, double count);")
+    lines.append("double jsfx_gmem_seq(DSPJSFX_State* st, double page);")
+    lines.append("double jsfx_gmem_page(DSPJSFX_State* st, double idx);")
+    lines.append("int jsfx_msg_subscribe(DSPJSFX_State* st, double chanHandle);")
+    lines.append("int jsfx_msg_unsubscribe(DSPJSFX_State* st, double chanHandle);")
+    lines.append("int jsfx_msg_advertise(DSPJSFX_State* st, double chanHandle, double caps);")
+    lines.append("int jsfx_msg_send(DSPJSFX_State* st, double chanHandle, double tag, double a, double b, double c, double d);")
+    lines.append("int jsfx_msg_sendto(DSPJSFX_State* st, double targetId, double chanHandle, double tag, double a, double b, double c, double d);")
+    lines.append("double jsfx_msg_avail(DSPJSFX_State* st, double chanHandle);")
+    lines.append("double jsfx_msg_kind(DSPJSFX_State* st, double chanHandle);")
+    lines.append("int jsfx_msg_recv(DSPJSFX_State* st, double chanHandle, double* src, double* tag, double* a, double* b, double* c, double* d);")
+    lines.append("int jsfx_msg_send_buf(DSPJSFX_State* st, double chanHandle, double tag, double srcBase, double len);")
+    lines.append("int jsfx_msg_sendto_buf(DSPJSFX_State* st, double targetId, double chanHandle, double tag, double srcBase, double len);")
+    lines.append("int jsfx_msg_recv_buf(DSPJSFX_State* st, double chanHandle, double* src, double* tag, double dstBase, double maxLen);")
+    lines.append("double jsfx_msg_length(DSPJSFX_State* st);")
+    lines.append("double jsfx_msg_dropped(DSPJSFX_State* st, double chanHandle);")
+    lines.append("int jsfx_msg_clear(DSPJSFX_State* st, double chanHandle);")
+    lines.append("double jsfx_msg_peer_count(DSPJSFX_State* st, double chanHandle, double role);")
+    lines.append("double jsfx_msg_peer_id(DSPJSFX_State* st, double chanHandle, double role, double index);")
+    lines.append("int jsfx_msg_peer_name(DSPJSFX_State* st, double peerId, double* outStr);")
+    lines.append("int jsfx_msg_peer_uid(DSPJSFX_State* st, double peerId, double* outStr);")
+    lines.append("double jsfx_msg_peer_caps(DSPJSFX_State* st, double peerId);")
+    lines.append("double jsfx_msg_peer_alive(DSPJSFX_State* st, double peerId);")
     lines.append("")
     lines.append("#ifdef __cplusplus")
     lines.append("}")
