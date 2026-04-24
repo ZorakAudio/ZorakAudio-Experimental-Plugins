@@ -1,61 +1,47 @@
-## Vocal Air Recovery
+# Vocal Air Recovery (VAR)
 
-**Vocal Air Recovery** is a perceptually driven high-frequency restoration tool designed to recover clarity, presence, and “air” in vocals **without harshness, hiss, or exaggerated EQ**.
+## What it is
+VAR is a **stereo air-restoration tool** built around bounded HF expansion plus a synthetic high-air halo.
 
-Instead of boosting treble blindly, it analyzes a vocal’s **predictability and spectral density** to distinguish between genuinely missing high-frequency detail and content where noise or sibilance would be exaggerated. Only perceptually relevant components are enhanced, while transients, consonants, and already-present detail remain intact.
+Important naming note: the current repo metadata presents this plugin as **Vocal Air Recovery (VAR)**, while the current Faust source declaration string says **Vocal Air Restore (VAR)**. This README keeps the repo-facing name but documents the source behavior as it exists now.
 
-This makes it especially effective on:
+The current source describes the process very clearly:
 
-- dull or over-de-essed vocals  
-- heavily processed or denoised dialogue  
-- intimate close-mic recordings lacking openness  
-- stacked vocals that need separation without edge  
+- a level-invariant, LoG-like curvature detector looks for the right kind of missing air behavior
+- a bounded high-frequency expansion stage adds real HF lift
+- a band-limited noise layer adds a controlled “air halo” rather than just raw fizz
 
-The result is **clarity without brittleness**, **openness without fatigue**, and air that feels *recovered*, not added.
+---
 
-Designed to be **safe, minimal, and gain-invariant**, Vocal Air Recovery works just as well for subtle dialogue repair as for expressive vocal production.
+## Why use it
+Use VAR when a vocal or airy source feels **closed-in, dull, or de-aired**, but a normal exciter sounds too fake or too aggressive.
 
+---
 
-## Parameter intuition
+## Quick start
+1. Start with **Air Amount** low to moderate.
+2. Raise **Sensitivity** until the air behavior starts to wake up naturally.
+3. Set **Detector Floor** high enough that silence and low-level junk do not keep the detector open.
+4. Level-match by ear after insertion.
 
-Vocal Air Recovery intentionally exposes only a small number of controls. The DSP does the rest: detection, safety limiting, and gain normalization are handled internally so the plugin stays predictable under automation and gain staging.
+---
 
-### Air Amount (%)
-Controls the **maximum amount of high-frequency “air” the plugin is allowed to recover**.
+## Main controls
+### Air Amount
+Overall amount of air restoration. In the current source this also scales the bounded HF expansion ceiling and the added halo contribution.
 
-- Low values: subtle openness and clarity; mostly “just a little more life.”
-- Medium values: restores presence on dull/over-de-essed vocals without turning into EQ hype.
-- High values: stronger recovery, but still bounded internally to avoid harshness.
+### Sensitivity
+How easily the curvature detector decides the source should open up.
 
-Think of this as the **ceiling** on how much air can be added — not a treble boost.
+### Detector Floor
+Prevents the detector from reacting to very low-level content or empty space.
 
-### Sensitivity (%)
-Controls **how readily the detector decides HF detail is missing** (vs. already present or likely to be noise/sibilance).
+---
 
-- Lower sensitivity: only recovers air when the loss is obvious; safest for bright or sibilant vocals.
-- Higher sensitivity: recovers air more often and from subtler cues; useful for denoised/flattened vocals.
+## Notes
+VAR is not meant to be a broad “make everything brighter” knob. The best settings are usually the ones that make you miss it when bypassed, not the ones that scream “exciter.”
 
-Think of this as the detector’s **picky vs. eager** setting.
+---
 
-### Detector Floor (dB)
-Sets a **minimum signal level** below which air recovery is suppressed.
-
-- Prevents room tone, noise floor, or denoiser residue from being “aired up.”
-- Higher values make the plugin more conservative in quiet passages.
-- Lower values allow air recovery on very soft material.
-
-This control affects **only the detector**, not the audio itself.  
-Once the signal rises clearly above the floor, behavior remains **gain-invariant**.
-
-Think of this as *“don’t help below here.”*
-
-
-### Practical starting points
-- Dull vocal: **Air 30–50**, **Sensitivity 40–60**
-- Over-de-essed / denoised dialogue: **Air 40–70**, **Sensitivity 55–80**
-- Already bright / sibilant: **Air 10–35**, **Sensitivity 20–45**
-
-### What to listen for (fast diagnosis)
-- If it starts to sound “fizzy” or emphasizes ess: lower **Sensitivity** first, then **Air Amount**.
-- If it’s doing nothing: raise **Sensitivity** first, then **Air Amount**.
-- If room tone or hiss rises during pauses: raise **Detector Floor**.
+## In one sentence
+VAR restores upper-air openness by adding real HF lift and a controlled synthetic halo without turning the source into brittle hype.

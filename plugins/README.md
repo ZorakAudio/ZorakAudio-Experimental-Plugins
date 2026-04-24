@@ -1,18 +1,17 @@
 # Plugin Tree Conventions
 
-Every buildable plugin in this repository now lives as a **leaf directory under `plugins/`**.
-
-The structure is intentionally flat at the category level:
+Every buildable plugin in this repository lives as a **leaf directory under `plugins/`**.
 
 ```text
-plugins/<Category>/<PluginKey>/
-  plugin.json
-  README.md
-  src/
-    <entry>.jsfx | <entry>.dsp
-  tests/        # optional
-  docs/         # optional
-  assets/       # optional
+plugins/
+  <Category>/
+    <PluginKey>/
+      plugin.json
+      README.md
+      src/
+      tests/      # optional
+      docs/       # optional
+      assets/     # optional
 ```
 
 ## No subcategories
@@ -28,28 +27,30 @@ plugins/Spatialization/DDT/
 Not:
 
 ```text
-plugins/Spatialization/Distance and Occlusion/DDT/
+plugins/Spatialization/Distance/DDT/
 ```
 
 If a category becomes too broad, add a new top-level category instead of inserting another nesting layer.
 
 ## `PluginKey`
 
-`PluginKey` is the stable leaf folder name.
+`PluginKey` is the stable leaf folder name. In most cases it matches the plugin slug.
 
-In this repository it is usually the same as the plugin slug, for example:
+Examples:
 
 - `plugins/Dynamics/RED/`
 - `plugins/Spatialization/DOT/`
 - `plugins/Spectral/TSEQ/`
 
-The display name shown to users lives in `plugin.json` as `name`, so it can be longer and more descriptive than the folder key.
+The user-facing display name lives in `plugin.json` as `name`.
 
 ## `README.md`
 
-Each leaf `README.md` is required. The build embeds it directly into the plugin, and the in-plugin `?` panel renders that markdown at runtime.
+Each leaf `README.md` is required.
 
-For JSFX plugins, the historical `// #HELP:` macro is now deprecated. Keep user-facing help in the leaf README instead.
+The build embeds it directly into the plugin, and the in-plugin `?` panel renders that markdown at runtime. Treat the leaf README as the canonical user help page for the current source, controls, routing, and workflow.
+
+For JSFX plugins, historical `// #HELP:` comments are no longer the primary documentation target. Keep durable user-facing help in the leaf README.
 
 ## `plugin.json`
 
@@ -68,25 +69,26 @@ Minimal example:
 }
 ```
 
-## Conventions
+Core conventions:
 
-- `name` is the human-facing plugin name.
-- `slug` is the stable build target identifier.
-- `pluginCode` is the 4-character JUCE plugin code.
-- `entry` points at the single build entry file for the leaf.
-- `pluginType` is `jsfx` or `faust`.
-- `tests/` is optional. Any `.rpp` files there are discovered by the JSFX null-test workflow.
-- release packaging mirrors the top-level category into `VST3/` and `CLAP/`.
+- `name` is the human-facing plugin name
+- `slug` is the stable build target identifier
+- `pluginCode` is the 4-character JUCE plugin code
+- `entry` points at the single build entry file for the leaf
+- `pluginType` is `jsfx` or `faust`
+
+## `tests/`
+
+`tests/` is optional.
+
+Do not assume REAPER `.rpp` files are discovered by CI. The repo's documented JSFX correctness path is `scripts/build.py --correctness-check`. Keep `tests/` for future fixtures, manual sessions, targeted assets, or whatever a specific plugin genuinely needs.
 
 ## Adding a plugin quickly
 
 Use the scaffold helper:
 
 ```bash
-python scripts/new_plugin.py Spatialization NewTool \
-  --name "New Tool" \
-  --plugin-code NTL1 \
-  --plugin-type jsfx
+python scripts/new_plugin.py Spatialization NewTool   --name "New Tool"   --plugin-code NTL1   --plugin-type jsfx
 ```
 
 Or create the leaf manually and then run:
@@ -95,4 +97,4 @@ Or create the leaf manually and then run:
 python scripts/build.py --list
 ```
 
-If discovery succeeds, the build and CI will pick the new plugin up automatically.
+If discovery succeeds, the normal build and packaging flow will pick the plugin up automatically.

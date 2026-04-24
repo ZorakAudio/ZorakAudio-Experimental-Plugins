@@ -1,10 +1,12 @@
 # Restoration
 
-Repair, cleanup, click control, and air-recovery experiments.
+Restoration tools here focus on **specific perception problems** rather than generic broadband cleanup.
 
-## Plugins
+## Current plugins
 
-- `ClickBeGoneSG` — Click-Be-Gone (SG) (Faust)
-- `VAR` — Vocal Air Recovery (VAR) (Faust)
+- **ClickBeGoneSG** — removes HF clicks and splats from wet or granular material without flattening the whole texture
+- **VAR** — restores vocal “air” with bounded HF expansion and a synthetic high-air halo
 
-Each plugin leaf carries its own `plugin.json`, source entry, and optional tests/docs/assets.
+## Category note
+
+These are problem-solvers: use them when a source is being distracted by a very specific defect or missing a very specific quality.

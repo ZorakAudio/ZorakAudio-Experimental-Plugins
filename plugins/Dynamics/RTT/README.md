@@ -1,185 +1,72 @@
-# Reverb Tail Tamer V3  
-**Role-Aware, Permission-Based Wet Compression**
+# Reverb Tail Tamer (RTT)
+
+## What it is
+RTT is a **permission-based wet compressor** for reverb returns.
+
+The core idea in the current source is not “duck whenever something happens.” It is:
+
+> let the tail exist when the foreground justifies it, and pull it back when it no longer earns its space.
+
+The current version is role-aware. It treats vocals and other/SFX inputs as separate authorities and uses that to decide how much reverb is allowed to stay alive.
 
 ---
 
-## What This Is
+## Why use it
+Use RTT when ordinary sidechain ducking feels too blunt for reverb returns.
 
-Reverb Tail Tamer V3 is not a traditional sidechain compressor.
+It is especially useful when:
 
-It does **not** duck the wet signal simply because something gets loud.
-
-Instead, it evaluates:
-
-> Is this amount of reverb justified by the current vocal or SFX energy?
-
-Only when the wet return exceeds what the input has effectively “earned” does gain reduction occur.
-
-The result is preserved emotional bloom with controlled space and improved intelligibility.
+- vocal reverb needs to stay musical but not swamp the mix
+- other foreground sounds should still be able to justify some wet energy
+- old tails should not re-open just because a tiny unrelated event happened later
 
 ---
 
-## Routing Contract
-
-- **Wet (post-reverb return):** Channels 1/2  
-- **Vocals key input:** Channels 5/6  
-- **Other / SFX key input:** Channels 7/8  
-
-Channels 5/6 and 7/8 are used for analysis only.  
-Only the wet return on 1/2 is processed.
+## Quick start
+1. Put the wet reverb return on **1/2**.
+2. Feed the vocal authority signal to **5/6**.
+3. Feed other or SFX authority to **7/8**.
+4. Set **Amount** and **Sensitivity** first.
+5. Shape recovery with **Release** and **Attack**, then trim how much non-vocal material can justify wet with **Other Authority**.
 
 ---
 
-## Core Model
-
-### 1. Wet Energy (Ey)
-
-Measured from the reverb return.
-
-### 2. Justified Energy (Ex)
-
-Built from role-aware contributions:
-
-- Vocal reference × Vocal permission  
-- Other reference × Other permission × Other authority  
-- Combined using a power-sum (not linear addition)
-
-### 3. Return Ratio
-
-The system evaluates:
-
-```
-
-rdB = Wet level − Justified level
-
-```
-
-If this difference exceeds a sensitivity-dependent threshold, wet gain reduction is applied.
-
-Implications:
-
-- Loud reverb is allowed if source energy supports it.
-- Quiet input cannot sustain excessive tail energy.
-
----
-
-## Role Logic
-
-### Vocal Permission
-
-Triggered by:
-- Transient excitation (fast vs slow envelope comparison)
-- Sustained speech floor detection
-
-Vocal memory decays more slowly to preserve speech continuity.
-
----
-
-### Other Permission
-
-Triggered by:
-- Level-based presence
-- Mild excitation assist for sharp SFX
-
-Other authority is reduced while vocals are active or recently active.  
-This prevents small incidental sounds from “re-opening” old vocal tails (anti-resurrection).
-
----
-
-## Tail Behavior
-
-### Grace Window
-
-When references drop out, ducking ramps in gradually.  
-This preserves natural tail bloom immediately after dialogue or SFX ends.
-
-### Aging
-
-Very long unattended tails are progressively reduced over time.  
-Prevents ambient buildup in dense mixes or across edits.
-
----
-
-## Controls
-
-### Amount (max duck dB)
-
-Sets the maximum possible wet attenuation.
-
----
+## Main controls
+### Amount
+Maximum wet gain reduction ceiling.
 
 ### Sensitivity
-
-Controls how easily excess return is detected.  
-Higher values lower the effective threshold and increase compression ratio.
-
----
+How easily the wet return is judged too hot relative to justified input.
 
 ### Release
-
-Controls how quickly wet gain recovers.  
-Also influences grace timing and long-tail aging duration.
-
----
+Recovery time. It also influences the tail-grace behavior of the current source.
 
 ### Attack
-
-Controls how quickly ducking engages.  
-Slower values preserve early tail bloom and transients.
-
----
+How quickly ducking is applied once excess wet is detected.
 
 ### Mix
-
-Parallel blend of processed wet and original wet.
-
----
+Parallel blend for the wet control path.
 
 ### Other Authority
-
-Determines how strongly non-vocal material is allowed to justify reverb.  
-Automatically reduced during vocal dominance.
+How much the non-vocal authority input is allowed to justify reverb compared with the vocal authority lane.
 
 ---
 
-## Why Use This Instead of Traditional Sidechain Ducking?
+## Routing / notes
+Current routing contract:
 
-Traditional ducking:
-- Reduces wet whenever input increases
-- Often sounds mechanical or overly dry
+- **1/2** = wet return
+- **5/6** = vocals sidechain key
+- **7/8** = other / SFX sidechain key
 
-Reverb Tail Tamer V3:
-- Reduces wet only when it exceeds justified return
-- Preserves density when earned
-- Removes excess when unsupported
-
-This keeps:
-- Dialogue intelligible  
-- SFX impactful  
-- Space controlled  
-- Emotional tails intact  
+This is the larger, more role-aware tail controller in the repo. If you just need a lighter reference-keyed wet controller, RED is the smaller sibling.
 
 ---
 
-## Intended Use Cases
-
-- Dialogue-heavy animation mixes  
-- Dense SFX environments  
-- Hybrid vocal/SFX scenes  
-- Cinematic reverb control  
-- Preventing ambient accumulation across edits  
+## Notes
+The current JSFX includes anti-resurrection logic and tail-aging behavior specifically to stop stale wet energy from becoming “alive again” for the wrong reasons.
 
 ---
 
-## Design Philosophy
-
-This is a return governance system, not a ducking gimmick.
-
-It models:
-- Authority  
-- Permission  
-- Memory  
-- Suppression  
-- Time-aware decay  
-
-The result is controlled space that still feels natural and earned.
+## In one sentence
+RTT is the smart reverb-return governor: it ducks wet when the tail stops being justified, not merely when a trigger fires.

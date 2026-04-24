@@ -1,63 +1,55 @@
 # Click-Be-Gone (SG)
-### Psychoacoustic Temporal De-Click & Micro-Smoothing
 
-**Click-Be-Gone (SG)** removes **high-frequency needle clicks, micro-splats, and temporally implausible artifacts** without dulling texture or tone.
+## What it is
+Click-Be-Gone (SG) is a **high-frequency click and splat remover** aimed at wet, granular, or otherwise delicate material where ordinary dulling would do more harm than good.
 
-Instead of working in the frequency domain, it operates in **time**. Each sample is evaluated for *temporal plausibility* using a Savitzky–Golay (SG) predictor. When a sample behaves like an out-of-place spike—brief, broadband, and inconsistent with its neighbors—it is softly rewritten. Everything else passes untouched.
-
-The result is **less irritation and listening fatigue**, not less detail.
+The current Faust source uses Savitzky–Golay style prediction and replacement logic rather than treating the whole signal like a generic noise problem.
 
 ---
 
-## What it’s good at
-- Removing needle-like clicks in wet granular sounds  
-- Taming tiny digital burrs from edits or resampling  
-- Cleaning up micro lip clicks and tongue ticks in vocals  
-- Reducing “nervous” high-frequency tension without de-essing  
-- Smoothing abrasive detail while preserving articulation  
+## Why use it
+Use it when the problem is:
 
-At **low Sensitivity**, it can act as a **gentle vocal or dialogue smoother**, removing only the most implausible micro-events.
+- HF needle-clicks
+- little wet splats
+- tiny granular spikes
+- brief brittle defects
 
----
-
-## What it’s not
-- Not a spectral repair tool  
-- Not a de-esser  
-- Not a transient shaper  
-- Not meant for long pops, hard clipping, or buffer crackle  
-
-It edits **only when something doesn’t belong**.
+and you do **not** want to sand off the whole texture just to make the defect disappear.
 
 ---
 
-## How it works (briefly)
-- A high-frequency *edge view* detects sudden micro-events  
-- A relative detector compares each event to its local context  
-- A Savitzky–Golay predictor tests temporal plausibility  
-- Implausible samples are softly replaced, with a capped mix  
-- A short hold ensures short click trains are fully covered  
-
-All processing is level-independent and designed to fail gracefully.
+## Quick start
+1. Insert it on the material that contains the clicks or splats.
+2. Raise **Amount** until the defects start disappearing.
+3. Use **Sensitivity** to decide how aggressively events are detected.
+4. Set **HPF** so the detector listens to the brittle problem area instead of the whole signal.
+5. Use **Monitor = Delta** when you want to hear what is being removed.
 
 ---
 
-## Controls
-- **Amount** — How strongly detected artifacts are rewritten  
-- **Sensitivity** — How strict the plausibility test is  
-- **HPF Focus** — Which high-frequency region is examined  
-- **Mode (Fast / Medium / Slow)** — Optimized presets for different click widths [0/1/2 in VST3]
-- **Monitor (Output / Delta)** — Hear the result or only what’s being removed  [0/1 in VST3]
+## Main controls
+### Amount
+How much corrective replacement is allowed.
+
+### Sensitivity
+How easily the detector decides a small HF event is suspicious.
+
+### HPF
+Moves the detector upward so the plugin focuses on the clicky region.
+
+### Mode
+Behavior preset for the current source. Fast, Medium, and Slow change the predictor ladder, gating feel, hold behavior, and maximum replacement attitude.
+
+### Monitor
+Output or Delta. Delta is the easiest way to check whether you are removing the right thing.
 
 ---
 
-## Latency
-- Fixed, very low latency (required for temporal prediction consistency)
+## Notes
+This is a targeted defect remover, not a broadband de-noiser. If the whole source is just harsh, use a different tool.
 
 ---
 
-## Design philosophy
-Click-Be-Gone (SG) prioritizes **psychoacoustic plausibility over aggressive correction**.
-
-If it isn’t confident a sample is wrong, it leaves it alone.
-
-That restraint is why it sounds natural.
+## In one sentence
+Click-Be-Gone removes small HF defects while trying to leave the living texture of the source intact.

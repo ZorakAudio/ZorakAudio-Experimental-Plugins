@@ -1,84 +1,85 @@
 # Ambience Discipline System (ADS)
-### Background-bed controller — keeps ambience present but not distracting
 
-**ADS is for ambience and room “beds”**: the stuff that should feel *there*… but shouldn’t fight dialogue, vocals, or foreground detail.
+## What it is
+ADS is a **slow, attenuation-only ambience governor** for room beds, background layers, and environmental support.
 
-It does this by shaping the cues your brain uses to decide what’s *important* vs *background*:
-- **Level + motion** (busy beds feel “louder” than meters suggest)
-- **Spectral brightness** (too much top feels “closer”)
-- **Stereo spread** (wide, unstable beds grab attention)
-- **Depth / density** (beds feel better when they sit *behind* foreground)
+It is designed to keep a bed behind the foreground instead of turning the bed into a second lead element. The current source is built around four ideas:
 
-It’s not a magic “mix it for me” box.
-It’s a **stability tool** designed to keep beds behaving like beds.
+- trim body, presence, and air when the bed gets too forward
+- rein in excess side energy so the bed stays wide without becoming splashy
+- optionally duck against a dialogue or key signal on channels 3/4
+- cap “attention capture” with the salience-budget stage instead of relying on brute-force broadband ducking
 
 ---
 
-## What it does (in plain steps)
+## Why use it
+Use ADS when the background is technically quiet but still **feels** too present.
 
-Internally ADS:
-1. Measures bed energy and motion (how “active” the background feels)
-2. Applies **depth discipline** (bed stays behind the foreground)
-3. Applies **width discipline** (reduces splashy, unstable stereo when needed)
-4. Shapes **tone** (tilt + HPF) to avoid low build-up and harsh “air”
-5. Optionally applies **ducking** (keyed / dialogue-friendly behavior)
-6. Trims output to match level
+It is especially useful on:
 
----
-
-## What it’s good at
-
-- Room tone and ambience beds in **film/game**
-- “Constant” background layers in dense music productions
-- Keeping wide ambience from feeling like it’s glued to the listener’s ears
-- Preventing low rumble / buildup from stacking across scenes
+- ambience beds
+- room layers
+- environmental support stems
+- wide noisy backgrounds
+- supporting reverbs that should stay supportive instead of flashy
 
 ---
 
-## Controls
-
-### 1) Fit
-Overall intensity / strength of the system.
-
-### 2) Tone (dB)
-Brightness tilt for the bed.
-- Negative = darker / farther
-- Positive = brighter / closer
-
-### 3) Width Discipline
-How strongly ADS reins in unstable or attention-grabbing stereo width.
-
-### 4) Depth
-Depth discipline (expander-like behavior that helps push the bed back).
-
-### 5) HPF (Hz)
-High-pass filter to remove rumble and low build-up.
-
-### 6) Dialog Duck (dB)
-Extra ducking amount when a dialogue/key signal is present.
-
-### 7) Output Trim (dB)
-Final level trim after processing.
-
-### 8) Salience Budget
-“How much attention is the bed allowed to take?”
-Lower = more background, higher = more present.
+## Quick start
+1. Insert ADS on the ambience or room bed you want to keep under control.
+2. If you want foreground-aware behavior, feed the dialogue or key source to channels 3/4.
+3. Set **Fit** for overall discipline, then use **Width Discipline** and **Salience Budget** to stop the bed from grabbing attention.
+4. Add **Dialog Duck** only as needed. In many cases Salience Budget is the smarter first move.
+5. Use **Output Trim** last to level-match.
 
 ---
 
-## Quick Start (recommended)
+## Main controls
+### Fit
+The main overall discipline amount. Higher settings push the bed farther back by trimming the parts of the ambience that feel too forward.
 
-- Fit: 40–60  
-- Depth: ~40  
-- Width Discipline: ~50  
-- HPF: 70–120 Hz  
-- Tone: 0 to -3 dB  
-- Dialog Duck: 0–3 dB (if needed)  
-- Output Trim: level-match
+### Tone
+Shifts the voicing from more pink/open toward more brown/darker support. Use it to keep a bed soft and supportive instead of bright and splashy.
+
+### Width Discipline
+Reins in side energy so the bed can stay wide without spraying attention into the stereo field.
+
+### Depth
+A gentle broadband downward-expander amount. This is the part that helps the bed sit behind the foreground without obvious pumping.
+
+### HPF
+Keeps low-end build-up from making the bed feel bulky or cloudy.
+
+### Dialog Duck
+Optional sidechain-based ducking from channels 3/4. Use it when a foreground voice or key source needs a little extra space.
+
+### Output Trim
+Final level trim after the discipline stages.
+
+### Salience Budget
+The smartest “stay in your lane” control here. It limits attention capture using presence level, transient behavior, and high-band side motion instead of acting like a plain volume duck.
 
 ---
 
-## Safety / behavior notes
+## Routing / notes
+**Input 1/2** is the ambience bed.
 
-- ADS is designed to be **hard to break**, but it is **not a limiter**.
-- Extreme settings can still change perceived loudness — level-match with Output Trim.
+**Input 3/4** is optional and acts as the dialogue / key reference for ducking and salience-aware behavior.
+
+A good starting point for beds is usually:
+
+- Fit: moderate
+- Tone: a little darker than flat
+- Width Discipline: enough to stop splash
+- Depth: gentle
+- Salience Budget: moderate to fairly high
+
+---
+
+## When it is the wrong tool
+ADS is not the right tool when you want obvious pumping, rhythmic keying, or big audible dynamic effects. It is built to behave like a governor, not a showy compressor.
+
+---
+
+## In one sentence
+ADS keeps ambience supportive, wide, and under control without letting it steal the spotlight.

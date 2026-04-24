@@ -1,203 +1,54 @@
-# EasyExpander (ERB Detector)
+# EasyExpander
 
-**Minimal Downward Expander with Perceptual Detector**
+## What it is
+EasyExpander is a **minimal broadband downward expander** driven by a perceptually weighted ERB detector.
 
----
-
-## What It Is
-
-EasyExpander is a **broadband downward expander** driven by an **ERB-spaced multi-band detector**.
-
-Important distinction:
-
-* Audio path = **clean, untouched**, except for one smooth gain multiplier.
-* Detection path = **ERB-style filterbank** → weighted loudness estimate → soft-knee expander.
-
-You get perceptually aware noise reduction without the twitchy, metallic chatter typical of simple RMS gates.
-
-This is not a gate that slams shut. It’s a controlled downward expander designed to reduce the noise floor while preserving tone and dynamics.
+The current source keeps the audio path simple. The plugin is mainly about detector behavior, thresholding, and smooth gain reduction rather than a long page of extra features.
 
 ---
 
-## Why ERB Detection?
+## Why use it
+Use EasyExpander when you want to:
 
-Most expanders measure raw broadband RMS. That overreacts to low rumble and underreacts to mid-range content.
-
-This plugin:
-
-* Splits the detector into **8 ERB-spaced bands (≈80 Hz – 8 kHz)**
-* Applies perceptual weighting (mid-band emphasis)
-* Smooths power per band
-* Recombines into a single loudness estimate
-
-Result:
-The detector behaves more like hearing, not a voltmeter.
-
-The gain reduction remains broadband for phase integrity and tonal safety.
+- push down low-level wash or spill
+- clean up tails between phrases
+- keep pauses quieter
+- gate gently without hard chatter
 
 ---
 
-## Core Controls
-
-### Threshold (dB)
-
-Level where expansion begins.
-
-* Higher threshold → more material reduced
-* Lower threshold → more transparent, subtle cleanup
-
-Measured against the ERB detector loudness.
+## Quick start
+1. Set **Threshold** where the source should stop being considered “active.”
+2. Raise **Depth** until the cleanup is doing useful work.
+3. Adjust **Contour** to decide whether the action should feel softer or more assertive.
+4. Use **Detector HPF** and **Detector LPF** to decide what should trigger the expander without changing the tone of the output.
 
 ---
 
-### Depth (dB)
+## Main controls
+### Threshold
+The activation point for the expander.
 
-Maximum attenuation below threshold.
+### Depth
+Maximum amount of downward expansion.
 
-* 6–12 dB → gentle floor control
-* 18–30 dB → clear noise tightening
-* 40+ dB → gate-like behavior
+### Contour
+The character of the action: gentler and softer at lower settings, harder and more gate-like at higher settings.
 
-Depth is hard-limited for safety.
+### Detector HPF
+Keeps low-frequency content from triggering the detector when that is not helpful.
 
----
-
-### Contour (0–100)
-
-Controls envelope behavior and effective ratio.
-
-Internally maps to approx **1.5:1 → 4:1 expansion ratio**.
-
-* 0 = gentle, smooth, glue-like
-* 50 = controlled tightening
-* 100 = firm, punchy floor clamp
-
-Higher contour = faster and more assertive reduction feel.
+### Detector LPF
+Keeps upper-frequency content from driving the detector when you want a more body-focused response.
 
 ---
 
-## Detector Shaping (Detection Only)
+## Notes
+The point of this plugin is not feature count. The point is a **clean detector workflow**.
 
-These filters **do not touch the audio path**.
-
-They only change what the detector “listens” to.
-
-### Detector HPF (Hz)
-
-High-pass for detection.
-
-Use when:
-
-* Low rumble is falsely opening the expander
-* You want speech or mids to drive expansion
-
-Example: 80–150 Hz for dialogue.
+If a source feels like it is gating for the wrong reasons, fix the detector filters first instead of immediately chasing the threshold.
 
 ---
 
-### Detector LPF (Hz)
-
-Low-pass for detection.
-
-Use when:
-
-* Hiss is falsely opening the expander
-* You want body over air to drive the gate
-
-Example: 6–10 kHz for vocal cleanup.
-
----
-
-## Internal Behavior (Why It Feels Stable)
-
-Several stability layers prevent chatter:
-
-* Soft knee (6 dB ramp into ratio)
-* 2 dB hysteresis (prevents flutter at threshold)
-* Separate open/close time constants
-* Adaptive close speed (faster when transients end)
-* Multi-band smoothed power detection
-
-This is why it closes smoothly instead of snapping.
-
----
-
-## Gain Computer Summary
-
-Below threshold:
-
-```
-GR = (Threshold - DetectorLevel) × (Ratio - 1)
-```
-
-Clamped by Depth.
-
-Above threshold:
-
-```
-GR = 0
-```
-
-Then smoothed.
-
-No upward expansion. No compression. No tone shaping.
-
-Only clean downward gain control.
-
----
-
-## Typical Use Cases
-
-Vocal cleanup
-Dialogue floor control
-Foley tightening
-Room tone shaping
-Synth tail cleanup
-Reverb return cleanup
-
-For transparent vocal work:
-
-* HPF detector around 100 Hz
-* LPF detector around 8–12 kHz
-* Threshold around -45 dB
-* Depth 12–20 dB
-* Contour 40–60
-
----
-
-## What This Is Not
-
-Not multiband processing
-Not spectral gating
-Not dynamic EQ
-Not upward expansion
-Not noise reduction via subtraction
-
-It is perceptually informed broadband downward expansion.
-
----
-
-## Metering
-
-The GFX displays:
-
-* Detector level (dB)
-* Threshold and hysteresis markers
-* Gain reduction amount
-* State indicator (OPEN / EXPANDING)
-
-If the lamp is lit, you are below threshold.
-
----
-
-## Philosophy
-
-Most expanders react to amplitude.
-
-This one reacts to structured, smoothed, perceptually weighted energy.
-
-Cleaner floor control.
-Less tonal damage.
-No transient murder.
-
-Minimal surface. Controlled behavior. Stable results.
+## In one sentence
+EasyExpander is a clean, ERB-aware downward expander for tidying material without overcomplicating the job.

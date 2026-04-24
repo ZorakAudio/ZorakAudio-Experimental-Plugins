@@ -1,212 +1,79 @@
-# Gesture MIDI Pad XL — patched build
+# GesturePad
 
-This patch keeps the original instrument intact and adds **hidden extra motion-to-CC routing** so you can map multiple movement derivatives at once.
+## What it is
+GesturePad is a **draw-and-play MIDI control surface**.
 
-## What changed
+You draw a gesture in the pad and the plugin turns that motion into MIDI output. It can transmit:
 
-The original file already had one “third lane” that could be switched between:
+- X and Y CC motion
+- a “primary motion” CC derived from gesture analysis
+- note output
+- CC + note output together
 
-- Speed
-- Vel X / Vel Y
-- Acc X / Acc Y
-- Jerk X / Jerk Y
-- Err X / Err Y
+The current source is much broader than a simple XY pad. It includes playback modes, note generation, motion-lane routing, and an advanced bank of extra CC outputs for speed, velocity, acceleration, jerk, and error signals.
 
-But it could only feed **one CC at a time**.
+---
 
-This patch keeps that original lane and adds a hidden **EXTRA CCs** panel so you can optionally assign **additional motion sources to their own CC numbers** at the same time.
+## Why use it
+Use GesturePad when you want **performed motion** instead of a static LFO.
 
-### Example
+It works well for:
 
-You can now do things like:
+- live macro movement
+- XY synth morphing
+- expressive automation recording
+- motion-driven note generation
+- turning drawing gestures into reusable MIDI phrases
 
-- Primary motion lane -> CC 11
-- Vel X -> CC 12
-- Acc X -> CC 13
-- Jerk Y -> CC 16
+---
 
-Or leave the primary lane off and only use the extra hidden routes.
+## Quick start
+1. Insert GesturePad before the instrument or effect you want to control.
+2. Set the **MIDI Channel** and choose the CC numbers for **X**, **Y**, and **Primary Motion**.
+3. Pick a playback mode such as **Direct**, **Loop**, **OneShot**, or **PingPong**.
+4. Draw a gesture in the pad. Enable **Auto Play After Draw** if you want it to fire immediately.
+5. Choose **CC Only**, **Note Only**, or **CC + Note** depending on whether you want pure modulation, notes, or both.
 
-## Patch goals
+---
 
-This was done as a **patch**, not a rewrite.
+## Main controls
+### Playback
+Mode, Playback Speed, Smoothing, and Min Point Distance control how the drawn motion is captured and replayed. Use these first to decide whether the gesture feels tight, smooth, fast, slow, or repeatable.
 
-The existing structure, drawing logic, playback logic, note logic, transport section, note range UI, and most of the custom UI remain unchanged. The added work is focused on motion routing only.
+### Basic CC output
+CC X and CC Y are the direct pad outputs. CC Primary Motion is a third lane that follows whichever movement feature you assign as the dominant gesture descriptor.
 
-## New behavior
+### Primary motion analysis
+Primary Motion Lane Source chooses what that main analysis lane represents. The current source can derive it from Speed, Velocity X/Y, Acceleration X/Y, Jerk X/Y, or Error X/Y.
 
-### 1. The old “Speed CC” is now the **Primary Motion CC**
+### Draw/play behavior
+Emit While Drawing sends data live as you draw. Auto Play After Draw starts playback when the gesture is finished. CC Deadband and Speed Sensitivity help tame noisy or over-busy output.
 
-The visible motion lane in the main UI still works the same way, but the labels were clarified:
+### Note generation
+Output Mode, Note Pitch Source, Note Velocity Source, Note Base, Note Span, and Fixed Note Velocity turn the pad into a note performer instead of only a CC surface.
 
-- `CC Speed` -> `CC Primary Motion`
-- `Emit Speed CC` -> `Emit Primary Motion CC`
-- `Motion Lane Source` -> `Primary Motion Source`
+### Advanced CC lanes
+The current source exposes additional per-feature CC slots: Speed, Velocity X, Velocity Y, Acceleration X, Acceleration Y, Jerk X, Jerk Y, Error X, and Error Y. Use them when you want multiple gesture-derived lanes at once.
 
-That visible lane is still the fast, obvious way to use one motion-derived CC.
+---
 
-### 2. Hidden **EXTRA CCs** menu
+## Routing / notes
+GesturePad is a MIDI generator. Route its MIDI output to whatever should receive the CCs or notes.
 
-A new button appears in the **ADVANCED & STATUS** card:
+A simple first setup is:
 
-- `EXTRA CCs`
+- X CC -> filter cutoff
+- Y CC -> morph or mix
+- Primary Motion -> resonance, FM amount, or another “energy” control
 
-That opens a hidden routing panel with one optional CC slot for each motion source:
+---
 
-- Speed
-- Vel X
-- Vel Y
-- Acc X
-- Acc Y
-- Jerk X
-- Jerk Y
-- Err X
-- Err Y
+## Notes
+This is not a static XY controller anymore. The current source behaves more like a **gesture analyzer + playback engine** with optional note synthesis on top.
 
-Each row can be:
+If you only use X and Y, you will miss a large part of what the plugin can do now.
 
-- assigned to any CC number
-- turned **OFF**
+---
 
-The menu is hidden by default, so the main UI stays uncluttered.
-
-### 3. Extra routes are independent from the primary lane
-
-The primary motion lane still uses:
-
-- `Emit Primary Motion CC`
-- `CC Primary Motion`
-- `Primary Motion Source`
-
-The new hidden extra routes do **not** depend on that toggle. They are separate optional outputs.
-
-That means you can:
-
-- keep the primary lane on and add more routes
-- turn the primary lane off and only use extra routes
-- use both at the same time
-
-### 4. CC picker now supports **OFF** for extra routes
-
-When assigning one of the hidden extra routes, the CC picker now includes a **TURN OFF** button.
-
-That disables the route cleanly without deleting anything else.
-
-## Motion sources
-
-### Unipolar source
-
-- **Speed**  
-  Encoded as normal 0–127 CC.
-
-### Bipolar sources
-
-These use **center-zero MIDI encoding**:
-
-- 64 = center / zero
-- below 64 = negative
-- above 64 = positive
-
-Sources:
-
-- **Vel X**
-- **Vel Y**
-- **Acc X**
-- **Acc Y**
-- **Jerk X**
-- **Jerk Y**
-- **Err X**
-- **Err Y**
-
-### What “Err” means
-
-`Err X` / `Err Y` are the current prediction error against a simple one-step motion estimate:
-
-- predict next X/Y from previous position + previous velocity
-- compare the real motion to that prediction
-- emit the difference
-
-Musically, this tends to emphasize sudden direction changes, surprises, and non-linear hand motion.
-
-## Shared controls
-
-The extra CC routes reuse the existing engine. They share the same motion preprocessing as the original file:
-
-- **Smoothing**
-- **CC Deadband**
-- **Speed Sensitivity** (for Speed)
-- **Motion Lane Sensitivity** (for signed motion features)
-
-That means:
-
-- raising **Motion Sense** makes Vel/Acc/Jerk/Err outputs more dramatic
-- raising **Speed Sense** makes Speed stronger
-- raising **Deadband** reduces MIDI chatter on all CC routes
-- raising **Smoothing** softens everything before modulation is emitted
-
-## Main UI workflow
-
-### Simple use
-
-1. Draw in the pad.
-2. Set **Output Type** to `CC Only` or `CC + Note`.
-3. Turn on **Primary Motion CC** if you want the visible motion lane.
-4. Pick a **Primary Motion Source**.
-5. Assign its CC number.
-
-### Advanced use
-
-1. Open **EXTRA CCs**.
-2. Assign any additional motion sources to their own CCs.
-3. Leave unused rows set to **OFF**.
-4. Record-enable the REAPER track and capture the generated MIDI.
-
-## Notes about MIDI output
-
-### When CCs are emitted
-
-Motion CCs only emit when CC output is active:
-
-- `Output Type = CC Only`
-- or `Output Type = CC + Note`
-
-If `Output Type = Note Only`, the extra CC routes remain configured but do not transmit.
-
-### Duplicate CC numbers
-
-The patch allows multiple sources to target the same CC number.
-
-That is legal, but it is usually a bad idea unless you want intentional interaction. If two sources feed the same CC, the later send wins block-by-block.
-
-Use different CC numbers for clean modulation routing.
-
-## Backward compatibility
-
-This patch is intentionally conservative:
-
-- existing X/Y CC behavior is unchanged
-- existing note output behavior is unchanged
-- existing gesture drawing/playback behavior is unchanged
-- existing primary motion lane is still there
-- new advanced routing is opt-in and hidden by default
-
-If you never open **EXTRA CCs**, the script behaves almost exactly like before.
-
-## Files included
-
-- `Gesture MIDI Pad XL.jsfx` — patched JSFX file
-- `Gesture MIDI Pad XL.patch` — unified diff against the original file
-- `README.md` — this file
-
-## Quick summary
-
-If you only need one motion lane, use the visible controls exactly like before.
-
-If you want multiple derivative modulations at once, open **EXTRA CCs** and assign:
-
-- Speed -> one CC
-- Velocity -> another CC
-- Acceleration -> another CC
-- Jerk / error -> more CCs as needed
-
-That gives you layered movement-driven modulation without bloating the default UI.
+## In one sentence
+GesturePad turns drawn motion into playable MIDI control, note, and gesture-analysis data.

@@ -1,9 +1,11 @@
 # Ambience
 
-Ambience and bed-management experiments.
+Ambience plugins in this repository are about **space beds, room support, and background discipline** rather than big obvious reverb tails.
 
-## Plugins
+## Current plugins
 
-- `ADS` — Ambience Discipline System (ADS) (JSFX)
+- **ADS** — Ambience Discipline System. A slow, attenuation-only governor for room beds, width, salience, and optional dialogue-aware ducking.
 
-Each plugin leaf carries its own `plugin.json`, source entry, and optional tests/docs/assets.
+## Category note
+
+This category is intentionally small right now. The common thread is not “reverb” in the broadest sense, but tools that manage how ambience sits around a foreground source.

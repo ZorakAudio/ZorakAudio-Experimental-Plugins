@@ -1,74 +1,58 @@
 # Designed Occlusion Topology (DOT)
-### Occlusion / behind-the-wall shaper — topology-driven, not a static “muffle EQ”
 
-**DOT makes a sound feel occluded** — like it’s behind a door, around a corner, or inside another space.
+## What it is
+DOT is a **perceptual occlusion tool**.
 
-Instead of a simple low-pass, it aims for a more *perceptual* result:
-- Controlled high-frequency loss
-- Minimum-phase style filtering (so it feels like a physical obstruction)
-- A “leak floor” so it never turns into total blanket-muffle unless you want it
+It is designed for making a sound feel like it is behind something, inside something, or otherwise partially blocked. The current source focuses on material-like curve choices, cavity sizing, brightness control, and a leak floor so the result can feel blocked without becoming unrealistically dead.
 
 ---
 
-## What it does (in plain steps)
+## Why use it
+Use DOT when a source should feel:
 
-Internally DOT:
-1. Chooses a material-style magnitude curve (Topology)
-2. Scales and shapes it (Amount / Size / Stretch)
-3. Converts it into a minimum-phase-ish filter shape
-4. Applies it with a controllable leak floor
-5. Applies output trim
-
----
-
-## What it’s good at
-
-- “Behind the wall / off-screen” perspective shifts (film/game)
-- Occluding background sources so foreground reads clearly
-- Making a source feel inside a vehicle/room/boxy space (with the right settings)
+- behind a wall
+- in another room
+- screened by an object
+- partially blocked
+- muffled but still believable
 
 ---
 
-## Controls
+## Quick start
+1. Choose a **Topology** that feels close to the material or obstacle you want.
+2. Raise **Amount** to set how occluded the result should be.
+3. Use **Brightness** and **Color** to fine-tune whether the blockage feels softer, harder, boxier, or more open.
+4. Use **Size** and **Stretch** to shape the occlusion geometry.
+5. Set **Leak Floor** so some believable top-end survives if needed.
 
-### 1) Topology
-Material-style occlusion curve preset.
+---
 
-### 2) Amount
-How strong the occlusion is.
+## Main controls
+### Topology
+Selects the base material/curve family.
 
-### 3) Brightness (dB)
-Overall brightness compensation.
+### Amount
+Overall wet amount of the occlusion effect.
 
-### 4) Color
-Tone bias (warm ↔ sharp).
+### Brightness
+Fine trim of how much top-end survives.
 
-### 5) Size
-Moves the main roll-off region (small ↔ large occluder).
+### Color
+Shifts the occlusion character toward harder/boxier behavior.
 
-### 6) Stretch
-Frequency scaling of the curve.
+### Size
+Apparent cavity / blockage size.
 
-### 7) Output (dB)
+### Stretch
+Reshapes the curve length / geometry.
+
+### Output
 Final trim.
 
-### 8) Leak Floor (dB)
-Minimum brightness that always leaks through.
+### Leak Floor
+Minimum high-end leakage so the result can stay believable instead of fully sealed.
 
 ---
 
-## Quick Start
-
-- Topology: Default  
-- Amount: 40–70  
-- Size: ~50  
-- Leak Floor: -36 to -24 dB  
-- Brightness: adjust to taste  
-- Output: level-match
-
----
-
-## Safety / behavior notes
-
-- DOT is a filter: it can change perceived loudness. Always level-match.
-- Extreme Amount + very low Leak Floor can sound intentionally “blocked.”
+## In one sentence
+DOT makes a sound feel blocked by shaping occlusion like a physical obstacle instead of just lowpassing it.

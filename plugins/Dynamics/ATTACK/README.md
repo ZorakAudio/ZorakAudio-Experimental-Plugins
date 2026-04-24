@@ -1,59 +1,61 @@
 # ATTACK
-### Transient + body shaper — punch and snap without “compressor knob soup”
 
-**ATTACK shapes the front edge of sounds** (especially drums and percussive material) by separating “hit” from “hang”:
-- Transient emphasis for impact
-- Body control for weight
-- Tail/tightness control to reduce flab
+## What it is
+ATTACK is an **aggressive transient-and-body shaper** for drums, percussion, and other impact-heavy material.
 
-It’s meant to be fast: you steer the feel, not the math.
+The current source is voiced less like a polite mastering tool and more like a “make this hit harder” device. It is built to reshape weight, edge, crack, and tightness with a small set of direct macros.
 
 ---
 
-## What it’s good at
+## Why use it
+Use ATTACK when a sound needs to feel:
 
-- Kick/snare punch without resorting to heavy compression
-- Adding snap to dull drums
-- Tightening boomy hits
-- Making percussion read clearly in dense mixes
+- heavier
+- sharper
+- tighter
+- more explosive
+- less flabby
 
----
-
-## Controls
-
-### 1) BODY
-Adds/removes the weight/sustain of the hit.
-
-### 2) EDGE
-Emphasizes or softens the sharp high-frequency edge.
-
-### 3) PUNCH
-Adds impact in a broad, “hit feels bigger” way.
-
-### 4) CRACK
-Adds bright snap / crack to the transient.
-
-### 5) TIGHT
-Reduces boom and tail looseness.
-
-### 6) FLAVOR
-Extra character / seasoning.
+It is especially at home on drums, impacts, claps, foley hits, and percussive synth sounds.
 
 ---
 
-## Quick Start
-
-Start gentle and build up:
-- BODY: 50  
-- PUNCH: 20–40  
-- CRACK: 10–30  
-- TIGHT: 20–40  
-- EDGE: 0 (then adjust)  
-- FLAVOR: 0–25  
+## Quick start
+1. Start with all controls low or centered.
+2. Raise **PUNCH** and **CRACK** for attack and snap.
+3. Add **BODY** when the source needs weight.
+4. Use **TIGHT** to pull back looseness or flab.
+5. Use **EDGE** carefully on already-bright material.
 
 ---
 
-## Safety / behavior notes
+## Main controls
+### BODY
+Adds weight and low-mid solidity to the hit.
 
-- This is **not a limiter** — it can increase peaks.
-- If you push PUNCH/CRACK hard, consider trimming output downstream.
+### EDGE
+Adds brightness and edge emphasis. Great on dull hits, dangerous on already-spiky ones.
+
+### PUNCH
+The main hit-forward control for transient impact.
+
+### CRACK
+Adds upper transient bite and crackle to the front of the sound.
+
+### TIGHT
+Reduces looseness, boom, or overhang so the hit feels more controlled.
+
+### FLAVOR
+A broader voicing / attitude control that changes how the shaping feels overall.
+
+---
+
+## Notes
+ATTACK is not a limiter and not a transparent dynamics processor.
+
+If the material is already harsh or clipped, pushing PUNCH, CRACK, and EDGE too hard can turn “exciting” into “annoying” very quickly.
+
+---
+
+## In one sentence
+ATTACK is a savage transient shaper for making percussive material hit harder, tighter, and meaner.

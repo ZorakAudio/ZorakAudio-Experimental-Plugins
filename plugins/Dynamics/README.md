@@ -1,14 +1,16 @@
 # Dynamics
 
-Dynamics, transient-shaping, expansion, and decay-control tools.
+Dynamics tools here are not only “compressors” or “expanders” in the traditional sense. This category includes **transient shaping, tail governance, envelope-weighting, and controlled dynamic emphasis**.
 
-## Plugins
+## Current plugins
 
-- `ATTACK` — ATTACK (JSFX)
-- `EasyExpander` — EasyExpander (JSFX)
-- `GTS` — Gaussian Transient Shaper (GTS) (Faust)
-- `ModTilt` — ModTilt (Faust)
-- `RED` — Reverb Expanding Downwards (RED) (Faust)
-- `RTT` — Reverb Tail Tamer (JSFX)
+- **ATTACK** — aggressive transient and body shaper for drums and percussive sources
+- **EasyExpander** — minimal downward expander with an ERB-weighted detector
+- **GTS** — Gaussian transient shaper with attack/sustain decomposition
+- **ModTilt** — SAFE envelope-tilt shaper for rebalancing fast vs slow motion
+- **RED** — compact wet-tail tamer keyed from a reference input
+- **RTT** — role-aware reverb tail permission compressor with dedicated vocal and other-authority inputs
 
-Each plugin leaf carries its own `plugin.json`, source entry, and optional tests/docs/assets.
+## Category note
+
+The shared idea is controlled movement: making attacks hit harder, tails behave, or dynamic emphasis sit where it should without turning every tool into a generic threshold box.

@@ -1,294 +1,100 @@
+# Sample
+
 ## What it is
+Sample is a **load-and-go psycho multisampler**.
 
-Load-and-Go MultiSampler is a **zero-setup multisampler**.
+The whole point is immediate usefulness:
 
-You point it at a group of samples and play.
+- load files into **slot 0**
+- play notes
+- get variation right away
+- shape the feel with a compact set of macros
 
-No manual zones. No bank editor. No key mapping session. No tedious setup before it becomes useful.
-
-It is built for the fast path:
-
-- load a bunch of files
-- press a key
-- get variation immediately
-- shape the feel with a few meaningful controls
+The current source goes well beyond the older README. It now includes hybrid playback, transient handling, onset modes, dynamics control, and optional FluxBridge-aware motion behavior.
 
 ---
 
 ## Why use it
+Use it when you want a folder of samples to become an instrument **fast**.
 
-Most multisamplers make you do admin work before you can make sound.
-
-This one does the opposite.
-
-It is meant for:
+It is especially good for:
 
 - quick sketching
-- texture instruments
-- found-sound banks
-- percussion and one-shots
-- randomized sample performance
+- one-shot banks
+- found-sound instruments
 - exploratory sound design
-
-It is especially good when you want a folder of samples to become an instrument **fast**.
-
----
-
-## What makes it different
-
-### 1. No manual mapping
-Traditional multisamplers often expect you to build zones, assign roots, and organize layers.
-
-This one is **load samples and go**.
-
-### 2. The whole bank is playable from any key
-A single MIDI note can trigger **any sample in the bank**.
-
-You are not locked into “this key only plays this file.”
-
-### 3. It is designed for variation
-Instead of repeating the same hit over and over, it can move through the bank in a more alive way.
-
-### 4. The controls are about feel
-The main controls are not there to bury you in technical setup. They are there to let you quickly shape:
-
-- envelope
-- pitch
-- stereo width
-- liveliness
-- tonal color
-- clarity/focus
-- output level
+- randomized playback
+- texture instruments
+- “turn this pile of audio into something playable right now” workflows
 
 ---
 
 ## Quick start
-
 1. Insert the plugin.
-2. On **slot 0**, choose **Open Multiple...**
-3. Select the samples you want in the instrument.
-4. Play MIDI notes.
-5. Adjust the controls to taste.
-
-That is it.
-
-The plugin auto-rescans the bank when the file selection changes, so you can swap the sample set and keep going.
-
----
-
-## How to think about it
-
-Do **not** think of it like a piano sampler where every note must be mapped carefully.
-
-Think of it more like this:
-
-> “I have a set of sounds. Turn them into a playable instrument with useful variation.”
-
-That is the correct mental model.
+2. On **slot 0**, choose **Open Multiple...** and select the files you want.
+3. Play MIDI notes.
+4. Pick **Random** or **Sequence** mode depending on whether you want wandering variation or ordered stepping.
+5. Shape the result with the envelope, macro, and playback controls.
 
 ---
 
 ## Main controls
+### Bank handling
+Force rescan slot 0 tells the plugin to refresh the load-and-go bank immediately. In normal use the current source also auto-polls the slot and queues bank reloads when the selection changes.
 
-## ADSR
-These shape the overall envelope of each triggered sample.
+### Envelope
+Attack, Decay, Sustain, Release, and Hold shape how each triggered sample behaves over time.
 
-### Attack
-How quickly the sound comes in.
+### Tone / feel
+Color, Focus, Width, Liveliness, Truth, and Output are the fast musical macros. Color warms or brightens, Focus softens or clarifies, Width changes spread, Liveliness adds motion and micro-variation, Truth moves between matched/cohesive behavior and raw individuality, and Output trims the result.
 
-- low = immediate
-- high = softer fade-in
+### Pitch / choice
+Pitch transposes the instrument globally. Sequence Mode switches between Random and Sequence sample choice.
 
-### Decay
-How long it takes to fall from the initial peak down toward the sustain level.
+### Playback body
+Stretch, Weight, Mono Source, and Dynamics shape how the bank feels physically. Dynamics in the current source is not just gain; it adds controlled loudness and density with internal protection.
 
-### Sustain
-The held level while the note is down.
+### Transient handling
+Transient Mode chooses how strongly attacks are protected: Auto, Punch, or Off.
 
-### Release
-How long it takes to fade out after note-off.
+### Playback engine
+Playback Mode selects Raw, Tape, or Hybrid. Raw stays direct. Tape is the slower, heavier path. Hybrid keeps the sample head more direct, uses body-phase/grain behavior for sustain, and can borrow donor tails after note-off.
 
----
+### Hybrid details
+Granular Body and Tail Borrow decide how much of the body and release are steered by the more synthetic / donor-assisted side of the engine.
 
-## Pitch
-Global pitch control.
-
-Use it to shift the whole instrument up or down.
-
-Range: **two octaves down to two octaves up**.
-
-Good for:
-
-- turning one bank into multiple instruments
-- making impacts heavier
-- making textures smaller/brighter
-- creative repurposing of the same sample set
+### Onset alignment
+Onset Align Mode switches between Classic and Gaussian behavior. Gaussian mode anchors starts more strongly to detected onsets and makes the current source feel more consistent across mixed material.
 
 ---
 
-## Liveliness
-Controls how much variation the instrument injects from trigger to trigger.
+## Notes
+### FluxBridge-aware behavior
 
-Low liveliness:
+The current source can listen for a **FluxBridge Receiver CC burst** on a fixed lane block. When that exact block is present, the sampler adds subtle motion-driven tone, focus, width, pan, and body contour behavior. It is designed to stay musical instead of turning every hit into obvious wobble.
 
-- steadier
-- more consistent
-- more repeatable
+### Good first recipe
 
-Higher liveliness:
+- Random mode
+- low Attack
+- moderate Release
+- a little Liveliness
+- set Pitch to a useful register
+- use Color and Focus first
+- finish with Width and Output
 
-- more movement
-- more small differences between hits
-- less stale repetition
+### Mental model
 
-Use this when the bank feels too static or too machine-like.
+Do not think of Sample as a full painstaking zone editor. Think of it as:
 
----
-
-## Random / Sequence
-Controls how samples are chosen.
-
-### Random
-Each trigger chooses from the bank with variation.
-
-Best for:
-
-- organic playback
-- avoiding obvious repetition
-- exploratory sound design
-
-### Sequence
-Walks through the bank in order.
-
-Best for:
-
-- consistent auditioning
-- predictable stepping through samples
-- controlled rhythmic use
-
----
-
-## Color
-Broad tonal tilt.
-
-- lower = warmer / darker
-- higher = brighter / lighter
-
-Use it to move the bank toward a darker body or brighter edge without digging into EQ.
-
----
-
-## Focus
-Shifts the sense of softness versus clarity.
-
-- lower = softer / smoother
-- higher = clearer / more present
-
-Useful when you want the bank to either sit back or speak more clearly.
-
----
-
-## Width
-Controls stereo spread.
-
-- lower = tighter / narrower
-- higher = wider / more open
-
-Useful for turning the same bank into either a centered instrument or a wider texture.
-
----
-
-## Truth
-Balances raw sample character versus a more controlled presentation.
-
-Lower values lean toward a more managed, even behavior.
-Higher values preserve more of the original sample differences.
-
-Use it like this:
-
-- lower = more cohesive bank behavior
-- higher = more raw individuality
-
----
-
-## Output
-Final output level.
-
-Use it to level-match the instrument after shaping it.
-
----
-
-## UI controls
-
-### Scroll wheel
-Hover a control and scroll to adjust it.
-
-### Right-click or double-click reset
-Right-click or double-click a control to return it to its default value.
-
----
-
-## Best use cases
-
-This instrument shines when:
-
-- you have many similar one-shots
-- you want one key to explore an entire bank
-- you want fast results instead of setup work
-- you want variation without building a huge sampler program by hand
-- you are sketching ideas and do not want workflow friction
+> “I have a bank of sounds. Make it playable and alive with almost no setup.”
 
 ---
 
 ## When it is the wrong tool
-
-Use a traditional multisampler instead when you need:
-
-- exact note-by-note mapping
-- carefully authored velocity layers
-- realistic chromatic instrument recreation
-- precise bank programming
-
-This instrument is about **speed, variation, and immediacy**, not obsessive manual zone design.
-
----
-
-## Design philosophy
-
-The goal is simple:
-
-**remove setup friction and make a bank of samples instantly playable.**
-
-It is designed around:
-
-- fast loading
-- immediate playability
-- variation without tedious programming
-- controls that shape the result in obvious ways
-
-In other words:
-
-> less administration, more sound.
-
----
-
-## Beginner recipe
-
-If you do not know where to start:
-
-1. Load a bank of samples into slot 0.
-2. Set **Random** mode.
-3. Set **Attack** low.
-4. Set **Release** somewhere moderate.
-5. Add a little **Liveliness**.
-6. Use **Pitch** to find the most useful register.
-7. Adjust **Color** and **Focus** until it sits right.
-8. Use **Width** and **Output** to finish.
-
-That will get you most of the way there.
+Use a traditional multisampler instead when you need exact key mapping, velocity-layer authoring, or realistic note-by-note instrument recreation.
 
 ---
 
 ## In one sentence
-
-Load-and-Go MultiSampler turns a pile of samples into a playable, variable instrument with almost no setup.
+Sample turns a loose bank of audio files into a playable, variable instrument with almost no setup.

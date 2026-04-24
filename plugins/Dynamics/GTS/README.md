@@ -1,76 +1,62 @@
-# Gaussian Transient Shaper
+# Gaussian Transient Shaper (GTS)
 
-Gaussian Transient Shaper is a linear-phase transient processor that separates **attack** and **sustain** using time-scale decomposition rather than envelope detection.
+## What it is
+GTS splits the signal into **attack** and **sustain** by using a true Gaussian FIR blur.
 
-It uses a true Gaussian FIR filter to split the signal into:
-- **Sustain** (slow, low-frequency temporal energy)
-- **Attack** (the residual: fast transient detail)
+In the current Faust source:
 
-These components are recombined with independent gain control and latency-aligned mixing.
+- the blurred path acts like the sustain component
+- the aligned dry-minus-blur path acts like the attack component
+- you rebalance them with dedicated gain controls
 
----
-
-## Why Gaussian?
-
-Most transient shapers rely on envelope followers and thresholds, making them:
-- level-dependent,
-- nonlinear,
-- program-dependent.
-
-This plugin instead uses a **Gaussian time-domain filter**, which provides:
-- smooth, ripple-free behavior,
-- exact linear phase,
-- predictable results independent of input level.
-
-“Time” here means *time scale*, not detector speed.
+That makes it a very direct transient shaper with a more explicitly defined split than the usual “attack/sustain” black box.
 
 ---
 
-## Controls
+## Why use it
+Use GTS when you want to:
 
-### Control Group
-- **Gaussian Sigma (σ) [ms]**  
-  Sets the time scale used to separate attack and sustain.
-  - Small values (≈0.3–1 ms): only very sharp transients are treated as attack.
-  - Medium values (≈2–4 ms): drum hits, plucks, consonants.
-  - Larger values (≈6–8 ms): broader impacts and macro punch.
-
-- **Attack Gain [dB]**  
-  Boosts or attenuates the transient (residual) component.
-
-- **Sustain Gain [dB]**  
-  Boosts or attenuates the sustained body of the sound.
-
-### Gain Group
-- **Mix**  
-  Blends between the aligned dry signal and the shaped signal.
-
-- **Output Gain [dB]**  
-  Final level trim for gain matching.
+- sharpen attacks
+- soften attacks
+- pull sustain down
+- make sustain bloom more
+- rebalance punch versus body in a very controlled way
 
 ---
 
-## Technical Notes
-
-- **Linear-phase FIR processing**  
-  The plugin introduces a fixed latency equal to half the FIR length.
-- **Level-independent behavior**  
-  Input level does not affect transient detection.
-- **No internal saturation**  
-  The processor is linear by design; use output gain to manage level.
+## Quick start
+1. Start with **Attack Gain** and **Sustain Gain** at 0 dB.
+2. Set **Gaussian Sigma** to decide how broad the sustain blur should be.
+3. Raise or lower **Attack Gain** to emphasize or soften the transient portion.
+4. Raise or lower **Sustain Gain** to thicken or dry out the body.
+5. Use **Mix** and **Output Gain** to blend and level-match.
 
 ---
 
-## Use Cases
+## Main controls
+### Gaussian Sigma
+The width of the Gaussian smoothing window, in milliseconds. Lower values behave more like very fine transient separation; higher values create a broader sustain estimate.
 
-- Tightening or softening drum transients
-- Adding punch without envelope pumping
-- Sculpting vocal consonants
-- Sound-design and SFX transient control
-- Parallel transient shaping via Mix
+### Attack Gain
+Gain applied to the extracted attack component.
+
+### Sustain Gain
+Gain applied to the Gaussian-smoothed sustain component.
+
+### Mix
+Wet/dry blend between the shaped result and the aligned dry path.
+
+### Output Gain
+Final gain trim.
 
 ---
 
-## License
+## Notes
+The current source declares **128 samples of latency** because the Gaussian FIR is 257 taps wide and the dry path is delay-aligned to match it.
 
-MIT License.
+That latency is part of the design, not a bug.
+
+---
+
+## In one sentence
+GTS uses Gaussian blur to split attack from sustain and lets you rebalance them directly.

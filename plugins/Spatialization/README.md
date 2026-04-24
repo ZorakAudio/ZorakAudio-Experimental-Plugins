@@ -1,14 +1,17 @@
 # Spatialization
 
-Panning, distance, occlusion, room, and placement experiments.
+Spatialization plugins in this repository shape **distance, placement, occlusion, room cues, and perceptual foreground/background depth**.
 
-## Plugins
+## Current plugins
 
-- `3DPanner` — Hyperreal 3D Panner (JSFX)
-- `DDT` — Designed Distance Topology (DDT) (JSFX)
-- `DOT` — Designed Occlusion Topology (DOT) (JSFX)
-- `DPT` — Designed Panning Topology (DPT) (JSFX)
-- `Roomalizer` — Roomalizer (JSFX)
-- `SaliencePush` — Salience Push (JSFX)
+- **3DPanner** — headphone-focused mouse-first 3D panner
+- **DDT** — distance and room-perception shaper
+- **DOT** — perceptual occlusion tool
+- **DPT** — natural psychoacoustic panner for speakers or headphones
+- **PsychoConvolver** — IR-based space processor with perceptual macro controls
+- **Roomalizer** — minimal early-reflection room placer
+- **SaliencePush** — perceptual “sit back” tool for pushing a source behind a foreground
 
-Each plugin leaf carries its own `plugin.json`, source entry, and optional tests/docs/assets.
+## Category note
+
+This category is broader than simple panning. The common thread is changing where a sound feels like it lives.
