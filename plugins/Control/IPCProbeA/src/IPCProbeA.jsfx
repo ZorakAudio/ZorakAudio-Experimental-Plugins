@@ -1,0 +1,81 @@
+desc:DSP-JSFX IPC Probe - one sender instance, one receiver instance
+
+// Instantiate this plugin twice with the same Bus Name.
+// Set one copy to Sender and the other to Receiver. If IPC works, the Receiver
+// shows the sender ID/sequence and outputs a tiny debug tone whose level follows
+// the received sequence.
+
+slider1:role=0<0,1,1{Sender,Receiver}>Role
+slider2:#bus_name="ZorakAudio.IPC.Probe"<string>Bus Name
+
+@init
+function frac(x) ( x - floor(x); );
+
+comm_join(#bus_name);
+instance_set_name("DSP-JSFX IPC Probe");
+msg_subscribe(#bus_name);
+msg_advertise(#bus_name, 1);
+gmem_attach_size(#bus_name, 64);
+
+iid = instance_id();
+seq = 0;
+rx_seq = 0;
+rx_src = 0;
+rx_count = 0;
+last_peer_count = 0;
+phase = 0;
+
+@slider
+comm_join(#bus_name);
+msg_subscribe(#bus_name);
+msg_advertise(#bus_name, 1);
+gmem_attach_size(#bus_name, 64);
+
+@block
+role < 0.5 ? (
+  seq += 1;
+  msg_send(#bus_name, 1001, iid, seq, samplesblock, 0);
+  gmem[0] = iid;
+  gmem[1] = seq;
+) : (
+  while (msg_recv(#bus_name, src, tag, a, b, c, d)) (
+    (tag == 1001) && (src != iid) ? (
+      rx_src = src;
+      rx_seq = b;
+      rx_count += 1;
+      gmem[2] = rx_src;
+      gmem[3] = rx_seq;
+      gmem[4] = rx_count;
+    );
+  );
+);
+
+last_peer_count = msg_peer_count(#bus_name, 3);
+
+@sample
+role >= 0.5 ? (
+  amp = min(0.02, 0.00025 * rx_count);
+  phase += 440 / srate;
+  phase >= 1 ? phase -= 1;
+  spl0 = sin(phase * 2 * $pi) * amp;
+  spl1 = spl0;
+) : (
+  spl0 = 0;
+  spl1 = 0;
+);
+
+@gfx 520 170
+gfx_clear = 0;
+gfx_set(0.04, 0.04, 0.05, 1); gfx_rect(0, 0, gfx_w, gfx_h);
+gfx_setfont(1, "Arial", 16);
+gfx_set(0.85, 0.88, 0.95, 1);
+gfx_x = 12; gfx_y = 12; gfx_drawstr("DSP-JSFX IPC Probe");
+
+gfx_setfont(1, "Arial", 12);
+gfx_x = 12; gfx_y = 44;
+role < 0.5 ? gfx_drawstr("Mode: Sender") : gfx_drawstr("Mode: Receiver");
+
+gfx_x = 12; gfx_y = 66; gfx_drawstr("Peer count: "); gfx_drawnumber(last_peer_count, 0);
+gfx_x = 12; gfx_y = 88; gfx_drawstr("Local ID: "); gfx_drawnumber(iid, 0);
+gfx_x = 12; gfx_y = 110; gfx_drawstr("TX seq / RX seq: "); gfx_drawnumber(seq, 0); gfx_drawstr(" / "); gfx_drawnumber(rx_seq, 0);
+gfx_x = 12; gfx_y = 132; gfx_drawstr("RX source / count: "); gfx_drawnumber(rx_src, 0); gfx_drawstr(" / "); gfx_drawnumber(rx_count, 0);
