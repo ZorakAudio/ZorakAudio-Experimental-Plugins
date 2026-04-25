@@ -35,7 +35,7 @@ public:
 
     bool hasReadyMessages() const noexcept;
     bool hasPendingForThisInstance() const noexcept;
-    bool enqueuePendingMessage(const DspJsfxMessage& message);
+    bool enqueuePendingMessage(const DspJsfxMessage& message); // same-process fallback/testing hook
 
     std::uint64_t instanceId() const noexcept { return instanceId_; }
     const std::string& instanceUid() const noexcept { return uid_; }
@@ -99,6 +99,7 @@ private:
     mutable std::mutex inboxMutex_;
     std::unordered_map<std::uint64_t, std::deque<DspJsfxMessage>> readyInbox_;
     std::unordered_map<std::uint64_t, std::deque<DspJsfxMessage>> pendingInbox_;
+    std::uint64_t ipcLastReadSeq_ = 0;
     std::vector<DspJsfxMessage> outbox_;
     std::unordered_map<std::uint64_t, std::uint64_t> droppedByChannel_;
     int lastMessageLength_ = 0;

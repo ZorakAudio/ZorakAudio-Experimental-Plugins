@@ -60,5 +60,7 @@ if __name__ == "__main__":
     expect_ok(base("receiver.jsfx"), "receiver compiles")
     expect_ok(base("gmem_writer.jsfx"), "gmem writer compiles")
     expect_ok(base("gmem_reader.jsfx"), "gmem reader compiles")
+    expect_ok(base("string_bus_slider.jsfx"), "string bus slider compiles")
+    expect_ok(base("ipc_probe.jsfx"), "IPC probe compiles")
     expect_fail(base("invalid_msg_sample.jsfx"), "msg_send rejected in @sample", "msg_send() is only valid in @block")
     expect_fail(base("invalid_gmem_put_sample.jsfx"), "gmem_put rejected in @sample", "gmem_put() is only valid in @block")

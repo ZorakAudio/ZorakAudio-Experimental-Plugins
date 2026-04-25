@@ -252,8 +252,16 @@ static inline int64_t getTrackedJsfxMemUsed (DSPJSFX_State* st) noexcept
         return 0;
 
     const auto it = gMemUsed.find (st);
-    const int64_t tracked = (it != gMemUsed.end() ? it->second : st->memN);
-    return std::max<int64_t> ((int64_t) 0, std::min<int64_t> (tracked, st->memN));
+    const int64_t tracked = (it != gMemUsed.end() ? it->second : 0);
+
+    // The DSP heap is intentionally retained across state resets/reloads. If a
+    // previous run grew memN enough to cover @gfx history buffers, subsequent
+    // writes inside that already-allocated range do not call jsfx_ensure_mem(),
+    // so the high-water tracker can remain zero and the @gfx VM receives no
+    // mirrored history. Treat an empty tracker as "mirror the current allocation"
+    // rather than "mirror nothing"; buildGfxMirrorRanges() still bounds the copy.
+    const int64_t effective = tracked > 0 ? tracked : st->memN;
+    return std::max<int64_t> ((int64_t) 0, std::min<int64_t> (effective, st->memN));
 }
 
 static inline void noteTrackedJsfxMemUsed (DSPJSFX_State* st, int64_t usedEndExclusive) noexcept
@@ -6560,7 +6568,7 @@ private:
 
         gMemOwner[&st] = st.mem;
         gMemSize [&st] = st.memN;
-        gMemUsed [&st] = 0;
+        gMemUsed [&st] = st.memN;
     }
 
     void resetStateStructOnly()
@@ -6578,7 +6586,7 @@ private:
 
         gMemOwner[&st] = st.mem;
         gMemSize [&st] = st.memN;
-        gMemUsed [&st] = 0;
+        gMemUsed [&st] = st.memN;
     }
 
     void bindMidiRuntimeBuffers()

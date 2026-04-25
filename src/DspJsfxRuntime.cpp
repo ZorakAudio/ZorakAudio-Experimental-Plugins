@@ -2,18 +2,87 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <random>
+#include <unordered_set>
+
+#if JUCE_WINDOWS || defined(_WIN32)
+ #ifndef NOMINMAX
+  #define NOMINMAX 1
+ #endif
+ #include <windows.h>
+ #ifdef min
+  #undef min
+ #endif
+ #ifdef max
+  #undef max
+ #endif
+#else
+ #include <unistd.h>
+#endif
 
 namespace za::jsfx
 {
 
 namespace
 {
-std::atomic<std::uint64_t> gNextInstanceId { 1 };
+std::atomic<std::uint64_t> gNextInstanceCounter { 1 };
 std::mutex gRuntimeRegistryMutex;
 std::unordered_map<DSPJSFX_State*, DspJsfxRuntime*> gRuntimeRegistry;
+std::mutex gInstanceIdMutex;
+std::unordered_set<std::uint64_t> gIssuedInstanceIds;
+
+static constexpr std::uint64_t kInstanceId53Mask = (1ull << 53) - 1ull;
+
+static std::uint64_t currentProcessIdForSalt() noexcept
+{
+   #if JUCE_WINDOWS || defined(_WIN32)
+    return static_cast<std::uint64_t> (::GetCurrentProcessId());
+   #else
+    return static_cast<std::uint64_t> (::getpid());
+   #endif
+}
+
+static std::uint64_t splitmix64(std::uint64_t x) noexcept
+{
+    x += 0x9e3779b97f4a7c15ull;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
+    return x ^ (x >> 31);
+}
+
+static std::uint64_t processInstanceSalt()
+{
+    std::uint64_t seed = static_cast<std::uint64_t> (
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    seed ^= currentProcessIdForSalt() * 0x9e3779b97f4a7c15ull;
+    seed ^= reinterpret_cast<std::uintptr_t> (&seed);
+
+    std::random_device rd;
+    seed ^= (static_cast<std::uint64_t> (rd()) << 32);
+    seed ^= static_cast<std::uint64_t> (rd());
+    return splitmix64(seed);
+}
+
+static std::uint64_t generateInstanceId53()
+{
+    static const std::uint64_t salt = processInstanceSalt();
+
+    for (;;)
+    {
+        const auto counter = gNextInstanceCounter.fetch_add(1u, std::memory_order_relaxed);
+        std::uint64_t id = splitmix64(salt ^ counter) & kInstanceId53Mask;
+        if (id == 0)
+            continue;
+
+        std::lock_guard<std::mutex> lock(gInstanceIdMutex);
+        if (gIssuedInstanceIds.insert(id).second)
+            return id;
+    }
+}
 
 static std::string makeUid(std::uint64_t instanceId)
 {
@@ -26,16 +95,16 @@ static int clampIntArg(double v) noexcept
 {
     if (! std::isfinite(v))
         return 0;
-    if (v <= static_cast<double> (std::numeric_limits<int>::min()))
-        return std::numeric_limits<int>::min();
-    if (v >= static_cast<double> (std::numeric_limits<int>::max()))
-        return std::numeric_limits<int>::max();
+    if (v <= static_cast<double> ((std::numeric_limits<int>::min)()))
+        return (std::numeric_limits<int>::min)();
+    if (v >= static_cast<double> ((std::numeric_limits<int>::max)()))
+        return (std::numeric_limits<int>::max)();
     return static_cast<int> (std::llround(v));
 }
 } // namespace
 
 DspJsfxRuntime::DspJsfxRuntime()
-    : instanceId_ (gNextInstanceId.fetch_add(1u, std::memory_order_relaxed)),
+    : instanceId_ (generateInstanceId53()),
       uid_ (makeUid(instanceId_))
 {
 }
@@ -82,6 +151,7 @@ void DspJsfxRuntime::reset()
     std::lock_guard<std::mutex> lock(inboxMutex_);
     readyInbox_.clear();
     pendingInbox_.clear();
+    ipcLastReadSeq_ = 0;
     outbox_.clear();
     droppedByChannel_.clear();
     lastMessageLength_ = 0;
@@ -90,6 +160,17 @@ void DspJsfxRuntime::reset()
 void DspJsfxRuntime::beginBlock(DSPJSFX_State&, int)
 {
     std::lock_guard<std::mutex> lock(inboxMutex_);
+
+    // Cross-process IPC path: materialize shared-memory ring messages into this
+    // block's stable ready inbox before script @block runs.
+    DspJsfxMessageBus::instance().collectInbox(instanceId_,
+                                               domainHash_,
+                                               subscriptions_,
+                                               ipcLastReadSeq_,
+                                               readyInbox_,
+                                               droppedByChannel_);
+
+    // Same-process fallback/testing path retained for code that injects directly.
     for (auto& kv : pendingInbox_)
     {
         auto& dst = readyInbox_[kv.first];
@@ -125,7 +206,13 @@ bool DspJsfxRuntime::hasReadyMessages() const noexcept
 
 bool DspJsfxRuntime::hasPendingForThisInstance() const noexcept
 {
-    return hasReadyMessages();
+    if (hasReadyMessages())
+        return true;
+
+    return DspJsfxMessageBus::instance().hasPendingFor(instanceId_,
+                                                       domainHash_,
+                                                       subscriptions_,
+                                                       ipcLastReadSeq_);
 }
 
 bool DspJsfxRuntime::enqueuePendingMessage(const DspJsfxMessage& message)
@@ -154,6 +241,13 @@ bool DspJsfxRuntime::joinDomain(std::uint64_t domainHash)
 {
     if (domainHash == 0)
         domainHash = 0x9ae16a3b2f90404full;
+    if (domainHash_ != domainHash)
+    {
+        std::lock_guard<std::mutex> lock(inboxMutex_);
+        readyInbox_.clear();
+        pendingInbox_.clear();
+        ipcLastReadSeq_ = 0;
+    }
     domainHash_ = domainHash;
     DspJsfxMessageBus::instance().updateDomain(instanceId_, domainHash_);
     return true;

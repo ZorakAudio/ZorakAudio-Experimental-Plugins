@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -12,6 +13,7 @@ namespace za::jsfx
 {
 
 class DspJsfxRuntime;
+class DspJsfxSharedMemorySegment;
 
 enum class DspJsfxMessageKind : std::uint8_t
 {
@@ -51,10 +53,26 @@ public:
     void updateSubscription(std::uint64_t instanceId, std::uint64_t channelHash, bool subscribed);
     void updateAdvertisement(std::uint64_t instanceId, std::uint64_t channelHash, std::uint64_t caps);
 
+    // Appends this block's outbound messages to the shared-memory IPC ring.
+    // Receivers materialize them at their next @block via collectInbox().
     void flushOutbox(std::uint64_t instanceId,
                      std::uint64_t domainHash,
                      const std::vector<DspJsfxMessage>& outbox,
                      std::unordered_map<std::uint64_t, std::uint64_t>& droppedByChannel);
+
+    // Pulls messages from the shared-memory IPC ring into the caller's ready inbox.
+    // lastReadSeq is per runtime/domain and survives across blocks.
+    void collectInbox(std::uint64_t instanceId,
+                      std::uint64_t domainHash,
+                      const std::unordered_set<std::uint64_t>& subscriptions,
+                      std::uint64_t& lastReadSeq,
+                      std::unordered_map<std::uint64_t, std::deque<DspJsfxMessage>>& readyInbox,
+                      std::unordered_map<std::uint64_t, std::uint64_t>& droppedByChannel);
+
+    bool hasPendingFor(std::uint64_t instanceId,
+                       std::uint64_t domainHash,
+                       const std::unordered_set<std::uint64_t>& subscriptions,
+                       std::uint64_t lastReadSeq);
 
     std::size_t peerCount(std::uint64_t domainHash, std::uint64_t channelHash, int role) const;
     std::uint64_t peerId(std::uint64_t domainHash, std::uint64_t channelHash, int role, std::size_t index) const;
@@ -69,7 +87,7 @@ private:
 
     struct InstanceRecord
     {
-        DspJsfxRuntime* runtime = nullptr;
+        DspJsfxRuntime* runtime = nullptr; // same-process convenience only; IPC does not depend on this pointer
         std::uint64_t instanceId = 0;
         std::uint64_t domainHash = 0;
         std::int64_t nameHandle = 0;
@@ -78,10 +96,18 @@ private:
         std::unordered_map<std::uint64_t, std::uint64_t> advertisedCaps;
     };
 
+    struct DomainState;
+
+    DomainState* domainFor(std::uint64_t domainHash) const;
+    void upsertIpcInstance(const InstanceRecord& rec) const;
+    void removeIpcInstance(std::uint64_t instanceId, std::uint64_t domainHash) const;
+
     static bool matchesRole(const InstanceRecord& rec, std::uint64_t channelHash, int role);
 
     mutable std::mutex mutex_;
     std::unordered_map<std::uint64_t, InstanceRecord> instances_;
+    mutable std::mutex domainsMutex_;
+    mutable std::unordered_map<std::uint64_t, std::unique_ptr<DomainState>> domains_;
 };
 
 } // namespace za::jsfx
