@@ -157,6 +157,7 @@ extern "C" double jsfx_slider_next_chg (DSPJSFX_State* st,
 // to this file.
 // ------------------------------
 #include "YSFXGfxInterpreter.h"
+#include "YSFXGfxCommCompat.h"
 #include "WDL/fft.h"
 
 
@@ -384,6 +385,13 @@ struct JsfxSliderDecl
     juce::StringArray choices;
     bool isChoice = false;
 
+    // DSP-JSFX extension: string input slider.
+    // Syntax:
+    //   slider1:#bus_name="main"<string>Bus Name
+    // The alias variable receives an opaque runtime string handle.
+    bool isString = false;
+    juce::String stringDefault;
+
     // Optional UI metadata parsed from JSFX comments
     juce::String tooltip;
 
@@ -446,6 +454,38 @@ static bool parseFloat (const std::string& s, float& out)
         return false;
     out = (float) v;
     return true;
+}
+
+static juce::String parseJsfxStringDefaultToken (std::string tok)
+{
+    tok = trimAscii (tok);
+    if (tok.size() >= 2)
+    {
+        const char quote = tok.front();
+        if ((quote == '"' || quote == '\'') && tok.back() == quote)
+        {
+            std::string out;
+            out.reserve (tok.size() - 2);
+            for (size_t i = 1; i + 1 < tok.size(); ++i)
+            {
+                char c = tok[i];
+                if (c == '\\' && i + 1 < tok.size() - 1)
+                {
+                    const char e = tok[++i];
+                    if (e == 'n') out.push_back ('\n');
+                    else if (e == 'r') out.push_back ('\r');
+                    else if (e == 't') out.push_back ('\t');
+                    else out.push_back (e);
+                }
+                else
+                {
+                    out.push_back (c);
+                }
+            }
+            return juce::String::fromUTF8 (out.c_str());
+        }
+    }
+    return juce::String::fromUTF8 (tok.c_str());
 }
 
 // sliderN:DEF<MIN,MAX,STEP{,SKEW}>Label
@@ -540,6 +580,24 @@ static std::vector<JsfxSliderDecl> parseJsfxSliderDecls (const char* jsfxText, j
         d.varName = juce::String::fromUTF8 (varTok.c_str()).trim();
 
         if (m[3].matched)
+        {
+            const auto rangeKind = juce::String::fromUTF8 (trimAscii (m[3].str()).c_str()).trim().toLowerCase();
+            if (rangeKind == "string" || rangeKind == "str" || rangeKind == "text")
+            {
+                d.isString = true;
+                d.isChoice = false;
+                d.choices.clear();
+                d.stringDefault = parseJsfxStringDefaultToken (defTok);
+            }
+        }
+
+        if (! d.isString && d.varName.startsWithChar ('#'))
+        {
+            d.isString = true;
+            d.stringDefault = parseJsfxStringDefaultToken (defTok);
+        }
+
+        if (! d.isString && m[3].matched)
         {
             std::string r = m[3].str();
             // IMPORTANT: do NOT naively split on ',' here.
@@ -2069,6 +2127,20 @@ public:
         // Tooltips:  // #TOOLTIP: ... (immediately above a slider line)
         // Help:      // #HELP: ...    (deprecated; the embedded README.md now drives the ? panel)
         sliderDecls = parseJsfxSliderDecls (kJsfxSourceText, nullptr);
+        sliderStringUsed.fill (false);
+        for (auto& text : stringSliderTexts)
+            text = {};
+        stringSliderAppliedSeq.fill (0);
+        for (auto& seq : stringSliderSeq)
+            seq.store (1u, std::memory_order_release);
+        for (const auto& s : sliderDecls)
+        {
+            if (s.isString && s.index0 >= 0 && s.index0 < 64)
+            {
+                sliderStringUsed[(size_t) s.index0] = true;
+                stringSliderTexts[(size_t) s.index0] = s.stringDefault;
+            }
+        }
 
         embeddedReadmeMarkdown = za::pluginui::getEmbeddedPluginReadmeMarkdown();
         if (embeddedReadmeMarkdown.isEmpty())
@@ -2110,6 +2182,9 @@ public:
         juce::AudioProcessorValueTreeState::ParameterLayout layout;
         for (const auto& s : sliderDecls)
         {
+            if (s.isString)
+                continue;
+
             const auto pid = sanitizeId (s.id);
 
             // Record how this slider maps back into JSFX runtime values.
@@ -2303,6 +2378,69 @@ public:
             gfxSnapshotForcePublish.store (true, std::memory_order_release);
     }
 
+    void syncGfxSliderAliasVarsToSliderValues (double* sliders,
+                                               int sliderCount,
+                                               const double* varsBefore,
+                                               const double* varsAfter,
+                                               int varsCount,
+                                               const double* effectiveSliders,
+                                               uint64_t notifyMask) const noexcept
+    {
+        if (sliders == nullptr || varsAfter == nullptr || effectiveSliders == nullptr || notifyMask == 0)
+            return;
+
+        const int n = juce::jlimit (0, 64, sliderCount);
+
+        for (int i = 0; i < n; ++i)
+        {
+            const uint64_t bit = (uint64_t) 1u << (uint64_t) i;
+            if ((notifyMask & bit) == 0)
+                continue;
+
+            if (! sliderParamUsed[(size_t) i] || sliderStringUsed[(size_t) i])
+                continue;
+
+            const int vIdx = sliderAliasVarIndex[(size_t) i];
+            if (vIdx < 0 || vIdx >= varsCount)
+                continue;
+
+            const auto sameDouble = [] (double a, double b) noexcept
+            {
+                if (a == b)
+                    return true;
+                if (std::isnan (a) && std::isnan (b))
+                    return true;
+                return std::abs (a - b) <= 1.0e-12;
+            };
+
+            // Direct slider()/sliderN writes already update the VM's slider array.
+            // Only synthesize a slider-array update when the slider itself stayed
+            // at the incoming snapshot value but its alias variable changed.
+            if (! sameDouble (sliders[i], effectiveSliders[i]))
+                continue;
+
+            if (varsBefore != nullptr && vIdx < varsCount && sameDouble (varsBefore[vIdx], varsAfter[vIdx]))
+                continue;
+
+            double v = varsAfter[vIdx];
+            if (! std::isfinite (v))
+                continue;
+
+            const auto& info = sliderParamInfo[(size_t) i];
+            v = juce::jlimit<double> ((double) info.min, (double) info.max, v);
+
+            const double step = (double) (info.step > 0.0f ? info.step : (info.isChoice ? 1.0f : 0.0f));
+            if (step > 0.0)
+            {
+                const double q = std::llround ((v - (double) info.min) / step);
+                v = (double) info.min + q * step;
+                v = juce::jlimit<double> ((double) info.min, (double) info.max, v);
+            }
+
+            sliders[i] = v;
+        }
+    }
+
     void registerGfxSnapshotClient() noexcept
     {
         gfxSnapshotUsers.fetch_add (1, std::memory_order_acq_rel);
@@ -2379,6 +2517,7 @@ public:
         dspGestureActive.fill (false);
         resetGfxSliderPreviewState();
         (void) pushParamsToStateSliders();
+        (void) applyStringSlidersToState (true);
 
         jsfx_init (&st);
 
@@ -2570,6 +2709,7 @@ public:
         const bool fileLoadsPromoted = promotePendingFileLoads();
 
         const bool slidersChanged = pushParamsToStateSliders();
+        const bool stringSlidersChanged = applyStringSlidersToState (false);
 
        #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
         auto* shadow = (correctnessRuntime != nullptr && correctnessRuntime->isReady())
@@ -2577,7 +2717,7 @@ public:
                          : nullptr;
        #endif
 
-        if (slidersChanged)
+        if (slidersChanged || stringSlidersChanged)
         {
             jsfx_slider (&st);
 
@@ -2613,7 +2753,7 @@ public:
             const int blockIndex = correctnessRuntime->getNextBlockIndex();
             shadow->beginBlock (st, numSamples);
 
-            if (slidersChanged)
+            if (slidersChanged || stringSlidersChanged)
                 correctnessRuntime->compareSliderAndVarState (st, blockIndex, -1, "pre-@block/@slider");
 
             correctnessRuntime->compareSliderAndVarState (st, blockIndex, -1, "pre-@block");
@@ -2707,6 +2847,7 @@ public:
         const bool keepAwakeBefore = getSmartIdleKeepAwakeFlag();
         const bool preProcessWakeEvent = fileLoadsPromoted
                                       || slidersChanged
+                                      || stringSlidersChanged
                                       || gfxWritesApplied
                                       || hasIncomingMidi
                                       || hasIncomingJsfxMessages
@@ -2856,6 +2997,12 @@ public:
             }
         }
 
+        {
+            auto stringState = makeStringSliderStateValueTree();
+            if (stringState.isValid() && stringState.getNumChildren() > 0)
+                tree.addChild (stringState, -1, nullptr);
+        }
+
         std::unique_ptr<juce::XmlElement> xml (tree.createXml());
         copyXmlToBinary (*xml, destData);
     }
@@ -2874,6 +3021,10 @@ public:
             auto fileUi = tree.getChildWithName ("FILE_UI");
             if (fileUi.isValid())
                 tree.removeChild (fileUi, nullptr);
+
+            auto stringSliders = tree.getChildWithName ("STRING_SLIDERS");
+            if (stringSliders.isValid())
+                tree.removeChild (stringSliders, nullptr);
 
             apvts->replaceState (tree);
             requestEmergencyMidiCleanup();
@@ -2911,6 +3062,9 @@ public:
 
             if (fileUi.isValid())
                 restoreFileUiState (fileUi, true, true);
+
+            if (stringSliders.isValid())
+                restoreStringSliderState (stringSliders);
         }
     }
 
@@ -2921,6 +3075,29 @@ public:
 
     juce::AudioProcessorValueTreeState& getApvts() noexcept { return *apvts; }
     const juce::AudioProcessorValueTreeState& getApvts() const noexcept { return *apvts; }
+
+    juce::String getStringSliderText (int index0) const
+    {
+        if (index0 < 0 || index0 >= 64 || ! sliderStringUsed[(size_t) index0])
+            return {};
+        std::lock_guard<std::mutex> lk (stringSliderMutex);
+        return stringSliderTexts[(size_t) index0];
+    }
+
+    void setStringSliderText (int index0, juce::String text)
+    {
+        if (index0 < 0 || index0 >= 64 || ! sliderStringUsed[(size_t) index0])
+            return;
+
+        text = text.substring (0, 1024);
+        {
+            std::lock_guard<std::mutex> lk (stringSliderMutex);
+            if (stringSliderTexts[(size_t) index0] == text)
+                return;
+            stringSliderTexts[(size_t) index0] = text;
+        }
+        stringSliderSeq[(size_t) index0].fetch_add (1u, std::memory_order_acq_rel);
+    }
 
    #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
     bool hasCorrectnessMonitor() const noexcept { return correctnessRuntime != nullptr; }
@@ -6516,6 +6693,82 @@ private:
         return true;
     }
 
+    bool applyStringSliderIndexToState (size_t i, const juce::String& text) noexcept
+    {
+        if (i >= 64 || ! sliderStringUsed[i])
+            return false;
+
+        double* slot = &st.sliders[i];
+        const auto utf8 = text.toRawUTF8();
+        const int len = (int) std::strlen (utf8);
+        if (jsfx_string_assign_utf8 (&st, slot, utf8, len) <= 0 && len > 0)
+            return false;
+
+        const int varsCap = (int) (sizeof (st.vars) / sizeof (st.vars[0]));
+        const int vIdx = sliderAliasVarIndex[i];
+        if (vIdx >= 0 && vIdx < varsCap)
+            st.vars[vIdx] = *slot;
+
+        return true;
+    }
+
+    bool applyStringSlidersToState (bool force)
+    {
+        bool changed = false;
+        for (size_t i = 0; i < 64; ++i)
+        {
+            if (! sliderStringUsed[i])
+                continue;
+
+            const uint32_t seq = stringSliderSeq[i].load (std::memory_order_acquire);
+            if (! force && seq == stringSliderAppliedSeq[i])
+                continue;
+
+            juce::String text;
+            {
+                std::lock_guard<std::mutex> lk (stringSliderMutex);
+                text = stringSliderTexts[i];
+            }
+
+            if (applyStringSliderIndexToState (i, text) || force)
+            {
+                stringSliderAppliedSeq[i] = seq;
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    juce::ValueTree makeStringSliderStateValueTree() const
+    {
+        juce::ValueTree root ("STRING_SLIDERS");
+        std::lock_guard<std::mutex> lk (stringSliderMutex);
+        for (size_t i = 0; i < 64; ++i)
+        {
+            if (! sliderStringUsed[i])
+                continue;
+            juce::ValueTree item ("SLIDER");
+            item.setProperty ("index", (int) i, nullptr);
+            item.setProperty ("text", stringSliderTexts[i], nullptr);
+            root.addChild (item, -1, nullptr);
+        }
+        return root;
+    }
+
+    void restoreStringSliderState (const juce::ValueTree& root)
+    {
+        for (int ci = 0; ci < root.getNumChildren(); ++ci)
+        {
+            auto item = root.getChild (ci);
+            if (! item.hasType ("SLIDER"))
+                continue;
+            const int idx = (int) item.getProperty ("index", -1);
+            if (idx < 0 || idx >= 64 || ! sliderStringUsed[(size_t) idx])
+                continue;
+            setStringSliderText (idx, item.getProperty ("text", {}).toString());
+        }
+    }
+
     bool pushParamsToStateSliders()
     {
         bool changed = false;
@@ -6980,6 +7233,12 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     std::array<SliderParamInfo, 64> sliderParamInfo {};
     std::array<int, 64>              sliderAliasVarIndex {};
 
+    std::array<bool, 64>           sliderStringUsed {};
+    std::array<juce::String, 64>   stringSliderTexts {};
+    mutable std::mutex             stringSliderMutex;
+    std::array<std::atomic<uint32_t>, 64> stringSliderSeq {};
+    std::array<uint32_t, 64>       stringSliderAppliedSeq {};
+
     std::array<bool, 64>           sliderParamUsed {};
 
     std::vector<const float*> inPtrs;
@@ -7091,25 +7350,50 @@ public:
             row.label->setText (sd.name, juce::dontSendNotification);
             row.label->setJustificationType (juce::Justification::centredLeft);
 
-            const bool isEnum = (sd.isChoice && sd.choices.size() > 0);
-            if (isEnum)
-            {
-                row.combo = std::make_unique<juce::ComboBox>();
-                row.combo->setEditableText (false);
-                row.combo->setJustificationType (juce::Justification::centredLeft);
-                row.combo->addItemList (sd.choices, 1);
+            if (sd.tooltip.isNotEmpty())
+                row.label->setTooltip (sd.tooltip);
 
-                row.comboAttach = std::make_unique<ComboAttach> (proc.getApvts(), sanitizeId ("slider" + juce::String (sd.index0 + 1)), *row.combo);
-                addAndMakeVisible (*row.combo);
+            if (sd.isString)
+            {
+                row.text = std::make_unique<juce::TextEditor>();
+                row.text->setMultiLine (false);
+                row.text->setReturnKeyStartsNewLine (false);
+                row.text->setSelectAllWhenFocused (true);
+                row.text->setText (proc.getStringSliderText (sd.index0), false);
+                if (sd.tooltip.isNotEmpty())
+                    row.text->setTooltip (sd.tooltip);
+
+                const int idx = sd.index0;
+                auto* editor = row.text.get();
+                row.text->onTextChange = [this, idx, editor]
+                {
+                    if (editor != nullptr)
+                        proc.setStringSliderText (idx, editor->getText());
+                };
+                addAndMakeVisible (*row.text);
             }
             else
             {
-                row.slider = std::make_unique<juce::Slider>();
-                row.slider->setSliderStyle (juce::Slider::LinearHorizontal);
-                row.slider->setTextBoxStyle (juce::Slider::TextBoxRight, false, 80, 20);
+                const bool isEnum = (sd.isChoice && sd.choices.size() > 0);
+                if (isEnum)
+                {
+                    row.combo = std::make_unique<juce::ComboBox>();
+                    row.combo->setEditableText (false);
+                    row.combo->setJustificationType (juce::Justification::centredLeft);
+                    row.combo->addItemList (sd.choices, 1);
 
-                row.sliderAttach = std::make_unique<SliderAttach> (proc.getApvts(), sanitizeId ("slider" + juce::String (sd.index0 + 1)), *row.slider);
-                addAndMakeVisible (*row.slider);
+                    row.comboAttach = std::make_unique<ComboAttach> (proc.getApvts(), sanitizeId ("slider" + juce::String (sd.index0 + 1)), *row.combo);
+                    addAndMakeVisible (*row.combo);
+                }
+                else
+                {
+                    row.slider = std::make_unique<juce::Slider>();
+                    row.slider->setSliderStyle (juce::Slider::LinearHorizontal);
+                    row.slider->setTextBoxStyle (juce::Slider::TextBoxRight, false, 80, 20);
+
+                    row.sliderAttach = std::make_unique<SliderAttach> (proc.getApvts(), sanitizeId ("slider" + juce::String (sd.index0 + 1)), *row.slider);
+                    addAndMakeVisible (*row.slider);
+                }
             }
 
             addAndMakeVisible (*row.label);
@@ -7210,6 +7494,10 @@ public:
             else if (row.combo)
             {
                 row.combo->setBounds (rowR.reduced (0, 1));
+            }
+            else if (row.text)
+            {
+                row.text->setBounds (rowR.reduced (0, 1));
             }
         }
 
@@ -8632,6 +8920,7 @@ private:
         // Slider/enum rows
         std::unique_ptr<juce::Slider> slider;
         std::unique_ptr<juce::ComboBox> combo;
+        std::unique_ptr<juce::TextEditor> text;
         std::unique_ptr<SliderAttach> sliderAttach;
         std::unique_ptr<ComboAttach> comboAttach;
 
@@ -9958,6 +10247,7 @@ public:
         addAndMakeVisible (menuOverlay);
         menuOverlay.setVisible (false);
 
+        jsfx_gfx_compat::registerBuiltins();
         interp = std::make_unique<jsfx_gfx::Interpreter> (kJsfxSourceText);
 
         if (interp != nullptr)
@@ -10938,6 +11228,22 @@ private:
 
         interp->readSliders (vmSliders.data(), 64);
 
+        const uint64_t mChange  = interp->popSliderChangeMask();
+        const uint64_t mAuto    = interp->popSliderAutomateMask();
+        const uint64_t mAutoEnd = interp->popSliderAutomateEndMask();
+        const uint64_t notifyMask = mChange | mAuto | mAutoEnd;
+
+        if (notifyMask != 0 && ! varsAfter.empty())
+        {
+            processor.syncGfxSliderAliasVarsToSliderValues (vmSliders.data(),
+                                                            64,
+                                                            varsBefore.empty() ? nullptr : varsBefore.data(),
+                                                            varsAfter.data(),
+                                                            (int) varsAfter.size(),
+                                                            effectiveSliders.data(),
+                                                            notifyMask);
+        }
+
         uint64_t diffMask = 0;
         for (int i = 0; i < 64; ++i)
         {
@@ -10945,11 +11251,7 @@ private:
                 diffMask |= (uint64_t) 1u << (uint64_t) i;
         }
 
-        const uint64_t mChange  = interp->popSliderChangeMask();
-        const uint64_t mAuto    = interp->popSliderAutomateMask();
-        const uint64_t mAutoEnd = interp->popSliderAutomateEndMask();
-
-        const uint64_t applyMask = diffMask | mChange | mAuto | mAutoEnd;
+        const uint64_t applyMask = diffMask | notifyMask;
         if (applyMask != 0)
         {
             for (int i = 0; i < 64; ++i)

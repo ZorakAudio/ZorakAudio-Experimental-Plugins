@@ -1,0 +1,1172 @@
+desc:SOMA-L2 GUI-Only Psychoacoustic Somatic Limiter (Hand-Tunable GUI + Reset)
+
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+slider1:drive_db=6<-12,18,0.1>--Drive (dB)
+slider2:ceiling_db=-0.1<-12,0,0.01>--Ceiling (dB)
+slider3:lookahead_ms=3<0,20,0.1>--Lookahead (ms)
+slider4:release_ms=90<5,600,1>--Release (ms)
+slider5:preserve_pct=45<0,100,1>--Preserve / Psycho (%)
+slider6:body_pct=20<0,100,1>--Somatic Body (%)
+slider7:stereo_link_pct=100<0,100,1>--Stereo Link (%)
+slider8:style=1<0,4,1{Clean,Punch,Dense,Body,Wild}>--Style
+slider9:guard=1<0,1,1{Off,On}>--Ceiling Guard
+slider10:display_range_db=24<12,60,1>--Display Range (dB)
+slider11:motion_pct=6<0,100,1>--Sub-JND Motion (%)
+
+@init
+MAX_LOOK = 65536;
+HIST_SIZE = 4096;
+
+// ============================================================================
+// HAND-TUNABLE GUI / RESET CONSTANTS
+// Edit these, save, then reload the JSFX in REAPER.
+// Native sliders stay hidden; these constants control GUI behavior only.
+// ============================================================================
+
+// Factory reset targets used by right-click and double-click reset.
+DEF_DRIVE_DB      = 6;
+DEF_CEILING_DB    = -0.10;
+DEF_LOOKAHEAD_MS  = 3;
+DEF_RELEASE_MS    = 90;
+DEF_PRESERVE_PCT  = 45;
+DEF_BODY_PCT      = 20;
+DEF_STEREO_LINK   = 100;
+DEF_MOTION_PCT    = 6;
+DEF_DISPLAY_RANGE = 24;
+DEF_STYLE         = 1;     // 0 Clean, 1 Punch, 2 Dense, 3 Body, 4 Wild
+DEF_GUARD         = 1;     // 0 Off, 1 On
+
+// Tooltip sizing. Previous build was huge; this is dialed back.
+// Raise TITLE/BODY/WIDTH if you want bigger help text.
+UI_TT_TITLE_SIZE    = 19;
+UI_TT_BODY_SIZE     = 14;
+UI_TT_WIDTH         = 620;
+UI_TT_MIN_WIDTH     = 330;
+UI_TT_PADDING       = 13;
+UI_TT_LINE_HEIGHT   = 22;
+UI_TT_TITLE_GAP     = 4;
+UI_TT_BOTTOM_EXTRA  = 10;
+UI_TT_OFFSET_X      = 18;
+UI_TT_OFFSET_Y      = 18;
+UI_TT_SCREEN_MARGIN = 8;
+UI_TT_SHADOW_ALPHA  = 0.45;
+UI_TT_BG_ALPHA      = 0.985;
+UI_TT_BLUE_LINE_H   = 2;
+UI_TT_RED_LINE_H    = 2;
+
+// General GUI feel.
+UI_TOP_H       = 44;
+UI_BOTTOM_H    = 156;
+UI_TILE_GAP    = 8;
+UI_TILE_H      = 52;
+UI_DBL_FRAMES  = 20;      // double-click detection window in @gfx frames
+UI_DRIVE_BADGE_DB_PER_PX   = 0.055;
+UI_CEIL_BADGE_DB_PER_PX    = 0.035;
+
+// Style behavior. These feed the audio engine and the STYLE tooltip.
+STYLE_CLEAN_REL  = 1.35;  STYLE_CLEAN_BODY  = 0.70;  STYLE_CLEAN_PRES  = 0.95;  STYLE_CLEAN_TILT  = 0.95;
+STYLE_PUNCH_REL  = 0.72;  STYLE_PUNCH_BODY  = 0.85;  STYLE_PUNCH_PRES  = 1.15;  STYLE_PUNCH_TILT  = 1.10;
+STYLE_DENSE_REL  = 1.85;  STYLE_DENSE_BODY  = 0.90;  STYLE_DENSE_PRES  = 0.85;  STYLE_DENSE_TILT  = 0.90;
+STYLE_BODY_REL   = 1.05;  STYLE_BODY_BODY   = 1.65;  STYLE_BODY_PRES   = 0.85;  STYLE_BODY_TILT   = 0.85;
+STYLE_WILD_REL   = 0.48;  STYLE_WILD_BODY   = 1.35;  STYLE_WILD_PRES   = 1.35;  STYLE_WILD_TILT   = 1.25;
+
+// Expert audio gain constants. Small changes matter.
+AUDIO_PRESENCE_ADD = 0.18;   // GR-keyed 1.6k-6k restoration
+AUDIO_AIR_ADD      = 0.055;  // GR-keyed >6k restoration
+AUDIO_BODY_LOW     = 0.28;   // low pressure contribution into somatic addback
+AUDIO_BODY_MID     = 0.55;   // low-mid contribution into somatic addback
+AUDIO_BODY_OUT     = 0.55;   // final somatic addback gain
+AUDIO_MOTION_BASE  = 0.000035; // sub-JND motion base depth
+
+// ============================================================================
+
+bufL = 0;
+bufR = MAX_LOOK + 64;
+histPeak = MAX_LOOK*2 + 128;
+histRMS = histPeak + HIST_SIZE + 64;
+histGR = histRMS + HIST_SIZE + 64;
+
+wrpos = 0;
+hist_wpos = 0;
+hist_count = 0;
+peak_acc = 0;
+rms_acc = 0;
+
+gainL = 1;
+gainR = 1;
+prevInL = 0;
+prevInR = 0;
+prevOutL = 0;
+prevOutR = 0;
+
+// Detector filter states.
+det_lp120 = 0;
+det_lp350 = 0;
+det_lp3000 = 0;
+det_side_lp350 = 0;
+
+// Addback filter states.
+add_lp120L = add_lp120R = 0;
+add_lp420L = add_lp420R = 0;
+add_lp1600L = add_lp1600R = 0;
+add_lp6000L = add_lp6000R = 0;
+
+meter_peak = 0;
+meter_rms2 = 0;
+gr_show_db = 0;
+safety_show_db = 0;
+rand_state = 0.12345;
+motionL = 0;
+motionR = 0;
+
+drag_mode = 0;
+last_mouse_cap = 0;
+last_mouse_y = 0;
+
+function db2lin(db) (
+  10^(db/20);
+);
+
+function lin2db(x) (
+  log(max(x,0.000000000001))*8.685889638065037;
+);
+
+function clamp(x lo hi) (
+  min(max(x,lo),hi);
+);
+
+function onepole_coeff(freq) local(f) (
+  f = min(freq, srate*0.45);
+  1 - exp(-2*3.141592653589793*f/srate);
+);
+
+function softsat(x amt) local(k) (
+  k = amt*6;
+  (x*(1+k))/(1+abs(x)*k);
+);
+
+function db_to_y(db top bot range) local(d norm) (
+  d = clamp(db, -range, 0);
+  norm = (d + range)/range;
+  bot - norm*(bot-top);
+);
+
+function amp_to_y(v top bot range) local(db norm) (
+  db = lin2db(max(v,0.000000000001));
+  db = clamp(db, -range, 0);
+  norm = (db + range)/range;
+  bot - norm*(bot-top);
+);
+
+function update_params() local(style_i rel_eff hist_hz) (
+  drive_lin = db2lin(drive_db);
+  ceiling_lin = db2lin(ceiling_db);
+  look_samps = floor(lookahead_ms*srate/1000 + 0.5);
+  look_samps = clamp(look_samps, 0, MAX_LOOK-2);
+
+  style_i = floor(style + 0.5);
+  relmul = 1;
+  bodymul = 1;
+  presmul = 1;
+  det_tilt = 1;
+  attack_samples = max(1, floor(0.15*srate/1000));
+
+  style_i == 0 ? ( // Clean
+    relmul = STYLE_CLEAN_REL;
+    bodymul = STYLE_CLEAN_BODY;
+    presmul = STYLE_CLEAN_PRES;
+    det_tilt = STYLE_CLEAN_TILT;
+  );
+  style_i == 1 ? ( // Punch
+    relmul = STYLE_PUNCH_REL;
+    bodymul = STYLE_PUNCH_BODY;
+    presmul = STYLE_PUNCH_PRES;
+    det_tilt = STYLE_PUNCH_TILT;
+  );
+  style_i == 2 ? ( // Dense
+    relmul = STYLE_DENSE_REL;
+    bodymul = STYLE_DENSE_BODY;
+    presmul = STYLE_DENSE_PRES;
+    det_tilt = STYLE_DENSE_TILT;
+  );
+  style_i == 3 ? ( // Body
+    relmul = STYLE_BODY_REL;
+    bodymul = STYLE_BODY_BODY;
+    presmul = STYLE_BODY_PRES;
+    det_tilt = STYLE_BODY_TILT;
+  );
+  style_i == 4 ? ( // Wild
+    relmul = STYLE_WILD_REL;
+    bodymul = STYLE_WILD_BODY;
+    presmul = STYLE_WILD_PRES;
+    det_tilt = STYLE_WILD_TILT;
+  );
+
+  rel_eff = max(2, release_ms * relmul);
+  relcoef = exp(-1/(rel_eff*0.001*srate));
+  fastrelcoef = exp(-1/(max(2, rel_eff*0.32)*0.001*srate));
+  atkcoef = exp(-1/max(1,attack_samples));
+
+  preserve = clamp(preserve_pct*0.01*presmul,0,1);
+  body_amt = clamp(body_pct*0.01*bodymul,0,1.8);
+  link_amt = clamp(stereo_link_pct*0.01,0,1);
+  motion_amt = clamp(motion_pct*0.01,0,1);
+  range_db = clamp(display_range_db,12,60);
+
+  c120 = onepole_coeff(120);
+  c350 = onepole_coeff(350);
+  c420 = onepole_coeff(420);
+  c1600 = onepole_coeff(1600);
+  c3000 = onepole_coeff(3000);
+  c6000 = onepole_coeff(6000);
+
+  meter_peak_decay = exp(-1/(0.35*srate));
+  meter_rms_coef = exp(-1/(0.20*srate));
+
+  hist_hz = 90;
+  hist_skip = max(1, floor(srate/hist_hz));
+);
+
+
+// Hidden-slider setters used by the custom GUI. Sliders still store state/automation; the native slider panel is suppressed.
+function notify_slider(mask) (
+  sliderchange(mask);
+  slider_automate(mask);
+  ui_changed = 1;
+);
+
+function set_drive(v) (
+  drive_db = clamp(v, -12, 18);
+  notify_slider(1);
+  update_params();
+);
+
+function set_ceiling(v) (
+  ceiling_db = clamp(v, -12, 0);
+  notify_slider(2);
+  update_params();
+);
+
+function set_lookahead(v) (
+  lookahead_ms = clamp(v, 0, 20);
+  notify_slider(4);
+  update_params();
+);
+
+function set_release(v) (
+  release_ms = clamp(floor(v + 0.5), 5, 600);
+  notify_slider(8);
+  update_params();
+);
+
+function set_preserve(v) (
+  preserve_pct = clamp(floor(v + 0.5), 0, 100);
+  notify_slider(16);
+  update_params();
+);
+
+function set_body(v) (
+  body_pct = clamp(floor(v + 0.5), 0, 100);
+  notify_slider(32);
+  update_params();
+);
+
+function set_link(v) (
+  stereo_link_pct = clamp(floor(v + 0.5), 0, 100);
+  notify_slider(64);
+  update_params();
+);
+
+function set_style(v) (
+  style = clamp(floor(v + 0.5), 0, 4);
+  notify_slider(128);
+  update_params();
+);
+
+function set_guard(v) (
+  guard = v >= 0.5 ? 1 : 0;
+  notify_slider(256);
+  update_params();
+);
+
+function set_range(v) (
+  display_range_db = clamp(floor(v + 0.5), 12, 60);
+  notify_slider(512);
+  update_params();
+);
+
+function set_motion(v) (
+  motion_pct = clamp(floor(v + 0.5), 0, 100);
+  notify_slider(1024);
+  update_params();
+);
+
+// Defaults. Right-click or double-click any GUI control to restore its default.
+function reset_control(ctl) (
+  ctl == 1 ? set_drive(DEF_DRIVE_DB);
+  ctl == 2 ? set_ceiling(DEF_CEILING_DB);
+  ctl == 3 ? set_lookahead(DEF_LOOKAHEAD_MS);
+  ctl == 4 ? set_release(DEF_RELEASE_MS);
+  ctl == 5 ? set_preserve(DEF_PRESERVE_PCT);
+  ctl == 6 ? set_body(DEF_BODY_PCT);
+  ctl == 7 ? set_link(DEF_STEREO_LINK);
+  ctl == 8 ? set_motion(DEF_MOTION_PCT);
+  ctl == 9 ? set_range(DEF_DISPLAY_RANGE);
+  ctl == 10 ? set_style(DEF_STYLE);
+  ctl == 11 ? set_guard(DEF_GUARD);
+);
+
+function val_norm(v lo hi) (
+  clamp((v - lo) / max(0.000001, hi - lo), 0, 1);
+);
+
+function log_norm(v lo hi) (
+  clamp((log(max(v, lo)) - log(lo)) / max(0.000001, log(hi) - log(lo)), 0, 1);
+);
+
+function norm_log(n lo hi) (
+  exp(log(lo) + clamp(n, 0, 1) * (log(hi) - log(lo)));
+);
+
+function control_norm(mx x ww) (
+  clamp((mx - (x + 10)) / max(1, ww - 20), 0, 1);
+);
+
+function inside(mx my x y ww hh) (
+  mx >= x && mx <= x + ww && my >= y && my <= y + hh;
+);
+
+// Parameter hit-test: returns 1-11 for resettable controls, 0 for non-parameter areas.
+function hover_param() local(id) (
+  id = 0;
+  inside(mouse_x, mouse_y, drive_badge_x, drive_badge_y, drive_badge_w, drive_badge_h+14) ? id = 1;
+  inside(mouse_x, mouse_y, ceil_badge_x, ceil_badge_y, ceil_badge_w, ceil_badge_h) ? id = 2;
+  inside(mouse_x, mouse_y, w*0.34, 10, w*0.34, 23) ? id = 10;
+
+  inside(mouse_x, mouse_y, drive_ctl_x, row1_y, tw6, tile_h) ? id = 1;
+  inside(mouse_x, mouse_y, ceil_ctl_x,  row1_y, tw6, tile_h) ? id = 2;
+  inside(mouse_x, mouse_y, look_ctl_x,  row1_y, tw6, tile_h) ? id = 3;
+  inside(mouse_x, mouse_y, rel_ctl_x,   row1_y, tw6, tile_h) ? id = 4;
+  inside(mouse_x, mouse_y, style_ctl_x, row1_y, tw6, tile_h) ? id = 10;
+  inside(mouse_x, mouse_y, guard_ctl_x, row1_y, tw6, tile_h) ? id = 11;
+  inside(mouse_x, mouse_y, pres_ctl_x,   row2_y, tw5, tile_h) ? id = 5;
+  inside(mouse_x, mouse_y, body_ctl_x,   row2_y, tw5, tile_h) ? id = 6;
+  inside(mouse_x, mouse_y, link_ctl_x,   row2_y, tw5, tile_h) ? id = 7;
+  inside(mouse_x, mouse_y, motion_ctl_x, row2_y, tw5, tile_h) ? id = 8;
+  inside(mouse_x, mouse_y, range_ctl_x,  row2_y, tw5, tile_h) ? id = 9;
+  id;
+);
+
+function ui_set_from_control(ctl) local(n) (
+  ctl == 1 ? (
+    n = control_norm(mouse_x, drive_ctl_x, tw6);
+    set_drive(-12 + n * 30);
+  );
+  ctl == 2 ? (
+    n = control_norm(mouse_x, ceil_ctl_x, tw6);
+    set_ceiling(-12 + n * 12);
+  );
+  ctl == 3 ? (
+    n = control_norm(mouse_x, look_ctl_x, tw6);
+    set_lookahead(n * 20);
+  );
+  ctl == 4 ? (
+    n = control_norm(mouse_x, rel_ctl_x, tw6);
+    set_release(norm_log(n, 5, 600));
+  );
+  ctl == 5 ? (
+    n = control_norm(mouse_x, pres_ctl_x, tw5);
+    set_preserve(n * 100);
+  );
+  ctl == 6 ? (
+    n = control_norm(mouse_x, body_ctl_x, tw5);
+    set_body(n * 100);
+  );
+  ctl == 7 ? (
+    n = control_norm(mouse_x, link_ctl_x, tw5);
+    set_link(n * 100);
+  );
+  ctl == 8 ? (
+    n = control_norm(mouse_x, motion_ctl_x, tw5);
+    set_motion(n * 100);
+  );
+  ctl == 9 ? (
+    n = control_norm(mouse_x, range_ctl_x, tw5);
+    set_range(12 + n * 48);
+  );
+  ctl == 10 ? (
+    n = control_norm(mouse_x, style_ctl_x, tw6);
+    set_style(min(4, floor(n * 5)));
+  );
+);
+
+function draw_tile_base(x y ww hh norm active) local(bar_x bar_y bar_w bar_h) (
+  active ? gfx_set(0.115,0.125,0.155,1) : gfx_set(0.070,0.073,0.092,1);
+  gfx_rect(x,y,ww,hh);
+  active ? gfx_set(0.34,0.44,0.67,1) : gfx_set(0.17,0.18,0.22,1);
+  gfx_rect(x,y,ww,1);
+  gfx_rect(x,y,1,hh);
+  gfx_set(0.025,0.027,0.035,1);
+  bar_x = x + 10; bar_y = y + hh - 13; bar_w = max(4, ww - 20); bar_h = 5;
+  gfx_rect(bar_x, bar_y, bar_w, bar_h);
+  gfx_set(0.42,0.53,0.78,0.95);
+  gfx_rect(bar_x, bar_y, bar_w * clamp(norm,0,1), bar_h);
+);
+
+function draw_tile_text(x y label_y value_y) (
+  gfx_setfont(1,"Arial",10);
+  gfx_set(0.55,0.58,0.66,1);
+  gfx_x = x + 10; gfx_y = label_y;
+);
+
+
+function draw_tooltip_box() local(tx ty ww hh pad lh yy title_sz body_sz margin ox oy min_w) (
+  tt_id > 0 ? (
+    pad = max(6, UI_TT_PADDING);
+    lh = max(12, UI_TT_LINE_HEIGHT);
+    title_sz = max(8, UI_TT_TITLE_SIZE);
+    body_sz = max(8, UI_TT_BODY_SIZE);
+    margin = max(0, UI_TT_SCREEN_MARGIN);
+    ox = UI_TT_OFFSET_X;
+    oy = UI_TT_OFFSET_Y;
+
+    ww = min(UI_TT_WIDTH, gfx_w - margin*2);
+    min_w = min(UI_TT_MIN_WIDTH, gfx_w - margin*2);
+    ww < min_w ? ww = min_w;
+    hh = pad*2 + max(1,tt_lines)*lh + UI_TT_BOTTOM_EXTRA;
+
+    tx = mouse_x + ox;
+    ty = mouse_y + oy;
+    tx + ww > gfx_w - margin ? tx = mouse_x - ww - ox;
+    tx < margin ? tx = margin;
+    ty + hh > gfx_h - margin ? ty = mouse_y - hh - oy;
+    ty < margin ? ty = margin;
+
+    gfx_set(0.00,0.00,0.00,UI_TT_SHADOW_ALPHA); gfx_rect(tx+4,ty+4,ww,hh);
+    gfx_set(0.012,0.014,0.022,UI_TT_BG_ALPHA); gfx_rect(tx,ty,ww,hh);
+    gfx_set(0.58,0.68,1.00,1.00); gfx_rect(tx,ty,ww,UI_TT_BLUE_LINE_H);
+    gfx_rect(tx,ty,2,hh);
+    gfx_set(1.00,0.10,0.16,1.00); gfx_rect(tx,ty+UI_TT_BLUE_LINE_H,ww,UI_TT_RED_LINE_H);
+    gfx_set(0.18,0.20,0.28,1.00); gfx_rect(tx+2,ty+hh-2,ww-4,2);
+
+    yy = ty + pad;
+    gfx_setfont(3,"Arial",title_sz);
+    gfx_set(0.98,0.99,1.00,1);
+    gfx_x = tx + pad; gfx_y = yy; gfx_drawstr(#tt1);
+    yy += lh + UI_TT_TITLE_GAP;
+
+    gfx_setfont(4,"Arial",body_sz);
+    gfx_set(0.84,0.87,0.96,1);
+    tt_lines > 1 ? ( gfx_x = tx + pad; gfx_y = yy; gfx_drawstr(#tt2); yy += lh; );
+    tt_lines > 2 ? ( gfx_x = tx + pad; gfx_y = yy; gfx_drawstr(#tt3); yy += lh; );
+    tt_lines > 3 ? ( gfx_x = tx + pad; gfx_y = yy; gfx_drawstr(#tt4); yy += lh; );
+    tt_lines > 4 ? ( gfx_x = tx + pad; gfx_y = yy; gfx_drawstr(#tt5); yy += lh; );
+  );
+);
+
+slider_show(2047, 0);
+native_sliders_hidden = 1;
+update_params();
+
+@slider
+update_params();
+
+@sample
+// 1) Input drive and lookahead buffer.
+inL = spl0 * drive_lin;
+inR = spl1 * drive_lin;
+
+bufL[wrpos] = inL;
+bufR[wrpos] = inR;
+
+rdpos = wrpos - look_samps;
+rdpos < 0 ? rdpos += MAX_LOOK;
+
+delL = bufL[rdpos];
+delR = bufR[rdpos];
+
+wrpos += 1;
+wrpos >= MAX_LOOK ? wrpos = 0;
+
+// 2) Psychoacoustic detector: true peak safety is not sacrificed, but the main GR is biased toward what matters perceptually.
+absL = abs(inL);
+absR = abs(inR);
+
+// Conservative guard nudges detector from one-sample peaks toward between-sample changes.
+guard >= 0.5 ? (
+  absL = max(absL, abs(inL - prevInL)*0.707 + abs(inL)*0.293);
+  absR = max(absR, abs(inR - prevInR)*0.707 + abs(inR)*0.293);
+);
+prevInL = inL;
+prevInR = inR;
+
+peak = max(absL, absR);
+mid = (inL + inR) * 0.5;
+side = (inL - inR) * 0.5;
+
+det_lp120 += c120 * (mid - det_lp120);
+det_lp350 += c350 * (mid - det_lp350);
+det_lp3000 += c3000 * (mid - det_lp3000);
+det_side_lp350 += c350 * (side - det_side_lp350);
+
+low_det = det_lp120;
+body_det = det_lp350 - det_lp120;
+pres_det = det_lp3000 - det_lp350;
+high_det = mid - det_lp3000;
+side_det = det_side_lp350 + (side - det_side_lp350) * 0.65;
+
+// ERB-ish compromise: highs/presence trigger protection; lows are allowed to lean into the safety stage.
+psy_peak = abs(low_det)*0.72 + abs(body_det)*0.92 + abs(pres_det)*(1.10*det_tilt) + abs(high_det)*(1.04*det_tilt) + abs(side_det)*0.68;
+psy_peak = max(psy_peak, peak*(0.42 + 0.28*(1-preserve)));
+
+det_peak_linked = peak*(1 - preserve*0.62) + psy_peak*(preserve*0.62);
+
+detL = absL*(1 - preserve*0.45) + max(abs(inL)*0.50, psy_peak)*(preserve*0.45);
+detR = absR*(1 - preserve*0.45) + max(abs(inR)*0.50, psy_peak)*(preserve*0.45);
+
+target_linked = min(1, ceiling_lin / max(det_peak_linked, 0.000000000001));
+targetL_unlinked = min(1, ceiling_lin / max(detL, 0.000000000001));
+targetR_unlinked = min(1, ceiling_lin / max(detR, 0.000000000001));
+
+targetL = target_linked*link_amt + targetL_unlinked*(1-link_amt);
+targetR = target_linked*link_amt + targetR_unlinked*(1-link_amt);
+
+// Adaptive release: deep gain reduction releases faster, shallow GR releases smoother.
+depth_now = 1 - min(gainL, gainR);
+rel_now = relcoef*(1-depth_now) + fastrelcoef*depth_now;
+
+targetL < gainL ? gainL = targetL : gainL = gainL*rel_now + targetL*(1-rel_now);
+targetR < gainR ? gainR = targetR : gainR = gainR*rel_now + targetR*(1-rel_now);
+
+// 3) Main gain reduction.
+mainL = delL * gainL;
+mainR = delR * gainR;
+
+gr_lin = min(gainL, gainR);
+gr_amt = clamp(1 - gr_lin, 0, 1);
+
+// 4) Salience addback: presence/air is restored in proportion to gain reduction.
+add_lp120L += c120 * (delL - add_lp120L);
+add_lp120R += c120 * (delR - add_lp120R);
+add_lp420L += c420 * (delL - add_lp420L);
+add_lp420R += c420 * (delR - add_lp420R);
+add_lp1600L += c1600 * (delL - add_lp1600L);
+add_lp1600R += c1600 * (delR - add_lp1600R);
+add_lp6000L += c6000 * (delL - add_lp6000L);
+add_lp6000R += c6000 * (delR - add_lp6000R);
+
+bodyBandL = add_lp420L - add_lp120L;
+bodyBandR = add_lp420R - add_lp120R;
+presBandL = add_lp6000L - add_lp1600L;
+presBandR = add_lp6000R - add_lp1600R;
+airBandL = delL - add_lp6000L;
+airBandR = delR - add_lp6000R;
+
+presAddL = (presBandL*AUDIO_PRESENCE_ADD + airBandL*AUDIO_AIR_ADD) * preserve * gr_amt;
+presAddR = (presBandR*AUDIO_PRESENCE_ADD + airBandR*AUDIO_AIR_ADD) * preserve * gr_amt;
+
+// 5) Somatic addback: controlled low/low-mid density keyed to GR, not static EQ.
+bodyDrive = body_amt * gr_amt;
+bodyAddL = softsat(add_lp120L*AUDIO_BODY_LOW + bodyBandL*AUDIO_BODY_MID, bodyDrive) * bodyDrive * AUDIO_BODY_OUT;
+bodyAddR = softsat(add_lp120R*AUDIO_BODY_LOW + bodyBandR*AUDIO_BODY_MID, bodyDrive) * bodyDrive * AUDIO_BODY_OUT;
+
+// 6) Sub-JND motion: tiny decorrelated pressure drift under heavy limiting. Default is intentionally low.
+randA = rand(1) - 0.5;
+randB = rand(1) - 0.5;
+motion_coef = AUDIO_MOTION_BASE * motion_amt * gr_amt;
+motionL = motionL*0.9997 + randA*motion_coef;
+motionR = motionR*0.9997 + randB*motion_coef;
+
+outL = mainL + presAddL + bodyAddL;
+outR = mainR + presAddR + bodyAddR;
+
+outL *= (1 + motionL);
+outR *= (1 + motionR);
+
+// 7) Final ceiling guard. This catches salience/body addback and detector liberties.
+safety_gain = 1;
+out_peak = max(abs(outL), abs(outR));
+out_peak > ceiling_lin ? (
+  safety_gain = ceiling_lin / max(out_peak,0.000000000001);
+  outL *= safety_gain;
+  outR *= safety_gain;
+);
+
+// Optional extra guard against sudden sample-to-sample jumps.
+guard >= 0.5 ? (
+  jump_peak = max(abs(outL - prevOutL)*0.5 + abs(outL)*0.5, abs(outR - prevOutR)*0.5 + abs(outR)*0.5);
+  jump_peak > ceiling_lin ? (
+    jump_gain = ceiling_lin / max(jump_peak,0.000000000001);
+    outL *= jump_gain;
+    outR *= jump_gain;
+    safety_gain *= jump_gain;
+  );
+);
+
+prevOutL = outL;
+prevOutR = outR;
+
+spl0 = outL;
+spl1 = outR;
+
+// 8) Metering/history.
+out_abs = max(abs(outL), abs(outR));
+power = (outL*outL + outR*outR) * 0.5;
+meter_peak = max(out_abs, meter_peak*meter_peak_decay);
+meter_rms2 = meter_rms2*meter_rms_coef + power*(1-meter_rms_coef);
+
+cur_gr_db = lin2db(max(gr_lin*safety_gain,0.000000000001));
+gr_show_db = cur_gr_db < gr_show_db ? cur_gr_db : gr_show_db*0.94 + cur_gr_db*0.06;
+safety_show_db = lin2db(max(safety_gain,0.000000000001));
+
+peak_acc = max(peak_acc, out_abs);
+rms_acc += power;
+hist_count += 1;
+
+hist_count >= hist_skip ? (
+  histPeak[hist_wpos] = peak_acc;
+  histRMS[hist_wpos] = sqrt(max(rms_acc / max(hist_count,1),0));
+  histGR[hist_wpos] = gr_show_db;
+  hist_wpos += 1;
+  hist_wpos >= HIST_SIZE ? hist_wpos = 0;
+  hist_count = 0;
+  peak_acc = 0;
+  rms_acc = 0;
+);
+
+@gfx 980 620
+// GUI-only surface. Native sliders are hidden with slider_show(); these controls own the UX.
+native_sliders_hidden == 0 ? (
+  slider_show(2047, 0);
+  native_sliders_hidden = 1;
+);
+
+// Layout.
+w = gfx_w;
+h = gfx_h;
+top_h = UI_TOP_H;
+bottom_h = UI_BOTTOM_H;
+plot_x = 10;
+plot_y = top_h + 8;
+plot_w = max(64, w - 88);
+plot_h = max(80, h - top_h - bottom_h - 18);
+plot_bot = plot_y + plot_h;
+meter_x = w - 62;
+meter_w = 24;
+meter_top = plot_y;
+meter_bot = plot_bot;
+
+// Bottom GUI controls.
+panel_y = h - bottom_h;
+tile_gap = UI_TILE_GAP;
+tile_h = UI_TILE_H;
+row1_y = panel_y + 12;
+row2_y = row1_y + tile_h + 12;
+x0 = 12;
+tw6 = max(70, (w - 24 - tile_gap*5) / 6);
+tw5 = max(84, (w - 24 - tile_gap*4) / 5);
+
+drive_ctl_x = x0;
+ceil_ctl_x  = x0 + (tw6 + tile_gap);
+look_ctl_x  = x0 + (tw6 + tile_gap) * 2;
+rel_ctl_x   = x0 + (tw6 + tile_gap) * 3;
+style_ctl_x = x0 + (tw6 + tile_gap) * 4;
+guard_ctl_x = x0 + (tw6 + tile_gap) * 5;
+
+pres_ctl_x   = x0;
+body_ctl_x   = x0 + (tw5 + tile_gap);
+link_ctl_x   = x0 + (tw5 + tile_gap) * 2;
+motion_ctl_x = x0 + (tw5 + tile_gap) * 3;
+range_ctl_x  = x0 + (tw5 + tile_gap) * 4;
+
+// Badges must be computed before hit-test.
+drive_badge_w = 86;
+drive_badge_h = 24;
+drive_badge_x = plot_x + 8;
+drive_badge_y = plot_y + plot_h*0.52;
+ceil_y = db_to_y(ceiling_db, meter_top, meter_bot, range_db);
+ceil_badge_w = 92;
+ceil_badge_h = 22;
+ceil_badge_x = meter_x - 30;
+ceil_badge_y = max(plot_y+2, min(plot_bot-ceil_badge_h-2, ceil_y - ceil_badge_h*0.5));
+
+// Mouse.
+mouse_down = mouse_cap & 1;
+right_down = mouse_cap & 2;
+mouse_clicked = mouse_down && !(last_mouse_cap & 1);
+right_clicked = right_down && !(last_mouse_cap & 2);
+mouse_released = !mouse_down && (last_mouse_cap & 1);
+
+// Frame-based double-click window; avoids relying on OS-specific double-click reporting.
+dbl_count > 0 ? dbl_count -= 1;
+dbl_reset = 0;
+
+right_clicked ? (
+  reset_id = hover_param();
+  reset_id > 0 ? (
+    reset_control(reset_id);
+    active_ctl = 0;
+    drag_mode = 0;
+    ui_changed = 0;
+    dbl_count = 0;
+    last_click_param = 0;
+  );
+);
+
+mouse_clicked ? (
+  clicked_param = hover_param();
+  clicked_param > 0 && clicked_param == last_click_param && dbl_count > 0 ? (
+    reset_control(clicked_param);
+    active_ctl = 0;
+    drag_mode = 0;
+    ui_changed = 0;
+    dbl_count = 0;
+    last_click_param = 0;
+    dbl_reset = 1;
+  ) : (
+    last_click_param = clicked_param;
+    dbl_count = clicked_param > 0 ? UI_DBL_FRAMES : 0;
+  );
+);
+
+mouse_clicked && !dbl_reset ? (
+  active_ctl = 0;
+  drag_mode = 0;
+
+  inside(mouse_x, mouse_y, drive_badge_x, drive_badge_y, drive_badge_w, drive_badge_h) ? (
+    drag_mode = 1;
+    last_mouse_y = mouse_y;
+  );
+  drag_mode == 0 && inside(mouse_x, mouse_y, ceil_badge_x, ceil_badge_y, ceil_badge_w, ceil_badge_h) ? (
+    drag_mode = 2;
+    last_mouse_y = mouse_y;
+  );
+
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, drive_ctl_x, row1_y, tw6, tile_h) ? (active_ctl = 1; ui_set_from_control(active_ctl););
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, ceil_ctl_x, row1_y, tw6, tile_h) ? (active_ctl = 2; ui_set_from_control(active_ctl););
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, look_ctl_x, row1_y, tw6, tile_h) ? (active_ctl = 3; ui_set_from_control(active_ctl););
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, rel_ctl_x, row1_y, tw6, tile_h) ? (active_ctl = 4; ui_set_from_control(active_ctl););
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, style_ctl_x, row1_y, tw6, tile_h) ? (active_ctl = 10; ui_set_from_control(active_ctl););
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, guard_ctl_x, row1_y, tw6, tile_h) ? (
+    guard >= 0.5 ? set_guard(0) : set_guard(1);
+  );
+
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, pres_ctl_x, row2_y, tw5, tile_h) ? (active_ctl = 5; ui_set_from_control(active_ctl););
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, body_ctl_x, row2_y, tw5, tile_h) ? (active_ctl = 6; ui_set_from_control(active_ctl););
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, link_ctl_x, row2_y, tw5, tile_h) ? (active_ctl = 7; ui_set_from_control(active_ctl););
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, motion_ctl_x, row2_y, tw5, tile_h) ? (active_ctl = 8; ui_set_from_control(active_ctl););
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, range_ctl_x, row2_y, tw5, tile_h) ? (active_ctl = 9; ui_set_from_control(active_ctl););
+);
+
+mouse_down && !mouse_clicked ? (
+  dy = mouse_y - last_mouse_y;
+  drag_mode == 1 ? (
+    set_drive(drive_db - dy*UI_DRIVE_BADGE_DB_PER_PX);
+    last_mouse_y = mouse_y;
+  );
+  drag_mode == 2 ? (
+    set_ceiling(ceiling_db - dy*UI_CEIL_BADGE_DB_PER_PX);
+    last_mouse_y = mouse_y;
+  );
+  active_ctl > 0 ? ui_set_from_control(active_ctl);
+);
+
+mouse_released ? (
+  ui_changed ? sliderchange(-1);
+  ui_changed = 0;
+  active_ctl = 0;
+  drag_mode = 0;
+);
+last_mouse_cap = mouse_cap;
+
+// Background.
+gfx_set(0.030,0.030,0.040,1); gfx_rect(0,0,w,h);
+gfx_set(0.060,0.060,0.075,1); gfx_rect(0,0,w,top_h);
+gfx_set(0.052,0.054,0.068,1); gfx_rect(0,panel_y,w,bottom_h);
+
+// Main plot background.
+gfx_set(0.050,0.050,0.065,1); gfx_rect(plot_x,plot_y,plot_w,plot_h);
+gfx_set(0.080,0.030,0.045,0.55); gfx_rect(plot_x,plot_y,plot_w,plot_h);
+
+// Grid.
+gfx_set(0.40,0.40,0.46,0.17);
+grid_db = 0;
+loop(9,
+  y = db_to_y(-grid_db, plot_y, plot_bot, range_db);
+  gfx_line(plot_x, y, plot_x+plot_w, y);
+  grid_db += 3;
+);
+
+gfx_set(0.55,0.55,0.62,0.28);
+gfx_line(plot_x, plot_y, plot_x+plot_w, plot_y);
+gfx_line(plot_x, plot_bot, plot_x+plot_w, plot_bot);
+
+// History draw area.
+draw_w = min(plot_w, HIST_SIZE-2);
+start_x = plot_x + plot_w - draw_w;
+
+// Red GR overlay.
+i = 0;
+loop(draw_w,
+  idx = hist_wpos - (draw_w - i);
+  idx < 0 ? idx += HIST_SIZE;
+  grv = histGR[idx];
+  grpix = clamp((-grv / range_db) * plot_h, 0, plot_h);
+  grpix > 0.25 ? (
+    gfx_set(1.00,0.04,0.11,0.48);
+    gfx_line(start_x+i, plot_y, start_x+i, plot_y+grpix);
+  );
+  i += 1;
+);
+
+// Blue waveform/peak fill.
+i = 0;
+loop(draw_w,
+  idx = hist_wpos - (draw_w - i);
+  idx < 0 ? idx += HIST_SIZE;
+  pv = histPeak[idx];
+  y = amp_to_y(pv, plot_y, plot_bot, range_db);
+  gfx_set(0.50,0.57,0.78,0.58);
+  gfx_line(start_x+i, plot_bot, start_x+i, y);
+  i += 1;
+);
+
+// RMS white trace.
+gfx_set(0.88,0.90,0.94,0.82);
+prev_y = -1;
+i = 0;
+loop(draw_w,
+  idx = hist_wpos - (draw_w - i);
+  idx < 0 ? idx += HIST_SIZE;
+  rv = histRMS[idx];
+  y = amp_to_y(rv, plot_y, plot_bot, range_db);
+  prev_y >= 0 ? gfx_line(start_x+i-1, prev_y, start_x+i, y);
+  prev_y = y;
+  i += 1;
+);
+
+// Right output meter.
+gfx_set(0.025,0.026,0.032,1); gfx_rect(meter_x-4,meter_top-1,meter_w+8,meter_bot-meter_top+2);
+gfx_set(0.12,0.13,0.16,1); gfx_rect(meter_x,meter_top,meter_w,meter_bot-meter_top);
+
+peak_y = amp_to_y(meter_peak, meter_top, meter_bot, range_db);
+rms_y = amp_to_y(sqrt(max(meter_rms2,0)), meter_top, meter_bot, range_db);
+gfx_set(0.47,0.52,0.70,0.95); gfx_rect(meter_x, peak_y, meter_w, meter_bot-peak_y);
+gfx_set(0.80,0.84,0.94,0.90); gfx_rect(meter_x+3, rms_y, meter_w-6, meter_bot-rms_y);
+ceil_y = db_to_y(ceiling_db, meter_top, meter_bot, range_db);
+gfx_set(0.25,1.00,0.28,1); gfx_line(meter_x-3,ceil_y,meter_x+meter_w+3,ceil_y);
+
+// Meter labels.
+gfx_setfont(1,"Arial",11);
+gfx_set(0.62,0.64,0.70,1);
+td = 0;
+loop(9,
+  dbv = -td*3;
+  y = db_to_y(dbv, meter_top, meter_bot, range_db);
+  gfx_line(meter_x+meter_w+3,y,meter_x+meter_w+7,y);
+  td == 0 || td == 1 || td == 2 || td == 4 || td == 8 ? (
+    sprintf(#s, "%d", dbv);
+    gfx_x = meter_x + meter_w + 10; gfx_y = y-6; gfx_drawstr(#s);
+  );
+  td += 1;
+);
+
+// Top bar branding/status.
+gfx_setfont(1,"Arial",18);
+gfx_x = 14; gfx_y = 12;
+gfx_set(0.78,0.80,0.86,1); gfx_drawstr("SOMA");
+gfx_set(1.00,0.12,0.18,1); gfx_drawstr("-L2");
+gfx_setfont(1,"Arial",11);
+gfx_set(0.55,0.56,0.62,1);
+gfx_x = 14; gfx_y = 30; gfx_drawstr("GUI-only psychoacoustic / somatic limiter");
+
+// Center style pill.
+gfx_set(0.12,0.12,0.15,1); gfx_rect(w*0.34,10,w*0.34,23);
+gfx_set(0.73,0.74,0.80,1); gfx_x = w*0.36; gfx_y = 15;
+style_i = floor(style+0.5);
+style_i == 0 ? strcpy(#style_name,"Clean");
+style_i == 1 ? strcpy(#style_name,"Punch");
+style_i == 2 ? strcpy(#style_name,"Dense");
+style_i == 3 ? strcpy(#style_name,"Body");
+style_i == 4 ? strcpy(#style_name,"Wild");
+sprintf(#s,"%s limiting  |  LA %.1f ms  |  Release %.0f ms",#style_name,lookahead_ms,release_ms);
+gfx_drawstr(#s);
+
+// Left Drive badge.
+gfx_set(0.25,0.39,0.61,0.96); gfx_rect(drive_badge_x,drive_badge_y,drive_badge_w,drive_badge_h);
+gfx_set(0.86,0.90,1.00,1); gfx_x = drive_badge_x + 8; gfx_y = drive_badge_y + 6;
+sprintf(#s,"%+.1f dB",drive_db); gfx_drawstr(#s);
+gfx_set(0.60,0.68,0.85,0.9); gfx_x = drive_badge_x + 8; gfx_y = drive_badge_y + drive_badge_h + 2; gfx_drawstr("DRIVE");
+
+// GR badge.
+gr_badge_w = 82;
+gr_badge_h = 23;
+gr_badge_x = plot_x + plot_w*0.55;
+gr_badge_y = plot_y + max(8, min(plot_h-32, (-gr_show_db/range_db)*plot_h));
+gfx_set(0.92,0.72,0.20,0.98); gfx_rect(gr_badge_x,gr_badge_y,gr_badge_w,gr_badge_h);
+gfx_set(0.05,0.035,0.02,1); gfx_x = gr_badge_x + 8; gfx_y = gr_badge_y + 6;
+sprintf(#s,"%.1f dB",gr_show_db); gfx_drawstr(#s);
+
+// Ceiling badge.
+gfx_set(0.10,0.55,0.16,0.98); gfx_rect(ceil_badge_x,ceil_badge_y,ceil_badge_w,ceil_badge_h);
+gfx_set(0.90,1.00,0.90,1); gfx_x = ceil_badge_x + 8; gfx_y = ceil_badge_y + 5;
+sprintf(#s,"%.2f dB",ceiling_db); gfx_drawstr(#s);
+
+// Bottom panel controls.
+gfx_set(0.038,0.040,0.052,1); gfx_rect(0,panel_y,w,bottom_h);
+gfx_set(0.10,0.10,0.13,1); gfx_line(0,panel_y,w,panel_y);
+
+// Row 1: Drive.
+draw_tile_base(drive_ctl_x,row1_y,tw6,tile_h,val_norm(drive_db,-12,18),active_ctl==1 || drag_mode==1);
+gfx_setfont(1,"Arial",10); gfx_set(0.55,0.58,0.66,1); gfx_x=drive_ctl_x+10; gfx_y=row1_y+7; gfx_drawstr("DRIVE");
+gfx_setfont(2,"Arial",15); gfx_set(0.88,0.91,1.00,1); gfx_x=drive_ctl_x+10; gfx_y=row1_y+22; sprintf(#s,"%+.1f dB",drive_db); gfx_drawstr(#s);
+
+// Ceiling.
+draw_tile_base(ceil_ctl_x,row1_y,tw6,tile_h,val_norm(ceiling_db,-12,0),active_ctl==2 || drag_mode==2);
+gfx_setfont(1,"Arial",10); gfx_set(0.55,0.58,0.66,1); gfx_x=ceil_ctl_x+10; gfx_y=row1_y+7; gfx_drawstr("CEILING");
+gfx_setfont(2,"Arial",15); gfx_set(0.90,1.00,0.90,1); gfx_x=ceil_ctl_x+10; gfx_y=row1_y+22; sprintf(#s,"%.2f dB",ceiling_db); gfx_drawstr(#s);
+
+// Lookahead.
+draw_tile_base(look_ctl_x,row1_y,tw6,tile_h,val_norm(lookahead_ms,0,20),active_ctl==3);
+gfx_setfont(1,"Arial",10); gfx_set(0.55,0.58,0.66,1); gfx_x=look_ctl_x+10; gfx_y=row1_y+7; gfx_drawstr("LOOKAHEAD");
+gfx_setfont(2,"Arial",15); gfx_set(0.86,0.88,0.94,1); gfx_x=look_ctl_x+10; gfx_y=row1_y+22; sprintf(#s,"%.1f ms",lookahead_ms); gfx_drawstr(#s);
+
+// Release.
+draw_tile_base(rel_ctl_x,row1_y,tw6,tile_h,log_norm(release_ms,5,600),active_ctl==4);
+gfx_setfont(1,"Arial",10); gfx_set(0.55,0.58,0.66,1); gfx_x=rel_ctl_x+10; gfx_y=row1_y+7; gfx_drawstr("RELEASE");
+gfx_setfont(2,"Arial",15); gfx_set(0.86,0.88,0.94,1); gfx_x=rel_ctl_x+10; gfx_y=row1_y+22; sprintf(#s,"%.0f ms",release_ms); gfx_drawstr(#s);
+
+// Style segmented tile.
+draw_tile_base(style_ctl_x,row1_y,tw6,tile_h,val_norm(style,0,4),active_ctl==10);
+gfx_setfont(1,"Arial",10); gfx_set(0.55,0.58,0.66,1); gfx_x=style_ctl_x+10; gfx_y=row1_y+7; gfx_drawstr("STYLE");
+gfx_setfont(2,"Arial",15); gfx_set(1.00,0.72,0.78,1); gfx_x=style_ctl_x+10; gfx_y=row1_y+22; gfx_drawstr(#style_name);
+seg_w = max(6,(tw6-20)/5);
+seg_i = 0;
+loop(5,
+  seg_x = style_ctl_x+10+seg_i*seg_w;
+  seg_i == style_i ? gfx_set(1.00,0.12,0.18,0.95) : gfx_set(0.16,0.17,0.21,1);
+  gfx_rect(seg_x,row1_y+tile_h-13,seg_w-2,5);
+  seg_i += 1;
+);
+
+// Guard toggle.
+draw_tile_base(guard_ctl_x,row1_y,tw6,tile_h,guard,0);
+gfx_setfont(1,"Arial",10); gfx_set(0.55,0.58,0.66,1); gfx_x=guard_ctl_x+10; gfx_y=row1_y+7; gfx_drawstr("GUARD");
+gfx_setfont(2,"Arial",15); guard >= 0.5 ? gfx_set(0.70,1.00,0.74,1) : gfx_set(1.00,0.45,0.45,1); gfx_x=guard_ctl_x+10; gfx_y=row1_y+22; guard >= 0.5 ? gfx_drawstr("ON") : gfx_drawstr("OFF");
+
+// Row 2: Preserve.
+draw_tile_base(pres_ctl_x,row2_y,tw5,tile_h,val_norm(preserve_pct,0,100),active_ctl==5);
+gfx_setfont(1,"Arial",10); gfx_set(0.55,0.58,0.66,1); gfx_x=pres_ctl_x+10; gfx_y=row2_y+7; gfx_drawstr("PRESERVE");
+gfx_setfont(2,"Arial",15); gfx_set(0.86,0.88,0.94,1); gfx_x=pres_ctl_x+10; gfx_y=row2_y+22; sprintf(#s,"%.0f%%",preserve_pct); gfx_drawstr(#s);
+
+// Body.
+draw_tile_base(body_ctl_x,row2_y,tw5,tile_h,val_norm(body_pct,0,100),active_ctl==6);
+gfx_setfont(1,"Arial",10); gfx_set(0.55,0.58,0.66,1); gfx_x=body_ctl_x+10; gfx_y=row2_y+7; gfx_drawstr("SOMATIC BODY");
+gfx_setfont(2,"Arial",15); gfx_set(0.86,0.88,0.94,1); gfx_x=body_ctl_x+10; gfx_y=row2_y+22; sprintf(#s,"%.0f%%",body_pct); gfx_drawstr(#s);
+
+// Link.
+draw_tile_base(link_ctl_x,row2_y,tw5,tile_h,val_norm(stereo_link_pct,0,100),active_ctl==7);
+gfx_setfont(1,"Arial",10); gfx_set(0.55,0.58,0.66,1); gfx_x=link_ctl_x+10; gfx_y=row2_y+7; gfx_drawstr("STEREO LINK");
+gfx_setfont(2,"Arial",15); gfx_set(0.86,0.88,0.94,1); gfx_x=link_ctl_x+10; gfx_y=row2_y+22; sprintf(#s,"%.0f%%",stereo_link_pct); gfx_drawstr(#s);
+
+// Motion.
+draw_tile_base(motion_ctl_x,row2_y,tw5,tile_h,val_norm(motion_pct,0,100),active_ctl==8);
+gfx_setfont(1,"Arial",10); gfx_set(0.55,0.58,0.66,1); gfx_x=motion_ctl_x+10; gfx_y=row2_y+7; gfx_drawstr("MOTION");
+gfx_setfont(2,"Arial",15); gfx_set(0.86,0.88,0.94,1); gfx_x=motion_ctl_x+10; gfx_y=row2_y+22; sprintf(#s,"%.0f%%",motion_pct); gfx_drawstr(#s);
+
+// Display range.
+draw_tile_base(range_ctl_x,row2_y,tw5,tile_h,val_norm(display_range_db,12,60),active_ctl==9);
+gfx_setfont(1,"Arial",10); gfx_set(0.55,0.58,0.66,1); gfx_x=range_ctl_x+10; gfx_y=row2_y+7; gfx_drawstr("DISPLAY RANGE");
+gfx_setfont(2,"Arial",15); gfx_set(0.86,0.88,0.94,1); gfx_x=range_ctl_x+10; gfx_y=row2_y+22; sprintf(#s,"%.0f dB",display_range_db); gfx_drawstr(#s);
+
+// Footer readout.
+gfx_setfont(1,"Arial",10);
+gfx_set(0.47,0.49,0.56,1);
+gfx_x = 12; gfx_y = h - 15; gfx_drawstr("Drag tiles horizontally. Hover for help. Right-click/double-click resets. Tooltip sizing lives near top of @init.");
+gfx_set(0.76,0.78,0.84,1);
+gfx_x = w - 215; gfx_y = h - 15;
+sprintf(#s,"Out %.2f dBFS   GR %.1f dB",ceiling_db,gr_show_db);
+gfx_drawstr(#s);
+
+// Hover tooltips. Drawn last so they stay visible above the Pro-L2-style panel.
+tt_id = 0;
+inside(mouse_x, mouse_y, plot_x, plot_y, plot_w, plot_h) ? tt_id = 12;
+inside(mouse_x, mouse_y, meter_x-6, meter_top-4, meter_w+46, meter_bot-meter_top+8) ? tt_id = 13;
+inside(mouse_x, mouse_y, drive_badge_x, drive_badge_y, drive_badge_w, drive_badge_h+14) ? tt_id = 1;
+inside(mouse_x, mouse_y, ceil_badge_x, ceil_badge_y, ceil_badge_w, ceil_badge_h) ? tt_id = 2;
+inside(mouse_x, mouse_y, gr_badge_x, gr_badge_y, gr_badge_w, gr_badge_h) ? tt_id = 14;
+inside(mouse_x, mouse_y, w*0.34, 10, w*0.34, 23) ? tt_id = 10;
+
+inside(mouse_x, mouse_y, drive_ctl_x, row1_y, tw6, tile_h) ? tt_id = 1;
+inside(mouse_x, mouse_y, ceil_ctl_x,  row1_y, tw6, tile_h) ? tt_id = 2;
+inside(mouse_x, mouse_y, look_ctl_x,  row1_y, tw6, tile_h) ? tt_id = 3;
+inside(mouse_x, mouse_y, rel_ctl_x,   row1_y, tw6, tile_h) ? tt_id = 4;
+inside(mouse_x, mouse_y, style_ctl_x, row1_y, tw6, tile_h) ? tt_id = 10;
+inside(mouse_x, mouse_y, guard_ctl_x, row1_y, tw6, tile_h) ? tt_id = 11;
+inside(mouse_x, mouse_y, pres_ctl_x,   row2_y, tw5, tile_h) ? tt_id = 5;
+inside(mouse_x, mouse_y, body_ctl_x,   row2_y, tw5, tile_h) ? tt_id = 6;
+inside(mouse_x, mouse_y, link_ctl_x,   row2_y, tw5, tile_h) ? tt_id = 7;
+inside(mouse_x, mouse_y, motion_ctl_x, row2_y, tw5, tile_h) ? tt_id = 8;
+inside(mouse_x, mouse_y, range_ctl_x,  row2_y, tw5, tile_h) ? tt_id = 9;
+
+drag_mode == 1 ? tt_id = 1;
+drag_mode == 2 ? tt_id = 2;
+active_ctl == 1 ? tt_id = 1;
+active_ctl == 2 ? tt_id = 2;
+active_ctl == 3 ? tt_id = 3;
+active_ctl == 4 ? tt_id = 4;
+active_ctl == 5 ? tt_id = 5;
+active_ctl == 6 ? tt_id = 6;
+active_ctl == 7 ? tt_id = 7;
+active_ctl == 8 ? tt_id = 8;
+active_ctl == 9 ? tt_id = 9;
+active_ctl == 10 ? tt_id = 10;
+
+strcpy(#tt1,""); strcpy(#tt2,""); strcpy(#tt3,""); strcpy(#tt4,""); strcpy(#tt5,""); tt_lines = 0;
+
+tt_id == 1 ? (
+  sprintf(#tt1,"DRIVE  %+.1f dB",drive_db);
+  strcpy(#tt2,"Input gain feeding the limiter and psychoacoustic detector.");
+  sprintf(#tt3,"More drive = more density. Current GR: %.1f dB down.",-gr_show_db);
+  strcpy(#tt4,"Target: 4-7 dB peak GR. Sustained 8+ dB starts flattening.");
+  strcpy(#tt5,"Drag tile left/right, or drag blue badge up/down.");
+  tt_lines = 5;
+);
+
+tt_id == 2 ? (
+  sprintf(#tt1,"CEILING  %.2f dBFS",ceiling_db);
+  strcpy(#tt2,"Final sample ceiling after body/presence addback.");
+  strcpy(#tt3,"Not true-peak certified: use -0.5 to -1.0 dB for safer export.");
+  strcpy(#tt4,"Lower ceiling trades tiny loudness for fewer intersample overs.");
+  strcpy(#tt5,"Drag tile left/right, or drag green badge up/down.");
+  tt_lines = 5;
+);
+
+tt_id == 3 ? (
+  sprintf(#tt1,"LOOKAHEAD  %.1f ms",lookahead_ms);
+  strcpy(#tt2,"How early the limiter sees peaks before they hit the output.");
+  strcpy(#tt3,"1-3 ms = punchier. 3-5 ms = cleaner. Higher adds latency.");
+  strcpy(#tt4,"Use more if cymbals/clicks spit; use less if impact feels soft.");
+  strcpy(#tt5,"Drag horizontally for 0-20 ms lookahead.");
+  tt_lines = 5;
+);
+
+tt_id == 4 ? (
+  sprintf(#tt1,"RELEASE  %.0f ms",release_ms);
+  strcpy(#tt2,"How fast gain recovers after limiting.");
+  strcpy(#tt3,"Fast = aggressive/punchy. Slow = smoother but can smear transients.");
+  strcpy(#tt4,"If it pumps, raise this. If it stays pinned, lower this.");
+  strcpy(#tt5,"Drag horizontally; lower = punchier, higher = smoother.");
+  tt_lines = 5;
+);
+
+tt_id == 5 ? (
+  sprintf(#tt1,"PRESERVE  %.0f%%",preserve_pct);
+  strcpy(#tt2,"Protects perceptual salience: transients, presence, intelligibility.");
+  strcpy(#tt3,"Higher values push GR toward lower-value material first.");
+  strcpy(#tt4,"Raise when voices/attacks collapse; lower if background feels too small.");
+  strcpy(#tt5,"Drag horizontally; higher protects foreground definition.");
+  tt_lines = 5;
+);
+
+tt_id == 6 ? (
+  sprintf(#tt1,"SOMATIC BODY  %.0f%%",body_pct);
+  strcpy(#tt2,"GR-keyed low/low-mid addback around pressure and body bands.");
+  strcpy(#tt3,"No limiting = little addback. More GR = more tactile density.");
+  strcpy(#tt4,"15-35% is natural. 40%+ becomes obvious thump inflation.");
+  strcpy(#tt5,"Drag horizontally; higher converts more GR into body.");
+  tt_lines = 5;
+);
+
+tt_id == 7 ? (
+  sprintf(#tt1,"STEREO LINK  %.0f%%",stereo_link_pct);
+  strcpy(#tt2,"How much left/right share the same gain reduction envelope.");
+  strcpy(#tt3,"100% = stable image. Lower = wider/louder tricks but image wobble.");
+  strcpy(#tt4,"Use 80-100% on full mixes; go lower for special effects.");
+  strcpy(#tt5,"Drag horizontally; higher keeps the stereo image locked.");
+  tt_lines = 5;
+);
+
+tt_id == 8 ? (
+  sprintf(#tt1,"MOTION  %.0f%%",motion_pct);
+  strcpy(#tt2,"Tiny decorrelated drift under gain reduction; below obvious modulation.");
+  strcpy(#tt3,"Purpose: prevent static clamp fatigue and add subtle aliveness.");
+  strcpy(#tt4,"0-10% is controlled. 20%+ can feel unstable.");
+  strcpy(#tt5,"Drag horizontally; low values keep movement sub-audible.");
+  tt_lines = 5;
+);
+
+tt_id == 9 ? (
+  sprintf(#tt1,"DISPLAY RANGE  %.0f dB",display_range_db);
+  strcpy(#tt2,"Visual scale for waveform, GR overlay, RMS trace, and meter.");
+  strcpy(#tt3,"This changes only the GUI. It does not change the audio path.");
+  strcpy(#tt4,"Lower range = zoomed-in limiting view. Higher = more headroom view.");
+  strcpy(#tt5,"Drag horizontally; visual only, no audio-path change.");
+  tt_lines = 5;
+);
+
+tt_id == 10 ? (
+  sprintf(#tt1,"STYLE  %s",#style_name);
+  style_i == 0 ? (
+    strcpy(#tt2,"Clean: slower release, reduced body addback, lower detector tilt.");
+    strcpy(#tt3,"Use when transparency beats maximum density.");
+  );
+  style_i == 1 ? (
+    strcpy(#tt2,"Punch: quicker recovery and stronger presence/transient protection.");
+    strcpy(#tt3,"Use when impact and bite matter more than smoothness.");
+  );
+  style_i == 2 ? (
+    strcpy(#tt2,"Dense: slower recovery and softer salience emphasis.");
+    strcpy(#tt3,"Use for thick, glued loudness with less transient jump.");
+  );
+  style_i == 3 ? (
+    strcpy(#tt2,"Body: much stronger GR-keyed body addback, calmer detector tilt.");
+    strcpy(#tt3,"Use for tactile pressure, weight, and low-mid mass.");
+  );
+  style_i == 4 ? (
+    strcpy(#tt2,"Wild: fastest recovery, high preserve, high body, hotter detector.");
+    strcpy(#tt3,"Use for aggressive sound-design loudness, not clean mastering.");
+  );
+  sprintf(#tt4,"Multipliers: release x%.2f, body x%.2f, preserve x%.2f",relmul,bodymul,presmul);
+  strcpy(#tt5,"Drag to choose. Right-click/double-click resets to Punch.");
+  tt_lines = 5;
+);
+
+tt_id == 11 ? (
+  guard >= 0.5 ? strcpy(#tt1,"GUARD  ON") : strcpy(#tt1,"GUARD  OFF");
+  strcpy(#tt2,"Final safety stage after psychoacoustic liberties and addback.");
+  strcpy(#tt3,"On catches overs and sample-to-sample jumps. Off is experimental.");
+  strcpy(#tt4,"Left-click toggles. Keep ON unless deliberately abusing it.");
+  tt_lines = 4;
+);
+
+tt_id == 12 ? (
+  strcpy(#tt1,"SCOPE");
+  strcpy(#tt2,"Blue fill = recent output peak level. White trace = RMS body.");
+  strcpy(#tt3,"Red from top = gain reduction depth. Yellow badge = current GR.");
+  strcpy(#tt4,"This is a visual loudness/pressure map, not a true-peak meter.");
+  tt_lines = 4;
+);
+
+tt_id == 13 ? (
+  strcpy(#tt1,"OUTPUT METER");
+  strcpy(#tt2,"Outer blue = output peak. Inner white = smoothed RMS.");
+  sprintf(#tt3,"Green line is ceiling: %.2f dBFS.",ceiling_db);
+  strcpy(#tt4,"Put a true-peak meter after this if exporting hot masters.");
+  tt_lines = 4;
+);
+
+tt_id == 14 ? (
+  sprintf(#tt1,"GAIN REDUCTION  %.1f dB",gr_show_db);
+  strcpy(#tt2,"Negative value means the limiter is pushing the signal down.");
+  strcpy(#tt3,"This includes the main limiter plus the final safety catch.");
+  strcpy(#tt4,"If this stays below -8 dB for long sections, back off Drive.");
+  tt_lines = 4;
+);
+
+draw_tooltip_box();

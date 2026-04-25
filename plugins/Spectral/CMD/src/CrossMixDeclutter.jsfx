@@ -1,0 +1,966 @@
+desc:Cross-Mix Somatic Bus (CMD) - shared declutter + somatic coupling
+
+// Cross-Mix Somatic Bus (CMD v2)
+// One global shared bus for now. Drop on every related track.
+// Engine A: ERB/gammatone declutter / turn taking.
+// Engine B: bounded psychoacoustic somatic injection from peer bus motion.
+//
+// String-bus integration hook:
+//   All bus identity is isolated to the two endpoint strings in @init:
+//     msg_subscribe / msg_advertise / msg_recv / msg_send channel
+//     gmem_attach_size namespace
+//   Replace those with your resolved user string when you add typed bus support.
+//   No user-facing bus names are hard-coded in this DSP file.
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+// #TOOLTIP: Role controls how this track drives and receives the shared somatic bus.
+slider1:0<0,7,1{Neutral,Lead,Body,Wet Detail,Impact,Ambience,Sub/Weight,Air/Tingle}>Role
+// #TOOLTIP: ERB-band declutter strength. Higher values make losing instances yield more in contested psychoacoustic bands.
+slider2:55<0,100,1>Declutter (%)
+// #TOOLTIP: Cross-actor psychoacoustic modulation amount. Higher values make this layer breathe more with peer activity.
+slider3:35<0,100,1>Somatic (%)
+// #TOOLTIP: How aggressively masked instances build credit and later win contested bands. Higher values rotate ownership faster.
+slider4:65<0,100,1>Turn Fairness (%)
+// #TOOLTIP: Band activity floor. Raise to ignore room tone/noise; lower for subtle sustained material.
+slider5:-46<-80,-12,1>Activity Floor (dB)
+// #TOOLTIP: Priority bias for this instance. Positive wins contested bands more often; negative yields more often.
+slider6:0<-100,100,1>Importance / Focus Bias
+// #TOOLTIP: Maximum per-band declutter cut. Keep moderate; excessive values create spectral holes.
+slider7:9<1,18,0.5>Max Band Cut (dB)
+// #TOOLTIP: Envelope release for band activity and ownership. Longer release gives steadier behavior.
+slider8:120<20,600,1>Release (ms)
+// #TOOLTIP: How strongly this instance contributes its pressure/contact/viscosity/thrust to the shared bus.
+slider9:65<0,100,1>Influence Out (%)
+// #TOOLTIP: How strongly this instance reacts to peer bus pressure/contact/viscosity/thrust.
+slider10:65<0,100,1>Influence In (%)
+// #TOOLTIP: Higher values clamp somatic movement more tightly. Lower values allow more obvious modulation.
+slider11:70<0,100,1>Safety Governor (%)
+// #TOOLTIP: Final output trim after declutter and somatic processing.
+slider12:0<-12,12,0.1>Output Trim (dB)
+// #TOOLTIP: Bus namespace. Instances with the same bus name share gmem state and messages.
+slider13:#bus_name="ZorakAudio.CMSB.Global"<string>Bus Name
+// #TOOLTIP: Number of ERB bands processed. Lower values reduce CPU across large sessions.
+slider14:12<8,24,4>ERB Bands / CPU
+
+@init
+function clamp(x, lo, hi) (
+  x < lo ? lo : (x > hi ? hi : x);
+);
+
+function sanitize(x, fallback) (
+  (x == x) && (abs(x) < 1000000000) ? x : fallback;
+);
+
+function active_norm(e, scale) local(x) (
+  x = e / floor_energy - 1;
+  x < 0 ? x = 0;
+  clamp(x / scale, 0, 1);
+);
+
+function erb_from_hz(f) (
+  21.4 * log(0.00437 * f + 1) * inv_ln10;
+);
+
+function hz_from_erb(e) (
+  (exp((e / 21.4) * ln10) - 1) / 0.00437;
+);
+
+function erb_bandwidth_hz(f) (
+  24.7 * (0.00437 * f + 1);
+);
+
+function band_weight(f, center, width_oct) local(d) (
+  d = log(max(f, 1) / center) * inv_ln2;
+  exp(-(d * d) / max(width_oct * width_oct, 0.0001));
+);
+
+function setup_from_sliders() (
+  role_id = floor(slider1 + 0.5);
+  role_id = clamp(role_id, ROLE_NEUTRAL, ROLE_TINGLE);
+
+  depth_amt = clamp(slider2 * 0.01, 0, 1);
+  somatic_amt = clamp(slider3 * 0.01, 0, 1);
+  fairness_amt = clamp(slider4 * 0.01, 0, 1);
+
+  floor_energy = exp(2 * slider5 * db2lin);
+  floor_energy < 0.000000000001 ? floor_energy = 0.000000000001;
+  floor_amp = sqrt(floor_energy);
+
+  priority_weight = exp((slider6 * 0.01) * 0.6931471805599453); // -100..+100 -> 0.5..2.0
+  max_cut_db = clamp(slider7, 1, 24);
+  release_ms = clamp(slider8, 20, 1000);
+
+  influence_out = clamp(slider9 * 0.01, 0, 1);
+  influence_in = clamp(slider10 * 0.01, 0, 1);
+  safety_amt = clamp(slider11 * 0.01, 0, 1);
+  out_gain = exp(slider12 * db2lin);
+
+  new_active_nb = floor(slider14 + 0.5);
+  new_active_nb < 8 ? new_active_nb = 8;
+  new_active_nb > NB ? new_active_nb = NB;
+  active_nb != new_active_nb ? (
+    active_nb = new_active_nb;
+    need_filter_rebuild = 1;
+  );
+
+  fairness_weight = 0.85 * fairness_amt;
+  max_cut_coeff = (1 - exp(-max_cut_db * db2lin)) * depth_amt * 0.72;
+
+  // High safety = smaller caps. Low safety = stronger movement.
+  band_somatic_cap = (0.040 + 0.145 * (1 - safety_amt)) * somatic_amt * influence_in;
+  width_cap = (0.035 + 0.130 * (1 - safety_amt)) * somatic_amt * influence_in;
+  sat_cap = (0.030 + 0.180 * (1 - safety_amt)) * somatic_amt * influence_in;
+);
+
+function build_filterbank() local(i nyq fmax erb_min erb_max erb_step erb_c fc_i bw q w0 sinw cosw alpha a0i) (
+  work_srate = srate;
+  work_srate < 1000 ? work_srate = 48000;
+
+  nyq = work_srate * 0.5;
+  fmax = 20000;
+  fmax > nyq * 0.94 ? fmax = nyq * 0.94;
+  fmax < 200 ? fmax = 200;
+
+  erb_min = erb_from_hz(50);
+  erb_max = erb_from_hz(fmax);
+  active_nb < 1 ? active_nb = 12;
+  active_nb > NB ? active_nb = NB;
+  erb_step = (erb_max - erb_min) / active_nb;
+
+  i = 0;
+  while (i < NB) (
+    i < active_nb ? (
+      erb_c = erb_min + (i + 0.5) * erb_step;
+      fc_i = hz_from_erb(erb_c);
+      fc_i = clamp(fc_i, 30, fmax);
+
+      bw = erb_bandwidth_hz(fc_i);
+      q = fc_i / (bw * 1.12);
+      q = clamp(q, 0.30, 14.0);
+
+      w0 = 2 * pi * fc_i / work_srate;
+      w0 > pi * 0.98 ? w0 = pi * 0.98;
+
+      sinw = sin(w0);
+      cosw = cos(w0);
+      alpha = sinw / (2 * q);
+      a0i = 1 + alpha;
+
+      fc[i] = fc_i;
+      b0c[i] = alpha / a0i;
+      b2c[i] = -alpha / a0i;
+      a1c[i] = (-2 * cosw) / a0i;
+      a2c[i] = (1 - alpha) / a0i;
+    ) : (
+      fc[i] = 0;
+      b0c[i] = 0;
+      b2c[i] = 0;
+      a1c[i] = 0;
+      a2c[i] = 0;
+      env[i] = 0;
+      accum[i] = 0;
+      targetCut[i] = 0;
+      smoothCut[i] = 0;
+      credit[i] = 0;
+      targetSom[i] = 0;
+      smoothSom[i] = 0;
+    );
+
+    i += 1;
+  );
+
+  need_filter_rebuild = 0;
+
+  cut_smooth = 1 - exp(-1 / (0.030 * work_srate));
+  som_smooth = 1 - exp(-1 / (0.055 * work_srate));
+  width_smooth = 1 - exp(-1 / (0.090 * work_srate));
+  sat_smooth = 1 - exp(-1 / (0.070 * work_srate));
+  fast_env_coeff = 1 - exp(-1 / (0.006 * work_srate));
+  breath_base_inc = 2 * pi / work_srate;
+
+  last_srate = work_srate;
+);
+
+function clear_own_slot() (
+  my_slot_base >= 0 ? (
+    gmem[my_slot_base + SLOT_ID] == iid ? (
+      gmem[my_slot_base + SLOT_ID] = 0;
+      gmem[my_slot_base + SLOT_HB] = 0;
+    );
+  );
+  my_slot = -1;
+  my_slot_base = -1;
+);
+
+function ensure_bus_header() (
+  gmem[BUS_MAGIC] != MAGIC ? (
+    gmem_zero(0, GMEM_SIZE);
+    gmem[BUS_MAGIC] = MAGIC;
+    gmem[BUS_VERSION] = VERSION;
+    gmem[BUS_TICK] = 0;
+  );
+
+  tick = gmem[BUS_TICK] + 1;
+  tick < 1 ? tick = 1;
+  gmem[BUS_TICK] = tick;
+);
+
+function allocate_slot() local(i sb sid hb stale fallback) (
+  my_slot >= 0 ? (
+    sb = BUS_HEADER + my_slot * SLOT_STRIDE;
+    gmem[sb + SLOT_ID] == iid ? (
+      my_slot_base = sb;
+    ) : (
+      my_slot = -1;
+      my_slot_base = -1;
+    );
+  );
+
+  my_slot < 0 ? (
+    i = 0;
+    while (i < MAX_SLOTS) (
+      sb = BUS_HEADER + i * SLOT_STRIDE;
+      gmem[sb + SLOT_ID] == iid ? (
+        my_slot = i;
+        my_slot_base = sb;
+        i = MAX_SLOTS;
+      );
+      i += 1;
+    );
+  );
+
+  my_slot < 0 ? (
+    i = 0;
+    while (i < MAX_SLOTS) (
+      sb = BUS_HEADER + i * SLOT_STRIDE;
+      sid = gmem[sb + SLOT_ID];
+      hb = gmem[sb + SLOT_HB];
+      stale = (sid <= 0) || ((tick - hb) > STALE_TICKS);
+      stale ? (
+        my_slot = i;
+        my_slot_base = sb;
+        i = MAX_SLOTS;
+      );
+      i += 1;
+    );
+  );
+
+  my_slot < 0 ? (
+    fallback = iid - floor(iid / MAX_SLOTS) * MAX_SLOTS;
+    fallback < 0 ? fallback = 0;
+    fallback >= MAX_SLOTS ? fallback = MAX_SLOTS - 1;
+    my_slot = fallback;
+    my_slot_base = BUS_HEADER + my_slot * SLOT_STRIDE;
+  );
+
+  gmem[my_slot_base + SLOT_ID] = iid;
+);
+
+function drain_messages() (
+  // Message traffic is disabled in the CMD hot path.
+  // gmem SLOT_HB/SLOT_ID already provides heartbeat/discovery.
+  msg_seen = 0;
+);
+
+function update_band_envs() local(i e coeff invblock atk rel) (
+  work_srate = srate;
+  work_srate < 1000 ? work_srate = 48000;
+
+  invblock = 1 / max(samplesblock, 1);
+  atk = 1 - exp(-samplesblock / (0.010 * work_srate));
+  rel = 1 - exp(-samplesblock / ((release_ms * 0.001) * work_srate));
+
+  i = 0;
+  while (i < active_nb) (
+    e = accum[i] * invblock;
+    accum[i] = 0;
+    e = sanitize(e, 0);
+    coeff = e > env[i] ? atk : rel;
+    env[i] += coeff * (e - env[i]);
+    env[i] < 0 ? env[i] = 0;
+    i += 1;
+  );
+);
+
+function update_motion_envs() local(invblock totalE lowE contactE viscE onsetN thrustN pressureRaw contactRaw viscRaw arousalRaw fatigueRaw coeffFast coeffSlow coeffFat roleSendScale) (
+  invblock = 1 / max(samplesblock, 1);
+
+  totalE = total_accum * invblock;
+  lowE = low_accum * invblock;
+  contactE = contact_accum * invblock;
+  viscE = visc_accum * invblock;
+
+  onsetN = onset_accum * invblock / max(floor_amp, 0.000001);
+  onsetN = clamp(onsetN * 0.35, 0, 1);
+
+  pressureRaw = active_norm(lowE, 10);
+  contactRaw = clamp(0.55 * active_norm(contactE, 14) + 0.45 * onsetN, 0, 1);
+  thrustN = clamp(onsetN * 1.35 + active_norm(totalE, 22) * 0.20, 0, 1);
+  viscRaw = clamp(active_norm(viscE, 12) * (1 - 0.35 * thrustN), 0, 1);
+  arousalRaw = active_norm(totalE, 18);
+  fatigueRaw = clamp(arousalRaw * (1 - thrustN) * (0.45 + 0.55 * viscRaw), 0, 1);
+
+  coeffFast = 1 - exp(-samplesblock / (0.060 * work_srate));
+  coeffSlow = 1 - exp(-samplesblock / (0.450 * work_srate));
+  coeffFat = 1 - exp(-samplesblock / (1.750 * work_srate));
+
+  local_pressure += coeffFast * (pressureRaw - local_pressure);
+  local_contact += coeffFast * (contactRaw - local_contact);
+  local_viscosity += coeffSlow * (viscRaw - local_viscosity);
+  local_thrust += coeffFast * (thrustN - local_thrust);
+  local_arousal += coeffSlow * (arousalRaw - local_arousal);
+  local_fatigue += coeffFat * (fatigueRaw - local_fatigue);
+
+  // Role send emphasis: the role changes how strongly this layer participates in the bus,
+  // not which bus it belongs to.
+  roleSendScale = 1;
+  role_id == ROLE_LEAD ? roleSendScale = 0.60;
+  role_id == ROLE_IMPACT ? roleSendScale = 1.20;
+  role_id == ROLE_AMBIENCE ? roleSendScale = 0.70;
+  role_id == ROLE_SUB ? roleSendScale = 1.10;
+
+  local_send_weight = clamp(influence_out * roleSendScale, 0, 1.5);
+
+  total_accum = 0;
+  low_accum = 0;
+  contact_accum = 0;
+  visc_accum = 0;
+  onset_accum = 0;
+);
+
+function scan_active_slots() local(j sb sid hb stale) (
+  active_instances = 0;
+  j = 0;
+  while (j < MAX_SLOTS) (
+    sb = BUS_HEADER + j * SLOT_STRIDE;
+    sid = gmem[sb + SLOT_ID];
+    hb = gmem[sb + SLOT_HB];
+    stale = (sid <= 0) || ((tick - hb) > STALE_TICKS);
+    !stale ? active_instances += 1;
+    j += 1;
+  );
+);
+
+function compute_declutter_targets() local(i j sb sid hb stale ownE ownAct ownScore peerE peerC peerP peerAct score topScore topAct topId pressure activity overlap desired decay turn_rate pubBase) (
+  scan_active_slots();
+
+  i = 0;
+  while (i < active_nb) (
+    ownE = env[i];
+    ownAct = ownE / floor_energy - 1;
+    ownAct < 0 ? ownAct = 0;
+    ownAct = clamp(ownAct, 0, 1000000);
+
+    ownScore = ownAct * priority_weight * (1 + credit[i] * fairness_weight);
+
+    topScore = ownScore;
+    topAct = ownAct;
+    topId = iid;
+
+    j = 0;
+    while (j < MAX_SLOTS) (
+      sb = BUS_HEADER + j * SLOT_STRIDE;
+      sid = gmem[sb + SLOT_ID];
+      hb = gmem[sb + SLOT_HB];
+      stale = (sid <= 0) || ((tick - hb) > STALE_TICKS);
+
+      (!stale) && (sid != iid) ? (
+        peerE = gmem[sb + SLOT_BANDS + i];
+        peerC = gmem[sb + SLOT_BANDS + NB + i];
+        peerP = gmem[sb + SLOT_PRIO];
+        peerP <= 0 ? peerP = 1;
+
+        peerAct = peerE / floor_energy - 1;
+        peerAct < 0 ? peerAct = 0;
+        peerAct = clamp(peerAct, 0, 1000000);
+
+        score = peerAct * peerP * (1 + clamp(peerC, 0, 4) * fairness_weight);
+
+        ((score > topScore + 0.0000001) || ((abs(score - topScore) <= 0.0000001) && (sid < topId))) ? (
+          topScore = score;
+          topAct = peerAct;
+          topId = sid;
+        );
+      );
+
+      j += 1;
+    );
+
+    desired = 0;
+    ((active_instances > 1) && (ownAct > 0.0001) && (topId != iid) && (topScore > 0.0001)) ? (
+      pressure = (topScore - ownScore) / (topScore + ownScore + 0.0000001);
+      pressure = clamp(pressure, 0, 1);
+
+      activity = ownAct / (ownAct + 1);
+      overlap = topAct / (topAct + ownAct + 0.0000001);
+      desired = max_cut_coeff * pressure * activity * (0.45 + 0.55 * overlap);
+      desired = clamp(desired, 0, 0.92);
+    );
+
+    targetCut[i] = desired;
+
+    turn_rate = 0.0025 + 0.020 * fairness_amt;
+
+    ownAct > 0.0001 ? (
+      topId == iid ? (
+        decay = 0.035 + 0.18 * fairness_amt;
+        credit[i] *= (1 - decay);
+      ) : (
+        pressure = (topScore - ownScore) / (topScore + ownScore + 0.0000001);
+        pressure = clamp(pressure, 0, 1);
+        credit[i] += turn_rate * (0.35 + pressure);
+      );
+    ) : (
+      credit[i] *= 0.965;
+    );
+
+    credit[i] = clamp(credit[i], 0, 4);
+
+    pubBuf[i] = env[i];
+    pubBuf[NB + i] = credit[i];
+
+    i += 1;
+  );
+
+  i = active_nb;
+  while (i < NB) (
+    targetCut[i] = 0;
+    credit[i] *= 0.965;
+    pubBuf[i] = 0;
+    pubBuf[NB + i] = 0;
+    i += 1;
+  );
+
+  pubBase = my_slot_base + SLOT_BANDS;
+  gmem_put(pubBase, pubBuf, NB2);
+);
+
+function publish_slot() (
+  gmem[my_slot_base + SLOT_ID] = iid;
+  gmem[my_slot_base + SLOT_HB] = tick;
+  gmem[my_slot_base + SLOT_SEQ] = seq;
+  gmem[my_slot_base + SLOT_ROLE] = role_id;
+  gmem[my_slot_base + SLOT_PRIO] = priority_weight;
+  gmem[my_slot_base + SLOT_DEPTH] = depth_amt;
+  gmem[my_slot_base + SLOT_DROP] = 0;
+  gmem[my_slot_base + SLOT_SEND] = local_send_weight;
+  gmem[my_slot_base + SLOT_RECV] = influence_in;
+  gmem[my_slot_base + SLOT_PRESSURE] = local_pressure;
+  gmem[my_slot_base + SLOT_CONTACT] = local_contact;
+  gmem[my_slot_base + SLOT_VISCOSITY] = local_viscosity;
+  gmem[my_slot_base + SLOT_THRUST] = local_thrust;
+  gmem[my_slot_base + SLOT_AROUSAL] = local_arousal;
+  gmem[my_slot_base + SLOT_FATIGUE] = local_fatigue;
+);
+
+function compute_peer_bus() local(j sb sid hb stale w sumW p c v t a f rawP rawC rawV rawT rawA rawF busCoeff) (
+  sumW = 0;
+  rawP = 0; rawC = 0; rawV = 0; rawT = 0; rawA = 0; rawF = 0;
+  active_peer_instances = 0;
+
+  j = 0;
+  while (j < MAX_SLOTS) (
+    sb = BUS_HEADER + j * SLOT_STRIDE;
+    sid = gmem[sb + SLOT_ID];
+    hb = gmem[sb + SLOT_HB];
+    stale = (sid <= 0) || ((tick - hb) > STALE_TICKS);
+
+    (!stale) && (sid != iid) ? (
+      w = gmem[sb + SLOT_SEND];
+      w <= 0 ? w = 0;
+      p = clamp(gmem[sb + SLOT_PRESSURE], 0, 1);
+      c = clamp(gmem[sb + SLOT_CONTACT], 0, 1);
+      v = clamp(gmem[sb + SLOT_VISCOSITY], 0, 1);
+      t = clamp(gmem[sb + SLOT_THRUST], 0, 1);
+      a = clamp(gmem[sb + SLOT_AROUSAL], 0, 1);
+      f = clamp(gmem[sb + SLOT_FATIGUE], 0, 1);
+
+      rawP += p * w;
+      rawC += c * w;
+      rawV += v * w;
+      rawT += t * w;
+      rawA += a * w;
+      rawF += f * w;
+      sumW += w;
+      active_peer_instances += 1;
+    );
+
+    j += 1;
+  );
+
+  sumW > 0 ? (
+    rawP /= sumW;
+    rawC /= sumW;
+    rawV /= sumW;
+    rawT /= sumW;
+    rawA /= sumW;
+    rawF /= sumW;
+  ) : (
+    rawP = 0; rawC = 0; rawV = 0; rawT = 0; rawA = 0; rawF = 0;
+  );
+
+  busCoeff = 1 - exp(-samplesblock / (0.090 * work_srate));
+  bus_pressure += busCoeff * (rawP - bus_pressure);
+  bus_contact += busCoeff * (rawC - bus_contact);
+  bus_viscosity += busCoeff * (rawV - bus_viscosity);
+  bus_thrust += busCoeff * (rawT - bus_thrust);
+  bus_arousal += busCoeff * (rawA - bus_arousal);
+  bus_fatigue += busCoeff * (rawF - bus_fatigue);
+);
+
+function role_band_drive(f) local(wLow wBody wDetail wAir p c v t a fatigue drive) (
+  wLow = band_weight(f, 120, 1.25);
+  wBody = band_weight(f, 430, 1.45);
+  wDetail = band_weight(f, 2600, 1.30);
+  wAir = band_weight(f, 8500, 1.20);
+
+  p = bus_pressure;
+  c = bus_contact;
+  v = bus_viscosity;
+  t = bus_thrust;
+  a = bus_arousal;
+  fatigue = bus_fatigue;
+
+  drive = 0;
+
+  role_id == ROLE_NEUTRAL ? (
+    drive = 0.23 * p * wBody + 0.20 * c * wDetail + 0.16 * v * wAir + 0.16 * t * (wLow + wDetail) - 0.20 * fatigue * wAir;
+  );
+
+  role_id == ROLE_LEAD ? (
+    drive = 0.10 * p * wBody - 0.22 * c * wDetail - 0.14 * v * wBody - 0.12 * fatigue * wAir;
+  );
+
+  role_id == ROLE_BODY ? (
+    drive = 0.34 * p * wBody + 0.27 * t * wLow + 0.12 * c * wDetail + 0.09 * v * wBody - 0.16 * fatigue * wAir;
+  );
+
+  role_id == ROLE_WET ? (
+    drive = 0.34 * c * wDetail + 0.25 * v * (wBody + wAir) + 0.18 * t * wAir - 0.16 * p * wLow - 0.30 * fatigue * wAir;
+  );
+
+  role_id == ROLE_IMPACT ? (
+    drive = 0.24 * t * (wLow + wBody) + 0.18 * c * wDetail - 0.12 * fatigue * wAir;
+  );
+
+  role_id == ROLE_AMBIENCE ? (
+    drive = -0.32 * a * wDetail - 0.26 * p * wBody + 0.20 * v * wAir - 0.25 * fatigue * wAir;
+  );
+
+  role_id == ROLE_SUB ? (
+    drive = 0.42 * p * wLow + 0.18 * t * wLow - 0.18 * c * wAir - 0.12 * a * wDetail;
+  );
+
+  role_id == ROLE_TINGLE ? (
+    drive = 0.40 * c * wAir + 0.20 * t * wDetail - 0.44 * fatigue * wAir - 0.15 * a * wAir;
+  );
+
+  drive;
+);
+
+function compute_somatic_targets() local(i raw target cap wmod satDesired recvScale) (
+  compute_peer_bus();
+
+  recvScale = somatic_amt * influence_in;
+  active_peer_instances <= 0 ? recvScale = 0;
+
+  i = 0;
+  while (i < active_nb) (
+    raw = role_band_drive(fc[i]);
+    cap = band_somatic_cap;
+    target = clamp(raw * recvScale, -cap, cap);
+
+    // Fatigue narrows positive high-band excitation before it becomes abrasive.
+    fc[i] > 4500 ? (
+      target > 0 ? target *= (1 - 0.55 * bus_fatigue);
+    );
+
+    targetSom[i] = target;
+    i += 1;
+  );
+
+  i = active_nb;
+  while (i < NB) (
+    targetSom[i] = 0;
+    smoothSom[i] *= 0.995;
+    i += 1;
+  );
+
+  wmod = 0;
+  role_id == ROLE_NEUTRAL ? wmod = 0.035 * bus_contact + 0.030 * bus_viscosity - 0.020 * bus_fatigue;
+  role_id == ROLE_LEAD ? wmod = -0.018 * bus_arousal;
+  role_id == ROLE_BODY ? wmod = 0.025 * bus_thrust - 0.020 * bus_fatigue;
+  role_id == ROLE_WET ? wmod = 0.060 * bus_contact + 0.035 * bus_thrust - 0.025 * bus_fatigue;
+  role_id == ROLE_IMPACT ? wmod = -0.030 * bus_arousal;
+  role_id == ROLE_AMBIENCE ? wmod = 0.095 * bus_viscosity + 0.070 * bus_arousal - 0.050 * bus_pressure;
+  role_id == ROLE_SUB ? wmod = -0.110 * (bus_pressure + 0.5 * bus_arousal);
+  role_id == ROLE_TINGLE ? wmod = 0.050 * bus_contact - 0.080 * bus_fatigue;
+
+  targetWidth = clamp(wmod * recvScale, -width_cap, width_cap);
+
+  satDesired = 0;
+  role_id == ROLE_BODY ? satDesired = 0.30 * bus_pressure + 0.18 * bus_thrust;
+  role_id == ROLE_WET ? satDesired = 0.18 * bus_viscosity + 0.12 * bus_contact;
+  role_id == ROLE_IMPACT ? satDesired = 0.24 * bus_thrust + 0.12 * bus_pressure;
+  role_id == ROLE_SUB ? satDesired = 0.32 * bus_pressure;
+  role_id == ROLE_TINGLE ? satDesired = 0.10 * bus_contact * (1 - bus_fatigue);
+  role_id == ROLE_AMBIENCE ? satDesired = 0.06 * bus_viscosity;
+  role_id == ROLE_LEAD ? satDesired = 0.04 * bus_pressure;
+  role_id == ROLE_NEUTRAL ? satDesired = 0.10 * bus_arousal;
+
+  targetSat = clamp(satDesired * recvScale, 0, sat_cap);
+);
+
+function role_name() (
+  role_id == ROLE_NEUTRAL ? gfx_drawstr("Neutral");
+  role_id == ROLE_LEAD ? gfx_drawstr("Lead");
+  role_id == ROLE_BODY ? gfx_drawstr("Body");
+  role_id == ROLE_WET ? gfx_drawstr("Wet Detail");
+  role_id == ROLE_IMPACT ? gfx_drawstr("Impact");
+  role_id == ROLE_AMBIENCE ? gfx_drawstr("Ambience");
+  role_id == ROLE_SUB ? gfx_drawstr("Sub/Weight");
+  role_id == ROLE_TINGLE ? gfx_drawstr("Air/Tingle");
+);
+
+
+pi = 3.141592653589793;
+ln10 = 2.302585092994046;
+ln2 = 0.6931471805599453;
+inv_ln10 = 0.4342944819032518;
+inv_ln2 = 1.4426950408889634;
+db2lin = 0.11512925464970229; // ln(10)/20
+
+NB = 24; // storage width / maximum ERB bands
+NB2 = NB * 2;
+active_nb = 12;
+need_filter_rebuild = 1;
+
+MAX_SLOTS = 64;
+
+BUS_MAGIC = 0;
+BUS_VERSION = 1;
+BUS_TICK = 2;
+BUS_RESERVED0 = 3;
+BUS_HEADER = 64;
+
+SLOT_ID = 0;
+SLOT_HB = 1;
+SLOT_SEQ = 2;
+SLOT_ROLE = 3;
+SLOT_PRIO = 4;
+SLOT_DEPTH = 5;
+SLOT_DROP = 6;
+SLOT_SEND = 7;
+SLOT_RECV = 8;
+SLOT_PRESSURE = 9;
+SLOT_CONTACT = 10;
+SLOT_VISCOSITY = 11;
+SLOT_THRUST = 12;
+SLOT_AROUSAL = 13;
+SLOT_FATIGUE = 14;
+SLOT_RESERVED_A = 15;
+SLOT_RESERVED_B = 16;
+SLOT_RESERVED_C = 17;
+SLOT_BANDS = 18;
+
+SLOT_STRIDE = SLOT_BANDS + NB2; // scalar state + energy[NB] + credit[NB]
+GMEM_SIZE = BUS_HEADER + MAX_SLOTS * SLOT_STRIDE + 64;
+
+MAGIC = 2026042402;
+VERSION = 2;
+STALE_TICKS = MAX_SLOTS * 128;
+
+OP_HEART = 1;
+OP_BYE = 2;
+
+ROLE_NEUTRAL = 0;
+ROLE_LEAD = 1;
+ROLE_BODY = 2;
+ROLE_WET = 3;
+ROLE_IMPACT = 4;
+ROLE_AMBIENCE = 5;
+ROLE_SUB = 6;
+ROLE_TINGLE = 7;
+
+comm_join("ZorakAudio.CrossMixSomaticBus");
+instance_set_name("Cross-Mix Somatic Bus");
+instance_uid(#uid);
+iid = instance_id();
+
+// Single global endpoint for V2. Replace this literal with the resolved user bus
+// string when the host/string-input layer is ready.
+// Message bus intentionally not used for CMD heartbeat; gmem is the hot path.
+gmem_attach_size(#bus_name, GMEM_SIZE);
+
+mempos = 0;
+
+fc = mempos; mempos += NB;
+b0c = mempos; mempos += NB;
+b2c = mempos; mempos += NB;
+a1c = mempos; mempos += NB;
+a2c = mempos; mempos += NB;
+
+x1La = mempos; mempos += NB;
+x2La = mempos; mempos += NB;
+y1La = mempos; mempos += NB;
+y2La = mempos; mempos += NB;
+x1Lb = mempos; mempos += NB;
+x2Lb = mempos; mempos += NB;
+y1Lb = mempos; mempos += NB;
+y2Lb = mempos; mempos += NB;
+
+x1Ra = mempos; mempos += NB;
+x2Ra = mempos; mempos += NB;
+y1Ra = mempos; mempos += NB;
+y2Ra = mempos; mempos += NB;
+x1Rb = mempos; mempos += NB;
+x2Rb = mempos; mempos += NB;
+y1Rb = mempos; mempos += NB;
+y2Rb = mempos; mempos += NB;
+
+env = mempos; mempos += NB;
+accum = mempos; mempos += NB;
+targetCut = mempos; mempos += NB;
+smoothCut = mempos; mempos += NB;
+credit = mempos; mempos += NB;
+targetSom = mempos; mempos += NB;
+smoothSom = mempos; mempos += NB;
+pubBuf = mempos; mempos += NB2;
+
+memset(0, 0, mempos);
+
+last_srate = -1;
+my_slot = -1;
+my_slot_base = -1;
+seq = 0;
+msg_seen = 0;
+active_instances = 1;
+active_peer_instances = 0;
+peer_count = 0;
+
+local_pressure = 0;
+local_contact = 0;
+local_viscosity = 0;
+local_thrust = 0;
+local_arousal = 0;
+local_fatigue = 0;
+local_send_weight = 0;
+
+bus_pressure = 0;
+bus_contact = 0;
+bus_viscosity = 0;
+bus_thrust = 0;
+bus_arousal = 0;
+bus_fatigue = 0;
+
+targetWidth = 0;
+smoothWidth = 0;
+targetSat = 0;
+smoothSat = 0;
+
+fastAmp = 0;
+prevFastAmp = 0;
+breathPhase = (iid - floor(iid / 997) * 997) * 0.006283185307179586;
+
+setup_from_sliders();
+build_filterbank();
+
+@slider
+setup_from_sliders();
+// Re-bind the shared endpoint when the string bus name changes.
+// Numeric slider moves also pass through here; the slot is republished next @block.
+clear_own_slot();
+gmem_attach_size(#bus_name, GMEM_SIZE);
+
+@block
+setup_from_sliders();
+
+work_srate = srate;
+work_srate < 1000 ? work_srate = 48000;
+(work_srate != last_srate || need_filter_rebuild) ? build_filterbank();
+
+ensure_bus_header();
+allocate_slot();
+publish_slot();
+
+drain_messages();
+update_band_envs();
+update_motion_envs();
+compute_declutter_targets();
+publish_slot();
+compute_somatic_targets();
+
+seq += 1;
+peer_count = active_peer_instances;
+
+@sample
+inL = spl0;
+inR = spl1;
+outL = inL;
+outR = inR;
+
+sampleAbs = max(abs(inL), abs(inR));
+fastAmp += fast_env_coeff * (sampleAbs - fastAmp);
+rise = fastAmp - prevFastAmp;
+rise > 0 ? onset_accum += rise;
+prevFastAmp = fastAmp;
+
+sampleTotal = 0;
+sampleLow = 0;
+sampleContact = 0;
+sampleVisc = 0;
+
+breathRate = 0.045 + 0.420 * bus_arousal + 0.220 * bus_thrust;
+breathPhase += breath_base_inc * breathRate;
+breathPhase > 2 * pi ? breathPhase -= 2 * pi;
+breath = 0.70 + 0.30 * sin(breathPhase);
+
+i = 0;
+while (i < active_nb) (
+  b0i = b0c[i];
+  b2i = b2c[i];
+  a1i = a1c[i];
+  a2i = a2c[i];
+
+  // Left channel, two cascaded ERB-spaced band-pass sections.
+  ya = b0i * inL + b2i * x2La[i] - a1i * y1La[i] - a2i * y2La[i];
+  x2La[i] = x1La[i];
+  x1La[i] = inL;
+  y2La[i] = y1La[i];
+  y1La[i] = ya;
+
+  bpL = b0i * ya + b2i * x2Lb[i] - a1i * y1Lb[i] - a2i * y2Lb[i];
+  x2Lb[i] = x1Lb[i];
+  x1Lb[i] = ya;
+  y2Lb[i] = y1Lb[i];
+  y1Lb[i] = bpL;
+
+  // Right channel, same filterbank.
+  ya = b0i * inR + b2i * x2Ra[i] - a1i * y1Ra[i] - a2i * y2Ra[i];
+  x2Ra[i] = x1Ra[i];
+  x1Ra[i] = inR;
+  y2Ra[i] = y1Ra[i];
+  y1Ra[i] = ya;
+
+  bpR = b0i * ya + b2i * x2Rb[i] - a1i * y1Rb[i] - a2i * y2Rb[i];
+  x2Rb[i] = x1Rb[i];
+  x1Rb[i] = ya;
+  y2Rb[i] = y1Rb[i];
+  y1Rb[i] = bpR;
+
+  e = 0.5 * (bpL * bpL + bpR * bpR);
+  e = sanitize(e, 0);
+  accum[i] += e;
+  sampleTotal += e;
+
+  f = fc[i];
+  f < 260 ? sampleLow += e;
+  (f >= 1100) && (f <= 8000) ? sampleContact += e;
+  (f >= 320) && (f <= 6200) ? sampleVisc += e;
+
+  cut = smoothCut[i] + cut_smooth * (targetCut[i] - smoothCut[i]);
+  cut = clamp(cut, 0, 0.95);
+  smoothCut[i] = cut;
+
+  som = smoothSom[i] + som_smooth * (targetSom[i] - smoothSom[i]);
+  som = clamp(som, -0.25, 0.25);
+  smoothSom[i] = som;
+
+  // Declutter removes contested bands. Somatic adds bounded peer-caused sympathy.
+  bandGain = -cut + som * breath;
+  outL += bandGain * bpL;
+  outR += bandGain * bpR;
+
+  i += 1;
+);
+
+total_accum += sampleTotal;
+low_accum += sampleLow;
+contact_accum += sampleContact;
+visc_accum += sampleVisc;
+
+smoothWidth += width_smooth * (targetWidth - smoothWidth);
+smoothWidth = clamp(smoothWidth, -0.25, 0.25);
+mid = 0.5 * (outL + outR);
+side = 0.5 * (outL - outR);
+side *= (1 + smoothWidth);
+outL = mid + side;
+outR = mid - side;
+
+smoothSat += sat_smooth * (targetSat - smoothSat);
+smoothSat = clamp(smoothSat, 0, 0.35);
+smoothSat > 0.00001 ? (
+  satDrive = smoothSat;
+  outL = outL * (1 + satDrive) / (1 + satDrive * abs(outL));
+  outR = outR * (1 + satDrive) / (1 + satDrive * abs(outR));
+);
+
+outL *= out_gain;
+outR *= out_gain;
+
+// Hard emergency bound only; normal behavior should stay far below this.
+spl0 = clamp(outL, -8, 8);
+spl1 = clamp(outR, -8, 8);
+
+@gfx 620 270
+gfx_clear = 0;
+w = gfx_w;
+h = gfx_h;
+
+gfx_set(0.80, 0.80, 0.80, 1);
+gfx_x = 12; gfx_y = 10;
+gfx_drawstr("Cross-Mix Somatic Bus  |  Shared Bus  |  Active ");
+gfx_drawnumber(active_instances, 0);
+gfx_drawstr("  |  Peers ");
+gfx_drawnumber(active_peer_instances, 0);
+gfx_drawstr("  |  Role ");
+role_name();
+
+x0 = 14; y0 = 44; x1 = w - 14; y1 = 142;
+barw = (x1 - x0) / max(active_nb, 1);
+
+i = 0;
+while (i < active_nb) (
+  x = x0 + i * barw;
+  a = env[i] / floor_energy - 1;
+  a < 0 ? a = 0;
+  a = clamp(a / 24, 0, 1);
+
+  gr = smoothCut[i];
+  gr = clamp(gr, 0, 1);
+
+  sm = abs(smoothSom[i]);
+  sm = clamp(sm * 8, 0, 1);
+
+  gfx_set(0.20, 0.35 + 0.45 * a, 0.90, 0.82);
+  gfx_rect(x, y1 - a * (y1 - y0), max(1, barw - 2), a * (y1 - y0), 1);
+
+  gfx_set(0.95, 0.35, 0.20, 0.90);
+  gfx_rect(x, y1 - gr * (y1 - y0), max(1, barw - 2), 2 + gr * (y1 - y0) * 0.08, 1);
+
+  gfx_set(0.35, 0.95, 0.55, 0.80);
+  gfx_rect(x, y1 - sm * (y1 - y0), max(1, barw - 2), 2, 1);
+
+  i += 1;
+);
+
+gfx_set(0.55, 0.55, 0.55, 1);
+gfx_line(x0, y1, x1, y1, 1);
+
+gfx_x = 14; gfx_y = 156;
+gfx_set(0.80, 0.80, 0.80, 1);
+gfx_drawstr("Bus motion from peers:  Pressure "); gfx_drawnumber(bus_pressure * 100, 0); gfx_drawstr("%   Contact "); gfx_drawnumber(bus_contact * 100, 0); gfx_drawstr("%   Viscosity "); gfx_drawnumber(bus_viscosity * 100, 0); gfx_drawstr("%");
+
+gfx_x = 14; gfx_y = 178;
+gfx_drawstr("                         Thrust "); gfx_drawnumber(bus_thrust * 100, 0); gfx_drawstr("%   Arousal "); gfx_drawnumber(bus_arousal * 100, 0); gfx_drawstr("%   Fatigue "); gfx_drawnumber(bus_fatigue * 100, 0); gfx_drawstr("%");
+
+gfx_x = 14; gfx_y = 206;
+gfx_drawstr("This track drives: P "); gfx_drawnumber(local_pressure * 100, 0); gfx_drawstr("  C "); gfx_drawnumber(local_contact * 100, 0); gfx_drawstr("  V "); gfx_drawnumber(local_viscosity * 100, 0); gfx_drawstr("  T "); gfx_drawnumber(local_thrust * 100, 0);
+
+gfx_x = 14; gfx_y = 236;
+gfx_set(0.70, 0.70, 0.70, 1);
+gfx_drawstr("Blue=local ERB activity. Orange=declutter yield. Green=somatic peer modulation.");

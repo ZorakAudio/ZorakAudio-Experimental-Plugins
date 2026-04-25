@@ -1415,8 +1415,10 @@ def validate_builtin_sections(programs: Dict[str, List[Node]]) -> None:
         "msg_peer_count", "msg_peer_id", "msg_peer_name", "msg_peer_uid", "msg_peer_caps", "msg_peer_alive",
         "gmem_get", "gmem_put", "gmem_fill", "gmem_zero", "gmem_copy",
     }
-    init_or_block = {"msg_subscribe", "msg_unsubscribe", "msg_advertise", "instance_set_name", "instance_get_name", "instance_uid", "gmem_attach", "gmem_attach_size"}
-    init_only = {"comm_join"}
+    # Bus/string-slider setup calls are intentionally valid from @slider so a
+    # per-instance text slider can rebind message/gmem endpoints without forcing
+    # users to reopen the plugin. Operational message traffic remains @block-only.
+    init_slider_block_setup = {"comm_join", "msg_subscribe", "msg_unsubscribe", "msg_advertise", "instance_set_name", "instance_get_name", "instance_uid", "gmem_attach", "gmem_attach_size"}
     init_slider_block = {"instance_id"}
 
     def fail(node: Node, message: str) -> None:
@@ -1437,10 +1439,8 @@ def validate_builtin_sections(programs: Dict[str, List[Node]]) -> None:
             fn = n.fn
             if fn in block_only and section != "block":
                 fail(n, f"{fn}() is only valid in @block")
-            if fn in init_or_block and section not in ("init", "block"):
-                fail(n, f"{fn}() is only valid in @init or @block")
-            if fn in init_only and section != "init":
-                fail(n, f"{fn}() is only valid in @init")
+            if fn in init_slider_block_setup and section not in ("init", "slider", "block"):
+                fail(n, f"{fn}() is only valid in @init, @slider, or @block")
             if fn in init_slider_block and section not in ("init", "slider", "block"):
                 fail(n, f"{fn}() is only valid in @init, @slider, or @block")
             for a in n.args:
