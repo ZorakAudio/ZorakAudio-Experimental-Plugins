@@ -117,7 +117,8 @@ bool DspJsfxSamplePool::commitFromPaths(const std::vector<juce::String>& paths, 
     if (sourceGeneration != 0
         && lastCommittedSourceGeneration_.load(std::memory_order_acquire) == sourceGeneration
         && lastCommittedMode_.load(std::memory_order_acquire) == currentMode
-        && lastCommittedBudgetBytes_.load(std::memory_order_acquire) == currentBudget)
+        && lastCommittedBudgetBytes_.load(std::memory_order_acquire) == currentBudget
+        && lastCommittedSourceKind_.load(std::memory_order_acquire) == 0)
         return true;
 
     ensureWorker();
@@ -143,6 +144,48 @@ bool DspJsfxSamplePool::commitFromPaths(const std::vector<juce::String>& paths, 
     lastCommittedSourceGeneration_.store(sourceGeneration, std::memory_order_release);
     lastCommittedMode_.store(currentMode, std::memory_order_release);
     lastCommittedBudgetBytes_.store(currentBudget, std::memory_order_release);
+    lastCommittedSourceKind_.store(0, std::memory_order_release);
+    return true;
+}
+
+bool DspJsfxSamplePool::commitFromMemory(std::shared_ptr<const DspJsfxSamplePoolMemorySourceList> sources,
+                                         std::uint64_t sourceGeneration)
+{
+    const int currentMode = mode_.load(std::memory_order_acquire);
+    const auto currentBudget = budgetBytes_.load(std::memory_order_acquire);
+
+    if (sourceGeneration != 0
+        && lastCommittedSourceGeneration_.load(std::memory_order_acquire) == sourceGeneration
+        && lastCommittedMode_.load(std::memory_order_acquire) == currentMode
+        && lastCommittedBudgetBytes_.load(std::memory_order_acquire) == currentBudget
+        && lastCommittedSourceKind_.load(std::memory_order_acquire) == 1)
+        return true;
+
+    ensureWorker();
+
+    Request req;
+    req.memorySources = std::move(sources);
+    req.sourceGeneration = sourceGeneration;
+    req.mode = currentMode;
+    req.budgetBytes = currentBudget;
+    req.requestId = nextRequestId_.fetch_add(1, std::memory_order_acq_rel);
+
+    const int selected = req.memorySources != nullptr ? static_cast<int>(req.memorySources->size()) : 0;
+    selected_.store(selected, std::memory_order_release);
+    failed_.store(0, std::memory_order_release);
+    state_.store(selected > 0 ? kSamplePoolLoading : kSamplePoolEmpty, std::memory_order_release);
+
+    {
+        std::lock_guard<std::mutex> lock(workerMutex_);
+        pendingRequest_ = std::move(req);
+        requestPending_ = true;
+    }
+    workerCv_.notify_one();
+
+    lastCommittedSourceGeneration_.store(sourceGeneration, std::memory_order_release);
+    lastCommittedMode_.store(currentMode, std::memory_order_release);
+    lastCommittedBudgetBytes_.store(currentBudget, std::memory_order_release);
+    lastCommittedSourceKind_.store(1, std::memory_order_release);
     return true;
 }
 
@@ -338,13 +381,88 @@ std::shared_ptr<DspJsfxSamplePoolGeneration> DspJsfxSamplePool::buildGeneration(
 {
     auto gen = std::make_shared<DspJsfxSamplePoolGeneration>();
     gen->sourceGeneration = request.sourceGeneration;
+
+    std::uint64_t usedBytes = 0;
+    const bool budgeted = (request.mode == kSamplePoolModeBudgeted || request.mode == kSamplePoolModeLazy || request.mode == kSamplePoolModeStream) && request.budgetBytes > 0;
+
+    if (request.memorySources != nullptr)
+    {
+        gen->selectedCount = static_cast<int>(request.memorySources->size());
+
+        for (const auto& src : *request.memorySources)
+        {
+            const int channels = std::max<int>(1, std::min<int>(64, static_cast<int>(src.channels)));
+            const std::uint64_t totalItems = static_cast<std::uint64_t>(src.audio.size());
+            const std::uint64_t frames64 = totalItems / static_cast<std::uint64_t>(channels);
+
+            if (frames64 == 0 || totalItems == 0 || totalItems % static_cast<std::uint64_t>(channels) != 0)
+            {
+                ++gen->failedCount;
+                continue;
+            }
+
+            const auto bytes = safeAudioBytes(static_cast<std::int64_t>(frames64), channels);
+            if (bytes == 0 || bytes == std::numeric_limits<std::uint64_t>::max())
+            {
+                ++gen->failedCount;
+                continue;
+            }
+
+            if (budgeted && usedBytes + bytes > request.budgetBytes)
+            {
+                ++gen->failedCount;
+                continue;
+            }
+
+            DspJsfxSamplePoolEntry entry;
+            entry.id = static_cast<std::uint64_t>(gen->entries.size() + 1);
+            entry.offsetItems = static_cast<std::uint64_t>(gen->audio.size());
+            entry.frames = static_cast<std::uint32_t>(std::min<std::uint64_t>(frames64, std::numeric_limits<std::uint32_t>::max()));
+            entry.channels = static_cast<std::uint16_t>(channels);
+            entry.sampleRate = std::max<std::uint32_t>(1u, src.sampleRate);
+
+            const std::uint64_t keptItems = static_cast<std::uint64_t>(entry.frames) * static_cast<std::uint64_t>(entry.channels);
+            if (keptItems > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / sizeof(float)))
+            {
+                ++gen->failedCount;
+                continue;
+            }
+
+            try
+            {
+                gen->audio.insert(gen->audio.end(), src.audio.begin(), src.audio.begin() + static_cast<std::ptrdiff_t>(keptItems));
+            }
+            catch (...)
+            {
+                ++gen->failedCount;
+                continue;
+            }
+
+            double sumSq = 0.0;
+            float peak = 0.0f;
+            for (std::uint64_t i = 0; i < keptItems; ++i)
+            {
+                const float v = gen->audio[static_cast<std::size_t>(entry.offsetItems + i)];
+                peak = std::max(peak, std::abs(v));
+                sumSq += static_cast<double>(v) * static_cast<double>(v);
+            }
+
+            entry.peak = peak;
+            entry.rms = keptItems > 0 ? static_cast<float>(std::sqrt(sumSq / static_cast<double>(keptItems))) : 0.0f;
+            buildPreviewForEntry(*gen, entry);
+            gen->names.push_back(src.name.empty() ? std::string("memory sample") : src.name);
+            gen->entries.push_back(entry);
+            usedBytes += bytes;
+        }
+
+        gen->decodedBytes = static_cast<std::uint64_t>(gen->audio.size()) * sizeof(float);
+        return gen;
+    }
+
     gen->selectedCount = static_cast<int>(request.paths.size());
 
     juce::AudioFormatManager fm;
     fm.registerBasicFormats();
-
-    std::uint64_t usedBytes = 0;
-    const bool budgeted = (request.mode == kSamplePoolModeBudgeted || request.mode == kSamplePoolModeLazy || request.mode == kSamplePoolModeStream) && request.budgetBytes > 0;
 
     for (const auto& path : request.paths)
     {

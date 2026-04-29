@@ -77,6 +77,16 @@ struct DspJsfxSamplePoolGeneration
     std::uint64_t decodedBytes = 0;
 };
 
+struct DspJsfxSamplePoolMemorySource
+{
+    std::string name;
+    std::uint32_t sampleRate = 0;
+    std::uint16_t channels = 0;
+    std::vector<float> audio; // interleaved frames * channels
+};
+
+using DspJsfxSamplePoolMemorySourceList = std::vector<DspJsfxSamplePoolMemorySource>;
+
 class DspJsfxSamplePool
 {
 public:
@@ -95,6 +105,11 @@ public:
     // Schedules a background scan/decode if paths or settings changed.
     // The completed generation is immutable and atomically published.
     bool commitFromPaths(const std::vector<juce::String>& paths, std::uint64_t sourceGeneration);
+    // Schedules a background publish from already-rendered in-memory audio.
+    // Used by import recipes so sample_pool users see segmented/modified results
+    // without writing temporary files to disk.
+    bool commitFromMemory(std::shared_ptr<const DspJsfxSamplePoolMemorySourceList> sources,
+                          std::uint64_t sourceGeneration);
 
     int state() const noexcept { return state_.load(std::memory_order_acquire); }
     int selected() const noexcept { return selected_.load(std::memory_order_acquire); }
@@ -122,6 +137,7 @@ private:
     struct Request
     {
         std::vector<juce::String> paths;
+        std::shared_ptr<const DspJsfxSamplePoolMemorySourceList> memorySources;
         std::uint64_t sourceGeneration = 0;
         int mode = kSamplePoolModeResident;
         std::uint64_t budgetBytes = 0;
@@ -147,6 +163,7 @@ private:
     std::atomic<std::uint64_t> lastCommittedSourceGeneration_ { 0 };
     std::atomic<std::uint64_t> lastCommittedBudgetBytes_ { 0 };
     std::atomic<int> lastCommittedMode_ { -1 };
+    std::atomic<int> lastCommittedSourceKind_ { -1 }; // 0 = paths, 1 = in-memory
 
     mutable std::mutex generationMutex_;
     std::vector<std::shared_ptr<const DspJsfxSamplePoolGeneration>> generations_; // retains immutable generations for lock-free readers

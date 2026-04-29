@@ -1992,9 +1992,9 @@ public:
         std::vector<juce::String> paths;
         FileLoadMode loadMode = FileLoadMode::SeparateEntries;
 
-        // Optional serialized import recipe. Rendered/cache files still live in paths
-        // for immediate playback; this keeps rule-based imports replayable in state,
-        // recents, and favorites.
+        // Optional serialized import recipe. Source paths plus deterministic rules are
+        // saved; processed recipe output is rendered directly into the in-memory
+        // file-slot cache for replay without temp files.
         juce::String importRecipeXml;
     };
 
@@ -2039,6 +2039,7 @@ public:
         std::vector<juce::String> currentPaths;
         FileLoadMode loadMode = FileLoadMode::SeparateEntries;
         juce::String currentRecipeXml;
+        std::shared_ptr<const za::jsfx::DspJsfxSamplePoolMemorySourceList> currentSamplePoolMemorySources;
 
         std::atomic<FileState> state { FileState::Unassigned };
         std::atomic<uint64_t> generation { 0 };
@@ -2077,6 +2078,7 @@ public:
             currentPaths = std::move (other.currentPaths);
             loadMode = other.loadMode;
             currentRecipeXml = std::move (other.currentRecipeXml);
+            currentSamplePoolMemorySources = std::move (other.currentSamplePoolMemorySources);
 
             state.store (other.state.load (std::memory_order_relaxed), std::memory_order_relaxed);
             generation.store (other.generation.load (std::memory_order_relaxed), std::memory_order_relaxed);
@@ -2100,6 +2102,7 @@ public:
             other.activeGeneration = 0;
             other.loadMode = FileLoadMode::SeparateEntries;
             other.currentRecipeXml.clear();
+            other.currentSamplePoolMemorySources.reset();
 
             return *this;
         }
@@ -2125,6 +2128,7 @@ public:
         int slot = -1;
         std::vector<juce::File> files;
         FileLoadMode mode = FileLoadMode::SeparateEntries;
+        juce::String importRecipeXml;
         uint64_t generation = 0;
     };
 
@@ -3816,6 +3820,7 @@ public:
             slot.currentPaths = fullPaths;
             slot.loadMode = loadMode;
             slot.currentRecipeXml = importRecipeXml;
+            slot.currentSamplePoolMemorySources.reset();
             rememberFileSelectionLocked (normalisedFiles, loadMode, importRecipeXml);
         }
         else
@@ -3824,6 +3829,7 @@ public:
             slot.currentPaths = fullPaths;
             slot.loadMode = loadMode;
             slot.currentRecipeXml = importRecipeXml;
+            slot.currentSamplePoolMemorySources.reset();
         }
 
         if (shouldRememberForUi)
@@ -3845,13 +3851,30 @@ public:
         if (allExist)
         {
            #if DSPJSFX_USES_SAMPLE_POOL && ! DSPJSFX_USES_LEGACY_FILE_IO
-            // sample_pool_* owns large-bank decoding. Avoid the legacy
-            // file_mem() double cache when the compiled DSP does not call the
-            // old file_* APIs; otherwise huge banks pay the old 64-bit memory
-            // cost before the float32 pool even starts loading.
-            slot.active.reset();
-            slot.activeGeneration = gen;
-            slot.state.store (FileState::ReadyActive);
+            if (importRecipeXml.isEmpty())
+            {
+                // sample_pool_* owns large-bank decoding for direct on-disk sources.
+                // Avoid the legacy file_mem() double cache when the compiled DSP
+                // does not call the old file_* APIs.
+                slot.active.reset();
+                slot.activeGeneration = gen;
+                slot.state.store (FileState::ReadyActive);
+            }
+            else
+            {
+                // Recipe-backed selections must be rendered in memory so
+                // sample_pool users receive the processed/segmented result
+                // instead of reloading the original source paths.
+                slot.state.store (FileState::Loading);
+
+                FileLoadRequest req;
+                req.slot = slotIndex0;
+                req.files = normalisedFiles;
+                req.mode = loadMode;
+                req.importRecipeXml = importRecipeXml;
+                req.generation = gen;
+                enqueueFileLoad (std::move (req));
+            }
            #else
             slot.state.store (FileState::Loading);
 
@@ -3859,6 +3882,7 @@ public:
             req.slot = slotIndex0;
             req.files = normalisedFiles;
             req.mode = loadMode;
+            req.importRecipeXml = importRecipeXml;
             req.generation = gen;
             enqueueFileLoad (std::move (req));
            #endif
@@ -3882,6 +3906,7 @@ public:
             slot.currentPaths.clear();
             slot.loadMode = FileLoadMode::SeparateEntries;
             slot.currentRecipeXml.clear();
+            slot.currentSamplePoolMemorySources.reset();
         }
 
         if (auto* oldPending = slot.pending.exchange (nullptr))
@@ -4304,12 +4329,17 @@ public:
             return 0.0;
 
         std::vector<juce::String> paths;
+        std::shared_ptr<const za::jsfx::DspJsfxSamplePoolMemorySourceList> memorySources;
         std::uint64_t gen = 0;
         {
             std::lock_guard<std::mutex> lk (filePathMutex);
             paths = fileSlots[(size_t) slot].currentPaths;
+            memorySources = fileSlots[(size_t) slot].currentSamplePoolMemorySources;
             gen = fileSlots[(size_t) slot].generation.load (std::memory_order_acquire);
         }
+
+        if (memorySources != nullptr && ! memorySources->empty())
+            return pool->commitFromMemory (std::move (memorySources), gen) ? 1.0 : 0.0;
 
         return pool->commitFromPaths (paths, gen) ? 1.0 : 0.0;
     }
@@ -4841,6 +4871,207 @@ public:
         const int cur = gfxSnapReading.load (std::memory_order_acquire);
         if (cur == index)
             gfxSnapReading.store (-1, std::memory_order_release);
+    }
+
+
+    std::unique_ptr<CachedFileData> makeCachedFileDataFromImportAudio (const za::fileimport::AudioFileData& src) const
+    {
+        const int channels = juce::jlimit (1, 64, src.buffer.getNumChannels());
+        const int64_t frames = juce::jmax<int64_t> (0, src.buffer.getNumSamples());
+
+        auto out = std::make_unique<CachedFileData>();
+        out->isText = false;
+        out->channels = channels;
+        out->frames = frames;
+        out->sampleRate = src.sampleRate > 0.0 ? src.sampleRate : 48000.0;
+
+        const int64_t totalItems64 = frames * (int64_t) channels;
+        if (totalItems64 <= 0)
+            return out;
+
+        if (totalItems64 > (int64_t) (std::numeric_limits<size_t>::max() / sizeof (double)))
+            return nullptr;
+
+        out->items.resize ((size_t) totalItems64);
+        for (int64_t i = 0; i < frames; ++i)
+        {
+            const size_t base = (size_t) (i * (int64_t) channels);
+            for (int ch = 0; ch < channels; ++ch)
+                out->items[base + (size_t) ch] = (double) src.buffer.getSample (ch, (int) i);
+        }
+
+        return out;
+    }
+
+    std::shared_ptr<const za::jsfx::DspJsfxSamplePoolMemorySourceList> makeSamplePoolSourcesFromImportAudio (const std::vector<za::fileimport::AudioFileData>& renderedAudio) const
+    {
+        using Source = za::jsfx::DspJsfxSamplePoolMemorySource;
+        using SourceList = za::jsfx::DspJsfxSamplePoolMemorySourceList;
+
+        auto out = std::make_shared<SourceList>();
+        out->reserve (renderedAudio.size());
+
+        for (const auto& audio : renderedAudio)
+        {
+            const int channels = juce::jlimit (1, 64, audio.buffer.getNumChannels());
+            const int frames = audio.buffer.getNumSamples();
+            if (frames <= 0)
+                continue;
+
+            const int64_t totalItems64 = (int64_t) frames * (int64_t) channels;
+            if (totalItems64 <= 0 || totalItems64 > (int64_t) std::numeric_limits<int>::max())
+                continue;
+
+            Source src;
+            src.name = (audio.sourceName.isNotEmpty() ? audio.sourceName : juce::String ("memory sample")).toStdString();
+            src.sampleRate = (std::uint32_t) juce::jmax (1, (int) std::llround (audio.sampleRate > 0.0 ? audio.sampleRate : 48000.0));
+            src.channels = (std::uint16_t) channels;
+            src.audio.resize ((size_t) totalItems64);
+
+            for (int i = 0; i < frames; ++i)
+            {
+                const size_t base = (size_t) ((int64_t) i * (int64_t) channels);
+                for (int ch = 0; ch < channels; ++ch)
+                    src.audio[base + (size_t) ch] = audio.buffer.getSample (ch, i);
+            }
+
+            out->push_back (std::move (src));
+        }
+
+        if (out->empty())
+            return {};
+
+        return out;
+    }
+
+    std::shared_ptr<const za::jsfx::DspJsfxSamplePoolMemorySourceList> makeSamplePoolSourcesFromCachedFileSet (const CachedFileSet& set) const
+    {
+        using Source = za::jsfx::DspJsfxSamplePoolMemorySource;
+        using SourceList = za::jsfx::DspJsfxSamplePoolMemorySourceList;
+
+        auto out = std::make_shared<SourceList>();
+        out->reserve (set.entries.size());
+
+        for (const auto& entry : set.entries)
+        {
+            if (entry.data == nullptr || entry.data->isText || entry.data->frames <= 0 || entry.data->channels <= 0)
+                continue;
+
+            const int channels = juce::jlimit (1, 64, entry.data->channels);
+            const int64_t frames = entry.data->frames;
+            const int64_t totalItems64 = frames * (int64_t) channels;
+            if (totalItems64 <= 0 || totalItems64 > (int64_t) std::numeric_limits<int>::max())
+                continue;
+
+            if ((int64_t) entry.data->items.size() < totalItems64)
+                continue;
+
+            Source src;
+            src.name = (entry.path.isNotEmpty() ? entry.path : juce::String ("memory sample")).toStdString();
+            src.sampleRate = (std::uint32_t) juce::jmax (1, (int) std::llround (entry.data->sampleRate > 0.0 ? entry.data->sampleRate : 48000.0));
+            src.channels = (std::uint16_t) channels;
+            src.audio.resize ((size_t) totalItems64);
+
+            for (int64_t i = 0; i < totalItems64; ++i)
+                src.audio[(size_t) i] = (float) entry.data->items[(size_t) i];
+
+            out->push_back (std::move (src));
+        }
+
+        if (out->empty())
+            return {};
+
+        return out;
+    }
+
+    void setFileSlotRenderedAudioData (int slotIndex0,
+                                       const std::vector<juce::File>& sourceFiles,
+                                       std::vector<za::fileimport::AudioFileData> renderedAudio,
+                                       bool shouldRememberForUi = true,
+                                       const juce::String& importRecipeXml = {})
+    {
+        if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size())
+            return;
+
+        if (renderedAudio.empty())
+        {
+            clearFileSlot (slotIndex0);
+            return;
+        }
+
+        auto samplePoolSources = makeSamplePoolSourcesFromImportAudio (renderedAudio);
+
+        auto cached = std::make_unique<CachedFileSet>();
+        cached->entries.reserve (renderedAudio.size());
+
+        for (auto& audio : renderedAudio)
+        {
+            auto data = makeCachedFileDataFromImportAudio (audio);
+            if (! data)
+                continue;
+
+            CachedFileEntry entry;
+            entry.path = audio.sourceName.isNotEmpty() ? audio.sourceName : juce::String ("memory://za-import/rendered");
+            entry.data = std::move (data);
+            cached->entries.push_back (std::move (entry));
+        }
+
+        auto& slot = fileSlots[(size_t) slotIndex0];
+
+        if (cached->entries.empty())
+        {
+            slot.errorCode.store (2);
+            slot.state.store (FileState::Error);
+            return;
+        }
+
+        std::vector<juce::File> normalisedFiles;
+        std::vector<juce::String> fullPaths;
+        normalisedFiles.reserve (sourceFiles.size());
+        fullPaths.reserve (sourceFiles.size());
+
+        for (const auto& file : sourceFiles)
+        {
+            const auto fullPath = file.getFullPathName();
+            if (fullPath.isEmpty())
+                continue;
+
+            normalisedFiles.push_back (file);
+            fullPaths.push_back (fullPath);
+        }
+
+        if (fullPaths.empty())
+        {
+            for (const auto& entry : cached->entries)
+                fullPaths.push_back (entry.path);
+        }
+
+        {
+            std::lock_guard<std::mutex> lk (filePathMutex);
+            slot.currentPaths = fullPaths;
+            slot.loadMode = FileLoadMode::SeparateEntries;
+            slot.currentRecipeXml = importRecipeXml;
+            slot.currentSamplePoolMemorySources = std::move (samplePoolSources);
+
+            if (shouldRememberForUi && ! normalisedFiles.empty())
+                rememberFileSelectionLocked (normalisedFiles, FileLoadMode::SeparateEntries, importRecipeXml);
+        }
+
+        if (shouldRememberForUi)
+            savePersistentFileUiState();
+
+        if (auto* oldPending = slot.pending.exchange (nullptr))
+            delete oldPending;
+
+        slot.errorCode.store (0);
+        const uint64_t gen = slot.generation.fetch_add (1) + 1;
+        slot.pendingGeneration.store (gen);
+
+        auto* raw = cached.release();
+        if (auto* old = slot.pending.exchange (raw))
+            delete old;
+
+        slot.state.store (FileState::ReadyPending);
     }
 
 private:
@@ -6387,7 +6618,9 @@ private:
             if (req.slot < 0 || req.slot >= (int) fileSlots.size())
                 continue;
 
-            auto data = loadFilesToMemory (req.files, req.mode);
+            auto data = req.importRecipeXml.isNotEmpty()
+                            ? loadImportRecipeToMemory (req.files, req.importRecipeXml, req.mode)
+                            : loadFilesToMemory (req.files, req.mode);
 
             auto& slot = fileSlots[(size_t) req.slot];
 
@@ -6400,6 +6633,14 @@ private:
                 slot.errorCode.store (2);
                 slot.state.store (FileState::Error);
                 continue;
+            }
+
+            if (req.importRecipeXml.isNotEmpty())
+            {
+                auto samplePoolSources = makeSamplePoolSourcesFromCachedFileSet (*data);
+                std::lock_guard<std::mutex> lk (filePathMutex);
+                if (slot.generation.load() == req.generation)
+                    slot.currentSamplePoolMemorySources = std::move (samplePoolSources);
             }
 
             auto* raw = data.release();
@@ -6492,192 +6733,106 @@ private:
 
         return out;
     }
-
-    static juce::File createAppendImportTempFile (const juce::String& suffix)
+    std::unique_ptr<CachedFileSet> loadRenderedAudioToMemory (const std::vector<za::fileimport::AudioFileData>& renderedAudio)
     {
-        auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                       .getChildFile ("ZorakAudio")
-                       .getChildFile ("JSFXAppendImportCache");
-        dir.createDirectory();
-        return dir.getNonexistentChildFile ("append_import_", suffix, false);
-    }
+        if (renderedAudio.empty())
+            return nullptr;
 
-    static bool writeAudioDataToWriter (juce::AudioFormatWriter& writer, const CachedFileData& data)
-    {
-        if (data.isText || data.channels <= 0)
-            return false;
+        auto out = std::make_unique<CachedFileSet>();
+        out->entries.reserve (renderedAudio.size());
 
-        const int channels = juce::jlimit (1, 64, data.channels);
-        const int64_t availableFrames = (int64_t) data.items.size() / (int64_t) channels;
-        const int64_t frames = juce::jmax<int64_t> (0, juce::jmin (data.frames, availableFrames));
-
-        if (frames <= 0)
-            return true;
-
-        constexpr int kChunkFrames = 8192;
-        juce::AudioBuffer<float> buffer (channels, kChunkFrames);
-
-        for (int64_t frameBase = 0; frameBase < frames; frameBase += kChunkFrames)
+        for (const auto& audio : renderedAudio)
         {
-            const int framesThisChunk = (int) juce::jmin<int64_t> (kChunkFrames, frames - frameBase);
+            auto data = makeCachedFileDataFromImportAudio (audio);
+            if (! data)
+                return nullptr;
 
-            for (int ch = 0; ch < channels; ++ch)
-            {
-                auto* dst = buffer.getWritePointer (ch);
-                for (int i = 0; i < framesThisChunk; ++i)
-                {
-                    const auto srcIndex = (size_t) ((frameBase + (int64_t) i) * (int64_t) channels + (int64_t) ch);
-                    dst[i] = (float) data.items[srcIndex];
-                }
-            }
-
-            if (! writer.writeFromAudioSampleBuffer (buffer, 0, framesThisChunk))
-                return false;
+            CachedFileEntry entry;
+            entry.path = audio.sourceName.isNotEmpty() ? audio.sourceName : juce::String ("memory://za-import/audio");
+            entry.data = std::move (data);
+            out->entries.push_back (std::move (entry));
         }
 
-        return true;
+        return out;
     }
 
-    juce::File buildAppendedSingleImportFile (const std::vector<juce::File>& files)
+    std::unique_ptr<CachedFileSet> loadImportRecipeToMemory (const std::vector<juce::File>& sourceFiles,
+                                                             const juce::String& importRecipeXml,
+                                                             FileLoadMode fallbackMode)
     {
-        if (files.empty())
-            return {};
+        if (importRecipeXml.isEmpty())
+            return nullptr;
 
-        bool sawAudio = false;
-        bool sawText = false;
-        bool haveAudioReference = false;
+        auto xml = juce::parseXML (importRecipeXml);
+        if (xml == nullptr)
+            return nullptr;
+
+        auto tree = juce::ValueTree::fromXml (*xml);
+        if (! tree.isValid())
+            return nullptr;
+
+        auto recipe = za::fileimport::recipeFromValueTree (tree);
+        auto result = za::fileimport::renderImportAction (sourceFiles, recipe.action, recipe.rules);
+        if (! result.ok)
+            return nullptr;
+
+        if (! result.renderedAudio.empty())
+            return loadRenderedAudioToMemory (result.renderedAudio);
+
+        if (! result.files.empty())
+        {
+            const auto mode = result.loadMode == za::fileimport::RenderedLoadMode::AppendAsSingleFile
+                                ? FileLoadMode::AppendAsSingleFile
+                                : fallbackMode;
+            return loadFilesToMemory (result.files, mode);
+        }
+
+        return nullptr;
+    }
+
+    std::unique_ptr<CachedFileData> appendLoadedFilesInMemory (const std::vector<juce::File>& files)
+    {
+        std::unique_ptr<CachedFileData> combined;
+        bool referenceIsText = false;
         int referenceChannels = 0;
         double referenceSampleRate = 0.0;
 
-        juce::File outFile;
-        std::unique_ptr<juce::AudioFormatWriter> writer;
-        std::unique_ptr<juce::FileOutputStream> textStream;
-        juce::WavAudioFormat wavFormat;
-        juce::StringPairArray metadata;
-
         for (const auto& file : files)
         {
-            if (! file.existsAsFile())
-            {
-                if (outFile.exists())
-                    outFile.deleteFile();
-                return {};
-            }
-
             auto data = loadFileToMemory (file);
             if (! data)
+                return nullptr;
+
+            if (combined == nullptr)
             {
-                if (outFile.exists())
-                    outFile.deleteFile();
-                return {};
-            }
-
-            if (data->isText)
-            {
-                if (sawAudio)
-                {
-                    if (outFile.exists())
-                        outFile.deleteFile();
-                    return {};
-                }
-
-                sawText = true;
-
-                if (! outFile.existsAsFile())
-                {
-                    outFile = createAppendImportTempFile (".txt");
-                    textStream.reset (outFile.createOutputStream().release());
-                    if (textStream == nullptr || ! textStream->openedOk())
-                    {
-                        if (outFile.exists())
-                            outFile.deleteFile();
-                        return {};
-                    }
-                }
-
-                const auto content = file.loadFileAsString();
-                if (content.isNotEmpty())
-                {
-                    textStream->writeText (content, false, false, nullptr);
-                    if (! content.endsWithChar ('\n'))
-                        textStream->writeText ("\n", false, false, nullptr);
-                }
-
+                referenceIsText = data->isText;
+                referenceChannels = data->channels;
+                referenceSampleRate = data->sampleRate;
+                combined = std::move (data);
                 continue;
             }
 
-            if (sawText || data->channels <= 0 || data->sampleRate <= 0.0)
+            if (referenceIsText != data->isText)
+                return nullptr;
+
+            if (referenceIsText)
             {
-                if (outFile.exists())
-                    outFile.deleteFile();
-                return {};
+                combined->items.insert (combined->items.end(), data->items.begin(), data->items.end());
+                continue;
             }
 
-            sawAudio = true;
-
-            if (! haveAudioReference)
-            {
-                haveAudioReference = true;
-                referenceChannels = data->channels;
-                referenceSampleRate = data->sampleRate;
-
-                outFile = createAppendImportTempFile (".wav");
-                auto stream = outFile.createOutputStream();
-                if (stream == nullptr)
-                {
-                    if (outFile.exists())
-                        outFile.deleteFile();
-                    return {};
-                }
-
-                auto* rawStream = stream.release();
-                writer.reset (wavFormat.createWriterFor (rawStream,
-                                                         referenceSampleRate,
-                                                         (unsigned int) referenceChannels,
-                                                         32,
-                                                         metadata,
-                                                         0));
-                if (writer == nullptr)
-                {
-                    delete rawStream;
-                    if (outFile.exists())
-                        outFile.deleteFile();
-                    return {};
-                }
-            }
-            else if (data->channels != referenceChannels
-                     || std::abs (data->sampleRate - referenceSampleRate) > 1.0e-9)
+            if (data->channels != referenceChannels || std::abs (data->sampleRate - referenceSampleRate) > 1.0e-9)
             {
                 data = convertAudioDataToFormat (*data, referenceChannels, referenceSampleRate);
                 if (! data)
-                {
-                    if (outFile.exists())
-                        outFile.deleteFile();
-                    return {};
-                }
+                    return nullptr;
             }
 
-            if (writer == nullptr || ! writeAudioDataToWriter (*writer, *data))
-            {
-                if (outFile.exists())
-                    outFile.deleteFile();
-                return {};
-            }
+            combined->items.insert (combined->items.end(), data->items.begin(), data->items.end());
+            combined->frames += data->frames;
         }
 
-        if (textStream != nullptr)
-            textStream->flush();
-
-        if (writer != nullptr)
-            writer->flush();
-
-        writer.reset();
-        textStream.reset();
-
-        if (! outFile.existsAsFile())
-            return {};
-
-        return outFile;
+        return combined;
     }
 
     std::unique_ptr<CachedFileSet> loadFilesToMemory (const std::vector<juce::File>& files,
@@ -6688,13 +6843,7 @@ private:
 
         if (loadMode == FileLoadMode::AppendAsSingleFile)
         {
-            const auto appendedImportFile = buildAppendedSingleImportFile (files);
-            if (! appendedImportFile.existsAsFile())
-                return nullptr;
-
-            auto data = loadFileToMemory (appendedImportFile);
-            appendedImportFile.deleteFile();
-
+            auto data = appendLoadedFilesInMemory (files);
             if (! data)
                 return nullptr;
 
@@ -8930,21 +9079,12 @@ private:
 
         if (action == za::fileimport::ImportAction::AppendRawAsSingle)
         {
-            proc.setFileSlotPathsWithMode (slot, files, JSFXJuceProcessor::FileLoadMode::AppendAsSingleFile, true);
+            auto rules = za::fileimport::makeDefaultRulesForAction (action);
+            renderImportActionForFileSlotAsync (slot, std::move (files), action, rules);
             return;
         }
 
-        za::fileimport::ImportRules rules;
-        rules.stripInternalSilence = (action == za::fileimport::ImportAction::BuildMegaTexture
-                                      || action == za::fileimport::ImportAction::ModifyExisting
-                                      || action == za::fileimport::ImportAction::SegmentThenMegaTexture);
-        rules.segmentBySilence = (action == za::fileimport::ImportAction::SegmentLongFile
-                                  || action == za::fileimport::ImportAction::SegmentThenMegaTexture);
-        rules.trimEdges = true;
-        rules.rejectNearDuplicates = (action == za::fileimport::ImportAction::BuildMegaTexture
-                                      || action == za::fileimport::ImportAction::SegmentThenMegaTexture);
-        rules.preferNovelSamples = (action == za::fileimport::ImportAction::BuildMegaTexture);
-        rules.randomSeed = (uint32_t) juce::Time::getMillisecondCounter();
+        auto rules = za::fileimport::makeDefaultRulesForAction (action);
 
         juce::Component::SafePointer<FilteredPanel> safeThis (this);
         za::fileimport::showImportPreviewDialog (*this, files, action, rules,
@@ -8964,7 +9104,7 @@ private:
         std::thread ([safeThis, slot, files = std::move (files), action, rules] () mutable
         {
             auto result = za::fileimport::renderImportAction (files, action, rules);
-            juce::MessageManager::callAsync ([safeThis, slot, result = std::move (result)] () mutable
+            juce::MessageManager::callAsync ([safeThis, slot, sourceFiles = files, result = std::move (result)] () mutable
             {
                 if (safeThis == nullptr)
                     return;
@@ -8977,14 +9117,21 @@ private:
                     return;
                 }
 
-                const auto mode = result.loadMode == za::fileimport::RenderedLoadMode::AppendAsSingleFile
-                                    ? JSFXJuceProcessor::FileLoadMode::AppendAsSingleFile
-                                    : JSFXJuceProcessor::FileLoadMode::SeparateEntries;
                 juce::String recipeXml;
                 if (auto xml = za::fileimport::recipeToValueTree (result.recipe).createXml())
                     recipeXml = xml->toString();
 
-                safeThis->proc.setFileSlotPathsWithMode (slot, result.files, mode, true, recipeXml);
+                if (! result.renderedAudio.empty())
+                {
+                    safeThis->proc.setFileSlotRenderedAudioData (slot, result.files.empty() ? sourceFiles : result.files, std::move (result.renderedAudio), true, recipeXml);
+                }
+                else
+                {
+                    const auto mode = result.loadMode == za::fileimport::RenderedLoadMode::AppendAsSingleFile
+                                        ? JSFXJuceProcessor::FileLoadMode::AppendAsSingleFile
+                                        : JSFXJuceProcessor::FileLoadMode::SeparateEntries;
+                    safeThis->proc.setFileSlotPathsWithMode (slot, result.files, mode, true, recipeXml);
+                }
             });
         }).detach();
     }
@@ -9020,7 +9167,7 @@ private:
         menu.addSeparator();
         menu.addItem (kMegaTexture, "Build Mega Texture...", true,
                       suggested == za::fileimport::ImportAction::BuildMegaTexture);
-        menu.addItem (kSegmentLong, "Segment long file...", files.size() == 1,
+        menu.addItem (kSegmentLong, "Segment / auto-segment...", true,
                       suggested == za::fileimport::ImportAction::SegmentLongFile);
         menu.addItem (kModify, "Modify / preprocess existing...", true,
                       suggested == za::fileimport::ImportAction::ModifyExisting);
@@ -9074,6 +9221,7 @@ private:
             kClearMenuId = 2,
             kAddCategoryMenuId = 3,
             kPasteClipboardMenuId = 4,
+            kAutoSegmentCurrentMenuId = 5,
             kFirstDynamicMenuId = 100,
         };
 
@@ -9301,6 +9449,7 @@ private:
         addRecipeImportItem ("Modify / Preprocess Existing...", za::fileimport::ImportAction::ModifyExisting);
         addRecipeImportItem ("Segment Then Build Mega Texture...", za::fileimport::ImportAction::SegmentThenMegaTexture);
         menu.addItem (kPasteClipboardMenuId, "Paste Files / URIs from Clipboard...");
+        menu.addItem (kAutoSegmentCurrentMenuId, "Auto-Segment Current Selection...", hasSelection);
 
         menu.addSeparator();
         menu.addItem (kAddFavoriteMenuId, "Add to Favorites...", hasSelection);
@@ -9371,6 +9520,18 @@ private:
                                 if (result == kPasteClipboardMenuId)
                                 {
                                     safeThis->pasteFilesFromClipboardForSlot (slot);
+                                    return;
+                                }
+
+                                if (result == kAutoSegmentCurrentMenuId)
+                                {
+                                    std::vector<juce::File> currentFiles;
+                                    currentFiles.reserve (currentSelection.paths.size());
+                                    for (const auto& path : currentSelection.paths)
+                                        if (path.isNotEmpty())
+                                            currentFiles.emplace_back (path);
+
+                                    safeThis->startImportActionForFileSlot (slot, std::move (currentFiles), za::fileimport::ImportAction::SegmentLongFile);
                                     return;
                                 }
 
@@ -9953,7 +10114,7 @@ public:
         importLandingPad.setVisible (false);
         repaint();
 
-        showImportActionMenu (std::move (files), suggested);
+        startImportAction (std::move (files), suggested);
     }
 
     bool isPasteImportKey (const juce::KeyPress& key) const
@@ -10015,8 +10176,8 @@ public:
                       true,
                       suggested == za::fileimport::ImportAction::BuildMegaTexture);
         menu.addItem (kSegmentLong,
-                      "Segment long file...",
-                      files.size() == 1,
+                      "Segment / auto-segment...",
+                      true,
                       suggested == za::fileimport::ImportAction::SegmentLongFile);
         menu.addItem (kModify,
                       "Modify / preprocess existing...",
@@ -10075,21 +10236,12 @@ public:
 
         if (action == za::fileimport::ImportAction::AppendRawAsSingle)
         {
-            processor.setFileSlotPathsWithMode (slot, files, JSFXJuceProcessor::FileLoadMode::AppendAsSingleFile, true);
+            auto rules = za::fileimport::makeDefaultRulesForAction (action);
+            renderImportActionAsync (slot, std::move (files), action, rules);
             return;
         }
 
-        za::fileimport::ImportRules rules;
-        rules.stripInternalSilence = (action == za::fileimport::ImportAction::BuildMegaTexture
-                                      || action == za::fileimport::ImportAction::ModifyExisting
-                                      || action == za::fileimport::ImportAction::SegmentThenMegaTexture);
-        rules.segmentBySilence = (action == za::fileimport::ImportAction::SegmentLongFile
-                                  || action == za::fileimport::ImportAction::SegmentThenMegaTexture);
-        rules.trimEdges = true;
-        rules.rejectNearDuplicates = (action == za::fileimport::ImportAction::BuildMegaTexture
-                                      || action == za::fileimport::ImportAction::SegmentThenMegaTexture);
-        rules.preferNovelSamples = (action == za::fileimport::ImportAction::BuildMegaTexture);
-        rules.randomSeed = (uint32_t) juce::Time::getMillisecondCounter();
+        auto rules = za::fileimport::makeDefaultRulesForAction (action);
 
         juce::Component::SafePointer<JSFXJuceEditor> safeThis (this);
         za::fileimport::showImportPreviewDialog (*this, files, action, rules,
@@ -10106,7 +10258,7 @@ public:
         std::thread ([safeThis, slot, files = std::move (files), action, rules] () mutable
         {
             auto result = za::fileimport::renderImportAction (files, action, rules);
-            juce::MessageManager::callAsync ([safeThis, slot, result = std::move (result)] () mutable
+            juce::MessageManager::callAsync ([safeThis, slot, sourceFiles = files, result = std::move (result)] () mutable
             {
                 if (safeThis == nullptr)
                     return;
@@ -10119,14 +10271,21 @@ public:
                     return;
                 }
 
-                const auto mode = result.loadMode == za::fileimport::RenderedLoadMode::AppendAsSingleFile
-                                    ? JSFXJuceProcessor::FileLoadMode::AppendAsSingleFile
-                                    : JSFXJuceProcessor::FileLoadMode::SeparateEntries;
                 juce::String recipeXml;
                 if (auto xml = za::fileimport::recipeToValueTree (result.recipe).createXml())
                     recipeXml = xml->toString();
 
-                safeThis->processor.setFileSlotPathsWithMode (slot, result.files, mode, true, recipeXml);
+                if (! result.renderedAudio.empty())
+                {
+                    safeThis->processor.setFileSlotRenderedAudioData (slot, result.files.empty() ? sourceFiles : result.files, std::move (result.renderedAudio), true, recipeXml);
+                }
+                else
+                {
+                    const auto mode = result.loadMode == za::fileimport::RenderedLoadMode::AppendAsSingleFile
+                                        ? JSFXJuceProcessor::FileLoadMode::AppendAsSingleFile
+                                        : JSFXJuceProcessor::FileLoadMode::SeparateEntries;
+                    safeThis->processor.setFileSlotPathsWithMode (slot, result.files, mode, true, recipeXml);
+                }
             });
         }).detach();
     }
