@@ -1,5 +1,5 @@
 
-desc:TSEQ v6c - CPU Opt + Eco + Delta Solo (Patched)
+desc:TSEQ v6h - Analyzer Always + True Delta
 in_pin:Input L
 in_pin:Input R
 in_pin:none
@@ -43,13 +43,15 @@ OUT_DEFAULT = 0;
 
 function refresh_bucket_cache()
 (
-  thrdb0 = slider1;  thrstart0 = thrdb0 - slider12; thrend0 = thrdb0 + slider12; kneedb0 = slider12;
-  thrdb1 = slider8;  thrstart1 = thrdb1 - slider13; thrend1 = thrdb1 + slider13; kneedb1 = slider13;
-  thrdb2 = slider9;  thrstart2 = thrdb2 - slider14; thrend2 = thrdb2 + slider14; kneedb2 = slider14;
-  thrdb3 = slider10; thrstart3 = thrdb3 - slider15; thrend3 = thrdb3 + slider15; kneedb3 = slider15;
-  thrdb4 = slider11; thrstart4 = thrdb4 - slider16; thrend4 = thrdb4 + slider16; kneedb4 = slider16;
-  eco_mode = slider17 >= 0.5;
-  delta_solo = slider18 >= 0.5;
+  // These sliders are declared with named variables in the header
+  // (Thr1, Bucket1, Knee1, etc.). Use those names, not slider1/slider2.
+  thrdb0 = Thr1;  thrstart0 = thrdb0 - Knee1; thrend0 = thrdb0 + Knee1; kneedb0 = Knee1;
+  thrdb1 = Thr2;  thrstart1 = thrdb1 - Knee2; thrend1 = thrdb1 + Knee2; kneedb1 = Knee2;
+  thrdb2 = Thr3;  thrstart2 = thrdb2 - Knee3; thrend2 = thrdb2 + Knee3; kneedb2 = Knee3;
+  thrdb3 = Thr4;  thrstart3 = thrdb3 - Knee4; thrend3 = thrdb3 + Knee4; kneedb3 = Knee4;
+  thrdb4 = Thr5;  thrstart4 = thrdb4 - Knee5; thrend4 = thrdb4 + Knee5; kneedb4 = Knee5;
+  eco_mode = Eco >= 0.5;
+  delta_solo = DeltaSolo >= 0.5;
 );
 
 function update_consts()
@@ -58,16 +60,15 @@ local(sr)
   sr = max(srate, 1);
 
   refresh_bucket_cache();
-  out_target = 10^(slider2/20);
+  out_target = 10^(Output/20);
 
-  tgt0 = slider3 * 0.01;
-  tgt1 = slider4 * 0.01;
-  tgt2 = slider5 * 0.01;
-  tgt3 = slider6 * 0.01;
-  tgt4 = slider7 * 0.01;
+  tgt0 = Bucket1 * 0.01;
+  tgt1 = Bucket2 * 0.01;
+  tgt2 = Bucket3 * 0.01;
+  tgt3 = Bucket4 * 0.01;
+  tgt4 = Bucket5 * 0.01;
 
-  det_att = 1 - exp(-1 / (sr * det_attack_ms  * 0.001));
-  det_rel = 1 - exp(-1 / (sr * det_release_ms * 0.001));
+  rms_a   = 1 - exp(-1 / (sr * tau_rms_ms     * 0.001));
   cv_att  = 1 - exp(-1 / (sr * cv_attack_ms   * 0.001));
   cv_rel  = 1 - exp(-1 / (sr * cv_release_ms  * 0.001));
   lim_att = 1 - exp(-1 / (sr * lim_attack_ms  * 0.001));
@@ -152,7 +153,11 @@ function bucket_ms_value(idx)
 
 function bucket_gain_pct_val(idx)
 (
-  slider(bucket_gain_idx(idx));
+  idx == 0 ? Bucket1
+  : idx == 1 ? Bucket2
+  : idx == 2 ? Bucket3
+  : idx == 3 ? Bucket4
+  : Bucket5;
 );
 
 function bucket_gain_norm(idx)
@@ -162,18 +167,26 @@ function bucket_gain_norm(idx)
 
 function bucket_thr_db_val(idx)
 (
-  slider(bucket_thr_idx(idx));
+  idx == 0 ? Thr1
+  : idx == 1 ? Thr2
+  : idx == 2 ? Thr3
+  : idx == 3 ? Thr4
+  : Thr5;
 );
 
 function bucket_knee_db_val(idx)
 (
-  slider(bucket_knee_idx(idx));
+  idx == 0 ? Knee1
+  : idx == 1 ? Knee2
+  : idx == 2 ? Knee3
+  : idx == 3 ? Knee4
+  : Knee5;
 );
 
 function set_output_db(db)
 (
   db = clamp(db, -24, 24);
-  slider2 = db;
+  Output = db;
   out_target = 10^(db/20);
   touch_slider_index(2);
   update_consts();
@@ -191,9 +204,14 @@ local(v, slidx, g)
 (
   v = clamp(pct, -100, 100);
   slidx = bucket_gain_idx(idx);
-  slider(slidx) = v;
-  g = v * 0.01;
 
+  idx == 0 ? Bucket1 = v;
+  idx == 1 ? Bucket2 = v;
+  idx == 2 ? Bucket3 = v;
+  idx == 3 ? Bucket4 = v;
+  idx == 4 ? Bucket5 = v;
+
+  g = v * 0.01;
   idx == 0 ? tgt0 = g;
   idx == 1 ? tgt1 = g;
   idx == 2 ? tgt2 = g;
@@ -214,7 +232,13 @@ local(v, slidx)
 (
   v = clamp(db, -96, 0);
   slidx = bucket_thr_idx(idx);
-  slider(slidx) = v;
+
+  idx == 0 ? Thr1 = v;
+  idx == 1 ? Thr2 = v;
+  idx == 2 ? Thr3 = v;
+  idx == 3 ? Thr4 = v;
+  idx == 4 ? Thr5 = v;
+
   refresh_bucket_cache();
   touch_slider_index(slidx);
 );
@@ -231,7 +255,13 @@ local(v, slidx)
 (
   v = clamp(db, 0, 24);
   slidx = bucket_knee_idx(idx);
-  slider(slidx) = v;
+
+  idx == 0 ? Knee1 = v;
+  idx == 1 ? Knee2 = v;
+  idx == 2 ? Knee3 = v;
+  idx == 3 ? Knee4 = v;
+  idx == 4 ? Knee5 = v;
+
   refresh_bucket_cache();
   touch_slider_index(slidx);
 );
@@ -244,14 +274,14 @@ local(v)
 );
 function set_eco_mode(v)
 (
-  slider17 = v ? 1 : 0;
+  Eco = v ? 1 : 0;
   refresh_bucket_cache();
   touch_slider_index(17);
 );
 
 function set_delta_solo(v)
 (
-  slider18 = v ? 1 : 0;
+  DeltaSolo = v ? 1 : 0;
   refresh_bucket_cache();
   touch_slider_index(18);
 );
@@ -288,7 +318,7 @@ local(idxC, cl, cr, i, il, ir, pairL, pairR, c)
   );
 );
 
-function smooth_exact_upto(maxband)
+function smooth_all_exact()
 local(idxC, cl, cr, i, il, ir, pairL, pairR, c)
 (
   idxC = (wp - 1 - DMAX) & BUFMASK;
@@ -296,10 +326,10 @@ local(idxC, cl, cr, i, il, ir, pairL, pairR, c)
   cr = bufR[idxC];
 
   s0L = center0 * cl; s0R = center0 * cr;
-  maxband >= 1 ? ( s1L = center1 * cl; s1R = center1 * cr; );
-  maxband >= 2 ? ( s2L = center2 * cl; s2R = center2 * cr; );
-  maxband >= 3 ? ( s3L = center3 * cl; s3R = center3 * cr; );
-  maxband >= 4 ? ( s4L = center4 * cl; s4R = center4 * cr; );
+  s1L = center1 * cl; s1R = center1 * cr;
+  s2L = center2 * cl; s2R = center2 * cr;
+  s3L = center3 * cl; s3R = center3 * cr;
+  s4L = center4 * cl; s4R = center4 * cr;
 
   i = 1;
   loop(M0,
@@ -309,10 +339,85 @@ local(idxC, cl, cr, i, il, ir, pairL, pairR, c)
     pairR = bufR[il] + bufR[ir];
 
     c = p0[i]; s0L += c * pairL; s0R += c * pairR;
-    maxband >= 1 ? ( c = p1[i]; s1L += c * pairL; s1R += c * pairR; );
-    maxband >= 2 ? ( c = p2[i]; s2L += c * pairL; s2R += c * pairR; );
-    maxband >= 3 ? ( c = p3[i]; s3L += c * pairL; s3R += c * pairR; );
-    maxband >= 4 ? ( c = p4[i]; s4L += c * pairL; s4R += c * pairR; );
+    c = p1[i]; s1L += c * pairL; s1R += c * pairR;
+    c = p2[i]; s2L += c * pairL; s2R += c * pairR;
+    c = p3[i]; s3L += c * pairL; s3R += c * pairR;
+    c = p4[i]; s4L += c * pairL; s4R += c * pairR;
+    i += 1;
+  );
+
+  loop(M1 - M0,
+    il = (idxC + i) & BUFMASK;
+    ir = (idxC - i) & BUFMASK;
+    pairL = bufL[il] + bufL[ir];
+    pairR = bufR[il] + bufR[ir];
+
+    c = p1[i]; s1L += c * pairL; s1R += c * pairR;
+    c = p2[i]; s2L += c * pairL; s2R += c * pairR;
+    c = p3[i]; s3L += c * pairL; s3R += c * pairR;
+    c = p4[i]; s4L += c * pairL; s4R += c * pairR;
+    i += 1;
+  );
+
+  loop(M2 - M1,
+    il = (idxC + i) & BUFMASK;
+    ir = (idxC - i) & BUFMASK;
+    pairL = bufL[il] + bufL[ir];
+    pairR = bufR[il] + bufR[ir];
+
+    c = p2[i]; s2L += c * pairL; s2R += c * pairR;
+    c = p3[i]; s3L += c * pairL; s3R += c * pairR;
+    c = p4[i]; s4L += c * pairL; s4R += c * pairR;
+    i += 1;
+  );
+
+  loop(M3 - M2,
+    il = (idxC + i) & BUFMASK;
+    ir = (idxC - i) & BUFMASK;
+    pairL = bufL[il] + bufL[ir];
+    pairR = bufR[il] + bufR[ir];
+
+    c = p3[i]; s3L += c * pairL; s3R += c * pairR;
+    c = p4[i]; s4L += c * pairL; s4R += c * pairR;
+    i += 1;
+  );
+
+  loop(M4 - M3,
+    il = (idxC + i) & BUFMASK;
+    ir = (idxC - i) & BUFMASK;
+    pairL = bufL[il] + bufL[ir];
+    pairR = bufR[il] + bufR[ir];
+
+    c = p4[i]; s4L += c * pairL; s4R += c * pairR;
+    i += 1;
+  );
+);
+
+function smooth_fast_eco(maxband)
+local(idxC, cl, cr, i, il, ir, pairL, pairR, c)
+(
+  idxC = (wp - 1 - DMAX) & BUFMASK;
+  cl = bufL[idxC];
+  cr = bufR[idxC];
+
+  s0L = center0 * cl; s0R = center0 * cr;
+  maxband >= 1 ? ( s1L = center1 * cl; s1R = center1 * cr; );
+  maxband >= 2 ? ( s2L = center2 * cl; s2R = center2 * cr; );
+
+  i = 1;
+  loop(M0,
+    il = (idxC + i) & BUFMASK;
+    ir = (idxC - i) & BUFMASK;
+    pairL = bufL[il] + bufL[ir];
+    pairR = bufR[il] + bufR[ir];
+
+    c = p0[i]; s0L += c * pairL; s0R += c * pairR;
+    maxband >= 1 ? (
+      c = p1[i]; s1L += c * pairL; s1R += c * pairR;
+    );
+    maxband >= 2 ? (
+      c = p2[i]; s2L += c * pairL; s2R += c * pairR;
+    );
     i += 1;
   );
 
@@ -324,9 +429,9 @@ local(idxC, cl, cr, i, il, ir, pairL, pairR, c)
       pairR = bufR[il] + bufR[ir];
 
       c = p1[i]; s1L += c * pairL; s1R += c * pairR;
-      maxband >= 2 ? ( c = p2[i]; s2L += c * pairL; s2R += c * pairR; );
-      maxband >= 3 ? ( c = p3[i]; s3L += c * pairL; s3R += c * pairR; );
-      maxband >= 4 ? ( c = p4[i]; s4L += c * pairL; s4R += c * pairR; );
+      maxband >= 2 ? (
+        c = p2[i]; s2L += c * pairL; s2R += c * pairR;
+      );
       i += 1;
     );
   );
@@ -339,76 +444,8 @@ local(idxC, cl, cr, i, il, ir, pairL, pairR, c)
       pairR = bufR[il] + bufR[ir];
 
       c = p2[i]; s2L += c * pairL; s2R += c * pairR;
-      maxband >= 3 ? ( c = p3[i]; s3L += c * pairL; s3R += c * pairR; );
-      maxband >= 4 ? ( c = p4[i]; s4L += c * pairL; s4R += c * pairR; );
       i += 1;
     );
-  );
-
-  maxband >= 3 ? (
-    loop(M3 - M2,
-      il = (idxC + i) & BUFMASK;
-      ir = (idxC - i) & BUFMASK;
-      pairL = bufL[il] + bufL[ir];
-      pairR = bufR[il] + bufR[ir];
-
-      c = p3[i]; s3L += c * pairL; s3R += c * pairR;
-      maxband >= 4 ? ( c = p4[i]; s4L += c * pairL; s4R += c * pairR; );
-      i += 1;
-    );
-  );
-
-  maxband >= 4 ? (
-    loop(M4 - M3,
-      il = (idxC + i) & BUFMASK;
-      ir = (idxC - i) & BUFMASK;
-      pairL = bufL[il] + bufL[ir];
-      pairR = bufR[il] + bufR[ir];
-
-      c = p4[i]; s4L += c * pairL; s4R += c * pairR;
-      i += 1;
-    );
-  );
-
-  maxband < 1 ? ( s1L = s0L; s1R = s0R; );
-  maxband < 2 ? ( s2L = s1L; s2R = s1R; );
-  maxband < 3 ? ( s3L = s2L; s3R = s2R; );
-  maxband < 4 ? ( s4L = s3L; s4R = s3R; );
-);
-
-function smooth_for_active(maxband)
-(
-  eco_mode && maxband >= 3 ? (
-    smooth_exact_upto(2);
-
-    eco_ctr3 <= 0 ? (
-      smooth_one_stereo(center3, p3, M3);
-      eco_s3L = smL; eco_s3R = smR;
-      eco_ctr3 = eco_div3 - 1;
-    ) : (
-      eco_ctr3 -= 1;
-    );
-    s3L = eco_s3L; s3R = eco_s3R;
-
-    maxband >= 4 ? (
-      eco_ctr4 <= 0 ? (
-        smooth_one_stereo(center4, p4, M4);
-        eco_s4L = smL; eco_s4R = smR;
-        eco_ctr4 = eco_div4 - 1;
-      ) : (
-        eco_ctr4 -= 1;
-      );
-      s4L = eco_s4L; s4R = eco_s4R;
-    ) : (
-      s4L = s3L; s4R = s3R;
-      eco_ctr4 = 0;
-    );
-  ) : (
-    smooth_exact_upto(maxband);
-    eco_s3L = s3L; eco_s3R = s3R;
-    eco_s4L = s4L; eco_s4R = s4R;
-    eco_ctr3 = 0;
-    eco_ctr4 = 0;
   );
 );
 
@@ -499,7 +536,6 @@ function rebuild_all()
   fineEnv = 0;
   coarseEnv = 0;
   limEnv = 0;
-  limGain = 1;
   dcXL = 0; dcYL = 0;
   dcXR = 0; dcYR = 0;
   gcur0 = 0; gcur1 = 0; gcur2 = 0; gcur3 = 0; gcur4 = 0;
@@ -535,10 +571,9 @@ function gate_band(xL, xR, band)
 local(pwr, rms, rmsdb, thdb, kneedb, startd, endd, t, g, mag, vc, band_half)
 (
   pwr = 0.5 * (xL*xL + xR*xR);
-  rms = sqrt(pwr + eps);
-  vc = rms > ema[band] ? det_att : det_rel;
-  ema[band] += vc * (rms - ema[band]);
-  rmsdb = 20 * log(ema[band] + eps) / LOG10;
+  ema[band] += rms_a * (pwr - ema[band]);
+  rms = sqrt(ema[band] + eps);
+  rmsdb = 20 * log(rms + eps) / LOG10;
 
   thdb = bucket_thr_db_val(band);
   kneedb = bucket_knee_db_val(band);
@@ -604,7 +639,7 @@ function knee_to_px(db)
   2 + (db / 24) * (0.12 * usable_h);
 );
 
-MAXN = 4095;
+MAXN = 1023;
 MAXPAIR = ((MAXN - 1) / 2) + 2;
 BUFLEN = 4096;
 BUFMASK = BUFLEN - 1;
@@ -633,8 +668,7 @@ ms2 = 2.00;
 ms3 = 5.00;
 ms4 = 10.00;
 
-det_attack_ms = 5;
-det_release_ms = 80;
+tau_rms_ms = 300;
 cv_attack_ms = 5;
 cv_release_ms = 80;
 lim_attack_ms = 0.5;
@@ -646,8 +680,8 @@ out_smooth_ms = 18;
 dc_fc = 18;
 detail_scale = 1.00;
 det_ceiling = 0.70;
-out_ceiling = 0.98;
 solo_scale = 0.90;
+delta_solo_gain = 1.00;
 solo_ceiling = 0.60;
 eco_div3 = 2;
 eco_div4 = 4;
@@ -660,12 +694,10 @@ drag_id = 0;
 drag_slider = 0;
 prev_mouse_cap = 0;
 ui_dirty = 0;
-ui_analysis_count = 0;
 
 fineEnv = 0;
 coarseEnv = 0;
 limEnv = 0;
-limGain = 1;
 out_cur = 1;
 dcXL = 0; dcYL = 0;
 dcXR = 0; dcYR = 0;
@@ -695,28 +727,11 @@ wp = (wp + 1) & BUFMASK;
 dryL = fetch(bufL, DMAX);
 dryR = fetch(bufR, DMAX);
 
-highestActive = -1;
-(abs(tgt4) > 0.000001 || abs(gcur4) > 0.000001) ? (
-  highestActive = 4;
-) : (abs(tgt3) > 0.000001 || abs(gcur3) > 0.000001) ? (
-  highestActive = 3;
-) : (abs(tgt2) > 0.000001 || abs(gcur2) > 0.000001) ? (
-  highestActive = 2;
-) : (abs(tgt1) > 0.000001 || abs(gcur1) > 0.000001) ? (
-  highestActive = 1;
-) : (abs(tgt0) > 0.000001 || abs(gcur0) > 0.000001) ? (
-  highestActive = 0;
-);
+// Analyzer must run independently of signed gain.
+// Otherwise a bucket at 0% gain has no meter activity even when its detector is open.
+highestActive = 4;
 
-analysisMax = highestActive;
-soloBand > analysisMax ? analysisMax = soloBand;
-(delta_solo || num_ch > 2) ? analysisMax = 4;
-ui_analysis_count > 0 ? (
-  analysisMax = 4;
-  ui_analysis_count -= 1;
-);
-
-analysisMax < 0 ? (
+highestActive < 0 ? (
   n0L = n0R = n1L = n1R = n2L = n2R = n3L = n3R = n4L = n4R = 0;
   viz[0] += viz_rel * (0 - viz[0]);
   viz[1] += viz_rel * (0 - viz[1]);
@@ -724,7 +739,64 @@ analysisMax < 0 ? (
   viz[3] += viz_rel * (0 - viz[3]);
   viz[4] += viz_rel * (0 - viz[4]);
 ) : (
-  smooth_for_active(analysisMax);
+  s0L = sg_smooth(bufL, c0, N0, M0, DMAX);
+  s0R = sg_smooth(bufR, c0, N0, M0, DMAX);
+
+  highestActive >= 1 ? (
+    s1L = sg_smooth(bufL, c1, N1, M1, DMAX);
+    s1R = sg_smooth(bufR, c1, N1, M1, DMAX);
+  ) : (
+    s1L = s0L; s1R = s0R;
+  );
+
+  highestActive >= 2 ? (
+    s2L = sg_smooth(bufL, c2, N2, M2, DMAX);
+    s2R = sg_smooth(bufR, c2, N2, M2, DMAX);
+  ) : (
+    s2L = s1L; s2R = s1R;
+  );
+
+  highestActive >= 3 ? (
+    eco_mode ? (
+      eco_ctr3 <= 0 ? (
+        eco_s3L = sg_smooth(bufL, c3, N3, M3, DMAX);
+        eco_s3R = sg_smooth(bufR, c3, N3, M3, DMAX);
+        eco_ctr3 = eco_div3 - 1;
+      ) : (
+        eco_ctr3 -= 1;
+      );
+      s3L = eco_s3L; s3R = eco_s3R;
+    ) : (
+      s3L = sg_smooth(bufL, c3, N3, M3, DMAX);
+      s3R = sg_smooth(bufR, c3, N3, M3, DMAX);
+      eco_s3L = s3L; eco_s3R = s3R;
+      eco_ctr3 = 0;
+    );
+  ) : (
+    s3L = s2L; s3R = s2R;
+    eco_ctr3 = 0;
+  );
+
+  highestActive >= 4 ? (
+    eco_mode ? (
+      eco_ctr4 <= 0 ? (
+        eco_s4L = sg_smooth(bufL, c4, N4, M4, DMAX);
+        eco_s4R = sg_smooth(bufR, c4, N4, M4, DMAX);
+        eco_ctr4 = eco_div4 - 1;
+      ) : (
+        eco_ctr4 -= 1;
+      );
+      s4L = eco_s4L; s4R = eco_s4R;
+    ) : (
+      s4L = sg_smooth(bufL, c4, N4, M4, DMAX);
+      s4R = sg_smooth(bufR, c4, N4, M4, DMAX);
+      eco_s4L = s4L; eco_s4R = s4R;
+      eco_ctr4 = 0;
+    );
+  ) : (
+    s4L = s3L; s4R = s3R;
+    eco_ctr4 = 0;
+  );
 
   b0L = dryL - s0L; b0R = dryR - s0R;
   b1L = s0L - s1L;  b1R = s0R - s1R;
@@ -733,22 +805,22 @@ analysisMax < 0 ? (
   b4L = s3L - s4L;  b4R = s3R - s4R;
 
   gate_band(b0L, b0R, 0); n0L = nbL; n0R = nbR;
-  analysisMax >= 1 ? (
+  highestActive >= 1 ? (
     gate_band(b1L, b1R, 1); n1L = nbL; n1R = nbR;
   ) : (
     n1L = n1R = 0; viz[1] += viz_rel * (0 - viz[1]);
   );
-  analysisMax >= 2 ? (
+  highestActive >= 2 ? (
     gate_band(b2L, b2R, 2); n2L = nbL; n2R = nbR;
   ) : (
     n2L = n2R = 0; viz[2] += viz_rel * (0 - viz[2]);
   );
-  analysisMax >= 3 ? (
+  highestActive >= 3 ? (
     gate_band(b3L, b3R, 3); n3L = nbL; n3R = nbR;
   ) : (
     n3L = n3R = 0; viz[3] += viz_rel * (0 - viz[3]);
   );
-  analysisMax >= 4 ? (
+  highestActive >= 4 ? (
     gate_band(b4L, b4R, 4); n4L = nbL; n4R = nbR;
   ) : (
     n4L = n4R = 0; viz[4] += viz_rel * (0 - viz[4]);
@@ -770,30 +842,32 @@ detL = dc_block_l(detL);
 detR = dc_block_r(detR);
 
 detPeak = max(abs(detL), abs(detR));
-targetLimGain = detPeak > det_ceiling ? (det_ceiling / (detPeak + eps)) : 1;
-targetLimGain < limGain ? (
-  limGain = targetLimGain;
-) : (
-  limGain += lim_rel * (targetLimGain - limGain);
-);
+lc = detPeak > limEnv ? lim_att : lim_rel;
+limEnv += lc * (detPeak - limEnv);
+limGain = limEnv > det_ceiling ? (det_ceiling / (limEnv + eps)) : 1;
 detL *= limGain;
 detR *= limGain;
 
 soloBand == 0 ? (
-  monL = n0L * solo_scale;
-  monR = n0R * solo_scale;
+  audGain = max(0.05, 1 + 0.95*gcur0);
+  monL = audGain * n0L * solo_scale;
+  monR = audGain * n0R * solo_scale;
 ) : soloBand == 1 ? (
-  monL = n1L * solo_scale;
-  monR = n1R * solo_scale;
+  audGain = max(0.05, 1 + 0.95*gcur1);
+  monL = audGain * n1L * solo_scale;
+  monR = audGain * n1R * solo_scale;
 ) : soloBand == 2 ? (
-  monL = n2L * solo_scale;
-  monR = n2R * solo_scale;
+  audGain = max(0.05, 1 + 0.95*gcur2);
+  monL = audGain * n2L * solo_scale;
+  monR = audGain * n2R * solo_scale;
 ) : soloBand == 3 ? (
-  monL = n3L * solo_scale;
-  monR = n3R * solo_scale;
+  audGain = max(0.05, 1 + 0.95*gcur3);
+  monL = audGain * n3L * solo_scale;
+  monR = audGain * n3R * solo_scale;
 ) : soloBand == 4 ? (
-  monL = n4L * solo_scale;
-  monR = n4R * solo_scale;
+  audGain = max(0.05, 1 + 0.95*gcur4);
+  monL = audGain * n4L * solo_scale;
+  monR = audGain * n4R * solo_scale;
 ) : delta_solo ? (
   monL = detL;
   monR = detR;
@@ -802,6 +876,7 @@ soloBand == 0 ? (
   monR = dryR + detR;
 );
 
+// Only bucket audition is safety-limited. DELTA is the actual processed difference at unity.
 soloBand >= 0 ? (
   monPeak = max(abs(monL), abs(monR));
   monPeak > solo_ceiling ? (
@@ -811,17 +886,17 @@ soloBand >= 0 ? (
   );
 );
 
-outL = monL * out_cur;
-outR = monR * out_cur;
-outPeak = max(abs(outL), abs(outR));
-outPeak > out_ceiling ? (
-  outGuard = out_ceiling / (outPeak + eps);
-  outL *= outGuard;
-  outR *= outGuard;
+// DELTA outputs the structural change itself at unity. Normal/audition paths still honor Output gain.
+delta_solo ? (
+  spl0 = monL;
+  spl1 = monR;
+) : (
+  spl0 = monL * out_cur;
+  spl1 = monR * out_cur;
 );
-spl0 = outL;
-spl1 = outR;
 
+// CV meters report detected bucket activity, not applied processing gain.
+// A bucket at 0% still shows/CVs when it crosses its threshold and knee.
 fineIn = 0.25 * (
   abs(n0L) + abs(n0R) +
   abs(n1L) + abs(n1R)
@@ -848,7 +923,6 @@ num_ch > 2 ? (
 
 @gfx 760 250
 gfx_getchar();
-ui_analysis_count = max(ui_analysis_count, srate * 0.25);
 
 left_m = 16;
 right_m = 34;
@@ -889,15 +963,15 @@ eco_h = 18;
 over_rect(delta_x, delta_y, delta_w, delta_h) ? (
   hover_type = 3;
   tooltip_on = 1;
-  sprintf(tooltip_slot, "Delta Solo: monitors the actual processed detail signal after bucket gain, DC blocking, and detail limiting. Silence means the processed delta is zero.");
+  sprintf(tooltip_slot, "Delta solo: structural difference at unity. Ignores Output gain; no boost or normalization.");
 ) : over_rect(eco_x, eco_y, eco_w, eco_h) ? (
   hover_type = 2;
   tooltip_on = 1;
-  sprintf(tooltip_slot, "Eco mode: skips inactive bands and updates 5 ms / 10 ms buckets less often to reduce CPU. Normal mode remains exact.");
+  sprintf(tooltip_slot, "Eco mode: updates 5 ms / 10 ms buckets less often to reduce CPU. Analyzer remains live.");
 );
 
 out_x = gfx_w - right_m - track_w;
-out_y = bot_m - ((slider2 + 24) / 48) * usable_h;
+out_y = bot_m - ((Output + 24) / 48) * usable_h;
 over_rect(out_x, top_m, track_w, usable_h) ? (
   hover_type = 1;
   tooltip_on = 1;
@@ -954,7 +1028,7 @@ wheel != 0 ? (
   knee_step = ctrl_held ? 0.1 : 0.5;
 
   hover_type == 1 ? (
-    set_output_db(slider2 + dir * steps * out_step);
+    set_output_db(Output + dir * steps * out_step);
     end_touch_slider(2);
     add_ui_undo_point();
   ) : hover_type >= 100 && hover_type < 200 ? (
@@ -982,11 +1056,11 @@ left_press ? (
   drag_slider = 0;
 
   hover_type == 3 ? (
-    set_delta_solo(slider18 < 0.5);
+    set_delta_solo(DeltaSolo < 0.5);
     end_touch_slider(18);
     add_ui_undo_point();
   ) : hover_type == 2 ? (
-    set_eco_mode(slider17 < 0.5);
+    set_eco_mode(Eco < 0.5);
     end_touch_slider(17);
     add_ui_undo_point();
   ) : hover_type == 1 ? (
@@ -1092,7 +1166,7 @@ gfx_rect(panel_x0 - 10, top_m - 10, panel_w + 20, usable_h + 20, 1);
 // delta solo button
 hover_type == 3 ? gfx_set(0.30, 0.34, 0.42, 1) : gfx_set(0.18, 0.19, 0.24, 1);
 gfx_rect(delta_x, delta_y, delta_w, delta_h, 1);
-slider18 >= 0.5 ? (
+DeltaSolo >= 0.5 ? (
   gfx_set(0.38, 0.24, 0.18, 1);
   gfx_rect(delta_x + 1, delta_y + 1, delta_w - 2, delta_h - 2, 1);
   gfx_set(1.00, 0.62, 0.38, 1);
@@ -1107,7 +1181,7 @@ gfx_drawstr("DELTA");
 // eco button
 hover_type == 2 ? gfx_set(0.30, 0.34, 0.42, 1) : gfx_set(0.18, 0.19, 0.24, 1);
 gfx_rect(eco_x, eco_y, eco_w, eco_h, 1);
-slider17 >= 0.5 ? (
+Eco >= 0.5 ? (
   gfx_set(0.16, 0.34, 0.18, 1);
   gfx_rect(eco_x + 1, eco_y + 1, eco_w - 2, eco_h - 2, 1);
   gfx_set(0.40, 0.92, 0.46, 1);
@@ -1131,7 +1205,7 @@ gfx_y = 6;
 gfx_drawstr("OUT");
 gfx_x = out_x - 10;
 gfx_y = gfx_h - 20;
-gfx_printf("%+.1f", slider2);
+gfx_printf("%+.1f", Output);
 
 // zero line across buckets
 gfx_set(0.35, 0.36, 0.42, 1);
@@ -1139,11 +1213,11 @@ gfx_line(panel_x0, center_y, panel_x1, center_y);
 
 gfx_x = panel_x0;
 gfx_y = 6;
-soloBand >= 0 ? gfx_drawstr("TSEQ BUCKET AUDITION") : slider18 >= 0.5 ? gfx_drawstr("TSEQ DELTA SOLO — PROCESSED DETAIL ONLY") : slider17 >= 0.5 ? gfx_drawstr("TSEQ — SIGNED STRUCTURAL BUCKETS (ECO)") : gfx_drawstr("TSEQ — SIGNED STRUCTURAL BUCKETS");
+soloBand >= 0 ? gfx_drawstr("TSEQ BUCKET AUDITION") : DeltaSolo >= 0.5 ? gfx_drawstr("TSEQ DELTA SOLO") : Eco >= 0.5 ? gfx_drawstr("TSEQ — SIGNED STRUCTURAL BUCKETS (ECO)") : gfx_drawstr("TSEQ — SIGNED STRUCTURAL BUCKETS");
 
 gfx_x = panel_x0;
 gfx_y = gfx_h - 20;
-gfx_drawstr("Gain = main area   Threshold = cyan band   Knee = side strip   DELTA = processed difference   Shift+click = bucket audition");
+gfx_drawstr("Gain = main area   Threshold = cyan band   Knee = side strip   Shift+click = audition   DELTA = true processed difference");
 
 bx = panel_x0;
 i = 0;
