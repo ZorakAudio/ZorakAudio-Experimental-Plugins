@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <regex>
+#include <set>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -2882,7 +2883,9 @@ public:
         smartIdleRuntime.lastInputPeak = inputPeak;
 
         const bool keepAwakeBefore = getSmartIdleKeepAwakeFlag();
+        const bool externalWakeEvent = pendingExternalWakeEvent.exchange (false, std::memory_order_acq_rel);
         const bool preProcessWakeEvent = fileLoadsPromoted
+                                      || externalWakeEvent
                                       || slidersChanged
                                       || stringSlidersChanged
                                       || gfxWritesApplied
@@ -3892,6 +3895,8 @@ public:
             slot.errorCode.store (1);
             slot.state.store (FileState::Error);
         }
+
+        notifyFileSlotChangedForUiAndSamplePools (slotIndex0);
     }
 
     void clearFileSlot (int slotIndex0)
@@ -3917,6 +3922,7 @@ public:
         const uint64_t gen = slot.generation.fetch_add (1) + 1;
         slot.pendingGeneration.store (gen);
         slot.state.store (FileState::PendingClear);
+        notifyFileSlotChangedForUiAndSamplePools (slotIndex0);
     }
 
 
@@ -5072,6 +5078,57 @@ public:
             delete old;
 
         slot.state.store (FileState::ReadyPending);
+        notifyFileSlotChangedForUiAndSamplePools (slotIndex0);
+    }
+
+    void notifyFileSlotChangedForUiAndSamplePools (int slotIndex0)
+    {
+        recommitSamplePoolsForSlot (slotIndex0);
+
+        // Force any running @gfx view and host wrapper to repaint/refetch state. This is
+        // required in stopped/sleeping hosts where a new file selection would otherwise
+        // remain invisible until transport playback causes another processBlock().
+        pendingExternalWakeEvent.store (true, std::memory_order_release);
+        gfxSnapshotForcePublish.store (true, std::memory_order_release);
+        updateHostDisplay();
+    }
+
+    void recommitSamplePoolsForSlot (int slotIndex0)
+    {
+        if (slotIndex0 < 0 || slotIndex0 >= (int) fileSlots.size())
+            return;
+
+        std::vector<za::jsfx::DspJsfxSamplePool*> pools;
+        {
+            std::lock_guard<std::mutex> lock (samplePoolMutex);
+            for (auto& handle : samplePools)
+                if (handle != nullptr && handle->slot == slotIndex0 && handle->pool != nullptr)
+                    pools.push_back (handle->pool.get());
+        }
+
+        if (pools.empty())
+            return;
+
+        std::vector<juce::String> paths;
+        std::shared_ptr<const za::jsfx::DspJsfxSamplePoolMemorySourceList> memorySources;
+        std::uint64_t gen = 0;
+        {
+            std::lock_guard<std::mutex> lk (filePathMutex);
+            paths = fileSlots[(size_t) slotIndex0].currentPaths;
+            memorySources = fileSlots[(size_t) slotIndex0].currentSamplePoolMemorySources;
+            gen = fileSlots[(size_t) slotIndex0].generation.load (std::memory_order_acquire);
+        }
+
+        for (auto* pool : pools)
+        {
+            if (pool == nullptr)
+                continue;
+
+            if (memorySources != nullptr && ! memorySources->empty())
+                pool->commitFromMemory (memorySources, gen);
+            else
+                pool->commitFromPaths (paths, gen);
+        }
     }
 
 private:
@@ -6649,6 +6706,7 @@ private:
 
             slot.pendingGeneration.store (req.generation);
             slot.state.store (FileState::ReadyPending);
+            notifyFileSlotChangedForUiAndSamplePools (req.slot);
         }
     }
 
@@ -7653,6 +7711,7 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     std::atomic<int> gfxSnapReading { -1 };
     std::atomic<int> gfxSnapshotUsers { 0 };
     std::atomic<bool> gfxSnapshotForcePublish { false };
+    std::atomic<bool> pendingExternalWakeEvent { false };
     int64_t gfxSnapPeriodSamples = 0;
     int64_t gfxSnapCountdown = 0;
     int64_t jsfxDeclaredMaxMem = 0;
@@ -9060,6 +9119,87 @@ private:
                                         });
     }
 
+    std::vector<juce::File> sourceFilesFromSelectionOrRecipe (const JSFXJuceProcessor::FileSelectionState& selection) const
+    {
+        std::vector<juce::File> files;
+        std::set<juce::String> seen;
+
+        auto addIfValid = [&] (const juce::String& path)
+        {
+            if (path.isEmpty())
+                return;
+
+            juce::File f (path);
+            if (! f.existsAsFile())
+                return;
+
+            const auto key = f.getFullPathName().toLowerCase();
+            if (seen.insert (key).second)
+                files.push_back (f);
+        };
+
+        if (selection.importRecipeXml.isNotEmpty())
+        {
+            if (auto xml = juce::parseXML (selection.importRecipeXml))
+            {
+                auto tree = juce::ValueTree::fromXml (*xml);
+                auto recipe = za::fileimport::recipeFromValueTree (tree);
+                for (const auto& input : recipe.inputs)
+                    addIfValid (input.path);
+            }
+        }
+
+        for (const auto& path : selection.paths)
+            addIfValid (path);
+
+        return za::fileimport::filterSupportedExistingFiles (files);
+    }
+
+    void editCurrentImportRecipeForFileSlot (int slot, JSFXJuceProcessor::FileSelectionState selection)
+    {
+        if (selection.importRecipeXml.isEmpty())
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::InfoIcon,
+                                                    "Edit Import Recipe",
+                                                    "The current file slot is not backed by an import recipe.");
+            return;
+        }
+
+        auto xml = juce::parseXML (selection.importRecipeXml);
+        if (xml == nullptr)
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                    "Edit Import Recipe",
+                                                    "The saved import recipe XML could not be parsed.");
+            return;
+        }
+
+        auto recipe = za::fileimport::recipeFromValueTree (juce::ValueTree::fromXml (*xml));
+        auto files = sourceFilesFromSelectionOrRecipe (selection);
+        if (files.empty())
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                    "Edit Import Recipe",
+                                                    "None of the original source files for this recipe could be found.");
+            return;
+        }
+
+        auto action = recipe.action;
+        if (action == za::fileimport::ImportAction::LoadSeparate)
+            action = za::fileimport::ImportAction::ModifyExisting;
+
+        auto rules = recipe.rules;
+        auto previewFiles = files;
+
+        juce::Component::SafePointer<FilteredPanel> safeThis (this);
+        za::fileimport::showImportPreviewDialog (*this, std::move (previewFiles), action, rules,
+            [safeThis, slot, filesForApply = std::move (files), action] (za::fileimport::ImportRules acceptedRules) mutable
+            {
+                if (safeThis != nullptr)
+                    safeThis->renderImportActionForFileSlotAsync (slot, std::move (filesForApply), action, acceptedRules);
+            });
+    }
+
     void startImportActionForFileSlot (int slot, std::vector<juce::File> files, za::fileimport::ImportAction action)
     {
         files = za::fileimport::filterSupportedExistingFiles (files);
@@ -9086,12 +9226,17 @@ private:
 
         auto rules = za::fileimport::makeDefaultRulesForAction (action);
 
+        // Keep a stable copy for the preview dialog. Function argument evaluation order
+        // can otherwise move `files` into the apply lambda before the preview receives it,
+        // leaving the dialog with no waveform input.
+        auto previewFiles = files;
+
         juce::Component::SafePointer<FilteredPanel> safeThis (this);
-        za::fileimport::showImportPreviewDialog (*this, files, action, rules,
-            [safeThis, slot, files = std::move (files), action] (za::fileimport::ImportRules acceptedRules) mutable
+        za::fileimport::showImportPreviewDialog (*this, std::move (previewFiles), action, rules,
+            [safeThis, slot, filesForApply = std::move (files), action] (za::fileimport::ImportRules acceptedRules) mutable
             {
                 if (safeThis != nullptr)
-                    safeThis->renderImportActionForFileSlotAsync (slot, std::move (files), action, acceptedRules);
+                    safeThis->renderImportActionForFileSlotAsync (slot, std::move (filesForApply), action, acceptedRules);
             });
     }
 
@@ -9222,11 +9367,13 @@ private:
             kAddCategoryMenuId = 3,
             kPasteClipboardMenuId = 4,
             kAutoSegmentCurrentMenuId = 5,
+            kEditCurrentRecipeMenuId = 6,
             kFirstDynamicMenuId = 100,
         };
 
         const auto currentSelection = proc.getFileSlotSelectionState (slot);
         const bool hasSelection = ! currentSelection.paths.empty();
+        const bool hasImportRecipe = currentSelection.importRecipeXml.isNotEmpty();
         const auto suggestedFavoriteName = proc.getSuggestedFavoriteNameForSelection (currentSelection);
         const auto suggestedFavoriteCategory = proc.getSuggestedFavoriteCategoryForSelection (currentSelection);
         const auto recentSelections = proc.getRecentFileSelections();
@@ -9450,6 +9597,7 @@ private:
         addRecipeImportItem ("Segment Then Build Mega Texture...", za::fileimport::ImportAction::SegmentThenMegaTexture);
         menu.addItem (kPasteClipboardMenuId, "Paste Files / URIs from Clipboard...");
         menu.addItem (kAutoSegmentCurrentMenuId, "Auto-Segment Current Selection...", hasSelection);
+        menu.addItem (kEditCurrentRecipeMenuId, "Edit Current Import Recipe...", hasImportRecipe);
 
         menu.addSeparator();
         menu.addItem (kAddFavoriteMenuId, "Add to Favorites...", hasSelection);
@@ -9525,13 +9673,14 @@ private:
 
                                 if (result == kAutoSegmentCurrentMenuId)
                                 {
-                                    std::vector<juce::File> currentFiles;
-                                    currentFiles.reserve (currentSelection.paths.size());
-                                    for (const auto& path : currentSelection.paths)
-                                        if (path.isNotEmpty())
-                                            currentFiles.emplace_back (path);
-
+                                    auto currentFiles = safeThis->sourceFilesFromSelectionOrRecipe (currentSelection);
                                     safeThis->startImportActionForFileSlot (slot, std::move (currentFiles), za::fileimport::ImportAction::SegmentLongFile);
+                                    return;
+                                }
+
+                                if (result == kEditCurrentRecipeMenuId)
+                                {
+                                    safeThis->editCurrentImportRecipeForFileSlot (slot, currentSelection);
                                     return;
                                 }
 
@@ -10243,12 +10392,17 @@ public:
 
         auto rules = za::fileimport::makeDefaultRulesForAction (action);
 
+        // Keep a stable copy for the preview dialog. Function argument evaluation order
+        // can otherwise move `files` into the apply lambda before the preview receives it,
+        // leaving the dialog with no waveform input.
+        auto previewFiles = files;
+
         juce::Component::SafePointer<JSFXJuceEditor> safeThis (this);
-        za::fileimport::showImportPreviewDialog (*this, files, action, rules,
-            [safeThis, slot, files = std::move (files), action] (za::fileimport::ImportRules acceptedRules) mutable
+        za::fileimport::showImportPreviewDialog (*this, std::move (previewFiles), action, rules,
+            [safeThis, slot, filesForApply = std::move (files), action] (za::fileimport::ImportRules acceptedRules) mutable
             {
                 if (safeThis != nullptr)
-                    safeThis->renderImportActionAsync (slot, std::move (files), action, acceptedRules);
+                    safeThis->renderImportActionAsync (slot, std::move (filesForApply), action, acceptedRules);
             });
     }
 

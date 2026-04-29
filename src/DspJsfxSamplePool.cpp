@@ -318,6 +318,17 @@ bool DspJsfxSamplePool::read2(std::uint64_t sampleId, double phase, double* outL
         return false;
     }
 
+    // Hard sample-boundary rule. A rendered segment is a complete pseudo-file;
+    // reads beyond its frame range must not report success or bleed into the
+    // following packed entry in the generation. read() already returns zero
+    // out-of-range, but returning false lets JSFX voices terminate cleanly.
+    if (! std::isfinite(phase) || phase < 0.0 || phase > static_cast<double>(e->frames - 1))
+    {
+        if (outL) *outL = 0.0;
+        if (outR) *outR = 0.0;
+        return false;
+    }
+
     const double l = interp ? readInterp(sampleId, 0, phase) : read(sampleId, 0, phase);
     const double r = e->channels >= 2
         ? (interp ? readInterp(sampleId, 1, phase) : read(sampleId, 1, phase))

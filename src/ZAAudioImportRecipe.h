@@ -97,7 +97,12 @@ struct ImportRules
     bool stripInternalSilence = false;
     bool segmentBySilence = false;
 
-    float silenceThresholdRatio = 0.50f;
+    // Absolute silence gate used for segmentation and pruning. A direct dBFS
+    // threshold is easier to reason about than the old RMS-ratio-only gate.
+    double silenceThresholdDb = -50.0;
+    float silenceThresholdRatio = 0.10f;
+    bool useRelativeRmsThreshold = false;
+    double silenceAnalysisWindowMs = 5.0;
     double minSilenceMs = 100.0;
     double preRollMs = 5.0;
     double postRollMs = 15.0;
@@ -344,7 +349,10 @@ static inline juce::ValueTree rulesToValueTree (const ImportRules& r)
     t.setProperty ("trimEdges", r.trimEdges, nullptr);
     t.setProperty ("stripInternalSilence", r.stripInternalSilence, nullptr);
     t.setProperty ("segmentBySilence", r.segmentBySilence, nullptr);
+    t.setProperty ("silenceThresholdDb", r.silenceThresholdDb, nullptr);
     t.setProperty ("silenceThresholdRatio", r.silenceThresholdRatio, nullptr);
+    t.setProperty ("useRelativeRmsThreshold", r.useRelativeRmsThreshold, nullptr);
+    t.setProperty ("silenceAnalysisWindowMs", r.silenceAnalysisWindowMs, nullptr);
     t.setProperty ("minSilenceMs", r.minSilenceMs, nullptr);
     t.setProperty ("preRollMs", r.preRollMs, nullptr);
     t.setProperty ("postRollMs", r.postRollMs, nullptr);
@@ -380,7 +388,10 @@ static inline ImportRules rulesFromValueTree (const juce::ValueTree& t)
     r.trimEdges = (bool) t.getProperty ("trimEdges", r.trimEdges);
     r.stripInternalSilence = (bool) t.getProperty ("stripInternalSilence", r.stripInternalSilence);
     r.segmentBySilence = (bool) t.getProperty ("segmentBySilence", r.segmentBySilence);
+    r.silenceThresholdDb = (double) t.getProperty ("silenceThresholdDb", r.silenceThresholdDb);
     r.silenceThresholdRatio = (float) (double) t.getProperty ("silenceThresholdRatio", r.silenceThresholdRatio);
+    r.useRelativeRmsThreshold = (bool) t.getProperty ("useRelativeRmsThreshold", r.useRelativeRmsThreshold);
+    r.silenceAnalysisWindowMs = (double) t.getProperty ("silenceAnalysisWindowMs", r.silenceAnalysisWindowMs);
     r.minSilenceMs = (double) t.getProperty ("minSilenceMs", r.minSilenceMs);
     r.preRollMs = (double) t.getProperty ("preRollMs", r.preRollMs);
     r.postRollMs = (double) t.getProperty ("postRollMs", r.postRollMs);
@@ -532,55 +543,143 @@ static inline float sampleRmsAt (const juce::AudioBuffer<float>& b, int i) noexc
     return std::sqrt (sum / (float) chs);
 }
 
-static inline std::vector<uint8_t> computeSilenceMask (const juce::AudioBuffer<float>& b, const ImportRules& rules, double sr)
+struct SilenceAnalysis
+{
+    std::vector<uint8_t> silent;
+    std::vector<float> envelope;
+    float threshold = 0.0f;
+};
+
+static inline std::vector<float> computeRmsEnvelopeLinear (const juce::AudioBuffer<float>& b, double sr, double windowMs)
 {
     const int n = b.getNumSamples();
-    std::vector<uint8_t> silent ((size_t) n, 1);
+    const int chs = b.getNumChannels();
+    std::vector<float> envelope ((size_t) n, 0.0f);
+    if (n <= 0 || chs <= 0)
+        return envelope;
+
+    std::vector<float> meanSquares ((size_t) n, 0.0f);
+    for (int i = 0; i < n; ++i)
+    {
+        double sum = 0.0;
+        for (int ch = 0; ch < chs; ++ch)
+        {
+            const double x = (double) b.getSample (ch, i);
+            sum += x * x;
+        }
+        meanSquares[(size_t) i] = (float) (sum / (double) chs);
+    }
+
+    const int window = juce::jmax (1, (int) std::llround (sr * juce::jlimit (0.0, 100.0, windowMs) / 1000.0));
+    if (window <= 1)
+    {
+        for (int i = 0; i < n; ++i)
+            envelope[(size_t) i] = std::sqrt (meanSquares[(size_t) i]);
+        return envelope;
+    }
+
+    const int radius = juce::jmax (0, window / 2);
+    double sum = 0.0;
+    int lo = 0;
+    int hi = 0;
+
+    for (int i = 0; i < n; ++i)
+    {
+        const int targetLo = juce::jmax (0, i - radius);
+        const int targetHi = juce::jmin (n, i + radius + 1);
+
+        while (hi < targetHi)
+            sum += (double) meanSquares[(size_t) hi++];
+        while (lo < targetLo)
+            sum -= (double) meanSquares[(size_t) lo++];
+
+        const int count = juce::jmax (1, hi - lo);
+        envelope[(size_t) i] = (float) std::sqrt (juce::jmax (0.0, sum / (double) count));
+    }
+
+    return envelope;
+}
+
+static inline SilenceAnalysis analyseSilence (const juce::AudioBuffer<float>& b, const ImportRules& rules, double sr)
+{
+    SilenceAnalysis a;
+    const int n = b.getNumSamples();
+    a.silent.assign ((size_t) n, 1u);
+    a.envelope.assign ((size_t) n, 0.0f);
     if (n <= 0)
-        return silent;
+        return a;
 
     const auto globalRms = computeRmsLinear (b);
     const auto globalPeak = computePeakLinear (b);
     if (globalRms <= 1.0e-10 && globalPeak <= 1.0e-10)
-        return silent;
+        return a;
 
-    // Use the same deterministic RMS-ratio rule as the prototype scripts,
-    // but with a small absolute floor so ultra-quiet files do not collapse
-    // into one giant "non-silent" region from denorm/noise.
-    const float threshold = (float) juce::jmax (1.0e-7,
-                                               globalRms * (double) juce::jlimit (0.0001f, 4.0f, rules.silenceThresholdRatio));
+    a.envelope = computeRmsEnvelopeLinear (b, sr, rules.silenceAnalysisWindowMs);
 
-    // Per-sample RMS across channels is intentionally used here. The previous
-    // smoothed gate could hold open across obvious gaps and produce one segment.
-    // Short false gaps are still rejected later by minSilenceMs.
+    double threshold = dbToLinear (juce::jlimit (-120.0, 0.0, rules.silenceThresholdDb));
+    if (rules.useRelativeRmsThreshold)
+        threshold = juce::jmax (threshold, globalRms * (double) juce::jlimit (0.0f, 4.0f, rules.silenceThresholdRatio));
+
+    a.threshold = (float) juce::jlimit (1.0e-8, 4.0, threshold);
+
     for (int i = 0; i < n; ++i)
-        silent[(size_t) i] = sampleRmsAt (b, i) <= threshold ? 1u : 0u;
+        a.silent[(size_t) i] = a.envelope[(size_t) i] <= a.threshold ? 1u : 0u;
 
-    // Bridge microscopic non-silent spikes inside silence. This prevents a click
-    // or codec fleck from splitting a silence run while preserving clear impacts.
-    const int bridge = juce::jmax (1, (int) std::llround (sr * 1.5 / 1000.0));
+    // Bridge microscopic non-silent spikes inside a quiet run. This makes the
+    // detector behave like an RMS-pruning gate rather than a brittle sample-by-
+    // sample zero detector.
+    const int bridge = juce::jmax (1, (int) std::llround (sr * 2.0 / 1000.0));
     int i = 0;
     while (i < n)
     {
-        if (silent[(size_t) i] != 0u)
+        if (a.silent[(size_t) i] != 0u)
         {
             ++i;
             continue;
         }
 
         int j = i;
-        while (j < n && silent[(size_t) j] == 0u)
+        while (j < n && a.silent[(size_t) j] == 0u)
             ++j;
 
-        const bool surroundedBySilence = i > 0 && j < n && silent[(size_t) (i - 1)] != 0u && silent[(size_t) j] != 0u;
+        const bool surroundedBySilence = i > 0 && j < n && a.silent[(size_t) (i - 1)] != 0u && a.silent[(size_t) j] != 0u;
         if (surroundedBySilence && (j - i) <= bridge)
             for (int k = i; k < j; ++k)
-                silent[(size_t) k] = 1u;
+                a.silent[(size_t) k] = 1u;
 
         i = j;
     }
 
-    return silent;
+    return a;
+}
+
+static inline std::vector<uint8_t> computeSilenceMask (const juce::AudioBuffer<float>& b, const ImportRules& rules, double sr)
+{
+    return analyseSilence (b, rules, sr).silent;
+}
+
+static inline int findQuietestSampleInRun (const std::vector<float>& envelope, int start, int end)
+{
+    if (envelope.empty())
+        return (start + end) / 2;
+
+    start = juce::jlimit (0, (int) envelope.size(), start);
+    end = juce::jlimit (start, (int) envelope.size(), end);
+    if (end <= start)
+        return start;
+
+    int best = start;
+    float bestValue = envelope[(size_t) start];
+    for (int i = start + 1; i < end; ++i)
+    {
+        const float v = envelope[(size_t) i];
+        if (v < bestValue)
+        {
+            bestValue = v;
+            best = i;
+        }
+    }
+    return best;
 }
 
 static inline std::vector<SegmentRegion> detectSegmentsBySilence (const juce::AudioBuffer<float>& b, double sr, const ImportRules& rules)
@@ -590,74 +689,92 @@ static inline std::vector<SegmentRegion> detectSegmentsBySilence (const juce::Au
     if (n <= 0 || sr <= 0.0)
         return segments;
 
-    const auto silent = computeSilenceMask (b, rules, sr);
+    const auto analysis = analyseSilence (b, rules, sr);
+    const auto& silent = analysis.silent;
     const int minSilence = juce::jmax (1, (int) std::llround (sr * rules.minSilenceMs / 1000.0));
     const int pre = juce::jmax (0, (int) std::llround (sr * rules.preRollMs / 1000.0));
     const int post = juce::jmax (0, (int) std::llround (sr * rules.postRollMs / 1000.0));
     const int minLen = juce::jmax (1, (int) std::llround (sr * rules.minSegmentMs / 1000.0));
     const int maxLen = juce::jmax (minLen, (int) std::llround (sr * rules.maxSegmentMs / 1000.0));
 
-    bool inSegment = false;
-    int segStart = 0;
-    int i = 0;
+    auto addSegment = [&] (int rawStart, int rawEnd)
+    {
+        int start = juce::jlimit (0, n, rawStart);
+        int end = juce::jlimit (start, n, rawEnd);
+        if (end - start < minLen)
+            return;
+
+        while (end - start > maxLen)
+        {
+            const int chunkEnd = start + maxLen;
+            const double rmsDb = linearToDb (computeRmsLinear (b, start, chunkEnd - start));
+            if (! rules.removeLowRms || rmsDb >= rules.minRmsDb)
+                segments.push_back ({ start, chunkEnd, rmsDb, linearToDb (computePeakLinear (b, start, chunkEnd - start)), 0.0, 0.0, true });
+            start = chunkEnd;
+        }
+
+        if (end - start >= minLen)
+        {
+            const double rmsDb = linearToDb (computeRmsLinear (b, start, end - start));
+            if (! rules.removeLowRms || rmsDb >= rules.minRmsDb)
+                segments.push_back ({ start, end, rmsDb, linearToDb (computePeakLinear (b, start, end - start)), 0.0, 0.0, true });
+        }
+    };
+
+    int firstSound = 0;
+    while (firstSound < n && silent[(size_t) firstSound] != 0u)
+        ++firstSound;
+
+    if (firstSound >= n)
+        return segments;
+
+    int segStart = juce::jmax (0, firstSound - pre);
+    int i = firstSound;
 
     while (i < n)
     {
-        if (! inSegment)
+        if (silent[(size_t) i] == 0u)
         {
-            if (! silent[(size_t) i])
-            {
-                inSegment = true;
-                segStart = juce::jmax (0, i - pre);
-            }
             ++i;
             continue;
         }
 
-        if (silent[(size_t) i])
-        {
-            int j = i;
-            while (j < n && silent[(size_t) j])
-                ++j;
+        int j = i;
+        while (j < n && silent[(size_t) j] != 0u)
+            ++j;
 
-            if (j - i >= minSilence)
-            {
-                const int end = juce::jmin (n, i + post);
-                if (end - segStart >= minLen)
-                {
-                    int localStart = segStart;
-                    while (end - localStart > maxLen)
-                    {
-                        const int chunkEnd = localStart + maxLen;
-                        segments.push_back ({ localStart, chunkEnd, linearToDb (computeRmsLinear (b, localStart, chunkEnd - localStart)), linearToDb (computePeakLinear (b, localStart, chunkEnd - localStart)), 0.0, 0.0, true });
-                        localStart = chunkEnd;
-                    }
-                    if (end - localStart >= minLen)
-                        segments.push_back ({ localStart, end, linearToDb (computeRmsLinear (b, localStart, end - localStart)), linearToDb (computePeakLinear (b, localStart, end - localStart)), 0.0, 0.0, true });
-                }
-                inSegment = false;
-                i = j;
-            }
-            else
-            {
-                i = j;
-            }
-        }
-        else
+        if (j - i >= minSilence)
         {
-            ++i;
+            const int cut = findQuietestSampleInRun (analysis.envelope, i, j);
+
+            // Hard boundary rule: post-roll may keep quiet tail, and pre-roll may
+            // keep quiet lead-in, but neither side is allowed to cross the chosen
+            // cut point. A segmented pseudo-file therefore cannot bleed into the
+            // following pseudo-file.
+            const int cutCap = juce::jmax (segStart, cut);
+            const int segEnd = juce::jlimit (segStart, cutCap, i + post);
+            addSegment (segStart, segEnd);
+
+            int nextSound = j;
+            while (nextSound < n && silent[(size_t) nextSound] != 0u)
+                ++nextSound;
+
+            segStart = juce::jmax (cut, nextSound - pre);
+            i = nextSound;
+            continue;
         }
+
+        i = j;
     }
 
-    if (inSegment)
-    {
-        const int end = n;
-        if (end - segStart >= minLen)
-            segments.push_back ({ segStart, end, linearToDb (computeRmsLinear (b, segStart, end - segStart)), linearToDb (computePeakLinear (b, segStart, end - segStart)), 0.0, 0.0, true });
-    }
+    addSegment (segStart, n);
 
     if (segments.empty() && computeRmsLinear (b) > 0.0)
-        segments.push_back ({ 0, n, linearToDb (computeRmsLinear (b)), linearToDb (computePeakLinear (b)), 0.0, 0.0, true });
+    {
+        const double rmsDb = linearToDb (computeRmsLinear (b));
+        if (! rules.removeLowRms || rmsDb >= rules.minRmsDb)
+            segments.push_back ({ 0, n, rmsDb, linearToDb (computePeakLinear (b)), 0.0, 0.0, true });
+    }
 
     return segments;
 }
@@ -1603,6 +1720,30 @@ private:
     juce::String status;
 };
 
+class ResettableSlider final : public juce::Slider
+{
+public:
+    void setResetValue (double v)
+    {
+        resetValue = v;
+        setDoubleClickReturnValue (true, resetValue);
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isRightButtonDown())
+        {
+            setValue (resetValue, juce::sendNotificationAsync);
+            return;
+        }
+
+        juce::Slider::mouseDown (e);
+    }
+
+private:
+    double resetValue = 0.0;
+};
+
 class ImportPreviewComponent final : public juce::Component, private juce::Slider::Listener
 {
 public:
@@ -1619,13 +1760,21 @@ public:
         title.setJustificationType (juce::Justification::centredLeft);
         addAndMakeVisible (title);
 
-        configureSlider (threshold, "Threshold × RMS", 0.01, 2.0, 0.01, rules.silenceThresholdRatio);
-        configureSlider (minSilence, "Min silence ms", 1.0, 10000.0, 1.0, rules.minSilenceMs);
-        configureSlider (minSegment, "Min segment ms", 1.0, 30000.0, 1.0, rules.minSegmentMs);
-        configureSlider (preRoll, "Pre-roll ms", 0.0, 500.0, 1.0, rules.preRollMs);
-        configureSlider (postRoll, "Post-roll ms", 0.0, 1000.0, 1.0, rules.postRollMs);
-        configureSlider (fade, "Fade ms", 0.0, 100.0, 0.5, rules.edgeFadeMs);
-        configureSlider (rmsReject, "Reject below dB RMS", -120.0, -12.0, 0.5, rules.minRmsDb);
+        defaultRules = makeDefaultRulesForAction (action);
+
+        configureSlider (silenceDb, "Silence threshold dBFS", -90.0, -6.0, 0.5, rules.silenceThresholdDb, defaultRules.silenceThresholdDb, -50.0);
+        configureSlider (threshold, "Relative RMS ×", 0.0, 2.0, 0.01, rules.silenceThresholdRatio, defaultRules.silenceThresholdRatio, 0.25);
+        configureSlider (minSilence, "Min quiet gap ms", 1.0, 5000.0, 1.0, rules.minSilenceMs, defaultRules.minSilenceMs, 100.0);
+        configureSlider (minSegment, "Min segment ms", 1.0, 10000.0, 1.0, rules.minSegmentMs, defaultRules.minSegmentMs, 250.0);
+        configureSlider (preRoll, "Pre-roll ms", 0.0, 500.0, 1.0, rules.preRollMs, defaultRules.preRollMs, 20.0);
+        configureSlider (postRoll, "Post-roll ms", 0.0, 1000.0, 1.0, rules.postRollMs, defaultRules.postRollMs, 25.0);
+        configureSlider (fade, "Fade ms", 0.0, 100.0, 0.5, rules.edgeFadeMs, defaultRules.edgeFadeMs, 10.0);
+        configureSlider (rmsReject, "Reject below dB RMS", -120.0, -12.0, 0.5, rules.minRmsDb, defaultRules.minRmsDb, -65.0);
+
+        relativeToggle.setButtonText ("Also use relative RMS gate");
+        relativeToggle.setToggleState (rules.useRelativeRmsThreshold, juce::dontSendNotification);
+        relativeToggle.onClick = [this] { updateRulesFromUi(); updateControlEnablement(); refreshPreview(); };
+        addAndMakeVisible (relativeToggle);
 
         stripToggle.setButtonText ("Strip internal silence");
         stripToggle.setToggleState (rules.stripInternalSilence, juce::dontSendNotification);
@@ -1639,7 +1788,7 @@ public:
 
         rejectToggle.setButtonText ("Enable low RMS pruning");
         rejectToggle.setToggleState (rules.removeLowRms, juce::dontSendNotification);
-        rejectToggle.onClick = [this] { updateRulesFromUi(); refreshPreview(); };
+        rejectToggle.onClick = [this] { updateRulesFromUi(); updateControlEnablement(); refreshPreview(); };
         addAndMakeVisible (rejectToggle);
 
         normalizeToggle.setButtonText ("Normalize clips to -24 dB RMS");
@@ -1668,8 +1817,30 @@ public:
         };
         addAndMakeVisible (cancel);
 
-        refreshPreview();
-        setSize (920, 640);
+        resetDefaults.setButtonText ("Reset");
+        resetDefaults.setTooltip ("Reset all import/segmentation controls to defaults. Right-click any slider to reset only that control.");
+        resetDefaults.onClick = [this]
+        {
+            rules = defaultRules;
+            syncUiFromRules();
+            refreshPreview();
+        };
+        addAndMakeVisible (resetDefaults);
+
+        updateControlEnablement();
+
+        setSize (980, 700);
+
+        waveform.setBuffers (juce::AudioBuffer<float>(), juce::AudioBuffer<float>(), {}, 0.0,
+                             action == ImportAction::SegmentLongFile || action == ImportAction::SegmentThenMegaTexture,
+                             files.empty() ? juce::String ("No input file was passed to the preview.") : juce::String ("Loading preview…"));
+
+        juce::Component::SafePointer<ImportPreviewComponent> safeThis (this);
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (safeThis != nullptr)
+                safeThis->refreshPreview();
+        });
     }
 
     void resized() override
@@ -1682,10 +1853,13 @@ public:
         cancel.setBounds (bottom.removeFromRight (100));
         bottom.removeFromRight (8);
         apply.setBounds (bottom.removeFromRight (100));
+        bottom.removeFromRight (8);
+        resetDefaults.setBounds (bottom.removeFromRight (90));
 
-        auto left = r.removeFromLeft (240);
+        auto left = r.removeFromLeft (260);
         r.removeFromLeft (12);
-        auto sliderH = 50;
+        auto sliderH = 47;
+        silenceDb.setBounds (left.removeFromTop (sliderH));
         threshold.setBounds (left.removeFromTop (sliderH));
         minSilence.setBounds (left.removeFromTop (sliderH));
         minSegment.setBounds (left.removeFromTop (sliderH));
@@ -1693,23 +1867,27 @@ public:
         postRoll.setBounds (left.removeFromTop (sliderH));
         fade.setBounds (left.removeFromTop (sliderH));
         rmsReject.setBounds (left.removeFromTop (sliderH));
-        left.removeFromTop (8);
-        trimToggle.setBounds (left.removeFromTop (28));
-        stripToggle.setBounds (left.removeFromTop (28));
-        rejectToggle.setBounds (left.removeFromTop (28));
-        normalizeToggle.setBounds (left.removeFromTop (28));
+        left.removeFromTop (6);
+        relativeToggle.setBounds (left.removeFromTop (26));
+        trimToggle.setBounds (left.removeFromTop (26));
+        stripToggle.setBounds (left.removeFromTop (26));
+        rejectToggle.setBounds (left.removeFromTop (26));
+        normalizeToggle.setBounds (left.removeFromTop (26));
 
         waveform.setBounds (r);
     }
 
 private:
-    void configureSlider (juce::Slider& s, const juce::String& label, double min, double max, double step, double value)
+    void configureSlider (ResettableSlider& s, const juce::String& label, double min, double max, double step, double value, double defaultValue, double midpoint = 0.0)
     {
         s.setTextValueSuffix (juce::String ("  ") + label);
         s.setRange (min, max, step);
         s.setValue (value, juce::dontSendNotification);
+        s.setResetValue (defaultValue);
         s.setSliderStyle (juce::Slider::LinearHorizontal);
-        s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 86, 18);
+        s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 104, 18);
+        if (midpoint > min && midpoint < max)
+            s.setSkewFactorFromMidPoint (midpoint);
         s.addListener (this);
         addAndMakeVisible (s);
     }
@@ -1722,7 +1900,9 @@ private:
 
     void updateRulesFromUi()
     {
+        rules.silenceThresholdDb = silenceDb.getValue();
         rules.silenceThresholdRatio = (float) threshold.getValue();
+        rules.useRelativeRmsThreshold = relativeToggle.getToggleState();
         rules.minSilenceMs = minSilence.getValue();
         rules.minSegmentMs = minSegment.getValue();
         rules.preRollMs = preRoll.getValue();
@@ -1735,15 +1915,44 @@ private:
         rules.normalizeClipsRms = normalizeToggle.getToggleState();
     }
 
+    void syncUiFromRules()
+    {
+        silenceDb.setValue (rules.silenceThresholdDb, juce::dontSendNotification);
+        threshold.setValue (rules.silenceThresholdRatio, juce::dontSendNotification);
+        relativeToggle.setToggleState (rules.useRelativeRmsThreshold, juce::dontSendNotification);
+        minSilence.setValue (rules.minSilenceMs, juce::dontSendNotification);
+        minSegment.setValue (rules.minSegmentMs, juce::dontSendNotification);
+        preRoll.setValue (rules.preRollMs, juce::dontSendNotification);
+        postRoll.setValue (rules.postRollMs, juce::dontSendNotification);
+        fade.setValue (rules.edgeFadeMs, juce::dontSendNotification);
+        rmsReject.setValue (rules.minRmsDb, juce::dontSendNotification);
+        stripToggle.setToggleState (rules.stripInternalSilence, juce::dontSendNotification);
+        trimToggle.setToggleState (rules.trimEdges, juce::dontSendNotification);
+        rejectToggle.setToggleState (rules.removeLowRms, juce::dontSendNotification);
+        normalizeToggle.setToggleState (rules.normalizeClipsRms, juce::dontSendNotification);
+        updateControlEnablement();
+    }
+
+    void updateControlEnablement()
+    {
+        threshold.setEnabled (relativeToggle.getToggleState());
+        rmsReject.setEnabled (rejectToggle.getToggleState());
+    }
+
     void refreshPreview()
     {
+        const bool segmentationMode = (action == ImportAction::SegmentLongFile
+                                       || action == ImportAction::SegmentThenMegaTexture);
+
         if (files.empty())
+        {
+            waveform.setBuffers (juce::AudioBuffer<float>(), juce::AudioBuffer<float>(), {}, 0.0, segmentationMode,
+                                 "No input file was passed to the preview.");
             return;
+        }
 
         juce::String error;
         auto previewRules = rules;
-        const bool segmentationMode = (action == ImportAction::SegmentLongFile
-                                       || action == ImportAction::SegmentThenMegaTexture);
         const double maxPreviewSeconds = segmentationMode ? 0.0 : previewRules.previewSeconds;
         const auto data = readAudioFile (files.front(), previewRules.outputChannels <= 0 ? 2 : previewRules.outputChannels,
                                          previewRules.outputSampleRate, maxPreviewSeconds, error);
@@ -1776,7 +1985,14 @@ private:
             status << files.front().getFileName();
 
         if (segmentationMode)
-            status << " | " << (int) segments.size() << " proposed cuts";
+        {
+            status << " | " << (int) segments.size() << " segment" << (segments.size() == 1 ? "" : "s")
+                   << " | silence≤" << juce::String (previewRules.silenceThresholdDb, 1) << " dBFS"
+                   << " | gap≥" << juce::String (previewRules.minSilenceMs, 0) << " ms"
+                   << " | minLen≥" << juce::String (previewRules.minSegmentMs, 0) << " ms";
+            if (previewRules.removeLowRms)
+                status << " | reject<" << juce::String (previewRules.minRmsDb, 1) << " dB RMS";
+        }
 
         waveform.setBuffers (data->buffer, std::move (processed), std::move (segments), data->sampleRate, segmentationMode, status);
     }
@@ -1784,13 +2000,14 @@ private:
     std::vector<juce::File> files;
     ImportAction action;
     ImportRules rules;
+    ImportRules defaultRules;
     ApplyCallback onApply;
 
     juce::Label title;
-    juce::Slider threshold, minSilence, minSegment, preRoll, postRoll, fade, rmsReject;
-    juce::ToggleButton stripToggle, trimToggle, rejectToggle, normalizeToggle;
+    ResettableSlider silenceDb, threshold, minSilence, minSegment, preRoll, postRoll, fade, rmsReject;
+    juce::ToggleButton relativeToggle, stripToggle, trimToggle, rejectToggle, normalizeToggle;
     WaveformPreview waveform;
-    juce::TextButton apply, cancel;
+    juce::TextButton apply, cancel, resetDefaults;
 };
 
 static inline void showImportPreviewDialog (juce::Component& parent, std::vector<juce::File> files, ImportAction action, ImportRules rules, ImportPreviewComponent::ApplyCallback onApply)
