@@ -120,6 +120,35 @@ inline void registerBuiltins()
         NSEEL_addfunc_varparm_ex ("msg_peer_uid", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("msg_peer_caps", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("msg_peer_alive", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+
+        // Sample-pool compatibility. Real raw access is DSP-owned; @gfx should
+        // read mirrored summary vars or preview-specific access once a UI bridge
+        // is added. These stubs keep @init/@gfx compileable.
+        NSEEL_addfunc_varparm_ex ("sample_pool_from_slot", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_set_mode", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_set_budget_mb", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_commit", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_state", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_selected", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_loaded", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_failed", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_ram_mb", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_generation", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_get", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_len", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_channels", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_srate", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_peak", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_rms", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_name", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_read", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_read_interp", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_read2", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_read2_interp", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_preview_bins", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_preview_read", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_export_mem", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_export_mem2", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
     });
 }
 

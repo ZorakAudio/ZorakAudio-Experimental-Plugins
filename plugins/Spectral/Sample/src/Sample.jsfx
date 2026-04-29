@@ -2,7 +2,8 @@ desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid)
 tags:instrument sampler ui
 
 // Slot 0 is the load-and-go sample bank.
-// Use the filename slot UI for this effect and choose Open Multiple... on slot 0.
+// Use the filename slot UI for this instrument and choose Open Multiple... on slot 0.
+// #FILE: Sample Bank {Open Multiple... loads the whole bank into slot 0; the bank auto-rescans when the selection changes.}
 filename:0,sample.wav
 
 slider1:0<0,1,1{idle,rescan}>--Force rescan slot 0
@@ -28,24 +29,22 @@ slider20:20<0,2000,1>--Hold (ms)
 slider21:0<0,1,1{stereo,mono}>--Mono Source
 slider22:0<0,1,0.001>--Dynamics
 slider23:0<0,1,1{classic,gaussian}>--Onset align mode
+slider24:0<0,65536,256>--Bank RAM Budget (MB, 0=unlimited)
 @init
 /*
-Multi-file slot API used here:
-  h     = file_open_multi(slot[, mode]);
-  count = file_multi_count(h);
-  ok    = file_multi_select(h, index);
+Runtime sample-pool API used here:
+  pool  = sample_pool_from_slot(slot, #name);
+  sample_pool_commit(pool);
+  id    = sample_get(pool, index);
+  value = sample_read_interp(pool, id, channel, phase);
 
-After selecting an entry, the normal file APIs operate on the currently selected file:
-  file_avail(h);
-  file_mem(h, memIndex, length);
-  file_riff(h, nch, srate);
-  file_rewind(h);
-  file_close(h);
+Decoded audio is held outside JSFX mem[] as packed float32 by the runtime.
+This keeps large banks from expanding into 64-bit JSFX double cells.
 
 This instrument stays load-and-go:
 - slot 0 is polled automatically
-- a cheap signature pass detects changes
-- the bank reload is deferred until voices are idle
+- sample_pool_generation() detects completed reloads
+- the metadata rebuild is deferred until voices are idle
 - no zones or bank metadata are required
 */
 
@@ -264,10 +263,28 @@ function m2e_reset() local(i)
   m2e_activity_s = m2e_activity_raw;
 );
 
-function mono_frame(ptr nch frame) local(base)
+function mono_frame(ptr nch frame) local(l r)
 (
-  base = ptr + frame * nch;
-  nch >= 2 ? 0.5 * (base[0] + base[1]) : base[0];
+  // SM_PTR stores a runtime sample-pool ID, not a mem[] pointer.
+  nch >= 2 ? (
+    l = sample_read(bank_pool, ptr, 0, frame);
+    r = sample_read(bank_pool, ptr, 1, frame);
+    0.5 * (l + r);
+  ) : (
+    sample_read(bank_pool, ptr, 0, frame);
+  );
+);
+
+function sample_frame2(ptr nch phase) local(ok l r)
+(
+  ok = sample_read2_interp(bank_pool, ptr, phase, l, r);
+  mono_source ? (
+    l = 0.5 * (l + r);
+    r = l;
+  );
+  readL = l;
+  readR = r;
+  ok;
 );
 
 function pt_in(x y w h)
@@ -982,6 +999,12 @@ function reset_weight_buffers() local(i)
 function reset_bank_state() local(i)
 (
   sample_count = 0;
+  bank_selected_count = 0;
+  bank_scan_count = 0;
+  bank_skipped_count = 0;
+  bank_cap_limited = 0;
+  bank_memory_limited = 0;
+  bank_pool_capacity = sample_pool_capacity;
   bank_pitchiness = 0;
   bank_brightness = 0;
   bank_sharpness = 0;
@@ -1000,42 +1023,27 @@ function reset_bank_state() local(i)
   transient_guard_s = 0;
 );
 
-function load_one_selected_file(handle sample_index) local(
-  ok istext nch sr avail words frames read_words sm
+function load_one_pool_sample(sample_index) local(
+  sid nch sr frames sm
 )
 (
-  ok = file_multi_select(handle, sample_index);
-  ok ? (
-    istext = file_text(handle);
-    !istext ? (
-      nch = 0;
-      sr = 0;
-      file_riff(handle, nch, sr);
+  sid = sample_get(bank_pool, sample_index);
+  sid > 0 && sample_count < sample_pool_capacity ? (
+    nch = max(1, sample_channels(bank_pool, sid) | 0);
+    sr = sample_srate(bank_pool, sid);
+    frames = sample_len(bank_pool, sid) | 0;
 
-      (nch > 0 && sr > 1000) ? (
-        avail = max(0, file_avail(handle) | 0);
-        words = avail - (avail % max(nch, 1));
-        frames = floor(words / max(nch, 1));
-
-        (frames > 1 && (next_audio + words + 8) < MEM_LIMIT) ? (
-          read_words = file_mem(handle, next_audio, words);
-          read_words = max(0, read_words | 0);
-          read_words -= (read_words % max(nch, 1));
-          frames = floor(read_words / max(nch, 1));
-
-          frames > 1 ? (
-            sm = sample_meta_base + sample_count * SM_STRIDE;
-            sm[SM_PTR]      = next_audio;
-            sm[SM_NCH]      = nch;
-            sm[SM_SR]       = sr;
-            sm[SM_FRAMES]   = frames;
-            sm[SM_LASTUSED] = -1000000;
-            analyze_sample(sm);
-            sample_count += 1;
-            next_audio += read_words + 8;
-          );
-        );
-      );
+    (nch > 0 && sr > 1000 && frames > 1) ? (
+      sm = sample_meta_base + sample_count * SM_STRIDE;
+      sm[SM_PTR]      = sid;
+      sm[SM_NCH]      = nch;
+      sm[SM_SR]       = sr;
+      sm[SM_FRAMES]   = frames;
+      sm[SM_LASTUSED] = -1000000;
+      sm[SM_PEAK]     = sample_peak(bank_pool, sid);
+      sm[SM_RMS]      = sample_rms(bank_pool, sid);
+      analyze_sample(sm);
+      sample_count += 1;
     );
   );
 );
@@ -1095,73 +1103,94 @@ function reanalyze_bank() local(i sm)
   rescan_flash = 1;
 );
 
-function load_bank() local(
-  bank count i
-)
-(
-  reset_bank_state();
+function configure_memory_layout(selected_count) local(cap) (
+  cap = max(SAMPLE_POOL_MIN, selected_count | 0);
+  cap > SAMPLE_POOL_HARD_MAX ? cap = SAMPLE_POOL_HARD_MAX;
+  sample_pool_capacity = cap;
 
-  bank = file_open_multi(0);
-  bank >= 0 ? (
-    count = min(MAX_SAMPLES, max(0, file_multi_count(bank) | 0));
+  sample_meta_base = 0;
+  voice_base = sample_meta_base + sample_pool_capacity * SM_STRIDE;
+  recent_base = voice_base + MAX_VOICES * VC_STRIDE;
+  grain_hist_sid_base = recent_base + RECENT_LEN + 32;
+  grain_hist_pos_base = grain_hist_sid_base + MAX_VOICES * GRAIN_HIST_LEN;
+  grain_hist_phase_base = grain_hist_pos_base + MAX_VOICES * GRAIN_HIST_LEN;
+  sig_scratch_base = grain_hist_phase_base + MAX_VOICES * GRAIN_HIST_LEN + 32;
+  onset_raw_base = sig_scratch_base + SIG_PEEK_WORDS + 64;
+  onset_smooth_base = onset_raw_base + ONSET_SCRATCH_MAX;
 
-    i = 0;
-    while (i < count) (
-      load_one_selected_file(bank, i);
-      i += 1;
-    );
+  m2e_cc_age_base = onset_smooth_base + ONSET_SCRATCH_MAX + 32;
+  m2e_cc_val_base = m2e_cc_age_base + 128;
 
-    file_close(bank);
-  );
+  weight_ap1_l_base = m2e_cc_val_base + 128 + 64;
+  weight_ap1_r_base = weight_ap1_l_base + AP_BUF_LEN;
+  weight_ap2_l_base = weight_ap1_r_base + AP_BUF_LEN;
+  weight_ap2_r_base = weight_ap2_l_base + AP_BUF_LEN;
+  weight_er_l_base  = weight_ap2_r_base + AP_BUF_LEN;
+  weight_er_r_base  = weight_er_l_base + ER_BUF_LEN;
 
-  refresh_bank_stats();
-  seq_cursor = 0;
-  rescan_flash = 1;
-  freembuf(next_audio);
+  AUDIO_BASE  = weight_er_r_base + ER_BUF_LEN + 256;
+  MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
 );
 
-function compute_slot_signature() local(
-  bank count sig i ok istext nch sr avail peek_words got j v
+function load_bank() local(
+  selected loaded count i before_count
 )
 (
-  sig = -1;
-  bank = file_open_multi(0);
-  bank >= 0 ? (
-    count = max(0, file_multi_count(bank) | 0);
-    sig = 2166136261 + count * 131;
+  sample_pool_set_mode(bank_pool, SAMPLE_MODE_RESIDENT);
+  sample_pool_set_budget_mb(bank_pool, bank_budget_mb);
+  sample_pool_commit(bank_pool);
 
+  selected = max(0, sample_pool_selected(bank_pool) | 0);
+  loaded = max(0, sample_pool_loaded(bank_pool) | 0);
+  pool_state = sample_pool_state(bank_pool);
+  pool_ram_mb = sample_pool_ram_mb(bank_pool);
+
+  ((pool_state == SAMPLE_POOL_SCANNING || pool_state == SAMPLE_POOL_LOADING) && loaded <= 0 && sample_count > 0) ? (
+    // Keep the previous generation playable while the worker builds the next one.
+    bank_selected_count = selected;
+    rescan_pending = 1;
+  ) : (
+    configure_memory_layout(max(selected, loaded));
+    reset_bank_state();
+
+    bank_selected_count = selected;
+    bank_scan_count = loaded;
+    bank_pool_capacity = sample_pool_capacity;
+    bank_cap_limited = bank_selected_count > sample_pool_capacity ? 1 : 0;
+    bank_memory_limited = sample_pool_failed(bank_pool) > 0 ? 1 : 0;
+
+    count = min(sample_pool_capacity, loaded);
     i = 0;
     while (i < count) (
-      ok = file_multi_select(bank, i);
-      sig = sig * 1.000003 + ok * 17 + i * 19;
-      ok ? (
-        istext = file_text(bank);
-        sig = sig * 1.000003 + istext * 23;
-        !istext ? (
-          nch = 0;
-          sr = 0;
-          file_riff(bank, nch, sr);
-          avail = max(0, file_avail(bank) | 0);
-          sig = sig * 1.000003 + nch * 31 + sr * 0.017 + avail * 0.0019;
-
-          peek_words = min(SIG_PEEK_WORDS, avail);
-          peek_words > 0 ? (
-            got = max(0, file_mem(bank, sig_scratch_base, peek_words) | 0);
-            j = 0;
-            while (j < got) (
-              v = sig_scratch_base[j];
-              sig += abs(v) * (j + 1) * 0.173;
-              j += 1;
-            );
-          );
-        );
-      );
+      before_count = sample_count;
+      load_one_pool_sample(i);
+      sample_count == before_count ? bank_skipped_count += 1;
       i += 1;
     );
 
-    file_close(bank);
+    bank_skipped_count += max(0, selected - loaded);
+    refresh_bank_stats();
+    seq_cursor = 0;
+    rescan_flash = 1;
+    next_audio = AUDIO_BASE;
+    freembuf(AUDIO_BASE);
   );
+);
 
+function compute_slot_signature() local(sig)
+(
+  sample_pool_set_mode(bank_pool, SAMPLE_MODE_RESIDENT);
+  sample_pool_set_budget_mb(bank_pool, bank_budget_mb);
+  sample_pool_commit(bank_pool);
+
+  pool_state = sample_pool_state(bank_pool);
+  pool_ram_mb = sample_pool_ram_mb(bank_pool);
+  bank_selected_count = max(0, sample_pool_selected(bank_pool) | 0);
+
+  sig = sample_pool_generation(bank_pool);
+  sig += sample_pool_loaded(bank_pool) * 8191;
+  sig += sample_pool_failed(bank_pool) * 131;
+  sig += pool_state * 17;
   sig;
 );
 
@@ -1786,7 +1815,12 @@ function draw_tooltip_box() local(tw1 th1 tw2 th2 tw th pad bx by bw bh)
   );
 );
 
-MAX_SAMPLES = 64;
+// Sample metadata is capacity-driven. The old fixed 64-sample bank cap
+// made large multi-select banks appear loaded while only a small prefix was in
+// memory. Grow the pool to the selected-file count for normal banks.
+SAMPLE_POOL_MIN = 64;
+SAMPLE_POOL_HARD_MAX = 16384;
+MAX_SAMPLES = SAMPLE_POOL_HARD_MAX;
 MAX_VOICES  = 16;
 RECENT_LEN  = 8;
 ROOT_LOW    = 36;
@@ -1903,6 +1937,7 @@ MASK_S20 = 524288;
 MASK_S21 = 1048576;
 MASK_S22 = 2097152;
 MASK_S23 = 4194304;
+MASK_S24 = 8388608;
 
 M2E_LANE_COUNT = 35;
 M2E_BASE_FIXED = 20;
@@ -1911,28 +1946,27 @@ M2E_BASE_MAX   = M2E_BASE_FIXED;
 M2E_DETECT_MIN = 10;
 M2E_CHAN       = 0;
 
-sample_meta_base = 0;
-voice_base = sample_meta_base + MAX_SAMPLES * SM_STRIDE;
-recent_base = voice_base + MAX_VOICES * VC_STRIDE;
-grain_hist_sid_base = recent_base + RECENT_LEN + 32;
-grain_hist_pos_base = grain_hist_sid_base + MAX_VOICES * GRAIN_HIST_LEN;
-grain_hist_phase_base = grain_hist_pos_base + MAX_VOICES * GRAIN_HIST_LEN;
-sig_scratch_base = grain_hist_phase_base + MAX_VOICES * GRAIN_HIST_LEN + 32;
-onset_raw_base = sig_scratch_base + SIG_PEEK_WORDS + 64;
-onset_smooth_base = onset_raw_base + ONSET_SCRATCH_MAX;
 
-m2e_cc_age_base = onset_smooth_base + ONSET_SCRATCH_MAX + 32;
-m2e_cc_val_base = m2e_cc_age_base + 128;
 
-weight_ap1_l_base = m2e_cc_val_base + 128 + 64;
-weight_ap1_r_base = weight_ap1_l_base + AP_BUF_LEN;
-weight_ap2_l_base = weight_ap1_r_base + AP_BUF_LEN;
-weight_ap2_r_base = weight_ap2_l_base + AP_BUF_LEN;
-weight_er_l_base  = weight_ap2_r_base + AP_BUF_LEN;
-weight_er_r_base  = weight_er_l_base + ER_BUF_LEN;
+configure_memory_layout(SAMPLE_POOL_MIN);
 
-AUDIO_BASE  = weight_er_r_base + ER_BUF_LEN + 256;
-MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
+SAMPLE_MODE_RESIDENT = 0;
+SAMPLE_MODE_BUDGETED = 1;
+SAMPLE_MODE_LAZY = 2;
+SAMPLE_POOL_EMPTY = 0;
+SAMPLE_POOL_SCANNING = 1;
+SAMPLE_POOL_LOADING = 2;
+SAMPLE_POOL_READY = 3;
+SAMPLE_POOL_PARTIAL = 4;
+SAMPLE_POOL_FAILED = 5;
+
+bank_pool = sample_pool_from_slot(0, "main");
+bank_budget_mb = max(0, slider24);
+sample_pool_set_mode(bank_pool, SAMPLE_MODE_RESIDENT);
+sample_pool_set_budget_mb(bank_pool, bank_budget_mb);
+sample_pool_commit(bank_pool);
+pool_state = sample_pool_state(bank_pool);
+pool_ram_mb = 0;
 
 note_counter = 0;
 bank_loaded = 0;
@@ -2064,6 +2098,7 @@ hold_samps = max(0, floor(slider20 * srate * 0.001));
 mono_source = (slider21 | 0) ? 1 : 0;
 dynamics_amt = clamp01(slider22);
 onset_mode_target = clamp(slider23 | 0, 0, 1);
+bank_budget_mb = max(0, slider24);
 attack_coef = attack_samps <= 1 ? 1 : (1 - exp(-6.90775527898214 / attack_samps));
 decay_coef = decay_samps <= 1 ? 1 : (1 - exp(-6.90775527898214 / decay_samps));
 release_coef = release_samps <= 1 ? 0 : exp(-6.90775527898214 / release_samps);
@@ -2281,28 +2316,10 @@ while (i < MAX_VOICES) (
     ) : (
       ip = pos | 0;
       ip < (frames - 1) ? (
-        frac = pos - ip;
-        ip1 = ip + 1;
-        p0 = ptr + ip * nch;
-        p1 = ptr + ip1 * nch;
-
-        mono_source ? (
-          x0 = nch >= 2 ? 0.5 * (p0[0] + p0[1]) : p0[0];
-          x1 = nch >= 2 ? 0.5 * (p1[0] + p1[1]) : p1[0];
-          x = x0 + (x1 - x0) * frac;
-          rawL = x;
-          rawR = x;
-        ) : nch >= 2 ? (
-          rawL = p0[0] + (p1[0] - p0[0]) * frac;
-          rawR = p0[1] + (p1[1] - p0[1]) * frac;
-        ) : (
-          x = p0[0] + (p1[0] - p0[0]) * frac;
-          rawL = x;
-          rawR = x;
-        );
-
-        got_raw = 1;
-        direct_alive = 1;
+        got_raw = sample_frame2(ptr, nch, pos);
+        rawL = readL;
+        rawR = readR;
+        direct_alive = got_raw;
 
         play_rate = v[VC_RATE];
         voice_stretch = max(1, v[VC_STRETCH]);
@@ -2558,26 +2575,9 @@ while (i < MAX_VOICES) (
               srcp = gb[VG_SRC] + age * gb[VG_RATE];
 
               srcp < (gframes - 1) ? (
-                ip = srcp | 0;
-                frac = srcp - ip;
-                ip1 = ip + 1;
-                p0 = gptr + ip * gnch;
-                p1 = gptr + ip1 * gnch;
-
-                mono_source ? (
-                  gx0 = gnch >= 2 ? 0.5 * (p0[0] + p0[1]) : p0[0];
-                  gx1 = gnch >= 2 ? 0.5 * (p1[0] + p1[1]) : p1[0];
-                  gx = gx0 + (gx1 - gx0) * frac;
-                  gl = gx;
-                  gr = gx;
-                ) : gnch >= 2 ? (
-                  gl = p0[0] + (p1[0] - p0[0]) * frac;
-                  gr = p0[1] + (p1[1] - p0[1]) * frac;
-                ) : (
-                  gx = p0[0] + (p1[0] - p0[0]) * frac;
-                  gl = gx;
-                  gr = gx;
-                );
+                sample_frame2(gptr, gnch, srcp);
+                gl = readL;
+                gr = readR;
 
                 w = stretch_window(age, gsize) * gb[VG_GAIN];
                 sumL += gl * w;
@@ -2964,21 +2964,30 @@ gfx_drawstr("Auto-polls slot 0, rescans on change, bank-wide triggering.");
 lamp_x = gfx_w - 180;
 lamp_y = y0 + 16;
 status_on = bank_loaded ? 1 : 0;
-gfx_r = status_on ? 0.28 : 0.18;
-gfx_g = status_on ? 0.80 : 0.20;
-gfx_b = status_on ? 0.44 : 0.20;
+bank_partial = bank_loaded && bank_selected_count > 0 && sample_count < bank_selected_count;
+gfx_r = bank_partial ? 0.90 : (status_on ? 0.28 : 0.18);
+gfx_g = bank_partial ? 0.66 : (status_on ? 0.80 : 0.20);
+gfx_b = bank_partial ? 0.22 : (status_on ? 0.44 : 0.20);
 gfx_a = 1;
 gfx_circle(lamp_x, lamp_y + 12, 8, 1);
 gfx_r = 0.85; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 gfx_x = lamp_x + 16; gfx_y = lamp_y + 2;
-bank_loaded ? sprintf(#ui_buf, "Bank ready") : sprintf(#ui_buf, "No bank");
+bank_partial ? sprintf(#ui_buf, "Bank partial") : (bank_loaded ? sprintf(#ui_buf, "Bank ready") : sprintf(#ui_buf, "No bank"));
 gfx_drawstr(#ui_buf);
 
 gfx_r = 0.72; gfx_g = 0.77; gfx_b = 0.84; gfx_a = 1;
 gfx_x = gfx_w - 180; gfx_y = y0 + 36;
-rescan_pending ? (
-  rescan_force ? sprintf(#ui_buf, "Rescan now") : sprintf(#ui_buf, "Rescan queued")
-) : sprintf(#ui_buf, "Auto-rescan live");
+bank_partial ? (
+  bank_memory_limited ? sprintf(#ui_buf, "Loaded %d/%d | %.0f MB", sample_count, bank_selected_count, pool_ram_mb) : (
+    bank_cap_limited ? sprintf(#ui_buf, "Loaded %d/%d | pool max %d", sample_count, bank_selected_count, sample_pool_capacity) : sprintf(#ui_buf, "Loaded %d/%d | %.0f MB", sample_count, bank_selected_count, pool_ram_mb)
+  )
+) : (
+  bank_loaded ? sprintf(#ui_buf, "Loaded %d/%d | %.0f MB", sample_count, max(bank_selected_count, sample_count), pool_ram_mb) : (
+    rescan_pending ? (
+      rescan_force ? sprintf(#ui_buf, "Rescan now") : sprintf(#ui_buf, "Rescan queued")
+    ) : sprintf(#ui_buf, "Auto-rescan live")
+  )
+);
 gfx_drawstr(#ui_buf);
 
 m2e_lamp_x = gfx_w - 332;
@@ -3056,8 +3065,8 @@ gfx_x = left_x + 14; gfx_y = left_y + 12;
 gfx_drawstr("Bank overview");
 
 gfx_setfont(1, "Arial", 14, 0);
-sprintf(#ui_buf, "%d samples loaded", sample_count);
-gfx_x = left_x + 14; gfx_y = left_y + 42; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88;
+bank_selected_count > 0 && sample_count < bank_selected_count ? sprintf(#ui_buf, "%d/%d samples loaded", sample_count, bank_selected_count) : sprintf(#ui_buf, "%d samples loaded", sample_count);
+gfx_x = left_x + 14; gfx_y = left_y + 42; gfx_r = bank_partial ? 0.95 : 0.70; gfx_g = bank_partial ? 0.76 : 0.78; gfx_b = bank_partial ? 0.42 : 0.88;
 gfx_drawstr(#ui_buf);
 
 sprintf(#ui_buf, "%d voices active", count_active_voices());
@@ -3443,7 +3452,7 @@ ui_hover_id == 1001 ? (
 );
 ui_hover_id == 1002 ? (
   sprintf(#tip_title, "Auto-rescan status");
-  sprintf(#tip_body, "Green means a bank is loaded. The text below shows whether a rescan is live or queued.");
+  sprintf(#tip_body, "Green means fully loaded; amber means the selected file list is larger than the in-memory bank, usually from the memory cap or the max-sample cap.");
 );
 ui_hover_id == 1003 ? (
   sprintf(#tip_title, "FluxBridge M2E");
@@ -3451,7 +3460,7 @@ ui_hover_id == 1003 ? (
 );
 ui_hover_id == 1100 ? (
   sprintf(#tip_title, "Bank status");
-  sprintf(#tip_body, "Shows whether slot 0 is loaded, how many samples are in memory, how many voices are active, and which sample was triggered last.");
+  sprintf(#tip_body, "Shows loaded/selected sample count. If this reads 5/121, the file slot has 121 files selected but only 5 fit or passed validation into memory.");
 );
 ui_hover_id == 1101 ? (
   sprintf(#tip_title, "Pitch confidence");

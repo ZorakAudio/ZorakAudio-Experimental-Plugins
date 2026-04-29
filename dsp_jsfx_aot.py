@@ -1324,10 +1324,30 @@ COMM_BLOCK_FUNCTIONS: Set[str] = {
     "msg_peer_count", "msg_peer_id", "msg_peer_name", "msg_peer_uid", "msg_peer_caps", "msg_peer_alive",
 }
 COMM_MISC_FUNCTIONS: Set[str] = {"instance_id", "instance_uid", "instance_get_name"}
-COMM_IMPURE_FUNCTIONS: Set[str] = COMM_SETUP_FUNCTIONS | COMM_BLOCK_FUNCTIONS | COMM_MISC_FUNCTIONS | GMEM_SETUP_FUNCTIONS | GMEM_BULK_FUNCTIONS | GMEM_QUERY_FUNCTIONS
+
+SAMPLE_POOL_SETUP_FUNCTIONS: Set[str] = {
+    "sample_pool_from_slot", "sample_pool_set_mode", "sample_pool_set_budget_mb", "sample_pool_commit",
+}
+SAMPLE_POOL_QUERY_FUNCTIONS: Set[str] = {
+    "sample_pool_state", "sample_pool_selected", "sample_pool_loaded", "sample_pool_failed",
+    "sample_pool_ram_mb", "sample_pool_generation", "sample_get", "sample_len",
+    "sample_channels", "sample_srate", "sample_peak", "sample_rms", "sample_preview_bins",
+}
+SAMPLE_POOL_READ_FUNCTIONS: Set[str] = {
+    "sample_read", "sample_read_interp", "sample_read2", "sample_read2_interp",
+    "sample_preview_read", "sample_name",
+}
+SAMPLE_POOL_EXPORT_FUNCTIONS: Set[str] = {"sample_export_mem", "sample_export_mem2"}
+SAMPLE_POOL_FUNCTIONS: Set[str] = SAMPLE_POOL_SETUP_FUNCTIONS | SAMPLE_POOL_QUERY_FUNCTIONS | SAMPLE_POOL_READ_FUNCTIONS | SAMPLE_POOL_EXPORT_FUNCTIONS
+LEGACY_FILE_FUNCTIONS: Set[str] = {
+    "file_open", "file_open_multi", "file_close", "file_rewind", "file_seek", "file_avail",
+    "file_text", "file_riff", "file_var", "file_mem", "file_multi_count", "file_multi_select",
+}
+COMM_IMPURE_FUNCTIONS: Set[str] = COMM_SETUP_FUNCTIONS | COMM_BLOCK_FUNCTIONS | COMM_MISC_FUNCTIONS | GMEM_SETUP_FUNCTIONS | GMEM_BULK_FUNCTIONS | GMEM_QUERY_FUNCTIONS | SAMPLE_POOL_SETUP_FUNCTIONS | SAMPLE_POOL_EXPORT_FUNCTIONS
 COMM_SEND_FUNCTIONS: Set[str] = {"msg_send", "msg_sendto", "msg_send_buf", "msg_sendto_buf"}
 COMM_RECV_FUNCTIONS: Set[str] = {"msg_recv", "msg_recv_buf"}
 COMM_DISCOVERY_FUNCTIONS: Set[str] = {"msg_peer_count", "msg_peer_id", "msg_peer_name", "msg_peer_uid", "msg_peer_caps", "msg_peer_alive"}
+
 
 
 def detect_comm_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Dict[str, Any]:
@@ -1407,6 +1427,67 @@ def detect_comm_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, Functi
     }
 
 
+def detect_sample_pool_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Dict[str, Any]:
+    uses_sample_pool = False
+    uses_export_mem = False
+    uses_raw_sample_read = False
+    uses_legacy_file_io = False
+
+    def rec(n: Node) -> None:
+        nonlocal uses_sample_pool, uses_export_mem, uses_raw_sample_read, uses_legacy_file_io
+        if isinstance(n, (Num, StrLit, Var)):
+            return
+        if isinstance(n, Index):
+            rec(n.base); rec(n.index); return
+        if isinstance(n, Unary):
+            rec(n.a); return
+        if isinstance(n, Binary):
+            rec(n.l); rec(n.r); return
+        if isinstance(n, Assign):
+            rec(n.target); rec(n.value); return
+        if isinstance(n, Call):
+            fn = n.fn
+            if fn in SAMPLE_POOL_FUNCTIONS:
+                uses_sample_pool = True
+            if fn in SAMPLE_POOL_EXPORT_FUNCTIONS:
+                uses_export_mem = True
+            if fn in {"sample_read", "sample_read_interp", "sample_read2", "sample_read2_interp"}:
+                uses_raw_sample_read = True
+            if fn in LEGACY_FILE_FUNCTIONS:
+                uses_legacy_file_io = True
+            for a in n.args:
+                rec(a)
+            return
+        if isinstance(n, Loop):
+            rec(n.count); rec(n.body); return
+        if isinstance(n, Ternary):
+            rec(n.cond); rec(n.then); rec(n.els); return
+        if isinstance(n, Seq):
+            for it in n.items: rec(it)
+            return
+        if isinstance(n, If):
+            rec(n.cond); rec(n.then)
+            if n.els: rec(n.els)
+            return
+        if isinstance(n, While):
+            rec(n.cond); rec(n.body); return
+        if isinstance(n, FunctionDef):
+            rec(n.body); return
+
+    for prog in programs.values():
+        for st in prog:
+            rec(st)
+    for f in fn_defs.values():
+        rec(f.body)
+
+    return {
+        "uses_sample_pool": uses_sample_pool,
+        "uses_raw_sample_read": uses_raw_sample_read,
+        "uses_export_mem": uses_export_mem,
+        "uses_legacy_file_io": uses_legacy_file_io,
+    }
+
+
 def validate_builtin_sections(programs: Dict[str, List[Node]]) -> None:
     block_only = {
         "msg_send", "msg_sendto", "msg_recv",
@@ -1414,12 +1495,14 @@ def validate_builtin_sections(programs: Dict[str, List[Node]]) -> None:
         "msg_avail", "msg_kind", "msg_length", "msg_dropped", "msg_clear",
         "msg_peer_count", "msg_peer_id", "msg_peer_name", "msg_peer_uid", "msg_peer_caps", "msg_peer_alive",
         "gmem_get", "gmem_put", "gmem_fill", "gmem_zero", "gmem_copy",
+        "sample_export_mem", "sample_export_mem2",
     }
     # Bus/string-slider setup calls are intentionally valid from @slider so a
     # per-instance text slider can rebind message/gmem endpoints without forcing
     # users to reopen the plugin. Operational message traffic remains @block-only.
-    init_slider_block_setup = {"comm_join", "msg_subscribe", "msg_unsubscribe", "msg_advertise", "instance_set_name", "instance_get_name", "instance_uid", "gmem_attach", "gmem_attach_size"}
+    init_slider_block_setup = {"comm_join", "msg_subscribe", "msg_unsubscribe", "msg_advertise", "instance_set_name", "instance_get_name", "instance_uid", "gmem_attach", "gmem_attach_size"} | SAMPLE_POOL_SETUP_FUNCTIONS
     init_slider_block = {"instance_id"}
+    sample_pool_runtime = SAMPLE_POOL_QUERY_FUNCTIONS | SAMPLE_POOL_READ_FUNCTIONS
 
     def fail(node: Node, message: str) -> None:
         raise SyntaxError(f"{message} at {node.span.line}:{node.span.col}")
@@ -1443,6 +1526,8 @@ def validate_builtin_sections(programs: Dict[str, List[Node]]) -> None:
                 fail(n, f"{fn}() is only valid in @init, @slider, or @block")
             if fn in init_slider_block and section not in ("init", "slider", "block"):
                 fail(n, f"{fn}() is only valid in @init, @slider, or @block")
+            if fn in sample_pool_runtime and section not in ("init", "slider", "block", "sample"):
+                fail(n, f"{fn}() is only valid in @init, @slider, @block, or @sample")
             for a in n.args:
                 rec(section, a)
             return
@@ -2207,6 +2292,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
     io_channels = infer_spl_io(programs, fn_defs, pin_hints=pin_hints)
     midi_caps = detect_midi_usage(programs, fn_defs)
     comm_caps = detect_comm_usage(programs, fn_defs)
+    sample_pool_caps = detect_sample_pool_usage(programs, fn_defs)
 
     sym = SymTable(user_vars)
 
@@ -2244,6 +2330,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
         "pin_hints": pin_hints,
         "midi": midi_caps,
         "comm": comm_caps,
+        "sample_pool": sample_pool_caps,
         "plugin_kind": plugin_kind,
         "string_literals": emitter.get_string_literals_meta(),
         "has_sample_section": has_sample_work,
@@ -2397,6 +2484,26 @@ def _summarize_loop_mutations(node: Node, user_fn_names: Set[str]) -> _LoopMutat
             if fn == "msg_recv_buf":
                 for a in n.args[1:3]:
                     _note_mutated_lvalue(a, out)
+                out.writes_mem = True
+                out.writes_unknown_state = True
+                return
+
+            if fn in ("sample_read2", "sample_read2_interp"):
+                for a in n.args[3:5]:
+                    _note_mutated_lvalue(a, out)
+                return
+
+            if fn == "sample_preview_read":
+                for a in n.args[3:6]:
+                    _note_mutated_lvalue(a, out)
+                return
+
+            if fn == "sample_name" and len(n.args) >= 3:
+                _note_mutated_lvalue(n.args[2], out)
+                out.writes_unknown_state = True
+                return
+
+            if fn in SAMPLE_POOL_EXPORT_FUNCTIONS:
                 out.writes_mem = True
                 out.writes_unknown_state = True
                 return
@@ -2802,6 +2909,31 @@ def _collect_section_rw(node: Node, user_fn_names: Set[str], out: _SectionRWInfo
             for a in node.args[1:3]:
                 _collect_section_lvalue_rw(a, user_fn_names, out)
             for a in node.args[3:]:
+                _collect_section_rw(a, user_fn_names, out)
+            out.writes_mem = True
+            out.writes_unknown_state = True
+            return
+        if fn in ("sample_read2", "sample_read2_interp"):
+            for a in node.args[:3]:
+                _collect_section_rw(a, user_fn_names, out)
+            for a in node.args[3:5]:
+                _collect_section_lvalue_rw(a, user_fn_names, out)
+            return
+        if fn == "sample_preview_read":
+            for a in node.args[:3]:
+                _collect_section_rw(a, user_fn_names, out)
+            for a in node.args[3:6]:
+                _collect_section_lvalue_rw(a, user_fn_names, out)
+            return
+        if fn == "sample_name":
+            for a in node.args[:2]:
+                _collect_section_rw(a, user_fn_names, out)
+            if len(node.args) >= 3:
+                _collect_section_lvalue_rw(node.args[2], user_fn_names, out)
+            out.writes_unknown_state = True
+            return
+        if fn in SAMPLE_POOL_EXPORT_FUNCTIONS:
+            for a in node.args:
                 _collect_section_rw(a, user_fn_names, out)
             out.writes_mem = True
             out.writes_unknown_state = True
@@ -4645,6 +4777,109 @@ class LLVMModuleEmitter:
                 return self._const_f64(float(self.jsfx_memtop_slots))
 
             # ------------------------------------------------------------
+            # Runtime sample-pool API: large-bank float32 storage outside mem[].
+            # ------------------------------------------------------------
+            if fn in SAMPLE_POOL_FUNCTIONS:
+                def get_decl(name, arg_count, returns_ptr=False):
+                    fdecl = self._buildins.get(name)
+                    if fdecl is None:
+                        fnty = ir.FunctionType(self.double, [self.state_ptr] + [self.double] * arg_count)
+                        fdecl = ir.Function(self.module, fnty, name=name)
+                        self._buildins[name] = fdecl
+                    return fdecl
+
+                if fn == "sample_pool_from_slot":
+                    if len(n.args) != 2:
+                        raise ValueError("sample_pool_from_slot expects 2 args")
+                    fdecl = get_decl("jsfx_sample_pool_from_slot", 2)
+                    return builder.call(fdecl, [st, self.emit_expr(builder, st, n.args[0]), self.emit_expr(builder, st, n.args[1])])
+
+                if fn in ("sample_pool_set_mode", "sample_pool_set_budget_mb"):
+                    if len(n.args) != 2:
+                        raise ValueError(f"{fn} expects 2 args")
+                    rt_name = "jsfx_" + fn
+                    fdecl = get_decl(rt_name, 2)
+                    return builder.call(fdecl, [st, self.emit_expr(builder, st, n.args[0]), self.emit_expr(builder, st, n.args[1])])
+
+                if fn in ("sample_pool_commit", "sample_pool_state", "sample_pool_selected", "sample_pool_loaded", "sample_pool_failed", "sample_pool_ram_mb", "sample_pool_generation"):
+                    if len(n.args) != 1:
+                        raise ValueError(f"{fn} expects 1 arg")
+                    rt_name = "jsfx_" + fn
+                    fdecl = get_decl(rt_name, 1)
+                    return builder.call(fdecl, [st, self.emit_expr(builder, st, n.args[0])])
+
+                if fn == "sample_get":
+                    if len(n.args) != 2:
+                        raise ValueError("sample_get expects 2 args")
+                    fdecl = get_decl("jsfx_sample_get", 2)
+                    return builder.call(fdecl, [st, self.emit_expr(builder, st, n.args[0]), self.emit_expr(builder, st, n.args[1])])
+
+                if fn in ("sample_len", "sample_channels", "sample_srate", "sample_peak", "sample_rms", "sample_preview_bins"):
+                    if len(n.args) != 2:
+                        raise ValueError(f"{fn} expects 2 args")
+                    rt_name = "jsfx_" + fn
+                    fdecl = get_decl(rt_name, 2)
+                    return builder.call(fdecl, [st, self.emit_expr(builder, st, n.args[0]), self.emit_expr(builder, st, n.args[1])])
+
+                if fn in ("sample_read", "sample_read_interp"):
+                    if len(n.args) != 4:
+                        raise ValueError(f"{fn} expects 4 args")
+                    rt_name = "jsfx_" + fn
+                    fdecl = get_decl(rt_name, 4)
+                    return builder.call(fdecl, [st] + [self.emit_expr(builder, st, a) for a in n.args])
+
+                if fn in ("sample_read2", "sample_read2_interp"):
+                    if len(n.args) != 5:
+                        raise ValueError(f"{fn} expects 5 args")
+                    rt_name = "jsfx_" + fn
+                    fdecl = self._buildins.get(rt_name)
+                    if fdecl is None:
+                        fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double, self.double.as_pointer(), self.double.as_pointer()])
+                        fdecl = ir.Function(self.module, fnty, name=rt_name)
+                        self._buildins[rt_name] = fdecl
+                    pool = self.emit_expr(builder, st, n.args[0])
+                    sid = self.emit_expr(builder, st, n.args[1])
+                    phase = self.emit_expr(builder, st, n.args[2])
+                    out_l = self._get_out_lvalue_ptr(builder, st, n.args[3], fn)
+                    out_r = self._get_out_lvalue_ptr(builder, st, n.args[4], fn)
+                    return builder.call(fdecl, [st, pool, sid, phase, out_l, out_r])
+
+                if fn == "sample_name":
+                    if len(n.args) != 3:
+                        raise ValueError("sample_name expects 3 args")
+                    rt_name = "jsfx_sample_name"
+                    fdecl = self._buildins.get(rt_name)
+                    if fdecl is None:
+                        fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double.as_pointer()])
+                        fdecl = ir.Function(self.module, fnty, name=rt_name)
+                        self._buildins[rt_name] = fdecl
+                    return builder.call(fdecl, [st, self.emit_expr(builder, st, n.args[0]), self.emit_expr(builder, st, n.args[1]), self._get_out_lvalue_ptr(builder, st, n.args[2], fn)])
+
+                if fn == "sample_preview_read":
+                    if len(n.args) != 6:
+                        raise ValueError("sample_preview_read expects 6 args")
+                    rt_name = "jsfx_sample_preview_read"
+                    fdecl = self._buildins.get(rt_name)
+                    if fdecl is None:
+                        fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double, self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer()])
+                        fdecl = ir.Function(self.module, fnty, name=rt_name)
+                        self._buildins[rt_name] = fdecl
+                    return builder.call(fdecl, [st,
+                                                self.emit_expr(builder, st, n.args[0]),
+                                                self.emit_expr(builder, st, n.args[1]),
+                                                self.emit_expr(builder, st, n.args[2]),
+                                                self._get_out_lvalue_ptr(builder, st, n.args[3], fn),
+                                                self._get_out_lvalue_ptr(builder, st, n.args[4], fn),
+                                                self._get_out_lvalue_ptr(builder, st, n.args[5], fn)])
+
+                if fn in ("sample_export_mem", "sample_export_mem2"):
+                    if len(n.args) != 5:
+                        raise ValueError(f"{fn} expects 5 args")
+                    rt_name = "jsfx_" + fn
+                    fdecl = get_decl(rt_name, 5)
+                    return builder.call(fdecl, [st] + [self.emit_expr(builder, st, a) for a in n.args])
+
+            # ------------------------------------------------------------
             # File I/O (DSP-JSFX runtime)
             #
             # REAPER JSFX provides file_*() APIs. In DSP-JSFX we keep the API
@@ -5570,6 +5805,11 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     uses_gmem = 1 if comm_meta.get("uses_gmem") else 0
     uses_msg = 1 if comm_meta.get("uses_msg") else 0
     uses_msg_buffers = 1 if comm_meta.get("uses_msg_buffers") else 0
+    sample_pool_meta: Dict[str, Any] = dict(meta.get("sample_pool", {}) or {})
+    uses_sample_pool = 1 if sample_pool_meta.get("uses_sample_pool") else 0
+    uses_raw_sample_read = 1 if sample_pool_meta.get("uses_raw_sample_read") else 0
+    uses_sample_export_mem = 1 if sample_pool_meta.get("uses_export_mem") else 0
+    uses_legacy_file_io = 1 if sample_pool_meta.get("uses_legacy_file_io") else 0
 
     in_ch = max(0, min(64, in_ch))
     out_ch = max(0, min(64, out_ch))
@@ -5592,7 +5832,12 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append(f"#define DSPJSFX_USES_GMEM {uses_gmem}")
     lines.append(f"#define DSPJSFX_USES_MSG {uses_msg}")
     lines.append(f"#define DSPJSFX_USES_MSG_BUFFERS {uses_msg_buffers}")
+    lines.append(f"#define DSPJSFX_USES_SAMPLE_POOL {uses_sample_pool}")
+    lines.append(f"#define DSPJSFX_USES_RAW_SAMPLE_READ {uses_raw_sample_read}")
+    lines.append(f"#define DSPJSFX_USES_SAMPLE_EXPORT_MEM {uses_sample_export_mem}")
+    lines.append(f"#define DSPJSFX_USES_LEGACY_FILE_IO {uses_legacy_file_io}")
     lines.append("#define DSPJSFX_COMM_API_VERSION 1")
+    lines.append("#define DSPJSFX_SAMPLE_POOL_API_VERSION 1")
     lines.append(f"#define DSPJSFX_ACCEPTS_MIDI_INPUT {accepts_midi_input}")
     lines.append(f"#define DSPJSFX_PRODUCES_MIDI_OUTPUT {produces_midi_output}")
     lines.append(f"#define DSPJSFX_HAS_SAMPLE_SECTION {1 if meta.get('has_sample_section', False) else 0}")
@@ -5777,6 +6022,31 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("int jsfx_msg_peer_uid(DSPJSFX_State* st, double peerId, double* outStr);")
     lines.append("double jsfx_msg_peer_caps(DSPJSFX_State* st, double peerId);")
     lines.append("double jsfx_msg_peer_alive(DSPJSFX_State* st, double peerId);")
+    lines.append("double jsfx_sample_pool_from_slot(DSPJSFX_State* st, double slot, double nameHandle);")
+    lines.append("double jsfx_sample_pool_set_mode(DSPJSFX_State* st, double pool, double mode);")
+    lines.append("double jsfx_sample_pool_set_budget_mb(DSPJSFX_State* st, double pool, double mb);")
+    lines.append("double jsfx_sample_pool_commit(DSPJSFX_State* st, double pool);")
+    lines.append("double jsfx_sample_pool_state(DSPJSFX_State* st, double pool);")
+    lines.append("double jsfx_sample_pool_selected(DSPJSFX_State* st, double pool);")
+    lines.append("double jsfx_sample_pool_loaded(DSPJSFX_State* st, double pool);")
+    lines.append("double jsfx_sample_pool_failed(DSPJSFX_State* st, double pool);")
+    lines.append("double jsfx_sample_pool_ram_mb(DSPJSFX_State* st, double pool);")
+    lines.append("double jsfx_sample_pool_generation(DSPJSFX_State* st, double pool);")
+    lines.append("double jsfx_sample_get(DSPJSFX_State* st, double pool, double index);")
+    lines.append("double jsfx_sample_len(DSPJSFX_State* st, double pool, double sampleId);")
+    lines.append("double jsfx_sample_channels(DSPJSFX_State* st, double pool, double sampleId);")
+    lines.append("double jsfx_sample_srate(DSPJSFX_State* st, double pool, double sampleId);")
+    lines.append("double jsfx_sample_peak(DSPJSFX_State* st, double pool, double sampleId);")
+    lines.append("double jsfx_sample_rms(DSPJSFX_State* st, double pool, double sampleId);")
+    lines.append("double jsfx_sample_name(DSPJSFX_State* st, double pool, double sampleId, double* outStr);")
+    lines.append("double jsfx_sample_read(DSPJSFX_State* st, double pool, double sampleId, double channel, double frame);")
+    lines.append("double jsfx_sample_read_interp(DSPJSFX_State* st, double pool, double sampleId, double channel, double phase);")
+    lines.append("double jsfx_sample_read2(DSPJSFX_State* st, double pool, double sampleId, double phase, double* outL, double* outR);")
+    lines.append("double jsfx_sample_read2_interp(DSPJSFX_State* st, double pool, double sampleId, double phase, double* outL, double* outR);")
+    lines.append("double jsfx_sample_preview_bins(DSPJSFX_State* st, double pool, double sampleId);")
+    lines.append("double jsfx_sample_preview_read(DSPJSFX_State* st, double pool, double sampleId, double bin, double* minValue, double* maxValue, double* rmsValue);")
+    lines.append("double jsfx_sample_export_mem(DSPJSFX_State* st, double pool, double sampleId, double dstBase, double srcFrame, double frameCount);")
+    lines.append("double jsfx_sample_export_mem2(DSPJSFX_State* st, double pool, double sampleId, double dstBase, double srcFrame, double frameCount);")
     lines.append("")
     lines.append("#ifdef __cplusplus")
     lines.append("}")

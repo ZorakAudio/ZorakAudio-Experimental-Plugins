@@ -1,0 +1,45 @@
+desc:DSP-JSFX Sample Pool Probe
+filename:0,sample.wav
+
+slider1:0<0,65536,256>RAM Budget (MB, 0=unlimited)
+
+@init
+SAMPLE_MODE_RESIDENT = 0;
+pool = sample_pool_from_slot(0, "probe");
+sample_pool_set_mode(pool, SAMPLE_MODE_RESIDENT);
+sample_pool_set_budget_mb(pool, slider1);
+sample_pool_commit(pool);
+phase = 0;
+last_l = 0;
+last_r = 0;
+
+@slider
+sample_pool_set_budget_mb(pool, slider1);
+sample_pool_commit(pool);
+
+@block
+state = sample_pool_state(pool);
+selected = sample_pool_selected(pool);
+loaded = sample_pool_loaded(pool);
+failed = sample_pool_failed(pool);
+ram = sample_pool_ram_mb(pool);
+id = sample_get(pool, 0);
+frames = sample_len(pool, id);
+chans = sample_channels(pool, id);
+
+@sample
+id > 0 && frames > 1 ? (
+  sample_read2_interp(pool, id, phase, last_l, last_r);
+  phase += 1;
+  phase >= frames ? phase = 0;
+);
+spl0 = last_l * 0.1;
+spl1 = last_r * 0.1;
+
+@gfx 420 160
+gfx_clear = 0;
+gfx_set(0.9,0.9,0.9,1);
+gfx_x = 12; gfx_y = 12; gfx_drawstr("Sample Pool Probe");
+gfx_x = 12; gfx_y = 38; gfx_drawstr("selected "); gfx_drawnumber(selected,0); gfx_drawstr(" loaded "); gfx_drawnumber(loaded,0); gfx_drawstr(" failed "); gfx_drawnumber(failed,0);
+gfx_x = 12; gfx_y = 62; gfx_drawstr("state "); gfx_drawnumber(state,0); gfx_drawstr(" ram MB "); gfx_drawnumber(ram,1);
+gfx_x = 12; gfx_y = 86; gfx_drawstr("first id "); gfx_drawnumber(id,0); gfx_drawstr(" frames "); gfx_drawnumber(frames,0); gfx_drawstr(" ch "); gfx_drawnumber(chans,0);

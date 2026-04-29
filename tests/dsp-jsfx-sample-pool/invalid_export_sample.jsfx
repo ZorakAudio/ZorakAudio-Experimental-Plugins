@@ -1,0 +1,7 @@
+desc:Invalid Sample Export
+filename:0,sample.wav
+@init
+pool = sample_pool_from_slot(0,"bad");
+id = 0;
+@sample
+sample_export_mem(pool, id, 0, 0, 128);

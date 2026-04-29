@@ -177,6 +177,7 @@ else()
       "${ZA_ROOT}/src/DspJsfxRuntimeBuiltins.cpp"
       "${ZA_ROOT}/src/DspJsfxMessageBus.cpp"
       "${ZA_ROOT}/src/DspJsfxGmem.cpp"
+      "${ZA_ROOT}/src/DspJsfxSamplePool.cpp"
       "${ZA_ROOT}/src/DspJsfxSharedMemory.cpp"
       "${PLUGIN_JSFX_OBJ}"
   )
