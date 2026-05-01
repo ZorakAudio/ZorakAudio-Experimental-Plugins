@@ -30,6 +30,7 @@ slider21:0<0,1,1{stereo,mono}>--Mono Source
 slider22:0<0,1,0.001>--Dynamics
 slider23:0<0,1,1{classic,gaussian}>--Onset align mode
 slider24:0<0,65536,256>--Bank RAM Budget (MB, 0=unlimited)
+slider25:0<0,1,0.001>--Clean
 @init
 /*
 Runtime sample-pool API used here:
@@ -995,6 +996,111 @@ function reset_weight_buffers() local(i)
   );
 );
 
+function reset_clean_buffers() local(i)
+(
+  clean_lp1_l = 0;
+  clean_lp2_l = 0;
+  clean_lp3_l = 0;
+  clean_lp4_l = 0;
+  clean_lp1_r = 0;
+  clean_lp2_r = 0;
+  clean_lp3_r = 0;
+  clean_lp4_r = 0;
+  clean_head_bus = 0;
+  clean_tail_bus = 0;
+
+  i = 0;
+  while (i < CLEAN_BANDS) (
+    clean_env_base[i] = 0;
+    clean_floor_base[i] = 0;
+    clean_gain_base[i] = 1;
+    i += 1;
+  );
+);
+
+function clean_update_gain(idx det amount bias) local(env floorv thresh under tgt g amt upc)
+(
+  env = clean_env_base[idx];
+  env += (det - env) * (det > env ? clean_env_att_coeff : clean_env_rel_coeff);
+  clean_env_base[idx] = env;
+
+  floorv = clean_floor_base[idx];
+  floorv += (det - floorv) * (det > floorv ? clean_floor_up_coeff : clean_floor_down_coeff);
+  floorv = min(floorv, env * 0.62 + 0.00000003);
+  floorv = max(0, floorv);
+  clean_floor_base[idx] = floorv;
+
+  thresh = floorv * clean_thresh_floor + env * clean_thresh_env + clean_abs_floor;
+  under = clamp(det / max(thresh, 0.000000001), 0, 1);
+  tgt = det < thresh ? max(clean_min_gain, under ^ clean_expand_pow) : 1;
+
+  amt = clamp01(amount * bias);
+  tgt = lerp(1, tgt, amt);
+
+  g = clean_gain_base[idx];
+  upc = amount < 0.02 ? clean_gain_protect_coeff : clean_gain_up_coeff;
+  g += (tgt - g) * (tgt < g ? clean_gain_down_coeff : upc);
+  g = clamp(g, clean_min_gain, 1);
+  clean_gain_base[idx] = g;
+  g;
+);
+
+function apply_cleaner() local(
+  inL inR
+  b0l b1l b2l b3l b4l b0r b1r b2r b3r b4r
+  d0 d1 d2 d3 d4
+  protect amount
+  g0 g1 g2 g3 g4
+)
+(
+  // ERB-ish detector/control split: low, low-mid, presence, air, top-noise.
+  // The bands sum back to the original signal when all gains are 1.
+  inL = outL;
+  inR = outR;
+
+  clean_lp1_l += (inL - clean_lp1_l) * clean_lp_c1;
+  clean_lp2_l += (inL - clean_lp2_l) * clean_lp_c2;
+  clean_lp3_l += (inL - clean_lp3_l) * clean_lp_c3;
+  clean_lp4_l += (inL - clean_lp4_l) * clean_lp_c4;
+
+  clean_lp1_r += (inR - clean_lp1_r) * clean_lp_c1;
+  clean_lp2_r += (inR - clean_lp2_r) * clean_lp_c2;
+  clean_lp3_r += (inR - clean_lp3_r) * clean_lp_c3;
+  clean_lp4_r += (inR - clean_lp4_r) * clean_lp_c4;
+
+  b0l = clean_lp1_l;
+  b1l = clean_lp2_l - clean_lp1_l;
+  b2l = clean_lp3_l - clean_lp2_l;
+  b3l = clean_lp4_l - clean_lp3_l;
+  b4l = inL - clean_lp4_l;
+
+  b0r = clean_lp1_r;
+  b1r = clean_lp2_r - clean_lp1_r;
+  b2r = clean_lp3_r - clean_lp2_r;
+  b3r = clean_lp4_r - clean_lp3_r;
+  b4r = inR - clean_lp4_r;
+
+  d0 = max(abs(b0l), abs(b0r)) * 0.62 + abs(0.5 * (b0l + b0r)) * 0.38;
+  d1 = max(abs(b1l), abs(b1r)) * 0.62 + abs(0.5 * (b1l + b1r)) * 0.38;
+  d2 = max(abs(b2l), abs(b2r)) * 0.62 + abs(0.5 * (b2l + b2r)) * 0.38;
+  d3 = max(abs(b3l), abs(b3r)) * 0.62 + abs(0.5 * (b3l + b3r)) * 0.38;
+  d4 = max(abs(b4l), abs(b4r)) * 0.62 + abs(0.5 * (b4l + b4r)) * 0.38;
+
+  protect = clamp01(transient_guard_s * (0.86 + 0.14 * trans_mode_mix) + clean_head_bus * 0.90);
+  amount = clamp01(clean_amt * (1 - protect));
+  amount = clamp01(amount * (1 + clean_tail_bus * 0.35));
+
+  g0 = clean_update_gain(0, d0, amount, 0.32);
+  g1 = clean_update_gain(1, d1, amount, 0.66);
+  g2 = clean_update_gain(2, d2, amount, 0.98);
+  g3 = clean_update_gain(3, d3, amount, 1.16);
+  g4 = clean_update_gain(4, d4, amount, 1.28);
+
+  clean_amt > 0.0001 ? (
+    outL = b0l * g0 + b1l * g1 + b2l * g2 + b3l * g3 + b4l * g4;
+    outR = b0r * g0 + b1r * g1 + b2r * g2 + b3r * g3 + b4r * g4;
+  );
+);
 
 function reset_bank_state() local(i)
 (
@@ -1020,6 +1126,7 @@ function reset_bank_state() local(i)
   reset_grain_histories();
   reset_voices();
   reset_weight_buffers();
+  reset_clean_buffers();
   transient_guard_s = 0;
 );
 
@@ -1088,6 +1195,7 @@ function reanalyze_bank() local(i sm)
   );
   reset_grain_histories();
   reset_weight_buffers();
+  reset_clean_buffers();
   transient_guard_s = 0;
   seq_cursor = 0;
   last_sid = -1;
@@ -1128,7 +1236,11 @@ function configure_memory_layout(selected_count) local(cap) (
   weight_er_l_base  = weight_ap2_r_base + AP_BUF_LEN;
   weight_er_r_base  = weight_er_l_base + ER_BUF_LEN;
 
-  AUDIO_BASE  = weight_er_r_base + ER_BUF_LEN + 256;
+  clean_env_base   = weight_er_r_base + ER_BUF_LEN + 256;
+  clean_floor_base = clean_env_base + CLEAN_BANDS;
+  clean_gain_base  = clean_floor_base + CLEAN_BANDS;
+
+  AUDIO_BASE  = clean_gain_base + CLEAN_BANDS + 256;
   MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
 );
 
@@ -1565,6 +1677,7 @@ function release_all_voices_transport(hard) local(i v)
 
   hard ? (
     reset_weight_buffers();
+    reset_clean_buffers();
   );
 );
 
@@ -1938,6 +2051,9 @@ MASK_S21 = 1048576;
 MASK_S22 = 2097152;
 MASK_S23 = 4194304;
 MASK_S24 = 8388608;
+MASK_S25 = 16777216;
+
+CLEAN_BANDS = 5;
 
 M2E_LANE_COUNT = 35;
 M2E_BASE_FIXED = 20;
@@ -1996,6 +2112,7 @@ release_samps = 2048;
 hold_samps = 0;
 mono_source = 0;
 dynamics_amt = 0;
+clean_amt = 0;
 onset_mode_active = 0;
 dyn_drive = 1;
 dyn_thresh = 0.98;
@@ -2039,6 +2156,25 @@ weight_in_lp_l = 0;
 weight_in_lp_r = 0;
 weight_wet_lp_l = 0;
 weight_wet_lp_r = 0;
+
+clean_lp_c1 = 0.02;
+clean_lp_c2 = 0.07;
+clean_lp_c3 = 0.22;
+clean_lp_c4 = 0.62;
+clean_env_att_coeff = 0.02;
+clean_env_rel_coeff = 0.002;
+clean_floor_up_coeff = 0.00002;
+clean_floor_down_coeff = 0.0005;
+clean_gain_down_coeff = 0.01;
+clean_gain_up_coeff = 0.002;
+clean_gain_protect_coeff = 0.04;
+clean_thresh_floor = 1.2;
+clean_thresh_env = 0.004;
+clean_abs_floor = 0.00000025;
+clean_expand_pow = 0.85;
+clean_min_gain = 1;
+clean_head_bus = 0;
+clean_tail_bus = 0;
 
 slot_signature_loaded = -999999;
 pending_signature = -999999;
@@ -2097,6 +2233,7 @@ release_samps = max(1, floor(slider5 * srate * 0.001));
 hold_samps = max(0, floor(slider20 * srate * 0.001));
 mono_source = (slider21 | 0) ? 1 : 0;
 dynamics_amt = clamp01(slider22);
+clean_amt = clamp01(slider25);
 onset_mode_target = clamp(slider23 | 0, 0, 1);
 bank_budget_mb = max(0, slider24);
 attack_coef = attack_samps <= 1 ? 1 : (1 - exp(-6.90775527898214 / attack_samps));
@@ -2163,6 +2300,23 @@ dyn_gain_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.120 * srate)));
 dyn_lim_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.0015 * srate)));
 dyn_lim_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.070 * srate)));
 dyn_ceiling = 0.985 - 0.01 * dynamics_amt;
+
+clean_lp_c1 = clamp(1 - exp(-6.283185307179586 * 180 / max(srate, 1)), 0.0001, 0.60);
+clean_lp_c2 = clamp(1 - exp(-6.283185307179586 * 720 / max(srate, 1)), 0.0002, 0.72);
+clean_lp_c3 = clamp(1 - exp(-6.283185307179586 * 2600 / max(srate, 1)), 0.0005, 0.86);
+clean_lp_c4 = clamp(1 - exp(-6.283185307179586 * 7800 / max(srate, 1)), 0.0010, 0.94);
+clean_env_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.006 * srate)));
+clean_env_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.520 * srate)));
+clean_floor_up_coeff = 1 - exp(-6.90775527898214 / max(1, floor(4.200 * srate)));
+clean_floor_down_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.280 * srate)));
+clean_gain_down_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.018 * srate)));
+clean_gain_up_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.140 * srate)));
+clean_gain_protect_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.006 * srate)));
+clean_thresh_floor = 1.18 + clean_amt * 3.10;
+clean_thresh_env = 0.0035 + clean_amt * 0.022;
+clean_abs_floor = 0.00000025 + clean_amt * 0.0000015;
+clean_expand_pow = 0.85 + clean_amt * 2.15;
+clean_min_gain = db2amp(-(2.0 + 12.0 * clean_amt));
 
 (onset_mode_target != onset_mode_active) ? (
   onset_mode_active = onset_mode_target;
@@ -2271,6 +2425,8 @@ rescan_pending ? (
 outL = 0;
 outR = 0;
 punch_bus = 0;
+clean_head_bus = 0;
+clean_tail_bus = 0;
 
 i = 0;
 while (i < MAX_VOICES) (
@@ -2688,8 +2844,18 @@ while (i < MAX_VOICES) (
     (g > 0 && got_sig) ? (
       outL += l * g;
       outR += r * g;
-      (v[VC_TLEFT] > 0) ? punch_bus = max(punch_bus, v[VC_TPROT]);
-      (stage == ENV_HOLD && hold_samps > 0) ? punch_bus = max(punch_bus, (0.18 + 0.32 * clamp01(v[VC_HLEFT] / max(1, hold_samps))) * (0.45 + 0.55 * max(0.25, v[VC_TPROT])));
+      (v[VC_TLEFT] > 0) ? (
+        punch_bus = max(punch_bus, v[VC_TPROT]);
+        clean_head_bus = max(clean_head_bus, v[VC_TPROT]);
+      );
+      (stage == ENV_HOLD && hold_samps > 0) ? (
+        punch_bus = max(punch_bus, (0.18 + 0.32 * clamp01(v[VC_HLEFT] / max(1, hold_samps))) * (0.45 + 0.55 * max(0.25, v[VC_TPROT])));
+        clean_head_bus = max(clean_head_bus, 0.22 * (0.45 + 0.55 * max(0.25, v[VC_TPROT])));
+      );
+      clean_tail_score = 0;
+      stage == ENV_RELEASE ? clean_tail_score = max(clean_tail_score, 0.82 + 0.18 * clamp01(v[VC_TAILMIX]));
+      (v[VC_POS] >= tailstart && stage != ENV_ATTACK && stage != ENV_HOLD) ? clean_tail_score = max(clean_tail_score, 0.45);
+      clean_tail_bus = max(clean_tail_bus, clean_tail_score * clamp01(env * 1.35));
     ) : (
       (!keepalive || stage == ENV_OFF) ? v[VC_ACTIVE] = 0;
     );
@@ -2776,6 +2942,8 @@ m2e_width_bias *= 0.62 + 0.38 * m2e_transient_damp;
 m2e_pan_bias *= 0.30 + 0.70 * m2e_transient_damp;
 m2e_body_bias *= 0.56 + 0.44 * m2e_transient_damp;
 m2e_sat_mix *= 0.16 + 0.84 * m2e_transient_damp * m2e_transient_damp;
+
+apply_cleaner();
 
 tone_lp_l += (outL - tone_lp_l) * tone_lp_coeff;
 tone_lp_r += (outR - tone_lp_r) * tone_lp_coeff;
@@ -3296,7 +3464,7 @@ draw_center_buf(onset_btn_x, btn_y3 + 9, onset_btn_w);
 knob_panel_top = btn_y3 + btn_h + 18;
 knob_panel_bottom = right_y + right_h - 18;
 knob_area_h = max(140, knob_panel_bottom - knob_panel_top);
-knob_count = 12;
+knob_count = 13;
 knob_cols = right_inner_w >= 720 ? 6 : (right_inner_w >= 460 ? 4 : (right_inner_w >= 320 ? 3 : 2));
 knob_rows = floor((knob_count + knob_cols - 1) / knob_cols);
 knob_col_gap = clamp(floor(right_inner_w * 0.016), 10, 16);
@@ -3416,8 +3584,19 @@ sprintf(#ui_buf, "%.2f", slider15); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc 
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Weight"); draw_center_buf(cell_x, label_y, cell_w);
 
-// Dynamics
+// Clean
 grid_idx = 10;
+cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
+cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
+kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
+nv = ui_knob(313, kc, ky, kb_r, slider25, 0, 1, 0, 0.018); abs(nv - slider25) > 0.0000001 ? (slider25 = nv; gfx_slider_mask |= MASK_S25;);
+gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+sprintf(#ui_buf, "%.2f", slider25); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
+gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+sprintf(#ui_buf, "Clean"); draw_center_buf(cell_x, label_y, cell_w);
+
+// Dynamics
+grid_idx = 11;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
@@ -3428,7 +3607,7 @@ gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a 
 sprintf(#ui_buf, "Dynamics"); draw_center_buf(cell_x, label_y, cell_w);
 
 // Output
-grid_idx = 11;
+grid_idx = 12;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
@@ -3494,7 +3673,7 @@ ui_hover_id == 1301 ? (
 );
 ui_hover_id == 1400 ? (
   sprintf(#tip_title, "Playback controls");
-  sprintf(#tip_body, "Top buttons switch Playback mode, Transient handling, Random versus Sequence triggering, Mono Source, and the new Classic versus Gaussian onset-start path. The knob grid below automatically reflows to fit the panel width so labels and values stay readable.");
+  sprintf(#tip_body, "Top buttons switch Playback mode, Transient handling, Random versus Sequence triggering, Mono Source, and Classic versus Gaussian onset-start path. The knob grid includes the new Clean macro and automatically reflows to fit the panel width.");
 );
 ui_hover_id == 201 ? (
   sprintf(#tip_title, "Attack");
@@ -3539,6 +3718,10 @@ ui_hover_id == 305 ? (
 ui_hover_id == 306 ? (
   sprintf(#tip_title, "Output");
   sprintf(#tip_body, "Current %.1f dB. Final output trim after the macro, Dynamics, and Weight stages. Wheel adjusts; right-click or double-click resets.", slider11);
+);
+ui_hover_id == 313 ? (
+  sprintf(#tip_title, "Clean");
+  sprintf(#tip_body, "Current %.2f. ERB-detector-driven downward cleanup before Color, Focus, Weight, and Dynamics. It learns a low-level band floor, gently pushes down hiss/room bed between useful material, protects transient heads, and allows slightly stronger cleanup in detected tail/release regions. Wheel adjusts; right-click or double-click resets.", slider25);
 );
 ui_hover_id == 312 ? (
   sprintf(#tip_title, "Dynamics");

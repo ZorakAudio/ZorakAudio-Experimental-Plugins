@@ -102,6 +102,13 @@ project(${PLUGIN_SLUG} VERSION ${PLUGIN_VERSION} LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(MSVC)
+  # Repository-authored UI strings are UTF-8. Make MSVC preserve the
+  # source/execution encoding so explicit juce::String::fromUTF8() calls
+  # receive UTF-8 bytes instead of the active Windows code page.
+  add_compile_options(/utf-8)
+endif()
+
 if(NOT ZA_ROOT)
   get_filename_component(ZA_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 endif()

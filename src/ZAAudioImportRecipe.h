@@ -29,6 +29,8 @@
 #include <thread>
 #include <vector>
 
+#include "ZAUnicodeText.h"
+
 namespace za::fileimport
 {
 
@@ -1763,7 +1765,7 @@ public:
         defaultRules = makeDefaultRulesForAction (action);
 
         configureSlider (silenceDb, "Silence threshold dBFS", -90.0, -6.0, 0.5, rules.silenceThresholdDb, defaultRules.silenceThresholdDb, -50.0);
-        configureSlider (threshold, "Relative RMS ×", 0.0, 2.0, 0.01, rules.silenceThresholdRatio, defaultRules.silenceThresholdRatio, 0.25);
+        configureSlider (threshold, za::text::utf8 ("Relative RMS ×"), 0.0, 2.0, 0.01, rules.silenceThresholdRatio, defaultRules.silenceThresholdRatio, 0.25);
         configureSlider (minSilence, "Min quiet gap ms", 1.0, 5000.0, 1.0, rules.minSilenceMs, defaultRules.minSilenceMs, 100.0);
         configureSlider (minSegment, "Min segment ms", 1.0, 10000.0, 1.0, rules.minSegmentMs, defaultRules.minSegmentMs, 250.0);
         configureSlider (preRoll, "Pre-roll ms", 0.0, 500.0, 1.0, rules.preRollMs, defaultRules.preRollMs, 20.0);
@@ -1833,7 +1835,7 @@ public:
 
         waveform.setBuffers (juce::AudioBuffer<float>(), juce::AudioBuffer<float>(), {}, 0.0,
                              action == ImportAction::SegmentLongFile || action == ImportAction::SegmentThenMegaTexture,
-                             files.empty() ? juce::String ("No input file was passed to the preview.") : juce::String ("Loading preview…"));
+                             files.empty() ? juce::String ("No input file was passed to the preview.") : za::text::utf8 ("Loading preview…"));
 
         juce::Component::SafePointer<ImportPreviewComponent> safeThis (this);
         juce::MessageManager::callAsync ([safeThis]
@@ -1987,9 +1989,9 @@ private:
         if (segmentationMode)
         {
             status << " | " << (int) segments.size() << " segment" << (segments.size() == 1 ? "" : "s")
-                   << " | silence≤" << juce::String (previewRules.silenceThresholdDb, 1) << " dBFS"
-                   << " | gap≥" << juce::String (previewRules.minSilenceMs, 0) << " ms"
-                   << " | minLen≥" << juce::String (previewRules.minSegmentMs, 0) << " ms";
+                   << za::text::utf8 (" | silence≤") << juce::String (previewRules.silenceThresholdDb, 1) << " dBFS"
+                   << za::text::utf8 (" | gap≥") << juce::String (previewRules.minSilenceMs, 0) << " ms"
+                   << za::text::utf8 (" | minLen≥") << juce::String (previewRules.minSegmentMs, 0) << " ms";
             if (previewRules.removeLowRms)
                 status << " | reject<" << juce::String (previewRules.minRmsDb, 1) << " dB RMS";
         }

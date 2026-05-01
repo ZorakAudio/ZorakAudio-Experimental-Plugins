@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "ZAUnicodeText.h"
+
 #if defined(__has_include)
  #if __has_include("PluginReadme.h")
   #include "PluginReadme.h"
@@ -275,9 +277,9 @@ private:
         marker.clear();
         body.clear();
 
-        if (t.startsWith ("* ") || t.startsWith ("- ") || t.startsWith (juce::String::fromUTF8 ("• ")))
+        if (t.startsWith ("* ") || t.startsWith ("- ") || t.startsWith (za::text::utf8 ("• ")))
         {
-            marker = juce::String::fromUTF8 ("•");
+            marker = za::text::utf8 ("•");
             body = t.fromFirstOccurrenceOf (" ", false, false).trimStart();
             return body.isNotEmpty();
         }
