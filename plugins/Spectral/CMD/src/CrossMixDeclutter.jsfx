@@ -1,9 +1,10 @@
-desc:Cross-Mix Somatic Bus (CMD) - shared declutter + somatic coupling
+desc:Cross-Mix Somatic Bus (CMD v4 TurnPulse Manifold) - shared declutter + JND width pistons + unified declutter
 
-// Cross-Mix Somatic Bus (CMD v2)
+// Cross-Mix Somatic Bus (CMD v4 TurnPulse Manifold)
 // One global shared bus for now. Drop on every related track.
-// Engine A: ERB/gammatone declutter / turn taking.
+// Engine A: ERB/gammatone declutter driven by the shared TurnPulse salience phase.
 // Engine B: bounded psychoacoustic somatic injection from peer bus motion.
+// Engine C: shared JND-width TurnPulse / piston ordering with bounded prediction error.
 //
 // String-bus integration hook:
 //   All bus identity is isolated to the two endpoint strings in @init:
@@ -17,34 +18,28 @@ in_pin:right input
 out_pin:left output
 out_pin:right output
 
-// #TOOLTIP: Role controls how this track drives and receives the shared somatic bus.
+// #TOOLTIP: Role controls how this layer drives and receives the shared somatic/declutter bus.
 slider1:0<0,7,1{Neutral,Lead,Body,Wet Detail,Impact,Ambience,Sub/Weight,Air/Tingle}>Role
-// #TOOLTIP: ERB-band declutter strength. Higher values make losing instances yield more in contested psychoacoustic bands.
-slider2:55<0,100,1>Declutter (%)
+// #TOOLTIP: One macro for ERB declutter strength, turn-taking ownership, tuck amount, and bus coupling. Higher = stronger shared salience choreography.
+slider2:55<0,100,1>Manifold (%)
 // #TOOLTIP: Cross-actor psychoacoustic modulation amount. Higher values make this layer breathe more with peer activity.
 slider3:35<0,100,1>Somatic (%)
-// #TOOLTIP: How aggressively masked instances build credit and later win contested bands. Higher values rotate ownership faster.
-slider4:65<0,100,1>Turn Fairness (%)
+// #TOOLTIP: Shared piston cycle rate. Instances on the same Bus Name average this value into one bus clock.
+slider4:1.20<0.05,8,0.01>TurnPulse Rate (Hz)
+// #TOOLTIP: Bounded prediction error. Raises chances of adjacent piston swaps, while preventing random soup.
+slider5:18<0,100,1>Prediction Error (%)
+// #TOOLTIP: Coordinated width-piston amount. Capped below +/-1% M/S width for barely-JND salience tagging.
+slider6:0.50<0,0.95,0.01>Width JND (%)
 // #TOOLTIP: Band activity floor. Raise to ignore room tone/noise; lower for subtle sustained material.
-slider5:-46<-80,-12,1>Activity Floor (dB)
-// #TOOLTIP: Priority bias for this instance. Positive wins contested bands more often; negative yields more often.
-slider6:0<-100,100,1>Importance / Focus Bias
-// #TOOLTIP: Maximum per-band declutter cut. Keep moderate; excessive values create spectral holes.
-slider7:9<1,18,0.5>Max Band Cut (dB)
-// #TOOLTIP: Envelope release for band activity and ownership. Longer release gives steadier behavior.
-slider8:120<20,600,1>Release (ms)
-// #TOOLTIP: How strongly this instance contributes its pressure/contact/viscosity/thrust to the shared bus.
-slider9:65<0,100,1>Influence Out (%)
-// #TOOLTIP: How strongly this instance reacts to peer bus pressure/contact/viscosity/thrust.
-slider10:65<0,100,1>Influence In (%)
+slider7:-46<-80,-12,1>Activity Floor (dB)
 // #TOOLTIP: Higher values clamp somatic movement more tightly. Lower values allow more obvious modulation.
-slider11:70<0,100,1>Safety Governor (%)
+slider8:70<0,100,1>Safety Governor (%)
 // #TOOLTIP: Final output trim after declutter and somatic processing.
-slider12:0<-12,12,0.1>Output Trim (dB)
-// #TOOLTIP: Bus namespace. Instances with the same bus name share gmem state and messages.
-slider13:#bus_name="ZorakAudio.CMSB.Global"<string>Bus Name
+slider9:0<-12,12,0.1>Output Trim (dB)
+// #TOOLTIP: Bus namespace. Instances with the same bus name share gmem state and the same TurnPulse manifold.
+slider10:#bus_name="ZorakAudio.CMSB.Global"<string>Bus Name
 // #TOOLTIP: Number of ERB bands processed. Lower values reduce CPU across large sessions.
-slider14:12<8,24,4>ERB Bands / CPU
+slider11:12<8,24,4>ERB Bands / CPU
 
 @init
 function clamp(x, lo, hi) (
@@ -82,24 +77,46 @@ function setup_from_sliders() (
   role_id = floor(slider1 + 0.5);
   role_id = clamp(role_id, ROLE_NEUTRAL, ROLE_TINGLE);
 
-  depth_amt = clamp(slider2 * 0.01, 0, 1);
+  manifold_amt = clamp(slider2 * 0.01, 0, 1);
+  depth_amt = manifold_amt;
   somatic_amt = clamp(slider3 * 0.01, 0, 1);
-  fairness_amt = clamp(slider4 * 0.01, 0, 1);
 
-  floor_energy = exp(2 * slider5 * db2lin);
+  // TurnPulse uses percent-of-width input converted to M/S side-gain delta.
+  // slider6 max is 0.95%, so the pulse stays below +/-1% by construction.
+  piston_rate = clamp(slider4, 0.05, 8);
+  piston_surprise = clamp(slider5 * 0.01, 0, 1);
+  piston_depth = clamp(slider6 * 0.01, 0, JND_WIDTH_LIMIT);
+  piston_tuck = clamp(0.25 + 0.55 * manifold_amt + 0.15 * piston_surprise, 0.20, 0.92);
+
+  floor_energy = exp(2 * slider7 * db2lin);
   floor_energy < 0.000000000001 ? floor_energy = 0.000000000001;
   floor_amp = sqrt(floor_energy);
 
-  priority_weight = exp((slider6 * 0.01) * 0.6931471805599453); // -100..+100 -> 0.5..2.0
-  max_cut_db = clamp(slider7, 1, 24);
-  release_ms = clamp(slider8, 20, 1000);
+  safety_amt = clamp(slider8 * 0.01, 0, 1);
+  out_gain = exp(slider9 * db2lin);
 
-  influence_out = clamp(slider9 * 0.01, 0, 1);
-  influence_in = clamp(slider10 * 0.01, 0, 1);
-  safety_amt = clamp(slider11 * 0.01, 0, 1);
-  out_gain = exp(slider12 * db2lin);
+  // Priority/order controls are now internal. The shared TurnPulse phase is the main owner/yield driver.
+  priority_weight = 1;
+  role_id == ROLE_LEAD ? priority_weight = 1.10;
+  role_id == ROLE_BODY ? priority_weight = 1.04;
+  role_id == ROLE_WET ? priority_weight = 1.00;
+  role_id == ROLE_IMPACT ? priority_weight = 1.08;
+  role_id == ROLE_AMBIENCE ? priority_weight = 0.88;
+  role_id == ROLE_SUB ? priority_weight = 0.96;
+  role_id == ROLE_TINGLE ? priority_weight = 0.92;
 
-  new_active_nb = floor(slider14 + 0.5);
+  // Fairness remains only as a low-level backstop so the phase engine, not a focus knob, drives ownership.
+  fairness_amt = clamp(0.14 + 0.42 * manifold_amt, 0, 1);
+  fairness_weight = 0.34 * fairness_amt;
+
+  // Removed user-facing Max Cut / Release / Influence controls; the manifold derives them.
+  max_cut_db = 2.0 + 10.0 * manifold_amt * (1 - 0.18 * safety_amt);
+  release_ms = 80 + 170 * safety_amt + 60 * (1 - manifold_amt);
+
+  influence_out = clamp(0.25 + 0.75 * manifold_amt, 0, 1);
+  influence_in = clamp(0.25 + 0.75 * manifold_amt, 0, 1);
+
+  new_active_nb = floor(slider11 + 0.5);
   new_active_nb < 8 ? new_active_nb = 8;
   new_active_nb > NB ? new_active_nb = NB;
   active_nb != new_active_nb ? (
@@ -107,7 +124,6 @@ function setup_from_sliders() (
     need_filter_rebuild = 1;
   );
 
-  fairness_weight = 0.85 * fairness_amt;
   max_cut_coeff = (1 - exp(-max_cut_db * db2lin)) * depth_amt * 0.72;
 
   // High safety = smaller caps. Low safety = stronger movement.
@@ -197,11 +213,14 @@ function clear_own_slot() (
 );
 
 function ensure_bus_header() (
-  gmem[BUS_MAGIC] != MAGIC ? (
+  ((gmem[BUS_MAGIC] != MAGIC) || (gmem[BUS_VERSION] != VERSION)) ? (
     gmem_zero(0, GMEM_SIZE);
     gmem[BUS_MAGIC] = MAGIC;
     gmem[BUS_VERSION] = VERSION;
     gmem[BUS_TICK] = 0;
+    gmem[BUS_PISTON_PHASE] = 0;
+    gmem[BUS_PISTON_CYCLE] = 0;
+    gmem[BUS_PISTON_SEED] = 0;
   );
 
   tick = gmem[BUS_TICK] + 1;
@@ -332,21 +351,53 @@ function update_motion_envs() local(invblock totalE lowE contactE viscE onsetN t
   onset_accum = 0;
 );
 
-function scan_active_slots() local(j sb sid hb stale) (
+function scan_active_slots() local(j sb sid hb stale rateVal surpriseVal sumRate sumSurprise) (
   active_instances = 0;
+  my_rank = 0;
+  leader_slot = -1;
+  sumRate = 0;
+  sumSurprise = 0;
+
   j = 0;
   while (j < MAX_SLOTS) (
     sb = BUS_HEADER + j * SLOT_STRIDE;
     sid = gmem[sb + SLOT_ID];
     hb = gmem[sb + SLOT_HB];
     stale = (sid <= 0) || ((tick - hb) > STALE_TICKS);
-    !stale ? active_instances += 1;
+
+    !stale ? (
+      leader_slot < 0 ? leader_slot = j;
+      j < my_slot ? my_rank += 1;
+      active_instances += 1;
+
+      rateVal = gmem[sb + SLOT_PISTON_RATE];
+      rateVal <= 0 ? rateVal = piston_rate;
+      sumRate += clamp(rateVal, 0.05, 8);
+
+      surpriseVal = gmem[sb + SLOT_PISTON_SURPRISE];
+      sumSurprise += clamp(surpriseVal, 0, 1);
+    );
+
     j += 1;
+  );
+
+  active_instances > 0 ? (
+    bus_piston_rate = sumRate / active_instances;
+    bus_piston_surprise = sumSurprise / active_instances;
+  ) : (
+    active_instances = 1;
+    my_rank = 0;
+    leader_slot = my_slot;
+    bus_piston_rate = piston_rate;
+    bus_piston_surprise = piston_surprise;
   );
 );
 
-function compute_declutter_targets() local(i j sb sid hb stale ownE ownAct ownScore peerE peerC peerP peerAct score topScore topAct topId pressure activity overlap desired decay turn_rate pubBase) (
+function compute_declutter_targets() local(i j sb sid hb stale ownE ownAct ownScore peerE peerC peerP peerAct peerGate score topScore topAct topId pressure activity overlap desired decay turn_rate pubBase turnWeight ownGate scoreMul yieldScale) (
   scan_active_slots();
+
+  turnWeight = clamp(0.95 * manifold_amt, 0, 0.95);
+  ownGate = clamp(pistonGate, -1, 1);
 
   i = 0;
   while (i < active_nb) (
@@ -355,7 +406,10 @@ function compute_declutter_targets() local(i j sb sid hb stale ownE ownAct ownSc
     ownAct < 0 ? ownAct = 0;
     ownAct = clamp(ownAct, 0, 1000000);
 
-    ownScore = ownAct * priority_weight * (1 + credit[i] * fairness_weight);
+    // The same TurnPulse manifold that widens this layer also biases ERB ownership.
+    // Active piston: higher ownership score. Inactive piston: lower ownership score.
+    scoreMul = clamp(1 + turnWeight * ownGate, 0.30, 2.10);
+    ownScore = ownAct * priority_weight * scoreMul * (1 + credit[i] * fairness_weight);
 
     topScore = ownScore;
     topAct = ownAct;
@@ -373,12 +427,14 @@ function compute_declutter_targets() local(i j sb sid hb stale ownE ownAct ownSc
         peerC = gmem[sb + SLOT_BANDS + NB + i];
         peerP = gmem[sb + SLOT_PRIO];
         peerP <= 0 ? peerP = 1;
+        peerGate = clamp(gmem[sb + SLOT_PISTON_GATE], -1, 1);
 
         peerAct = peerE / floor_energy - 1;
         peerAct < 0 ? peerAct = 0;
         peerAct = clamp(peerAct, 0, 1000000);
 
-        score = peerAct * peerP * (1 + clamp(peerC, 0, 4) * fairness_weight);
+        scoreMul = clamp(1 + turnWeight * peerGate, 0.30, 2.10);
+        score = peerAct * peerP * scoreMul * (1 + clamp(peerC, 0, 4) * fairness_weight);
 
         ((score > topScore + 0.0000001) || ((abs(score - topScore) <= 0.0000001) && (sid < topId))) ? (
           topScore = score;
@@ -398,21 +454,26 @@ function compute_declutter_targets() local(i j sb sid hb stale ownE ownAct ownSc
       activity = ownAct / (ownAct + 1);
       overlap = topAct / (topAct + ownAct + 0.0000001);
       desired = max_cut_coeff * pressure * activity * (0.45 + 0.55 * overlap);
+
+      // Same firing pattern also shapes yield amount:
+      // active layers resist cuts; inactive layers tuck harder.
+      yieldScale = 1 + 0.78 * turnWeight * max(-ownGate, 0) - 0.48 * turnWeight * max(ownGate, 0);
+      desired *= clamp(yieldScale, 0.35, 1.75);
       desired = clamp(desired, 0, 0.92);
     );
 
     targetCut[i] = desired;
 
-    turn_rate = 0.0025 + 0.020 * fairness_amt;
+    turn_rate = 0.0012 + 0.010 * fairness_amt;
 
     ownAct > 0.0001 ? (
       topId == iid ? (
-        decay = 0.035 + 0.18 * fairness_amt;
+        decay = 0.025 + 0.090 * fairness_amt;
         credit[i] *= (1 - decay);
       ) : (
         pressure = (topScore - ownScore) / (topScore + ownScore + 0.0000001);
         pressure = clamp(pressure, 0, 1);
-        credit[i] += turn_rate * (0.35 + pressure);
+        credit[i] += turn_rate * (0.25 + pressure);
       );
     ) : (
       credit[i] *= 0.965;
@@ -455,6 +516,11 @@ function publish_slot() (
   gmem[my_slot_base + SLOT_THRUST] = local_thrust;
   gmem[my_slot_base + SLOT_AROUSAL] = local_arousal;
   gmem[my_slot_base + SLOT_FATIGUE] = local_fatigue;
+  gmem[my_slot_base + SLOT_PISTON_DEPTH] = piston_depth;
+  gmem[my_slot_base + SLOT_PISTON_RATE] = piston_rate;
+  gmem[my_slot_base + SLOT_PISTON_SURPRISE] = piston_surprise;
+  gmem[my_slot_base + SLOT_PISTON_PULSE] = pistonPulse;
+  gmem[my_slot_base + SLOT_PISTON_GATE] = pistonGate;
 );
 
 function compute_peer_bus() local(j sb sid hb stale w sumW p c v t a f rawP rawC rawV rawT rawA rawF busCoeff) (
@@ -615,6 +681,116 @@ function compute_somatic_targets() local(i raw target cap wmod satDesired recvSc
   targetSat = clamp(satDesired * recvScale, 0, sat_cap);
 );
 
+function hash01(x) local(y) (
+  y = sin((x + 1.2345) * 12.9898 + gmem[BUS_PISTON_SEED] * 78.233) * 43758.5453123;
+  y - floor(y);
+);
+
+function piston_curve(u) local(p) (
+  p = 0;
+  u < 0 ? u = 0;
+  u > 1 ? u = 1;
+
+  u < 0.18 ? (
+    p = u / 0.18;
+  ) : (
+    u < 0.34 ? (
+      p = 1;
+    ) : (
+      p = exp(-5.2 * (u - 0.34) / 0.66);
+    );
+  );
+
+  clamp(p, 0, 1);
+);
+
+function compute_turnpulse_target() local(oldPhase newPhase inc wraps cycle n rnd gate swapA swapOn phase posRank u pulse activeContrast tuckAmt roleScale totalCap) (
+  scan_active_slots();
+
+  n = active_instances;
+  n < 1 ? n = 1;
+
+  // One deterministic leader advances the bus clock. All instances read it.
+  leader_slot == my_slot ? (
+    gmem[BUS_PISTON_SEED] <= 0 ? gmem[BUS_PISTON_SEED] = iid + 17.371;
+
+    oldPhase = sanitize(gmem[BUS_PISTON_PHASE], 0);
+    oldPhase = oldPhase - floor(oldPhase);
+
+    inc = samplesblock * clamp(bus_piston_rate, 0.05, 8) / max(work_srate, 1);
+    newPhase = oldPhase + inc;
+    wraps = floor(newPhase);
+    wraps > 0 ? (
+      newPhase -= wraps;
+      gmem[BUS_PISTON_CYCLE] = gmem[BUS_PISTON_CYCLE] + wraps;
+    );
+
+    cycle = floor(gmem[BUS_PISTON_CYCLE]);
+    swapOn = 0;
+    swapA = 0;
+
+    // Bounded prediction error: at most one adjacent swap per full cycle.
+    (n > 2) && (bus_piston_surprise > 0.001) ? (
+      rnd = hash01(cycle * 3.17 + n * 11.0);
+      gate = 0.08 + 0.62 * bus_piston_surprise;
+      rnd < gate ? (
+        swapOn = 1;
+        swapA = floor(hash01(cycle * 7.91 + n * 29.0) * (n - 1));
+        swapA = clamp(swapA, 0, n - 2);
+      );
+    );
+
+    gmem[BUS_PISTON_PHASE] = newPhase;
+    gmem[BUS_PISTON_ACTIVE] = n;
+    gmem[BUS_PISTON_SWAP_ON] = swapOn;
+    gmem[BUS_PISTON_SWAP_A] = swapA;
+    gmem[BUS_PISTON_RATE] = bus_piston_rate;
+    gmem[BUS_PISTON_SURPRISE] = bus_piston_surprise;
+  );
+
+  phase = sanitize(gmem[BUS_PISTON_PHASE], 0);
+  phase = phase - floor(phase);
+  piston_phase = phase;
+  piston_cycle = sanitize(gmem[BUS_PISTON_CYCLE], 0);
+  piston_swap_on = sanitize(gmem[BUS_PISTON_SWAP_ON], 0);
+  piston_swap_a = floor(sanitize(gmem[BUS_PISTON_SWAP_A], 0) + 0.5);
+
+  // Rank is slot order. Swap changes order position, not ownership identity.
+  posRank = my_rank;
+  piston_swap_on > 0.5 ? (
+    my_rank == piston_swap_a ? posRank = piston_swap_a + 1;
+    my_rank == piston_swap_a + 1 ? posRank = piston_swap_a;
+  );
+
+  u = phase * n - posRank;
+  u < 0 ? u += n;
+
+  pulse = 0;
+  u < 1 ? pulse = piston_curve(u);
+
+  tuckAmt = piston_tuck * 0.64;
+  activeContrast = pulse - tuckAmt * (1 - pulse);
+
+  roleScale = 1;
+  role_id == ROLE_LEAD ? roleScale = 0.75;
+  role_id == ROLE_IMPACT ? roleScale = 0.70;
+  role_id == ROLE_AMBIENCE ? roleScale = 0.85;
+  role_id == ROLE_SUB ? roleScale = 0.30;
+
+  pistonTargetWidth = piston_depth * activeContrast * roleScale;
+
+  // Sub/Weight should not get a positive width bloom; let it only yield/narrow subtly.
+  role_id == ROLE_SUB ? (
+    pistonTargetWidth > 0 ? pistonTargetWidth = 0;
+  );
+
+  totalCap = JND_WIDTH_LIMIT;
+  pistonTargetWidth = clamp(pistonTargetWidth, -totalCap, totalCap);
+  pistonPulse = pulse;
+  pistonGate = activeContrast;
+  pistonOrderPos = posRank;
+);
+
 function role_name() (
   role_id == ROLE_NEUTRAL ? gfx_drawstr("Neutral");
   role_id == ROLE_LEAD ? gfx_drawstr("Lead");
@@ -644,7 +820,14 @@ MAX_SLOTS = 64;
 BUS_MAGIC = 0;
 BUS_VERSION = 1;
 BUS_TICK = 2;
-BUS_RESERVED0 = 3;
+BUS_PISTON_PHASE = 3;
+BUS_PISTON_CYCLE = 4;
+BUS_PISTON_SEED = 5;
+BUS_PISTON_ACTIVE = 6;
+BUS_PISTON_SWAP_A = 7;
+BUS_PISTON_SWAP_ON = 8;
+BUS_PISTON_RATE = 9;
+BUS_PISTON_SURPRISE = 10;
 BUS_HEADER = 64;
 
 SLOT_ID = 0;
@@ -662,16 +845,19 @@ SLOT_VISCOSITY = 11;
 SLOT_THRUST = 12;
 SLOT_AROUSAL = 13;
 SLOT_FATIGUE = 14;
-SLOT_RESERVED_A = 15;
-SLOT_RESERVED_B = 16;
-SLOT_RESERVED_C = 17;
-SLOT_BANDS = 18;
+SLOT_PISTON_DEPTH = 15;
+SLOT_PISTON_RATE = 16;
+SLOT_PISTON_SURPRISE = 17;
+SLOT_PISTON_PULSE = 18;
+SLOT_PISTON_GATE = 19;
+SLOT_BANDS = 20;
 
-SLOT_STRIDE = SLOT_BANDS + NB2; // scalar state + energy[NB] + credit[NB]
+SLOT_STRIDE = SLOT_BANDS + NB2; // scalar state + TurnPulse state + energy[NB] + credit[NB]
 GMEM_SIZE = BUS_HEADER + MAX_SLOTS * SLOT_STRIDE + 64;
 
-MAGIC = 2026042402;
-VERSION = 2;
+MAGIC = 2026042404;
+VERSION = 4;
+JND_WIDTH_LIMIT = 0.0095; // 0.95% M/S side-gain delta; stays below +/-1%.
 STALE_TICKS = MAX_SLOTS * 128;
 
 OP_HEART = 1;
@@ -687,12 +873,11 @@ ROLE_SUB = 6;
 ROLE_TINGLE = 7;
 
 comm_join("ZorakAudio.CrossMixSomaticBus");
-instance_set_name("Cross-Mix Somatic Bus");
+instance_set_name("Cross-Mix Somatic Bus + TurnPulse Manifold");
 instance_uid(#uid);
 iid = instance_id();
 
-// Single global endpoint for V2. Replace this literal with the resolved user bus
-// string when the host/string-input layer is ready.
+// Single named endpoint. Instances sharing Bus Name share one gmem namespace.
 // Message bus intentionally not used for CMD heartbeat; gmem is the hot path.
 gmem_attach_size(#bus_name, GMEM_SIZE);
 
@@ -759,6 +944,17 @@ bus_fatigue = 0;
 
 targetWidth = 0;
 smoothWidth = 0;
+pistonTargetWidth = 0;
+pistonPulse = 0;
+pistonGate = 0;
+piston_phase = 0;
+pistonOrderPos = 0;
+piston_swap_on = 0;
+piston_swap_a = 0;
+my_rank = 0;
+leader_slot = -1;
+bus_piston_rate = 1.20;
+bus_piston_surprise = 0;
 targetSat = 0;
 smoothSat = 0;
 
@@ -790,9 +986,13 @@ publish_slot();
 drain_messages();
 update_band_envs();
 update_motion_envs();
+compute_turnpulse_target();
+publish_slot();
 compute_declutter_targets();
 publish_slot();
 compute_somatic_targets();
+// Final M/S width target is kept below +/-1% for barely-JND piston behavior.
+targetWidth = clamp(targetWidth + pistonTargetWidth, -JND_WIDTH_LIMIT, JND_WIDTH_LIMIT);
 
 seq += 1;
 peer_count = active_peer_instances;
@@ -906,14 +1106,14 @@ outR *= out_gain;
 spl0 = clamp(outL, -8, 8);
 spl1 = clamp(outR, -8, 8);
 
-@gfx 620 270
+@gfx 620 300
 gfx_clear = 0;
 w = gfx_w;
 h = gfx_h;
 
 gfx_set(0.80, 0.80, 0.80, 1);
 gfx_x = 12; gfx_y = 10;
-gfx_drawstr("Cross-Mix Somatic Bus  |  Shared Bus  |  Active ");
+gfx_drawstr("Cross-Mix Somatic Bus v4 Manifold  |  Shared Bus  |  Active ");
 gfx_drawnumber(active_instances, 0);
 gfx_drawstr("  |  Peers ");
 gfx_drawnumber(active_peer_instances, 0);
@@ -961,6 +1161,11 @@ gfx_drawstr("                         Thrust "); gfx_drawnumber(bus_thrust * 100
 gfx_x = 14; gfx_y = 206;
 gfx_drawstr("This track drives: P "); gfx_drawnumber(local_pressure * 100, 0); gfx_drawstr("  C "); gfx_drawnumber(local_contact * 100, 0); gfx_drawstr("  V "); gfx_drawnumber(local_viscosity * 100, 0); gfx_drawstr("  T "); gfx_drawnumber(local_thrust * 100, 0);
 
-gfx_x = 14; gfx_y = 236;
+gfx_x = 14; gfx_y = 232;
+gfx_set(0.80, 0.80, 0.80, 1);
+gfx_drawstr("TurnPulse manifold: rank "); gfx_drawnumber(my_rank + 1, 0); gfx_drawstr("/"); gfx_drawnumber(active_instances, 0);
+gfx_drawstr("  pulse "); gfx_drawnumber(pistonPulse * 100, 0); gfx_drawstr("%  gate "); gfx_drawnumber(pistonGate * 100, 0); gfx_drawstr("%  width "); gfx_drawnumber(pistonTargetWidth * 100, 2); gfx_drawstr("%  swap "); gfx_drawnumber(piston_swap_on, 0);
+
+gfx_x = 14; gfx_y = 266;
 gfx_set(0.70, 0.70, 0.70, 1);
-gfx_drawstr("Blue=local ERB activity. Orange=declutter yield. Green=somatic peer modulation.");
+gfx_drawstr("Blue=local ERB activity. Orange=TurnPulse-shaped declutter yield. Green=somatic peer modulation. Width is M/S-capped below +/-1%.");
