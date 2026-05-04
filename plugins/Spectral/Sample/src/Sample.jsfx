@@ -6,6 +6,41 @@ tags:instrument sampler ui
 // #FILE: Sample Bank {Open Multiple... loads the whole bank into slot 0; the bank auto-rescans when the selection changes.}
 filename:0,sample.wav
 
+// #HELP: # Sample
+// #HELP:
+// #HELP: ## What it is
+// #HELP: Sample is a load-and-go psycho multisampler: load files into slot 0, play notes, and shape the bank with compact macro controls.
+// #HELP:
+// #HELP: ## Quick start
+// #HELP: 1. Insert Sample. 2. On slot 0, choose Open Multiple... and select files. 3. Play MIDI notes. 4. Choose Random, Sequence, or Walk. 5. Shape with Envelope, Playback, Clean, Room Tame, Push, and Output.
+// #HELP:
+// #HELP: ## Selection modes
+// #HELP: Random picks from the full bank with anti-repeat weighting. Sequence steps through loaded files. Walk bridges from the previous sample using brightness, focus, transient richness, length, pitch confidence, body span, and tail span.
+// #HELP:
+// #HELP: ## Envelope
+// #HELP: Attack, Hold, Decay, Sustain, and Release shape each trigger. Shift+Wheel on Attack, Decay, or Release changes slope from -100% to +100%; 0% is linear. Defaults preserve the original curve behavior.
+// #HELP:
+// #HELP: ## Playback engines
+// #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack.
+// #HELP:
+// #HELP: ## Cleanup and depth
+// #HELP: Clean reduces low-level hiss/room bed. Room Tame restrains late room smear. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement.
+// #HELP:
+// #HELP: ## Tone and feel
+// #HELP: Color warms/brightens. Focus softens/clarifies. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection.
+// #HELP:
+// #HELP: ## FluxBridge
+// #HELP: When the fixed FluxBridge CC lane block is present, Sample adds subtle motion-driven tone, focus, width, pan, and body contour while protecting transient-rich hits.
+// #HELP:
+// #HELP: ## Best uses
+// #HELP: Fast one-shot banks, found-sound instruments, texture instruments, sketching, and exploratory sound design.
+// #HELP:
+// #HELP: ## Wrong tool
+// #HELP: Use a traditional multisampler when you need exact key zones, velocity-layer authoring, or realistic note-by-note recreation.
+// #HELP:
+// #HELP: ## In one sentence
+// #HELP: Sample turns a loose bank of audio files into a playable, variable instrument with almost no setup.
+
 slider1:0<0,1,1{idle,rescan}>--Force rescan slot 0
 slider2:3<0.1,500,0.1>--Attack (ms)
 slider3:110<1,5000,1>--Decay (ms)
@@ -33,6 +68,9 @@ slider24:0<0,65536,256>--Bank RAM Budget (MB, 0=unlimited)
 slider25:0<0,1,0.001>--Clean
 slider26:0<0,1,0.001>--Room Tame
 slider27:0<0,100,0.1>--Push (%)
+slider28:100<-100,100,1>--Attack slope (%)
+slider29:-100<-100,100,1>--Decay slope (%)
+slider30:-100<-100,100,1>--Release slope (%)
 @init
 /*
 Runtime sample-pool API used here:
@@ -100,6 +138,66 @@ function env_curve01(t) local(k d)
   k = ENV_VIS_SHAPE;
   d = 1 - exp(-k);
   d <= 0 ? clamp01(t) : (1 - exp(-k * clamp01(t))) / d;
+);
+
+function env_slope_shape(t slope_pct) local(n a p d)
+(
+  n = clamp01(t);
+  a = clamp(slope_pct, -100, 100) / 100;
+
+  abs(a) < 0.000001 ? (
+    n;
+  ) : a >= 0.999999 ? (
+    // Full positive slope is the original one-pole envelope curve.
+    env_curve01(n);
+  ) : a > 0 ? (
+    // Positive: fast start, slow finish.
+    p = 1 + a * (ENV_VIS_SHAPE - 1);
+    1 - ((1 - n) ^ p);
+  ) : (
+    // Negative: slow start, fast finish.
+    p = 1 + (-a) * (ENV_VIS_SHAPE - 1);
+    n ^ p;
+  );
+);
+
+function env_slope_inv(y slope_pct) local(n a p d)
+(
+  n = clamp01(y);
+  a = clamp(slope_pct, -100, 100) / 100;
+
+  abs(a) < 0.000001 ? (
+    n;
+  ) : a >= 0.999999 ? (
+    d = 1 - exp(-ENV_VIS_SHAPE);
+    d <= 0 ? n : clamp01(-log(max(0.000000001, 1 - n * d)) / ENV_VIS_SHAPE);
+  ) : a > 0 ? (
+    p = 1 + a * (ENV_VIS_SHAPE - 1);
+    1 - ((1 - n) ^ (1 / p));
+  ) : (
+    p = 1 + (-a) * (ENV_VIS_SHAPE - 1);
+    n ^ (1 / p);
+  );
+);
+
+function env_segment_slope(raw_slope polarity)
+(
+  clamp(raw_slope, -100, 100) * polarity;
+);
+
+function env_slope_is_classic(raw_slope polarity)
+(
+  env_segment_slope(raw_slope, polarity) >= 99.999;
+);
+
+function env_migrate_old_slope(v polarity)
+(
+  v == 0 ? (polarity == ENV_RISE ? 100 : -100)
+  : v == 1 ? 0
+  : v == 2 ? (polarity == ENV_RISE ? -70 : 70)
+  : v == 3 ? (polarity == ENV_RISE ? 70 : -70)
+  : v == 4 ? 0
+  : v;
 );
 
 function stretch_window(age gsize) local(n denom)
@@ -2003,6 +2101,11 @@ function apply_release_attack_bridge(skip_idx) local(i v use)
         v[VC_RSTEP] = min(v[VC_RSTEP], seam_bridge_release_coef);
         v[VC_RHLEFT] = min(v[VC_RHLEFT], seam_bridge_samps);
         v[VC_GTIMER] = min(v[VC_GTIMER], 1);
+        (!env_slope_is_classic(v[VC_RCURVE], ENV_FALL)) ? (
+          v[VC_EPHASE] = 0;
+          v[VC_ESTART] = v[VC_ENV];
+          v[VC_RLEN] = min(max(1, floor(v[VC_RLEN])), seam_bridge_samps);
+        );
       );
 
       i += 1;
@@ -2137,6 +2240,19 @@ function start_voice(note vel chan) local(
     v[VC_HLEFT]  = voice_hold_samps;
     v[VC_STAGE]  = env0 >= 1 ? (voice_hold_samps > 0 ? ENV_HOLD : ENV_DECAY) : ENV_ATTACK;
     v[VC_AGE]    = note_counter;
+    v[VC_EPHASE] = 0;
+    v[VC_ESTART] = env0;
+    v[VC_ALEN]   = attack_samps;
+    v[VC_DLEN]   = decay_samps;
+    v[VC_RLEN]   = release_samps;
+    v[VC_ACURVE] = attack_slope_pct;
+    v[VC_DCURVE] = decay_slope_pct;
+    v[VC_RCURVE] = release_slope_pct;
+    (playmode == 2 && granular_amt > 0.0001 && seam_bridge_env > 0.0005 && env0 < 1 && !env_slope_is_classic(attack_slope_pct, ENV_RISE)) ? (
+      // For non-classic slopes, continue from the equivalent Attack curve point
+      // instead of spending a full Attack time above the inherited Release level.
+      v[VC_EPHASE] = env_slope_inv(env0, env_segment_slope(attack_slope_pct, ENV_RISE)) * max(1, attack_samps);
+    );
 
     v[VC_GMODE]    = (playmode == 2) ? 1 : 0;
     v[VC_OHOP]     = hybrid_hop_samps;
@@ -2191,6 +2307,10 @@ function release_voice_internal(v) local(donor donor_sm donor_tail)
       v[VC_RSTEP] = release_coef;
       v[VC_HLEFT] = 0;
       v[VC_TLEFT] = 0;
+      v[VC_EPHASE] = 0;
+      v[VC_ESTART] = v[VC_ENV];
+      v[VC_RLEN] = release_samps;
+      v[VC_RCURVE] = release_slope_pct;
       (v[VC_GMODE] > 0) ? (
         v[VC_CANSPAWN] = (v[VC_GMIX] > 0.0001 || v[VC_TAILMIX] > 0.0001) ? 1 : 0;
         v[VC_RHLEN] = max(1, release_handoff_samps);
@@ -2303,7 +2423,7 @@ function ui_knob(id x y r val vmin vmax defval wheel_step) local(hot norm ang px
     );
   );
 
-  hot && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+  hot && !ui_wheel_used && abs(ui_wheel) >= 1 && !ui_shift ? (
     step_amt = wheel_step * max(1, floor(abs(ui_wheel) / 120 + 0.5));
     norm = curve_norm(val, vmin, vmax, CURVE_LINEAR);
     norm = clamp01(norm + (ui_wheel > 0 ? step_amt : -step_amt));
@@ -2381,7 +2501,7 @@ function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local
     );
   );
 
-  hot && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+  hot && !ui_wheel_used && abs(ui_wheel) >= 1 && !ui_shift ? (
     step_amt = wheel_step * max(1, floor(abs(ui_wheel) / 120 + 0.5));
     norm = curve_norm(val, vmin, vmax, curve_mode);
     norm = clamp01(norm + (ui_wheel > 0 ? step_amt : -step_amt));
@@ -2428,7 +2548,19 @@ function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local
   val;
 );
 
-function draw_curve_line(x1 y1 x2 y2) local(i steps t u px py nx ny)
+function ui_shift_wheel_slope(id val defval) local(step_amt)
+(
+  (ui_hover_id == id && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1) ? (
+    step_amt = 5 * max(1, floor(abs(ui_wheel) / 120 + 0.5));
+    val = clamp(val + (ui_wheel > 0 ? step_amt : -step_amt), -100, 100);
+    ui_wheel_used = 1;
+    ui_value_changed = 1;
+  );
+
+  val;
+);
+
+function draw_curve_line(x1 y1 x2 y2 mode) local(i steps t u px py nx ny)
 (
   steps = 16;
   px = x1;
@@ -2436,7 +2568,7 @@ function draw_curve_line(x1 y1 x2 y2) local(i steps t u px py nx ny)
   i = 1;
   while (i <= steps) (
     t = i / steps;
-    u = env_curve01(t);
+    u = env_slope_shape(t, mode);
     nx = x1 + (x2 - x1) * t;
     ny = y1 + (y2 - y1) * u;
     gfx_line(px, py, nx, ny);
@@ -2567,7 +2699,15 @@ VC_BODYEND   = 31;
 VC_HLEFT     = 32;
 VC_RHLEFT    = 33;
 VC_RHLEN     = 34;
-VC_GBASE     = 35;
+VC_EPHASE    = 35;
+VC_ESTART    = 36;
+VC_ALEN      = 37;
+VC_DLEN      = 38;
+VC_RLEN      = 39;
+VC_ACURVE    = 40;
+VC_DCURVE    = 41;
+VC_RCURVE    = 42;
+VC_GBASE     = 43;
 
 VG_ACTIVE    = 0;
 VG_AGE       = 1;
@@ -2590,6 +2730,8 @@ ENV_RELEASE = 5;
 CURVE_LINEAR  = 0;
 CURVE_TIME    = 1;
 CURVE_SUSTAIN = 2;
+ENV_RISE = 1;
+ENV_FALL = -1;
 ENV_VIS_SHAPE = 6.90775527898214;
 
 MASK_S1  = 1;
@@ -2619,6 +2761,9 @@ MASK_S24 = 8388608;
 MASK_S25 = 16777216;
 MASK_S26 = 33554432;
 MASK_S27 = 67108864;
+MASK_S28 = 134217728;
+MASK_S29 = 268435456;
+MASK_S30 = 536870912;
 
 CLEAN_BANDS = 5;
 PUSH_EPS = 0.00000000000000000001;
@@ -2696,6 +2841,10 @@ mono_source = 0;
 dynamics_amt = 0;
 clean_amt = 0;
 room_amt = 0;
+attack_slope_pct = 100;
+decay_slope_pct = -100;
+release_slope_pct = -100;
+slope_schema = 0;
 clean_active_prev = 0;
 room_active_prev = 0;
 onset_mode_active = 0;
@@ -2848,6 +2997,9 @@ transport_playpos_prev = -1;
 reset_bank_state();
 m2e_reset();
 
+@serialize
+file_var(0, slope_schema);
+
 @slider
 attack_samps = max(1, floor(slider2 * srate * 0.001));
 decay_samps = max(1, floor(slider3 * srate * 0.001));
@@ -2859,6 +3011,16 @@ dynamics_amt = clamp01(slider22);
 clean_amt = clamp01(slider25);
 room_amt = clamp01(slider26);
 push_amt = clamp01(slider27 / 100);
+(slope_schema < 0.5) ? (
+  slider28 = env_migrate_old_slope(slider28, ENV_RISE);
+  slider29 = env_migrate_old_slope(slider29, ENV_FALL);
+  slider30 = env_migrate_old_slope(slider30, ENV_FALL);
+  slope_schema = 1;
+  sliderchange(MASK_S28 + MASK_S29 + MASK_S30);
+);
+attack_slope_pct = clamp(slider28, -100, 100);
+decay_slope_pct = clamp(slider29, -100, 100);
+release_slope_pct = clamp(slider30, -100, 100);
 (clean_amt <= 0.0001 && clean_active_prev > 0) ? reset_clean_buffers();
 (room_amt <= 0.0001 && room_active_prev > 0) ? reset_room_buffers();
 (push_amt <= 0.0001 && push_active_prev > 0) ? reset_push_buffers();
@@ -3453,10 +3615,26 @@ while (i < MAX_VOICES) (
     env = v[VC_ENV];
 
     stage == ENV_ATTACK ? (
-      env += (1 - env) * v[VC_ASTEP];
-      env >= 0.999 ? (
-        env = 1;
-        stage = (v[VC_HLEFT] > 0) ? ENV_HOLD : ENV_DECAY;
+      (env_slope_is_classic(v[VC_ACURVE], ENV_RISE)) ? (
+        env += (1 - env) * v[VC_ASTEP];
+        env >= 0.999 ? (
+          env = 1;
+          stage = (v[VC_HLEFT] > 0) ? ENV_HOLD : ENV_DECAY;
+          v[VC_EPHASE] = 0;
+          v[VC_ESTART] = env;
+        );
+      ) : (
+        env_phase = v[VC_EPHASE] + 1;
+        env_len = max(1, floor(v[VC_ALEN]));
+        env_n = clamp01(env_phase / env_len);
+        env = v[VC_ESTART] + (1 - v[VC_ESTART]) * env_slope_shape(env_n, env_segment_slope(v[VC_ACURVE], ENV_RISE));
+        v[VC_EPHASE] = env_phase;
+        (env_phase >= env_len || env >= 0.999) ? (
+          env = 1;
+          stage = (v[VC_HLEFT] > 0) ? ENV_HOLD : ENV_DECAY;
+          v[VC_EPHASE] = 0;
+          v[VC_ESTART] = env;
+        );
       );
     );
 
@@ -3464,14 +3642,34 @@ while (i < MAX_VOICES) (
       env = 1;
       hleft = max(0, floor(v[VC_HLEFT]) - 1);
       v[VC_HLEFT] = hleft;
-      hleft <= 0 ? stage = ENV_DECAY;
+      hleft <= 0 ? (
+        stage = ENV_DECAY;
+        v[VC_EPHASE] = 0;
+        v[VC_ESTART] = env;
+      );
     );
 
     stage == ENV_DECAY ? (
-      env += (sustain_level - env) * v[VC_DSTEP];
-      abs(env - sustain_level) <= 0.0005 ? (
-        env = sustain_level;
-        stage = ENV_SUSTAIN;
+      (env_slope_is_classic(v[VC_DCURVE], ENV_FALL)) ? (
+        env += (sustain_level - env) * v[VC_DSTEP];
+        abs(env - sustain_level) <= 0.0005 ? (
+          env = sustain_level;
+          stage = ENV_SUSTAIN;
+          v[VC_EPHASE] = 0;
+          v[VC_ESTART] = env;
+        );
+      ) : (
+        env_phase = v[VC_EPHASE] + 1;
+        env_len = max(1, floor(v[VC_DLEN]));
+        env_n = clamp01(env_phase / env_len);
+        env = v[VC_ESTART] + (sustain_level - v[VC_ESTART]) * env_slope_shape(env_n, env_segment_slope(v[VC_DCURVE], ENV_FALL));
+        v[VC_EPHASE] = env_phase;
+        (env_phase >= env_len || abs(env - sustain_level) <= 0.0005) ? (
+          env = sustain_level;
+          stage = ENV_SUSTAIN;
+          v[VC_EPHASE] = 0;
+          v[VC_ESTART] = env;
+        );
       );
     );
 
@@ -3485,8 +3683,16 @@ while (i < MAX_VOICES) (
         v[VC_RHLEFT] = rel_handoff_left;
         rel_handoff_mix = 1 - rel_handoff_left / rel_handoff_len;
       );
-      env *= v[VC_RSTEP];
-      env <= 0.00005 ? (
+      (env_slope_is_classic(v[VC_RCURVE], ENV_FALL)) ? (
+        env *= v[VC_RSTEP];
+      ) : (
+        env_phase = v[VC_EPHASE] + 1;
+        env_len = max(1, floor(v[VC_RLEN]));
+        env_n = clamp01(env_phase / env_len);
+        env = v[VC_ESTART] * (1 - env_slope_shape(env_n, env_segment_slope(v[VC_RCURVE], ENV_FALL)));
+        v[VC_EPHASE] = env_phase;
+      );
+      (env <= 0.00005 || ((!env_slope_is_classic(v[VC_RCURVE], ENV_FALL)) && v[VC_EPHASE] >= max(1, floor(v[VC_RLEN])))) ? (
         env = 0;
         v[VC_ACTIVE] = 0;
         stage = ENV_OFF;
@@ -3779,8 +3985,10 @@ spl0 += outL * out_trim;
 spl1 += outR * out_trim;
 
 @gfx 920 560
+gfx_getchar();
 mouse_down = mouse_cap & 1;
 mouse_rdown = mouse_cap & 2;
+ui_shift = (mouse_cap & 8) ? 1 : 0;
 mouse_pressed = mouse_down && !ui_prev_down;
 mouse_rpressed = mouse_rdown && !ui_prev_rdown;
 ui_now = time_precise();
@@ -4039,11 +4247,11 @@ gfx_line(graph_x + 14, graph_y + graph_h - 18, graph_x + graph_w - 14, graph_y +
 gfx_line(graph_x + 14, graph_y + 18, graph_x + 14, graph_y + graph_h - 18);
 
 gfx_r = 0.32; gfx_g = 0.67; gfx_b = 0.92; gfx_a = 1;
-draw_curve_line(p0x, p0y, p1x, p1y);
+draw_curve_line(p0x, p0y, p1x, p1y, env_segment_slope(attack_slope_pct, ENV_RISE));
 gfx_line(p1x, p1y, p2x, p2y);
-draw_curve_line(p2x, p2y, p3x, p3y);
+draw_curve_line(p2x, p2y, p3x, p3y, env_segment_slope(decay_slope_pct, ENV_FALL));
 gfx_line(p3x, p3y, p4x, p4y);
-draw_curve_line(p4x, p4y, p5x, p5y);
+draw_curve_line(p4x, p4y, p5x, p5y, env_segment_slope(release_slope_pct, ENV_FALL));
 
 for_y = graph_y + graph_h - 18 - (graph_h - 36) * sustain_level;
 gfx_r = 0.26; gfx_g = 0.52; gfx_b = 0.74; gfx_a = 0.6;
@@ -4065,6 +4273,7 @@ track_gap = max(10, (adsr_inner_w - track_w * track_count) / max(1, track_count 
 track_x = mid_x + 20;
 
 nv = ui_vslider(201, track_x, adsr_y, track_w, adsr_h, slider2, 0.1, 500, CURVE_TIME, 3, 0.020); abs(nv - slider2) > 0.0000001 ? (slider2 = nv; gfx_slider_mask |= MASK_S2;);
+nv = ui_shift_wheel_slope(201, slider28, 100); abs(nv - slider28) > 0.0000001 ? (slider28 = nv; gfx_slider_mask |= MASK_S28;);
 gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("A");
 sprintf(#ui_buf, "%.1f", slider2); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
@@ -4075,6 +4284,7 @@ sprintf(#ui_buf, "%.0f", slider20); gfx_x = track_x + (track_w - 18) * 0.5; gfx_
 
 track_x += track_w + track_gap;
 nv = ui_vslider(202, track_x, adsr_y, track_w, adsr_h, slider3, 1, 5000, CURVE_TIME, 110, 0.020); abs(nv - slider3) > 0.0000001 ? (slider3 = nv; gfx_slider_mask |= MASK_S3;);
+nv = ui_shift_wheel_slope(202, slider29, -100); abs(nv - slider29) > 0.0000001 ? (slider29 = nv; gfx_slider_mask |= MASK_S29;);
 gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("D");
 sprintf(#ui_buf, "%.0f", slider3); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
@@ -4085,6 +4295,7 @@ sprintf(#ui_buf, "%.0f%%", slider4 * 100); gfx_x = track_x + (track_w - 28) * 0.
 
 track_x += track_w + track_gap;
 nv = ui_vslider(204, track_x, adsr_y, track_w, adsr_h, slider5, 5, 5000, CURVE_TIME, 180, 0.020); abs(nv - slider5) > 0.0000001 ? (slider5 = nv; gfx_slider_mask |= MASK_S5;);
+nv = ui_shift_wheel_slope(204, slider30, -100); abs(nv - slider30) > 0.0000001 ? (slider30 = nv; gfx_slider_mask |= MASK_S30;);
 gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("R");
 sprintf(#ui_buf, "%.0f", slider5); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
@@ -4340,180 +4551,154 @@ rescan_flash > 0 ? (
 );
 
 ui_hover_id == 1001 ? (
-  sprintf(#tip_title, "Load-and-Go MultiSampler");
-  sprintf(#tip_body, "Slot 0 is polled automatically. Drop in files and the bank reloads itself.");
+  sprintf(#tip_title, "Sample");
+  sprintf(#tip_body, "Slot 0 auto-loads the bank.");
 );
 ui_hover_id == 1002 ? (
-  sprintf(#tip_title, "Auto-rescan status");
-  sprintf(#tip_body, "Green means fully loaded; amber means the selected file list is larger than the in-memory bank, usually from the memory cap or the max-sample cap.");
+  sprintf(#tip_title, "Bank status");
+  sprintf(#tip_body, "Green ready. Amber partial.");
 );
 ui_hover_id == 1003 ? (
-  sprintf(#tip_title, "FluxBridge M2E");
-  sprintf(#tip_body, "Listens only for the FluxBridge Receiver CC burst at fixed base 20 on MIDI channel 1 / channel 0 status bytes. When that exact 20-54 lane block is present, the sampler adds subtle motion-driven tone, focus, width, pan, and body contour, but transient-rich hits are protected so the attack stays intact.");
+  sprintf(#tip_title, "FluxBridge");
+  sprintf(#tip_body, "Uses fixed CC lanes for motion.");
 );
 ui_hover_id == 1100 ? (
-  sprintf(#tip_title, "Bank status");
-  sprintf(#tip_body, "Shows loaded/selected sample count. If this reads 5/121, the file slot has 121 files selected but only 5 fit or passed validation into memory.");
+  sprintf(#tip_title, "Bank");
+  sprintf(#tip_body, "Loaded count and trigger mode.");
 );
 ui_hover_id == 1101 ? (
   sprintf(#tip_title, "Pitch confidence");
-  sprintf(#tip_body, "Average confidence of the auto pitch detector. This is informational now that playback is bank-wide instead of key-zoned.");
+  sprintf(#tip_body, "Average pitch detection strength.");
 );
 ui_hover_id == 1102 ? (
-  sprintf(#tip_title, "Average brightness");
-  sprintf(#tip_body, "Bank-wide high-band energy estimate used by the chooser and Color macro.");
+  sprintf(#tip_title, "Brightness");
+  sprintf(#tip_body, "Average high-band energy.");
 );
 ui_hover_id == 1103 ? (
-  sprintf(#tip_title, "Average attack focus");
-  sprintf(#tip_body, "Bank-wide onset sharpness estimate used by the chooser and Focus macro.");
+  sprintf(#tip_title, "Attack focus");
+  sprintf(#tip_body, "Average onset sharpness.");
 );
 ui_hover_id == 1200 ? (
   sprintf(#tip_title, "Sample map");
-  sprintf(#tip_body, "Bars are shown in loaded-file order. Any trigger can now reach any bar; color still reflects inferred pitch, brightness, and focus.");
+  sprintf(#tip_body, "Loaded files by descriptor color.");
 );
 ui_hover_id >= 5000 ? (
   hov_sid = ui_hover_id - 5000;
   sm = sample_meta_base + hov_sid * SM_STRIDE;
   sprintf(#tip_title, "Sample %d", hov_sid + 1);
-  sprintf(#tip_body, "Root %.0f | Bright %.2f | Focus %.2f | Punch %.2f | Len %.0f ms", sm[SM_ROOT], sm[SM_BRIGHT], sm[SM_SHARP], sm[SM_FLAGS], sm[SM_LENMS]);
+  sprintf(#tip_body, "Root %.0f | Br %.2f | Focus %.2f | Len %.0f ms", sm[SM_ROOT], sm[SM_BRIGHT], sm[SM_SHARP], sm[SM_LENMS]);
 );
 ui_hover_id == 1300 ? (
-  sprintf(#tip_title, "Envelope section");
-  onset_mode_active ? sprintf(#tip_body, "AHDSR is curved instead of linear. Gaussian onset alignment anchors sample starts, Sustain is body-only in Hybrid, Release keeps the granular body alive, and a new Hybrid trigger can inherit the live Release level/body phase for smoother Attack handoff. Hold delays the handoff from punch to granular sustain.") : sprintf(#tip_body, "AHDSR is curved instead of linear. Sustain is body-only in Hybrid, Release keeps the granular body alive, and a new Hybrid trigger can inherit the live Release level/body phase for smoother Attack handoff.");
+  sprintf(#tip_title, "Envelope");
+  sprintf(#tip_body, "AHDSR. Shift+Wheel A/D/R slope.");
 );
 ui_hover_id == 1301 ? (
-  sprintf(#tip_title, "AHDSR graph");
-  onset_mode_active ? sprintf(#tip_body, "The graph shows AHDSR. In Gaussian Onset mode the detected onset anchors the source start, Attack controls pre-onset lead-in, held notes live in the body window, and Release can bridge its current level/body phase into the next Hybrid Attack.") : sprintf(#tip_body, "The graph shows AHDSR. In Hybrid mode the held note lives in the detected body window, and Release can bridge its current level/body phase into the next Hybrid Attack instead of hard-resetting.");
+  sprintf(#tip_title, "Envelope graph");
+  sprintf(#tip_body, "Shows AHDSR timing and slope.");
 );
 ui_hover_id == 1400 ? (
-  sprintf(#tip_title, "Playback controls");
-  sprintf(#tip_body, "Top buttons switch Playback mode, Transient handling, Random / Sequence / Walk triggering, Mono Source, and Classic versus Gaussian onset-start path. The knob grid includes Clean and Room Tame macros and automatically reflows to fit the panel width.");
+  sprintf(#tip_title, "Playback");
+  sprintf(#tip_body, "Mode, transient, selection, mono, onset.");
 );
 ui_hover_id == 201 ? (
   sprintf(#tip_title, "Attack");
-  onset_mode_active ? sprintf(#tip_body, "Current %.1f ms. Log-scaled time control with curved rise. In Gaussian Onset mode the same normalized Attack setting also decides how much pre-onset lead-in is kept before the detected onset anchor. In Hybrid, an active Release can seed this Attack from the equivalent envelope level and body-grain phase. Wheel adjusts; right-click or double-click resets.", slider2) : sprintf(#tip_body, "Current %.1f ms. Log-scaled time control with curved rise. Attack is envelope rise only; in Hybrid, an active Release can seed the next Attack level/body phase. Hold separately controls how long the hit stays at full level. Wheel adjusts; right-click or double-click resets.", slider2);
+  sprintf(#tip_body, "%.1f ms | slope %+.0f%%", slider2, slider28);
 );
 ui_hover_id == 202 ? (
   sprintf(#tip_title, "Decay");
-  sprintf(#tip_body, "Current %.0f ms. Log-scaled time control with curved fall to Sustain. Wheel adjusts; right-click or double-click resets.", slider3);
+  sprintf(#tip_body, "%.0f ms | slope %+.0f%%", slider3, slider29);
 );
 ui_hover_id == 205 ? (
   sprintf(#tip_title, "Hold");
-  sprintf(#tip_body, "Current %.0f ms. Keeps the envelope at full level after Attack. In Hybrid it also delays granular takeover and extra modulation so the head and early body stay punchier before the sustain body takes over. Wheel adjusts; right-click or double-click resets.", slider20);
+  sprintf(#tip_body, "%.0f ms at full level.", slider20);
 );
 ui_hover_id == 203 ? (
   sprintf(#tip_title, "Sustain");
-  sprintf(#tip_body, "Current %.0f%%. Perceptually curved sustain level. In Hybrid this holds the body region only; it does not keep replaying the tail. Wheel adjusts; right-click or double-click resets.", slider4 * 100);
+  sprintf(#tip_body, "%.0f%% held level.", slider4 * 100);
 );
 ui_hover_id == 204 ? (
   sprintf(#tip_title, "Release");
-  sprintf(#tip_body, "Current %.0f ms. Log-scaled time control with curved fade-out. In Hybrid, note-off keeps the granular body engine alive under the Release envelope; if a new Hybrid note arrives during that release, the next Attack starts from the current Release level and maps the body-grain cursor to the equivalent phase for a smoother handoff. Wheel adjusts; right-click or double-click resets.", slider5);
+  sprintf(#tip_body, "%.0f ms | slope %+.0f%%", slider5, slider30);
 );
 ui_hover_id == 301 ? (
   sprintf(#tip_title, "Color");
-  sprintf(#tip_body, "Current %.2f. Gentle spectral tilt: negative warms, positive brightens. Wheel adjusts; right-click or double-click resets.", slider6);
+  sprintf(#tip_body, "%.2f warm/bright tilt.", slider6);
 );
 ui_hover_id == 302 ? (
   sprintf(#tip_title, "Focus");
-  sprintf(#tip_body, "Current %.2f. Negative softens, positive adds clarity. Wheel adjusts; right-click or double-click resets.", slider7);
+  sprintf(#tip_body, "%.2f soft/clear edge.", slider7);
 );
 ui_hover_id == 303 ? (
   sprintf(#tip_title, "Width");
-  sprintf(#tip_body, "Current %.2f. Mild mid/side spread kept intentionally mono-safe. Wheel adjusts; right-click or double-click resets.", slider8);
+  sprintf(#tip_body, "%.2f mono-safe spread.", slider8);
 );
 ui_hover_id == 304 ? (
   sprintf(#tip_title, "Liveliness");
-  sprintf(#tip_body, "Current %.2f. Controls start-position jitter, tiny detune drift, gain micro-variation, Random-mode adventurousness, and the depth of auto FluxBridge motion when present. Wheel adjusts; right-click or double-click resets.", slider9);
+  sprintf(#tip_body, "%.2f variation depth.", slider9);
 );
 ui_hover_id == 305 ? (
   sprintf(#tip_title, "Truth");
-  sprintf(#tip_body, "Current %.2f. 0 favors matched playback, 1 preserves raw sample behavior. Wheel adjusts; right-click or double-click resets.", slider10);
+  sprintf(#tip_body, "%.2f matched to raw.", slider10);
 );
 ui_hover_id == 306 ? (
   sprintf(#tip_title, "Output");
-  sprintf(#tip_body, "Current %.1f dB. Final output trim after the macro, Dynamics, and Weight stages. Wheel adjusts; right-click or double-click resets.", slider11);
+  sprintf(#tip_body, "%.1f dB final trim.", slider11);
 );
 ui_hover_id == 313 ? (
   sprintf(#tip_title, "Clean");
-  sprintf(#tip_body, "Current %.2f. ERB-detector-driven downward cleanup before Color, Focus, Weight, and Dynamics. It learns a low-level band floor, gently pushes down hiss/room bed between useful material, protects transient heads, and allows slightly stronger cleanup in detected tail/release regions. Wheel adjusts; right-click or double-click resets.", slider25);
+  sprintf(#tip_body, "%.2f hiss/bed cleanup.", slider25);
 );
 ui_hover_id == 314 ? (
   sprintf(#tip_title, "Room Tame");
-  sprintf(#tip_body, "Current %.2f. Mild de-reverb-style late-tail control before Color, Focus, Weight, and Dynamics. It watches for decaying diffuse energy, protects attacks and held heads, trims low-mid and presence smear more than air, and slightly narrows wide late-room wash. Wheel adjusts; right-click or double-click resets.", slider26);
+  sprintf(#tip_body, "%.2f late-room restraint.", slider26);
 );
 ui_hover_id == 315 ? (
   sprintf(#tip_title, "Push");
-  sprintf(#tip_body, "Current %.0f%%. Final salience-budget pushback after Weight and Dynamics but before Output. Higher settings trim foreground-grabbing presence and air, restrain clicky upper spikes, narrow bright side wash, and add broadband distance; 100%% is intentionally extreme BG-level pushback. Wheel adjusts; right-click or double-click resets.", slider27);
+  sprintf(#tip_body, "%.0f%% salience pushback.", slider27);
 );
 ui_hover_id == 312 ? (
   sprintf(#tip_title, "Dynamics");
-  sprintf(#tip_body, "Current %.2f. Adds controlled loudness and density without naive gain piling: extra drive feeds a program-dependent compressor, gentle saturation, and a safety peak guard so the sound lifts without flying out of control. Wheel adjusts; right-click or double-click resets.", slider22);
+  sprintf(#tip_body, "%.2f density and guard.", slider22);
 );
 ui_hover_id == 307 ? (
   sprintf(#tip_title, "Pitch");
-  sprintf(#tip_body, "Current %+.1f semitones. Global transpose for every engine. In Tape and Hybrid it stacks on the same slowed-down rate path; in Raw it is simple repitching.", slider12);
+  sprintf(#tip_body, "%+.1f semitones.", slider12);
 );
 ui_hover_id == 308 ? (
   sprintf(#tip_title, "Stretch");
-  sprintf(#tip_body, "Current %.2fx. Used by Tape and Hybrid only. Higher values slow and lower the direct path naturally; Hybrid then layers structured grains after the head instead of stretching the hit itself.", slider14);
+  sprintf(#tip_body, "%.2fx Tape/Hybrid speed.", slider14);
 );
 ui_hover_id == 309 ? (
   sprintf(#tip_title, "Weight");
-  sprintf(#tip_body, "Current %.2f. Short ER-style thickener with damping and body bloom. In transient modes it ducks around the first hit so heavy attacks stay punchy.", slider15);
+  sprintf(#tip_body, "%.2f short body bloom.", slider15);
 );
 ui_hover_id == 310 ? (
   sprintf(#tip_title, "Granular body");
-  sprintf(#tip_body, "Current %.2f. Only used in Hybrid mode. Low values keep the direct sample dominant; high values let segmented body grains take over more. Hybrid grains now use a COLA-friendly Hann overlap with fixed quarter-hop spacing, so transitions are smoother and less robotic while the picker still avoids recently used starts and widens to matched same-phase body donors before it repeats obvious material.", slider18);
+  sprintf(#tip_body, "%.2f Hybrid body grains.", slider18);
 );
 ui_hover_id == 311 ? (
   sprintf(#tip_title, "Tail borrow");
-  sprintf(#tip_body, "Current %.2f. Only used in Hybrid mode. It chooses matched donor tails from elsewhere in the bank, but only for the tail and release path. If close donors get exhausted, the search widens to any coherent same-phase tails in the bank before falling back toward self reuse.", slider19);
+  sprintf(#tip_body, "%.2f matched donor tails.", slider19);
 );
 ui_hover_id == 401 ? (
-  sprintf(#tip_title, "Selection mode");
-  (slider13 | 0) == 2 ? (
-    sprintf(#tip_body, "Walk mode builds a cheap descriptor-cluster graph from brightness, attack focus, transient richness, length, pitch confidence, body span, and tail span. Each trigger chooses a nearby-but-not-identical bridge from the previous sample, and Hybrid donor grains use the same coherence bias.");
-  ) : (slider13 | 0) == 1 ? (
-    sprintf(#tip_body, "Sequence mode walks through every loaded file in order, one trigger at a time.");
-  ) : (
-    sprintf(#tip_body, "Random mode chooses from the whole bank every trigger, with anti-repeat weighting and subtle descriptor matching.");
-  );
+  sprintf(#tip_title, "Selection");
+  (slider13 | 0) == 2 ? sprintf(#tip_body, "Walk: coherent descriptor bridges.") : (slider13 | 0) == 1 ? sprintf(#tip_body, "Sequence: loaded order.") : sprintf(#tip_body, "Random: weighted bank picks.");
 );
 ui_hover_id == 402 ? (
-  sprintf(#tip_title, "Transient mode");
-  (slider16 | 0) == 1 ? (
-    onset_mode_active ? sprintf(#tip_body, "Punch mode hard-locks playback to the Gaussian-detected onset, keeps the first hit closer to raw speed before slowdown or hybrid grains take over, and damps FluxBridge and Weight around the hit so heavy transients stay raw.") : sprintf(#tip_body, "Punch mode hard-locks playback to the detected onset, keeps the first hit closer to raw speed before slowdown or hybrid grains take over, and damps FluxBridge and Weight around the hit so heavy transients stay raw.");
-  ) : (slider16 | 0) == 2 ? (
-    sprintf(#tip_body, "Off disables transient locking. Start-position liveliness, head protection, and hybrid punch preservation are left fully free.");
-  ) : (
-    onset_mode_active ? sprintf(#tip_body, "Auto infers whether a sample is transient-rich and, with Gaussian Onset active, anchors the start consistently across different materials before deciding how much of the head to protect.") : sprintf(#tip_body, "Auto infers whether a sample is transient-rich and only protects the head when the onset looks sharp enough to benefit.");
-  );
+  sprintf(#tip_title, "Transient");
+  (slider16 | 0) == 1 ? sprintf(#tip_body, "Punch: stronger attack lock.") : (slider16 | 0) == 2 ? sprintf(#tip_body, "Off: no transient lock.") : sprintf(#tip_body, "Auto: protect sharp hits.");
 );
 ui_hover_id == 403 ? (
   sprintf(#tip_title, "Playback mode");
-  (slider17 | 0) == 2 ? (
-    onset_mode_active ? sprintf(#tip_body, "Hybrid mode keeps the selected sample head direct, uses Gaussian-onset-aligned body phase for held sustain, and widens to matched same-phase body donors before repeating obvious grains. In Walk mode those donor choices get the same descriptor-bridge bias. Borrow still pushes the tail and release toward donor tails after note-off.") : sprintf(#tip_body, "Hybrid mode keeps the selected sample head direct, uses the body phase for held sustain, and now widens to matched same-phase body donors before repeating obvious grains. In Walk mode those donor choices get the same descriptor-bridge bias. Borrow still pushes the tail and release toward donor tails after note-off.");
-  ) : (slider17 | 0) == 1 ? (
-    sprintf(#tip_body, "Tape mode is the current natural slowdown path: slower, lower, heavier, with transient protection on top.");
-  ) : (
-    sprintf(#tip_body, "Raw mode disables Stretch and plays the direct sample only, with Pitch, ADSR, Weight, and the existing macro and FluxBridge stages.");
-  );
+  (slider17 | 0) == 2 ? sprintf(#tip_body, "Hybrid: head direct, body grains.") : (slider17 | 0) == 1 ? sprintf(#tip_body, "Tape: slowed rate path.") : sprintf(#tip_body, "Raw: direct playback.");
 );
 ui_hover_id == 404 ? (
   sprintf(#tip_title, "Mono Source");
-  (slider21 | 0) ? (
-    sprintf(#tip_body, "On. Each loaded file is summed to mono before playback, grains, Weight, Width, and the rest of the macro chain. Good when you want tighter center energy and consistent donor blending from mixed stereo libraries.");
-  ) : (
-    sprintf(#tip_body, "Off. Sources keep their original channel layout before the macro chain. Turn Mono Source on when you want every file centered before widening and weighting are added back downstream.");
-  );
+  (slider21 | 0) ? sprintf(#tip_body, "On: sum source to mono.") : sprintf(#tip_body, "Off: keep source stereo.");
 );
 ui_hover_id == 405 ? (
-  sprintf(#tip_title, "Onset start path");
-  (slider23 | 0) ? (
-    sprintf(#tip_body, "Gaussian Onset mode uses a smoothed onset detector to anchor different samples to their real hit point. Attack then doubles as pre-onset inclusion: low Attack keeps very little lead-in for punchier starts, higher Attack preserves more of what comes before the hit. Hybrid uses the same onset-relative body and tail phases when borrowing donor grains.");
-  ) : (
-    sprintf(#tip_body, "Classic Onset mode keeps the original simpler start detector and the old start-position behavior. Use Gaussian Onset when you want different materials to line up harder around the hit.");
-  );
+  sprintf(#tip_title, "Onset");
+  (slider23 | 0) ? sprintf(#tip_body, "Gaussian: stronger hit anchor.") : sprintf(#tip_body, "Classic: simpler start detector.");
 );
 
 draw_tooltip_box();
@@ -4521,4 +4706,3 @@ draw_tooltip_box();
 gfx_slider_mask ? sliderchange(gfx_slider_mask);
 ui_prev_down = mouse_down;
 ui_prev_rdown = mouse_rdown;
- 
