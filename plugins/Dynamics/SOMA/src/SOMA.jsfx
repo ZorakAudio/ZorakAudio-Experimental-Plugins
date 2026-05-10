@@ -17,6 +17,8 @@ slider8:style=1<0,4,1{Clean,Punch,Dense,Body,Wild}>--Style
 slider9:guard=1<0,1,1{Off,On}>--Ceiling Guard
 slider10:display_range_db=24<12,60,1>--Display Range (dB)
 slider11:motion_pct=6<0,100,1>--Sub-JND Motion (%)
+slider12:tame_pct=35<0,100,1>--Tame / Foreground Restraint (%)
+slider13:relief_pct=30<0,100,1>--Relief / Dynamic Contrast (%)
 
 @init
 MAX_LOOK = 65536;
@@ -37,6 +39,8 @@ DEF_PRESERVE_PCT  = 45;
 DEF_BODY_PCT      = 20;
 DEF_STEREO_LINK   = 100;
 DEF_MOTION_PCT    = 6;
+DEF_TAME_PCT      = 0;     // 0 = exact legacy behavior
+DEF_RELIEF_PCT    = 0;     // 0 = exact legacy behavior
 DEF_DISPLAY_RANGE = 24;
 DEF_STYLE         = 1;     // 0 Clean, 1 Punch, 2 Dense, 3 Body, 4 Wild
 DEF_GUARD         = 1;     // 0 Off, 1 On
@@ -83,6 +87,29 @@ AUDIO_BODY_MID     = 0.55;   // low-mid contribution into somatic addback
 AUDIO_BODY_OUT     = 0.55;   // final somatic addback gain
 AUDIO_MOTION_BASE  = 0.000035; // sub-JND motion base depth
 
+// TAME is a transparent, appended control. At 0%, it resolves to neutral multipliers.
+// It only engages during heavier gain reduction to reduce shout/foreground inflation.
+TAME_START_GR_DB      = 3.0;
+TAME_FULL_GR_DB       = 9.5;
+TAME_PRESENCE_DEPTH   = 0.72;
+TAME_AIR_DEPTH        = 0.55;
+TAME_BODY_MID_DEPTH   = 0.68;
+TAME_LOW_DEPTH        = 0.10;
+TAME_MIN_ADD_KEEP     = 0.18;
+
+// RELIEF is also transparent at 0%. It restores contrast by slowing deep-GR recovery,
+// ducking GR-keyed addback in valleys, and giving tiny transient emphasis where headroom permits.
+RELIEF_START_GR_DB       = 2.0;
+RELIEF_FULL_GR_DB        = 8.0;
+RELIEF_RELEASE_HOLD      = 0.45;
+RELIEF_ADD_DUCK          = 0.38;
+RELIEF_VALLEY_DUCK       = 0.42;
+RELIEF_BODY_DUCK         = 0.25;
+RELIEF_BODY_VALLEY_DUCK  = 0.35;
+RELIEF_TRANSIENT_GAIN    = 0.08;
+RELIEF_MIN_ADD_KEEP      = 0.25;
+RELIEF_MIN_BODY_KEEP     = 0.35;
+
 // ============================================================================
 
 bufL = 0;
@@ -123,6 +150,8 @@ safety_show_db = 0;
 rand_state = 0.12345;
 motionL = 0;
 motionR = 0;
+relief_fast = 0;
+relief_slow = 0;
 
 drag_mode = 0;
 last_mouse_cap = 0;
@@ -216,6 +245,8 @@ function update_params() local(style_i rel_eff hist_hz) (
   body_amt = clamp(body_pct*0.01*bodymul,0,1.8);
   link_amt = clamp(stereo_link_pct*0.01,0,1);
   motion_amt = clamp(motion_pct*0.01,0,1);
+  tame_amt = clamp(tame_pct*0.01,0,1);
+  relief_amt = clamp(relief_pct*0.01,0,1);
   range_db = clamp(display_range_db,12,60);
 
   c120 = onepole_coeff(120);
@@ -227,6 +258,8 @@ function update_params() local(style_i rel_eff hist_hz) (
 
   meter_peak_decay = exp(-1/(0.35*srate));
   meter_rms_coef = exp(-1/(0.20*srate));
+  relief_fast_decay = exp(-1/(0.012*srate));
+  relief_slow_coef = exp(-1/(0.090*srate));
 
   hist_hz = 90;
   hist_skip = max(1, floor(srate/hist_hz));
@@ -306,6 +339,18 @@ function set_motion(v) (
   update_params();
 );
 
+function set_tame(v) (
+  tame_pct = clamp(floor(v + 0.5), 0, 100);
+  notify_slider(2048);
+  update_params();
+);
+
+function set_relief(v) (
+  relief_pct = clamp(floor(v + 0.5), 0, 100);
+  notify_slider(4096);
+  update_params();
+);
+
 // Defaults. Right-click or double-click any GUI control to restore its default.
 function reset_control(ctl) (
   ctl == 1 ? set_drive(DEF_DRIVE_DB);
@@ -319,6 +364,8 @@ function reset_control(ctl) (
   ctl == 9 ? set_range(DEF_DISPLAY_RANGE);
   ctl == 10 ? set_style(DEF_STYLE);
   ctl == 11 ? set_guard(DEF_GUARD);
+  ctl == 12 ? set_tame(DEF_TAME_PCT);
+  ctl == 13 ? set_relief(DEF_RELIEF_PCT);
 );
 
 function val_norm(v lo hi) (
@@ -341,12 +388,14 @@ function inside(mx my x y ww hh) (
   mx >= x && mx <= x + ww && my >= y && my <= y + hh;
 );
 
-// Parameter hit-test: returns 1-11 for resettable controls, 0 for non-parameter areas.
+// Parameter hit-test: returns 1-13 for resettable controls, 0 for non-parameter areas.
 function hover_param() local(id) (
   id = 0;
   inside(mouse_x, mouse_y, drive_badge_x, drive_badge_y, drive_badge_w, drive_badge_h+14) ? id = 1;
   inside(mouse_x, mouse_y, ceil_badge_x, ceil_badge_y, ceil_badge_w, ceil_badge_h) ? id = 2;
   inside(mouse_x, mouse_y, w*0.34, 10, w*0.34, 23) ? id = 10;
+  inside(mouse_x, mouse_y, tame_top_x, top_ctl_y, tame_top_w, top_ctl_h) ? id = 12;
+  inside(mouse_x, mouse_y, relief_top_x, top_ctl_y, relief_top_w, top_ctl_h) ? id = 13;
 
   inside(mouse_x, mouse_y, drive_ctl_x, row1_y, tw6, tile_h) ? id = 1;
   inside(mouse_x, mouse_y, ceil_ctl_x,  row1_y, tw6, tile_h) ? id = 2;
@@ -402,6 +451,14 @@ function ui_set_from_control(ctl) local(n) (
   ctl == 10 ? (
     n = control_norm(mouse_x, style_ctl_x, tw6);
     set_style(min(4, floor(n * 5)));
+  );
+  ctl == 12 ? (
+    n = control_norm(mouse_x, tame_top_x, tame_top_w);
+    set_tame(n * 100);
+  );
+  ctl == 13 ? (
+    n = control_norm(mouse_x, relief_top_x, relief_top_w);
+    set_relief(n * 100);
   );
 );
 
@@ -469,7 +526,7 @@ function draw_tooltip_box() local(tx ty ww hh pad lh yy title_sz body_sz margin 
   );
 );
 
-slider_show(2047, 0);
+slider_show(8191, 0);
 native_sliders_hidden = 1;
 update_params();
 
@@ -539,6 +596,10 @@ targetR = target_linked*link_amt + targetR_unlinked*(1-link_amt);
 // Adaptive release: deep gain reduction releases faster, shallow GR releases smoother.
 depth_now = 1 - min(gainL, gainR);
 rel_now = relcoef*(1-depth_now) + fastrelcoef*depth_now;
+pre_gr_db_pos = -lin2db(max(min(gainL,gainR), 0.000000000001));
+relief_zone_pre = clamp((pre_gr_db_pos - RELIEF_START_GR_DB) / max(0.000001, RELIEF_FULL_GR_DB - RELIEF_START_GR_DB), 0, 1);
+relief_power_pre = relief_amt * relief_zone_pre * relief_zone_pre;
+rel_now = rel_now*(1 - relief_power_pre*RELIEF_RELEASE_HOLD) + relcoef*(relief_power_pre*RELIEF_RELEASE_HOLD);
 
 targetL < gainL ? gainL = targetL : gainL = gainL*rel_now + targetL*(1-rel_now);
 targetR < gainR ? gainR = targetR : gainR = gainR*rel_now + targetR*(1-rel_now);
@@ -549,6 +610,18 @@ mainR = delR * gainR;
 
 gr_lin = min(gainL, gainR);
 gr_amt = clamp(1 - gr_lin, 0, 1);
+main_gr_db_pos = -lin2db(max(gr_lin, 0.000000000001));
+
+tame_zone = clamp((main_gr_db_pos - TAME_START_GR_DB) / max(0.000001, TAME_FULL_GR_DB - TAME_START_GR_DB), 0, 1);
+tame_power = tame_amt * tame_zone * tame_zone;
+
+relief_zone = clamp((main_gr_db_pos - RELIEF_START_GR_DB) / max(0.000001, RELIEF_FULL_GR_DB - RELIEF_START_GR_DB), 0, 1);
+relief_power = relief_amt * relief_zone * relief_zone;
+relief_level = max(abs(delL), abs(delR));
+relief_fast = max(relief_level, relief_fast * relief_fast_decay);
+relief_slow = relief_slow * relief_slow_coef + relief_level * (1 - relief_slow_coef);
+relief_transient = clamp((relief_fast - relief_slow) / max(relief_slow,0.000001), 0, 1);
+relief_valley = clamp((relief_slow - relief_level) / max(relief_slow,0.000001), 0, 1);
 
 // 4) Salience addback: presence/air is restored in proportion to gain reduction.
 add_lp120L += c120 * (delL - add_lp120L);
@@ -567,13 +640,22 @@ presBandR = add_lp6000R - add_lp1600R;
 airBandL = delL - add_lp6000L;
 airBandR = delR - add_lp6000R;
 
-presAddL = (presBandL*AUDIO_PRESENCE_ADD + airBandL*AUDIO_AIR_ADD) * preserve * gr_amt;
-presAddR = (presBandR*AUDIO_PRESENCE_ADD + airBandR*AUDIO_AIR_ADD) * preserve * gr_amt;
+tame_pres_scale = max(TAME_MIN_ADD_KEEP, 1 - tame_power*TAME_PRESENCE_DEPTH);
+tame_air_scale = max(TAME_MIN_ADD_KEEP, 1 - tame_power*TAME_AIR_DEPTH);
+tame_low_scale = max(TAME_MIN_ADD_KEEP, 1 - tame_power*TAME_LOW_DEPTH);
+tame_body_mid_scale = max(TAME_MIN_ADD_KEEP, 1 - tame_power*TAME_BODY_MID_DEPTH);
+relief_add_scale = max(RELIEF_MIN_ADD_KEEP, 1 - relief_power*(RELIEF_ADD_DUCK + relief_valley*RELIEF_VALLEY_DUCK));
+
+presAddL = (presBandL*AUDIO_PRESENCE_ADD*tame_pres_scale + airBandL*AUDIO_AIR_ADD*tame_air_scale) * preserve * gr_amt * relief_add_scale;
+presAddR = (presBandR*AUDIO_PRESENCE_ADD*tame_pres_scale + airBandR*AUDIO_AIR_ADD*tame_air_scale) * preserve * gr_amt * relief_add_scale;
 
 // 5) Somatic addback: controlled low/low-mid density keyed to GR, not static EQ.
 bodyDrive = body_amt * gr_amt;
-bodyAddL = softsat(add_lp120L*AUDIO_BODY_LOW + bodyBandL*AUDIO_BODY_MID, bodyDrive) * bodyDrive * AUDIO_BODY_OUT;
-bodyAddR = softsat(add_lp120R*AUDIO_BODY_LOW + bodyBandR*AUDIO_BODY_MID, bodyDrive) * bodyDrive * AUDIO_BODY_OUT;
+relief_body_scale = max(RELIEF_MIN_BODY_KEEP, 1 - relief_power*(RELIEF_BODY_DUCK + relief_valley*RELIEF_BODY_VALLEY_DUCK));
+bodySrcL = add_lp120L*AUDIO_BODY_LOW*tame_low_scale + bodyBandL*AUDIO_BODY_MID*tame_body_mid_scale;
+bodySrcR = add_lp120R*AUDIO_BODY_LOW*tame_low_scale + bodyBandR*AUDIO_BODY_MID*tame_body_mid_scale;
+bodyAddL = softsat(bodySrcL, bodyDrive) * bodyDrive * AUDIO_BODY_OUT * relief_body_scale;
+bodyAddR = softsat(bodySrcR, bodyDrive) * bodyDrive * AUDIO_BODY_OUT * relief_body_scale;
 
 // 6) Sub-JND motion: tiny decorrelated pressure drift under heavy limiting. Default is intentionally low.
 randA = rand(1) - 0.5;
@@ -582,8 +664,9 @@ motion_coef = AUDIO_MOTION_BASE * motion_amt * gr_amt;
 motionL = motionL*0.9997 + randA*motion_coef;
 motionR = motionR*0.9997 + randB*motion_coef;
 
-outL = mainL + presAddL + bodyAddL;
-outR = mainR + presAddR + bodyAddR;
+relief_trans_gain = 1 + relief_power * RELIEF_TRANSIENT_GAIN * relief_transient;
+outL = mainL * relief_trans_gain + presAddL + bodyAddL;
+outR = mainR * relief_trans_gain + presAddR + bodyAddR;
 
 outL *= (1 + motionL);
 outR *= (1 + motionR);
@@ -642,7 +725,7 @@ hist_count >= hist_skip ? (
 @gfx 980 620
 // GUI-only surface. Native sliders are hidden with slider_show(); these controls own the UX.
 native_sliders_hidden == 0 ? (
-  slider_show(2047, 0);
+  slider_show(8191, 0);
   native_sliders_hidden = 1;
 );
 
@@ -694,6 +777,14 @@ ceil_badge_w = 92;
 ceil_badge_h = 22;
 ceil_badge_x = meter_x - 30;
 ceil_badge_y = max(plot_y+2, min(plot_bot-ceil_badge_h-2, ceil_y - ceil_badge_h*0.5));
+
+// Compact top-bar controls appended for compatibility. They do not move the original bottom controls.
+top_ctl_y = 10;
+top_ctl_h = 23;
+tame_top_w = 82;
+relief_top_w = 92;
+relief_top_x = w - relief_top_w - 12;
+tame_top_x = relief_top_x - tame_top_w - 8;
 
 // Mouse.
 mouse_down = mouse_cap & 1;
@@ -755,6 +846,9 @@ mouse_clicked && !dbl_reset ? (
   drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, guard_ctl_x, row1_y, tw6, tile_h) ? (
     guard >= 0.5 ? set_guard(0) : set_guard(1);
   );
+
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, tame_top_x, top_ctl_y, tame_top_w, top_ctl_h) ? (active_ctl = 12; ui_set_from_control(active_ctl););
+  drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, relief_top_x, top_ctl_y, relief_top_w, top_ctl_h) ? (active_ctl = 13; ui_set_from_control(active_ctl););
 
   drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, pres_ctl_x, row2_y, tw5, tile_h) ? (active_ctl = 5; ui_set_from_control(active_ctl););
   drag_mode == 0 && active_ctl == 0 && inside(mouse_x, mouse_y, body_ctl_x, row2_y, tw5, tile_h) ? (active_ctl = 6; ui_set_from_control(active_ctl););
@@ -897,6 +991,17 @@ style_i == 4 ? strcpy(#style_name,"Wild");
 sprintf(#s,"%s limiting  |  LA %.1f ms  |  Release %.0f ms",#style_name,lookahead_ms,release_ms);
 gfx_drawstr(#s);
 
+// Compact appended controls: transparent at 0%, right/double-click reset.
+gfx_set(0.080,0.083,0.105,1); gfx_rect(tame_top_x,top_ctl_y,tame_top_w,top_ctl_h);
+gfx_set(0.42,0.53,0.78,0.95); gfx_rect(tame_top_x,top_ctl_y,tame_top_w*val_norm(tame_pct,0,100),2);
+gfx_setfont(1,"Arial",10); gfx_set(0.62,0.65,0.73,1); gfx_x=tame_top_x+7; gfx_y=top_ctl_y+4; gfx_drawstr("TAME");
+gfx_set(0.90,0.92,1.00,1); gfx_x=tame_top_x+43; gfx_y=top_ctl_y+4; sprintf(#s,"%.0f%%",tame_pct); gfx_drawstr(#s);
+
+gfx_set(0.080,0.083,0.105,1); gfx_rect(relief_top_x,top_ctl_y,relief_top_w,top_ctl_h);
+gfx_set(0.42,0.53,0.78,0.95); gfx_rect(relief_top_x,top_ctl_y,relief_top_w*val_norm(relief_pct,0,100),2);
+gfx_setfont(1,"Arial",10); gfx_set(0.62,0.65,0.73,1); gfx_x=relief_top_x+7; gfx_y=top_ctl_y+4; gfx_drawstr("RELIEF");
+gfx_set(0.90,0.92,1.00,1); gfx_x=relief_top_x+55; gfx_y=top_ctl_y+4; sprintf(#s,"%.0f%%",relief_pct); gfx_drawstr(#s);
+
 // Left Drive badge.
 gfx_set(0.25,0.39,0.61,0.96); gfx_rect(drive_badge_x,drive_badge_y,drive_badge_w,drive_badge_h);
 gfx_set(0.86,0.90,1.00,1); gfx_x = drive_badge_x + 8; gfx_y = drive_badge_y + 6;
@@ -987,7 +1092,7 @@ gfx_setfont(2,"Arial",15); gfx_set(0.86,0.88,0.94,1); gfx_x=range_ctl_x+10; gfx_
 // Footer readout.
 gfx_setfont(1,"Arial",10);
 gfx_set(0.47,0.49,0.56,1);
-gfx_x = 12; gfx_y = h - 15; gfx_drawstr("Drag tiles horizontally. Hover for help. Right-click/double-click resets. Tooltip sizing lives near top of @init.");
+gfx_x = 12; gfx_y = h - 15; gfx_drawstr("Drag tiles/top controls. Hover for help. Right-click/double-click resets. Tooltip sizing lives near top of @init.");
 gfx_set(0.76,0.78,0.84,1);
 gfx_x = w - 215; gfx_y = h - 15;
 sprintf(#s,"Out %.2f dBFS   GR %.1f dB",ceiling_db,gr_show_db);
@@ -1001,6 +1106,8 @@ inside(mouse_x, mouse_y, drive_badge_x, drive_badge_y, drive_badge_w, drive_badg
 inside(mouse_x, mouse_y, ceil_badge_x, ceil_badge_y, ceil_badge_w, ceil_badge_h) ? tt_id = 2;
 inside(mouse_x, mouse_y, gr_badge_x, gr_badge_y, gr_badge_w, gr_badge_h) ? tt_id = 14;
 inside(mouse_x, mouse_y, w*0.34, 10, w*0.34, 23) ? tt_id = 10;
+inside(mouse_x, mouse_y, tame_top_x, top_ctl_y, tame_top_w, top_ctl_h) ? tt_id = 15;
+inside(mouse_x, mouse_y, relief_top_x, top_ctl_y, relief_top_w, top_ctl_h) ? tt_id = 16;
 
 inside(mouse_x, mouse_y, drive_ctl_x, row1_y, tw6, tile_h) ? tt_id = 1;
 inside(mouse_x, mouse_y, ceil_ctl_x,  row1_y, tw6, tile_h) ? tt_id = 2;
@@ -1026,6 +1133,8 @@ active_ctl == 7 ? tt_id = 7;
 active_ctl == 8 ? tt_id = 8;
 active_ctl == 9 ? tt_id = 9;
 active_ctl == 10 ? tt_id = 10;
+active_ctl == 12 ? tt_id = 15;
+active_ctl == 13 ? tt_id = 16;
 
 strcpy(#tt1,""); strcpy(#tt2,""); strcpy(#tt3,""); strcpy(#tt4,""); strcpy(#tt5,""); tt_lines = 0;
 
@@ -1167,6 +1276,24 @@ tt_id == 14 ? (
   strcpy(#tt3,"This includes the main limiter plus the final safety catch.");
   strcpy(#tt4,"If this stays below -8 dB for long sections, back off Drive.");
   tt_lines = 4;
+);
+
+tt_id == 15 ? (
+  sprintf(#tt1,"TAME  %.0f%%",tame_pct);
+  strcpy(#tt2,"Transparent at 0%. Heavy-GR restraint for shout/foreground inflation.");
+  strcpy(#tt3,"After ~3 dB GR it trims presence, air, and low-mid addback.");
+  strcpy(#tt4,"Use 15-45% when vocals/assets get too close at loud playback.");
+  strcpy(#tt5,"Right-click/double-click resets to 0% legacy behavior.");
+  tt_lines = 5;
+);
+
+tt_id == 16 ? (
+  sprintf(#tt1,"RELIEF  %.0f%%",relief_pct);
+  strcpy(#tt2,"Transparent at 0%. Anti-flattening control for dynamic contrast.");
+  strcpy(#tt3,"Slows deep-GR recovery, ducks addback in valleys, favors transients.");
+  strcpy(#tt4,"Use 10-35% when the limiter sounds loud but emotionally flattened.");
+  strcpy(#tt5,"Right-click/double-click resets to 0% legacy behavior.");
+  tt_lines = 5;
 );
 
 draw_tooltip_box();

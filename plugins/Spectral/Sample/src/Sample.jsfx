@@ -1303,6 +1303,76 @@ function reset_voices() local(i j v)
   );
 );
 
+function note_gate_idx(note chan)
+(
+  (clamp(chan, 0, 15) | 0) * 128 + (clamp(note, 0, 127) | 0);
+);
+
+function reset_note_gates() local(i)
+(
+  i = 0;
+  while (i < NOTE_GATE_CELLS) (
+    note_gate_base[i] = 0;
+    i += 1;
+  );
+);
+
+function note_gate_on(note chan) local(idx)
+(
+  idx = note_gate_idx(note, chan);
+  note_gate_base[idx] = min(32, note_gate_base[idx] + 1);
+);
+
+function note_gate_off(note chan) local(idx)
+(
+  idx = note_gate_idx(note, chan);
+  note_gate_base[idx] = max(0, note_gate_base[idx] - 1);
+);
+
+function note_gate_forget_voice(v) local(idx)
+(
+  (v[VC_ACTIVE] > 0 && v[VC_STAGE] != ENV_RELEASE) ? (
+    idx = note_gate_idx(v[VC_NOTE], v[VC_CHAN]);
+    note_gate_base[idx] = max(0, note_gate_base[idx] - 1);
+  );
+);
+
+function count_held_note_voices(note chan) local(i v cnt)
+(
+  cnt = 0;
+  i = 0;
+  while (i < MAX_VOICES) (
+    v = voice_base + i * VC_STRIDE;
+    (v[VC_ACTIVE] > 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan && v[VC_STAGE] != ENV_RELEASE) ? cnt += 1;
+    i += 1;
+  );
+  cnt;
+);
+
+function release_oldest_held_note_voice(note chan) local(i v best_idx best_age)
+(
+  best_idx = -1;
+  best_age = 100000000000;
+
+  i = 0;
+  while (i < MAX_VOICES) (
+    v = voice_base + i * VC_STRIDE;
+    (v[VC_ACTIVE] > 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan && v[VC_STAGE] != ENV_RELEASE) ? (
+      v[VC_AGE] < best_age ? (
+        best_age = v[VC_AGE];
+        best_idx = i;
+      );
+    );
+    i += 1;
+  );
+
+  best_idx >= 0 ? (
+    v = voice_base + best_idx * VC_STRIDE;
+    release_voice_internal(v);
+    1;
+  ) : 0;
+);
+
 function reset_weight_buffers() local(i)
 (
   weight_ap1_pos = 0;
@@ -1691,6 +1761,7 @@ function reset_bank_state() local(i)
   );
   reset_grain_histories();
   reset_voices();
+  reset_note_gates();
   reset_weight_buffers();
   reset_clean_buffers();
   reset_room_buffers();
@@ -1804,7 +1875,9 @@ function configure_memory_layout(selected_count) local(cap) (
   m2e_cc_age_base = onset_smooth_base + ONSET_SCRATCH_MAX + 32;
   m2e_cc_val_base = m2e_cc_age_base + 128;
 
-  weight_ap1_l_base = m2e_cc_val_base + 128 + 64;
+  note_gate_base = m2e_cc_val_base + 128 + 64;
+
+  weight_ap1_l_base = note_gate_base + NOTE_GATE_CELLS + 64;
   weight_ap1_r_base = weight_ap1_l_base + AP_BUF_LEN;
   weight_ap2_l_base = weight_ap1_r_base + AP_BUF_LEN;
   weight_ap2_r_base = weight_ap2_l_base + AP_BUF_LEN;
@@ -2100,7 +2173,11 @@ function apply_release_attack_bridge(skip_idx) local(i v use)
         // fades on a short seam budget so the new Attack can take over smoothly.
         v[VC_RSTEP] = min(v[VC_RSTEP], seam_bridge_release_coef);
         v[VC_RHLEFT] = min(v[VC_RHLEFT], seam_bridge_samps);
-        v[VC_GTIMER] = min(v[VC_GTIMER], 1);
+        // Once this release has been consumed by a new Attack, do not let the
+        // old voice spawn fresh body grains. Existing grains can fade, but this
+        // prevents the old sample from sounding like a second retrigger.
+        v[VC_CANSPAWN] = 0;
+        v[VC_GTIMER] = max(v[VC_GTIMER], seam_bridge_samps);
         (!env_slope_is_classic(v[VC_RCURVE], ENV_FALL)) ? (
           v[VC_EPHASE] = 0;
           v[VC_ESTART] = v[VC_ENV];
@@ -2110,6 +2187,29 @@ function apply_release_attack_bridge(skip_idx) local(i v use)
 
       i += 1;
     );
+  );
+);
+
+function fade_same_note_releases_for_retrigger(note chan skip_idx) local(i v)
+(
+  // Same-note retriggers should hand off; they should not leave an old Tape/Raw
+  // release audibly trailing behind the new Attack. This is deliberately scoped
+  // to already-releasing voices so normal polyphonic overlaps remain intact.
+  i = 0;
+  while (i < MAX_VOICES) (
+    v = voice_base + i * VC_STRIDE;
+    (i != skip_idx && v[VC_ACTIVE] > 0 && v[VC_STAGE] == ENV_RELEASE && v[VC_NOTE] == note && v[VC_CHAN] == chan) ? (
+      v[VC_RSTEP] = min(v[VC_RSTEP], seam_bridge_release_coef);
+      v[VC_RHLEFT] = min(v[VC_RHLEFT], seam_bridge_samps);
+      v[VC_CANSPAWN] = 0;
+      v[VC_GTIMER] = max(v[VC_GTIMER], seam_bridge_samps);
+      (!env_slope_is_classic(v[VC_RCURVE], ENV_FALL)) ? (
+        v[VC_EPHASE] = 0;
+        v[VC_ESTART] = v[VC_ENV];
+        v[VC_RLEN] = min(max(1, floor(v[VC_RLEN])), seam_bridge_samps);
+      );
+    );
+    i += 1;
   );
 );
 
@@ -2132,6 +2232,7 @@ function start_voice(note vel chan) local(
 
     voice_idx = alloc_voice();
     v = voice_base + voice_idx * VC_STRIDE;
+    note_gate_forget_voice(v);
 
     j = 0;
     while (j < VC_STRIDE) (
@@ -2285,6 +2386,7 @@ function start_voice(note vel chan) local(
     v[VC_RHLEN]    = max(1, release_handoff_samps);
 
     apply_release_attack_bridge(voice_idx);
+    fade_same_note_releases_for_retrigger(note, chan, voice_idx);
 
     sm[SM_LASTUSED] = note_counter;
     push_recent(sid);
@@ -2295,7 +2397,7 @@ function start_voice(note vel chan) local(
   );
 );
 
-function release_voice_internal(v) local(donor donor_sm donor_tail)
+function release_voice_internal(v) local(donor donor_sm donor_tail body_start body_end release_src)
 (
   (v[VC_ACTIVE] > 0 && v[VC_STAGE] != ENV_RELEASE) ? (
     release_samps <= 1 ? (
@@ -2312,6 +2414,15 @@ function release_voice_internal(v) local(donor donor_sm donor_tail)
       v[VC_RLEN] = release_samps;
       v[VC_RCURVE] = release_slope_pct;
       (v[VC_GMODE] > 0) ? (
+        // Release must continue from the current body/playback position, not
+        // restart the body window. This prevents short one-shots from replaying
+        // their body grain after the direct head has already finished.
+        (v[VC_GMIX] > 0.0001) ? (
+          body_start = max(0, floor(v[VC_BODYSTART]));
+          body_end = max(body_start + 1, floor(v[VC_BODYEND]));
+          release_src = clamp(max(v[VC_NEXTSRC], min(v[VC_POS], body_end - 1)), body_start, max(body_start, body_end - 1));
+          v[VC_NEXTSRC] = release_src;
+        );
         v[VC_CANSPAWN] = (v[VC_GMIX] > 0.0001 || v[VC_TAILMIX] > 0.0001) ? 1 : 0;
         v[VC_RHLEN] = max(1, release_handoff_samps);
         v[VC_RHLEFT] = v[VC_RHLEN];
@@ -2328,15 +2439,23 @@ function release_voice_internal(v) local(donor donor_sm donor_tail)
   );
 );
 
-function release_voice(note chan) local(i v)
+function release_voice(note chan) local(target held guard idx)
 (
-  i = 0;
-  while (i < MAX_VOICES) (
-    v = voice_base + i * VC_STRIDE;
-    (v[VC_ACTIVE] > 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan) ? (
-      release_voice_internal(v);
+  // Reconcile active held voices to the MIDI gate count for this note/channel.
+  // This fixes stuck one-voice states: an extra Note Off with no matching Note On
+  // drives the target to zero and releases every held orphan instead of only one.
+  idx = note_gate_idx(note, chan);
+  target = clamp(note_gate_base[idx], 0, MAX_VOICES);
+  held = count_held_note_voices(note, chan);
+  guard = 0;
+
+  while (held > target && guard < MAX_VOICES) (
+    release_oldest_held_note_voice(note, chan) ? (
+      held -= 1;
+    ) : (
+      held = target;
     );
-    i += 1;
+    guard += 1;
   );
 );
 
@@ -2356,6 +2475,8 @@ function release_all_voices_transport(hard) local(i v)
     );
     i += 1;
   );
+
+  reset_note_gates();
 
   hard ? (
     reset_weight_buffers();
@@ -2631,6 +2752,7 @@ SAMPLE_POOL_MIN = 64;
 SAMPLE_POOL_HARD_MAX = 16384;
 MAX_SAMPLES = SAMPLE_POOL_HARD_MAX;
 MAX_VOICES  = 16;
+NOTE_GATE_CELLS = 2048;
 RECENT_LEN  = 8;
 ROOT_LOW    = 36;
 ROOT_HIGH   = 84;
@@ -2993,6 +3115,7 @@ m2e_clock_samps = 0;
 transient_guard_s = 0;
 transport_running_prev = 0;
 transport_playpos_prev = -1;
+transport_play_state_prev = -1;
 
 reset_bank_state();
 m2e_reset();
@@ -3170,22 +3293,47 @@ push_side_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.900 + 1.900 * 
 @block
 m2e_clock_samps += samplesblock;
 
-transport_running = (play_state == 1 || play_state == 5);
-transport_stopped = (play_state <= 0);
+// Transport panic/seek reconciliation. REAPER does not guarantee MIDI note-offs
+// when playback is paused, stopped, or the edit cursor jumps while a note is
+// sounding. Treat those discontinuities as an all-notes-off and hard-clear the
+// sampler voices so held Hybrid/Tape notes cannot become orphaned.
+transport_running = (play_state & 1) ? 1 : 0;
+transport_paused = (play_state & 2) ? 1 : 0;
+transport_stopped = play_state == 0;
+transport_discontinuity = 0;
 
-(transport_stopped && transport_running_prev) ? (
-  release_all_voices_transport(0);
+transport_play_state_prev < 0 ? (
+  transport_play_state_prev = play_state;
+  transport_playpos_prev = play_position;
+);
+
+transport_running && transport_playpos_prev >= 0 ? (
+  transport_expected_pos = transport_playpos_prev + samplesblock / max(srate, 1);
+  transport_seek_tol = max(0.050, 3 * samplesblock / max(srate, 1));
+  abs(play_position - transport_expected_pos) > transport_seek_tol ? transport_discontinuity = 1;
+);
+
+((transport_paused || transport_stopped) && transport_running_prev) ? (
+  transport_discontinuity = 1;
+);
+
+transport_discontinuity ? (
+  release_all_voices_transport(1);
+  seam_bridge_env = 0;
+  seam_bridge_idx = -1;
+  seam_bridge_phase = -1;
+  seam_bridge_same_note = 0;
 );
 
 transport_running ? (
   transport_running_prev = 1;
   transport_playpos_prev = play_position;
-);
-
-transport_stopped ? (
+) : (
   transport_running_prev = 0;
   transport_playpos_prev = -1;
 );
+
+transport_play_state_prev = play_state;
 
 force_rescan_flag ? (
   poll_slot(1);
@@ -3220,13 +3368,25 @@ while (midirecv(offset, msg1, msg23)) (
         m2e_apply_cc(m2e_base, ccnum, ccval);
       );
     );
+
+    bank_loaded && (note == 120 || note == 123) ? (
+      reset_note_gates();
+      release_all_voices_transport(note == 120);
+    );
+
     midisend(offset, msg1, msg23);
   ) : (
     (status == 144 && vel > 0) ? (
-      bank_loaded ? start_voice(note, vel, chan) : midisend(offset, msg1, msg23);
+      bank_loaded ? (
+        note_gate_on(note, chan);
+        start_voice(note, vel, chan);
+      ) : midisend(offset, msg1, msg23);
     ) : (
       (status == 128 || (status == 144 && vel == 0)) ? (
-        bank_loaded ? release_voice(note, chan) : midisend(offset, msg1, msg23);
+        bank_loaded ? (
+          note_gate_off(note, chan);
+          release_voice(note, chan);
+        ) : midisend(offset, msg1, msg23);
       ) : (
         midisend(offset, msg1, msg23);
       );
@@ -3468,21 +3628,43 @@ while (i < MAX_VOICES) (
             grow_lo = body_start;
             grow_hi = min(max(grow_lo + 1, body_end), max(grow_lo + 1, frames - 2));
             grow_span = max(1, grow_hi - grow_lo);
-            grow_cursor = wrap_in_range(v[VC_NEXTSRC], grow_lo, grow_hi);
-            grow_phase01 = clamp01((grow_cursor - grow_lo) / max(1, grow_span - 1));
-            advance = v[VC_SRCHOP] * (0.80 + 0.65 * rand(1));
-            nextsrc = grow_cursor + advance;
-            wrapped = nextsrc >= grow_hi;
-            nextsrc = wrap_in_range(nextsrc, grow_lo, grow_hi);
-            source_exhausted ? (
-              nextsrc = wrap_in_range(nextsrc + (rand(1) - 0.5) * grow_span * 0.30, grow_lo, grow_hi);
+
+            hybrid_body_release ? (
+              // Release is one-way through the body window. Do not wrap back to
+              // the start and do not widen to body donors; both can sound like a
+              // second hit after a short one-shot has already finished.
+              grow_cursor = clamp(v[VC_NEXTSRC], grow_lo, max(grow_lo, grow_hi - 1));
+              grow_phase01 = clamp01((grow_cursor - grow_lo) / max(1, grow_span - 1));
+              advance = v[VC_SRCHOP] * (0.72 + 0.22 * rand(1));
+              nextsrc = grow_cursor + advance;
+              wrapped = nextsrc >= grow_hi;
+              wrapped ? (
+                nextsrc = max(grow_lo, grow_hi - 1);
+                v[VC_CANSPAWN] = 0;
+              );
+              v[VC_NEXTSRC] = nextsrc;
+              source_exhausted = 0;
+
+              release_jitter = min(max(2, floor(v[VC_GSIZE] * 0.08)), max(2, floor(grow_span * 0.10)));
+              self_pos = clamp(grow_cursor + (rand(1) - 0.5) * release_jitter, grow_lo, max(grow_lo, grow_hi - 1));
+              self_pen = 0;
+            ) : (
+              grow_cursor = wrap_in_range(v[VC_NEXTSRC], grow_lo, grow_hi);
+              grow_phase01 = clamp01((grow_cursor - grow_lo) / max(1, grow_span - 1));
+              advance = v[VC_SRCHOP] * (0.80 + 0.65 * rand(1));
+              nextsrc = grow_cursor + advance;
+              wrapped = nextsrc >= grow_hi;
+              nextsrc = wrap_in_range(nextsrc, grow_lo, grow_hi);
+              source_exhausted ? (
+                nextsrc = wrap_in_range(nextsrc + (rand(1) - 0.5) * grow_span * 0.30, grow_lo, grow_hi);
+              );
+              v[VC_NEXTSRC] = nextsrc;
+
+              self_pos = choose_region_pos(i, sid, 0, grow_phase01, 0.18 + 0.48 * slider9 + 0.22 * source_exhausted);
+              self_pen = grain_hist_penalty(i, sid, self_pos, grow_lo, grow_hi);
             );
-            v[VC_NEXTSRC] = nextsrc;
 
-            self_pos = choose_region_pos(i, sid, 0, grow_phase01, 0.18 + 0.48 * slider9 + 0.22 * source_exhausted);
-            self_pen = grain_hist_penalty(i, sid, self_pos, grow_lo, grow_hi);
-
-            need_alt = source_exhausted || wrapped || (self_pen > 2.35) || (grow_span < max(64, floor(v[VC_GSIZE] * 0.55)));
+            need_alt = (!hybrid_body_release) && (source_exhausted || wrapped || (self_pen > 2.35) || (grow_span < max(64, floor(v[VC_GSIZE] * 0.55))));
             alt_sid = sid;
             alt_pen = 1000000000;
 
@@ -3516,7 +3698,7 @@ while (i < MAX_VOICES) (
               );
             );
 
-            use_alt = (alt_sid != sid) && (source_exhausted || (alt_pen + 0.18 < self_pen) || (wrapped && rand(1) < 0.65));
+            use_alt = (!hybrid_body_release) && (alt_sid != sid) && (source_exhausted || (alt_pen + 0.18 < self_pen) || (wrapped && rand(1) < 0.65));
             use_alt ? (
               gsid = alt_sid;
               gsm = alt_sm;
@@ -4000,6 +4182,23 @@ ui_hover_id = -1;
 gfx_slider_mask = 0;
 sprintf(#tip_title, "");
 sprintf(#tip_body, "");
+
+// UI-side safety net: when REAPER stops/pause-freezes processing, @gfx can
+// still run. Clear orphaned transport voices here too, but only after a prior
+// running transport state, so live MIDI use while stopped is not affected.
+gfx_transport_running = (play_state & 1) ? 1 : 0;
+gfx_transport_paused = (play_state & 2) ? 1 : 0;
+gfx_transport_stopped = play_state == 0;
+((gfx_transport_paused || gfx_transport_stopped) && transport_running_prev) ? (
+  release_all_voices_transport(1);
+  seam_bridge_env = 0;
+  seam_bridge_idx = -1;
+  seam_bridge_phase = -1;
+  seam_bridge_same_note = 0;
+  transport_running_prev = 0;
+  transport_playpos_prev = -1;
+  transport_play_state_prev = play_state;
+);
 
 bg_r = 0.055; bg_g = 0.065; bg_b = 0.085;
 gfx_r = bg_r; gfx_g = bg_g; gfx_b = bg_b; gfx_a = 1;

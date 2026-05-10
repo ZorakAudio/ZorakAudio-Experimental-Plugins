@@ -1,4 +1,4 @@
-desc:Reverb Tail Tamer V3 (Wet 1/2, Vocals 5/6, Other 7/8) — Role-Aware + SAFE
+desc:Reverb Tail Tamer V3.5 LongTail (Wet 1/2, Vocals 5/6, Other 7/8) — Role-Aware + SAFE
 
 // Routing contract:
 // - Wet (post reverb) audio:   ch 1/2  (spl0/spl1)
@@ -27,6 +27,10 @@ slider4:60<1,500,1:sqr>Attack (ms)
 slider5:100<0,100,1>Mix (%)
 // #TOOLTIP: Scales how much "Other/SFX" input is allowed to justify reverb. Reduced automatically while vocals are dominant.
 slider6:40<0,100,1>Other Authority (%)
+// #TOOLTIP: Approximate reverb decay/T60 the tail model should permit before treating the return as excessive. Raise for halls, cathedrals, shimmer, freeze-like tails.
+slider7:4500<500,20000,1:sqr>Tail Match (ms)
+// #TOOLTIP: Higher values preserve long tail continuity and slow tail-only gain reduction. Lower values clean ambience faster.
+slider8:75<0,100,1>Tail Naturalness (%)
 
 @init
 function db2lin(db) (10^(db/20));
@@ -84,6 +88,11 @@ hold_samps = 0;
 // tail aging
 age_samps = 0;
 
+// long-tail model / latch
+tail_ref = floor_lin;
+tail_live_ref = floor_lin;
+prev_ref_off = 0;
+
 // gain reduction
 gr_db = 0;
 tgt_db_sm = 0;
@@ -95,18 +104,35 @@ rel_ms = slider3;
 atk_ms = max(slider4, 0.1);
 mix = clamp(slider5/100, 0, 1);
 other_auth = clamp(slider6/100, 0, 1);
+tail_match_ms = slider7;
+tail_nat = clamp(slider8/100, 0, 1);
 
 // Core compressor mapping (ratio-of-return)
 thr_db  = 18 - sens*21;         // 18 .. -3 dB
 ratio   = 1.2 + sens*3.0;       // 1.2 .. 4.2
 knee_db = 10 - sens*6;          // ~10 .. ~4 dB
 
-// Tail ramp time: longer for longer releases (lets the pretty part breathe)
-grace_ms = clamp(rel_ms*2.0, 150, 6000);
+// Tail ramp time: longer for longer releases, but now also follows the expected reverb tail length.
+grace_ms = clamp(max(rel_ms*2.0, tail_match_ms*(0.12 + 0.20*tail_nat)), 150, 12000);
 
-// Tail aging (how fast "very long tails" get nudged down)
-age_ms = clamp(rel_ms*6.0, 1200, 15000);
-age_strength_db = sens * 6.0;   // 0..6 dB extra over time (only in tail)
+// Tail aging: delayed/curved so long natural decays are preserved, then cleaned if they hang around.
+age_ms = clamp(max(rel_ms*6.0, tail_match_ms*(0.75 + 0.75*tail_nat)), 1200, 30000);
+age_delay_ms = clamp(tail_match_ms*(0.15 + 0.35*tail_nat), 0, 12000);
+age_strength_db = sens * (3.0 + 3.0*(1-tail_nat));   // stronger cleanup when Tail Naturalness is lower
+
+// Long-tail reference model. Tail Match is treated like an approximate T60, so convert to an amplitude time constant.
+tail_tau_ms = max(1, tail_match_ms / 6.9078);
+tail_ref_a = exp(-1/(srate*(tail_tau_ms/1000)));
+
+// How strongly the modeled tail is allowed to act as a lower bound for Ex_use.
+tail_floor_strength = 0.25 + 0.75*tail_nat;
+
+// Extra ratio slack in pure tail mode. Prevents "source ended, therefore tail is illegal" behavior.
+tail_thr_bonus_db = 3.0 + 9.0*tail_nat;
+
+// Tail-only attack for adding more ducking. This is the main anti-chop control.
+tail_atk_ms = clamp(250 + tail_match_ms*(0.20 + 0.80*tail_nat), 500, 20000);
+tail_atk_a = exp(-1/(srate*(tail_atk_ms/1000)));
 
 // Vocal excitation detector (fast-slow delta)
 v_fast_ms = 12;
@@ -194,9 +220,10 @@ v_mem_rel_a = exp(-1/(srate*(v_mem_ms/1000)));
 o_mem_rel_a = exp(-1/(srate*(o_mem_ms/1000)));
 
 // hold / grace / age
-hold_samps_set = max(1, floor(srate*(hold_ms/1000)));
-grace_samps    = max(1, floor(srate*(grace_ms/1000)));
-age_samps_max  = max(1, floor(srate*(age_ms/1000)));
+hold_samps_set  = max(1, floor(srate*(hold_ms/1000)));
+grace_samps     = max(1, floor(srate*(grace_ms/1000)));
+age_delay_samps = max(0, floor(srate*(age_delay_ms/1000)));
+age_samps_max   = max(age_delay_samps+1, floor(srate*(age_ms/1000)));
 
 @sample
 // Wet (post reverb) on 1/2
@@ -363,6 +390,33 @@ other_auth_eff = other_auth * (1 - v_guard*other_suppress);
 // combine (power-sum)
 Ex_use = sqrt(v_credit*v_credit + (o_credit*other_auth_eff)*(o_credit*other_auth_eff));
 Ex_use = max(Ex_use, floor_lin);
+Ex_raw = Ex_use;
+
+// === Long-tail permission latch/model ===
+// The old detector let v_mem/o_mem AND v_perm/o_perm decay together, so Ex_use could collapse
+// much faster than the actual reverb tail. This latches an expected tail reference while the
+// source is live, then decays it at the chosen Tail Match rate after the source stops.
+tail_seed_ratio_db = max(thr_db, 6);
+tail_seed_from_wet = Ey / db2lin(tail_seed_ratio_db);
+tail_candidate = max(Ex_raw, tail_seed_from_wet);
+
+ref_off ? (
+  prev_ref_off == 0 ? (
+    tail_ref = max(tail_ref, tail_live_ref);
+  );
+
+  tail_ref *= tail_ref_a;
+  tail_live_ref = max(tail_live_ref*tail_ref_a, floor_lin);
+
+  // Use modeled tail as a floor only while references are gone.
+  Ex_use = max(Ex_raw, tail_ref * tail_floor_strength);
+) : (
+  // While source is active, keep a model of the tail that has been earned.
+  tail_live_ref = max(tail_live_ref*tail_ref_a, tail_candidate);
+  tail_ref = max(tail_ref*tail_ref_a, Ex_raw);
+);
+
+Ex_use = max(Ex_use, floor_lin);
 
 // === Tail ramp-in (prevents instant clamp right as refs go off) ===
 ref_off ? (
@@ -380,13 +434,14 @@ ref_off ? (
   age_samps = 0;
 );
 
-age_w = age_samps / age_samps_max;
+age_w = smoothstep01((age_samps - age_delay_samps) / max(1, age_samps_max - age_delay_samps));
 
 // Ratio-of-return in dB
 rdB = lin2db((Ey+eps)/(Ex_use+eps));
 
 // === Soft-knee overage ===
-over = rdB - thr_db;
+thr_eff_db = thr_db + (ref_off ? tail_w*tail_thr_bonus_db : 0);
+over = rdB - thr_eff_db;
 half = 0.5 * max(knee_db, 0.001);
 
 over <= -half ? (
@@ -431,9 +486,14 @@ tgt_db > 0 ? (
   );
 );
 
-// Smooth GR with separate attack/release
+// Smooth GR with separate attack/release.
+// In pure tail mode, adding MORE ducking uses a much slower attack so the tail fades instead of chops.
 tgt_db > gr_db ? (
-  gr_db = gr_db*atk_a + tgt_db*(1-atk_a);
+  ref_off ? (
+    gr_db = gr_db*tail_atk_a + tgt_db*(1-tail_atk_a);
+  ) : (
+    gr_db = gr_db*atk_a + tgt_db*(1-atk_a);
+  );
 ) : (
   (v_active || o_active) ? (
     gr_db = gr_db*rel_in_a + tgt_db*(1-rel_in_a);
@@ -452,6 +512,7 @@ spl0 = wetL + (procL - wetL)*mix;
 spl1 = wetR + (procR - wetR)*mix;
 
 // leave other channels untouched
+prev_ref_off = ref_off;
 
 @gfx 820 410
 // Reverb Tail Tamer V3 -- causality-first monitor
@@ -589,8 +650,9 @@ ocr_db = ui_db(ocr);
 oef_db = ui_db(oeff);
 
 gap_db     = rdB;
-over_db    = max(0, rdB - thr_db);
-allowed_db = min(0, Ex_db + thr_db);
+mon_thr_db = thr_eff_db;
+over_db    = max(0, rdB - mon_thr_db);
+allowed_db = min(0, Ex_db + mon_thr_db);
 
 mode = 0; // 0 live, 1 grace, 2 tail, 3 aging
 ref_off ? (
@@ -661,7 +723,7 @@ ui_shadow_text(hx+SX(8), hy+SY(6), "Reverb Tail Tamer V3", txt_r,txt_g,txt_b, 1)
 
 gfx_setfont(3, "Arial", font_small);
 sprintf(#hdr, "mode %s   gap %.1f dB   thr %.1f dB   over %.1f dB",
-  #mode, gap_db, thr_db, over_db);
+  #mode, gap_db, mon_thr_db, over_db);
 ui_shadow_text(hx+SX(8), hy+SY(23), #hdr, sub_r,sub_g,sub_b, 1);
 
 // right-side header cluster
@@ -773,7 +835,7 @@ over_db > 0 ? (
 // micro readout
 gfx_setfont(3, "Arial", font_small);
 sprintf(#l1, "Gap %.1f dB   Thr %.1f dB   Over %.1f dB",
-  gap_db, thr_db, over_db);
+  gap_db, mon_thr_db, over_db);
 ui_shadow_text(lx+SX(8), ly+SY(106), #l1, sub_r,sub_g,sub_b, 1);
 
 sprintf(#l2, "Ey %+.1f dB   Ex %+.1f dB   allowed Ey %+.1f dB",
