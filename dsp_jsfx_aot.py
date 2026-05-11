@@ -2348,8 +2348,10 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
 
 _PURE_HOIST_CALLS: Set[str] = {
     "min", "max",
-    "sin", "cos", "sqrt", "fabs", "floor", "ceil",
-    "pow", "exp", "log", "tan", "log10",
+    "sin", "cos", "tan",
+    "asin", "acos", "atan", "atan2",
+    "sqr", "sqrt", "pow", "exp", "log", "log10",
+    "fabs", "sign", "floor", "ceil", "invsqrt",
     "__memtop",
 }
 
@@ -3257,6 +3259,7 @@ class LLVMModuleEmitter:
         self.sym = sym
 
         self.double = ir.DoubleType()
+        self.float = ir.FloatType()
         self.i1 = ir.IntType(1)
         self.i8 = ir.IntType(8)
         self.i32 = ir.IntType(32)
@@ -3672,8 +3675,13 @@ class LLVMModuleEmitter:
             self._intrinsics[fn] = f
             return f
 
-        if fn in ("pow", "exp", "log", "tan", "log10"):
-            f = ir.Function(self.module, ir.FunctionType(self.double, [self.double, self.double]) if fn == "pow" else ir.FunctionType(self.double, [self.double]), name=fn)
+        if fn in ("asin", "acos", "atan", "exp", "log", "tan", "log10"):
+            f = ir.Function(self.module, ir.FunctionType(self.double, [self.double]), name=fn)
+            self._intrinsics[fn] = f
+            return f
+
+        if fn in ("pow", "atan2"):
+            f = ir.Function(self.module, ir.FunctionType(self.double, [self.double, self.double]), name=fn)
             self._intrinsics[fn] = f
             return f
 
@@ -4206,6 +4214,8 @@ class LLVMModuleEmitter:
             # common JSFX constants (expand if needed)
             if n.name == "$pi":
                 return self._const_f64(math.pi)
+            if n.name == "$phi":
+                return self._const_f64((1.0 + math.sqrt(5.0)) * 0.5)
             if n.name == "$e":
                 return self._const_f64(math.e)
             if n.name.startswith("$x") and len(n.name) > 2:
@@ -5136,6 +5146,21 @@ class LLVMModuleEmitter:
                 c = builder.fcmp_ordered("ogt", a, b)
                 return builder.select(c, a, b)
 
+            if fn == "sqr":
+                if len(n.args) != 1:
+                    raise ValueError("sqr expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                return builder.fmul(a0, a0)
+
+            if fn == "sign":
+                if len(n.args) != 1:
+                    raise ValueError("sign expects 1 arg")
+                a0 = self.emit_expr(builder, st, n.args[0])
+                is_pos = builder.fcmp_ordered(">", a0, self._const_f64(0.0))
+                is_neg = builder.fcmp_ordered("<", a0, self._const_f64(0.0))
+                neg_or_zero = builder.select(is_neg, self._const_f64(-1.0), self._const_f64(0.0))
+                return builder.select(is_pos, self._const_f64(1.0), neg_or_zero)
+
             if fn in ("sin", "cos", "sqrt", "fabs", "floor", "ceil"):
                 if len(n.args) != 1:
                     raise ValueError(f"{fn} expects 1 arg")
@@ -5143,15 +5168,38 @@ class LLVMModuleEmitter:
                 a0 = self.emit_expr(builder, st, n.args[0])
                 return builder.call(fdecl, [a0])
 
-            if fn == "pow":
+            if fn == "invsqrt":
+                if len(n.args) != 1:
+                    raise ValueError("invsqrt expects 1 arg")
+                # Match EEL2/JSFX's classic fast inverse-square-root shape:
+                #   y = bitcast_float(0x5f3759df - (bitcast_i32((float)x) >> 1))
+                #   y * (1.5 - 0.5 * x * y * y)
+                # This preserves the documented approximation behavior rather
+                # than lowering to an exact reciprocal sqrt.
+                a0 = self.emit_expr(builder, st, n.args[0])
+                a0_f32 = builder.fptrunc(a0, self.float)
+                bits = builder.bitcast(a0_f32, self.i32)
+                half_bits = builder.ashr(bits, self._const_i32(1))
+                magic = ir.Constant(self.i32, 0x5f3759df)
+                approx_bits = builder.sub(magic, half_bits)
+                approx_f32 = builder.bitcast(approx_bits, self.float)
+                y0 = builder.fpext(approx_f32, self.double)
+                y0_sq = builder.fmul(y0, y0)
+                correction = builder.fsub(
+                    self._const_f64(1.5),
+                    builder.fmul(builder.fmul(self._const_f64(0.5), a0), y0_sq),
+                )
+                return builder.fmul(y0, correction)
+
+            if fn in ("pow", "atan2"):
                 if len(n.args) != 2:
-                    raise ValueError("pow expects 2 args")
-                fdecl = self._declare_math("pow")
+                    raise ValueError(f"{fn} expects 2 args")
+                fdecl = self._declare_math(fn)
                 a0 = self.emit_expr(builder, st, n.args[0])
                 a1 = self.emit_expr(builder, st, n.args[1])
                 return builder.call(fdecl, [a0, a1])
 
-            if fn in ("exp", "log", "tan", "log10"):
+            if fn in ("asin", "acos", "atan", "exp", "log", "tan", "log10"):
                 if len(n.args) != 1:
                     raise ValueError(f"{fn} expects 1 arg")
                 fdecl = self._declare_math(fn)

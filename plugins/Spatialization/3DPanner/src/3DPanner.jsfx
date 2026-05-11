@@ -1,12 +1,14 @@
-desc:Hyperreal 3D Panner V5 (Mouse-First Room Canvas)
+desc:Hyperreal 3D Panner V6.2.1 (Perceptual Position + Visual Cues + Tooltip Alignment Fix)
 
-// #HELP: Headphone-focused 3D panner using microdelay, head shadow, distance loss, occlusion, and room cues.
-// #HELP: Drag the orange source in the room to place it. Right-click the room to reset position.
-// #HELP: Shift-drag = fine control. Mouse wheel over the room changes Distance.
-// #HELP: Shift + wheel over room = Width. Ctrl/Cmd + wheel = Room. Alt/Option + wheel = Externalize.
-// #HELP: Cyan wall markers are EARLY BOUNCES: the first wall hits that help sounds leave your skull and exist in space.
-// #HELP: Every major control can also be dragged directly in the right-side control lanes.
-// #TOOLTIP: Where the source sits around you. Top = front wall, bottom = rear wall, sides = left / right walls.
+// #HELP: Headphone-focused 3D panner using softened perceptual placement, microdelay, head shadow, pinna cues, distance loss, occlusion, and room cues.
+// #HELP: Drag the orange source in the stage canvas. X = Lateral, Y = Front/Rear. Mouse wheel changes Distance.
+// #HELP: Spatial Throw controls how strongly the placement asserts itself without changing output gain.
+// #HELP: Solid orange = visual object position. Ghost orange = effective cue position after Throw / Cue Curve compression.
+// #HELP: Cyan wall markers are EARLY BOUNCES: first reflection hits used for out-of-head placement.
+// #HELP: Automation Safe caps aggressive throw and lengthens smoothing for drawn automation.
+// #HELP: Visual cues: Size = orange halo/cloud, Distance = grey range rings/dashes, Push Out = listener shell, Room = cyan bounces/wall glow, Motion = green trail.
+// #HELP: Hover any canvas cue, snap chip, Automation Safe button, or quick-control lane for inline guidance. Tooltips use exact hit zones and dock away from controls.
+// #TOOLTIP: Perceptual object panner. Place the object visually, then scale how hard the cue stack fires.
 
 options:want_all_kb
 options:gfx_hz=60
@@ -16,33 +18,48 @@ in_pin:right input
 out_pin:left output
 out_pin:right output
 
-slider1:0<-180,180,0.1>-Azimuth (deg)
+// POSITION
+// #TOOLTIP: Left/right object placement. Negative = left, positive = right.
+slider1:0<-1,1,0.001>-Lateral
+// #TOOLTIP: Physical distance throw. V6 uses a shorter, higher-resolution stage range than V5.
 slider2:0.25<0,1,0.001>-Distance
-// #TOOLTIP: Apparent source size. Lower = tighter point source; higher = wider / more diffuse image.
-slider3:0.08<0,1,0.001>-Width
-// #TOOLTIP: Strength of spectral / directional cues that push the source outside the head.
-slider4:0.42<0,1,0.001>-Externalize
-// #TOOLTIP: Amount of room cue and early reflections. Higher = more externalization, less surgical precision.
-slider5:0.30<0,1,0.001>-Room
-// #TOOLTIP: Geometric room scale for the bounce model. Higher = larger room and longer early reflection timing.
-slider6:0.55<0,1,0.001>-Room Size
-// #TOOLTIP: How blocked or hidden the source is. Higher = more muffled direct sound and more reflection dominance.
-slider7:0<0,1,0.001>-Occlusion
-// #TOOLTIP: Tiny motion added to keep static sources from collapsing inward on headphones.
-slider8:0.05<0,1,0.001>-Micro Motion
-// #TOOLTIP: Final output trim after spatial processing.
-slider9:0<-18,12,0.1>-Output Trim (dB)
+// #TOOLTIP: Front/rear object placement. +1 = front wall, 0 = side plane, -1 = rear wall.
+slider3:0.82<-1,1,0.001>-Depth Front/Rear
 
-// Slider guide:
-//   Azimuth     = where the source sits around you.
-//   Distance    = how far away it feels.
-//   Width       = point source vs spread source.
-//   Externalize = strength of out-of-head cues.
-//   Room        = early reflections / externalization amount.
-//   Room Size   = room scale / bounce timing.
-//   Occlusion   = blocked / muffled / hidden direct path.
-//   Micro Motion= tiny drift to stop static collapse.
-//   Output Trim = final level after processing.
+// FEEL
+// #TOOLTIP: Spatial cue intensity. Higher = stronger ITD/head-shadow/pinna/side cues. Does not change loudness.
+slider4:0.58<0,1,0.001>-Spatial Throw
+// #TOOLTIP: Apparent source size. Lower = tighter point source; higher = wider / more diffuse image.
+slider5:0.10<0,1,0.001>-Size
+// #TOOLTIP: Out-of-head realism cue strength. Formerly Externalize.
+slider6:0.42<0,1,0.001>-Push Out
+// #TOOLTIP: Early reflection amount. Higher = more room cue and more externalization, less surgical precision.
+slider7:0.30<0,1,0.001>-Room
+
+// MATERIAL / MOTION
+// #TOOLTIP: How blocked or hidden the source is. Higher = more muffled direct sound and more reflection dominance.
+slider8:0<0,1,0.001>-Occlusion
+// #TOOLTIP: Tiny motion added to keep static sources from collapsing inward on headphones.
+slider9:0.04<0,1,0.001>-Micro Motion
+// #TOOLTIP: Final output trim after spatial processing.
+slider10:0<-18,12,0.1>-Output Trim (dB)
+
+// AUTOMATION / ADVANCED
+// #TOOLTIP: Caps aggressive spatial throw and uses safer smoothing for automation curves.
+slider11:1<0,1,1>-Automation Safe
+// #TOOLTIP: Perceptual compression curve. Higher values make moderate visual angles less extreme.
+slider12:2.00<1,3,0.01>-Cue Curve
+// #TOOLTIP: Movement smoothing in milliseconds. Automation Safe enforces a higher minimum.
+slider13:90<5,250,1>-Motion Smooth (ms)
+// #TOOLTIP: Geometric room scale for the bounce model. Higher = larger room and longer early reflection timing.
+slider14:0.55<0,1,0.001>-Room Size
+
+// V6 control model:
+//   Lateral + Depth Front/Rear = visual object coordinate.
+//   Distance                  = near/far physical distance.
+//   Spatial Throw             = strength of the directional cue stack.
+//   Push Out                  = outside-head realism / pinna-room emphasis.
+//   Cue Curve                 = how much mid-angle positions are softened.
 
 @init
 // --- delay buffers ---
@@ -67,8 +84,9 @@ loop(itd_bufsize,
 );
 
 // --- smoothing ---
-smooth_k = 1 - exp(-1/(0.020*srate));
-coeff_k  = 1 - exp(-1/(0.040*srate));
+// V6 recalculates smooth_k / coeff_k from the Motion Smooth slider in @block.
+smooth_k = 1 - exp(-1/(0.090*srate));
+coeff_k  = 1 - exp(-1/(0.140*srate));
 meter_k  = 1 - exp(-1/(0.050*srate));
 
 // --- filters / splits ---
@@ -94,14 +112,15 @@ er_a7 = exp(-2*$pi*3200/srate);
 er_a8 = exp(-2*$pi*2600/srate);
 
 // --- smoothed params ---
+// sm_az is the softened/cue-scaled azimuth, not the visual placement angle.
 sm_az = 0;
 sm_depth = 0.25;
-sm_width = 0.08;
+sm_width = 0.10;
 sm_ext = 0.42;
 sm_room = 0.30;
 sm_rsize = 0.55;
 sm_occ = 0;
-sm_motion = 0.05;
+sm_motion = 0.04;
 sm_trim = 1;
 
 // --- smoothed derived ---
@@ -190,6 +209,17 @@ last_back = 0;
 last_room_w = 4.8;
 last_room_d = 5.6;
 
+// V6 perceptual placement readouts
+last_visual_az = 0;
+last_cue_az = 0;
+last_throw = 0.58;
+last_throw_dsp = 0.58;
+last_lat = 0;
+last_fb = 0.82;
+last_smooth_ms = 90;
+last_cue_curve_eff = 1;
+last_automation_safe = 1;
+
 // UI interaction
 ui_mode = 0;
 ui_prev_l = 0;
@@ -202,36 +232,144 @@ ui_drag_bar = 0;
 
 
 @block
-// Run every audio block so GFX-driven slider edits propagate instantly.
-tgt_az = slider1;
-tgt_depth = slider2;
-tgt_width = slider3;
-tgt_ext = slider4;
-tgt_room = slider5;
-tgt_rsize = slider6;
-tgt_occ = slider7;
-tgt_motion = slider8;
-tgt_trim = 10^(slider9/20);
+// V6 perceptual-position mapping.
+// User-facing position is a stage coordinate; DSP receives a softened cue azimuth.
 
-// Distance mapping: more precision up close, longer throw at the far end
-_depth2 = tgt_depth*tgt_depth;
-_depth3 = _depth2*tgt_depth;
-dist_m = 0.25 + 21.75*(0.78*_depth2 + 0.22*_depth3);
+// --- raw UI targets ---
+tgt_lat = slider1;
+tgt_lat < -1 ? tgt_lat = -1;
+tgt_lat > 1 ? tgt_lat = 1;
+
+tgt_dist_n = slider2;
+tgt_dist_n < 0 ? tgt_dist_n = 0;
+tgt_dist_n > 1 ? tgt_dist_n = 1;
+
+tgt_fb = slider3;
+tgt_fb < -1 ? tgt_fb = -1;
+tgt_fb > 1 ? tgt_fb = 1;
+
+tgt_throw = slider4;
+tgt_throw < 0 ? tgt_throw = 0;
+tgt_throw > 1 ? tgt_throw = 1;
+
+tgt_width = slider5;
+tgt_width < 0 ? tgt_width = 0;
+tgt_width > 1 ? tgt_width = 1;
+
+tgt_ext = slider6;
+tgt_ext < 0 ? tgt_ext = 0;
+tgt_ext > 1 ? tgt_ext = 1;
+
+tgt_room = slider7;
+tgt_room < 0 ? tgt_room = 0;
+tgt_room > 1 ? tgt_room = 1;
+
+tgt_occ = slider8;
+tgt_occ < 0 ? tgt_occ = 0;
+tgt_occ > 1 ? tgt_occ = 1;
+
+tgt_motion = slider9;
+tgt_motion < 0 ? tgt_motion = 0;
+tgt_motion > 1 ? tgt_motion = 1;
+
+tgt_trim = 10^(slider10/20);
+
+auto_safe = slider11 >= 0.5 ? 1 : 0;
+last_automation_safe = auto_safe;
+
+cue_curve_user = slider12;
+cue_curve_user < 1 ? cue_curve_user = 1;
+cue_curve_user > 3 ? cue_curve_user = 3;
+
+smooth_ms = slider13;
+smooth_ms < 5 ? smooth_ms = 5;
+auto_safe && smooth_ms < 90 ? smooth_ms = 90;
+last_smooth_ms = smooth_ms;
+smooth_k = 1 - exp(-1/((smooth_ms*0.001)*srate));
+coeff_ms = smooth_ms * 1.55;
+coeff_ms < 15 ? coeff_ms = 15;
+coeff_k = 1 - exp(-1/((coeff_ms*0.001)*srate));
+meter_k  = 1 - exp(-1/(0.050*srate));
+
+tgt_rsize = slider14;
+tgt_rsize < 0 ? tgt_rsize = 0;
+tgt_rsize > 1 ? tgt_rsize = 1;
+
+// --- visual coordinate normalization ---
+pos_r = sqrt(tgt_lat*tgt_lat + tgt_fb*tgt_fb);
+(pos_r > 1) ? (
+  vis_lat = tgt_lat / pos_r;
+  vis_fb = tgt_fb / pos_r;
+  pos_r = 1;
+) : (
+  vis_lat = tgt_lat;
+  vis_fb = tgt_fb;
+);
+
+// If object is dead-center, treat it as front-center so cue math stays stable.
+pos_r < 0.0001 ? (
+  raw_side = 0;
+  raw_front = 1;
+) : (
+  raw_side = vis_lat / pos_r;
+  raw_front = vis_fb / pos_r;
+);
+
+// Visual angle readout, preserving V5 convention: negative = left, positive = right.
+vis_ang = atan(raw_side / (abs(raw_front) + 0.000000000000000001)) * 180 / $pi;
+(raw_front < 0) ? (
+  raw_side >= 0 ? vis_ang = 180 - vis_ang : vis_ang = -180 - vis_ang;
+);
+last_visual_az = vis_ang;
+last_lat = vis_lat;
+last_fb = vis_fb;
+
+// Spatial Throw becomes the cue-stack intensity. Automation Safe caps it.
+throw_dsp = tgt_throw;
+auto_safe && throw_dsp > 0.72 ? throw_dsp = 0.72;
+last_throw = tgt_throw;
+last_throw_dsp = throw_dsp;
+
+// Perceptual compression: 45 degrees visual no longer equals 70% max side cue by default.
+// Throw 100% returns to raw/V5-like side cueing. Lower throw both compresses and scales.
+curve_eff = 1 + (1 - throw_dsp) * (cue_curve_user - 1);
+last_cue_curve_eff = curve_eff;
+side_abs = abs(raw_side);
+cue_side = side_abs^curve_eff;
+raw_side < 0 ? cue_side = -cue_side;
+cue_side *= 0.50 + 0.50*throw_dsp;
+cue_side > 0.999 ? cue_side = 0.999;
+cue_side < -0.999 ? cue_side = -0.999;
+cue_front_abs = sqrt(1 - cue_side*cue_side);
+cue_front = raw_front < 0 ? -cue_front_abs : cue_front_abs;
+
+cue_ang = atan(cue_side / (abs(cue_front) + 0.000000000000000001)) * 180 / $pi;
+(cue_front < 0) ? (
+  cue_side >= 0 ? cue_ang = 180 - cue_ang : cue_ang = -180 - cue_ang;
+);
+tgt_az = cue_ang;
+last_cue_az = cue_ang;
+
+// Distance mapping: V6 trades V5's huge 22m reach for faster, higher-resolution stage placement.
+_depth2 = tgt_dist_n*tgt_dist_n;
+_depth3 = _depth2*tgt_dist_n;
+tgt_depth = tgt_dist_n;
+dist_m = 0.18 + 8.82*(0.72*_depth2 + 0.28*_depth3);
 last_dist_m = dist_m;
 
 // Direct gain vs distance/occlusion
-_direct_g = 1 / (1 + 0.22*dist_m);
+_direct_g = 1 / (1 + 0.26*dist_m);
 _direct_g *= 1 - 0.28*tgt_occ;
 _direct_g < 0.11 ? _direct_g = 0.11;
 tgt_direct_g = _direct_g;
 
 // Room gain vs distance + occlusion
-_er_g = tgt_room * (0.03 + 0.15*tgt_depth + 0.10*_depth2);
+_er_g = tgt_room * (0.035 + 0.16*tgt_depth + 0.11*_depth2);
 _er_g *= 1 + 0.85*tgt_occ;
 tgt_er_g = _er_g;
 
 // Air absorption cutoff (distance + occlusion)
-air_fc = 19000 / (1 + 0.11*dist_m + 1.7*tgt_occ);
+air_fc = 19000 / (1 + 0.20*dist_m + 1.7*tgt_occ);
 air_fc < 1700 ? air_fc = 1700;
 air_fc > 19000 ? air_fc = 19000;
 last_air_fc = air_fc;
@@ -250,10 +388,10 @@ room_d = 3.3 + 12.2*room_curve;
 last_room_w = room_w;
 last_room_d = room_d;
 
-// Reflection delays from a simple image-source style room
-az_rad = tgt_az * $pi / 180;
-src_nx = 0.74 * tgt_depth * sin(az_rad);
-src_ny = 0.74 * tgt_depth * cos(az_rad);
+// Reflection delays from a simple image-source style room.
+// Uses visual object coordinate, not compressed cue angle, so the room picture remains honest.
+src_nx = 0.74 * vis_lat;
+src_ny = 0.74 * vis_fb;
 
 hw = room_w * 0.5;
 hd = room_d * 0.5;
@@ -271,7 +409,7 @@ len_bl = sqrt(((-2 - src_nx)*hw)*((-2 - src_nx)*hw) + (((-2 - src_ny)*hd)*((-2 -
 len_br = sqrt((((2 - src_nx)*hw))*(((2 - src_nx)*hw)) + (((-2 - src_ny)*hd)*((-2 - src_ny)*hd)));
 
 ms_scale = 1000/343;
-base_ms = 0.8 + 1.8*tgt_depth + 0.6*tgt_room;
+base_ms = 0.8 + 1.5*tgt_depth + 0.6*tgt_room;
 
 d1 = base_ms + max(1.0, (len_l  - direct_geom) * ms_scale);
 d2 = base_ms + max(1.0, (len_r  - direct_geom) * ms_scale);
@@ -292,7 +430,7 @@ tgt_er7_d = d7 * srate * 0.001;
 tgt_er8_d = d8 * srate * 0.001;
 
 // Reflection LPFs get darker with distance + occlusion + rear bias
-hf_scale = 1 / (1 + 0.09*dist_m + 1.1*tgt_occ);
+hf_scale = 1 / (1 + 0.14*dist_m + 1.1*tgt_occ);
 
 c1 = 11800*hf_scale; c2 = 11800*hf_scale; c3 = 10200*hf_scale; c4 = 7200*hf_scale;
 c5 = 7600*hf_scale;  c6 = 7600*hf_scale;  c7 = 5200*hf_scale; c8 = 5200*hf_scale;
@@ -313,6 +451,7 @@ er_a7 = exp(-2*$pi*c7/srate);
 er_a8 = exp(-2*$pi*c8/srate);
 
 // --- Pinna externalize biquad (negative peaking EQ = notch hint) ---
+az_rad = tgt_az * $pi / 180;
 az_s = sin(az_rad);
 az_c = cos(az_rad);
 az_abs = abs(az_s);
@@ -384,7 +523,7 @@ abs(notch_db) < 0.001 ? (
   pn_t_b0_r = b0; pn_t_b1_r = b1; pn_t_b2_r = b2; pn_t_a1_r = a1; pn_t_a2_r = a2;
 );
 
-// Rear tint targets (very gentle, only when externalize is up)
+// Rear tint targets (very gentle, only when push out is up)
 rear_t_mix = (0.08*side + 0.34*rear) * tgt_ext;
 rear_fc = 18000 / (1 + 1.2*side*tgt_ext + 2.8*rear*tgt_ext);
 rear_fc < 2300 ? rear_fc = 2300;
@@ -726,37 +865,37 @@ meter_direct += (max(abs(dir_l), abs(dir_r)) - meter_direct) * meter_k;
 meter_er     += (max(abs(er_l),  abs(er_r))  - meter_er)     * meter_k;
 
 
-@gfx 760 460
-// V5 room-canvas UI: mouse-first interaction, geometric bounce markers, scalable controls.
+@gfx 820 500
+// V6.1 perceptual-position UI: stage canvas, visual-vs-cue ghosting, automation-safe controls, distinct visual nouns.
 
 winflags = gfx_getchar(65536);
 
 // --- layout ---
-base_w = 760; base_h = 460;
+base_w = 820; base_h = 500;
 ui_s = min(gfx_w/base_w, gfx_h/base_h);
 ui_s < 0.56 ? ui_s = 0.56;
 ui_s > 1.85 ? ui_s = 1.85;
 
 pad = 16*ui_s;
 pad < 10 ? pad = 10;
-title_h = 46*ui_s;
+title_h = 48*ui_s;
 title_h < 36 ? title_h = 36;
-foot_h = 52*ui_s;
-foot_h < 40 ? foot_h = 40;
+foot_h = 34*ui_s;
+foot_h < 28 ? foot_h = 28;
 
-right_w = gfx_w * 0.33;
-right_w < 232*ui_s ? right_w = 232*ui_s;
-right_w > gfx_w*0.40 ? right_w = gfx_w*0.40;
+right_w = gfx_w * 0.34;
+right_w < 250*ui_s ? right_w = 250*ui_s;
+right_w > gfx_w*0.42 ? right_w = gfx_w*0.42;
 
 left_w = gfx_w - right_w - pad*3;
-left_w < 250*ui_s ? (
+left_w < 265*ui_s ? (
   right_w = gfx_w*0.36;
   left_w = gfx_w - right_w - pad*3;
 );
-left_w < 240*ui_s ? left_w = 240*ui_s;
+left_w < 245*ui_s ? left_w = 245*ui_s;
 
 field_h = gfx_h - title_h - foot_h - pad*2;
-field_h < 208*ui_s ? field_h = 208*ui_s;
+field_h < 230*ui_s ? field_h = 230*ui_s;
 
 canvas_x = pad;
 canvas_y = title_h + pad;
@@ -766,88 +905,131 @@ canvas_h = field_h;
 rx = canvas_x + canvas_w + pad;
 ry = canvas_y;
 rw = gfx_w - rx - pad;
-rw < 220*ui_s ? rw = 220*ui_s;
+rw < 230*ui_s ? rw = 230*ui_s;
 rh = field_h;
 
 cx = canvas_x + canvas_w*0.50;
-cy = canvas_y + canvas_h*0.54;
+cy = canvas_y + canvas_h*0.52;
 
-comp_r = min(canvas_w, canvas_h) * 0.39;
-room_hw = min(canvas_w*0.33, comp_r*0.88) * (0.78 + 0.18*slider6);
-room_hd = min(canvas_h*0.28, comp_r*0.78) * (0.74 + 0.22*slider6);
+room_hw = canvas_w * 0.39;
+room_hd = canvas_h * 0.31;
+room_hw < 86*ui_s ? room_hw = 86*ui_s;
+room_hd < 70*ui_s ? room_hd = 70*ui_s;
+room_hw *= 0.88 + 0.12*slider14;
+room_hd *= 0.86 + 0.14*slider14;
 
 room_l = cx - room_hw;
 room_r = cx + room_hw;
 room_t = cy - room_hd;
 room_b = cy + room_hd;
 
-ui_az = slider1;
-ui_depth = slider2;
-ui_width = slider3;
-ui_ext = slider4;
-ui_room = slider5;
-ui_rsize = slider6;
-ui_occ = slider7;
-ui_motion = slider8;
-ui_trim = slider9;
+// --- sliders / readouts ---
+ui_lat = slider1;
+ui_dist = slider2;
+ui_fb = slider3;
+ui_throw = slider4;
+ui_size = slider5;
+ui_push = slider6;
+ui_room = slider7;
+ui_occ = slider8;
+ui_motion = slider9;
+ui_trim = slider10;
+ui_safe = slider11 >= 0.5 ? 1 : 0;
+ui_curve = slider12;
+ui_smooth = slider13;
+ui_rsize = slider14;
 
-ui_az_rad = ui_az * $pi/180;
-src_nx = sin(ui_az_rad) * ui_depth * 0.82;
-src_ny = cos(ui_az_rad) * ui_depth * 0.82;
-sx = cx + src_nx * room_hw;
-sy = cy - src_ny * room_hd;
+pos_r = sqrt(ui_lat*ui_lat + ui_fb*ui_fb);
+pos_r > 1 ? (
+  draw_lat = ui_lat / pos_r;
+  draw_fb = ui_fb / pos_r;
+  draw_r = 1;
+) : (
+  draw_lat = ui_lat;
+  draw_fb = ui_fb;
+  draw_r = pos_r;
+);
 
-dot_r = 9*ui_s + 5*ui_width;
+sx = cx + draw_lat * room_hw * 0.82;
+sy = cy - draw_fb  * room_hd * 0.82;
+
+dot_r = 8.5*ui_s + 4.5*ui_s*ui_size;
+// Tooltip hit-tests need these before the drawing pass.
+ghost_r = dot_r*0.72;
+head_r = 17*ui_s;
+
+cue_rad = last_cue_az * $pi/180;
+ghost_x = sin(cue_rad) * draw_r;
+ghost_y = cos(cue_rad) * draw_r;
+gsx = cx + ghost_x * room_hw * 0.82;
+gsy = cy - ghost_y * room_hd * 0.82;
+
+frontness = max(0, draw_fb / (draw_r + 0.000000000000000001));
+backness = max(0, -draw_fb / (draw_r + 0.000000000000000001));
+sideness = abs(draw_lat / (draw_r + 0.000000000000000001));
+draw_r < 0.0001 ? (frontness = 1; backness = 0; sideness = 0;);
+
+// Precompute bounce points before mouse hit-testing so Room tooltips align this frame.
+src_nx = draw_lat * 0.82;
+src_ny = draw_fb * 0.82;
+tL = (-1 - src_nx) / (-2 - src_nx + 0.000000000000000001);
+bLx = -1;
+bLy = src_ny + tL * (0 - src_ny);
+tR = (1 - src_nx) / (2 - src_nx + 0.000000000000000001);
+bRx = 1;
+bRy = src_ny + tR * (0 - src_ny);
+tF = (1 - src_ny) / (2 - src_ny + 0.000000000000000001);
+bFx = src_nx + tF * (0 - src_nx);
+bFy = 1;
+tB = (-1 - src_ny) / (-2 - src_ny + 0.000000000000000001);
+bBx = src_nx + tB * (0 - src_nx);
+bBy = -1;
+bpLx = cx + bLx * room_hw; bpLy = cy - bLy * room_hd;
+bpRx = cx + bRx * room_hw; bpRy = cy - bRy * room_hd;
+bpFx = cx + bFx * room_hw; bpFy = cy - bFy * room_hd;
+bpBx = cx + bBx * room_hw; bpBy = cy - bBy * room_hd;
 
 // --- cards / bars ---
 card_gap = 10*ui_s;
 card_gap < 6 ? card_gap = 6;
 
 card1_h = rh * 0.23;
-card2_h = rh * 0.47;
-
-min_c1 = 76*ui_s;
-min_c2 = 176*ui_s;
-min_c3 = 88*ui_s;
-
+card2_h = rh * 0.57;
+min_c1 = 88*ui_s;
+min_c2 = 218*ui_s;
+min_c3 = 76*ui_s;
 card1_h < min_c1 ? card1_h = min_c1;
 card2_h < min_c2 ? card2_h = min_c2;
 card3_h = rh - card1_h - card2_h - card_gap*2;
-
 card3_h < min_c3 ? (
   deficit = min_c3 - card3_h;
   card2_h -= deficit;
-  card2_h < min_c2 ? (
-    deficit2 = min_c2 - card2_h;
-    card2_h = min_c2;
-    card1_h -= deficit2;
-    card1_h < min_c1 ? card1_h = min_c1;
-  );
+  card2_h < 188*ui_s ? card2_h = 188*ui_s;
   card3_h = rh - card1_h - card2_h - card_gap*2;
 );
-
-card3_h < 60*ui_s ? card3_h = 60*ui_s;
+card3_h < 58*ui_s ? card3_h = 58*ui_s;
 
 c1x = rx; c1y = ry; c1w = rw; c1h = card1_h;
 c2x = rx; c2y = c1y + c1h + card_gap; c2w = rw; c2h = card2_h;
 c3x = rx; c3y = c2y + c2h + card_gap; c3w = rw; c3h = card3_h;
 
 bar_pad_x = 14*ui_s;
-value_gutter = 58*ui_s;
-value_gutter < 44 ? value_gutter = 44;
+value_gutter = 62*ui_s;
+value_gutter < 48 ? value_gutter = 48;
 barx = c2x + bar_pad_x;
 barw = c2w - bar_pad_x*2 - value_gutter;
 barw < 96*ui_s ? barw = 96*ui_s;
 valx = barx + barw + 8*ui_s;
 
-bars_top = c2y + 40*ui_s;
-bars_bottom = c2y + c2h - 14*ui_s;
-row_h = (bars_bottom - bars_top) / 7;
-row_h < 18*ui_s ? row_h = 18*ui_s;
-barh = row_h * 0.50;
-barh > 16*ui_s ? barh = 16*ui_s;
-barh < 10*ui_s ? barh = 10*ui_s;
+bars_top = c2y + 39*ui_s;
+bars_bottom = c2y + c2h - 12*ui_s;
+row_h = (bars_bottom - bars_top) / 10;
+row_h < 15*ui_s ? row_h = 15*ui_s;
+barh = row_h * 0.42;
+barh > 13*ui_s ? barh = 13*ui_s;
+barh < 8*ui_s ? barh = 8*ui_s;
 label_lift = barh + 4*ui_s;
+
 b1y = bars_top + row_h*0.50 - barh*0.50;
 b2y = bars_top + row_h*1.50 - barh*0.50;
 b3y = bars_top + row_h*2.50 - barh*0.50;
@@ -855,11 +1037,9 @@ b4y = bars_top + row_h*3.50 - barh*0.50;
 b5y = bars_top + row_h*4.50 - barh*0.50;
 b6y = bars_top + row_h*5.50 - barh*0.50;
 b7y = bars_top + row_h*6.50 - barh*0.50;
-
-// help/detail density
-show_mouse_diag = c3h >= 112*ui_s;
-show_mouse_diag2 = c3h >= 130*ui_s;
-show_footer2 = gfx_h >= 360*ui_s;
+b8y = bars_top + row_h*7.50 - barh*0.50;
+b9y = bars_top + row_h*8.50 - barh*0.50;
+b10y = bars_top + row_h*9.50 - barh*0.50;
 
 // --- mouse / hover ---
 mouse_l = mouse_cap & 1;
@@ -869,7 +1049,8 @@ mouse_ctrl = mouse_cap & 4;
 mouse_alt = mouse_cap & 16;
 
 inside_canvas = mouse_x >= canvas_x && mouse_x <= canvas_x + canvas_w && mouse_y >= canvas_y && mouse_y <= canvas_y + canvas_h;
-near_src = ((mouse_x-sx)*(mouse_x-sx) + (mouse_y-sy)*(mouse_y-sy)) <= ((dot_r+7*ui_s)*(dot_r+7*ui_s));
+inside_room = mouse_x >= room_l && mouse_x <= room_r && mouse_y >= room_t && mouse_y <= room_b;
+near_src = ((mouse_x-sx)*(mouse_x-sx) + (mouse_y-sy)*(mouse_y-sy)) <= ((dot_r+8*ui_s)*(dot_r+8*ui_s));
 
 hover_bar = 0;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b1y && mouse_y <= b1y+barh) ? hover_bar = 1;
@@ -879,6 +1060,123 @@ hover_bar = 0;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b5y && mouse_y <= b5y+barh) ? hover_bar = 5;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b6y && mouse_y <= b6y+barh) ? hover_bar = 6;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b7y && mouse_y <= b7y+barh) ? hover_bar = 7;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b8y && mouse_y <= b8y+barh) ? hover_bar = 8;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b9y && mouse_y <= b9y+barh) ? hover_bar = 9;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= b10y && mouse_y <= b10y+barh) ? hover_bar = 10;
+
+// Tooltip lane targeting must match the actual slider hitbox exactly.
+// V6.2 used widened row hitboxes, which made help trigger above the visible bar
+// and made the slider feel visually offset. Keep tooltip hover tied to hover_bar.
+hover_tip_bar = hover_bar;
+
+safe_x = c1x + c1w - 112*ui_s;
+safe_y = c1y + 10*ui_s;
+safe_w = 96*ui_s;
+safe_h = 22*ui_s;
+hover_safe = mouse_x >= safe_x && mouse_x <= safe_x+safe_w && mouse_y >= safe_y && mouse_y <= safe_y+safe_h;
+
+// Snap chips
+chip_h = 22*ui_s;
+chip_y = canvas_y + canvas_h - chip_h - 11*ui_s;
+chip_gap = 6*ui_s;
+chip_x = canvas_x + 14*ui_s;
+chip_w = (canvas_w - 28*ui_s - chip_gap*7) / 8;
+chip_w > 54*ui_s ? chip_w = 54*ui_s;
+chip_w < 34*ui_s ? chip_w = 34*ui_s;
+chip1x = chip_x;
+chip2x = chip1x + chip_w + chip_gap;
+chip3x = chip2x + chip_w + chip_gap;
+chip4x = chip3x + chip_w + chip_gap;
+chip5x = chip4x + chip_w + chip_gap;
+chip6x = chip5x + chip_w + chip_gap;
+chip7x = chip6x + chip_w + chip_gap;
+chip8x = chip7x + chip_w + chip_gap;
+
+hover_chip = 0;
+(mouse_y >= chip_y && mouse_y <= chip_y+chip_h) ? (
+  mouse_x >= chip1x && mouse_x <= chip1x+chip_w ? hover_chip = 1;
+  mouse_x >= chip2x && mouse_x <= chip2x+chip_w ? hover_chip = 2;
+  mouse_x >= chip3x && mouse_x <= chip3x+chip_w ? hover_chip = 3;
+  mouse_x >= chip4x && mouse_x <= chip4x+chip_w ? hover_chip = 4;
+  mouse_x >= chip5x && mouse_x <= chip5x+chip_w ? hover_chip = 5;
+  mouse_x >= chip6x && mouse_x <= chip6x+chip_w ? hover_chip = 6;
+  mouse_x >= chip7x && mouse_x <= chip7x+chip_w ? hover_chip = 7;
+  mouse_x >= chip8x && mouse_x <= chip8x+chip_w ? hover_chip = 8;
+);
+
+// --- tooltip target routing ---
+// Numeric IDs keep this JSFX-safe:
+// 20s canvas/visual cues, 30 Auto Safe, 40s snap chips, 100s lanes.
+tip_id = 0;
+tip_hot = (!mouse_l && !mouse_r && ui_mode == 0);
+
+tip_hot ? (
+  hover_tip_bar > 0 ? tip_id = 100 + hover_tip_bar;
+  hover_safe ? tip_id = 30;
+  hover_chip > 0 ? tip_id = 40 + hover_chip;
+
+  // Recompute visible-cue hit zones from the current object/canvas geometry.
+  src_dx = mouse_x - sx;
+  src_dy = mouse_y - sy;
+  src_d2 = src_dx*src_dx + src_dy*src_dy;
+  near_src = src_d2 <= ((dot_r+8*ui_s)*(dot_r+8*ui_s));
+
+  ghost_dx = mouse_x - gsx;
+  ghost_dy = mouse_y - gsy;
+  near_ghost = (ghost_dx*ghost_dx + ghost_dy*ghost_dy) <= ((ghost_r+9*ui_s)*(ghost_r+9*ui_s));
+
+  mouse_rad = sqrt((mouse_x-cx)*(mouse_x-cx) + (mouse_y-cy)*(mouse_y-cy));
+  room_edge_hot = inside_canvas && (abs(mouse_x-room_l) < 8*ui_s || abs(mouse_x-room_r) < 8*ui_s || abs(mouse_y-room_t) < 8*ui_s || abs(mouse_y-room_b) < 8*ui_s);
+  listener_shell_r = head_r + (10 + 52*ui_push)*ui_s;
+  shell_hot = inside_room && ui_push > 0.04 && abs(mouse_rad - listener_shell_r) <= 10*ui_s;
+
+  size_hot_r = dot_r + (8 + 46*(ui_size^0.72))*ui_s;
+  size_hot = inside_room && ui_size > 0.06 && !near_src && src_d2 <= size_hot_r*size_hot_r;
+
+  range_min_tip = min(room_hw, room_hd);
+  range_active_tip = range_min_tip * (0.18 + 0.70*ui_dist);
+  range_hot = inside_room && abs(mouse_rad - range_active_tip) <= 9*ui_s;
+
+  motion_hot_r = (4 + 28*ui_motion)*ui_s + 8*ui_s;
+  motion_hot = inside_room && ui_motion > 0.04 && !near_src && src_d2 <= motion_hot_r*motion_hot_r;
+
+  occ_tip_x = cx + (sx-cx)*0.46;
+  occ_tip_y = cy + (sy-cy)*0.46;
+  occ_hot_r = 18*ui_s + 26*ui_s*ui_occ;
+  occ_hot = inside_room && ui_occ > 0.04 && ((mouse_x-occ_tip_x)*(mouse_x-occ_tip_x) + (mouse_y-occ_tip_y)*(mouse_y-occ_tip_y)) <= occ_hot_r*occ_hot_r;
+
+  bounce_hot_r = 2.5*ui_s + 5.2*ui_s*ui_room + 8*ui_s;
+  bounce_hot = ui_room > 0.035 && (
+    ((mouse_x-bpLx)*(mouse_x-bpLx) + (mouse_y-bpLy)*(mouse_y-bpLy)) <= bounce_hot_r*bounce_hot_r ||
+    ((mouse_x-bpRx)*(mouse_x-bpRx) + (mouse_y-bpRy)*(mouse_y-bpRy)) <= bounce_hot_r*bounce_hot_r ||
+    ((mouse_x-bpFx)*(mouse_x-bpFx) + (mouse_y-bpFy)*(mouse_y-bpFy)) <= bounce_hot_r*bounce_hot_r ||
+    ((mouse_x-bpBx)*(mouse_x-bpBx) + (mouse_y-bpBy)*(mouse_y-bpBy)) <= bounce_hot_r*bounce_hot_r
+  );
+
+  head_hot = ((mouse_x-cx)*(mouse_x-cx) + (mouse_y-cy)*(mouse_y-cy)) <= ((head_r+11*ui_s)*(head_r+11*ui_s));
+
+  tip_id == 0 && near_src ? tip_id = 20;
+  tip_id == 0 && near_ghost ? tip_id = 21;
+  tip_id == 0 && occ_hot ? tip_id = 29;
+  tip_id == 0 && bounce_hot ? tip_id = 22;
+  tip_id == 0 && shell_hot ? tip_id = 23;
+  tip_id == 0 && size_hot ? tip_id = 26;
+  tip_id == 0 && motion_hot ? tip_id = 28;
+  tip_id == 0 && range_hot ? tip_id = 27;
+  tip_id == 0 && room_edge_hot ? tip_id = 22;
+  tip_id == 0 && head_hot ? tip_id = 24;
+  tip_id == 0 && inside_room ? tip_id = 24;
+  tip_id == 0 && inside_canvas ? tip_id = 25;
+);
+
+// Small hover delay: prevents flashing while passing over dense controls.
+tip_id == tooltip_last_id ? (
+  tooltip_frames += 1;
+) : (
+  tooltip_last_id = tip_id;
+  tooltip_frames = 0;
+);
+tooltip_show = tip_id > 0 && tooltip_frames >= 8;
 
 // --- wheel controls ---
 mouse_wheel != 0 ? (
@@ -886,58 +1184,57 @@ mouse_wheel != 0 ? (
   wheel_scale = mouse_shift ? 0.25 : 1.0;
 
   hover_bar == 1 ? (
-    slider3 += wstep * 0.03 * wheel_scale;
-    slider3 < 0 ? slider3 = 0; slider3 > 1 ? slider3 = 1;
-    sliderchange(4);
-  ) :
-  hover_bar == 2 ? (
-    slider4 += wstep * 0.04 * wheel_scale;
+    slider1 += wstep * 0.045 * wheel_scale;
+    slider1 < -1 ? slider1 = -1; slider1 > 1 ? slider1 = 1;
+    sliderchange(-1.0);
+  ) : hover_bar == 2 ? (
+    slider3 += wstep * 0.045 * wheel_scale;
+    slider3 < -1 ? slider3 = -1; slider3 > 1 ? slider3 = 1;
+    sliderchange(-1.0);
+  ) : hover_bar == 3 ? (
+    slider2 += wstep * 0.035 * wheel_scale;
+    slider2 < 0 ? slider2 = 0; slider2 > 1 ? slider2 = 1;
+    sliderchange(-1.0);
+  ) : hover_bar == 4 ? (
+    slider4 += wstep * 0.035 * wheel_scale;
     slider4 < 0 ? slider4 = 0; slider4 > 1 ? slider4 = 1;
-    sliderchange(8);
-  ) :
-  hover_bar == 3 ? (
-    slider5 += wstep * 0.04 * wheel_scale;
+    sliderchange(-1.0);
+  ) : hover_bar == 5 ? (
+    slider5 += wstep * 0.030 * wheel_scale;
     slider5 < 0 ? slider5 = 0; slider5 > 1 ? slider5 = 1;
-    sliderchange(16);
-  ) :
-  hover_bar == 4 ? (
-    slider6 += wstep * 0.04 * wheel_scale;
+    sliderchange(-1.0);
+  ) : hover_bar == 6 ? (
+    slider6 += wstep * 0.035 * wheel_scale;
     slider6 < 0 ? slider6 = 0; slider6 > 1 ? slider6 = 1;
-    sliderchange(32);
-  ) :
-  hover_bar == 5 ? (
-    slider7 += wstep * 0.04 * wheel_scale;
+    sliderchange(-1.0);
+  ) : hover_bar == 7 ? (
+    slider7 += wstep * 0.035 * wheel_scale;
     slider7 < 0 ? slider7 = 0; slider7 > 1 ? slider7 = 1;
-    sliderchange(64);
-  ) :
-  hover_bar == 6 ? (
-    slider8 += wstep * 0.03 * wheel_scale;
+    sliderchange(-1.0);
+  ) : hover_bar == 8 ? (
+    slider8 += wstep * 0.035 * wheel_scale;
     slider8 < 0 ? slider8 = 0; slider8 > 1 ? slider8 = 1;
-    sliderchange(128);
-  ) :
-  hover_bar == 7 ? (
-    slider9 += wstep * 0.4 * wheel_scale;
-    slider9 < -18 ? slider9 = -18; slider9 > 12 ? slider9 = 12;
-    sliderchange(256);
-  ) :
-  inside_canvas ? (
-    mouse_shift ? (
-      slider3 += wstep * 0.03 * wheel_scale;
-      slider3 < 0 ? slider3 = 0; slider3 > 1 ? slider3 = 1;
-      sliderchange(4);
-    ) : mouse_ctrl ? (
-      slider5 += wstep * 0.04 * wheel_scale;
-      slider5 < 0 ? slider5 = 0; slider5 > 1 ? slider5 = 1;
-      sliderchange(16);
-    ) : mouse_alt ? (
-      slider4 += wstep * 0.04 * wheel_scale;
+    sliderchange(-1.0);
+  ) : hover_bar == 9 ? (
+    slider9 += wstep * 0.030 * wheel_scale;
+    slider9 < 0 ? slider9 = 0; slider9 > 1 ? slider9 = 1;
+    sliderchange(-1.0);
+  ) : hover_bar == 10 ? (
+    slider10 += wstep * 0.4 * wheel_scale;
+    slider10 < -18 ? slider10 = -18; slider10 > 12 ? slider10 = 12;
+    sliderchange(-1.0);
+  ) : inside_canvas ? (
+    mouse_ctrl ? (
+      slider4 += wstep * 0.035 * wheel_scale;
       slider4 < 0 ? slider4 = 0; slider4 > 1 ? slider4 = 1;
-      sliderchange(8);
+    ) : mouse_alt ? (
+      slider6 += wstep * 0.035 * wheel_scale;
+      slider6 < 0 ? slider6 = 0; slider6 > 1 ? slider6 = 1;
     ) : (
       slider2 += wstep * 0.035 * wheel_scale;
       slider2 < 0 ? slider2 = 0; slider2 > 1 ? slider2 = 1;
-      sliderchange(2);
     );
+    sliderchange(-1.0);
   );
   mouse_wheel = 0;
 );
@@ -947,94 +1244,108 @@ mouse_wheel != 0 ? (
   inside_canvas ? (
     slider1 = 0;
     slider2 = 0.25;
-    sliderchange(3);
+    slider3 = 0.82;
     sliderchange(-1.0);
-  ) :
-  hover_bar == 1 ? (slider3 = 0.08; sliderchange(4); sliderchange(-1.0);) :
-  hover_bar == 2 ? (slider4 = 0.42; sliderchange(8); sliderchange(-1.0);) :
-  hover_bar == 3 ? (slider5 = 0.30; sliderchange(16); sliderchange(-1.0);) :
-  hover_bar == 4 ? (slider6 = 0.55; sliderchange(32); sliderchange(-1.0);) :
-  hover_bar == 5 ? (slider7 = 0.00; sliderchange(64); sliderchange(-1.0);) :
-  hover_bar == 6 ? (slider8 = 0.05; sliderchange(128); sliderchange(-1.0);) :
-  hover_bar == 7 ? (slider9 = 0.0; sliderchange(256); sliderchange(-1.0););
+  ) : hover_bar == 1 ? (slider1 = 0; sliderchange(-1.0);) :
+  hover_bar == 2 ? (slider3 = 0.82; sliderchange(-1.0);) :
+  hover_bar == 3 ? (slider2 = 0.25; sliderchange(-1.0);) :
+  hover_bar == 4 ? (slider4 = 0.58; sliderchange(-1.0);) :
+  hover_bar == 5 ? (slider5 = 0.10; sliderchange(-1.0);) :
+  hover_bar == 6 ? (slider6 = 0.42; sliderchange(-1.0);) :
+  hover_bar == 7 ? (slider7 = 0.30; sliderchange(-1.0);) :
+  hover_bar == 8 ? (slider8 = 0.00; sliderchange(-1.0);) :
+  hover_bar == 9 ? (slider9 = 0.04; sliderchange(-1.0);) :
+  hover_bar == 10 ? (slider10 = 0.0; sliderchange(-1.0););
 );
 
 (!ui_prev_l && mouse_l) ? (
-  mouse_ctrl && hover_bar == 1 ? (slider3 = 0.08; sliderchange(4); sliderchange(-1.0);) :
-  mouse_ctrl && hover_bar == 2 ? (slider4 = 0.42; sliderchange(8); sliderchange(-1.0);) :
-  mouse_ctrl && hover_bar == 3 ? (slider5 = 0.30; sliderchange(16); sliderchange(-1.0);) :
-  mouse_ctrl && hover_bar == 4 ? (slider6 = 0.55; sliderchange(32); sliderchange(-1.0);) :
-  mouse_ctrl && hover_bar == 5 ? (slider7 = 0.00; sliderchange(64); sliderchange(-1.0);) :
-  mouse_ctrl && hover_bar == 6 ? (slider8 = 0.05; sliderchange(128); sliderchange(-1.0);) :
-  mouse_ctrl && hover_bar == 7 ? (slider9 = 0.0; sliderchange(256); sliderchange(-1.0);) :
-  (near_src || inside_canvas) ? (
+  hover_safe ? (
+    slider11 = 1 - slider11;
+    sliderchange(-1.0);
+  ) : hover_chip > 0 ? (
+    snap_r = 0.78;
+    hover_chip == 1 ? (slider1 = 0; slider3 = 0.82;) :
+    hover_chip == 2 ? (a = -30*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
+    hover_chip == 3 ? (a = -45*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
+    hover_chip == 4 ? (a = -60*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
+    hover_chip == 5 ? (a = 30*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
+    hover_chip == 6 ? (a = 45*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
+    hover_chip == 7 ? (a = 60*$pi/180; slider1 = sin(a)*snap_r; slider3 = cos(a)*snap_r;) :
+                         (slider1 = 0; slider3 = -0.82;);
+    sliderchange(-1.0);
+  ) : (near_src || inside_room) ? (
     ui_mode = 1;
     ui_drag_start_x = mouse_x;
     ui_drag_start_y = mouse_y;
     ui_drag_start_v1 = slider1;
-    ui_drag_start_v2 = slider2;
-  ) :
-  hover_bar > 0 ? (
+    ui_drag_start_v2 = slider3;
+    ui_drag_start_v3 = slider2;
+  ) : hover_bar > 0 ? (
     ui_mode = 100 + hover_bar;
     ui_drag_bar = hover_bar;
     ui_drag_start_x = mouse_x;
     ui_drag_start_y = mouse_y;
     ui_drag_start_v1 =
-      hover_bar == 1 ? slider3 :
-      hover_bar == 2 ? slider4 :
-      hover_bar == 3 ? slider5 :
-      hover_bar == 4 ? slider6 :
-      hover_bar == 5 ? slider7 :
-      hover_bar == 6 ? slider8 : slider9;
+      hover_bar == 1 ? slider1 :
+      hover_bar == 2 ? slider3 :
+      hover_bar == 3 ? slider2 :
+      hover_bar == 4 ? slider4 :
+      hover_bar == 5 ? slider5 :
+      hover_bar == 6 ? slider6 :
+      hover_bar == 7 ? slider7 :
+      hover_bar == 8 ? slider8 :
+      hover_bar == 9 ? slider9 : slider10;
   );
 );
 
 // --- drag actions ---
 (mouse_l && ui_mode == 1) ? (
-  mouse_shift ? (
-    slider1 = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) * 0.28 / ui_s;
-    slider1 > 180 ? slider1 = 180;
-    slider1 < -180 ? slider1 = -180;
-    slider2 = ui_drag_start_v2 - (mouse_y - ui_drag_start_y) * 0.0024 / ui_s;
+  mouse_alt ? (
+    slider2 = ui_drag_start_v3 - (mouse_y - ui_drag_start_y) * 0.0028 / ui_s;
     slider2 < 0 ? slider2 = 0;
     slider2 > 1 ? slider2 = 1;
-  ) : mouse_alt ? (
-    slider2 = ui_drag_start_v2 - (mouse_y - ui_drag_start_y) * 0.0028 / ui_s;
-    slider2 < 0 ? slider2 = 0;
-    slider2 > 1 ? slider2 = 1;
+  ) : mouse_ctrl ? (
+    slider1 = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) * 0.0040 / ui_s;
+    slider1 < -1 ? slider1 = -1;
+    slider1 > 1 ? slider1 = 1;
+  ) : mouse_shift ? (
+    slider1 = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) * 0.00135 / ui_s;
+    slider3 = ui_drag_start_v2 - (mouse_y - ui_drag_start_y) * 0.00135 / ui_s;
+    slider1 < -1 ? slider1 = -1; slider1 > 1 ? slider1 = 1;
+    slider3 < -1 ? slider3 = -1; slider3 > 1 ? slider3 = 1;
+    rr = sqrt(slider1*slider1 + slider3*slider3);
+    rr > 1 ? (slider1 /= rr; slider3 /= rr;);
   ) : (
-    dxn = (mouse_x - cx) / room_hw;
-    dyn = (cy - mouse_y) / room_hd;
+    dxn = (mouse_x - cx) / (room_hw*0.82);
+    dyn = (cy - mouse_y) / (room_hd*0.82);
     rr = sqrt(dxn*dxn + dyn*dyn);
-    rr > 0.98 ? (
-      dxn *= 0.98/rr;
-      dyn *= 0.98/rr;
-      rr = 0.98;
+    rr > 1 ? (
+      dxn /= rr;
+      dyn /= rr;
     );
-    ang = atan(dxn / (abs(dyn) + 0.00000000000000000001)) * 180 / $pi;
-    (dyn < 0) ? (
-      dxn >= 0 ? ang = 180 - ang : ang = -180 - ang;
-    );
-    slider1 = ang;
-    slider2 = rr / 0.82;
-    slider2 > 1 ? slider2 = 1;
-    slider2 < 0 ? slider2 = 0;
+    slider1 = dxn;
+    slider3 = dyn;
   );
-  sliderchange(3);
+  sliderchange(-1.0);
 );
 
 (mouse_l && ui_mode >= 101) ? (
   sid = ui_mode - 100;
-  sid == 1 ? (mn=0; mx=1; mask=4;) :
-  sid == 2 ? (mn=0; mx=1; mask=8;) :
-  sid == 3 ? (mn=0; mx=1; mask=16;) :
-  sid == 4 ? (mn=0; mx=1; mask=32;) :
-  sid == 5 ? (mn=0; mx=1; mask=64;) :
-  sid == 6 ? (mn=0; mx=1; mask=128;) :
-             (mn=-18; mx=12; mask=256;);
+  sid == 1 ? (mn=-1; mx=1;) :
+  sid == 2 ? (mn=-1; mx=1;) :
+  sid == 3 ? (mn=0; mx=1;) :
+  sid == 4 ? (mn=0; mx=1;) :
+  sid == 5 ? (mn=0; mx=1;) :
+  sid == 6 ? (mn=0; mx=1;) :
+  sid == 7 ? (mn=0; mx=1;) :
+  sid == 8 ? (mn=0; mx=1;) :
+  sid == 9 ? (mn=0; mx=1;) :
+             (mn=-18; mx=12;);
 
   mouse_shift ? (
     v = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) / barw * (mx - mn) * 0.25;
+    v < mn ? v = mn;
+    v > mx ? v = mx;
   ) : (
     nrm = (mouse_x - barx) / barw;
     nrm < 0 ? nrm = 0;
@@ -1042,14 +1353,17 @@ mouse_wheel != 0 ? (
     v = mn + nrm * (mx - mn);
   );
 
-  sid == 1 ? slider3 = v :
-  sid == 2 ? slider4 = v :
-  sid == 3 ? slider5 = v :
-  sid == 4 ? slider6 = v :
-  sid == 5 ? slider7 = v :
-  sid == 6 ? slider8 = v : slider9 = v;
+  sid == 1 ? slider1 = v :
+  sid == 2 ? slider3 = v :
+  sid == 3 ? slider2 = v :
+  sid == 4 ? slider4 = v :
+  sid == 5 ? slider5 = v :
+  sid == 6 ? slider6 = v :
+  sid == 7 ? slider7 = v :
+  sid == 8 ? slider8 = v :
+  sid == 9 ? slider9 = v : slider10 = v;
 
-  sliderchange(mask);
+  sliderchange(-1.0);
 );
 
 // finalize drag
@@ -1063,41 +1377,56 @@ ui_prev_l = mouse_l;
 ui_prev_r = mouse_r;
 
 // refresh for drawing after interaction
-ui_az = slider1;
-ui_depth = slider2;
-ui_width = slider3;
-ui_ext = slider4;
-ui_room = slider5;
-ui_rsize = slider6;
-ui_occ = slider7;
-ui_motion = slider8;
-ui_trim = slider9;
+ui_lat = slider1;
+ui_dist = slider2;
+ui_fb = slider3;
+ui_throw = slider4;
+ui_size = slider5;
+ui_push = slider6;
+ui_room = slider7;
+ui_occ = slider8;
+ui_motion = slider9;
+ui_trim = slider10;
+ui_safe = slider11 >= 0.5 ? 1 : 0;
+ui_curve = slider12;
+ui_smooth = slider13;
+ui_rsize = slider14;
 
-ui_az_rad = ui_az * $pi/180;
-src_nx = sin(ui_az_rad) * ui_depth * 0.82;
-src_ny = cos(ui_az_rad) * ui_depth * 0.82;
-sx = cx + src_nx * room_hw;
-sy = cy - src_ny * room_hd;
+pos_r = sqrt(ui_lat*ui_lat + ui_fb*ui_fb);
+pos_r > 1 ? (
+  draw_lat = ui_lat / pos_r;
+  draw_fb = ui_fb / pos_r;
+  draw_r = 1;
+) : (
+  draw_lat = ui_lat;
+  draw_fb = ui_fb;
+  draw_r = pos_r;
+);
+sx = cx + draw_lat * room_hw * 0.82;
+sy = cy - draw_fb  * room_hd * 0.82;
+cue_rad = last_cue_az * $pi/180;
+ghost_x = sin(cue_rad) * draw_r;
+ghost_y = cos(cue_rad) * draw_r;
+gsx = cx + ghost_x * room_hw * 0.82;
+gsy = cy - ghost_y * room_hd * 0.82;
 
-frontness = max(0, cos(ui_az_rad));
-backness = max(0, -cos(ui_az_rad));
-sideness = 1 - abs(cos(ui_az_rad));
-sideness < 0 ? sideness = 0;
+// bounce points on room walls, visual coordinate
+src_nx = draw_lat * 0.82;
+src_ny = draw_fb * 0.82;
 
-// bounce points on room walls
-tL = (-1 - src_nx) / (-2 - src_nx + 0.00000000000000000001);
+tL = (-1 - src_nx) / (-2 - src_nx + 0.000000000000000001);
 bLx = -1;
 bLy = src_ny + tL * (0 - src_ny);
 
-tR = (1 - src_nx) / (2 - src_nx + 0.00000000000000000001);
+tR = (1 - src_nx) / (2 - src_nx + 0.000000000000000001);
 bRx = 1;
 bRy = src_ny + tR * (0 - src_ny);
 
-tF = (1 - src_ny) / (2 - src_ny + 0.00000000000000000001);
+tF = (1 - src_ny) / (2 - src_ny + 0.000000000000000001);
 bFx = src_nx + tF * (0 - src_nx);
 bFy = 1;
 
-tB = (-1 - src_ny) / (-2 - src_ny + 0.00000000000000000001);
+tB = (-1 - src_ny) / (-2 - src_ny + 0.000000000000000001);
 bBx = src_nx + tB * (0 - src_nx);
 bBy = -1;
 
@@ -1107,9 +1436,9 @@ bpFx = cx + bFx * room_hw; bpFy = cy - bFy * room_hd;
 bpBx = cx + bBx * room_hw; bpBy = cy - bBy * room_hd;
 
 // --- colors ---
-bg_r=0.060; bg_g=0.068; bg_b=0.082;
-panel_r=0.105; panel_g=0.118; panel_b=0.145;
-card_r=0.128; card_g=0.142; card_b=0.176;
+bg_r=0.056; bg_g=0.064; bg_b=0.078;
+panel_r=0.100; panel_g=0.112; panel_b=0.140;
+card_r=0.126; card_g=0.140; card_b=0.174;
 line_r=0.235; line_g=0.260; line_b=0.320;
 txt_r=0.94; txt_g=0.95; txt_b=0.98;
 mut_r=0.56; mut_g=0.61; mut_b=0.69;
@@ -1117,6 +1446,7 @@ src_cr=0.97; src_cg=0.67; src_cb=0.16;
 bounce_r=0.33; bounce_g=0.80; bounce_b=0.98;
 occ_cr=0.83; occ_cg=0.38; occ_cb=0.96;
 ok_r=0.58; ok_g=0.78; ok_b=0.51;
+warn_r=0.96; warn_g=0.48; warn_b=0.18;
 
 // --- background ---
 gfx_set(bg_r,bg_g,bg_b,1); gfx_rect(0,0,gfx_w,gfx_h,1);
@@ -1128,12 +1458,12 @@ fs1 < 12 ? fs1 = 12; fs2 < 10 ? fs2 = 10; fs3 < 9 ? fs3 = 9; fs4 < 8 ? fs4 = 8;
 // title
 gfx_setfont(1,"Arial",fs1,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V5");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.2.1");
 
 gfx_setfont(2,"Arial",fs2);
 gfx_set(mut_r,mut_g,mut_b,1);
 gfx_x = pad; gfx_y = pad*0.45 + fs1 + 1*ui_s;
-gfx_printf("Mouse-first room canvas | drag source | wall-bounce cues | scalable UI");
+gfx_printf("Perceptual Position | visual cues | aligned hover help | automation-safe spatial throw");
 
 // main surfaces
 gfx_set(panel_r,panel_g,panel_b,1);
@@ -1146,66 +1476,133 @@ gfx_roundrect(c2x, c2y, c2w, c2h, 12*ui_s, 1);
 gfx_rect(c3x, c3y, c3w, c3h);
 gfx_roundrect(c3x, c3y, c3w, c3h, 12*ui_s, 1);
 
-// canvas shading
+// canvas inner
 gfx_set(0.082,0.090,0.112,1);
 gfx_rect(canvas_x+8*ui_s, canvas_y+8*ui_s, canvas_w-16*ui_s, canvas_h-16*ui_s);
 gfx_roundrect(canvas_x+8*ui_s, canvas_y+8*ui_s, canvas_w-16*ui_s, canvas_h-16*ui_s, 12*ui_s, 1);
 
-// compass
-gfx_set(0.19,0.22,0.28,0.92);
-i=1;
-loop(4,
-  rr = comp_r * i/4;
-  gfx_circle(cx, cy, rr, 0, 1);
-  i += 1;
-);
-gfx_line(cx-comp_r, cy, cx+comp_r, cy);
-gfx_line(cx, cy-comp_r, cx, cy+comp_r);
-
-// room
-gfx_set(0.12,0.13,0.17,1);
+// stage room
+gfx_set(0.112,0.124,0.158,1);
 gfx_rect(room_l, room_t, room_hw*2, room_hd*2);
 gfx_roundrect(room_l, room_t, room_hw*2, room_hd*2, 10*ui_s, 1);
 gfx_set(0.38,0.43,0.52,0.95);
 gfx_roundrect(room_l, room_t, room_hw*2, room_hd*2, 10*ui_s, 0);
 
+// grid
+gfx_set(0.23,0.26,0.33,0.55);
+gfx_line(cx-room_hw, cy, cx+room_hw, cy);
+gfx_line(cx, cy-room_hd, cx, cy+room_hd);
+gfx_line(cx-room_hw*0.5, room_t, cx-room_hw*0.5, room_b);
+gfx_line(cx+room_hw*0.5, room_t, cx+room_hw*0.5, room_b);
+gfx_line(room_l, cy-room_hd*0.5, room_r, cy-room_hd*0.5);
+gfx_line(room_l, cy+room_hd*0.5, room_r, cy+room_hd*0.5);
+
+// snap rays
+gfx_set(0.30,0.34,0.42,0.35);
+a=-60*$pi/180; gfx_line(cx,cy,cx+sin(a)*room_hw*0.82,cy-cos(a)*room_hd*0.82);
+a=-45*$pi/180; gfx_line(cx,cy,cx+sin(a)*room_hw*0.82,cy-cos(a)*room_hd*0.82);
+a=-30*$pi/180; gfx_line(cx,cy,cx+sin(a)*room_hw*0.82,cy-cos(a)*room_hd*0.82);
+a=30*$pi/180; gfx_line(cx,cy,cx+sin(a)*room_hw*0.82,cy-cos(a)*room_hd*0.82);
+a=45*$pi/180; gfx_line(cx,cy,cx+sin(a)*room_hw*0.82,cy-cos(a)*room_hd*0.82);
+a=60*$pi/180; gfx_line(cx,cy,cx+sin(a)*room_hw*0.82,cy-cos(a)*room_hd*0.82);
+
 // room labels
 gfx_setfont(3,"Arial",fs3,'b');
 gfx_set(0.73,0.79,0.87,0.95);
-gfx_x = cx - 32*ui_s; gfx_y = room_t - 16*ui_s; gfx_printf("FRONT WALL");
+gfx_x = cx - 30*ui_s; gfx_y = room_t - 16*ui_s; gfx_printf("FRONT");
 gfx_x = room_l - 18*ui_s; gfx_y = cy - 5*ui_s; gfx_printf("L");
 gfx_x = room_r + 10*ui_s; gfx_y = cy - 5*ui_s; gfx_printf("R");
 gfx_set(0.70,0.58,0.85,0.95);
-gfx_x = cx - 30*ui_s; gfx_y = room_b + 6*ui_s; gfx_printf("REAR WALL");
+gfx_x = cx - 24*ui_s; gfx_y = room_b + 5*ui_s; gfx_printf("REAR");
 
-// direct path
-gfx_set(src_cr,src_cg,src_cb,0.85);
+// --- visual cue: Distance = range rings + air dashes, not a bigger source ---
+range_min = min(room_hw, room_hd);
+range_r1 = range_min * 0.25;
+range_r2 = range_min * 0.50;
+range_r3 = range_min * 0.75;
+range_active = range_min * (0.18 + 0.70*ui_dist);
+
+// static reference rings
+gfx_set(0.70,0.74,0.84,0.10); gfx_circle(cx,cy,range_r1,0,1);
+gfx_set(0.70,0.74,0.84,0.08); gfx_circle(cx,cy,range_r2,0,1);
+gfx_set(0.70,0.74,0.84,0.06); gfx_circle(cx,cy,range_r3,0,1);
+
+// active distance ring brightens and expands with Distance
+gfx_set(0.78,0.82,0.92,0.13 + 0.14*ui_dist);
+gfx_circle(cx,cy,range_active,0,1);
+
+// small distance tick marks along the placement ray
+seg_n = 5;
+seg_i = 1;
+loop(seg_n,
+  seg_t = seg_i / (seg_n + 1);
+  seg_x = cx + (sx-cx) * seg_t;
+  seg_y = cy + (sy-cy) * seg_t;
+  seg_a = (0.05 + 0.18*ui_dist) * seg_t;
+  gfx_set(0.78,0.82,0.92,seg_a);
+  gfx_circle(seg_x, seg_y, (1.5 + 2.8*ui_dist)*ui_s, 1, 1);
+  seg_i += 1;
+);
+
+gfx_setfont(4,"Arial",fs4);
+gfx_set(0.70,0.74,0.84,0.48);
+gfx_x = room_l + 8*ui_s; gfx_y = room_b - 18*ui_s; gfx_printf("CLOSE");
+gfx_x = cx - 10*ui_s; gfx_y = room_b - 18*ui_s; gfx_printf("MID");
+gfx_x = room_r - 28*ui_s; gfx_y = room_b - 18*ui_s; gfx_printf("FAR");
+
+// --- visual cue: Room = wall glow strength ---
+(ui_room > 0.001) ? (
+  glow_i = 0;
+  loop(3,
+    glow_o = (glow_i + 1) * 2.0*ui_s;
+    glow_a = ui_room * (0.20 - glow_i*0.045);
+    gfx_set(bounce_r,bounce_g,bounce_b,glow_a);
+    gfx_roundrect(room_l-glow_o, room_t-glow_o, room_hw*2+glow_o*2, room_hd*2+glow_o*2, 10*ui_s+glow_o, 0);
+    glow_i += 1;
+  );
+);
+
+// direct visual path
+gfx_set(src_cr,src_cg,src_cb,0.58 + 0.20*(1-ui_dist));
 gfx_line(cx, cy, sx, sy);
 
-// bounce paths
-bounce_a = 0.16 + 0.62*ui_room;
+// cue ghost path
+gfx_set(src_cr,src_cg,src_cb,0.22 + 0.12*ui_throw);
+gfx_line(cx, cy, gsx, gsy);
+
+// --- visual cue: Room = cyan early-bounce paths and wall-hit markers ---
+bounce_a = 0.04 + 0.72*ui_room;
 gfx_set(bounce_r,bounce_g,bounce_b,bounce_a);
 gfx_line(sx, sy, bpLx, bpLy); gfx_line(bpLx, bpLy, cx, cy);
 gfx_line(sx, sy, bpRx, bpRy); gfx_line(bpRx, bpRy, cx, cy);
 gfx_line(sx, sy, bpFx, bpFy); gfx_line(bpFx, bpFy, cx, cy);
 gfx_line(sx, sy, bpBx, bpBy); gfx_line(bpBx, bpBy, cx, cy);
 
-// bounce markers on walls
-bm_r = 4.0*ui_s + 3.2*ui_room;
-gfx_set(bounce_r,bounce_g,bounce_b,0.95);
+// secondary stronger trace at high Room, gives a thicker-looking reflection web
+(ui_room > 0.55) ? (
+  gfx_set(bounce_r,bounce_g,bounce_b,(ui_room-0.55)*0.55);
+  gfx_line(sx+1*ui_s, sy, bpLx+1*ui_s, bpLy); gfx_line(bpLx+1*ui_s, bpLy, cx+1*ui_s, cy);
+  gfx_line(sx-1*ui_s, sy, bpRx-1*ui_s, bpRy); gfx_line(bpRx-1*ui_s, bpRy, cx-1*ui_s, cy);
+  gfx_line(sx, sy+1*ui_s, bpFx, bpFy+1*ui_s); gfx_line(bpFx, bpFy+1*ui_s, cx, cy+1*ui_s);
+  gfx_line(sx, sy-1*ui_s, bpBx, bpBy-1*ui_s); gfx_line(bpBx, bpBy-1*ui_s, cx, cy-1*ui_s);
+);
+
+// bounce markers fade down when Room is low; they no longer imply reflections are active at 0
+bm_r = 2.5*ui_s + 5.2*ui_s*ui_room;
+bm_a = 0.16 + 0.82*ui_room;
+gfx_set(bounce_r,bounce_g,bounce_b,bm_a);
 gfx_circle(bpLx, bpLy, bm_r, 1, 1);
 gfx_circle(bpRx, bpRy, bm_r, 1, 1);
 gfx_circle(bpFx, bpFy, bm_r, 1, 1);
 gfx_circle(bpBx, bpBy, bm_r, 1, 1);
 
-// bounce legend
-gfx_setfont(2,"Arial",fs2);
-gfx_set(bounce_r,bounce_g,bounce_b,0.95);
-gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s; gfx_printf("EARLY BOUNCES");
-gfx_setfont(4,"Arial",fs4);
-gfx_set(mut_r,mut_g,mut_b,1);
-gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s + fs2 + 1*ui_s;
-gfx_printf("cyan wall hits = first reflections");
+(ui_room > 0.30) ? (
+  gfx_set(bounce_r,bounce_g,bounce_b,0.12 + 0.24*ui_room);
+  gfx_circle(bpLx, bpLy, bm_r + 4.0*ui_s*ui_room, 0, 1);
+  gfx_circle(bpRx, bpRy, bm_r + 4.0*ui_s*ui_room, 0, 1);
+  gfx_circle(bpFx, bpFy, bm_r + 4.0*ui_s*ui_room, 0, 1);
+  gfx_circle(bpBx, bpBy, bm_r + 4.0*ui_s*ui_room, 0, 1);
+);
 
 // occlusion wedge
 (ui_occ > 0.001) ? (
@@ -1217,148 +1614,478 @@ gfx_printf("cyan wall hits = first reflections");
   ay = cy + (sy-cy)*0.23;
   gfx_set(occ_cr,occ_cg,occ_cb,0.48 + 0.22*ui_occ);
   gfx_triangle(ax,ay, bx+wx,by+wy, bx-wx,by-wy);
-  gfx_set(0.95,0.92,0.99,0.82);
-  gfx_x = bx + 7*ui_s; gfx_y = by - 8*ui_s; gfx_printf("BLOCKER");
 );
 
-// width halo
-halo_r = dot_r + 12*ui_width;
-gfx_set(src_cr,src_cg,src_cb,0.16 + 0.20*ui_width);
-gfx_circle(sx, sy, halo_r, 0, 1);
+// --- visual cue: Push Out = listener externalization shell, not distance ---
+head_r = 17*ui_s;
+(ui_push > 0.001) ? (
+  shell_r = head_r + (10 + 52*ui_push)*ui_s;
+  shell_a = 0.06 + 0.22*ui_push;
+  gfx_set(src_cr,src_cg,src_cb,shell_a);
+  gfx_circle(cx, cy, shell_r, 0, 1);
+  gfx_set(bounce_r,bounce_g,bounce_b,0.04 + 0.16*ui_push);
+  gfx_circle(cx, cy, shell_r + 8*ui_s, 0, 1);
 
-// source orb
-gfx_set(src_cr,src_cg,src_cb,1); gfx_circle(sx, sy, dot_r, 1, 1);
+  // faint ear-to-source separation rays appear only as Push Out rises
+  ear_a = 0.05 + 0.16*ui_push;
+  gfx_set(src_cr,src_cg,src_cb,ear_a);
+  gfx_line(cx-21*ui_s, cy, sx, sy);
+  gfx_line(cx+21*ui_s, cy, sx, sy);
+);
+
+// cue ghost = effective DSP position after Spatial Throw/Cue Curve compression
+ghost_r = dot_r*0.72;
+gfx_set(src_cr,src_cg,src_cb,0.12 + 0.20*ui_throw);
+gfx_circle(gsx, gsy, ghost_r, 1, 1);
+gfx_set(src_cr,src_cg,src_cb,0.45 + 0.35*ui_throw);
+gfx_circle(gsx, gsy, ghost_r + 3*ui_s, 0, 1);
+
+// --- visual cue: Motion = green fading trail around source ---
+(ui_motion > 0.002) ? (
+  trail_n = 11;
+  trail_i = 0;
+  trail_amp = (4 + 28*ui_motion)*ui_s;
+  trail_phase = ph1*0.70 + ph2*0.33;
+  loop(trail_n,
+    trail_t = trail_i / (trail_n - 1);
+    trail_a = trail_phase - trail_t*(1.45 + 2.20*ui_motion)*$pi;
+    trail_rr = trail_amp * (0.35 + 0.65*trail_t);
+    tx = sx + cos(trail_a) * trail_rr;
+    ty = sy + sin(trail_a) * trail_rr * 0.58;
+    ta = (0.06 + 0.30*ui_motion) * (1 - trail_t);
+    gfx_set(ok_r,ok_g,ok_b,ta);
+    gfx_circle(tx, ty, (1.2 + 2.4*ui_motion)*ui_s, 1, 1);
+    trail_i += 1;
+  );
+  gfx_set(ok_r,ok_g,ok_b,0.08 + 0.18*ui_motion);
+  gfx_circle(sx, sy, trail_amp, 0, 1);
+);
+
+// --- visual cue: Size = orange source extent / diffusion ---
+size_pow = ui_size^0.72;
+halo_r = dot_r + (8 + 46*size_pow)*ui_s;
+halo_a = 0.05 + 0.24*ui_size;
+gfx_set(src_cr,src_cg,src_cb,halo_a);
+gfx_circle(sx, sy, halo_r, 0, 1);
+gfx_set(src_cr,src_cg,src_cb,0.04 + 0.14*ui_size);
+gfx_circle(sx, sy, halo_r*0.58, 0, 1);
+
+(ui_size > 0.12) ? (
+  cloud_n = floor(4 + 14*ui_size);
+  cloud_i = 0;
+  loop(cloud_n,
+    cloud_t = cloud_i / (cloud_n + 0.000001);
+    ca = cloud_t*2*$pi + 0.55;
+    cr = halo_r * (0.24 + 0.58*(cloud_i + 1)/(cloud_n + 1));
+    px = sx + cos(ca)*cr;
+    py = sy + sin(ca)*cr*0.68;
+    pa = (0.06 + 0.20*ui_size) * (0.55 + 0.45*(cloud_n - cloud_i)/(cloud_n + 1));
+    gfx_set(src_cr,src_cg,src_cb,pa);
+    gfx_circle(px, py, (1.2 + 2.5*ui_size)*ui_s, 1, 1);
+    cloud_i += 1;
+  );
+);
+
+// focus crosshair fades out as Size becomes diffuse
+focus_a_ui = 0.62 * (1 - ui_size);
+(focus_a_ui > 0.02) ? (
+  gfx_set(1,1,1,focus_a_ui);
+  gfx_line(sx-13*ui_s, sy, sx+13*ui_s, sy);
+  gfx_line(sx, sy-13*ui_s, sx, sy+13*ui_s);
+);
+
+// main source orb: size changes mildly; distance only dims the edge, avoiding size/distance confusion
+core_a = 1 - 0.16*ui_dist;
+gfx_set(src_cr,src_cg,src_cb,core_a);
+gfx_circle(sx, sy, dot_r, 1, 1);
+gfx_set(1,0.88,0.55,0.35 + 0.20*(1-ui_dist));
+gfx_circle(sx, sy, dot_r + 1.8*ui_s, 0, 1);
 gfx_set(0.12,0.12,0.13,1); gfx_circle(sx, sy, 2.6*ui_s, 1, 1);
 
 // listener
-head_r = 17*ui_s;
 gfx_set(0.60,0.66,0.76,1);
 gfx_circle(cx, cy, head_r, 0, 1);
 gfx_circle(cx-21*ui_s, cy, 5.1*ui_s, 0, 1);
 gfx_circle(cx+21*ui_s, cy, 5.1*ui_s, 0, 1);
 gfx_line(cx, cy-head_r, cx, cy-(head_r+9*ui_s));
 
-// status chips on canvas
-gfx_setfont(2,"Arial",fs2,'b');
-gfx_set(card_r,card_g,card_b,0.92);
-chip_w = 86*ui_s; chip_h = 22*ui_s;
-gfx_rect(canvas_x + 14*ui_s, canvas_y + canvas_h - 34*ui_s, chip_w, chip_h);
-gfx_roundrect(canvas_x + 14*ui_s, canvas_y + canvas_h - 34*ui_s, chip_w, chip_h, 8*ui_s, 1);
-gfx_rect(canvas_x + 14*ui_s + chip_w + 8*ui_s, canvas_y + canvas_h - 34*ui_s, chip_w, chip_h);
-gfx_roundrect(canvas_x + 14*ui_s + chip_w + 8*ui_s, canvas_y + canvas_h - 34*ui_s, chip_w, chip_h, 8*ui_s, 1);
-gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = canvas_x + 26*ui_s; gfx_y = canvas_y + canvas_h - 29*ui_s; gfx_printf("Drag = place");
-gfx_x = canvas_x + 26*ui_s + chip_w + 8*ui_s; gfx_y = canvas_y + canvas_h - 29*ui_s; gfx_printf("Right click = reset");
+// legend / readout on canvas
+gfx_setfont(4,"Arial",fs4);
+gfx_set(bounce_r,bounce_g,bounce_b,0.95);
+gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s; gfx_printf("cyan = Room bounces");
+gfx_set(src_cr,src_cg,src_cb,0.95);
+gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s + fs4 + 4*ui_s; gfx_printf("orange halo = Size | ghost = cue");
+gfx_set(0.78,0.82,0.92,0.82);
+gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s + (fs4 + 4*ui_s)*2; gfx_printf("rings = Distance | shell = Push Out");
+gfx_set(ok_r,ok_g,ok_b,0.82);
+gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s + (fs4 + 4*ui_s)*3; gfx_printf("green trail = Motion");
+
+// chips
+gfx_setfont(4,"Arial",fs4,'b');
+
+active = hover_chip==1;
+gfx_set(active ? 0.22 : 0.15, active ? 0.24 : 0.17, active ? 0.30 : 0.22, 0.96);
+gfx_rect(chip1x,chip_y,chip_w,chip_h); gfx_roundrect(chip1x,chip_y,chip_w,chip_h,7*ui_s,1);
+gfx_set(active ? src_cr : mut_r, active ? src_cg : mut_g, active ? src_cb : mut_b, 1);
+gfx_x = chip1x + 7*ui_s; gfx_y = chip_y + 5*ui_s; gfx_printf("Center");
+
+active = hover_chip==2;
+gfx_set(active ? 0.22 : 0.15, active ? 0.24 : 0.17, active ? 0.30 : 0.22, 0.96);
+gfx_rect(chip2x,chip_y,chip_w,chip_h); gfx_roundrect(chip2x,chip_y,chip_w,chip_h,7*ui_s,1);
+gfx_set(active ? src_cr : mut_r, active ? src_cg : mut_g, active ? src_cb : mut_b, 1);
+gfx_x = chip2x + 7*ui_s; gfx_y = chip_y + 5*ui_s; gfx_printf("30L");
+
+active = hover_chip==3;
+gfx_set(active ? 0.22 : 0.15, active ? 0.24 : 0.17, active ? 0.30 : 0.22, 0.96);
+gfx_rect(chip3x,chip_y,chip_w,chip_h); gfx_roundrect(chip3x,chip_y,chip_w,chip_h,7*ui_s,1);
+gfx_set(active ? src_cr : mut_r, active ? src_cg : mut_g, active ? src_cb : mut_b, 1);
+gfx_x = chip3x + 7*ui_s; gfx_y = chip_y + 5*ui_s; gfx_printf("45L");
+
+active = hover_chip==4;
+gfx_set(active ? 0.22 : 0.15, active ? 0.24 : 0.17, active ? 0.30 : 0.22, 0.96);
+gfx_rect(chip4x,chip_y,chip_w,chip_h); gfx_roundrect(chip4x,chip_y,chip_w,chip_h,7*ui_s,1);
+gfx_set(active ? src_cr : mut_r, active ? src_cg : mut_g, active ? src_cb : mut_b, 1);
+gfx_x = chip4x + 7*ui_s; gfx_y = chip_y + 5*ui_s; gfx_printf("60L");
+
+active = hover_chip==5;
+gfx_set(active ? 0.22 : 0.15, active ? 0.24 : 0.17, active ? 0.30 : 0.22, 0.96);
+gfx_rect(chip5x,chip_y,chip_w,chip_h); gfx_roundrect(chip5x,chip_y,chip_w,chip_h,7*ui_s,1);
+gfx_set(active ? src_cr : mut_r, active ? src_cg : mut_g, active ? src_cb : mut_b, 1);
+gfx_x = chip5x + 7*ui_s; gfx_y = chip_y + 5*ui_s; gfx_printf("30R");
+
+active = hover_chip==6;
+gfx_set(active ? 0.22 : 0.15, active ? 0.24 : 0.17, active ? 0.30 : 0.22, 0.96);
+gfx_rect(chip6x,chip_y,chip_w,chip_h); gfx_roundrect(chip6x,chip_y,chip_w,chip_h,7*ui_s,1);
+gfx_set(active ? src_cr : mut_r, active ? src_cg : mut_g, active ? src_cb : mut_b, 1);
+gfx_x = chip6x + 7*ui_s; gfx_y = chip_y + 5*ui_s; gfx_printf("45R");
+
+active = hover_chip==7;
+gfx_set(active ? 0.22 : 0.15, active ? 0.24 : 0.17, active ? 0.30 : 0.22, 0.96);
+gfx_rect(chip7x,chip_y,chip_w,chip_h); gfx_roundrect(chip7x,chip_y,chip_w,chip_h,7*ui_s,1);
+gfx_set(active ? src_cr : mut_r, active ? src_cg : mut_g, active ? src_cb : mut_b, 1);
+gfx_x = chip7x + 7*ui_s; gfx_y = chip_y + 5*ui_s; gfx_printf("60R");
+
+active = hover_chip==8;
+gfx_set(active ? 0.22 : 0.15, active ? 0.24 : 0.17, active ? 0.30 : 0.22, 0.96);
+gfx_rect(chip8x,chip_y,chip_w,chip_h); gfx_roundrect(chip8x,chip_y,chip_w,chip_h,7*ui_s,1);
+gfx_set(active ? src_cr : mut_r, active ? src_cg : mut_g, active ? src_cb : mut_b, 1);
+gfx_x = chip8x + 7*ui_s; gfx_y = chip_y + 5*ui_s; gfx_printf("Rear");
 
 // --- right card 1: summary ---
 gfx_setfont(2,"Arial",fs2,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = c1x + 14*ui_s; gfx_y = c1y + 10*ui_s; gfx_printf("Grab Sound");
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 10*ui_s; gfx_printf("Position");
+
+// safe toggle
+gfx_set(ui_safe ? ok_r : warn_r, ui_safe ? ok_g : warn_g, ui_safe ? ok_b : warn_b, hover_safe ? 0.95 : 0.75);
+gfx_rect(safe_x,safe_y,safe_w,safe_h);
+gfx_roundrect(safe_x,safe_y,safe_w,safe_h,8*ui_s,1);
+gfx_set(0.08,0.09,0.11,1);
+gfx_setfont(4,"Arial",fs4,'b');
+gfx_x = safe_x + 9*ui_s; gfx_y = safe_y + 6*ui_s; ui_safe ? gfx_printf("AUTO SAFE") : gfx_printf("PERFORM");
 
 gfx_setfont(3,"Arial",fs3);
 gfx_set(0.88,0.91,0.96,1);
-gfx_x = c1x + 14*ui_s; gfx_y = c1y + 32*ui_s; gfx_printf("Azimuth  %.1f deg", ui_az);
-gfx_x = c1x + 14*ui_s; gfx_y = c1y + 49*ui_s; gfx_printf("Distance %.2f m", last_dist_m);
-gfx_x = c1x + c1w*0.58; gfx_y = c1y + 32*ui_s; gfx_printf("Width %.2f", ui_width);
-gfx_x = c1x + c1w*0.58; gfx_y = c1y + 49*ui_s;
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 34*ui_s; gfx_printf("Visual %+.1f deg", last_visual_az);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 51*ui_s; gfx_printf("Cue    %+.1f deg", last_cue_az);
+gfx_x = c1x + c1w*0.55; gfx_y = c1y + 34*ui_s; gfx_printf("%.2f m", last_dist_m);
+gfx_x = c1x + c1w*0.55; gfx_y = c1y + 51*ui_s;
 frontness >= sideness && frontness >= backness ? gfx_printf("Zone FRONT") : sideness >= backness ? gfx_printf("Zone SIDE") : gfx_printf("Zone BACK");
 
 gfx_setfont(4,"Arial",fs4);
 gfx_set(mut_r,mut_g,mut_b,1);
-gfx_x = c1x + 14*ui_s; gfx_y = c1y + 66*ui_s;
-gfx_printf("Shift-drag = fine | Alt-drag = distance only");
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 70*ui_s;
+gfx_printf("Throw %.0f%% -> DSP %.0f%% | Smooth %.0f ms", ui_throw*100, last_throw_dsp*100, last_smooth_ms);
 
 // --- right card 2: control lanes ---
 gfx_setfont(2,"Arial",fs2,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = c2x + 14*ui_s; gfx_y = c2y + 10*ui_s; gfx_printf("Control Lanes");
+gfx_x = c2x + 14*ui_s; gfx_y = c2y + 10*ui_s; gfx_printf("Quick Controls");
 
-// helper proc-ish by repetition
-// bar 1 width
 gfx_setfont(4,"Arial",fs4);
-gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b1y-11*ui_s; gfx_printf("Width");
-gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b1y,barw,barh); gfx_roundrect(barx,b1y,barw,barh,6*ui_s,1);
-gfx_set(src_cr,src_cg,src_cb,1); gfx_rect(barx,b1y,barw*ui_width,barh);
-gfx_set(1,1,1, hover_bar==1 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_width, b1y + barh*0.5, 4.2*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b1y-1*ui_s; gfx_printf("%.2f", ui_width);
 
-// bar 2 ext
-gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b2y-11*ui_s; gfx_printf("Externalize");
-gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b2y,barw,barh); gfx_roundrect(barx,b2y,barw,barh,6*ui_s,1);
-gfx_set(src_cr,src_cg,src_cb,1); gfx_rect(barx,b2y,barw*ui_ext,barh);
-gfx_set(1,1,1, hover_bar==2 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_ext, b2y + barh*0.5, 4.2*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b2y-1*ui_s; gfx_printf("%.2f", ui_ext);
-
-// bar 3 room
-gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b3y-11*ui_s; gfx_printf("Room");
-gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b3y,barw,barh); gfx_roundrect(barx,b3y,barw,barh,6*ui_s,1);
-gfx_set(bounce_r,bounce_g,bounce_b,1); gfx_rect(barx,b3y,barw*ui_room,barh);
-gfx_set(1,1,1, hover_bar==3 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_room, b3y + barh*0.5, 4.2*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b3y-1*ui_s; gfx_printf("%.2f", ui_room);
-
-// bar 4 room size
-gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b4y-11*ui_s; gfx_printf("Room Size");
-gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b4y,barw,barh); gfx_roundrect(barx,b4y,barw,barh,6*ui_s,1);
-gfx_set(0.64,0.76,0.95,1); gfx_rect(barx,b4y,barw*ui_rsize,barh);
-gfx_set(1,1,1, hover_bar==4 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_rsize, b4y + barh*0.5, 4.2*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b4y-1*ui_s; gfx_printf("%.2f", ui_rsize);
-
-// bar 5 occlusion
-gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b5y-11*ui_s; gfx_printf("Occlusion");
-gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b5y,barw,barh); gfx_roundrect(barx,b5y,barw,barh,6*ui_s,1);
-gfx_set(occ_cr,occ_cg,occ_cb,1); gfx_rect(barx,b5y,barw*ui_occ,barh);
-gfx_set(1,1,1, hover_bar==5 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_occ, b5y + barh*0.5, 4.2*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b5y-1*ui_s; gfx_printf("%.2f", ui_occ);
-
-// bar 6 motion
-gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b6y-11*ui_s; gfx_printf("Micro Motion");
-gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b6y,barw,barh); gfx_roundrect(barx,b6y,barw,barh,6*ui_s,1);
-gfx_set(ok_r,ok_g,ok_b,1); gfx_rect(barx,b6y,barw*ui_motion,barh);
-gfx_set(1,1,1, hover_bar==6 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_motion, b6y + barh*0.5, 4.2*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b6y-1*ui_s; gfx_printf("%.2f", ui_motion);
-
-// bar 7 trim
+// bar drawing repeated
+lat_n = (ui_lat + 1)*0.5;
+fb_n = (ui_fb + 1)*0.5;
 trim_n = (ui_trim + 18) / 30;
-gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b7y-11*ui_s; gfx_printf("Output Trim");
-gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b7y,barw,barh); gfx_roundrect(barx,b7y,barw,barh,6*ui_s,1);
-gfx_set(0.85,0.88,0.93,1); gfx_rect(barx,b7y,barw*trim_n,barh);
-zero_x = barx + barw*(18/30);
-gfx_set(0.10,0.10,0.12,0.85); gfx_line(zero_x, b7y, zero_x, b7y+barh);
-gfx_set(1,1,1, hover_bar==7 ? 0.95 : 0.70); gfx_circle(barx + barw*trim_n, b7y + barh*0.5, 4.2*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b7y-1*ui_s; gfx_printf("%.1f dB", ui_trim);
 
-// --- right card 3: help + diagnostics ---
+// 1 Lateral
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b1y-label_lift; gfx_printf("Lateral");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b1y,barw,barh); gfx_roundrect(barx,b1y,barw,barh,6*ui_s,1);
+gfx_set(src_cr,src_cg,src_cb,1); gfx_rect(barx,b1y,barw*lat_n,barh);
+gfx_set(0.08,0.08,0.10,0.65); gfx_line(barx+barw*0.5,b1y,barx+barw*0.5,b1y+barh);
+gfx_set(1,1,1, hover_bar==1 ? 0.95 : 0.70); gfx_circle(barx + barw*lat_n, b1y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b1y-1*ui_s; gfx_printf("%+.2f", ui_lat);
+
+// 2 Front/rear
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b2y-label_lift; gfx_printf("Front / Rear");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b2y,barw,barh); gfx_roundrect(barx,b2y,barw,barh,6*ui_s,1);
+gfx_set(0.70,0.58,0.85,1); gfx_rect(barx,b2y,barw*fb_n,barh);
+gfx_set(0.08,0.08,0.10,0.65); gfx_line(barx+barw*0.5,b2y,barx+barw*0.5,b2y+barh);
+gfx_set(1,1,1, hover_bar==2 ? 0.95 : 0.70); gfx_circle(barx + barw*fb_n, b2y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b2y-1*ui_s; gfx_printf("%+.2f", ui_fb);
+
+// 3 Distance
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b3y-label_lift; gfx_printf("Distance");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b3y,barw,barh); gfx_roundrect(barx,b3y,barw,barh,6*ui_s,1);
+gfx_set(0.78,0.81,0.90,1); gfx_rect(barx,b3y,barw*ui_dist,barh);
+gfx_set(1,1,1, hover_bar==3 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_dist, b3y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b3y-1*ui_s; gfx_printf("%.2fm", last_dist_m);
+
+// 4 Throw
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b4y-label_lift; gfx_printf("Spatial Throw");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b4y,barw,barh); gfx_roundrect(barx,b4y,barw,barh,6*ui_s,1);
+gfx_set(src_cr,src_cg,src_cb,1); gfx_rect(barx,b4y,barw*ui_throw,barh);
+gfx_set(1,1,1, hover_bar==4 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_throw, b4y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b4y-1*ui_s; gfx_printf("%.0f%%", ui_throw*100);
+
+// 5 Size
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b5y-label_lift; gfx_printf("Size");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b5y,barw,barh); gfx_roundrect(barx,b5y,barw,barh,6*ui_s,1);
+gfx_set(src_cr,src_cg,src_cb,1); gfx_rect(barx,b5y,barw*ui_size,barh);
+gfx_set(1,1,1, hover_bar==5 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_size, b5y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b5y-1*ui_s; gfx_printf("%.2f", ui_size);
+
+// 6 Push Out
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b6y-label_lift; gfx_printf("Push Out");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b6y,barw,barh); gfx_roundrect(barx,b6y,barw,barh,6*ui_s,1);
+gfx_set(0.95,0.66,0.24,1); gfx_rect(barx,b6y,barw*ui_push,barh);
+gfx_set(1,1,1, hover_bar==6 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_push, b6y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b6y-1*ui_s; gfx_printf("%.2f", ui_push);
+
+// 7 Room
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b7y-label_lift; gfx_printf("Room");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b7y,barw,barh); gfx_roundrect(barx,b7y,barw,barh,6*ui_s,1);
+gfx_set(bounce_r,bounce_g,bounce_b,1); gfx_rect(barx,b7y,barw*ui_room,barh);
+gfx_set(1,1,1, hover_bar==7 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_room, b7y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b7y-1*ui_s; gfx_printf("%.2f", ui_room);
+
+// 8 Occlusion
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b8y-label_lift; gfx_printf("Occlusion");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b8y,barw,barh); gfx_roundrect(barx,b8y,barw,barh,6*ui_s,1);
+gfx_set(occ_cr,occ_cg,occ_cb,1); gfx_rect(barx,b8y,barw*ui_occ,barh);
+gfx_set(1,1,1, hover_bar==8 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_occ, b8y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b8y-1*ui_s; gfx_printf("%.2f", ui_occ);
+
+// 9 Motion
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b9y-label_lift; gfx_printf("Motion");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b9y,barw,barh); gfx_roundrect(barx,b9y,barw,barh,6*ui_s,1);
+gfx_set(ok_r,ok_g,ok_b,1); gfx_rect(barx,b9y,barw*ui_motion,barh);
+gfx_set(1,1,1, hover_bar==9 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_motion, b9y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b9y-1*ui_s; gfx_printf("%.2f", ui_motion);
+
+// 10 Output
+gfx_set(0.92,0.94,0.97,1); gfx_x = barx; gfx_y = b10y-label_lift; gfx_printf("Output");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b10y,barw,barh); gfx_roundrect(barx,b10y,barw,barh,6*ui_s,1);
+gfx_set(0.85,0.88,0.93,1); gfx_rect(barx,b10y,barw*trim_n,barh);
+zero_x = barx + barw*(18/30);
+gfx_set(0.10,0.10,0.12,0.85); gfx_line(zero_x, b10y, zero_x, b10y+barh);
+gfx_set(1,1,1, hover_bar==10 ? 0.95 : 0.70); gfx_circle(barx + barw*trim_n, b10y + barh*0.5, 4.0*ui_s, 1, 1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b10y-1*ui_s; gfx_printf("%.1fdB", ui_trim);
+
+// --- right card 3: visual key + advanced readouts ---
 gfx_setfont(2,"Arial",fs2,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = c3x + 14*ui_s; gfx_y = c3y + 10*ui_s; gfx_printf("Mouse Map");
+gfx_x = c3x + 14*ui_s; gfx_y = c3y + 10*ui_s; gfx_printf("Visual Keys");
 
 gfx_setfont(4,"Arial",fs4);
 gfx_set(0.90,0.92,0.96,1);
 line_h = fs4 + 4*ui_s;
 c3tx = c3x + 14*ui_s;
 c3ty = c3y + 30*ui_s;
-gfx_x = c3tx; gfx_y = c3ty + 0*line_h; gfx_printf("Drag source = Azimuth + Distance");
-gfx_x = c3tx; gfx_y = c3ty + 1*line_h; gfx_printf("Shift-drag = Fine movement");
-gfx_x = c3tx; gfx_y = c3ty + 2*line_h; gfx_printf("Alt-drag = Distance only");
-gfx_x = c3tx; gfx_y = c3ty + 3*line_h; gfx_printf("Wheel = fast edits | Ctrl-click = reset");
-
-show_mouse_diag ? (
-  gfx_set(mut_r,mut_g,mut_b,1);
-  gfx_x = c3tx; gfx_y = c3ty + 5*line_h; gfx_printf("ITD %.3f ms   Air %.0f Hz   ER %.2f", last_itd_ms, last_air_fc, meter_er);
+gfx_x = c3tx; gfx_y = c3ty + 0*line_h; gfx_printf("Size = orange halo/cloud");
+gfx_x = c3tx; gfx_y = c3ty + 1*line_h; gfx_printf("Distance = grey rings/dashes");
+gfx_x = c3tx; gfx_y = c3ty + 2*line_h; gfx_printf("Push Out = listener shell");
+(c3h > 88*ui_s) ? (
+  gfx_x = c3tx; gfx_y = c3ty + 3*line_h; gfx_printf("Room = cyan | Motion = green");
 );
-
-show_mouse_diag2 ? (
+(c3h > 108*ui_s) ? (
   gfx_set(mut_r,mut_g,mut_b,1);
-  gfx_x = c3tx; gfx_y = c3ty + 6*line_h; gfx_printf("Room %.1f m x %.1f m   Shadow %.2f", last_room_w, last_room_d, last_shadow);
+  gfx_x = c3tx; gfx_y = c3ty + 5*line_h; gfx_printf("Drag=place | Wheel=distance | Ctrl=throw");
+);
+(c3h > 128*ui_s) ? (
+  gfx_set(mut_r,mut_g,mut_b,1);
+  gfx_x = c3tx; gfx_y = c3ty + 6*line_h; gfx_printf("Curve %.2f -> eff %.2f | ITD %.3f ms", ui_curve, last_cue_curve_eff, last_itd_ms);
 );
 
 // footer
 gfx_setfont(4,"Arial",fs4);
 gfx_set(mut_r,mut_g,mut_b,1);
-gfx_x = pad; gfx_y = gfx_h - foot_h + 6*ui_s;
-gfx_printf("Cyan wall hits = EARLY BOUNCES: first reflections used for room size and out-of-head placement.");
+gfx_x = pad; gfx_y = gfx_h - foot_h + 7*ui_s;
+gfx_printf("V6.2.1: aligned hover help; slider hitboxes and tooltip hitboxes now share the same lane geometry.");
 
-show_footer2 ? (
-  gfx_x = pad; gfx_y = gfx_h - foot_h + 6*ui_s + (fs4+4*ui_s);
-  gfx_printf("Mouse-first: drag the source, drag the lanes, Shift for fine, wheel for fast edits, right-click to reset.");
+// --- hover tooltip card ---
+(tooltip_show) ? (
+  tip_w = 318*ui_s;
+  tip_h = 88*ui_s;
+  tip_w < 230 ? tip_w = 230;
+  tip_h < 72 ? tip_h = 72;
+
+  // Dock tooltip away from the active region. Near-cursor cards covered the next
+  // lanes and made the controls feel offset even when the math was correct.
+  mouse_x >= rx ? (
+    // Hovering right-side controls: put help on the canvas side.
+    tip_x = canvas_x + 16*ui_s;
+    tip_y = canvas_y + canvas_h - tip_h - 16*ui_s;
+  ) : (
+    // Hovering the canvas/chips: put help in the lower-right info area.
+    tip_x = rx;
+    tip_y = c3y + c3h - tip_h - 8*ui_s;
+    tip_y < c3y + 8*ui_s ? tip_y = c3y + 8*ui_s;
+  );
+  tip_x + tip_w > gfx_w - pad ? tip_x = gfx_w - pad - tip_w;
+  tip_y + tip_h > gfx_h - pad ? tip_y = gfx_h - pad - tip_h;
+  tip_x < pad ? tip_x = pad;
+  tip_y < pad ? tip_y = pad;
+
+  gfx_set(0,0,0,0.42);
+  gfx_rect(tip_x + 4*ui_s, tip_y + 5*ui_s, tip_w, tip_h);
+  gfx_roundrect(tip_x + 4*ui_s, tip_y + 5*ui_s, tip_w, tip_h, 10*ui_s, 1);
+
+  gfx_set(0.065,0.075,0.098,0.97);
+  gfx_rect(tip_x, tip_y, tip_w, tip_h);
+  gfx_roundrect(tip_x, tip_y, tip_w, tip_h, 10*ui_s, 1);
+  gfx_set(0.40,0.47,0.60,0.88);
+  gfx_roundrect(tip_x, tip_y, tip_w, tip_h, 10*ui_s, 0);
+
+  // Accent stripe by visual/control family.
+  tip_id == 22 || tip_id == 107 ? gfx_set(bounce_r,bounce_g,bounce_b,0.96) :
+  tip_id == 108 || tip_id == 29 ? gfx_set(occ_cr,occ_cg,occ_cb,0.96) :
+  tip_id == 109 || tip_id == 28 ? gfx_set(ok_r,ok_g,ok_b,0.96) :
+  tip_id == 103 || tip_id == 27 ? gfx_set(0.78,0.82,0.92,0.96) :
+  tip_id == 106 || tip_id == 23 ? gfx_set(0.95,0.66,0.24,0.96) :
+  gfx_set(src_cr,src_cg,src_cb,0.96);
+  gfx_rect(tip_x, tip_y, 4*ui_s, tip_h);
+
+  tip_tx = tip_x + 13*ui_s;
+  tip_title_y = tip_y + 9*ui_s;
+  tip_l1 = tip_y + 31*ui_s;
+  tip_l2 = tip_y + 49*ui_s;
+  tip_l3 = tip_y + 67*ui_s;
+
+  gfx_setfont(2,"Arial",fs2,'b');
+  gfx_set(txt_r,txt_g,txt_b,1);
+  gfx_x = tip_tx; gfx_y = tip_title_y;
+  tip_id == 20 ? gfx_printf("Source Object") :
+  tip_id == 21 ? gfx_printf("Cue Ghost") :
+  tip_id == 22 ? gfx_printf("Room Bounces") :
+  tip_id == 23 ? gfx_printf("Push Out Shell") :
+  tip_id == 24 ? gfx_printf("Stage Placement") :
+  tip_id == 25 ? gfx_printf("Canvas Controls") :
+  tip_id == 26 ? gfx_printf("Size Halo") :
+  tip_id == 27 ? gfx_printf("Distance Rings") :
+  tip_id == 28 ? gfx_printf("Motion Trail") :
+  tip_id == 29 ? gfx_printf("Occlusion Wedge") :
+  tip_id == 30 ? gfx_printf("Automation Safe") :
+  tip_id >= 41 && tip_id <= 48 ? gfx_printf("Snap Placement") :
+  tip_id == 101 ? gfx_printf("Lateral") :
+  tip_id == 102 ? gfx_printf("Front / Rear") :
+  tip_id == 103 ? gfx_printf("Distance") :
+  tip_id == 104 ? gfx_printf("Spatial Throw") :
+  tip_id == 105 ? gfx_printf("Size") :
+  tip_id == 106 ? gfx_printf("Push Out") :
+  tip_id == 107 ? gfx_printf("Room") :
+  tip_id == 108 ? gfx_printf("Occlusion") :
+  tip_id == 109 ? gfx_printf("Motion") :
+  tip_id == 110 ? gfx_printf("Output Trim") : gfx_printf("Help");
+
+  gfx_setfont(4,"Arial",fs4);
+  gfx_set(0.82,0.86,0.93,1);
+
+  tip_id == 20 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Drag to place the visual object.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Shift = fine, Alt = distance only.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Orange halo/cloud shows Size.");
+  ) : tip_id == 21 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Effective DSP direction after Throw/Curve.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Solid orb = visual; ghost = cue target.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Visual %.0f deg | Cue %.0f deg", last_visual_az, last_cue_az);
+  ) : tip_id == 22 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Cyan wall hits are early bounces.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Room raises bounce opacity and glow.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Room Size changes geometry timing.");
+  ) : tip_id == 23 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Externalization cue around the listener.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Push Out helps leave the head.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Not distance, not gain.");
+  ) : tip_id == 24 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("X = Lateral, Y = Front/Rear.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Wheel = Distance.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Right-click canvas = reset position.");
+  ) : tip_id == 25 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Drag source/room to place object.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Ctrl-wheel = Spatial Throw.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Alt-wheel = Push Out.");
+  ) : tip_id == 26 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Size means source extent/diffusion.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("It grows the orange halo/cloud.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("It is not Distance.");
+  ) : tip_id == 27 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Distance is range from the listener.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Grey rings/dashes show close-to-far.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Wheel over canvas edits it.");
+  ) : tip_id == 28 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Motion is tiny anti-collapse drift.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Green dots show the movement envelope.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Low values add life, not travel.");
+  ) : tip_id == 29 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Occlusion means blocked/screened source.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Purple wedge marks the blocker cue.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Higher values darken the direct path.");
+  ) : tip_id == 30 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Caps aggressive cue motion.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Use for fast drawn automation.");
+    gfx_x = tip_tx; gfx_y = tip_l3; ui_safe ? gfx_printf("Currently ON.") : gfx_printf("Currently OFF.");
+  ) : tip_id >= 41 && tip_id <= 48 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1;
+    tip_id == 41 ? gfx_printf("Center front quick placement.") :
+    tip_id == 42 ? gfx_printf("30 deg left-front quick placement.") :
+    tip_id == 43 ? gfx_printf("45 deg left-front quick placement.") :
+    tip_id == 44 ? gfx_printf("60 deg left-front quick placement.") :
+    tip_id == 45 ? gfx_printf("30 deg right-front quick placement.") :
+    tip_id == 46 ? gfx_printf("45 deg right-front quick placement.") :
+    tip_id == 47 ? gfx_printf("60 deg right-front quick placement.") : gfx_printf("Centered rear quick placement.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Click to jump visual position.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Spatial Throw still controls intensity.");
+  ) : tip_id == 101 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Left/right object coordinate. %.2f", ui_lat);
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Automation-safe replacement for azimuth.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Canvas X also edits this.");
+  ) : tip_id == 102 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Front wall to rear wall placement. %.2f", ui_fb);
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("+ = front, 0 = side, - = rear.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Canvas Y also edits this.");
+  ) : tip_id == 103 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Near/far range from listener: %.2f m", last_dist_m);
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Grey rings/dashes show distance only.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Does not mean source Size.");
+  ) : tip_id == 104 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Spatial cue intensity, not loudness.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Scales ITD, shadow, pinna, side cues.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Use lower values for mix-safe positions.");
+  ) : tip_id == 105 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Apparent object size/diffusion.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Orange halo/cloud grows with Size.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Does not mean farther away.");
+  ) : tip_id == 106 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Out-of-head externalization strength.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Shown as listener shell/separation rays.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Former Externalize control.");
+  ) : tip_id == 107 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Early reflection and room cue amount.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Cyan bounces/wall glow scale with Room.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("More Room = less surgical, more external.");
+  ) : tip_id == 108 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Blocked or screened source feel.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Darkens/smears direct sound.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Purple wedge shows blocker cue.");
+  ) : tip_id == 109 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Tiny anti-collapse drift.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Green trail shows motion envelope.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Low values add life, not travel.");
+  ) : tip_id == 110 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Final gain after spatial processing.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Use for level match, not distance.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Right-click resets to 0 dB.");
+  );
 );
