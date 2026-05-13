@@ -1,4 +1,4 @@
-desc:Hyperreal 3D Panner V6.14.0 (Elevation Feel)
+desc:Hyperreal 3D Panner V6.17.0 (Camera Orbit Fix)
 
 // #HELP: Headphone-focused 3D panner using softened perceptual placement, microdelay, head shadow, pinna cues, distance loss, occlusion, and room cues.
 // #HELP: Drag the orange source in the stage canvas. X = Lateral, Y = Front/Rear. Mouse wheel changes Distance.
@@ -11,6 +11,7 @@ desc:Hyperreal 3D Panner V6.14.0 (Elevation Feel)
 // #HELP: Manager Link is opt-in. New instances start in Standalone mode and only follow a Manager after switching Mode to Manager.
 // #HELP: V6.13.0 overhauls long-distance psychoacoustics: extended manager distances stay far/clear instead of just becoming reverby.
 // #HELP: V6.14.0 adds Elevation: a non-HRTF height-feel macro for lifted/grounded perception, not exact vertical localization.
+// #HELP: V6.15.0 adds Manager third-person camera support: orbit radius/angle with parallax-aware distance and optional look-at pivot. V6.16 adds middle-drag Elevation. V6.17 fixes LookAt orbit yaw so hidden Camera Rotation is not double-applied.
 // #HELP: V6.2.2 stabilizes Occlusion by applying blocked-source coloration after localization, preventing opposite-ear flicker.
 // #TOOLTIP: UI-only perceptual object panner. Main controls stay standalone-clean; Manager mode is explicit and opt-in.
 
@@ -76,10 +77,11 @@ slider20:1<1,64,1>-Internal Manager Slot
 // #TOOLTIP: Height-feel macro. Non-HRTF psychoacoustic illusion: lifted/grounded impression, not reliable exact overhead/below localization.
 slider21:0<-1,1,0.001>-Elevation
 
-// V6.13.0 Manager model:
+// V6.15.0 Manager model:
 //   Sliders 6/8 store the object's fixed world placement.
 //   Standalone mode ignores managers and does not appear as a linked object.
-//   Manager mode subscribes by Manager Name and renders effective position = object world angle - camera yaw.
+//   Manager mode subscribes by Manager Name and renders effective position from the Manager camera transform.
+//   POV yaw is preserved, and Third Person adds camera orbit radius/angle, look-at pivot, and parallax distance.
 
 // V6 control model:
 //   Lateral + Depth Front/Rear = visual object coordinate.
@@ -132,6 +134,22 @@ function p3d_far01_from_m(m) local(v den) (
   v < 0 ? v = 0;
   v > 1 ? v = 1;
   v;
+);
+
+function p3d_n_from_distance_m(m) local(lo hi mid i) (
+  // Inverse of p3d_distance_m_from_n(), solved once per block for Manager
+  // camera parallax. This keeps third-person/orbit camera geometry in the
+  // same psychoacoustic distance space as the local Distance slider.
+  m < 0.20 ? m = 0.20;
+  m > 121.0 ? m = 121.0;
+  lo = 0; hi = 4;
+  i = 0;
+  loop(18,
+    mid = (lo + hi) * 0.5;
+    p3d_distance_m_from_n(mid) < m ? lo = mid : hi = mid;
+    i += 1;
+  );
+  (lo + hi) * 0.5;
 );
 
 
@@ -513,6 +531,88 @@ function p3d_angle_from_lat_fb(lat, fb) local(r side front ang) (
   p3d_wrap_deg(ang);
 );
 
+function p3d_compute_effective_transform() local(wr yaw old_ang old_lat old_fb depth_delta side_delta topology dist_scale old_dist tp world_m obj_x obj_y cam_ang cam_r cam_x cam_y look_yaw yaw_eff yaw_delta rel_x rel_y c s view_x view_y geo_ang geo_m geo_n) (
+  // Fixed object world coordinates -> listener/camera-relative render target.
+  // tp=0 reproduces the existing POV yaw transform. tp>0 moves the camera
+  // around the scene pivot, creating real parallax and distance changes.
+  wr = sqrt(p3d_world_lat*p3d_world_lat + p3d_world_fb*p3d_world_fb);
+  wr > 1 ? wr = 1;
+  p3d_world_ang = p3d_angle_from_lat_fb(p3d_world_lat, p3d_world_fb);
+  p3d_effective_ang = p3d_world_ang;
+  p3d_effective_lat = p3d_world_lat;
+  p3d_effective_fb = p3d_world_fb;
+  last_effective_dist_n = p3d_world_dist_n;
+
+  p3d_link_active ? (
+    yaw = p3d_camera_rot * p3d_manager_amt;
+    old_ang = p3d_wrap_deg(p3d_world_ang - yaw);
+    old_lat = sin(old_ang * $pi / 180) * wr;
+    old_fb  = cos(old_ang * $pi / 180) * wr;
+
+    depth_delta = old_fb - p3d_world_fb;
+    side_delta = abs(old_lat) - abs(p3d_world_lat);
+    topology = 1 - 0.42 * depth_delta * p3d_manager_amt + 0.10 * side_delta * p3d_manager_amt;
+    topology < 0.25 ? topology = 0.25;
+    topology > 4.00 ? topology = 4.00;
+    dist_scale = 1 + (p3d_distance_scale - 1) * p3d_manager_amt;
+    old_dist = p3d_world_dist_n * dist_scale * topology;
+    old_dist < 0 ? old_dist = 0;
+    old_dist > 4.0 ? old_dist = 4.0;
+
+    tp = p3d_camera_view_blend * p3d_manager_amt;
+    tp < 0 ? tp = 0; tp > 1 ? tp = 1;
+
+    tp > 0.0001 ? (
+      world_m = p3d_distance_m_from_n(p3d_world_dist_n);
+      obj_x = sin(p3d_world_ang * $pi / 180) * world_m;
+      obj_y = cos(p3d_world_ang * $pi / 180) * world_m;
+
+      cam_r = p3d_camera_orbit_radius * tp;
+      cam_ang = p3d_camera_orbit_angle * $pi / 180;
+      // Orbit angle 0 = camera behind the scene looking forward. 90 = side shot.
+      cam_x = sin(cam_ang) * cam_r;
+      cam_y = -cos(cam_ang) * cam_r;
+
+      look_yaw = 0;
+      cam_r > 0.0001 ? look_yaw = p3d_angle_from_lat_fb(-cam_x, -cam_y);
+      // LookAt orbit should replace manual POV yaw as Third Person reaches 100%,
+      // not add to it.  V6.16 double-applied hidden Camera Rotation here, which
+      // could feel like unstable ear-to-ear fading during orbit moves.
+      p3d_camera_look_at >= 0.5 ? (
+        yaw_delta = p3d_wrap_deg(look_yaw - yaw);
+        yaw_eff = p3d_wrap_deg(yaw + yaw_delta * tp);
+      ) : (
+        yaw_eff = yaw;
+      );
+
+      rel_x = obj_x - cam_x;
+      rel_y = obj_y - cam_y;
+      c = cos(yaw_eff * $pi / 180);
+      s = sin(yaw_eff * $pi / 180);
+      view_x = rel_x*c - rel_y*s;
+      view_y = rel_x*s + rel_y*c;
+
+      geo_ang = p3d_angle_from_lat_fb(view_x, view_y);
+      geo_m = sqrt(view_x*view_x + view_y*view_y) * dist_scale;
+      geo_n = p3d_n_from_distance_m(geo_m);
+      geo_n < 0 ? geo_n = 0; geo_n > 4 ? geo_n = 4;
+
+      p3d_effective_ang = geo_ang;
+      p3d_effective_lat = sin(geo_ang * $pi / 180) * wr;
+      p3d_effective_fb  = cos(geo_ang * $pi / 180) * wr;
+      last_effective_dist_n = old_dist*(1 - tp) + geo_n*tp;
+    ) : (
+      p3d_effective_ang = old_ang;
+      p3d_effective_lat = old_lat;
+      p3d_effective_fb = old_fb;
+      last_effective_dist_n = old_dist;
+    );
+
+    last_effective_dist_n < 0 ? last_effective_dist_n = 0;
+    last_effective_dist_n > 4.0 ? last_effective_dist_n = 4.0;
+  );
+);
+
 function p3d_write_object_name(base, name) local(i n c) (
   n = strlen(name);
   n > P3D_OBJECT_NAME_LEN ? n = P3D_OBJECT_NAME_LEN;
@@ -620,6 +720,10 @@ function p3d_service_registry() local(mb wr depth_delta side_delta topology dist
     p3d_cached_camera_rot = 0;
     p3d_cached_distance_scale = 1;
     p3d_cached_elevation = 0;
+    p3d_cached_view_blend = 0;
+    p3d_cached_orbit_angle = 0;
+    p3d_cached_orbit_radius = 0;
+    p3d_cached_look_at = 1;
   );
   p3d_mgr_slot >= 0 ? (
     mb = P3D_MGR_BASE + p3d_mgr_slot * P3D_MGR_STRIDE;
@@ -636,6 +740,10 @@ function p3d_service_registry() local(mb wr depth_delta side_delta topology dist
       p3d_cached_distance_scale <= 0 ? p3d_cached_distance_scale = 1;
       p3d_cached_distance_scale = p3d_clamp(p3d_cached_distance_scale, 0.25, 16.0);
       p3d_cached_elevation = p3d_clamp(gmem[mb + P3D_MGR_ELEVATION], -1, 1);
+      p3d_cached_view_blend = p3d_clamp(gmem[mb + P3D_MGR_VIEW_BLEND], 0, 1);
+      p3d_cached_orbit_angle = p3d_wrap_deg(gmem[mb + P3D_MGR_ORBIT_ANGLE]);
+      p3d_cached_orbit_radius = p3d_clamp(gmem[mb + P3D_MGR_ORBIT_RADIUS], 0, 100);
+      p3d_cached_look_at = gmem[mb + P3D_MGR_LOOK_AT] >= 0.5 ? 1 : 0;
       p3d_mgr_hold = P3D_MANAGER_HOLD_BLOCKS;
     ) : (
       p3d_mgr_hold > 0 ? p3d_mgr_hold -= 1;
@@ -650,33 +758,16 @@ function p3d_service_registry() local(mb wr depth_delta side_delta topology dist
   p3d_link_active = (p3d_link_enabled && p3d_manager_alive && p3d_manager_enabled && (p3d_manager_amt > 0.0001)) ? 1 : 0;
   p3d_camera_rot = p3d_cached_camera_rot;
   p3d_distance_scale = p3d_cached_distance_scale;
-p3d_manager_elevation = p3d_cached_elevation;
+  p3d_manager_elevation = p3d_cached_elevation;
+  p3d_camera_view_blend = p3d_cached_view_blend;
+  p3d_camera_orbit_angle = p3d_cached_orbit_angle;
+  p3d_camera_orbit_radius = p3d_cached_orbit_radius;
+  p3d_camera_look_at = p3d_cached_look_at;
 
   p3d_world_lat = p3d_clamp(slider6, -1, 1);
   p3d_world_fb = p3d_clamp(slider8, -1, 1);
   p3d_world_dist_n = p3d_clamp(slider7, 0, 1);
-  wr = sqrt(p3d_world_lat*p3d_world_lat + p3d_world_fb*p3d_world_fb);
-  wr > 1 ? wr = 1;
-  p3d_world_ang = p3d_angle_from_lat_fb(p3d_world_lat, p3d_world_fb);
-  p3d_effective_ang = p3d_world_ang;
-  p3d_effective_lat = p3d_world_lat;
-  p3d_effective_fb = p3d_world_fb;
-  last_effective_dist_n = p3d_world_dist_n;
-
-  p3d_link_active ? (
-    p3d_effective_ang = p3d_wrap_deg(p3d_world_ang - p3d_camera_rot * p3d_manager_amt);
-    p3d_effective_lat = sin(p3d_effective_ang * $pi / 180) * wr;
-    p3d_effective_fb  = cos(p3d_effective_ang * $pi / 180) * wr;
-    depth_delta = p3d_effective_fb - p3d_world_fb;
-    side_delta = abs(p3d_effective_lat) - abs(p3d_world_lat);
-    topology = 1 - 0.42 * depth_delta * p3d_manager_amt + 0.10 * side_delta * p3d_manager_amt;
-    topology < 0.25 ? topology = 0.25;
-    topology > 4.00 ? topology = 4.00;
-    dist_scale = 1 + (p3d_distance_scale - 1) * p3d_manager_amt;
-    last_effective_dist_n = p3d_world_dist_n * dist_scale * topology;
-    last_effective_dist_n < 0 ? last_effective_dist_n = 0;
-    last_effective_dist_n > 4.0 ? last_effective_dist_n = 4.0;
-  );
+  p3d_compute_effective_transform();
 
   last_manager_link = p3d_link_enabled;
   last_manager_active = p3d_link_active;
@@ -706,7 +797,7 @@ p3d_manager_elevation = p3d_cached_elevation;
 
 // --- 3DPannerManager shared bus protocol ---
 P3D_MAGIC = 30260611;
-P3D_VERSION = 11;
+P3D_VERSION = 12;
 P3D_MAX_OBJECTS = 128;
 P3D_BUS_MAGIC = 0;
 P3D_BUS_VERSION = 1;
@@ -722,6 +813,10 @@ P3D_BUS_COORD_MODE = 10;
 P3D_BUS_LINKED_COUNT = 11;
 P3D_BUS_MANAGER_SEQ = 12;
 P3D_BUS_ELEVATION = 13;
+P3D_BUS_VIEW_BLEND = 14;
+P3D_BUS_ORBIT_ANGLE = 15;
+P3D_BUS_ORBIT_RADIUS = 16;
+P3D_BUS_LOOK_AT = 17;
 P3D_OBJ_BASE = 64;
 P3D_SLOT_STRIDE = 64;
 P3D_SLOT_IID = 0;
@@ -771,6 +866,10 @@ P3D_MGR_CHANNEL = 10;
 P3D_MGR_SCENE_NAME_LEN_FIELD = 11;
 P3D_MGR_SCENE_CHAR_BASE = 12;
 P3D_MGR_ELEVATION = 48;
+P3D_MGR_VIEW_BLEND = 49;
+P3D_MGR_ORBIT_ANGLE = 50;
+P3D_MGR_ORBIT_RADIUS = 51;
+P3D_MGR_LOOK_AT = 52;
 P3D_MAX_SCENES = 32;
 P3D_SCENE_NAME_LEN = 36;
 P3D_SCENE_BASE = P3D_MGR_BASE + P3D_MAX_MANAGER_SLOTS * P3D_MGR_STRIDE;
@@ -821,6 +920,14 @@ p3d_cached_manager_hb = -1;
 p3d_cached_camera_rot = 0;
 p3d_cached_distance_scale = 1;
 p3d_cached_elevation = 0;
+p3d_cached_view_blend = 0;
+p3d_cached_orbit_angle = 0;
+p3d_cached_orbit_radius = 0;
+p3d_cached_look_at = 1;
+p3d_camera_view_blend = 0;
+p3d_camera_orbit_angle = 0;
+p3d_camera_orbit_radius = 0;
+p3d_camera_look_at = 1;
 p3d_cached_rot_scale = 1;
 p3d_target_mgr_iid = 0;
 p3d_ui_scene_base = 65536;
@@ -1017,6 +1124,7 @@ last_automation_safe = 1;
 ui_mode = 0;
 ui_prev_l = 0;
 ui_prev_r = 0;
+ui_prev_m = 0;
 ui_drag_start_x = 0;
 ui_drag_start_y = 0;
 ui_drag_start_v1 = 0;
@@ -1144,6 +1252,10 @@ p3d_mgr_slot >= 0 ? (
     p3d_cached_distance_scale <= 0 ? p3d_cached_distance_scale = 1;
     p3d_cached_distance_scale = p3d_clamp(p3d_cached_distance_scale, 0.25, 16.0);
     p3d_cached_elevation = p3d_clamp(gmem[p3d_mgr_base + P3D_MGR_ELEVATION], -1, 1);
+    p3d_cached_view_blend = p3d_clamp(gmem[p3d_mgr_base + P3D_MGR_VIEW_BLEND], 0, 1);
+    p3d_cached_orbit_angle = p3d_wrap_deg(gmem[p3d_mgr_base + P3D_MGR_ORBIT_ANGLE]);
+    p3d_cached_orbit_radius = p3d_clamp(gmem[p3d_mgr_base + P3D_MGR_ORBIT_RADIUS], 0, 100);
+    p3d_cached_look_at = gmem[p3d_mgr_base + P3D_MGR_LOOK_AT] >= 0.5 ? 1 : 0;
     p3d_mgr_hold = P3D_MANAGER_HOLD_BLOCKS;
   ) : (
     p3d_mgr_hold > 0 ? p3d_mgr_hold -= 1;
@@ -1160,6 +1272,10 @@ p3d_link_active = (p3d_link_enabled && p3d_manager_alive && p3d_manager_enabled 
 p3d_camera_rot = p3d_cached_camera_rot;
 p3d_distance_scale = p3d_cached_distance_scale;
 p3d_manager_elevation = p3d_cached_elevation;
+p3d_camera_view_blend = p3d_cached_view_blend;
+p3d_camera_orbit_angle = p3d_cached_orbit_angle;
+p3d_camera_orbit_radius = p3d_cached_orbit_radius;
+p3d_camera_look_at = p3d_cached_look_at;
 
 while (msg_recv(#p3d_registry_bus, p3d_msg_src, p3d_msg_tag, p3d_msg_a, p3d_msg_b, p3d_msg_c, p3d_msg_d)) (
   (p3d_msg_tag == P3D_OP_MANAGER_STATE) && (p3d_msg_src != p3d_iid) ? (
@@ -1234,37 +1350,15 @@ tgt_rsize > 1 ? tgt_rsize = 1;
 
 // --- Manager camera transform ---
 // Sliders retain the fixed world position. Linked mode only changes the temporary render target.
+// V6.15 adds true third-person/orbit camera geometry: camera offset + look-at pivot + parallax distance.
 p3d_world_lat = tgt_lat;
 p3d_world_fb = tgt_fb;
 p3d_world_dist_n = tgt_dist_n;
-p3d_world_r = sqrt(p3d_world_lat*p3d_world_lat + p3d_world_fb*p3d_world_fb);
-p3d_world_r > 1 ? p3d_world_r = 1;
-p3d_world_ang = p3d_angle_from_lat_fb(p3d_world_lat, p3d_world_fb);
-p3d_effective_ang = p3d_world_ang;
-p3d_effective_lat = p3d_world_lat;
-p3d_effective_fb = p3d_world_fb;
-
+p3d_compute_effective_transform();
 p3d_link_active ? (
-  // Rotation uses fixed object world coordinates. Distance is recalculated from
-  // the transformed topology instead of only multiplying the old Distance knob.
-  p3d_effective_ang = p3d_wrap_deg(p3d_world_ang - p3d_camera_rot * p3d_manager_amt);
-  tgt_lat = sin(p3d_effective_ang * $pi / 180) * p3d_world_r;
-  tgt_fb  = cos(p3d_effective_ang * $pi / 180) * p3d_world_r;
-
-  // Topology-aware distance: when a camera turn pulls a rear/side object toward
-  // the front plane it feels less distant; when it pushes the object rearward it
-  // feels farther. Manager Distance Scale can exaggerate this well beyond 2x.
-  p3d_depth_delta = tgt_fb - p3d_world_fb;
-  p3d_side_delta = abs(tgt_lat) - abs(p3d_world_lat);
-  p3d_topology_dist = 1 - 0.42 * p3d_depth_delta * p3d_manager_amt + 0.10 * p3d_side_delta * p3d_manager_amt;
-  p3d_topology_dist < 0.25 ? p3d_topology_dist = 0.25;
-  p3d_topology_dist > 4.00 ? p3d_topology_dist = 4.00;
-  tgt_dist_n = p3d_world_dist_n * (1 + (p3d_distance_scale - 1) * p3d_manager_amt) * p3d_topology_dist;
-  tgt_dist_n < 0 ? tgt_dist_n = 0;
-  tgt_dist_n > 4.0 ? tgt_dist_n = 4.0;
-
-  p3d_effective_lat = tgt_lat;
-  p3d_effective_fb = tgt_fb;
+  tgt_lat = p3d_effective_lat;
+  tgt_fb = p3d_effective_fb;
+  tgt_dist_n = last_effective_dist_n;
 );
 
 p3d_link_active ? (
@@ -2151,6 +2245,7 @@ b11y = bars_top + row_h*10.50 - barh*0.50;
 // --- mouse / hover ---
 mouse_l = mouse_cap & 1;
 mouse_r = mouse_cap & 2;
+mouse_m = mouse_cap & 64;
 mouse_shift = mouse_cap & 8;
 mouse_ctrl = mouse_cap & 4;
 mouse_alt = mouse_cap & 16;
@@ -2300,7 +2395,7 @@ hover_chip = 0;
 // Numeric IDs keep this JSFX-safe:
 // 20s canvas/visual cues, 30 Auto Safe, 40s snap chips, 100s lanes.
 tip_id = 0;
-tip_hot = (!mouse_l && !mouse_r && ui_mode == 0 && ui_text_active == 0 && !hover_drawer_tab && !inside_drawer && !inside_scene_menu);
+tip_hot = (!mouse_l && !mouse_r && !mouse_m && ui_mode == 0 && ui_text_active == 0 && !hover_drawer_tab && !inside_drawer && !inside_scene_menu);
 
 tip_hot ? (
   hover_tip_bar > 0 ? tip_id = 100 + hover_tip_bar;
@@ -2542,6 +2637,12 @@ mouse_wheel != 0 ? (
   hover_adv == 3 ? (slider19 = 0.55; sliderchange(-1.0););
 );
 
+(!ui_prev_m && mouse_m && inside_canvas && ui_text_active == 0 && !inside_drawer && !inside_scene_menu) ? (
+  ui_mode = 300;
+  ui_drag_start_y = mouse_y;
+  ui_drag_start_v1 = slider21;
+);
+
 (!ui_prev_l && mouse_l) ? (
   ui_scene_menu && scene_hover_idx >= 0 ? (
     scene_real_count > 0 ? (
@@ -2561,6 +2662,10 @@ mouse_wheel != 0 ? (
     p3d_cached_camera_rot = 0;
     p3d_cached_distance_scale = 1;
     p3d_cached_elevation = 0;
+    p3d_cached_view_blend = 0;
+    p3d_cached_orbit_angle = 0;
+    p3d_cached_orbit_radius = 0;
+    p3d_cached_look_at = 1;
     p3d_target_mgr_iid = 0;
     p3d_manager_iid = 0;
     p3d_mgr_slot = -1;
@@ -2618,6 +2723,10 @@ mouse_wheel != 0 ? (
     p3d_cached_camera_rot = 0;
     p3d_cached_distance_scale = 1;
     p3d_cached_elevation = 0;
+    p3d_cached_view_blend = 0;
+    p3d_cached_orbit_angle = 0;
+    p3d_cached_orbit_radius = 0;
+    p3d_cached_look_at = 1;
     p3d_rebind_pending = 1;
     p3d_allow_msg = 0;
     p3d_service_registry();
@@ -2751,9 +2860,21 @@ mouse_wheel != 0 ? (
   sliderchange(-1.0);
 );
 
+(mouse_m && ui_mode == 300) ? (
+  elev_step = mouse_shift ? 0.0016 : 0.0042;
+  slider21 = ui_drag_start_v1 - (mouse_y - ui_drag_start_y) * elev_step / ui_s;
+  slider21 < -1 ? slider21 = -1;
+  slider21 > 1 ? slider21 = 1;
+  sliderchange(-1.0);
+);
 
 // finalize drag
-(!mouse_l && ui_prev_l && ui_mode) ? (
+(!mouse_l && ui_prev_l && ui_mode != 300) ? (
+  ui_mode = 0;
+  ui_drag_bar = 0;
+  sliderchange(-1.0);
+);
+(!mouse_m && ui_prev_m && ui_mode == 300) ? (
   ui_mode = 0;
   ui_drag_bar = 0;
   sliderchange(-1.0);
@@ -2761,6 +2882,7 @@ mouse_wheel != 0 ? (
 
 ui_prev_l = mouse_l;
 ui_prev_r = mouse_r;
+ui_prev_m = mouse_m;
 
 // refresh for drawing after interaction
 ui_base_lat = slider6;
@@ -2856,7 +2978,7 @@ fs1 < 12 ? fs1 = 12; fs2 < 10 ? fs2 = 10; fs3 < 9 ? fs3 = 9; fs4 < 8 ? fs4 = 8;
 // title
 gfx_setfont(1,"Arial",fs1,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.14.0");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.17.0");
 
 gfx_setfont(2,"Arial",fs2);
 gfx_set(mut_r,mut_g,mut_b,1);
@@ -3597,11 +3719,11 @@ ui_drawer_open ? (
   ) : tip_id == 24 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("X = Lateral, Y = Front/Rear.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Wheel = Distance.");
-    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Right-click canvas = reset position.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Middle-drag = Elevation.");
   ) : tip_id == 25 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Drag source/room to place object.");
-    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Ctrl-wheel = Spatial Throw.");
-    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Alt-wheel = Push Out.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Middle-drag = Elevation feel.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Ctrl-wheel Throw, Alt-wheel Push Out.");
   ) : tip_id == 26 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Size means source extent/diffusion.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("It grows the orange halo/cloud.");

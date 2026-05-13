@@ -1,10 +1,11 @@
-desc:3DPannerManager V1.9.0 (Elevation Controller)
+desc:3DPannerManager V1.12.0 (Orbit Control Fix)
 
 // #HELP: Manager-named camera controller for linked 3DPanner instances.
 // #HELP: Manager publishes its Name; panners choose that Manager Name and all routing IDs stay hidden.
 // #HELP: V1.8.3 keeps the working Manager-Name link and drives the panner's psychoacoustic extended-distance model.
 // #HELP: V1.9.0 adds global Elevation: non-HRTF lifted/grounded height feel for linked panners, not exact vertical localization.
-// #HELP: Camera Rotation rotates the listener/camera around fixed sound objects. Objects stay mapped once; the camera moves.
+// #HELP: V1.12.0 fixes orbit interaction: canvas radius uses a slower perceptual curve and LookAt orbit keeps Camera Rotation locked.
+// #HELP: Camera Rotation rotates POV yaw. Third Person moves the camera around a scene pivot, then panners recompute angle and distance from that camera.
 // #HELP: The linked-ID list is scrollable with the mouse wheel or the Linked List Scroll slider.
 // #TOOLTIP: UI-only manager. All visible controls live in GFX; hidden sliders remain the saved/automation backend.
 
@@ -37,10 +38,23 @@ slider9:0<0,64,1>-Linked List Scroll
 slider10:1<1,64,1>-Internal Manager Slot
 // #TOOLTIP: Global height-feel offset for linked panners. Non-HRTF caveat: suggests lifted/grounded perception, not exact overhead/below localization.
 slider11:0<-1,1,0.001>-Elevation
+// #TOOLTIP: Blends from current POV/yaw behavior to true third-person orbit camera. 0 = POV, 1 = full orbit/parallax.
+slider12:0<0,1,0.001>-Third Person
+// #TOOLTIP: Camera position around the scene pivot. 0 = behind/over-shoulder, 90 = side shot, 180 = front-facing reverse.
+slider13:0<-180,180,0.1>-Orbit Angle (deg)
+// #TOOLTIP: Camera pullback distance in meters. This creates real parallax before panners apply psychoacoustic distance.
+slider14:0<0,100,0.1>-Orbit Radius (m)
+// #TOOLTIP: When on, the orbit camera turns to face the scene pivot. When off, Camera Rotation remains a manual yaw.
+slider15:1<0,1,1{Manual,YawToPivot}>-Look At Pivot
 
 @init
 za_idle_mode = 4;
 za_keep_awake = 1;
+
+// Canvas orbit editing uses a cinematic working range for precision.
+// The Orbit Radius lane still reaches 100m; canvas drag tops out around this
+// value to avoid accidental huge parallax jumps from small mouse moves.
+ORBIT_CANVAS_MAX_M = 32;
 
 function clamp(x, lo, hi) (
   x < lo ? lo : (x > hi ? hi : x);
@@ -436,6 +450,10 @@ function publish_manager_gmem() local(mb) (
   mgr_smooth = clamp(slider6, 5, 250);
   mgr_dist_scale = clamp(slider7, 0.25, 16);
   mgr_elevation = clamp(slider11, -1, 1);
+  mgr_view_blend = clamp(slider12, 0, 1);
+  mgr_orbit_angle = wrap_deg(slider13);
+  mgr_orbit_radius = clamp(slider14, 0, 100);
+  mgr_look_at = slider15 >= 0.5 ? 1 : 0;
   mgr_tracker = slider8 >= 0.5 ? 1 : 0;
   strlen(#manager_name) <= 0 ? strcpy(#manager_name, "Manager");
   strcpy(#scene_bus, #manager_name);
@@ -460,6 +478,10 @@ function publish_manager_gmem() local(mb) (
   gmem[P3D_BUS_ROT_SCALE] = mgr_scale;
   gmem[P3D_BUS_DIST_SCALE] = mgr_dist_scale;
   gmem[P3D_BUS_ELEVATION] = mgr_elevation;
+  gmem[P3D_BUS_VIEW_BLEND] = mgr_view_blend;
+  gmem[P3D_BUS_ORBIT_ANGLE] = mgr_orbit_angle;
+  gmem[P3D_BUS_ORBIT_RADIUS] = mgr_orbit_radius;
+  gmem[P3D_BUS_LOOK_AT] = mgr_look_at;
   gmem[P3D_BUS_SMOOTH_MS] = mgr_smooth;
   gmem[P3D_BUS_COORD_MODE] = mgr_tracker;
   gmem[P3D_BUS_MANAGER_SEQ] = mgr_seq;
@@ -472,6 +494,10 @@ function publish_manager_gmem() local(mb) (
   gmem[mb + P3D_MGR_ROT_SCALE] = mgr_scale;
   gmem[mb + P3D_MGR_DIST_SCALE] = mgr_dist_scale;
   gmem[mb + P3D_MGR_ELEVATION] = mgr_elevation;
+  gmem[mb + P3D_MGR_VIEW_BLEND] = mgr_view_blend;
+  gmem[mb + P3D_MGR_ORBIT_ANGLE] = mgr_orbit_angle;
+  gmem[mb + P3D_MGR_ORBIT_RADIUS] = mgr_orbit_radius;
+  gmem[mb + P3D_MGR_LOOK_AT] = mgr_look_at;
   gmem[mb + P3D_MGR_SMOOTH_MS] = mgr_smooth;
   gmem[mb + P3D_MGR_SEQ] = mgr_seq;
   gmem[mb + P3D_MGR_TRACKER] = mgr_tracker;
@@ -489,7 +515,7 @@ function publish_manager() (
 
 // Must match 3DPanner V6.3.1 protocol.
 P3D_MAGIC = 30260611;
-P3D_VERSION = 11;
+P3D_VERSION = 12;
 P3D_MAX_OBJECTS = 128;
 P3D_BUS_MAGIC = 0;
 P3D_BUS_VERSION = 1;
@@ -505,6 +531,10 @@ P3D_BUS_COORD_MODE = 10;
 P3D_BUS_LINKED_COUNT = 11;
 P3D_BUS_MANAGER_SEQ = 12;
 P3D_BUS_ELEVATION = 13;
+P3D_BUS_VIEW_BLEND = 14;
+P3D_BUS_ORBIT_ANGLE = 15;
+P3D_BUS_ORBIT_RADIUS = 16;
+P3D_BUS_LOOK_AT = 17;
 P3D_OBJ_BASE = 64;
 P3D_SLOT_STRIDE = 64;
 P3D_SLOT_IID = 0;
@@ -554,6 +584,10 @@ P3D_MGR_CHANNEL = 10;
 P3D_MGR_SCENE_NAME_LEN_FIELD = 11;
 P3D_MGR_SCENE_CHAR_BASE = 12;
 P3D_MGR_ELEVATION = 48;
+P3D_MGR_VIEW_BLEND = 49;
+P3D_MGR_ORBIT_ANGLE = 50;
+P3D_MGR_ORBIT_RADIUS = 51;
+P3D_MGR_LOOK_AT = 52;
 P3D_MAX_SCENES = 32;
 P3D_SCENE_NAME_LEN = 36;
 P3D_SCENE_BASE = P3D_MGR_BASE + P3D_MAX_MANAGER_SLOTS * P3D_MGR_STRIDE;
@@ -594,6 +628,7 @@ mgr_ui_obj_max = P3D_MAX_OBJECTS;
 mgr_ui_obj_count = 0;
 ui_prev_l = 0;
 ui_prev_r = 0;
+ui_prev_m = 0;
 ui_mode = 0;
 ui_text_active = 0; // 0 none, 2 Manager Name
 ui_text_frames = 0;
@@ -609,6 +644,7 @@ strcpy(#mgr_edit_name, #manager_name);
 
 slider_show(1,0); slider_show(2,1); slider_show(3,0); slider_show(4,0); slider_show(5,0);
 slider_show(6,0); slider_show(7,0); slider_show(8,0); slider_show(9,0); slider_show(10,0); slider_show(11,0);
+slider_show(12,0); slider_show(13,0); slider_show(14,0); slider_show(15,0);
 
 mgr_attach();
 
@@ -631,6 +667,10 @@ slider9 < 0 ? slider9 = 0;
 slider9 > P3D_MAX_OBJECTS ? slider9 = P3D_MAX_OBJECTS;
 slider10 < 1 ? slider10 = 1;
 slider10 > P3D_MAX_MANAGERS ? slider10 = P3D_MAX_MANAGERS;
+slider12 < 0 ? slider12 = 0; slider12 > 1 ? slider12 = 1;
+slider13 = wrap_deg(slider13);
+slider14 < 0 ? slider14 = 0; slider14 > 100 ? slider14 = 100;
+slider15 = slider15 >= 0.5 ? 1 : 0;
 ensure_bus_header();
 cleanup_stale_registry_slots();
 scan_objects();
@@ -693,7 +733,10 @@ panel_h = canvas_h;
 
 mouse_l = mouse_cap & 1;
 mouse_r = mouse_cap & 2;
+mouse_ctrl = mouse_cap & 4;
 mouse_shift = mouse_cap & 8;
+mouse_alt = mouse_cap & 16;
+mouse_m = mouse_cap & 64;
 
 // UI-only identity and control hitboxes. Hidden sliders remain the backend.
 box_h = 18*ui_s; box_h < 15 ? box_h = 15;
@@ -718,28 +761,40 @@ barx = panel_x + 18*ui_s;
 barw = panel_w - 36*ui_s;
 barh = 12*ui_s;
 barh < 8 ? barh = 8;
-ctrl1y = panel_y + 132*ui_s;
-ctrl2y = ctrl1y + 47*ui_s;
-ctrl3y = ctrl2y + 47*ui_s;
-ctrl4y = ctrl3y + 47*ui_s;
-ctrl5y = ctrl4y + 47*ui_s;
+ctrl_step = 30*ui_s;
+ctrl_step < 24 ? ctrl_step = 24;
+ctrl1y = panel_y + 144*ui_s;
+ctrl2y = ctrl1y + ctrl_step;
+ctrl3y = ctrl2y + ctrl_step;
+ctrl4y = ctrl3y + ctrl_step;
+ctrl5y = ctrl4y + ctrl_step;
+ctrl6y = ctrl5y + ctrl_step;
+ctrl7y = ctrl6y + ctrl_step;
+ctrl8y = ctrl7y + ctrl_step;
+ctrl9y = ctrl8y + ctrl_step;
 list_x = panel_x + 16*ui_s;
-list_y = ctrl5y + 50*ui_s;
+list_y = ctrl9y + 34*ui_s;
 list_w = panel_w - 32*ui_s;
 list_h = panel_h - (list_y - panel_y) - 16*ui_s;
-list_h < 86*ui_s ? list_h = 86*ui_s;
+list_h < 74*ui_s ? list_h = 74*ui_s;
 inside_canvas = mouse_x >= canvas_x && mouse_x <= canvas_x+canvas_w && mouse_y >= canvas_y && mouse_y <= canvas_y+canvas_h;
 inside_list = mouse_x >= list_x && mouse_x <= list_x+list_w && mouse_y >= list_y && mouse_y <= list_y+list_h;
+orbit_input_active = (slider12 > 0.001 || slider14 > 0.001) ? 1 : 0;
+yaw_locked_by_orbit = (orbit_input_active && slider15 >= 0.5) ? 1 : 0;
 hover_ctrl = 0;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= ctrl1y-22*ui_s && mouse_y <= ctrl1y+barh+10*ui_s) ? hover_ctrl = 1;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= ctrl2y-22*ui_s && mouse_y <= ctrl2y+barh+10*ui_s) ? hover_ctrl = 2;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= ctrl3y-22*ui_s && mouse_y <= ctrl3y+barh+10*ui_s) ? hover_ctrl = 3;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= ctrl4y-22*ui_s && mouse_y <= ctrl4y+barh+10*ui_s) ? hover_ctrl = 4;
 (mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= ctrl5y-22*ui_s && mouse_y <= ctrl5y+barh+10*ui_s) ? hover_ctrl = 5;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= ctrl6y-22*ui_s && mouse_y <= ctrl6y+barh+10*ui_s) ? hover_ctrl = 6;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= ctrl7y-22*ui_s && mouse_y <= ctrl7y+barh+10*ui_s) ? hover_ctrl = 7;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= ctrl8y-22*ui_s && mouse_y <= ctrl8y+barh+10*ui_s) ? hover_ctrl = 8;
+(mouse_x >= barx && mouse_x <= barx+barw && mouse_y >= ctrl9y-22*ui_s && mouse_y <= ctrl9y+barh+10*ui_s) ? hover_ctrl = 9;
 
 // Manager hover tooltip routing. Exact hitboxes only; disabled during edits/drags.
 tip_id = 0;
-tip_hot = (!mouse_l && !mouse_r && ui_mode == 0 && ui_text_active == 0);
+tip_hot = (!mouse_l && !mouse_r && !mouse_m && ui_mode == 0 && ui_text_active == 0);
 tip_hot ? (
   hover_name_box ? tip_id = 11;
   hover_enable ? tip_id = 12;
@@ -765,7 +820,7 @@ fs_small = floor(10*ui_s); fs_small < 8 ? fs_small = 8;
 
 gfx_setfont(1,"Arial",fs_title,'b');
 gfx_set(0.94,0.96,0.99,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("3DPannerManager V1.9.0");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("3DPannerManager V1.12.0");
 gfx_setfont(2,"Arial",fs_body);
 gfx_set(0.58,0.64,0.74,1);
 gfx_x = pad; gfx_y = pad*0.45 + fs_title + 2*ui_s; gfx_printf("Camera Controller | only panners in Manager mode follow this Name | fixed objects, moving listener");
@@ -856,17 +911,58 @@ loop(P3D_MAX_OBJECTS,
 );
 
 // camera orbit and camera object
+// Two camera representations are intentionally kept coherent:
+//   POV yaw camera = blue marker on outer yaw ring.
+//   Third-person orbit target = cyan ghost/pullback marker.
+// The visible camera smoothly blends between them so TP 0% -> 1% does not warp to center.
 eff_cam = wrap_deg(slider4 * slider5);
+third_amt = clamp(slider12, 0, 1);
 orbit_rx = rx * 1.08;
 orbit_ry = ry * 1.08;
+yaw_locked_by_orbit = (third_amt > 0.001 && slider14 > 0.001 && slider15 >= 0.5) ? 1 : 0;
 gfx_set(0.22,0.74,1.0,0.38); draw_ellipse(cx, cy, orbit_rx, orbit_ry);
-cam_a = eff_cam*$pi/180;
-cam_x = cx + sin(cam_a)*orbit_rx;
-cam_y = cy - cos(cam_a)*orbit_ry;
+
+// POV camera target on the yaw ring.
+pov_a = eff_cam*$pi/180;
+pov_x = cx + sin(pov_a)*orbit_rx;
+pov_y = cy - cos(pov_a)*orbit_ry;
+
+// Third-person orbit target around the scene pivot. 0deg = behind/over-shoulder.
+tp_norm = sqrt(clamp(slider14 / ORBIT_CANVAS_MAX_M, 0, 1));
+tp_rad_x = orbit_rx * 1.18 * tp_norm;
+tp_rad_y = orbit_ry * 1.18 * tp_norm;
+tp_a = slider13*$pi/180;
+tp_x = cx + sin(tp_a)*tp_rad_x;
+tp_y = cy + cos(tp_a)*tp_rad_y;
+
+// Draw target/ghost when orbit controls matter but the view is only partially blended.
+(slider14 > 0.001 || third_amt > 0.001) ? (
+  gfx_set(0.22,0.74,1.0,0.22); gfx_line(cx, cy, tp_x, tp_y);
+  gfx_set(0.22,0.74,1.0,0.34); gfx_circle(tp_x, tp_y, 9*ui_s, 0, 1);
+  gfx_setfont(3,"Arial",fs_small,'b'); gfx_set(0.55,0.82,1.0,0.70);
+  gfx_x = tp_x + 10*ui_s; gfx_y = tp_y + 8*ui_s; gfx_printf("ORBIT");
+);
+
+// Smoothly interpolate the visible camera from POV yaw to orbit target.
+cam_x = pov_x*(1-third_amt) + tp_x*third_amt;
+cam_y = pov_y*(1-third_amt) + tp_y*third_amt;
+(third_amt > 0.001 && slider14 > 0.001) ? (
+  gfx_set(0.22,0.74,1.0,0.45); gfx_line(cx, cy, cam_x, cam_y);
+);
+
+// Look direction. LookAt ON aims at pivot; Manual mode uses Camera Rotation as yaw direction.
+(slider15 >= 0.5 || third_amt <= 0.001) ? (
+  look_vx = cx - cam_x;
+  look_vy = cy - cam_y;
+) : (
+  yaw_a = eff_cam*$pi/180;
+  look_vx = sin(yaw_a);
+  look_vy = -cos(yaw_a);
+);
+
 // camera cone
-vx = cx - cam_x; vy = cy - cam_y;
-vl = sqrt(vx*vx + vy*vy); vl < 0.001 ? vl = 1;
-nx = vx/vl; ny = vy/vl;
+vl = sqrt(look_vx*look_vx + look_vy*look_vy); vl < 0.001 ? vl = 1;
+nx = look_vx/vl; ny = look_vy/vl;
 pxp = -ny; pyp = nx;
 tip_x = cam_x + nx*26*ui_s; tip_y = cam_y + ny*26*ui_s;
 b1x = cam_x - nx*18*ui_s + pxp*17*ui_s; b1y = cam_y - ny*18*ui_s + pyp*17*ui_s;
@@ -874,7 +970,8 @@ b2x = cam_x - nx*18*ui_s - pxp*17*ui_s; b2y = cam_y - ny*18*ui_s - pyp*17*ui_s;
 gfx_set(0.24,0.78,1.0,0.95); gfx_triangle(tip_x,tip_y,b1x,b1y,b2x,b2y);
 gfx_set(0.94,0.99,1,1); gfx_circle(cam_x, cam_y, 6*ui_s, 1, 1);
 gfx_setfont(3,"Arial",fs_small,'b'); gfx_set(0.70,0.90,1,1);
-gfx_x = cam_x + 12*ui_s; gfx_y = cam_y - 28*ui_s; gfx_printf("CAM %.1f", eff_cam);
+gfx_x = cam_x + 12*ui_s; gfx_y = cam_y - 28*ui_s;
+third_amt > 0.001 ? gfx_printf("CAM TP %.0f%%", third_amt*100) : gfx_printf("CAM %.1f", eff_cam);
 
 // Global Elevation gauge: non-HRTF height-feel offset broadcast to linked panners.
 mgr_elev_ui = clamp(slider11, -1, 1);
@@ -951,10 +1048,14 @@ ui_text_active > 0 ? (
   ui_text_active > 0 ? (
     noop = 0;
   ) : hover_ctrl == 1 ? (
-    step = mouse_shift ? 1 : 5;
-    slider4 += wstep * step;
-    slider4 = wrap_deg(slider4);
-    sliderchange(-1.0);
+    yaw_locked_by_orbit ? (
+      noop = 0;
+    ) : (
+      step = mouse_shift ? 1 : 5;
+      slider4 += wstep * step;
+      slider4 = wrap_deg(slider4);
+      sliderchange(-1.0);
+    );
   ) : hover_ctrl == 2 ? (
     slider5 += wstep * 0.05 * (mouse_shift ? 0.25 : 1);
     slider5 < -2 ? slider5 = -2; slider5 > 2 ? slider5 = 2;
@@ -971,18 +1072,50 @@ ui_text_active > 0 ? (
     slider11 += wstep * 0.045 * (mouse_shift ? 0.25 : 1);
     slider11 < -1 ? slider11 = -1; slider11 > 1 ? slider11 = 1;
     sliderchange(-1.0);
+  ) : hover_ctrl == 6 ? (
+    slider12 += wstep * 0.035 * (mouse_shift ? 0.25 : 1);
+    slider12 < 0 ? slider12 = 0; slider12 > 1 ? slider12 = 1;
+    sliderchange(-1.0);
+  ) : hover_ctrl == 7 ? (
+    slider13 += wstep * 5 * (mouse_shift ? 0.25 : 1);
+    slider13 = wrap_deg(slider13);
+    sliderchange(-1.0);
+  ) : hover_ctrl == 8 ? (
+    slider14 += wstep * 0.25 * (mouse_shift ? 0.20 : 1);
+    slider14 < 0 ? slider14 = 0; slider14 > 100 ? slider14 = 100;
+    sliderchange(-1.0);
+  ) : hover_ctrl == 9 ? (
+    slider15 = 1 - (slider15 >= 0.5 ? 1 : 0);
+    sliderchange(-1.0);
   ) : inside_list ? (
     slider9 -= wstep;
     slider9 < 0 ? slider9 = 0;
     slider9 > P3D_MAX_OBJECTS ? slider9 = P3D_MAX_OBJECTS;
     sliderchange(-1.0);
   ) : inside_canvas ? (
-    step = mouse_shift ? 1 : 5;
-    slider4 += wstep * step;
-    slider4 = wrap_deg(slider4);
+    orbit_input_active ? (
+      (mouse_alt || mouse_ctrl) ? (
+        slider14 += wstep * (mouse_shift ? 0.05 : 0.25);
+        slider14 < 0 ? slider14 = 0; slider14 > 100 ? slider14 = 100;
+      ) : (
+        step = mouse_shift ? 1 : 5;
+        slider13 += wstep * step;
+        slider13 = wrap_deg(slider13);
+      );
+    ) : (
+      step = mouse_shift ? 1 : 5;
+      slider4 += wstep * step;
+      slider4 = wrap_deg(slider4);
+    );
     sliderchange(-1.0);
   );
   mouse_wheel = 0;
+);
+
+(!ui_prev_m && mouse_m && inside_canvas && ui_text_active == 0) ? (
+  ui_mode = 300;
+  ui_drag_start_y = mouse_y;
+  ui_drag_start_v1 = slider11;
 );
 
 (!ui_prev_l && mouse_l) ? (
@@ -1015,9 +1148,13 @@ ui_text_active > 0 ? (
     slider8 = 1 - slider8;
     sliderchange(-1.0);
   ) : hover_ctrl > 0 ? (
-    ui_mode = 100 + hover_ctrl;
-    ui_drag_start_x = mouse_x;
-    ui_drag_start_v1 = hover_ctrl == 1 ? slider4 : hover_ctrl == 2 ? slider5 : hover_ctrl == 3 ? slider6 : hover_ctrl == 4 ? slider7 : slider11;
+    (hover_ctrl == 1 && yaw_locked_by_orbit) ? (
+      noop = 0;
+    ) : (
+      ui_mode = 100 + hover_ctrl;
+      ui_drag_start_x = mouse_x;
+      ui_drag_start_v1 = hover_ctrl == 1 ? slider4 : hover_ctrl == 2 ? slider5 : hover_ctrl == 3 ? slider6 : hover_ctrl == 4 ? slider7 : hover_ctrl == 5 ? slider11 : hover_ctrl == 6 ? slider12 : hover_ctrl == 7 ? slider13 : hover_ctrl == 8 ? slider14 : slider15;
+    );
   ) : inside_canvas ? (
     ui_mode = 1;
   );
@@ -1026,38 +1163,80 @@ ui_text_active > 0 ? (
 (mouse_l && ui_mode == 1) ? (
   dxn = (mouse_x - cx) / orbit_rx;
   dyn = (cy - mouse_y) / orbit_ry;
-  slider4 = wrap_deg(deg_from_vec(dxn, dyn));
+  orbit_input_active ? (
+    rnorm = sqrt(dxn*dxn + dyn*dyn) / 1.18;
+    rnorm < 0 ? rnorm = 0; rnorm > 1 ? rnorm = 1;
+    orbit_drag_max = mouse_shift ? 12 : ORBIT_CANVAS_MAX_M;
+    orbit_drag_r = rnorm*rnorm*orbit_drag_max;
+    mouse_alt ? (
+      slider14 = orbit_drag_r;
+    ) : mouse_ctrl ? (
+      slider13 = wrap_deg(deg_from_vec(dxn, -dyn));
+    ) : (
+      slider13 = wrap_deg(deg_from_vec(dxn, -dyn));
+      slider14 = orbit_drag_r;
+    );
+    slider14 < 0 ? slider14 = 0; slider14 > 100 ? slider14 = 100;
+  ) : (
+    slider4 = wrap_deg(deg_from_vec(dxn, dyn));
+  );
+  sliderchange(-1.0);
+);
+
+(mouse_m && ui_mode == 300) ? (
+  elev_step = mouse_shift ? 0.0016 : 0.0042;
+  slider11 = ui_drag_start_v1 - (mouse_y - ui_drag_start_y) * elev_step / ui_s;
+  slider11 < -1 ? slider11 = -1;
+  slider11 > 1 ? slider11 = 1;
   sliderchange(-1.0);
 );
 
 (mouse_l && ui_mode >= 101 && ui_mode < 200) ? (
   sid = ui_mode - 100;
-  sid == 1 ? (mn=-180; mx=180;) : sid == 2 ? (mn=-2; mx=2;) : sid == 3 ? (mn=5; mx=250;) : sid == 4 ? (mn=0.25; mx=16;) : (mn=-1; mx=1;);
-  mouse_shift ? (
-    v = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) / barw * (mx - mn) * 0.25;
+  sid == 1 ? (mn=-180; mx=180;) : sid == 2 ? (mn=-2; mx=2;) : sid == 3 ? (mn=5; mx=250;) : sid == 4 ? (mn=0.25; mx=16;) : sid == 5 ? (mn=-1; mx=1;) : sid == 6 ? (mn=0; mx=1;) : sid == 7 ? (mn=-180; mx=180;) : sid == 8 ? (mn=0; mx=100;) : (mn=0; mx=1;);
+  sid == 9 ? (
+    slider15 = (mouse_x >= barx + barw*0.5) ? 1 : 0;
   ) : (
-    nrm = (mouse_x - barx) / barw;
-    nrm < 0 ? nrm = 0; nrm > 1 ? nrm = 1;
-    v = mn + nrm * (mx - mn);
+    mouse_shift ? (
+      v = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) / barw * (mx - mn) * 0.10;
+    ) : (
+      nrm = (mouse_x - barx) / barw;
+      nrm < 0 ? nrm = 0; nrm > 1 ? nrm = 1;
+      sid == 8 ? (
+        // Nonlinear radius lane: more pixels for 0-20m, full 100m range still reachable.
+        v = nrm*nrm * 100;
+      ) : (
+        v = mn + nrm * (mx - mn);
+      );
+    );
+    v < mn ? v = mn; v > mx ? v = mx;
+    sid == 1 ? (yaw_locked_by_orbit ? noop = 0 : slider4 = wrap_deg(v)) : sid == 2 ? slider5 = v : sid == 3 ? slider6 = v : sid == 4 ? slider7 = v : sid == 5 ? slider11 = v : sid == 6 ? slider12 = v : sid == 7 ? slider13 = wrap_deg(v) : sid == 8 ? slider14 = v : slider15 = v;
   );
-  v < mn ? v = mn; v > mx ? v = mx;
-  sid == 1 ? slider4 = wrap_deg(v) : sid == 2 ? slider5 = v : sid == 3 ? slider6 = v : sid == 4 ? slider7 = v : slider11 = v;
   sliderchange(-1.0);
 );
 
-(!mouse_l && ui_prev_l) ? ui_mode = 0;
+(!mouse_l && ui_prev_l && ui_mode != 300) ? ui_mode = 0;
+(!mouse_m && ui_prev_m && ui_mode == 300) ? (ui_mode = 0; sliderchange(-1.0););
 (!ui_prev_r && mouse_r) ? (
   hover_ctrl == 1 ? (slider4 = 0; sliderchange(-1.0);) :
   hover_ctrl == 2 ? (slider5 = 1; sliderchange(-1.0);) :
   hover_ctrl == 3 ? (slider6 = 90; sliderchange(-1.0);) :
   hover_ctrl == 4 ? (slider7 = 1; sliderchange(-1.0);) :
   hover_ctrl == 5 ? (slider11 = 0; sliderchange(-1.0);) :
+  hover_ctrl == 6 ? (slider12 = 0; sliderchange(-1.0);) :
+  hover_ctrl == 7 ? (slider13 = 0; sliderchange(-1.0);) :
+  hover_ctrl == 8 ? (slider14 = 0; sliderchange(-1.0);) :
+  hover_ctrl == 9 ? (slider15 = 1; sliderchange(-1.0);) :
   hover_enable ? (slider3 = 1; sliderchange(-1.0);) :
   hover_tracker ? (slider8 = 0; sliderchange(-1.0);) :
-  inside_canvas ? (slider4 = 0; sliderchange(-1.0););
+  inside_canvas ? (
+    orbit_input_active ? (slider13 = 0; slider14 = 0;) : (slider4 = 0;);
+    sliderchange(-1.0);
+  );
 );
 ui_prev_l = mouse_l;
 ui_prev_r = mouse_r;
+ui_prev_m = mouse_m;
 
 // right panel controls/status - UI-only, hidden-slider-backed
 gfx_setfont(2,"Arial",fs_body,'b');
@@ -1088,15 +1267,16 @@ gfx_rect(tracker_x,tracker_y,tracker_w,tracker_h); gfx_roundrect(tracker_x,track
 gfx_set(0.06,0.07,0.09,1); gfx_x = tracker_x + 8*ui_s; gfx_y = tracker_y + 4*ui_s; slider8>=0.5 ? gfx_printf("TRACKER") : gfx_printf("TRKR OFF");
 
 gfx_setfont(3,"Arial",fs_small); gfx_set(0.70,0.78,0.90,1);
-gfx_x = field_x; gfx_y = enable_y + 25*ui_s; gfx_printf("Objects %d | Slot %d | Manager-mode %d", active_objects, mgr_slot_index, linked_objects);
-gfx_x = field_x; gfx_y = enable_y + 40*ui_s; gfx_printf("Name "); gfx_drawstr(#manager_name);
+gfx_x = field_x; gfx_y = enable_y + 24*ui_s; gfx_printf("Objects %d | Manager-mode %d", active_objects, linked_objects);
 
 // Camera rotation bar
 rot_n = (slider4 + 180) / 360;
-gfx_setfont(3,"Arial",fs_small,'b'); gfx_set(0.90,0.93,0.98,1); gfx_x = barx; gfx_y = ctrl1y-18*ui_s; gfx_printf("Camera Rotation   %.1f deg", slider4);
+yaw_dim = yaw_locked_by_orbit ? 0.38 : 1.0;
+gfx_setfont(3,"Arial",fs_small,'b'); gfx_set(0.90*yaw_dim,0.93*yaw_dim,0.98*yaw_dim,1); gfx_x = barx; gfx_y = ctrl1y-18*ui_s;
+yaw_locked_by_orbit ? gfx_printf("Camera Rotation   LOCKED %.1f deg", slider4) : gfx_printf("Camera Rotation   %.1f deg", slider4);
 gfx_set(0.16,0.19,0.25,1); gfx_rect(barx,ctrl1y,barw,barh,1); gfx_roundrect(barx,ctrl1y,barw,barh,6*ui_s,1);
-gfx_set(0.24,0.78,1.0,1); gfx_rect(barx,ctrl1y,barw*rot_n,barh,1);
-gfx_set(1,1,1,hover_ctrl==1?0.95:0.70); gfx_circle(barx+barw*rot_n, ctrl1y+barh*0.5, 5*ui_s, 1, 1);
+gfx_set(0.24*yaw_dim,0.78*yaw_dim,1.0*yaw_dim, yaw_locked_by_orbit ? 0.35 : 1); gfx_rect(barx,ctrl1y,barw*rot_n,barh,1);
+gfx_set(1,1,1,hover_ctrl==1?(yaw_locked_by_orbit?0.45:0.95):(yaw_locked_by_orbit?0.32:0.70)); gfx_circle(barx+barw*rot_n, ctrl1y+barh*0.5, 5*ui_s, 1, 1);
 
 // Rotation Scale
 scale_n = (slider5 + 2) / 4;
@@ -1126,6 +1306,36 @@ gfx_set(0.16,0.19,0.25,1); gfx_rect(barx,ctrl5y,barw,barh,1); gfx_roundrect(barx
 gfx_set(0.55,0.76,1.0,1); gfx_rect(barx,ctrl5y,barw*elev_n,barh,1);
 gfx_set(0.08,0.08,0.10,0.72); gfx_line(barx+barw*0.5,ctrl5y,barx+barw*0.5,ctrl5y+barh);
 gfx_set(1,1,1,hover_ctrl==5?0.95:0.70); gfx_circle(barx+barw*elev_n, ctrl5y+barh*0.5, 5*ui_s, 1, 1);
+
+// Third Person blend
+tp_n = slider12;
+gfx_set(0.90,0.93,0.98,1); gfx_x = barx; gfx_y = ctrl6y-18*ui_s; gfx_printf("Third Person   %.0f%%", slider12*100);
+gfx_set(0.16,0.19,0.25,1); gfx_rect(barx,ctrl6y,barw,barh,1); gfx_roundrect(barx,ctrl6y,barw,barh,6*ui_s,1);
+gfx_set(0.24,0.78,1.0,1); gfx_rect(barx,ctrl6y,barw*tp_n,barh,1);
+gfx_set(1,1,1,hover_ctrl==6?0.95:0.70); gfx_circle(barx+barw*tp_n, ctrl6y+barh*0.5, 5*ui_s, 1, 1);
+
+// Orbit Angle
+orb_ang_n = (slider13 + 180) / 360;
+orb_dim = orbit_input_active ? 1.0 : 0.46;
+gfx_set(0.90*orb_dim,0.93*orb_dim,0.98*orb_dim,1); gfx_x = barx; gfx_y = ctrl7y-18*ui_s; gfx_printf("Orbit Angle   %.1f deg", slider13);
+gfx_set(0.16,0.19,0.25,1); gfx_rect(barx,ctrl7y,barw,barh,1); gfx_roundrect(barx,ctrl7y,barw,barh,6*ui_s,1);
+gfx_set(0.24*orb_dim,0.78*orb_dim,1.0*orb_dim,orbit_input_active?1:0.35); gfx_rect(barx,ctrl7y,barw*orb_ang_n,barh,1);
+gfx_set(1,1,1,hover_ctrl==7?(orbit_input_active?0.95:0.55):(orbit_input_active?0.70:0.36)); gfx_circle(barx+barw*orb_ang_n, ctrl7y+barh*0.5, 5*ui_s, 1, 1);
+
+// Orbit Radius
+orb_rad_n = sqrt(clamp(slider14 / 100, 0, 1));
+orb_rad_dim = (slider14 > 0.001 || slider12 > 0.001) ? 1.0 : 0.46;
+gfx_set(0.90*orb_rad_dim,0.93*orb_rad_dim,0.98*orb_rad_dim,1); gfx_x = barx; gfx_y = ctrl8y-18*ui_s; gfx_printf("Orbit Radius   %.1f m", slider14);
+gfx_set(0.16,0.19,0.25,1); gfx_rect(barx,ctrl8y,barw,barh,1); gfx_roundrect(barx,ctrl8y,barw,barh,6*ui_s,1);
+gfx_set(0.24*orb_rad_dim,0.78*orb_rad_dim,1.0*orb_rad_dim,orb_rad_dim>0.5?1:0.35); gfx_rect(barx,ctrl8y,barw*orb_rad_n,barh,1);
+gfx_set(1,1,1,hover_ctrl==8?(orb_rad_dim>0.5?0.95:0.55):(orb_rad_dim>0.5?0.70:0.36)); gfx_circle(barx+barw*orb_rad_n, ctrl8y+barh*0.5, 5*ui_s, 1, 1);
+
+// Look At Pivot
+look_n = slider15 >= 0.5 ? 1 : 0;
+gfx_set(0.90,0.93,0.98,1); gfx_x = barx; gfx_y = ctrl9y-18*ui_s; look_n ? gfx_printf("Look At Pivot   ON") : gfx_printf("Look At Pivot   MANUAL");
+gfx_set(0.16,0.19,0.25,1); gfx_rect(barx,ctrl9y,barw,barh,1); gfx_roundrect(barx,ctrl9y,barw,barh,6*ui_s,1);
+gfx_set(0.24,0.78,1.0,1); gfx_rect(barx,ctrl9y,barw*(look_n?1:0.5),barh,1);
+gfx_set(1,1,1,hover_ctrl==9?0.95:0.70); gfx_circle(barx+barw*(look_n?1:0.5), ctrl9y+barh*0.5, 5*ui_s, 1, 1);
 
 // Linked object list with scrolling
 gfx_set(0.070,0.085,0.115,1); gfx_rect(list_x,list_y,list_w,list_h,1); gfx_roundrect(list_x,list_y,list_w,list_h,12*ui_s,1);
@@ -1206,17 +1416,21 @@ shown <= 0 ? (
 
 
 // Hover tooltip card
+// Tooltips use short wrapped lines. JSFX GFX has no native text-wrap widget,
+// so the bubble height is sized for three concise lines and no line is allowed
+// to run outside the card.
 tooltip_show ? (
   tip_x = panel_x + 18*ui_s;
-  tip_y = panel_y + panel_h - 74*ui_s;
+  tip_y = panel_y + panel_h - 104*ui_s;
   tip_w = panel_w - 36*ui_s;
-  tip_h = 54*ui_s;
-  tip_h < 42 ? tip_h = 42;
+  tip_h = 88*ui_s;
+  tip_h < 70 ? tip_h = 70;
+  tip_y < panel_y + 8*ui_s ? tip_y = panel_y + 8*ui_s;
   gfx_set(0.035,0.045,0.062,0.96); gfx_rect(tip_x,tip_y,tip_w,tip_h,1); gfx_roundrect(tip_x,tip_y,tip_w,tip_h,10*ui_s,1);
   gfx_set(0.24,0.78,1.0,0.65); gfx_roundrect(tip_x,tip_y,tip_w,tip_h,10*ui_s,0);
+
   gfx_setfont(3,"Arial",fs_small,'b'); gfx_set(0.94,0.97,1,1); gfx_x = tip_x + 10*ui_s; gfx_y = tip_y + 8*ui_s;
-  tip_id == 10 ? gfx_printf("Manager Name") :
-  tip_id == 11 ? gfx_printf("Name") :
+  tip_id == 11 ? gfx_printf("Manager Name") :
   tip_id == 12 ? gfx_printf("Manager Enable") :
   tip_id == 13 ? gfx_printf("Motion Tracker") :
   tip_id == 14 ? gfx_printf("Internal Slot") :
@@ -1226,20 +1440,79 @@ tooltip_show ? (
   tip_id == 102 ? gfx_printf("Rotation Scale") :
   tip_id == 103 ? gfx_printf("Automation Smooth") :
   tip_id == 104 ? gfx_printf("Distance Scale") :
-  tip_id == 105 ? gfx_printf("Elevation") : gfx_printf("Manager Help");
-  gfx_setfont(3,"Arial",fs_small); gfx_set(0.68,0.76,0.88,1); gfx_x = tip_x + 10*ui_s; gfx_y = tip_y + 26*ui_s;
-  tip_id == 11 ? gfx_printf("Panners subscribe to this exact Manager Name.") :
-  tip_id == 12 ? gfx_printf("Right-click resets ON. Off makes linked panners stay local.") :
-  tip_id == 13 ? gfx_printf("Reserved Global Motion Tracker bridge. Off unless tracker data is connected.") :
-  tip_id == 15 ? gfx_printf("Scroll to inspect panners targeting this Manager Name.") :
-  tip_id == 16 ? gfx_printf("Orange dots are matching panners; grey dots are local/armed instances.") :
-  tip_id == 101 ? gfx_printf("Camera/listener yaw. Right-click resets to 0 degrees.") :
-  tip_id == 102 ? gfx_printf("Multiplies yaw before panners consume it. Right-click = 100%%.") :
-  tip_id == 103 ? gfx_printf("Manager smoothing hint. Right-click = 90 ms.") :
-  tip_id == 104 ? gfx_printf("Global linked-object distance scale. Range is 0.25x to 16x.") :
-  tip_id == 105 ? gfx_printf("Non-HRTF height feel: lifted/grounded, not true overhead/below.") : gfx_printf("Hover a manager control for help.");
+  tip_id == 105 ? gfx_printf("Elevation") :
+  tip_id == 106 ? gfx_printf("Third Person") :
+  tip_id == 107 ? gfx_printf("Orbit Angle") :
+  tip_id == 108 ? gfx_printf("Orbit Radius") :
+  tip_id == 109 ? gfx_printf("Look At Pivot") : gfx_printf("Manager Help");
+
+  gfx_setfont(3,"Arial",fs_small); gfx_set(0.68,0.76,0.88,1);
+  tip_l1 = tip_y + 27*ui_s;
+  tip_l2 = tip_y + 44*ui_s;
+  tip_l3 = tip_y + 61*ui_s;
+
+  tip_id == 11 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Panners subscribe to this name.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Click selects all text.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Spaces become underscores.");
+  ) : tip_id == 12 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Master manager on/off.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Off leaves linked panners local.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Right-click resets ON.");
+  ) : tip_id == 13 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Reserved tracker bridge.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Not REAPER track routing.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Leave off unless connected.");
+  ) : tip_id == 15 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Shows panners targeting this name.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Orange = following; grey = local.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Mouse-wheel scrolls the list.");
+  ) : tip_id == 16 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("World chart for matching panners.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Drag canvas: yaw or orbit mode.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Middle-drag changes Elevation.");
+  ) : tip_id == 101 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; yaw_locked_by_orbit ? gfx_printf("Locked while Look At orbit is active.") : gfx_printf("POV yaw around the listener.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Canvas edits yaw only in POV mode.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Right-click resets to 0 deg.");
+  ) : tip_id == 102 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Scales camera yaw before output.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("100%% = normal direction.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Negative values invert yaw.");
+  ) : tip_id == 103 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Smoothing hint for camera moves.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Use more for fast automation.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Right-click resets to 90 ms.");
+  ) : tip_id == 104 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Global far/near scale for followers.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Feeds psychoacoustic distance.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Range: 0.25x to 16x.");
+  ) : tip_id == 105 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Non-HRTF height feel.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Lifted/grounded, not exact Z.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Middle-drag canvas edits it.");
+  ) : tip_id == 106 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Blend POV into orbit camera.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Uses Orbit Angle + Radius.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("0%% = POV, 100%% = full TP.");
+  ) : tip_id == 107 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Camera location around pivot.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("0=behind, 90=side shot.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Canvas drag edits this in orbit.");
+  ) : tip_id == 108 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Camera pullback / zoom-out.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Creates true parallax.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("Alt/Ctrl-wheel changes radius slowly.");
+  ) : tip_id == 109 ? (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("ON aims camera at pivot.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("This locks manual yaw input.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l3; gfx_printf("OFF uses Camera Rotation yaw.");
+  ) : (
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l1; gfx_printf("Hover controls for help.");
+    gfx_x = tip_x + 10*ui_s; gfx_y = tip_l2; gfx_printf("Right-click most controls to reset.");
+  );
 );
 
 // footer hint
 gfx_setfont(3,"Arial",fs_small); gfx_set(0.55,0.62,0.73,1);
-gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + canvas_h - 24*ui_s; gfx_printf("Drag camera orbit or mouse-wheel canvas = rotate. Right-click canvas = reset. Panners subscribing to this Manager Name appear as dots and rotate their effective view.");
+gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + canvas_h - 24*ui_s; gfx_printf("Canvas drag = POV yaw, or Orbit Angle/Radius in orbit mode. Radius drag uses a slow curve; lane still reaches 100m. Middle-drag = Elevation.");
