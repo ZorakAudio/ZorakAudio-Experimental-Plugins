@@ -589,10 +589,45 @@ class Parser:
             return True
         return False
 
+        # --- JSFX AOT parser: newline-leading infix continuation support ---
+    def _is_line_continuation_op(self, tok: Tok, min_prec: int) -> bool:
+        """True when a newline followed by tok must continue the current expr.
+
+        JSFX/EEL2 permits expressions such as:
+
+            wrapped
+                || something
+                || something_else
+
+        Newlines still separate statements in general; we only join across a
+        newline when the next token is an infix/ternary continuation operator
+        that cannot safely start a standalone expression.  '+', '-', and '!'
+        are intentionally excluded here because they are valid unary prefixes.
+        """
+        if tok.kind != "op":
+            return False
+        if tok.text == "?":
+            return _TERNARY_PREC >= min_prec
+        if tok.text == ":":
+            return False
+        if tok.text in ("+", "-", "!"):
+            return False
+        prec = _PRECEDENCE.get(tok.text)
+        return prec is not None and prec >= min_prec
+
+    def _skip_expr_continuation_eol(self, min_prec: int) -> None:
+        # Skip blank lines while looking for an explicit continuation operator,
+        # but do not swallow newlines before ordinary statement starts.
+        while self.cur.kind == "eol" and (
+            self.nxt.kind == "eol" or self._is_line_continuation_op(self.nxt, min_prec)
+        ):
+            self._adv()
+
     def parse_expr(self, min_prec: int) -> Node:
         lhs = self.parse_prefix()
-
         while True:
+            self._skip_expr_continuation_eol(min_prec)
+
             # assignment / binary ops
             if self.cur.kind != "op":
                 break
