@@ -1,4 +1,4 @@
-desc:Hyperreal 3D Panner V6.17.0 (Camera Orbit Fix)
+desc:Hyperreal 3D Panner V6.19.0 (Centerline / Rear Stability)
 
 // #HELP: Headphone-focused 3D panner using softened perceptual placement, microdelay, head shadow, pinna cues, distance loss, occlusion, and room cues.
 // #HELP: Drag the orange source in the stage canvas. X = Lateral, Y = Front/Rear. Mouse wheel changes Distance.
@@ -11,7 +11,7 @@ desc:Hyperreal 3D Panner V6.17.0 (Camera Orbit Fix)
 // #HELP: Manager Link is opt-in. New instances start in Standalone mode and only follow a Manager after switching Mode to Manager.
 // #HELP: V6.13.0 overhauls long-distance psychoacoustics: extended manager distances stay far/clear instead of just becoming reverby.
 // #HELP: V6.14.0 adds Elevation: a non-HRTF height-feel macro for lifted/grounded perception, not exact vertical localization.
-// #HELP: V6.15.0 adds Manager third-person camera support: orbit radius/angle with parallax-aware distance and optional look-at pivot. V6.16 adds middle-drag Elevation. V6.17 fixes LookAt orbit yaw so hidden Camera Rotation is not double-applied.
+// #HELP: V6.15.0 adds Manager third-person camera support: orbit radius/angle with parallax-aware distance and optional look-at pivot. V6.16 adds middle-drag Elevation. V6.17 fixes LookAt orbit yaw. V6.18 adds Source Modes for mono emitters, stereo emitters, ambience beds, and dual emitters. V6.19 stabilizes centerline/rear motion by smoothing cue vectors instead of raw wrapped angles.
 // #HELP: V6.2.2 stabilizes Occlusion by applying blocked-source coloration after localization, preventing opposite-ear flicker.
 // #TOOLTIP: UI-only perceptual object panner. Main controls stay standalone-clean; Manager mode is explicit and opt-in.
 
@@ -76,6 +76,12 @@ slider19:0.55<0,1,0.001>-Room Size
 slider20:1<1,64,1>-Internal Manager Slot
 // #TOOLTIP: Height-feel macro. Non-HRTF psychoacoustic illusion: lifted/grounded impression, not reliable exact overhead/below localization.
 slider21:0<-1,1,0.001>-Elevation
+// #TOOLTIP: Input interpretation. Mono Emitter folds to mono; Stereo/Dual preserve source width; Ambience Bed preserves field material instead of forcing a point source.
+slider22:0<0,3,1{Mono,Stereo,Bed,Dual}>-Source Mode
+// #TOOLTIP: How much original stereo side/difference content survives in Stereo/Dual/Ambience modes. Leave high for beds/music; lower for point sources.
+slider23:0.75<0,1,0.001>-Input Width Preserve
+// #TOOLTIP: Ambience Bed only. Lower = broad stable bed; higher = more world-locked bed biased by object/camera placement.
+slider24:0.45<0,1,0.001>-Bed Anchor
 
 // V6.15.0 Manager model:
 //   Sliders 6/8 store the object's fixed world placement.
@@ -89,6 +95,7 @@ slider21:0<-1,1,0.001>-Elevation
 //   Spatial Throw             = strength of the directional cue stack.
 //   Push Out                  = outside-head realism / pinna-room emphasis.
 //   Elevation                 = non-HRTF lifted/grounded height feel.
+//   Source Mode               = mono point emitter vs stereo/ambience preservation.
 //   Cue Curve                 = how much mid-angle positions are softened.
 
 @init
@@ -103,6 +110,16 @@ function p3d_wrap_deg(a) (
   while (a > 180) ( a -= 360; );
   while (a < -180) ( a += 360; );
   a;
+);
+
+function p3d_angle_from_components(side, front) local(ang) (
+  // Stable signed azimuth from a cue vector.  This is used after smoothing
+  // side/front components so rear-center never has to jump through front.
+  ang = atan(side / (abs(front) + 0.000000000000000001)) * 180 / $pi;
+  (front < 0) ? (
+    side >= 0 ? ang = 180 - ang : ang = -180 - ang;
+  );
+  p3d_wrap_deg(ang);
 );
 
 function p3d_distance_m_from_n(n) local(b e d2 d3 m) (
@@ -990,13 +1007,21 @@ er_a8 = exp(-2*$pi*2600/srate);
 
 // --- smoothed params ---
 // sm_az is the softened/cue-scaled azimuth, not the visual placement angle.
+// V6.19 smooths the cue vector too; this avoids +/-180 rear wrap jumps and
+// prevents center-front/back moves from sweeping through a fake left/right side.
 sm_az = 0;
+sm_cue_side = 0;
+sm_cue_front = 1;
+tgt_cue_side = 0;
+tgt_cue_front = 1;
 sm_depth = 0.25;
 sm_far = 0;
 sm_width = 0.10;
 sm_ext = 0.42;
 sm_room = 0.30;
 sm_elev = 0;
+sm_in_width = 0.75;
+sm_bed_anchor = 0.45;
 sm_rsize = 0.55;
 sm_occ = 0;
 sm_motion = 0.04;
@@ -1086,6 +1111,19 @@ elev_er_lp2 = 0;
 elev_body_a = exp(-2*$pi*420/srate);
 elev_air_a = exp(-2*$pi*6200/srate);
 
+// Stereo / bed source-mode states
+side_air_state = 0;
+bed_air_l = 0;
+bed_air_r = 0;
+input_corr_l2 = 0;
+input_corr_r2 = 0;
+input_corr_lr = 0;
+last_input_corr = 1;
+last_input_mode = 0;
+last_input_width_preserve = 0.75;
+last_bed_anchor = 0.45;
+last_source_warn = 0;
+
 // Motion LFO
 ph1 = 0;
 ph2 = 0;
@@ -1103,6 +1141,7 @@ last_ext_db = 0;
 last_rear = 0;
 last_focus = 1;
 last_shadow = 0;
+last_axis_lock = 1;
 last_front = 1;
 last_side = 0;
 last_back = 0;
@@ -1148,6 +1187,7 @@ slider_show(1,1); slider_show(2,1); slider_show(3,0); slider_show(4,1); slider_s
 slider_show(6,0); slider_show(7,0); slider_show(8,0); slider_show(9,0); slider_show(10,0);
 slider_show(11,0); slider_show(12,0); slider_show(13,0); slider_show(14,0); slider_show(15,0);
 slider_show(16,0); slider_show(17,0); slider_show(18,0); slider_show(19,0); slider_show(20,0); slider_show(21,0);
+slider_show(22,0); slider_show(23,0); slider_show(24,0);
 
 
 @slider
@@ -1317,6 +1357,21 @@ tgt_elev = slider21;
 tgt_elev < -1 ? tgt_elev = -1;
 tgt_elev > 1 ? tgt_elev = 1;
 
+tgt_source_mode = floor(slider22 + 0.5);
+tgt_source_mode < 0 ? tgt_source_mode = 0;
+tgt_source_mode > 3 ? tgt_source_mode = 3;
+last_input_mode = tgt_source_mode;
+
+tgt_in_width = slider23;
+tgt_in_width < 0 ? tgt_in_width = 0;
+tgt_in_width > 1 ? tgt_in_width = 1;
+last_input_width_preserve = tgt_in_width;
+
+tgt_bed_anchor = slider24;
+tgt_bed_anchor < 0 ? tgt_bed_anchor = 0;
+tgt_bed_anchor > 1 ? tgt_bed_anchor = 1;
+last_bed_anchor = tgt_bed_anchor;
+
 tgt_occ = slider13;
 tgt_occ < 0 ? tgt_occ = 0;
 tgt_occ > 1 ? tgt_occ = 1;
@@ -1424,13 +1479,16 @@ raw_side < 0 ? cue_side = -cue_side;
 cue_side *= 0.50 + 0.50*throw_dsp;
 cue_side > 0.999 ? cue_side = 0.999;
 cue_side < -0.999 ? cue_side = -0.999;
+// Dead-zone numerical side around the center axis.  Without this, rear-center
+// can randomly choose a left/right “near ear” because +180 and -180 are the
+// same place geometrically but different signs numerically.
+abs(cue_side) < 0.00001 ? cue_side = 0;
 cue_front_abs = sqrt(1 - cue_side*cue_side);
 cue_front = raw_front < 0 ? -cue_front_abs : cue_front_abs;
 
-cue_ang = atan(cue_side / (abs(cue_front) + 0.000000000000000001)) * 180 / $pi;
-(cue_front < 0) ? (
-  cue_side >= 0 ? cue_ang = 180 - cue_ang : cue_ang = -180 - cue_ang;
-);
+tgt_cue_side = cue_side;
+tgt_cue_front = cue_front;
+cue_ang = p3d_angle_from_components(cue_side, cue_front);
 tgt_az = cue_ang;
 last_cue_az = cue_ang;
 
@@ -1547,9 +1605,10 @@ er_a7 = exp(-2*$pi*c7/srate);
 er_a8 = exp(-2*$pi*c8/srate);
 
 // --- Pinna externalize biquad (negative peaking EQ = notch hint) ---
-az_rad = tgt_az * $pi / 180;
-az_s = sin(az_rad);
-az_c = cos(az_rad);
+// Use cue vector components, not raw angle trig, so rear-center does not depend
+// on the arbitrary sign of +180/-180.
+az_s = tgt_cue_side;
+az_c = tgt_cue_front;
 az_abs = abs(az_s);
 front = max(0, az_c);
 rear = max(0, -az_c);
@@ -1633,17 +1692,47 @@ p3d_publish_slot();
 p3d_link_enabled ? msg_send(#p3d_registry_bus, P3D_OP_PANNER_HEART, p3d_iid, p3d_obj_id, p3d_world_ang, p3d_effective_ang);
 
 @sample
-// --- input to mono ---
-mono_in = (spl0 + spl1) * 0.5;
+// --- source input interpretation ---
+// Mono Emitter keeps the legacy mono-first path. Stereo/Dual/Ambience modes
+// preserve controlled side/field information around that point-source core.
+in_l = spl0;
+in_r = spl1;
+input_mid = (in_l + in_r) * 0.5;
+input_side = (in_l - in_r) * 0.5;
+mono_in = input_mid;
+
+// Input correlation meter: warns when Mono Emitter would collapse meaningful stereo material.
+input_corr_l2 += (in_l*in_l - input_corr_l2) * meter_k;
+input_corr_r2 += (in_r*in_r - input_corr_r2) * meter_k;
+input_corr_lr += (in_l*in_r - input_corr_lr) * meter_k;
+_corr_den = sqrt(input_corr_l2*input_corr_r2) + 0.000000000001;
+last_input_corr = input_corr_lr / _corr_den;
+last_input_corr < -1 ? last_input_corr = -1;
+last_input_corr > 1 ? last_input_corr = 1;
+last_source_warn = (tgt_source_mode == 0 && last_input_corr < 0.82) ? 1 : 0;
 
 // --- smooth user params ---
-sm_az     += (tgt_az     - sm_az)     * smooth_k;
+// Smooth the cue vector, not the wrapped azimuth angle.  Linear angle smoothing
+// jumps at +/-180 and makes rear L/R moves or centered front/back moves sweep
+// wildly through the wrong side.
+sm_cue_side  += (tgt_cue_side  - sm_cue_side)  * smooth_k;
+sm_cue_front += (tgt_cue_front - sm_cue_front) * smooth_k;
+cue_side_s = p3d_clamp(sm_cue_side, -1, 1);
+cue_front_s = p3d_clamp(sm_cue_front, -1, 1);
+cue_len_s = sqrt(cue_side_s*cue_side_s + cue_front_s*cue_front_s);
+cue_len_s < 0.0001 ? (
+  sm_az = 0;
+) : (
+  sm_az = p3d_angle_from_components(cue_side_s / cue_len_s, cue_front_s / cue_len_s);
+);
 sm_depth  += (tgt_depth  - sm_depth)  * smooth_k;
 sm_far    += (tgt_far01  - sm_far)    * smooth_k;
 sm_width  += (tgt_width  - sm_width)  * smooth_k;
 sm_ext    += (tgt_ext    - sm_ext)    * smooth_k;
 sm_room   += (tgt_room   - sm_room)   * smooth_k;
 sm_elev   += (tgt_elev   - sm_elev)   * smooth_k;
+sm_in_width += (tgt_in_width - sm_in_width) * smooth_k;
+sm_bed_anchor += (tgt_bed_anchor - sm_bed_anchor) * smooth_k;
 sm_rsize  += (tgt_rsize  - sm_rsize)  * smooth_k;
 sm_occ    += (tgt_occ    - sm_occ)    * smooth_k;
 sm_motion += (tgt_motion - sm_motion) * smooth_k;
@@ -1687,12 +1776,22 @@ ph2 += (2*$pi*(0.20 + 0.10*sm_motion))/srate;
 (ph2 > 2*$pi) ? ph2 -= 2*$pi;
 
 mot_deg = 2.3 * sm_motion;
-az_eff = sm_az + mot_deg*(sin(ph1) + 0.55*sin(ph2));
-az_eff > 180 ? az_eff = 180;
-az_eff < -180 ? az_eff = -180;
+mot_rad = (mot_deg*(sin(ph1) + 0.55*sin(ph2))) * $pi / 180;
+// Apply micro-motion as a tiny vector rotation.  Do not clamp at +/-180; rear
+// is a continuous circle, and clamping creates discontinuities.
+mm_cs = cos(mot_rad);
+mm_sn = sin(mot_rad);
+az_sin_base = cue_side_s;
+az_cos_base = cue_front_s;
+az_sin = az_sin_base*mm_cs + az_cos_base*mm_sn;
+az_cos = az_cos_base*mm_cs - az_sin_base*mm_sn;
+az_eff = p3d_angle_from_components(az_sin, az_cos);
 
 // --- distance / air absorption ---
 air_state = (1-sm_air_a)*mono_in + sm_air_a*air_state;
+side_air_state = (1-sm_air_a)*input_side + sm_air_a*side_air_state;
+bed_air_l = (1-sm_air_a)*in_l + sm_air_a*bed_air_l;
+bed_air_r = (1-sm_air_a)*in_r + sm_air_a*bed_air_r;
 
 // --- stable occlusion source model ---
 // Build a mono blocked-source color for reflections, but keep the direct
@@ -1722,17 +1821,23 @@ er_feed = air_state*(1 - 0.28*sm_occ) + occ_er_sig*(0.28*sm_occ);
 // --- ITD delay line ---
 itdbuf[itd_wpos] = direct_feed;
 
-az_rad = az_eff * $pi / 180;
-az_sin = sin(az_rad);
-az_cos = cos(az_rad);
-az_abs = abs(az_sin);
-az_sign = az_eff >= 0 ? 1 : -1;
+// az_sin / az_cos are already the stable smoothed cue vector plus micro-motion.
+// Center-axis lock fades out arbitrary left/right assignment when lateral is
+// effectively zero.  This keeps front-center and rear-center deterministic.
+az_axis_abs = abs(az_sin);
+axis_lock = 1 - (az_axis_abs / 0.018);
+axis_lock < 0 ? axis_lock = 0;
+axis_lock > 1 ? axis_lock = 1;
+last_axis_lock = axis_lock;
+az_sin_dsp = az_sin * (1 - axis_lock);
+az_abs = abs(az_sin_dsp);
+az_sign = az_sin >= 0 ? 1 : -1;
 
 focus = 1 - 0.74*sm_width;
 focus *= 1 - 0.20*sm_far;
 focus < 0.14 ? focus = 0.14;
 
-itd_ms = 0.68 * az_sin * focus;
+itd_ms = 0.68 * az_sin_dsp * focus;
 last_itd_ms = itd_ms;
 itd_spl = abs(itd_ms) * 0.001 * srate;
 itd_i = floor(itd_spl);
@@ -1747,6 +1852,10 @@ az_eff < 0 ? (
 ) : (
   sig_l = far_sig;
   sig_r = direct_feed;
+);
+axis_lock > 0 ? (
+  sig_l = sig_l*(1-axis_lock) + direct_feed*axis_lock;
+  sig_r = sig_r*(1-axis_lock) + direct_feed*axis_lock;
 );
 
 itd_wpos = (itd_wpos + 1) & itd_mask;
@@ -1767,10 +1876,16 @@ r_midb = r_band2;
 r_hib = r_rem1 - r_band2;
 
 // --- frequency-shaped directional weighting ---
+axis_mag = sqrt(az_sin*az_sin + az_cos*az_cos);
 front = max(0, az_cos);
 rear = max(0, -az_cos);
-side = 1 - abs(az_cos);
+axis_mag > 0.0001 ? (
+  side = axis_mag * (1 - abs(az_cos / axis_mag));
+) : (
+  side = 0;
+);
 side < 0 ? side = 0;
+side > 1 ? side = 1;
 shadow = az_abs * focus;
 nearfield = 1 - sm_depth;
 nearfield < 0 ? nearfield = 0;
@@ -1827,6 +1942,11 @@ az_eff < 0 ? (
   dir_l = l_low*far_low_g  + l_high*far_hi_g;
   dir_r = r_low*near_low_g + r_high*near_hi_g;
 );
+axis_lock > 0 ? (
+  axis_mid = (dir_l + dir_r) * 0.5;
+  dir_l = dir_l*(1-axis_lock) + axis_mid*axis_lock;
+  dir_r = dir_r*(1-axis_lock) + axis_mid*axis_lock;
+);
 
 // Width = blur toward center, more at distance
 center_blend = sm_width * (0.22 + 0.10*sm_depth + 0.10*rear) + 0.035*sm_far*(1 + 0.35*rear);
@@ -1873,6 +1993,14 @@ dir_r *= front_tight;
 rear_scale = 1 - 0.05*rear;
 dir_l *= rear_scale + 0.05*front;
 dir_r *= rear_scale + 0.05*front;
+axis_lock > 0 ? (
+  // Final deterministic centerline blend catches any residual asymmetry from
+  // per-ear filter histories while preserving non-centered localization.
+  axis_final = axis_lock * 0.88;
+  axis_mid = (dir_l + dir_r) * 0.5;
+  dir_l = dir_l*(1-axis_final) + axis_mid*axis_final;
+  dir_r = dir_r*(1-axis_final) + axis_mid*axis_final;
+);
 
 // --- Elevation feel: non-HRTF lifted/grounded macro ---
 // This is an illusion cue, not exact vertical localization. It gently biases
@@ -2025,6 +2153,14 @@ er_ap_y = -apR*er_r + er_ap_x1_r + apR*er_ap_y1_r;
 er_ap_x1_r = er_r;
 er_ap_y1_r = er_ap_y;
 er_r = er_ap_y;
+axis_lock > 0 ? (
+  // Centered sources can still have roomy width, but they should not throw
+  // unpredictable left/right reflection flashes while moving on the center axis.
+  axis_er = axis_lock * 0.45;
+  er_mid = (er_l + er_r) * 0.5;
+  er_l = er_l*(1-axis_er) + er_mid*axis_er;
+  er_r = er_r*(1-axis_er) + er_mid*axis_er;
+);
 
 // Distance / occlusion push more energy into the room.
 // V6.2.2 moderates the occlusion room boost so the opposite ear does not
@@ -2033,9 +2169,63 @@ er_push = 0.70 + 0.45*sm_depth + 0.10*sm_far + 0.30*sm_occ + 0.12*side + 0.18*re
 er_l *= sm_er_g * er_push;
 er_r *= sm_er_g * er_push;
 
-// Mix out
-out_l = (dir_l + er_l) * sm_trim;
-out_r = (dir_r + er_r) * sm_trim;
+// Mix out with source-mode preservation.
+// 0 Mono Emitter: legacy mono point source.
+// 1 Stereo Emitter: spatialized mid + preserved side around one object.
+// 2 Ambience Bed: keeps the stereo field broad; placement acts as a bias/anchor.
+// 3 Dual Emitter: treats L/R difference as two linked emitters using stronger side preservation.
+core_l = dir_l + er_l;
+core_r = dir_r + er_r;
+
+src_mode = tgt_source_mode;
+side_env_g = sm_in_width * (1 - 0.55*sm_far) * (1 - 0.35*sm_occ);
+side_env_g < 0 ? side_env_g = 0;
+
+src_mode == 1 ? (
+  // Stereo Emitter: preserve width, but let distance/occlusion narrow it naturally.
+  side_g = side_env_g * (0.22 + 0.66*sm_width + 0.16*sm_ext) * sm_direct_g;
+  side_add = side_air_state * side_g;
+  out_l = core_l + side_add;
+  out_r = core_r - side_add;
+) : src_mode == 2 ? (
+  // Ambience Bed: do not crush the bed into a point. Keep L/R field and blend in
+  // position/room cues only as much as Bed Anchor asks for.
+  anchor = sm_bed_anchor;
+  pan_bias = az_sin * anchor * (0.10 + 0.25*(1 - sm_far));
+  pan_bias > 0.65 ? pan_bias = 0.65;
+  pan_bias < -0.65 ? pan_bias = -0.65;
+  bed_g = 0.86 - 0.26*sm_far - 0.16*sm_occ;
+  bed_g < 0.42 ? bed_g = 0.42;
+  bed_l = bed_air_l * bed_g;
+  bed_r = bed_air_r * bed_g;
+  pan_bias >= 0 ? (
+    bed_l *= 1 - 0.28*pan_bias;
+    bed_r *= 1 + 0.12*pan_bias;
+  ) : (
+    bed_l *= 1 + 0.12*(-pan_bias);
+    bed_r *= 1 - 0.28*(-pan_bias);
+  );
+  // Width Preserve controls how much original side field survives; 0 narrows toward mid.
+  bed_mid = (bed_l + bed_r) * 0.5;
+  bed_l = bed_mid + (bed_l - bed_mid) * sm_in_width;
+  bed_r = bed_mid + (bed_r - bed_mid) * sm_in_width;
+  core_amt = 0.10 + 0.38*anchor;
+  bed_amt = 1.00 - 0.22*anchor;
+  out_l = bed_l*bed_amt + core_l*core_amt;
+  out_r = bed_r*bed_amt + core_r*core_amt;
+) : src_mode == 3 ? (
+  // Dual Emitter: stronger side preservation, useful for PA pairs / two-person baked stereo.
+  side_g = side_env_g * (0.42 + 0.82*sm_width + 0.22*sm_ext) * sm_direct_g;
+  side_add = side_air_state * side_g;
+  out_l = core_l + side_add;
+  out_r = core_r - side_add;
+) : (
+  out_l = core_l;
+  out_r = core_r;
+);
+
+out_l *= sm_trim;
+out_r *= sm_trim;
 
 spl0 = out_l;
 spl1 = out_r;
@@ -2134,6 +2324,11 @@ ui_safe = slider16 >= 0.5 ? 1 : 0;
 ui_curve = slider17;
 ui_smooth = slider18;
 ui_rsize = slider19;
+ui_source_mode = floor(slider22 + 0.5);
+ui_source_mode < 0 ? ui_source_mode = 0;
+ui_source_mode > 3 ? ui_source_mode = 3;
+ui_src_width = slider23;
+ui_bed_anchor = slider24;
 ui_link = slider4 >= 0.5 ? 1 : 0;
 ui_obj_id = floor(slider3 + 0.5);
 ui_mgr_amt = slider5;
@@ -2277,6 +2472,11 @@ safe_y = c1y + 10*ui_s;
 safe_w = 96*ui_s;
 safe_h = 22*ui_s;
 hover_safe = mouse_x >= safe_x && mouse_x <= safe_x+safe_w && mouse_y >= safe_y && mouse_y <= safe_y+safe_h;
+source_btn_x = c1x + c1w - 112*ui_s;
+source_btn_y = c1y + 38*ui_s;
+source_btn_w = 96*ui_s;
+source_btn_h = 22*ui_s;
+hover_source_btn = mouse_x >= source_btn_x && mouse_x <= source_btn_x+source_btn_w && mouse_y >= source_btn_y && mouse_y <= source_btn_y+source_btn_h;
 
 // Optional Manager Link side drawer. Closed by default so the panner stays clean
 // for standalone use. Hitboxes are inactive unless the drawer is open.
@@ -2353,14 +2553,20 @@ adv_barx = c3x + 14*ui_s;
 adv_barw = c3w - 76*ui_s;
 adv_valx = adv_barx + adv_barw + 7*ui_s;
 adv_barw < 74*ui_s ? adv_barw = 74*ui_s;
-adv_h = 9*ui_s; adv_h < 7 ? adv_h = 7;
-adv1y = c3y + 36*ui_s;
-adv2y = c3y + 61*ui_s;
-adv3y = c3y + 86*ui_s;
+adv_h = 7*ui_s; adv_h < 5 ? adv_h = 5;
+adv_row_h = (c3h - 34*ui_s) / 5;
+adv_row_h < 16*ui_s ? adv_row_h = 16*ui_s;
+adv1y = c3y + 31*ui_s;
+adv2y = adv1y + adv_row_h;
+adv3y = adv2y + adv_row_h;
+adv4y = adv3y + adv_row_h;
+adv5y = adv4y + adv_row_h;
 hover_adv = 0;
 (mouse_x >= adv_barx && mouse_x <= adv_barx+adv_barw && mouse_y >= adv1y && mouse_y <= adv1y+adv_h) ? hover_adv = 1;
 (mouse_x >= adv_barx && mouse_x <= adv_barx+adv_barw && mouse_y >= adv2y && mouse_y <= adv2y+adv_h) ? hover_adv = 2;
 (mouse_x >= adv_barx && mouse_x <= adv_barx+adv_barw && mouse_y >= adv3y && mouse_y <= adv3y+adv_h) ? hover_adv = 3;
+(mouse_x >= adv_barx && mouse_x <= adv_barx+adv_barw && mouse_y >= adv4y && mouse_y <= adv4y+adv_h) ? hover_adv = 4;
+(mouse_x >= adv_barx && mouse_x <= adv_barx+adv_barw && mouse_y >= adv5y && mouse_y <= adv5y+adv_h) ? hover_adv = 5;
 
 // Snap chips
 chip_h = 22*ui_s;
@@ -2401,6 +2607,7 @@ tip_hot ? (
   hover_tip_bar > 0 ? tip_id = 100 + hover_tip_bar;
   hover_adv > 0 ? tip_id = 200 + hover_adv;
   hover_safe ? tip_id = 30;
+  hover_source_btn ? tip_id = 112;
   hover_chip > 0 ? tip_id = 40 + hover_chip;
 
   // Recompute visible-cue hit zones from the current object/canvas geometry.
@@ -2554,6 +2761,14 @@ mouse_wheel != 0 ? (
     slider19 += wstep * 0.035 * wheel_scale;
     slider19 < 0 ? slider19 = 0; slider19 > 1 ? slider19 = 1;
     sliderchange(-1.0);
+  ) : hover_adv == 4 ? (
+    slider23 += wstep * 0.035 * wheel_scale;
+    slider23 < 0 ? slider23 = 0; slider23 > 1 ? slider23 = 1;
+    sliderchange(-1.0);
+  ) : hover_adv == 5 ? (
+    slider24 += wstep * 0.035 * wheel_scale;
+    slider24 < 0 ? slider24 = 0; slider24 > 1 ? slider24 = 1;
+    sliderchange(-1.0);
   ) : hover_bar == 1 ? (
     slider6 += wstep * 0.045 * wheel_scale;
     slider6 < -1 ? slider6 = -1; slider6 > 1 ? slider6 = 1;
@@ -2632,9 +2847,12 @@ mouse_wheel != 0 ? (
   hover_bar == 9 ? (slider13 = 0.00; sliderchange(-1.0);) :
   hover_bar == 10 ? (slider14 = 0.04; sliderchange(-1.0);) :
   hover_bar == 11 ? (slider15 = 0.0; sliderchange(-1.0);) :
+  hover_source_btn ? (slider22 = 0; slider23 = 0.75; slider24 = 0.45; sliderchange(-1.0);) :
   hover_adv == 1 ? (slider17 = 2.0; sliderchange(-1.0);) :
   hover_adv == 2 ? (slider18 = 90; sliderchange(-1.0);) :
-  hover_adv == 3 ? (slider19 = 0.55; sliderchange(-1.0););
+  hover_adv == 3 ? (slider19 = 0.55; sliderchange(-1.0);) :
+  hover_adv == 4 ? (slider23 = 0.75; sliderchange(-1.0);) :
+  hover_adv == 5 ? (slider24 = 0.45; sliderchange(-1.0););
 );
 
 (!ui_prev_m && mouse_m && inside_canvas && ui_text_active == 0 && !inside_drawer && !inside_scene_menu) ? (
@@ -2731,10 +2949,14 @@ mouse_wheel != 0 ? (
     p3d_allow_msg = 0;
     p3d_service_registry();
     sliderchange(-1.0);
+  ) : hover_source_btn ? (
+    slider22 += 1;
+    slider22 > 3 ? slider22 = 0;
+    sliderchange(-1.0);
   ) : hover_adv > 0 ? (
     ui_mode = 200 + hover_adv;
     ui_drag_start_x = mouse_x;
-    ui_drag_start_v1 = hover_adv == 1 ? slider17 : hover_adv == 2 ? slider18 : slider19;
+    ui_drag_start_v1 = hover_adv == 1 ? slider17 : hover_adv == 2 ? slider18 : hover_adv == 3 ? slider19 : hover_adv == 4 ? slider23 : slider24;
   ) : hover_safe ? (
     slider16 = 1 - slider16;
     sliderchange(-1.0);
@@ -2856,7 +3078,7 @@ mouse_wheel != 0 ? (
     v = mn + nrm * (mx - mn);
   );
   v < mn ? v = mn; v > mx ? v = mx;
-  sid == 1 ? slider17 = v : sid == 2 ? slider18 = v : slider19 = v;
+  sid == 1 ? slider17 = v : sid == 2 ? slider18 = v : sid == 3 ? slider19 = v : sid == 4 ? slider23 = v : slider24 = v;
   sliderchange(-1.0);
 );
 
@@ -2907,6 +3129,11 @@ ui_safe = slider16 >= 0.5 ? 1 : 0;
 ui_curve = slider17;
 ui_smooth = slider18;
 ui_rsize = slider19;
+ui_source_mode = floor(slider22 + 0.5);
+ui_source_mode < 0 ? ui_source_mode = 0;
+ui_source_mode > 3 ? ui_source_mode = 3;
+ui_src_width = slider23;
+ui_bed_anchor = slider24;
 ui_link = slider4 >= 0.5 ? 1 : 0;
 ui_obj_id = floor(slider3 + 0.5);
 ui_mgr_amt = slider5;
@@ -2978,7 +3205,7 @@ fs1 < 12 ? fs1 = 12; fs2 < 10 ? fs2 = 10; fs3 < 9 ? fs3 = 9; fs4 < 8 ? fs4 = 8;
 // title
 gfx_setfont(1,"Arial",fs1,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.17.0");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.19.0");
 
 gfx_setfont(2,"Arial",fs2);
 gfx_set(mut_r,mut_g,mut_b,1);
@@ -3329,12 +3556,24 @@ gfx_set(0.08,0.09,0.11,1);
 gfx_setfont(4,"Arial",fs4,'b');
 gfx_x = safe_x + 9*ui_s; gfx_y = safe_y + 6*ui_s; ui_safe ? gfx_printf("AUTO SAFE") : gfx_printf("PERFORM");
 
+// Source mode button: compact so standalone panning stays uncluttered.
+gfx_set(hover_source_btn ? 0.20 : 0.13, hover_source_btn ? 0.28 : 0.18, hover_source_btn ? 0.38 : 0.25, 0.96);
+gfx_rect(source_btn_x,source_btn_y,source_btn_w,source_btn_h);
+gfx_roundrect(source_btn_x,source_btn_y,source_btn_w,source_btn_h,8*ui_s,1);
+gfx_setfont(4,"Arial",fs4,'b');
+gfx_set(0.82,0.90,0.98,1);
+gfx_x = source_btn_x + 8*ui_s; gfx_y = source_btn_y + 6*ui_s;
+ui_source_mode == 0 ? gfx_printf("MONO") : ui_source_mode == 1 ? gfx_printf("STEREO") : ui_source_mode == 2 ? gfx_printf("BED") : gfx_printf("DUAL");
+
 // compact, isolation-safe status
 gfx_setfont(3,"Arial",fs3);
 gfx_set(0.88,0.91,0.96,1);
 gfx_x = c1x + 14*ui_s; gfx_y = c1y + 36*ui_s; gfx_printf("Visual  %+.1f deg", last_visual_az);
 gfx_x = c1x + 14*ui_s; gfx_y = c1y + 54*ui_s; gfx_printf("Cue     %+.1f deg", last_cue_az);
 gfx_x = c1x + 14*ui_s; gfx_y = c1y + 72*ui_s; gfx_printf("Range   %.1f m", last_dist_m);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 90*ui_s;
+last_source_warn ? gfx_set(warn_r,warn_g,warn_b,1) : gfx_set(0.88,0.91,0.96,1);
+gfx_printf("Input r %.2f", last_input_corr);
 
 gfx_setfont(4,"Arial",fs4);
 gfx_set(mut_r,mut_g,mut_b,1);
@@ -3457,36 +3696,45 @@ smooth_n = (ui_smooth - 5) / 245;
 rsize_n = ui_rsize;
 
 // Cue Curve
-gfx_set(0.90,0.92,0.96,1); gfx_x = adv_barx; gfx_y = adv1y - 12*ui_s; gfx_printf("Cue Curve");
+gfx_set(0.90,0.92,0.96,1); gfx_x = adv_barx; gfx_y = adv1y - 10*ui_s; gfx_printf("Cue Curve");
 gfx_set(0.18,0.20,0.24,1); gfx_rect(adv_barx,adv1y,adv_barw,adv_h); gfx_roundrect(adv_barx,adv1y,adv_barw,adv_h,5*ui_s,1);
 gfx_set(src_cr,src_cg,src_cb,1); gfx_rect(adv_barx,adv1y,adv_barw*curve_n,adv_h);
-gfx_set(1,1,1,hover_adv==1?0.95:0.70); gfx_circle(adv_barx+adv_barw*curve_n, adv1y+adv_h*0.5, 3.2*ui_s,1,1);
+gfx_set(1,1,1,hover_adv==1?0.95:0.70); gfx_circle(adv_barx+adv_barw*curve_n, adv1y+adv_h*0.5, 3.0*ui_s,1,1);
 gfx_set(mut_r,mut_g,mut_b,1); gfx_x = adv_valx; gfx_y = adv1y - 2*ui_s; gfx_printf("%.2f", ui_curve);
 
 // Motion Smooth
-gfx_set(0.90,0.92,0.96,1); gfx_x = adv_barx; gfx_y = adv2y - 12*ui_s; gfx_printf("Smooth");
+gfx_set(0.90,0.92,0.96,1); gfx_x = adv_barx; gfx_y = adv2y - 10*ui_s; gfx_printf("Smooth");
 gfx_set(0.18,0.20,0.24,1); gfx_rect(adv_barx,adv2y,adv_barw,adv_h); gfx_roundrect(adv_barx,adv2y,adv_barw,adv_h,5*ui_s,1);
 gfx_set(ok_r,ok_g,ok_b,1); gfx_rect(adv_barx,adv2y,adv_barw*smooth_n,adv_h);
-gfx_set(1,1,1,hover_adv==2?0.95:0.70); gfx_circle(adv_barx+adv_barw*smooth_n, adv2y+adv_h*0.5, 3.2*ui_s,1,1);
+gfx_set(1,1,1,hover_adv==2?0.95:0.70); gfx_circle(adv_barx+adv_barw*smooth_n, adv2y+adv_h*0.5, 3.0*ui_s,1,1);
 gfx_set(mut_r,mut_g,mut_b,1); gfx_x = adv_valx; gfx_y = adv2y - 2*ui_s; gfx_printf("%.0fms", ui_smooth);
 
 // Room Size
-gfx_set(0.90,0.92,0.96,1); gfx_x = adv_barx; gfx_y = adv3y - 12*ui_s; gfx_printf("Room Size");
+gfx_set(0.90,0.92,0.96,1); gfx_x = adv_barx; gfx_y = adv3y - 10*ui_s; gfx_printf("Room Size");
 gfx_set(0.18,0.20,0.24,1); gfx_rect(adv_barx,adv3y,adv_barw,adv_h); gfx_roundrect(adv_barx,adv3y,adv_barw,adv_h,5*ui_s,1);
 gfx_set(bounce_r,bounce_g,bounce_b,1); gfx_rect(adv_barx,adv3y,adv_barw*rsize_n,adv_h);
-gfx_set(1,1,1,hover_adv==3?0.95:0.70); gfx_circle(adv_barx+adv_barw*rsize_n, adv3y+adv_h*0.5, 3.2*ui_s,1,1);
+gfx_set(1,1,1,hover_adv==3?0.95:0.70); gfx_circle(adv_barx+adv_barw*rsize_n, adv3y+adv_h*0.5, 3.0*ui_s,1,1);
 gfx_set(mut_r,mut_g,mut_b,1); gfx_x = adv_valx; gfx_y = adv3y - 2*ui_s; gfx_printf("%.2f", ui_rsize);
 
-(c3h > 124*ui_s) ? (
-  gfx_set(mut_r,mut_g,mut_b,1);
-  gfx_x = adv_barx; gfx_y = adv3y + 16*ui_s; gfx_printf("Wheel/drag these; native sliders are hidden.");
-);
+// Input Width Preserve
+gfx_set(0.90,0.92,0.96,1); gfx_x = adv_barx; gfx_y = adv4y - 10*ui_s; gfx_printf("Input Width");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(adv_barx,adv4y,adv_barw,adv_h); gfx_roundrect(adv_barx,adv4y,adv_barw,adv_h,5*ui_s,1);
+gfx_set(0.64,0.76,0.95,1); gfx_rect(adv_barx,adv4y,adv_barw*ui_src_width,adv_h);
+gfx_set(1,1,1,hover_adv==4?0.95:0.70); gfx_circle(adv_barx+adv_barw*ui_src_width, adv4y+adv_h*0.5, 3.0*ui_s,1,1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = adv_valx; gfx_y = adv4y - 2*ui_s; gfx_printf("%.2f", ui_src_width);
+
+// Bed Anchor
+gfx_set(0.90,0.92,0.96,1); gfx_x = adv_barx; gfx_y = adv5y - 10*ui_s; gfx_printf("Bed Anchor");
+gfx_set(0.18,0.20,0.24,1); gfx_rect(adv_barx,adv5y,adv_barw,adv_h); gfx_roundrect(adv_barx,adv5y,adv_barw,adv_h,5*ui_s,1);
+gfx_set(0.72,0.60,0.96,1); gfx_rect(adv_barx,adv5y,adv_barw*ui_bed_anchor,adv_h);
+gfx_set(1,1,1,hover_adv==5?0.95:0.70); gfx_circle(adv_barx+adv_barw*ui_bed_anchor, adv5y+adv_h*0.5, 3.0*ui_s,1,1);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = adv_valx; gfx_y = adv5y - 2*ui_s; gfx_printf("%.2f", ui_bed_anchor);
 
 // footer
 gfx_setfont(4,"Arial",fs4);
 gfx_set(mut_r,mut_g,mut_b,1);
 gfx_x = pad; gfx_y = gfx_h - foot_h + 7*ui_s;
-gfx_printf("V6.12.0: Standalone by default; switch Mode to Manager to opt into manager-name routing.");
+gfx_printf("V6.18.0: Source Modes preserve stereo beds; Mono Emitter remains default for point sources.");
 
 // --- Manager Link side tab + drawer overlay ---
 // Tab is the only visible Manager affordance in standalone mode.
@@ -3693,9 +3941,12 @@ ui_drawer_open ? (
   tip_id == 109 ? gfx_printf("Occlusion") :
   tip_id == 110 ? gfx_printf("Motion") :
   tip_id == 111 ? gfx_printf("Output Trim") :
+  tip_id == 112 ? gfx_printf("Source Mode") :
   tip_id == 201 ? gfx_printf("Cue Curve") :
   tip_id == 202 ? gfx_printf("Motion Smooth") :
-  tip_id == 203 ? gfx_printf("Room Size") : gfx_printf("Help");
+  tip_id == 203 ? gfx_printf("Room Size") :
+  tip_id == 204 ? gfx_printf("Input Width") :
+  tip_id == 205 ? gfx_printf("Bed Anchor") : gfx_printf("Help");
 
   gfx_setfont(4,"Arial",fs4);
   gfx_set(0.82,0.86,0.93,1);
@@ -3803,6 +4054,10 @@ ui_drawer_open ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Final gain after spatial processing.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Use for level match, not distance.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Right-click resets to 0 dB.");
+  ) : tip_id == 112 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Click cycles Mono/Stereo/Bed/Dual.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Mono folds to point source; Bed preserves field.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Low input correlation warns against mono fold.");
   ) : tip_id == 201 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Compresses moderate visual angles.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Higher = 45 deg sounds less extreme.");
@@ -3815,5 +4070,13 @@ ui_drawer_open ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Scales early-bounce geometry.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Higher = larger room timing.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Right-click resets to 0.55.");
+  ) : tip_id == 204 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Preserves original L/R side detail.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Use high for music, beds, ambience.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Ignored in Mono Emitter mode.");
+  ) : tip_id == 205 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Ambience Bed placement strength.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("0 = broad stable bed, 1 = scene-biased.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Only affects Ambience Bed mode.");
   );
 );

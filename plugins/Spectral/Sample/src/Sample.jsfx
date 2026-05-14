@@ -1,6 +1,7 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v13-crossflow)
 tags:instrument sampler ui
 
+// v13 CrossFlow: keeps v12 learned continuation, but prevents same-take reconstruction loops.
 // Slot 0 is the load-and-go sample bank.
 // Use the filename slot UI for this instrument and choose Open Multiple... on slot 0.
 // #FILE: Sample Bank {Open Multiple... loads the whole bank into slot 0; the bank auto-rescans when the selection changes.}
@@ -21,7 +22,7 @@ filename:0,sample.wav
 // #HELP: Attack, Hold, Decay, Sustain, and Release shape each trigger. Shift+Wheel on Attack, Decay, or Release changes slope from -100% to +100%; 0% is linear. Defaults preserve the original curve behavior.
 // #HELP:
 // #HELP: ## Playback engines
-// #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack.
+// #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack. Granular uses the stable HybridCore grain layer with the direct path muted, then adds cross-sample learned-flow continuity, restrained swells, phase motion, rare release blooms, and grain-level decorrelation.
 // #HELP:
 // #HELP: ## Cleanup and depth
 // #HELP: Clean reduces low-level hiss/room bed. Room Tame restrains late room smear. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement.
@@ -57,9 +58,9 @@ slider13:0<0,2,1{random,sequence,walk}>--Selection mode
 slider14:1<1,4,0.001>--Stretch (x)
 slider15:0<0,1,0.001>--Weight
 slider16:0<0,2,1{auto,punch,off}>--Transient mode
-slider17:1<0,2,1{raw,tape,hybrid}>--Playback mode
-slider18:0.55<0,1,0.001>--Granular body
-slider19:0.35<0,1,0.001>--Tail borrow
+slider17:1<0,3,1{raw,tape,hybrid,granular}>--Playback mode
+slider18:0.55<0,1,0.001>--Grain
+slider19:0.35<0,1,0.001>--Spice
 slider20:20<0,2000,1>--Hold (ms)
 slider21:0<0,1,1{stereo,mono}>--Mono Source
 slider22:0<0,1,0.001>--Dynamics
@@ -871,6 +872,454 @@ function choose_region_pos(vix sid region_mode phase01 jitter_norm) local(
   best;
 );
 
+
+function source_phase_jitter_samples(sid region_mode lively truth spice) local(sm sr conf note hz period amt maxms off)
+(
+  (sid < 0 || sid >= sample_count) ? 0 : (
+    sm = sample_meta_base + sid * SM_STRIDE;
+    sr = max(1, sm[SM_SR]);
+    conf = clamp01(sm[SM_PITCHCONF] * bank_pitchiness);
+
+    // Pitched material: source offset up to roughly +/- half a pitch period.
+    // Noisy material: small millisecond dephasing. This avoids hard polarity flips.
+    conf > 0.38 ? (
+      note = sm[SM_ROOT];
+      hz = 440 * exp((note - 69) * 0.0577622650466621);
+      period = sr / max(20, hz);
+      amt = clamp01(lively) * lerp(0.22, 0.82, 1 - truth) * lerp(0.82, 1.10, spice);
+      off = (rand(1) - 0.5) * period * amt;
+    ) : (
+      maxms = lerp(0.00025, 0.00280, clamp01(lively)) * lerp(1.00, 0.66, truth) * lerp(0.84, 1.16, spice);
+      off = (rand(1) - 0.5) * 2 * sr * maxms;
+    );
+
+    region_mode ? off *= 0.82 : off *= 0.70;
+    off;
+  );
+);
+
+
+function wrap01(x) local(y)
+(
+  y = x - floor(x);
+  y < 0 ? y += 1;
+  y;
+);
+
+function phase_lerp_region(a b amt region_mode) local(t)
+(
+  // v13: phase is no longer circular for body grains. Circular interpolation was
+  // one reason learned-flow could rebuild a source phrase, hit the end, wrap to
+  // the beginning, and make the same take audible again.
+  t = clamp01(amt);
+  lerp(clamp01(a), clamp01(b), t);
+);
+
+function grain_region_lo(sid region_mode) local(sm)
+(
+  sm = sample_meta_base + sid * SM_STRIDE;
+  region_mode ? (
+    clamp(sm[SM_TAILSTART], 0, max(0, sm[SM_FRAMES] - 2));
+  ) : (
+    clamp(sm[SM_HEADEND], 0, max(0, sm[SM_TAILSTART] - 1));
+  );
+);
+
+function grain_region_hi(sid region_mode) local(sm lo)
+(
+  sm = sample_meta_base + sid * SM_STRIDE;
+  region_mode ? (
+    lo = clamp(sm[SM_TAILSTART], 0, max(0, sm[SM_FRAMES] - 2));
+    max(lo + 1, sm[SM_FRAMES] - 2);
+  ) : (
+    lo = clamp(sm[SM_HEADEND], 0, max(0, sm[SM_TAILSTART] - 1));
+    clamp(sm[SM_TAILSTART], lo + 1, max(lo + 1, sm[SM_FRAMES] - 2));
+  );
+);
+
+function grain_follow_phase(v region_mode) local(lo hi span ph step f)
+(
+  (v[VC_LGSID] < 0 || v[VC_LGREG] != region_mode) ? -1 : (
+    lo = v[VC_LGLO];
+    hi = max(lo + 1, v[VC_LGHI]);
+    span = max(1, hi - lo);
+    ph = clamp01((v[VC_LGPOS] - lo) / max(1, span - 1));
+    step = clamp(abs(v[VC_SRCHOP]) / max(1, span), 0.006, 0.24);
+    f = ph + step * (0.78 + 0.20 * rand(1));
+    // No wrap. Reaching the end of a body phrase should cause cross-sample
+    // continuation, not restart the same take.
+    clamp01(f);
+  );
+);
+
+function grain_run_limit(lively truth spice)
+(
+  // Same-source phrases should be long enough to feel connected but short
+  // enough to avoid reconstructing one original take.
+  max(4, floor(6 + (1 - spice) * 5 + truth * 3 + (1 - lively) * 2));
+);
+
+function grain_follow_strength(v lively truth spice) local(runw runlim)
+(
+  // Strong at the start of a phrase, then fades hard as the same source repeats.
+  // v12 faded too slowly, causing take-sized loops.
+  runlim = max(1, grain_run_limit(lively, truth, spice));
+  runw = clamp01(v[VC_LGRUN] / runlim);
+  clamp01(0.82 + 0.08 * (1 - lively) + 0.05 * (1 - truth) - 0.10 * spice - 0.58 * runw);
+);
+
+
+function flow_slot(region_mode bin feat)
+(
+  SM_FLOWBASE + ((clamp(region_mode, 0, 1) | 0) * FLOW_BINS + clamp(bin | 0, 0, FLOW_BINS - 1)) * FLOW_FEATS + clamp(feat | 0, 0, FLOW_FEATS - 1);
+);
+
+function flow_weight_slot(region_mode outfeat infeat)
+(
+  flow_model_base + ((clamp(region_mode, 0, 1) | 0) * FLOW_FEATS + clamp(outfeat | 0, 0, FLOW_FEATS - 1)) * FLOW_IN + clamp(infeat | 0, 0, FLOW_IN - 1);
+);
+
+function flow_region_bounds(sm region_mode) local(lo hi)
+(
+  region_mode ? (
+    flow_lo = clamp(sm[SM_TAILSTART], 0, max(0, sm[SM_FRAMES] - 2));
+    flow_hi = max(flow_lo + 1, sm[SM_FRAMES] - 2);
+  ) : (
+    flow_lo = clamp(sm[SM_HEADEND], 0, max(0, sm[SM_TAILSTART] - 1));
+    flow_hi = clamp(sm[SM_TAILSTART], flow_lo + 1, max(flow_lo + 1, sm[SM_FRAMES] - 2));
+  );
+);
+
+function analyze_sample_flow(sm) local(
+  ptr nch sr frames region bin lo hi span center win a b n i x ax prev sumsq sumabs sumdiff
+  frms fbright fedge relrms slot fallback_rms
+)
+(
+  ptr    = sm[SM_PTR] | 0;
+  nch    = max(1, sm[SM_NCH] | 0);
+  sr     = sm[SM_SR];
+  frames = sm[SM_FRAMES] | 0;
+  fallback_rms = max(sm[SM_RMS], 0.000001);
+
+  region = 0;
+  while (region < 2) (
+    flow_region_bounds(sm, region);
+    lo = flow_lo;
+    hi = flow_hi;
+    span = max(1, hi - lo);
+
+    bin = 0;
+    while (bin < FLOW_BINS) (
+      center = lo + (bin + 0.5) * span / FLOW_BINS;
+      win = clamp(floor(sr * 0.0065), 48, 512);
+      win = min(win, max(32, floor(span * 0.45)));
+      a = clamp(floor(center - win * 0.5), 0, max(0, frames - 2));
+      b = clamp(a + win, a + 1, max(a + 1, frames - 1));
+
+      n = 0;
+      sumsq = 0;
+      sumabs = 0;
+      sumdiff = 0;
+      prev = mono_frame(ptr, nch, a);
+      i = a;
+      while (i < b) (
+        x = mono_frame(ptr, nch, i);
+        ax = abs(x);
+        sumsq += x * x;
+        sumabs += ax;
+        i > a ? sumdiff += abs(x - prev);
+        prev = x;
+        n += 1;
+        i += 1;
+      );
+
+      frms = sqrt(sumsq / max(n, 1));
+      relrms = clamp01(frms / max(fallback_rms * 2.85, 0.000001));
+      fedge = clamp01((sumdiff / max(sumabs, 0.000001)) * 0.20);
+      fbright = clamp01(sm[SM_BRIGHT] * 0.42 + fedge * 0.58 + sm[SM_SHARP] * 0.08);
+
+      slot = flow_slot(region, bin, 0); sm[slot] = relrms;
+      slot = flow_slot(region, bin, 1); sm[slot] = fbright;
+      slot = flow_slot(region, bin, 2); sm[slot] = clamp01(fedge * 0.70 + sm[SM_FLAGS] * 0.20 + sm[SM_SHARP] * 0.10);
+
+      bin += 1;
+    );
+
+    region += 1;
+  );
+);
+
+function init_flow_model() local(region o inn widx)
+(
+  region = 0;
+  while (region < 2) (
+    o = 0;
+    while (o < FLOW_FEATS) (
+      inn = 0;
+      while (inn < FLOW_IN) (
+        widx = flow_weight_slot(region, o, inn);
+        flow_model_base[widx - flow_model_base] = 0;
+        inn += 1;
+      );
+      // Identity-biased one-layer predictor. Training nudges this toward the
+      // corpus' actual next-grain statistics, but it starts safe.
+      widx = flow_weight_slot(region, o, o);
+      flow_model_base[widx - flow_model_base] = 0.86;
+      widx = flow_weight_slot(region, o, 4);
+      flow_model_base[widx - flow_model_base] = 0.04;
+      o += 1;
+    );
+    region += 1;
+  );
+  flow_model_trained = 0;
+);
+
+function flow_predict(region_mode outfeat x0 x1 x2 phase) local(wbase y)
+(
+  wbase = flow_weight_slot(region_mode, outfeat, 0);
+  y = flow_model_base[wbase - flow_model_base] * x0
+    + flow_model_base[wbase - flow_model_base + 1] * x1
+    + flow_model_base[wbase - flow_model_base + 2] * x2
+    + flow_model_base[wbase - flow_model_base + 3] * phase
+    + flow_model_base[wbase - flow_model_base + 4];
+  clamp01(y);
+);
+
+function train_flow_model() local(
+  region o inn epoch i sm bin slot0 slot1 x0 x1 x2 ph y0 y1 y2 p0 p1 p2 err lr widx
+)
+(
+  init_flow_model();
+  sample_count > 0 ? (
+    epoch = 0;
+    while (epoch < 2) (
+      lr = epoch == 0 ? 0.030 : 0.014;
+      region = 0;
+      while (region < 2) (
+        i = 0;
+        while (i < sample_count) (
+          sm = sample_meta_base + i * SM_STRIDE;
+          bin = 0;
+          while (bin < FLOW_BINS - 1) (
+            slot0 = flow_slot(region, bin, 0);
+            slot1 = flow_slot(region, bin + 1, 0);
+            x0 = sm[slot0];
+            x1 = sm[slot0 + 1];
+            x2 = sm[slot0 + 2];
+            ph = bin / max(1, FLOW_BINS - 1);
+            y0 = sm[slot1];
+            y1 = sm[slot1 + 1];
+            y2 = sm[slot1 + 2];
+
+            o = 0;
+            while (o < FLOW_FEATS) (
+              p0 = flow_predict(region, o, x0, x1, x2, ph);
+              err = (o == 0 ? y0 : (o == 1 ? y1 : y2)) - p0;
+              widx = flow_weight_slot(region, o, 0);
+              flow_model_base[widx - flow_model_base]     = clamp(flow_model_base[widx - flow_model_base]     + lr * err * x0, -1.8, 1.8);
+              flow_model_base[widx - flow_model_base + 1] = clamp(flow_model_base[widx - flow_model_base + 1] + lr * err * x1, -1.8, 1.8);
+              flow_model_base[widx - flow_model_base + 2] = clamp(flow_model_base[widx - flow_model_base + 2] + lr * err * x2, -1.8, 1.8);
+              flow_model_base[widx - flow_model_base + 3] = clamp(flow_model_base[widx - flow_model_base + 3] + lr * err * ph, -1.8, 1.8);
+              flow_model_base[widx - flow_model_base + 4] = clamp(flow_model_base[widx - flow_model_base + 4] + lr * err, -1.8, 1.8);
+              o += 1;
+            );
+
+            bin += 1;
+          );
+          i += 1;
+        );
+        region += 1;
+      );
+      epoch += 1;
+    );
+    flow_model_trained = 1;
+  );
+);
+
+function flow_bin_from_pos(sid region_mode pos) local(lo hi span phase)
+(
+  lo = grain_region_lo(sid, region_mode);
+  hi = grain_region_hi(sid, region_mode);
+  span = max(1, hi - lo);
+  phase = clamp01((pos - lo) / max(1, span - 1));
+  clamp(floor(phase * FLOW_BINS), 0, FLOW_BINS - 1) | 0;
+);
+
+function flow_feat_sid(sid region_mode bin feat) local(sm slot)
+(
+  sm = sample_meta_base + sid * SM_STRIDE;
+  slot = flow_slot(region_mode, bin, feat);
+  sm[slot];
+);
+
+function flow_phase_distance(a b region_mode) local(d)
+(
+  // v13: learned flow is phrase-linear. Do not score body phase as circular,
+  // because circular distance rewards wraparound into the same take.
+  d = abs(a - b);
+  d;
+);
+
+function learned_flow_score(vix prev_sid prev_pos region_mode cand_sid cand_pos cand_lo cand_hi target_phase gsize lively truth spice same_run force_cross) local(
+  pbin cbin x0 x1 x2 ph pred0 pred1 pred2 c0 c1 c2 err phase cand_phase hist near same_current same_sid nextbin local_mix
+  prev_phase runlim same_run_norm same_sid_pen regression end_rehit cross_bonus
+)
+(
+  (prev_sid < 0 || prev_sid >= sample_count || cand_sid < 0 || cand_sid >= sample_count || flow_model_trained <= 0) ? (
+    1000000;
+  ) : (
+    pbin = flow_bin_from_pos(prev_sid, region_mode, prev_pos);
+    cbin = flow_bin_from_pos(cand_sid, region_mode, cand_pos);
+    x0 = flow_feat_sid(prev_sid, region_mode, pbin, 0);
+    x1 = flow_feat_sid(prev_sid, region_mode, pbin, 1);
+    x2 = flow_feat_sid(prev_sid, region_mode, pbin, 2);
+    ph = pbin / max(1, FLOW_BINS - 1);
+    prev_phase = ph;
+
+    // Use the trained corpus predictor as the target. v12 mixed in the actual
+    // same-source successor too strongly, making the system rebuild and loop the
+    // take it came from.
+    pred0 = flow_predict(region_mode, 0, x0, x1, x2, ph);
+    pred1 = flow_predict(region_mode, 1, x0, x1, x2, ph);
+    pred2 = flow_predict(region_mode, 2, x0, x1, x2, ph);
+    nextbin = min(FLOW_BINS - 1, pbin + 1);
+    local_mix = clamp01(0.035 + 0.075 * (1 - truth) - 0.030 * spice);
+    pred0 = lerp(pred0, flow_feat_sid(prev_sid, region_mode, nextbin, 0), local_mix);
+    pred1 = lerp(pred1, flow_feat_sid(prev_sid, region_mode, nextbin, 1), local_mix);
+    pred2 = lerp(pred2, flow_feat_sid(prev_sid, region_mode, nextbin, 2), local_mix);
+
+    c0 = flow_feat_sid(cand_sid, region_mode, cbin, 0);
+    c1 = flow_feat_sid(cand_sid, region_mode, cbin, 1);
+    c2 = flow_feat_sid(cand_sid, region_mode, cbin, 2);
+    err = abs(c0 - pred0) * 0.78 + abs(c1 - pred1) * 1.14 + abs(c2 - pred2) * 0.92;
+
+    cand_phase = clamp01((cand_pos - cand_lo) / max(1, cand_hi - cand_lo - 1));
+    phase = flow_phase_distance(cand_phase, target_phase, region_mode);
+    hist = grain_hist_penalty(vix, cand_sid, cand_pos, cand_lo, cand_hi) * (0.25 + 0.34 * (1 - truth) + 0.16 * lively);
+
+    same_current = (cand_sid == prev_sid && abs(cand_pos - prev_pos) < max(16, floor(gsize * 0.50))) ? 1 : 0;
+    same_sid = cand_sid == prev_sid ? 1 : 0;
+    near = same_current ? (5.8 + 2.8 * lively) : 0;
+
+    runlim = max(1, grain_run_limit(lively, truth, spice));
+    same_run_norm = clamp01((same_run - 2) / max(1, runlim - 2));
+    same_sid_pen = same_sid ? (same_run_norm * (1.55 + 1.35 * lively + 0.85 * (1 - truth)) - (1 - same_run_norm) * 0.045 * (1 - spice)) : 0;
+    force_cross && same_sid ? same_sid_pen += 1000;
+
+    // Regression is the real take-loop tell: same sample, phase jumps backward.
+    regression = (!region_mode && same_sid && cand_phase < prev_phase - 0.10) ? 1 : 0;
+    end_rehit = (!region_mode && same_sid && prev_phase > 0.72 && cand_phase > 0.68) ? clamp01((prev_phase - 0.72) / 0.28) : 0;
+    cross_bonus = same_sid ? 0 : (-0.08 - 0.10 * spice - 0.07 * lively);
+
+    err * (1.24 + 0.36 * (1 - truth))
+    + phase * (0.72 + 0.22 * (1 - spice))
+    + hist
+    + near
+    + same_sid_pen
+    + regression * (3.4 + 2.2 * lively)
+    + end_rehit * (1.5 + 1.4 * lively)
+    + cross_bonus;
+  );
+);
+
+function learned_flow_consider(vix prev_sid prev_pos region_mode cand_sid cand_phase gsize lively truth spice same_run force_cross) local(
+  lo hi span pos score
+)
+(
+  cand_sid >= 0 && cand_sid < sample_count ? (
+    lo = grain_region_lo(cand_sid, region_mode);
+    hi = grain_region_hi(cand_sid, region_mode);
+    span = max(1, hi - lo);
+    span > max(32, floor(gsize * 0.36)) ? (
+      pos = choose_region_pos(vix, cand_sid, region_mode, cand_phase, 0.06 + 0.16 * lively + 0.07 * spice);
+      score = learned_flow_score(vix, prev_sid, prev_pos, region_mode, cand_sid, pos, lo, hi, cand_phase, gsize, lively, truth, spice, same_run, force_cross);
+      score < learned_best_score ? (
+        learned_best_score = score;
+        learned_sid = cand_sid;
+        learned_pos = pos;
+        learned_lo = lo;
+        learned_hi = hi;
+      );
+    );
+  );
+);
+
+function learned_flow_pick(vix v region_mode fallback_sid fallback_pos fallback_lo fallback_hi gsize lively truth spice) local(
+  prev_sid prev_pos target_phase fallback_score strength tries donor sid_anchor cand_phase
+  same_run runlim prev_lo prev_hi prev_phase boundary_thr end_pressure force_cross donor2
+)
+(
+  learned_sid = fallback_sid;
+  learned_pos = fallback_pos;
+  learned_lo = fallback_lo;
+  learned_hi = fallback_hi;
+  learned_best_score = 1000000;
+
+  (flow_model_trained > 0 && v[VC_LGSID] >= 0 && v[VC_LGREG] == region_mode) ? (
+    prev_sid = v[VC_LGSID] | 0;
+    prev_pos = v[VC_LGPOS];
+    same_run = max(0, v[VC_LGRUN]);
+    runlim = grain_run_limit(lively, truth, spice);
+
+    target_phase = grain_follow_phase(v, region_mode);
+    target_phase < 0 ? target_phase = clamp01((fallback_pos - fallback_lo) / max(1, fallback_hi - fallback_lo - 1));
+
+    prev_lo = grain_region_lo(prev_sid, region_mode);
+    prev_hi = grain_region_hi(prev_sid, region_mode);
+    prev_phase = clamp01((prev_pos - prev_lo) / max(1, prev_hi - prev_lo - 1));
+    boundary_thr = region_mode ? 0.92 : clamp(0.76 + 0.10 * spice - 0.12 * lively, 0.58, 0.88);
+    end_pressure = (!region_mode && prev_phase > boundary_thr) ? clamp01((prev_phase - boundary_thr) / max(0.02, 1 - boundary_thr)) : 0;
+    force_cross = (sample_count > 1 && ((same_run >= runlim) || end_pressure > 0.50)) ? 1 : 0;
+
+    // At a phrase boundary, the next event may start early in another sample.
+    // That is a cross-sample continuation, not same-sample wraparound.
+    end_pressure > 0 ? (
+      target_phase = phase_lerp_region(target_phase, 0.06 + 0.32 * rand(1), clamp01(end_pressure * 0.90), region_mode);
+    );
+
+    fallback_score = learned_flow_score(vix, prev_sid, prev_pos, region_mode, fallback_sid, fallback_pos, fallback_lo, fallback_hi, target_phase, gsize, lively, truth, spice, same_run, force_cross);
+    learned_best_score = fallback_score;
+
+    // Same-source continuation is allowed only as a short phrase. v12 always
+    // considered prev_sid first; this was the main same-take reconstruction bug.
+    !force_cross ? (
+      learned_flow_consider(vix, prev_sid, prev_pos, region_mode, prev_sid, target_phase, gsize, lively, truth, spice, same_run, force_cross);
+    );
+
+    sid_anchor = v[VC_SAMPLE] | 0;
+    sid_anchor != prev_sid ? learned_flow_consider(vix, prev_sid, prev_pos, region_mode, sid_anchor, target_phase, gsize, lively, truth, spice, same_run, force_cross);
+    fallback_sid != prev_sid && fallback_sid != sid_anchor ? learned_flow_consider(vix, prev_sid, prev_pos, region_mode, fallback_sid, target_phase, gsize, lively, truth, spice, same_run, force_cross);
+
+    tries = 0;
+    while (tries < 7) (
+      donor = choose_region_donor(prev_sid, region_mode, clamp01(0.12 + 0.20 * lively + 0.34 * spice + 0.10 * tries + 0.30 * end_pressure), vix);
+      donor != prev_sid ? (
+        cand_phase = phase_lerp_region(target_phase, rand(1), 0.035 + 0.10 * spice + 0.15 * end_pressure, region_mode);
+        learned_flow_consider(vix, prev_sid, prev_pos, region_mode, donor, cand_phase, gsize, lively, truth, spice, same_run, force_cross);
+      );
+      tries += 1;
+    );
+
+    // Hard escape valve: if we must cross but the weighted donor search came
+    // back empty, ask from the original anchor too. Still never accept prev_sid.
+    (force_cross && learned_sid == prev_sid && sample_count > 1) ? (
+      donor2 = choose_region_donor(sid_anchor, region_mode, 1, vix);
+      donor2 != prev_sid ? (
+        learned_flow_consider(vix, prev_sid, prev_pos, region_mode, donor2, 0.06 + 0.36 * rand(1), gsize, lively, truth, spice, same_run, 0);
+      );
+    );
+
+    strength = clamp01(0.16 + 0.46 * lively + 0.16 * (1 - truth) - 0.06 * spice);
+    // Bias, don't command, unless we are escaping a same-take phrase boundary.
+    (!force_cross && learned_best_score > fallback_score + (0.48 + 1.10 * strength)) ? (
+      learned_sid = fallback_sid;
+      learned_pos = fallback_pos;
+      learned_lo = fallback_lo;
+      learned_hi = fallback_hi;
+    );
+  );
+);
+
 function voices_busy() local(i v busy)
 (
   busy = 0;
@@ -1286,6 +1735,7 @@ function analyze_sample_gauss(sm) local(
 function analyze_sample(sm)
 (
   onset_mode_active ? analyze_sample_gauss(sm) : analyze_sample_classic(sm);
+  analyze_sample_flow(sm);
 );
 
 function reset_voices() local(i j v)
@@ -1742,6 +2192,7 @@ function reset_bank_state() local(i)
   reset_clean_buffers();
   reset_room_buffers();
   reset_push_buffers();
+  init_flow_model();
   transient_guard_s = 0;
   seam_bridge_env = 0;
   seam_bridge_idx = -1;
@@ -1803,6 +2254,7 @@ function refresh_bank_stats() local(
     bank_sharpness = sharp_sum / sample_count;
   );
 
+  sample_count > 0 ? train_flow_model() : init_flow_model();
   bank_loaded = sample_count > 0;
 );
 
@@ -1844,7 +2296,8 @@ function configure_memory_layout(selected_count) local(cap) (
   grain_hist_sid_base = recent_base + RECENT_LEN + 32;
   grain_hist_pos_base = grain_hist_sid_base + MAX_VOICES * GRAIN_HIST_LEN;
   grain_hist_phase_base = grain_hist_pos_base + MAX_VOICES * GRAIN_HIST_LEN;
-  sig_scratch_base = grain_hist_phase_base + MAX_VOICES * GRAIN_HIST_LEN + 32;
+  flow_model_base = grain_hist_phase_base + MAX_VOICES * GRAIN_HIST_LEN + 32;
+  sig_scratch_base = flow_model_base + FLOW_WEIGHTS + 32;
   onset_raw_base = sig_scratch_base + SIG_PEEK_WORDS + 64;
   onset_smooth_base = onset_raw_base + ONSET_SCRATCH_MAX;
 
@@ -2075,7 +2528,7 @@ function prepare_release_attack_bridge(note chan) local(
   // Hybrid retrigger seam: if the previous sample is still in granular Release,
   // the next Attack begins from the equivalent envelope level instead of from 0.
   // Same-note releases are preferred; a single same-channel release can bridge too.
-  (playback_mode == 2 && granular_amt > 0.0001) ? (
+  (playback_mode >= 2 && granular_amt > 0.0001) ? (
     same_count = 0;
     any_count = 0;
     same_best = 0;
@@ -2191,12 +2644,13 @@ function fade_same_note_releases_for_retrigger(note chan skip_idx) local(i v)
 
 function start_voice(note vel chan) local(
   velnorm sid sm donor donor_sm voice_idx v
-  srcsr norm gain env0 lively playmode voice_stretch voice_stretch_norm
+  srcsr norm gain env0 lively playmode gran_voice ggrain_amt voice_stretch voice_stretch_norm
   driftcents raw_rate base_rate
   transrich transprot translock hold_ms trans_hold_src trans_hold_out attack_preroll
   attack_norm pre_avail pre_keep align_guard align_jit
   j jmax pre startpos softskip gain_jit_db
   bodystart bodyend tailstart donor_tail min_body_span remain voice_hold_samps
+  gesture_len gesture_depth
 )
 (
   sample_count <= 0 ? 0 : (
@@ -2223,6 +2677,8 @@ function start_voice(note vel chan) local(
 
     lively = clamp01(slider9);
     playmode = playback_mode;
+    gran_voice = playmode == 3 ? 1 : 0;
+    ggrain_amt = gran_voice ? max(0.18, granular_amt) : granular_amt;
     playmode == 0 ? voice_stretch = 1 : voice_stretch = stretch_ratio;
     voice_stretch = max(1, voice_stretch);
     voice_stretch_norm = clamp01((voice_stretch - 1) / 3);
@@ -2302,9 +2758,9 @@ function start_voice(note vel chan) local(
     v[VC_SAMPLE] = sid;
     v[VC_POS]    = startpos;
     v[VC_RATE]   = base_rate;
-    v[VC_BASE]   = gain;
+    v[VC_BASE]   = gain * (gran_voice ? 1.55 : 1);
     env0 = (attack_samps <= 1 || (translock && attack_samps <= floor(0.010 * srate))) ? 1 : 0;
-    (playmode == 2 && granular_amt > 0.0001 && seam_bridge_env > 0.0005) ? (
+    (playmode >= 2 && ggrain_amt > 0.0001 && seam_bridge_env > 0.0005) ? (
       // Attack begins from the current Release level, matching the Phase Plant-style
       // release-point -> equivalent-attack-point retrigger behavior. This overrides
       // the usual fast Punch/Gaussian env=1 shortcut, except for a true 1-sample attack.
@@ -2325,41 +2781,55 @@ function start_voice(note vel chan) local(
     v[VC_ACURVE] = attack_slope_pct;
     v[VC_DCURVE] = decay_slope_pct;
     v[VC_RCURVE] = release_slope_pct;
-    (playmode == 2 && granular_amt > 0.0001 && seam_bridge_env > 0.0005 && env0 < 1 && !env_slope_is_classic(attack_slope_pct, ENV_RISE)) ? (
+    (playmode >= 2 && ggrain_amt > 0.0001 && seam_bridge_env > 0.0005 && env0 < 1 && !env_slope_is_classic(attack_slope_pct, ENV_RISE)) ? (
       // For non-classic slopes, continue from the equivalent Attack curve point
       // instead of spending a full Attack time above the inherited Release level.
       v[VC_EPHASE] = env_slope_inv(env0, env_segment_slope(attack_slope_pct, ENV_RISE)) * max(1, attack_samps);
     );
 
-    v[VC_GMODE]    = (playmode == 2) ? 1 : 0;
+    v[VC_GMODE]    = (playmode >= 2) ? 1 : 0;
     v[VC_OHOP]     = hybrid_hop_samps;
     v[VC_GSIZE]    = hybrid_grain_samps;
-    // Start the granular layer as soon as transient protection clears so the
-    // OLA field can fill before the direct path runs out.
-    v[VC_GTIMER]   = max(1, trans_hold_out + 1);
+    // Hybrid waits until transient protection clears because the direct head is audible.
+    // Granular has no audible direct head, so its HybridCore grain layer starts immediately.
+    v[VC_GTIMER]   = gran_voice ? 1 : max(1, trans_hold_out + 1);
     v[VC_NEXTSRC]  = max(bodystart, min(startpos, bodyend - 1));
-    (playmode == 2 && granular_amt > 0.0001 && seam_bridge_env > 0.0005 && seam_bridge_phase >= 0) ? (
+    (playmode >= 2 && ggrain_amt > 0.0001 && seam_bridge_env > 0.0005 && seam_bridge_phase >= 0) ? (
       // The new Hybrid body cursor starts at the matching normalized body phase
       // of the releasing voice, while the direct head still uses Gaussian/onset alignment.
       v[VC_NEXTSRC] = clamp(bodystart + seam_bridge_phase * max(1, bodyend - bodystart - 1), bodystart, max(bodystart, bodyend - 1));
       v[VC_GTIMER] = min(v[VC_GTIMER], max(1, floor(hybrid_hop_samps * 0.25)));
     );
     v[VC_SRCHOP]   = max(0.25, abs(base_rate) * hybrid_hop_samps);
-    v[VC_CANSPAWN] = (playmode == 2 && granular_amt > 0.0001) ? 1 : 0;
-    v[VC_TLEFT]    = trans_hold_out;
+    v[VC_CANSPAWN] = (playmode >= 2 && ggrain_amt > 0.0001) ? 1 : 0;
+    v[VC_TLEFT]    = gran_voice ? 0 : trans_hold_out;
     v[VC_TPROT]    = transprot;
     v[VC_DONOR]    = donor;
     v[VC_DONORPOS] = donor_tail;
     v[VC_BODYSTART]= bodystart;
     v[VC_TAILSTART]= tailstart;
     v[VC_BODYEND]  = bodyend;
-    v[VC_GMIX]     = granular_amt;
+    v[VC_GMIX]     = ggrain_amt;
     v[VC_TAILMIX]  = tail_borrow;
     v[VC_MODE]     = playmode;
     v[VC_STRETCH]  = voice_stretch;
     v[VC_THOLD]    = max(1, trans_hold_out);
     v[VC_RHLEFT]   = 0;
     v[VC_RHLEN]    = max(1, release_handoff_samps);
+
+    gesture_len = floor(srate * lerp(0.22, 1.20, rand(1)) * lerp(0.82, 1.22, stretch_norm));
+    gesture_len = max(64, gesture_len);
+    gesture_depth = lively * (0.38 + 0.62 * ggrain_amt) * (gran_voice ? 1.0 : 0.32);
+    v[VC_GPHASE]  = rand(1);
+    v[VC_GLEN]    = gesture_len;
+    v[VC_GDEPTH]  = gesture_depth;
+    v[VC_GACCENT] = rand(1);
+    v[VC_LGSID]   = -1;
+    v[VC_LGPOS]   = 0;
+    v[VC_LGLO]    = 0;
+    v[VC_LGHI]    = 1;
+    v[VC_LGREG]   = -1;
+    v[VC_LGRUN]   = 0;
 
     apply_release_attack_bridge(voice_idx);
     fade_same_note_releases_for_retrigger(note, chan, voice_idx);
@@ -2954,9 +3424,9 @@ SIG_PEEK_WORDS = 48;
 ONSET_SCRATCH_MAX = 2048;
 AP_BUF_LEN  = 4096;
 ER_BUF_LEN  = 24576;
-GRAIN_HIST_LEN = 6;
-GRAIN_PHASE_BINS = 8;
-GRAIN_CAND_TRIES = 5;
+GRAIN_HIST_LEN = 24;
+GRAIN_PHASE_BINS = 24;
+GRAIN_CAND_TRIES = 8;
 
 SM_PTR       = 0;
 SM_NCH       = 1;
@@ -2978,7 +3448,12 @@ SM_FLAGS     = 16;
 SM_HEADEND   = 17;
 SM_TAILSTART = 18;
 SM_CLUSTER   = 19;
-SM_STRIDE    = 20;
+SM_FLOWBASE  = 20;
+FLOW_BINS    = 8;
+FLOW_FEATS   = 3;
+FLOW_IN      = 5;
+FLOW_WEIGHTS = 2 * FLOW_FEATS * FLOW_IN;
+SM_STRIDE    = SM_FLOWBASE + 2 * FLOW_BINS * FLOW_FEATS;
 
 VC_ACTIVE    = 0;
 VC_NOTE      = 1;
@@ -3023,7 +3498,17 @@ VC_RLEN      = 39;
 VC_ACURVE    = 40;
 VC_DCURVE    = 41;
 VC_RCURVE    = 42;
-VC_GBASE     = 43;
+VC_GPHASE    = 43;
+VC_GLEN      = 44;
+VC_GDEPTH    = 45;
+VC_GACCENT   = 46;
+VC_LGSID     = 47;
+VC_LGPOS     = 48;
+VC_LGLO      = 49;
+VC_LGHI      = 50;
+VC_LGREG     = 51;
+VC_LGRUN     = 52;
+VC_GBASE     = 53;
 
 VG_ACTIVE    = 0;
 VG_AGE       = 1;
@@ -3031,8 +3516,10 @@ VG_SRC       = 2;
 VG_SID       = 3;
 VG_RATE      = 4;
 VG_GAIN      = 5;
-VG_STRIDE    = 6;
-NUM_GRAINS   = 4;
+VG_PAN       = 6;
+VG_SIZE      = 7;
+VG_STRIDE    = 8;
+NUM_GRAINS   = 12;
 
 VC_STRIDE    = VC_GBASE + NUM_GRAINS * VG_STRIDE;
 
@@ -3119,6 +3606,12 @@ bank_loaded = 0;
 bank_pitchiness = 0;
 bank_brightness = 0;
 bank_sharpness = 0;
+flow_model_trained = 0;
+learned_sid = -1;
+learned_pos = 0;
+learned_lo = 0;
+learned_hi = 1;
+learned_best_score = 0;
 truth_mix = 0;
 out_trim = 1;
 pitch_semi = 0;
@@ -3359,7 +3852,7 @@ stretch_ratio = clamp(slider14, 1, 4);
 stretch_norm = clamp01((stretch_ratio - 1) / 3);
 weight_amt = clamp01(slider15);
 transient_mode = clamp(slider16 | 0, 0, 2);
-playback_mode = clamp(slider17 | 0, 0, 2);
+playback_mode = clamp(slider17 | 0, 0, 3);
 granular_amt = clamp01(slider18);
 tail_borrow = clamp01(slider19);
 poll_interval_samps = max(1024, floor(0.35 * srate));
@@ -3638,6 +4131,21 @@ while (i < MAX_VOICES) (
     body_start = max(0, floor(v[VC_BODYSTART]));
     tailstart = clamp(floor(v[VC_TAILSTART]), body_start, max(body_start, frames - 2));
     body_end = clamp(floor(v[VC_BODYEND]), body_start + 1, max(body_start + 1, frames - 2));
+    granular_voice = (v[VC_MODE] == 3) ? 1 : 0;
+    gesture_arc = 0;
+    gesture_drive = 0;
+    v[VC_GMODE] > 0 ? (
+      gphase = v[VC_GPHASE] + 1 / max(1, v[VC_GLEN]);
+      gphase >= 1 ? (
+        gphase -= floor(gphase);
+        v[VC_GLEN] = max(64, floor(srate * lerp(0.24, 1.35, rand(1)) * lerp(0.82, 1.18, stretch_norm)));
+        v[VC_GACCENT] = rand(1);
+      );
+      v[VC_GPHASE] = gphase;
+      gesture_arc = sin(gphase * 3.141592653589793);
+      gesture_arc = gesture_arc * gesture_arc;
+      gesture_drive = clamp01(v[VC_GDEPTH] * gesture_arc);
+    );
 
     hybrid_body_release = (v[VC_GMODE] > 0 && stage == ENV_RELEASE && v[VC_GMIX] > 0.0001) ? 1 : 0;
     hybrid_tail_release = (stage == ENV_RELEASE && !hybrid_body_release && v[VC_TAILMIX] > 0.0001) ? 1 : 0;
@@ -3659,7 +4167,8 @@ while (i < MAX_VOICES) (
     direct_alive = 0;
     activeg = 0;
 
-    // Direct playback path always carries the head and the core identity.
+    // Hybrid: direct playback carries the head and core identity.
+    // Granular: the same path remains as a silent timing/source-exhaustion clock.
     pos = v[VC_POS];
     held_body_only = (v[VC_GMODE] > 0 && (stage != ENV_RELEASE || hybrid_body_release));
     body_cutoff = max(body_start + 1, tailstart);
@@ -3692,22 +4201,34 @@ while (i < MAX_VOICES) (
       );
     );
 
+    granular_voice ? (
+      got_raw = 0;
+      rawL = 0;
+      rawR = 0;
+    );
+
     tleft > 0 ? (
       tleft -= 1;
       v[VC_TLEFT] = tleft;
     );
 
-    // Hybrid mode overlays granular body/tail material after the protected head.
+    // Hybrid overlays granular body/tail material after the protected head.
+    // Granular reuses this same conservative core with the direct path muted.
     hybrid_release_only = hybrid_tail_release;
     (v[VC_GMODE] > 0 && (v[VC_GMIX] > 0.0001 || hybrid_release_only)) ? (
       (stage == ENV_RELEASE && !hybrid_body_release && rel_handoff_left <= 0) ? (
         v[VC_NEXTSRC] < tailstart ? v[VC_NEXTSRC] = tailstart;
       );
 
-      gran_hold_guard = ((stage == ENV_ATTACK || stage == ENV_HOLD) && direct_alive) ? 1 : 0;
+      gran_hold_guard = (!granular_voice && (stage == ENV_ATTACK || stage == ENV_HOLD) && direct_alive) ? 1 : 0;
       (tleft <= 0 && !gran_hold_guard) ? (
         hop = max(1, floor(v[VC_OHOP]));
         gsize = max(hop + 1, floor(v[VC_GSIZE]));
+        gran_hop_floor = 1;
+        granular_voice ? (
+          gran_hop_floor = max(floor(srate * 0.008), floor(gsize * 0.16));
+          hop = max(gran_hop_floor, floor(hop * (1 - gesture_drive * 0.22)));
+        );
         timer = floor(v[VC_GTIMER]) - 1;
         spawn_guard = 0;
 
@@ -3791,6 +4312,9 @@ while (i < MAX_VOICES) (
               );
 
               use_alt = (alt_pen + 0.12 < self_pen) || (rand(1) < donor_blend * (0.42 + 0.14 * clamp01(self_pen * 0.30) + 0.12 * source_exhausted));
+              granular_voice ? (
+                use_alt = use_alt && (source_exhausted || self_pen > 2.90 || rand(1) < donor_blend * (0.16 + 0.14 * slider9));
+              );
             ) : (
               use_alt = 0;
             );
@@ -3845,27 +4369,63 @@ while (i < MAX_VOICES) (
             ) : (
               grow_cursor = wrap_in_range(v[VC_NEXTSRC], grow_lo, grow_hi);
               grow_phase01 = clamp01((grow_cursor - grow_lo) / max(1, grow_span - 1));
+              grow_phase_pick = grow_phase01;
+              granular_voice ? (
+                // Crescendo motion pulls the grain cursor toward earlier body/head color,
+                // not raw attack retriggering. Hybrid itself remains unchanged.
+                phase_pull = gesture_drive * (0.055 + 0.105 * slider9 + 0.045 * v[VC_TAILMIX]);
+                stage == ENV_ATTACK || stage == ENV_HOLD ? phase_pull *= 0.18;
+                stage == ENV_RELEASE ? phase_pull *= 0.35;
+                grow_phase_pick = clamp01(grow_phase01 - phase_pull);
+                cont_phase = grain_follow_phase(v, 0);
+                cont_phase >= 0 ? (
+                  cont_strength = grain_follow_strength(v, slider9, truth_mix, v[VC_TAILMIX]);
+                  grow_phase_pick = phase_lerp_region(grow_phase_pick, cont_phase, cont_strength * 0.55, 0);
+                );
+              );
               advance = v[VC_SRCHOP] * (0.80 + 0.65 * rand(1));
               nextsrc = grow_cursor + advance;
               wrapped = nextsrc >= grow_hi;
-              nextsrc = wrap_in_range(nextsrc, grow_lo, grow_hi);
+              granular_voice && wrapped ? (
+                // v13: grain-only learned flow should not restart the same body
+                // window. Hold the silent anchor at the boundary and let learned
+                // cross-flow select the next sample event.
+                nextsrc = max(grow_lo, grow_hi - 1);
+              ) : (
+                nextsrc = wrap_in_range(nextsrc, grow_lo, grow_hi);
+              );
               source_exhausted ? (
-                nextsrc = wrap_in_range(nextsrc + (rand(1) - 0.5) * grow_span * 0.30, grow_lo, grow_hi);
+                granular_voice ? (
+                  nextsrc = max(grow_lo, grow_hi - 1);
+                ) : (
+                  nextsrc = wrap_in_range(nextsrc + (rand(1) - 0.5) * grow_span * 0.30, grow_lo, grow_hi);
+                );
               );
               v[VC_NEXTSRC] = nextsrc;
 
-              self_pos = choose_region_pos(i, sid, 0, grow_phase01, 0.18 + 0.48 * slider9 + 0.22 * source_exhausted);
+              self_pos = choose_region_pos(i, sid, 0, granular_voice ? grow_phase_pick : grow_phase01, 0.18 + 0.48 * slider9 + 0.22 * source_exhausted + (granular_voice ? gesture_drive * 0.10 : 0));
               self_pen = grain_hist_penalty(i, sid, self_pos, grow_lo, grow_hi);
             );
 
             need_alt = (!hybrid_body_release) && (source_exhausted || wrapped || (self_pen > 2.35) || (grow_span < max(64, floor(v[VC_GSIZE] * 0.55))));
+            granular_voice ? (
+              // In grain-only mode, the silent direct clock exhausting should
+              // not by itself cause donor hopping. Switch only on a boundary,
+              // bad repeat pressure, short source span, or Spice-authorized relief.
+              need_alt = (!hybrid_body_release) && (
+                wrapped
+                || (self_pen > (3.15 + 0.65 * (1 - v[VC_TAILMIX])))
+                || (grow_span < max(64, floor(v[VC_GSIZE] * 0.55)))
+                || (source_exhausted && self_pen > 2.10 && rand(1) < (0.06 + 0.28 * v[VC_TAILMIX]))
+              );
+            );
             alt_sid = sid;
             alt_pen = 1000000000;
 
             need_alt && sample_count > 1 ? (
               alt_sid = choose_region_donor(sid, 0, clamp01(0.16 + 0.40 * source_exhausted + 0.20 * wrapped + 0.10 * slider9 + 0.08 * clamp01((self_pen - 1.2) * 0.6)), i);
               alt_sid != sid ? (
-                alt_pos = choose_region_pos(i, alt_sid, 0, grow_phase01, 0.26 + 0.56 * slider9 + 0.24 * source_exhausted);
+                alt_pos = choose_region_pos(i, alt_sid, 0, granular_voice ? grow_phase_pick : grow_phase01, 0.26 + 0.56 * slider9 + 0.24 * source_exhausted + (granular_voice ? gesture_drive * 0.08 : 0));
                 alt_sm = sample_meta_base + alt_sid * SM_STRIDE;
                 alt_lo = clamp(alt_sm[SM_HEADEND], 0, max(0, alt_sm[SM_TAILSTART] - 1));
                 alt_hi = clamp(alt_sm[SM_TAILSTART], alt_lo + 1, max(alt_lo + 1, alt_sm[SM_FRAMES] - 2));
@@ -3893,6 +4453,14 @@ while (i < MAX_VOICES) (
             );
 
             use_alt = (!hybrid_body_release) && (alt_sid != sid) && (source_exhausted || (alt_pen + 0.18 < self_pen) || (wrapped && rand(1) < 0.65));
+            granular_voice ? (
+              use_alt = (!hybrid_body_release) && (alt_sid != sid) && (
+                (wrapped && rand(1) < (0.72 + 0.20 * slider9))
+                || ((self_pen > 2.85) && (alt_pen + 0.58 < self_pen))
+                || (source_exhausted && alt_pen + 0.24 < self_pen && rand(1) < (0.10 + 0.40 * v[VC_TAILMIX]))
+                || (rand(1) < v[VC_TAILMIX] * slider9 * 0.055 && alt_pen + 0.28 < self_pen)
+              );
+            );
             use_alt ? (
               gsid = alt_sid;
               gsm = alt_sm;
@@ -3914,15 +4482,136 @@ while (i < MAX_VOICES) (
             );
           );
 
+          cur_region_mode = (stage == ENV_RELEASE && !hybrid_body_release && rel_handoff_left <= 0) ? 1 : 0;
+          granular_voice ? (
+            follow_phase = hybrid_body_release ? -1 : grain_follow_phase(v, cur_region_mode);
+            follow_phase >= 0 ? (
+              follow_strength = grain_follow_strength(v, slider9, truth_mix, v[VC_TAILMIX]);
+              follow_limit = grain_run_limit(slider9, truth_mix, v[VC_TAILMIX]);
+              follow_sid = v[VC_LGSID] | 0;
+              follow_can_reuse = (follow_sid >= 0 && follow_sid < sample_count && (v[VC_LGRUN] < follow_limit || gsid == follow_sid)) ? 1 : 0;
+
+              follow_can_reuse && rand(1) < follow_strength ? (
+                follow_lo = grain_region_lo(follow_sid, cur_region_mode);
+                follow_hi = grain_region_hi(follow_sid, cur_region_mode);
+                follow_span = max(1, follow_hi - follow_lo);
+                follow_span > max(32, floor(gsize * 0.42)) ? (
+                  follow_pos = choose_region_pos(i, follow_sid, cur_region_mode, follow_phase, 0.07 + 0.18 * slider9 + 0.07 * gesture_drive);
+                  follow_pen = grain_hist_penalty(i, follow_sid, follow_pos, follow_lo, follow_hi);
+                  cur_pen = grain_hist_penalty(i, gsid, gsrc, ghist_lo, ghist_hi);
+
+                  follow_pen <= cur_pen + 1.65 + 0.65 * (1 - v[VC_TAILMIX]) ? (
+                    gsid = follow_sid;
+                    gsm = sample_meta_base + gsid * SM_STRIDE;
+                    gframes = gsm[SM_FRAMES] | 0;
+                    gsrc = follow_pos;
+                    grate = v[VC_RATE] * (gsm[SM_SR] / max(sm[SM_SR], 1));
+                    ggain *= gsid == sid ? 1.0 : 0.96;
+                    ghist_lo = follow_lo;
+                    ghist_hi = follow_hi;
+                  ) : (
+                    cur_phase = clamp01((gsrc - ghist_lo) / max(1, ghist_hi - ghist_lo - 1));
+                    blended_phase = phase_lerp_region(cur_phase, follow_phase, follow_strength * 0.42, cur_region_mode);
+                    gsrc = choose_region_pos(i, gsid, cur_region_mode, blended_phase, 0.08 + 0.22 * slider9 + 0.05 * gesture_drive);
+                  );
+                );
+              ) : (
+                cur_phase = clamp01((gsrc - ghist_lo) / max(1, ghist_hi - ghist_lo - 1));
+                blended_phase = phase_lerp_region(cur_phase, follow_phase, follow_strength * 0.35, cur_region_mode);
+                gsrc = choose_region_pos(i, gsid, cur_region_mode, blended_phase, 0.10 + 0.24 * slider9 + 0.05 * gesture_drive);
+              );
+            );
+          );
+
+          granular_voice ? (
+            learned_flow_pick(i, v, cur_region_mode, gsid, gsrc, ghist_lo, ghist_hi, gsize, slider9, truth_mix, v[VC_TAILMIX]);
+            learned_sid >= 0 && learned_sid < sample_count ? (
+              prev_pick_sid = gsid;
+              gsid = learned_sid;
+              gsrc = learned_pos;
+              ghist_lo = learned_lo;
+              ghist_hi = learned_hi;
+              (gsid != prev_pick_sid) ? ggain *= 0.975;
+              gsm = sample_meta_base + gsid * SM_STRIDE;
+              gframes = gsm[SM_FRAMES] | 0;
+              grate = v[VC_RATE] * (gsm[SM_SR] / max(sm[SM_SR], 1));
+            );
+          );
+
+          gsrc_follow_store = gsrc;
+          spawn_gsize = gsize;
+          gpan = 0;
+          prefill_age = 0;
+          prefill_src = gsrc;
+
+          granular_voice ? (
+            gran_tail_region = cur_region_mode;
+
+            src_phase_jit = source_phase_jitter_samples(gsid, gran_tail_region, slider9, truth_mix, v[VC_TAILMIX]);
+            gran_tail_region ? (
+              gsrc = clamp(gsrc + src_phase_jit, ghist_lo, max(ghist_lo, ghist_hi - 1));
+            ) : (
+              gsrc = wrap_in_range(gsrc + src_phase_jit, ghist_lo, ghist_hi);
+            );
+
+            pitch_jit_cents = (rand(1) - 0.5) * 2 * slider9 * (0.85 + 3.20 * (1 - truth_mix)) * lerp(1.00, 0.45, clamp01(gsm[SM_PITCHCONF] * bank_pitchiness));
+            grate *= cents_ratio(pitch_jit_cents);
+
+            len_jit = 1 + (rand(1) - 0.5) * slider9 * (0.08 + 0.10 * (1 - truth_mix) + 0.04 * gesture_arc);
+            spawn_gsize = clamp(floor(gsize * len_jit), max(hop + 1, floor(gsize * 0.82)), max(hop + 1, floor(gsize * 1.20)));
+
+            reverse_grain = gran_tail_region && slider9 > 0.55 && v[VC_TAILMIX] > 0.25 && rand(1) < (0.006 + 0.030 * slider9 * v[VC_TAILMIX] * gesture_arc);
+            reverse_grain ? (
+              rev_span = min(max(1, ghist_hi - ghist_lo - 2), (spawn_gsize - 1) * abs(grate));
+              gsrc = clamp(gsrc + rev_span, ghist_lo + rev_span, max(ghist_lo + rev_span, ghist_hi - 1));
+              grate = -abs(grate);
+              ggain *= 0.92;
+            );
+
+            norm_match = clamp(gsm[SM_NORM] / max(sm[SM_NORM], 0.000001), 0.45, 2.10);
+            ggain *= lerp(norm_match, 1, truth_mix);
+            ggain *= 1 + gesture_drive * (0.08 + 0.10 * v[VC_GMIX]);
+            amp_jit_db = (rand(1) - 0.5) * 2 * slider9 * (0.22 + 0.78 * (1 - truth_mix));
+            ggain *= db2amp(amp_jit_db);
+            gpan = (rand(1) - 0.5) * slider8 * slider9 * (0.10 + 0.30 * gesture_arc);
+
+            prefill_age = floor(spawn_gsize * slider9 * (0.015 + 0.075 * gesture_arc) * rand(1));
+            prefill_src = gsrc - prefill_age * grate;
+            gran_tail_region ? (
+              prefill_src = clamp(prefill_src, ghist_lo, max(ghist_lo, ghist_hi - 1));
+            ) : (
+              prefill_src = wrap_in_range(prefill_src, ghist_lo, ghist_hi);
+            );
+          );
+
           gb[VG_ACTIVE] = 1;
-          gb[VG_AGE] = 0;
-          gb[VG_SRC] = gsrc;
+          gb[VG_AGE] = prefill_age;
+          gb[VG_SRC] = prefill_src;
           gb[VG_SID] = gsid;
           gb[VG_RATE] = grate;
           gb[VG_GAIN] = ggain;
+          gb[VG_PAN] = gpan;
+          gb[VG_SIZE] = spawn_gsize;
           grain_hist_push(i, gsid, gsrc, ghist_lo, ghist_hi);
+          granular_voice ? (
+            prev_lgsid = v[VC_LGSID] | 0;
+            prev_lgreg = v[VC_LGREG] | 0;
+            v[VC_LGRUN] = (prev_lgsid == gsid && prev_lgreg == cur_region_mode) ? min(999, v[VC_LGRUN] + 1) : 1;
+            v[VC_LGSID] = gsid;
+            // Store the logical source before micro-decorrelation so jitter does
+            // not become the path itself.
+            v[VC_LGPOS] = gsrc_follow_store;
+            v[VC_LGLO] = ghist_lo;
+            v[VC_LGHI] = ghist_hi;
+            v[VC_LGREG] = cur_region_mode;
+          );
 
-          timer += hop;
+          spawn_hop = hop;
+          granular_voice ? (
+            hop_jit = floor(hop * slider9 * (0.08 + 0.18 * (1 - truth_mix)) * ((rand(1) - 0.5) * 2));
+            spawn_hop = max(gran_hop_floor, hop + hop_jit);
+          );
+          timer += spawn_hop;
           spawn_guard += 1;
         );
 
@@ -3944,15 +4633,24 @@ while (i < MAX_VOICES) (
             gnch = max(1, gsm[SM_NCH] | 0);
             gframes = gsm[SM_FRAMES] | 0;
             age = gb[VG_AGE];
-            gsize = max(1, floor(v[VC_GSIZE]));
+            gsize = max(1, floor(gb[VG_SIZE]));
+            gsize <= 1 ? gsize = max(1, floor(v[VC_GSIZE]));
 
             age < gsize ? (
               srcp = gb[VG_SRC] + age * gb[VG_RATE];
 
-              srcp < (gframes - 1) ? (
+              (srcp >= 0 && srcp < (gframes - 1)) ? (
                 sample_frame2(gptr, gnch, srcp);
                 gl = readL;
                 gr = readR;
+
+                gpan = gb[VG_PAN];
+                abs(gpan) > 0.000001 ? (
+                  gm = 0.5 * (gl + gr);
+                  gs = 0.5 * (gl - gr);
+                  gl = gm + gs + gm * gpan;
+                  gr = gm - gs - gm * gpan;
+                );
 
                 w = stretch_window(age, gsize) * gb[VG_GAIN];
                 sumL += gl * w;
@@ -3962,7 +4660,7 @@ while (i < MAX_VOICES) (
 
               age += 1;
               gb[VG_AGE] = age;
-              ((age >= gsize) || (srcp >= (gframes - 1))) ? (
+              ((age >= gsize) || (srcp < 0) || (srcp >= (gframes - 1))) ? (
                 gb[VG_ACTIVE] = 0;
               ) : (
                 activeg += 1;
@@ -4155,7 +4853,7 @@ m2e_activity_s += (m2e_activity_raw - m2e_activity_s) * m2e_smooth_coeff;
 
 m2e_depth = m2e_mix * (0.22 + 0.78 * max(0.18, slider9));
 m2e_depth *= (1 - 0.35 * m2e_rigid_s);
-(playback_mode == 2) ? m2e_depth *= (0.94 - 0.12 * granular_amt * (0.55 + 0.45 * tail_borrow));
+(playback_mode >= 2) ? m2e_depth *= (0.94 - 0.12 * granular_amt * (0.55 + 0.45 * tail_borrow));
 m2e_depth = clamp01(m2e_depth);
 m2e_activity_hi = clamp01((m2e_activity_s - 1) / 3);
 
@@ -4830,7 +5528,7 @@ onset_btn_x = right_inner_x;
 onset_btn_w = right_inner_w;
 
 ui_button(403, mode_btn_x, btn_y1, btn_w, btn_h) ? (
-  slider17 = ((slider17 | 0) + 1) % 3;
+  slider17 = ((slider17 | 0) + 1) % 4;
   gfx_slider_mask |= MASK_S17;
 );
 ui_button(402, trans_btn_x, btn_y1, btn_w, btn_h) ? (
@@ -4853,7 +5551,7 @@ ui_button(405, onset_btn_x, btn_y3, onset_btn_w, btn_h) ? (
 gfx_setfont(1, "Arial", 11, 0);
 gfx_r = 0.92; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
 
-(slider17 | 0) == 2 ? sprintf(#ui_buf, "Hybrid") : ((slider17 | 0) == 1 ? sprintf(#ui_buf, "Tape") : sprintf(#ui_buf, "Raw"));
+(slider17 | 0) == 3 ? sprintf(#ui_buf, "Granular") : (slider17 | 0) == 2 ? sprintf(#ui_buf, "Hybrid") : ((slider17 | 0) == 1 ? sprintf(#ui_buf, "Tape") : sprintf(#ui_buf, "Raw"));
 draw_center_buf(mode_btn_x, btn_y1 + 9, btn_w);
 
 (slider16 | 0) == 1 ? sprintf(#ui_buf, "Punch") : ((slider16 | 0) == 2 ? sprintf(#ui_buf, "Off") : sprintf(#ui_buf, "Auto"));
@@ -4912,7 +5610,7 @@ nv = ui_knob(310, kc, ky, kb_r, slider18, 0, 1, 0.55, 0.018); abs(nv - slider18)
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
 sprintf(#ui_buf, "%.2f", slider18); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-sprintf(#ui_buf, "Gran"); draw_center_buf(cell_x, label_y, cell_w);
+sprintf(#ui_buf, "Grain"); draw_center_buf(cell_x, label_y, cell_w);
 
 // Borrow
 grid_idx = 3;
@@ -4923,7 +5621,7 @@ nv = ui_knob(311, kc, ky, kb_r, slider19, 0, 1, 0.35, 0.018); abs(nv - slider19)
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
 sprintf(#ui_buf, "%.2f", slider19); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-sprintf(#ui_buf, "Borrow"); draw_center_buf(cell_x, label_y, cell_w);
+sprintf(#ui_buf, "Spice"); draw_center_buf(cell_x, label_y, cell_w);
 
 // Color
 grid_idx = 4;
@@ -5178,12 +5876,12 @@ ui_hover_id == 309 ? (
   sprintf(#tip_body, "%.2f short body bloom.", slider15);
 );
 ui_hover_id == 310 ? (
-  sprintf(#tip_title, "Granular body");
-  sprintf(#tip_body, "%.2f Hybrid body grains.", slider18);
+  sprintf(#tip_title, "Grain");
+  sprintf(#tip_body, "%.2f density/body amount.", slider18);
 );
 ui_hover_id == 311 ? (
-  sprintf(#tip_title, "Tail borrow");
-  sprintf(#tip_body, "%.2f matched donor tails.", slider19);
+  sprintf(#tip_title, "Spice");
+  sprintf(#tip_body, "%.2f donor tails, release bloom, and safe variation.", slider19);
 );
 ui_hover_id == 401 ? (
   sprintf(#tip_title, "Selection");
@@ -5195,7 +5893,7 @@ ui_hover_id == 402 ? (
 );
 ui_hover_id == 403 ? (
   sprintf(#tip_title, "Playback mode");
-  (slider17 | 0) == 2 ? sprintf(#tip_body, "Hybrid: head direct, body grains.") : (slider17 | 0) == 1 ? sprintf(#tip_body, "Tape: slowed rate path.") : sprintf(#tip_body, "Raw: direct playback.");
+  (slider17 | 0) == 3 ? sprintf(#tip_body, "Granular: HybridCore grains with cross-sample learned flow, swells, and decorrelation.") : (slider17 | 0) == 2 ? sprintf(#tip_body, "Hybrid: head direct, body grains.") : (slider17 | 0) == 1 ? sprintf(#tip_body, "Tape: slowed rate path.") : sprintf(#tip_body, "Raw: direct playback.");
 );
 ui_hover_id == 404 ? (
   sprintf(#tip_title, "Mono Source");
