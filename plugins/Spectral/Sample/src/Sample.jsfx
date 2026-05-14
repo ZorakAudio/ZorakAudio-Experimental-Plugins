@@ -11,6 +11,7 @@ filename:0,sample.wav
 // #HELP:
 // #HELP: ## What it is
 // #HELP: Sample is a load-and-go psycho multisampler: load files into slot 0, play notes, and shape the bank with compact macro controls.
+// #HELP: v15 BrightCal uses a filterbank brightness meter and bank-aware Color scaling.
 // #HELP:
 // #HELP: ## Quick start
 // #HELP: 1. Insert Sample. 2. On slot 0, choose Open Multiple... and select files. 3. Play MIDI notes. 4. Choose Random, Sequence, or Walk. 5. Shape with Envelope, Playback, Clean, Room Tame, Push, and Output.
@@ -1512,6 +1513,73 @@ function estimate_pitch(sm) local(
   sm[SM_PITCHCONF] = best_conf;
 );
 
+
+function estimate_brightness_metric(ptr nch sr start scan) local(
+  i endp x ax
+  c250 c1000 c3500 c8500
+  lp250 lp1000 lp3500 lp8500
+  b0 b1 b2 b3 b4
+  e0 e1 e2 e3 e4 total centroid rawbright highratio airratio br
+  warmup
+)
+(
+  // Robust brightness proxy: cheap filterbank spectral-centroid estimate.
+  // The previous metric was a single high-pass residual ratio, which saturates
+  // on clicks/noise and made the bank brightness meter sit near 1.0.
+  start = clamp(floor(start), 0, max(0, sample_len(bank_pool, ptr) - 2));
+  scan = max(64, floor(scan));
+  endp = min(sample_len(bank_pool, ptr) | 0, start + scan);
+
+  c250  = clamp(1 - exp(-6.283185307179586 * min(250,  sr * 0.45) / max(sr, 1)), 0.0001, 0.70);
+  c1000 = clamp(1 - exp(-6.283185307179586 * min(1000, sr * 0.45) / max(sr, 1)), 0.0001, 0.82);
+  c3500 = clamp(1 - exp(-6.283185307179586 * min(3500, sr * 0.45) / max(sr, 1)), 0.0001, 0.90);
+  c8500 = clamp(1 - exp(-6.283185307179586 * min(8500, sr * 0.45) / max(sr, 1)), 0.0001, 0.96);
+
+  lp250 = 0; lp1000 = 0; lp3500 = 0; lp8500 = 0;
+  e0 = 0; e1 = 0; e2 = 0; e3 = 0; e4 = 0;
+
+  i = start;
+  warmup = min(max(16, floor(sr * 0.0015)), max(16, endp - start));
+  while (i < endp) (
+    x = mono_frame(ptr, nch, i);
+    lp250  += (x - lp250)  * c250;
+    lp1000 += (x - lp1000) * c1000;
+    lp3500 += (x - lp3500) * c3500;
+    lp8500 += (x - lp8500) * c8500;
+
+    (i - start) >= warmup ? (
+      b0 = lp250;
+      b1 = lp1000 - lp250;
+      b2 = lp3500 - lp1000;
+      b3 = lp8500 - lp3500;
+      b4 = x - lp8500;
+
+      // Power energy. This damps click-only maxing compared with abs(highpass).
+      e0 += b0 * b0;
+      e1 += b1 * b1;
+      e2 += b2 * b2;
+      e3 += b3 * b3;
+      e4 += b4 * b4;
+    );
+    i += 1;
+  );
+
+  total = e0 + e1 + e2 + e3 + e4 + 0.00000000000000000001;
+  centroid = (e0 * 170 + e1 * 700 + e2 * 2200 + e3 * 5200 + e4 * 10500) / total;
+
+  // Log-frequency normalization is closer to perceived brightness than linear Hz.
+  rawbright = clamp01((log(max(centroid, 80) / 180) / log(10500 / 180)));
+  highratio = clamp01((e3 + e4) / total);
+  airratio = clamp01(e4 / total);
+
+  // Blend centroid with high-band occupancy, then re-scale conservatively so
+  // normal banks land around the middle instead of pegging at 1.0.
+  br = rawbright * 0.78 + sqrt(highratio) * 0.17 + sqrt(airratio) * 0.05;
+  br = clamp01((br - 0.16) / 0.78);
+  br = br ^ 1.16;
+  br;
+);
+
 function analyze_sample_classic(sm) local(
   ptr nch sr frames scan i x ax prev lp hf prevhf
   peak sumsq sumabs sumdiff brightsum roughsum rms bright edge
@@ -1559,7 +1627,6 @@ function analyze_sample_classic(sm) local(
   );
 
   rms = sqrt(sumsq / max(scan, 1));
-  bright = clamp01((brightsum / max(sumabs, 0.000001) - 0.08) * 2.1);
   edge = clamp01((roughsum / max(brightsum, 0.000001)) * 0.34);
 
   thresh = max(peak * 0.12, rms * 1.8);
@@ -1570,6 +1637,8 @@ function analyze_sample_classic(sm) local(
     i += 1;
   );
   attack < 0 ? attack = 0;
+
+  bright = estimate_brightness_metric(ptr, nch, sr, attack, min(frames - attack, max(384, floor(sr * 0.20))));
 
   attack_ms = 1000 * attack / max(sr, 1);
   sharp = clamp01((1 - min(1, attack_ms / 70)) * 0.72 + edge * 0.28);
@@ -1776,8 +1845,8 @@ function analyze_sample_gauss(sm) local(
   );
 
   rms = sqrt(sumsq / max(scan, 1));
-  bright = clamp01((brightsum / max(sumabs, 0.000001) - 0.08) * 2.1);
   edge = clamp01((roughsum / max(brightsum, 0.000001)) * 0.34);
+  bright = estimate_brightness_metric(ptr, nch, sr, feat_lo, scan);
 
   sharp = clamp01((1 - min(1, onset_rise_ms / 18)) * 0.58 + edge * 0.24 + onset_conf * 0.18);
   transrich = clamp01(sharp * 0.58 + edge * 0.14 + onset_conf * 0.18 + bright * 0.10);
@@ -2271,6 +2340,9 @@ function reset_bank_state() local(i)
   bank_pool_capacity = sample_pool_capacity;
   bank_pitchiness = 0;
   bank_brightness = 0;
+  bank_brightness_spread = 0;
+  bank_brightness_reliability = 0;
+  bank_color_extreme = 0;
   bank_sharpness = 0;
   next_audio = AUDIO_BASE;
   seq_cursor = 0;
@@ -2325,17 +2397,21 @@ function load_one_pool_sample(sample_index) local(
 );
 
 function refresh_bank_stats() local(
-  i sm spread_step spread_root pitch_sum bright_sum sharp_sum
+  i sm spread_step spread_root pitch_sum bright_sum bright2_sum sharp_sum bright_mean bright_var
 )
 (
   bank_pitchiness = 0;
   bank_brightness = 0;
+  bank_brightness_spread = 0;
+  bank_brightness_reliability = 0;
+  bank_color_extreme = 0;
   bank_sharpness = 0;
 
   sample_count > 0 ? (
     spread_step = sample_count > 1 ? (ROOT_HIGH - ROOT_LOW) / (sample_count - 1) : 0;
     pitch_sum = 0;
     bright_sum = 0;
+    bright2_sum = 0;
     sharp_sum = 0;
     i = 0;
     while (i < sample_count) (
@@ -2345,11 +2421,19 @@ function refresh_bank_stats() local(
       update_sample_cluster(sm);
       pitch_sum += sm[SM_PITCHCONF];
       bright_sum += sm[SM_BRIGHT];
+      bright2_sum += sm[SM_BRIGHT] * sm[SM_BRIGHT];
       sharp_sum += sm[SM_SHARP];
       i += 1;
     );
     bank_pitchiness = clamp01(pitch_sum / sample_count);
-    bank_brightness = bright_sum / sample_count;
+    bright_mean = bright_sum / sample_count;
+    bright_var = max(0, bright2_sum / sample_count - bright_mean * bright_mean);
+    bank_brightness = clamp01(bright_mean);
+    bank_brightness_spread = clamp(sqrt(bright_var), 0, 0.50);
+    bank_brightness_reliability = clamp01(1 - bank_brightness_spread / 0.28);
+    // Used by Color: extreme bright/dark banks get a stronger, more useful tilt.
+    // Diverse banks get less automatic aggression because the average is less decisive.
+    bank_color_extreme = clamp01(abs(bank_brightness - 0.50) / 0.32) * (0.55 + 0.45 * bank_brightness_reliability);
     bank_sharpness = sharp_sum / sample_count;
   );
 
@@ -3721,6 +3805,9 @@ note_counter = 0;
 bank_loaded = 0;
 bank_pitchiness = 0;
 bank_brightness = 0;
+bank_brightness_spread = 0;
+bank_brightness_reliability = 0;
+bank_color_extreme = 0;
 bank_sharpness = 0;
 flow_model_trained = 0;
 learned_sid = -1;
@@ -5037,12 +5124,17 @@ tone_hp_r = outR - tone_lp_r;
 focus_hp_l = outL - focus_lp_l;
 focus_hp_r = outR - focus_lp_r;
 
-tone_amt = clamp(slider6 + m2e_tone_bias, -1, 1);
+bank_bright_dev = bank_brightness - 0.50;
+color_corrective = ((slider6 < 0 && bank_bright_dev > 0) || (slider6 > 0 && bank_bright_dev < 0)) ? 1 : 0.35;
+color_drive = 1 + bank_color_extreme * (0.30 + 0.42 * color_corrective + 0.18 * abs(slider6));
+tone_amt = clamp(slider6 * color_drive + m2e_tone_bias, -1, 1);
 focus_amt = clamp(slider7 + m2e_focus_bias, -1, 1);
 width_amt = clamp(slider8 + m2e_width_bias, 0, 1);
 
-outL += tone_amt * (tone_hp_l * 0.17 - tone_lp_l * 0.035);
-outR += tone_amt * (tone_hp_r * 0.17 - tone_lp_r * 0.035);
+tone_hi_w = 0.17 * (1 + bank_color_extreme * (0.18 + 0.28 * abs(tone_amt)));
+tone_lo_w = 0.035 * (1 + bank_color_extreme * (0.20 + 0.34 * abs(tone_amt)));
+outL += tone_amt * (tone_hp_l * tone_hi_w - tone_lp_l * tone_lo_w);
+outR += tone_amt * (tone_hp_r * tone_hi_w - tone_lp_r * tone_lo_w);
 
 focus_mix = focus_amt * (0.05 + transient * (0.11 + 0.08 * m2e_impact_s * m2e_depth));
 outL += focus_hp_l * focus_mix;
@@ -5892,7 +5984,7 @@ ui_hover_id == 1101 ? (
 );
 ui_hover_id == 1102 ? (
   sprintf(#tip_title, "Brightness");
-  sprintf(#tip_body, "Average high-band energy.");
+  sprintf(#tip_body, "Filterbank centroid brightness; drives Color range.");
 );
 ui_hover_id == 1103 ? (
   sprintf(#tip_title, "Attack focus");
