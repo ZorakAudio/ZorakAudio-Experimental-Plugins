@@ -1,6 +1,7 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v13-crossflow)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v16-focuscal)
 tags:instrument sampler ui
 
+// v16 FocusCal: bank-aware Color and Focus calibration from brightness/attack-focus statistics.
 // v13 CrossFlow: keeps v12 learned continuation, but prevents same-take reconstruction loops.
 // Slot 0 is the load-and-go sample bank.
 // Use the filename slot UI for this instrument and choose Open Multiple... on slot 0.
@@ -12,6 +13,7 @@ filename:0,sample.wav
 // #HELP: ## What it is
 // #HELP: Sample is a load-and-go psycho multisampler: load files into slot 0, play notes, and shape the bank with compact macro controls.
 // #HELP: v15 BrightCal uses a filterbank brightness meter and bank-aware Color scaling.
+// #HELP: v16 FocusCal makes Focus bank-aware: high attack-focus banks soften harder and clarify more cautiously; dull banks clarify harder and soften more cautiously.
 // #HELP:
 // #HELP: ## Quick start
 // #HELP: 1. Insert Sample. 2. On slot 0, choose Open Multiple... and select files. 3. Play MIDI notes. 4. Choose Random, Sequence, or Walk. 5. Shape with Envelope, Playback, Clean, Room Tame, Push, and Output.
@@ -2344,6 +2346,9 @@ function reset_bank_state() local(i)
   bank_brightness_reliability = 0;
   bank_color_extreme = 0;
   bank_sharpness = 0;
+  bank_sharpness_spread = 0;
+  bank_sharpness_reliability = 0;
+  bank_focus_extreme = 0;
   next_audio = AUDIO_BASE;
   seq_cursor = 0;
   walk_last_sid = -1;
@@ -2397,7 +2402,7 @@ function load_one_pool_sample(sample_index) local(
 );
 
 function refresh_bank_stats() local(
-  i sm spread_step spread_root pitch_sum bright_sum bright2_sum sharp_sum bright_mean bright_var
+  i sm spread_step spread_root pitch_sum bright_sum bright2_sum sharp_sum sharp2_sum bright_mean bright_var sharp_mean sharp_var
 )
 (
   bank_pitchiness = 0;
@@ -2406,6 +2411,9 @@ function refresh_bank_stats() local(
   bank_brightness_reliability = 0;
   bank_color_extreme = 0;
   bank_sharpness = 0;
+  bank_sharpness_spread = 0;
+  bank_sharpness_reliability = 0;
+  bank_focus_extreme = 0;
 
   sample_count > 0 ? (
     spread_step = sample_count > 1 ? (ROOT_HIGH - ROOT_LOW) / (sample_count - 1) : 0;
@@ -2413,6 +2421,7 @@ function refresh_bank_stats() local(
     bright_sum = 0;
     bright2_sum = 0;
     sharp_sum = 0;
+    sharp2_sum = 0;
     i = 0;
     while (i < sample_count) (
       sm = sample_meta_base + i * SM_STRIDE;
@@ -2423,6 +2432,7 @@ function refresh_bank_stats() local(
       bright_sum += sm[SM_BRIGHT];
       bright2_sum += sm[SM_BRIGHT] * sm[SM_BRIGHT];
       sharp_sum += sm[SM_SHARP];
+      sharp2_sum += sm[SM_SHARP] * sm[SM_SHARP];
       i += 1;
     );
     bank_pitchiness = clamp01(pitch_sum / sample_count);
@@ -2434,7 +2444,15 @@ function refresh_bank_stats() local(
     // Used by Color: extreme bright/dark banks get a stronger, more useful tilt.
     // Diverse banks get less automatic aggression because the average is less decisive.
     bank_color_extreme = clamp01(abs(bank_brightness - 0.50) / 0.32) * (0.55 + 0.45 * bank_brightness_reliability);
-    bank_sharpness = sharp_sum / sample_count;
+
+    sharp_mean = sharp_sum / sample_count;
+    sharp_var = max(0, sharp2_sum / sample_count - sharp_mean * sharp_mean);
+    bank_sharpness = clamp01(sharp_mean);
+    bank_sharpness_spread = clamp(sqrt(sharp_var), 0, 0.50);
+    bank_sharpness_reliability = clamp01(1 - bank_sharpness_spread / 0.30);
+    // Used by Focus: sharp/dull banks get stronger corrective behavior,
+    // but mixed banks avoid over-trusting the average.
+    bank_focus_extreme = clamp01(abs(bank_sharpness - 0.50) / 0.32) * (0.55 + 0.45 * bank_sharpness_reliability);
   );
 
   sample_count > 0 ? train_flow_model() : init_flow_model();
@@ -3809,6 +3827,9 @@ bank_brightness_spread = 0;
 bank_brightness_reliability = 0;
 bank_color_extreme = 0;
 bank_sharpness = 0;
+bank_sharpness_spread = 0;
+bank_sharpness_reliability = 0;
+bank_focus_extreme = 0;
 flow_model_trained = 0;
 learned_sid = -1;
 learned_pos = 0;
@@ -5128,7 +5149,21 @@ bank_bright_dev = bank_brightness - 0.50;
 color_corrective = ((slider6 < 0 && bank_bright_dev > 0) || (slider6 > 0 && bank_bright_dev < 0)) ? 1 : 0.35;
 color_drive = 1 + bank_color_extreme * (0.30 + 0.42 * color_corrective + 0.18 * abs(slider6));
 tone_amt = clamp(slider6 * color_drive + m2e_tone_bias, -1, 1);
-focus_amt = clamp(slider7 + m2e_focus_bias, -1, 1);
+
+// Average Attack Focus now calibrates the Focus macro. Corrective moves get
+// stronger; exaggerating an already sharp/dull bank is deliberately restrained.
+bank_focus_dev = bank_sharpness - 0.50;
+focus_corrective = ((slider7 < 0 && bank_focus_dev > 0) || (slider7 > 0 && bank_focus_dev < 0)) ? 1 : 0;
+focus_exaggerating = ((slider7 > 0 && bank_focus_dev > 0) || (slider7 < 0 && bank_focus_dev < 0)) ? 1 : 0;
+focus_drive = focus_corrective ? (
+  1 + bank_focus_extreme * (0.32 + 0.54 * abs(slider7))
+) : (
+  focus_exaggerating ? (
+    1 - bank_focus_extreme * (0.12 + 0.24 * abs(slider7))
+  ) : 1
+);
+focus_drive = clamp(focus_drive, 0.58, 1.86);
+focus_amt = clamp(slider7 * focus_drive + m2e_focus_bias * (1 - 0.10 * bank_focus_extreme * focus_exaggerating), -1, 1);
 width_amt = clamp(slider8 + m2e_width_bias, 0, 1);
 
 tone_hi_w = 0.17 * (1 + bank_color_extreme * (0.18 + 0.28 * abs(tone_amt)));
@@ -5136,7 +5171,13 @@ tone_lo_w = 0.035 * (1 + bank_color_extreme * (0.20 + 0.34 * abs(tone_amt)));
 outL += tone_amt * (tone_hp_l * tone_hi_w - tone_lp_l * tone_lo_w);
 outR += tone_amt * (tone_hp_r * tone_hi_w - tone_lp_r * tone_lo_w);
 
-focus_mix = focus_amt * (0.05 + transient * (0.11 + 0.08 * m2e_impact_s * m2e_depth));
+focus_base_mix = 0.05 + transient * (0.11 + 0.08 * m2e_impact_s * m2e_depth);
+focus_corrective_boost = 1 + bank_focus_extreme * focus_corrective * (0.18 + 0.24 * abs(focus_amt));
+focus_exaggerate_guard = focus_exaggerating ? (
+  1 - bank_focus_extreme * (0.10 + 0.24 * abs(focus_amt) + 0.14 * max(0, bank_focus_dev) + 0.06 * max(0, -bank_focus_dev))
+) : 1;
+focus_exaggerate_guard = clamp(focus_exaggerate_guard, 0.56, 1);
+focus_mix = focus_amt * focus_base_mix * focus_corrective_boost * focus_exaggerate_guard;
 outL += focus_hp_l * focus_mix;
 outR += focus_hp_r * focus_mix;
 
@@ -5988,7 +6029,7 @@ ui_hover_id == 1102 ? (
 );
 ui_hover_id == 1103 ? (
   sprintf(#tip_title, "Attack focus");
-  sprintf(#tip_body, "Average onset sharpness.");
+  sprintf(#tip_body, "Average onset sharpness; drives bank-aware Focus scaling.");
 );
 ui_hover_id == 1200 ? (
   sprintf(#tip_title, "Sample map");
@@ -6038,7 +6079,7 @@ ui_hover_id == 301 ? (
 );
 ui_hover_id == 302 ? (
   sprintf(#tip_title, "Focus");
-  sprintf(#tip_body, "%.2f soft/clear edge.", slider7);
+  sprintf(#tip_body, "%.2f bank-aware soft/clear edge.", slider7);
 );
 ui_hover_id == 303 ? (
   sprintf(#tip_title, "Width");
