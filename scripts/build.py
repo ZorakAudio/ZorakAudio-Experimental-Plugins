@@ -12,6 +12,30 @@ from pathlib import Path
 
 from pluginlib import PluginSpec, PluginDiscoveryError, discover_plugins, filter_plugins
 
+def is_nested_vst3_payload(path: Path) -> bool:
+    """Return True for files inside an outer .vst3 bundle.
+
+    JUCE/Steinberg-style Windows VST3 output is normally:
+
+        Plugin.vst3/
+          Contents/
+            Resources/moduleinfo.json
+            x86_64-win/Plugin.vst3
+
+    The outer Plugin.vst3 directory is the bundle that must be staged.
+    The inner Plugin.vst3 file is only the binary payload. Packaging the
+    inner payload alone produces a broken VST3 install package.
+    """
+    return any(parent.suffix.lower() == ".vst3" for parent in path.parents)
+
+
+def collect_stageable_vst3_artifacts(artefacts: Path) -> list[Path]:
+    vst3s = [
+        p
+        for p in artefacts.rglob("*.vst3")
+        if p.exists() and not is_nested_vst3_payload(p)
+    ]
+    return sorted(vst3s, key=lambda p: (len(p.parts), str(p).lower()))
 
 def _run_text(cmd: list[str]) -> str:
     return subprocess.check_output(cmd, text=True, encoding="utf-8", errors="replace").strip()
@@ -644,7 +668,7 @@ def main() -> None:
         install_vst3_dir = vst3_dir / spec.install_rel_dir
         install_clap_dir = clap_dir / spec.install_rel_dir
 
-        vst3s = [p for p in artefacts.rglob("*.vst3") if p.exists()]
+        vst3s = collect_stageable_vst3_artifacts(artefacts)
         claps = [p for p in artefacts.rglob("*.clap") if p.exists()]
 
         for artifact in vst3s:
