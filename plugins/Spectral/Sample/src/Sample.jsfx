@@ -1,7 +1,8 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v23-freeband-posteq)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v24-posteq-qfix)
 tags:instrument sampler ui
 // #GFX_RESIZE: responsive
 
+// v24 PostEQ QFix: HPF/LPF Q now produces visible and audible cutoff resonance, including 6 dB/oct mode.
 // v23 FreeBand PostEQ: three free parametric bands plus HPF/LPF, graph control, Q/slope gestures, and spectrum underlay.
 // v22 PostEQ removed the Shaper page and kept Processing as final-output EQ.
 // v19 AutoRelease: sample-tail analysis adds a release floor and graceful EOF/tail-grain fades.
@@ -20,6 +21,7 @@ filename:0,sample.wav
 // #HELP: v16 FocusCal makes Focus bank-aware: high attack-focus banks soften harder and clarify more cautiously; dull banks clarify harder and soften more cautiously.
 // #HELP: v18 strengthens Shift+drag Pitch formant shifting: audible spectral-envelope warp plus resonance drive, still transient-protected.
 // #HELP: v19 AutoRelease analyzes each sample tail, extends too-short MIDI releases when needed, and fades source endings so EOF does not chop.
+// #HELP: v24 PostEQ QFix makes HPF/LPF Q visible and audible as cutoff resonance.
 // #HELP: v23 FreeBand PostEQ adds a spectrum-underlaid final EQ: HPF, LPF, and three draggable parametric bands with Q and cutoff slope control.
 // #HELP:
 // #HELP: ## Quick start
@@ -98,8 +100,8 @@ slider41:0.75<0.15,12,0.01>--EQ Band 2 Q
 slider42:0.75<0.15,12,0.01>--EQ Band 3 Q
 slider43:1<0,4,1{6,12,24,36,48}>--EQ HPF Slope
 slider44:1<0,4,1{6,12,24,36,48}>--EQ LPF Slope
-slider45:0.707<0.35,2.5,0.001>--EQ HPF Q
-slider46:0.707<0.35,2.5,0.001>--EQ LPF Q
+slider45:0.707<0.35,4,0.001>--EQ HPF Q
+slider46:0.707<0.35,4,0.001>--EQ LPF Q
 @init
 /*
 Runtime sample-pool API used here:
@@ -2226,6 +2228,45 @@ function posteq_slope_db(idx)
   idx <= 0 ? 6 : idx * 12;
 );
 
+function posteq_cut_q_norm(q)
+(
+  clamp01((clamp(q, 0.35, 4.0) - 0.707) / max(0.000001, 4.0 - 0.707));
+);
+
+function posteq_cut_filter_q(q)
+(
+  // Keep cascaded HPF/LPF stages stable. Resonance is handled by the explicit
+  // cutoff-peak stage below, so high Q no longer turns steep filters brittle.
+  q = clamp(q, 0.35, 4.0);
+  q <= 0.707 ? q : clamp(0.707 + (q - 0.707) * 0.12, 0.707, 1.10);
+);
+
+function posteq_cut_res_gain_db(q) local(n)
+(
+  n = posteq_cut_q_norm(q);
+  n <= 0 ? 0 : 12.0 * (n ^ 0.72);
+);
+
+function posteq_cut_res_peak_q(q) local(n)
+(
+  n = posteq_cut_q_norm(q);
+  clamp(0.55 + n * 5.25, 0.55, 5.80);
+);
+
+function posteq_cut_res_resp_db(freq cf q) local(n amt width octv)
+(
+  // Visual model for HPF/LPF resonance. This is deliberately the same concept
+  // as the DSP: Q raises a narrow-ish peak at the cutoff instead of silently
+  // changing a hidden biquad parameter.
+  amt = posteq_cut_res_gain_db(q);
+  amt <= 0.0001 ? 0 : (
+    n = posteq_cut_q_norm(q);
+    octv = log(max(20, freq) / max(20, cf)) / log(2);
+    width = lerp(0.72, 0.16, n);
+    amt * exp(-(octv * octv) / max(0.000001, 2 * width * width));
+  );
+);
+
 function posteq_bq_identity(slot) local(base)
 (
   base = slot * POSTEQ_BQ_STRIDE;
@@ -2269,7 +2310,7 @@ function posteq_bq_set_highpass(slot freq q) local(base w0 sn cs alpha a0 b0 b1 
 (
   base = slot * POSTEQ_BQ_STRIDE;
   freq = clamp(freq, 20, min(20000, srate * 0.49));
-  q = clamp(q, 0.35, 2.5);
+  q = clamp(q, 0.35, 4.0);
   w0 = 6.283185307179586 * freq / max(srate, 1);
   sn = sin(w0);
   cs = cos(w0);
@@ -2291,7 +2332,7 @@ function posteq_bq_set_lowpass(slot freq q) local(base w0 sn cs alpha a0 b0 b1 b
 (
   base = slot * POSTEQ_BQ_STRIDE;
   freq = clamp(freq, 20, min(20000, srate * 0.49));
-  q = clamp(q, 0.35, 2.5);
+  q = clamp(q, 0.35, 4.0);
   w0 = 6.283185307179586 * freq / max(srate, 1);
   sn = sin(w0);
   cs = cos(w0);
@@ -2327,21 +2368,28 @@ function posteq_bq_process_r(slot x) local(base y)
   y;
 );
 
-function posteq_update_coeffs() local(i norm cf c)
+function posteq_update_coeffs() local(i norm cf c cutq)
 (
-  posteq_bq_set_highpass(0, proc_hpf_hz, proc_hpf_q);
-  posteq_bq_set_highpass(1, proc_hpf_hz, proc_hpf_q);
-  posteq_bq_set_highpass(2, proc_hpf_hz, proc_hpf_q);
-  posteq_bq_set_highpass(3, proc_hpf_hz, proc_hpf_q);
+  cutq = posteq_cut_filter_q(proc_hpf_q);
+  posteq_bq_set_highpass(0, proc_hpf_hz, cutq);
+  posteq_bq_set_highpass(1, proc_hpf_hz, cutq);
+  posteq_bq_set_highpass(2, proc_hpf_hz, cutq);
+  posteq_bq_set_highpass(3, proc_hpf_hz, cutq);
 
   posteq_bq_set_peak(4, proc_eq_band1_hz, proc_eq_band1_q, proc_eq_band1_db);
   posteq_bq_set_peak(5, proc_eq_band2_hz, proc_eq_band2_q, proc_eq_band2_db);
   posteq_bq_set_peak(6, proc_eq_band3_hz, proc_eq_band3_q, proc_eq_band3_db);
 
-  posteq_bq_set_lowpass(7, proc_lpf_hz, proc_lpf_q);
-  posteq_bq_set_lowpass(8, proc_lpf_hz, proc_lpf_q);
-  posteq_bq_set_lowpass(9, proc_lpf_hz, proc_lpf_q);
-  posteq_bq_set_lowpass(10, proc_lpf_hz, proc_lpf_q);
+  cutq = posteq_cut_filter_q(proc_lpf_q);
+  posteq_bq_set_lowpass(7, proc_lpf_hz, cutq);
+  posteq_bq_set_lowpass(8, proc_lpf_hz, cutq);
+  posteq_bq_set_lowpass(9, proc_lpf_hz, cutq);
+  posteq_bq_set_lowpass(10, proc_lpf_hz, cutq);
+
+  posteq_hpf_res_db = (proc_hpf_hz > 22) ? posteq_cut_res_gain_db(proc_hpf_q) : 0;
+  posteq_lpf_res_db = (proc_lpf_hz < min(19000, srate * 0.47)) ? posteq_cut_res_gain_db(proc_lpf_q) : 0;
+  posteq_bq_set_peak(11, proc_hpf_hz, posteq_cut_res_peak_q(proc_hpf_q), posteq_hpf_res_db);
+  posteq_bq_set_peak(12, proc_lpf_hz, posteq_cut_res_peak_q(proc_lpf_q), posteq_lpf_res_db);
 
   i = 0;
   while (i < POSTEQ_SPEC_BINS) (
@@ -2394,6 +2442,10 @@ function apply_posteq_filter() local(xL xR idx count)
         idx += 1;
       );
     );
+    posteq_hpf_res_db > 0.0001 ? (
+      xL = posteq_bq_process_l(11, xL);
+      xR = posteq_bq_process_r(11, xR);
+    );
   );
 
   abs(proc_eq_band1_db) > 0.000001 ? (
@@ -2410,6 +2462,10 @@ function apply_posteq_filter() local(xL xR idx count)
   );
 
   proc_lpf_hz < min(19000, srate * 0.47) ? (
+    posteq_lpf_res_db > 0.0001 ? (
+      xL = posteq_bq_process_l(12, xL);
+      xR = posteq_bq_process_r(12, xR);
+    );
     proc_lpf_slope_idx <= 0 ? (
       proc_lpf1_l += (xL - proc_lpf1_l) * proc_lpf_coeff;
       proc_lpf1_r += (xR - proc_lpf1_r) * proc_lpf_coeff;
@@ -4256,6 +4312,7 @@ function proc_eq_resp_db(freq) local(resp hpfhz lpfhz slope r octv)
 
   hpfhz = clamp(slider38, 20, 1000);
   hpfhz > 22 ? (
+    resp += posteq_cut_res_resp_db(freq, hpfhz, slider45);
     freq < hpfhz ? (
       slope = proc_cut_slope_db(clamp(slider43 | 0, 0, 4));
       octv = log(hpfhz / max(freq, 1)) / log(2);
@@ -4265,6 +4322,7 @@ function proc_eq_resp_db(freq) local(resp hpfhz lpfhz slope r octv)
 
   lpfhz = clamp(slider39, 1000, 20000);
   lpfhz < min(19000, srate * 0.47) ? (
+    resp += posteq_cut_res_resp_db(freq, lpfhz, slider46);
     freq > lpfhz ? (
       slope = proc_cut_slope_db(clamp(slider44 | 0, 0, 4));
       octv = log(max(freq, 1) / lpfhz) / log(2);
@@ -4522,7 +4580,7 @@ MASK_S46 = 35184372088832;
 
 CLEAN_BANDS = 5;
 POSTEQ_SPEC_BINS = 48;
-POSTEQ_BQ_COUNT = 11;
+POSTEQ_BQ_COUNT = 13;
 POSTEQ_BQ_STRIDE = 9;
 PUSH_EPS = 0.00000000000000000001;
 LOG10_INV = 1 / log(10);
@@ -4740,6 +4798,8 @@ proc_hpf_coeff = 0.004;
 proc_lpf_coeff = 0.90;
 posteq_spec_att_coeff = 0.18;
 posteq_spec_rel_coeff = 0.02;
+posteq_hpf_res_db = 0;
+posteq_lpf_res_db = 0;
 ui_alt_release_drag = 0;
 form_lp_c1 = 0.02;
 form_lp_c2 = 0.05;
@@ -4862,8 +4922,8 @@ proc_eq_band2_q = clamp(slider41, 0.15, 12);
 proc_eq_band3_q = clamp(slider42, 0.15, 12);
 proc_hpf_slope_idx = clamp(slider43 | 0, 0, 4);
 proc_lpf_slope_idx = clamp(slider44 | 0, 0, 4);
-proc_hpf_q = clamp(slider45, 0.35, 2.5);
-proc_lpf_q = clamp(slider46, 0.35, 2.5);
+proc_hpf_q = clamp(slider45, 0.35, 4.0);
+proc_lpf_q = clamp(slider46, 0.35, 4.0);
 selection_mode = clamp(slider13 | 0, 0, 2);
 sequence_mode = selection_mode == 1 ? 1 : 0;
 walk_mode = selection_mode == 2 ? 1 : 0;
@@ -6896,7 +6956,7 @@ proc_inner_w = max(150, proc_w - 24);
 gfx_setfont(1, "Arial", 11, 0);
 gfx_r = 0.62; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
 gfx_x = proc_inner_x + 8; gfx_y = proc_y + 45;
-gfx_drawstr("Free EQ  |  drag bands  |  wheel Q  |  Shift+wheel HP/LP slope");
+gfx_drawstr("Free EQ  |  drag bands  |  wheel Q/resonance  |  Shift+wheel HP/LP slope");
 
 proc_graph_x = proc_inner_x + 8;
 proc_graph_y = proc_y + 66;
@@ -6914,8 +6974,8 @@ lpf_x = proc_freq_x(slider39, proc_graph_x, proc_graph_w);
 b1_x = proc_freq_x(slider35, proc_graph_x, proc_graph_w);
 b2_x = proc_freq_x(slider36, proc_graph_x, proc_graph_w);
 b3_x = proc_freq_x(slider37, proc_graph_x, proc_graph_w);
-hpf_y = proc_db_y(-15, proc_graph_y, proc_graph_h);
-lpf_y = proc_db_y(-15, proc_graph_y, proc_graph_h);
+hpf_y = proc_db_y(posteq_cut_res_gain_db(slider45), proc_graph_y, proc_graph_h);
+lpf_y = proc_db_y(posteq_cut_res_gain_db(slider46), proc_graph_y, proc_graph_h);
 b1_y = proc_db_y(slider32, proc_graph_y, proc_graph_h);
 b2_y = proc_db_y(slider33, proc_graph_y, proc_graph_h);
 b3_y = proc_db_y(slider34, proc_graph_y, proc_graph_h);
@@ -6927,41 +6987,53 @@ hot_b1 = ((mouse_x - b1_x) * (mouse_x - b1_x) + (mouse_y - b1_y) * (mouse_y - b1
 hot_b2 = ((mouse_x - b2_x) * (mouse_x - b2_x) + (mouse_y - b2_y) * (mouse_y - b2_y)) <= node_r * node_r * 1.8;
 hot_b3 = ((mouse_x - b3_x) * (mouse_x - b3_x) + (mouse_y - b3_y) * (mouse_y - b3_y)) <= node_r * node_r * 1.8;
 
+// Cards are also valid wheel/reset targets. This makes Q/slope editing usable
+// even when the cutoff node is visually parked near the edge of the graph.
+pre_card_gap = 5;
+pre_card_w = (proc_inner_w - pre_card_gap * 4) / 5;
+pre_card_y = proc_cards_y;
+pre_card_h = min(64, proc_cards_h);
+hot_hpf_ctl = hot_hpf || pt_in(proc_inner_x, pre_card_y, pre_card_w, pre_card_h);
+hot_b1_ctl = hot_b1 || pt_in(proc_inner_x + 1 * (pre_card_w + pre_card_gap), pre_card_y, pre_card_w, pre_card_h);
+hot_b2_ctl = hot_b2 || pt_in(proc_inner_x + 2 * (pre_card_w + pre_card_gap), pre_card_y, pre_card_w, pre_card_h);
+hot_b3_ctl = hot_b3 || pt_in(proc_inner_x + 3 * (pre_card_w + pre_card_gap), pre_card_y, pre_card_w, pre_card_h);
+hot_lpf_ctl = hot_lpf || pt_in(proc_inner_x + 4 * (pre_card_w + pre_card_gap), pre_card_y, pre_card_w, pre_card_h);
+
 // Right-click reset.
-mouse_rpressed && hot_hpf ? (slider38 = 20; slider43 = 1; slider45 = 0.707; gfx_slider_mask |= MASK_S38 + MASK_S43 + MASK_S45;);
-mouse_rpressed && hot_lpf ? (slider39 = 20000; slider44 = 1; slider46 = 0.707; gfx_slider_mask |= MASK_S39 + MASK_S44 + MASK_S46;);
-mouse_rpressed && hot_b1 ? (slider35 = 120; slider32 = 0; slider40 = 0.75; gfx_slider_mask |= MASK_S35 + MASK_S32 + MASK_S40;);
-mouse_rpressed && hot_b2 ? (slider36 = 950; slider33 = 0; slider41 = 0.75; gfx_slider_mask |= MASK_S36 + MASK_S33 + MASK_S41;);
-mouse_rpressed && hot_b3 ? (slider37 = 6500; slider34 = 0; slider42 = 0.75; gfx_slider_mask |= MASK_S37 + MASK_S34 + MASK_S42;);
+mouse_rpressed && hot_hpf_ctl ? (slider38 = 20; slider43 = 1; slider45 = 0.707; gfx_slider_mask |= MASK_S38 + MASK_S43 + MASK_S45;);
+mouse_rpressed && hot_lpf_ctl ? (slider39 = 20000; slider44 = 1; slider46 = 0.707; gfx_slider_mask |= MASK_S39 + MASK_S44 + MASK_S46;);
+mouse_rpressed && hot_b1_ctl ? (slider35 = 120; slider32 = 0; slider40 = 0.75; gfx_slider_mask |= MASK_S35 + MASK_S32 + MASK_S40;);
+mouse_rpressed && hot_b2_ctl ? (slider36 = 950; slider33 = 0; slider41 = 0.75; gfx_slider_mask |= MASK_S36 + MASK_S33 + MASK_S41;);
+mouse_rpressed && hot_b3_ctl ? (slider37 = 6500; slider34 = 0; slider42 = 0.75; gfx_slider_mask |= MASK_S37 + MASK_S34 + MASK_S42;);
 
 // Wheel: Q for all nodes. Shift+Wheel: cutoff slope for HPF/LPF.
 (!ui_wheel_used && abs(ui_wheel) >= 1) ? (
   wdir = ui_wheel > 0 ? 1 : -1;
   wsteps = max(1, floor(abs(ui_wheel) / 120 + 0.5));
-  hot_b1 ? (
+  hot_b1_ctl ? (
     slider40 = clamp(slider40 * exp(wdir * wsteps * 0.115), 0.15, 12);
     gfx_slider_mask |= MASK_S40; ui_wheel_used = 1;
-  ) : hot_b2 ? (
+  ) : hot_b2_ctl ? (
     slider41 = clamp(slider41 * exp(wdir * wsteps * 0.115), 0.15, 12);
     gfx_slider_mask |= MASK_S41; ui_wheel_used = 1;
-  ) : hot_b3 ? (
+  ) : hot_b3_ctl ? (
     slider42 = clamp(slider42 * exp(wdir * wsteps * 0.115), 0.15, 12);
     gfx_slider_mask |= MASK_S42; ui_wheel_used = 1;
-  ) : hot_hpf ? (
+  ) : hot_hpf_ctl ? (
     ui_shift ? (
       slider43 = clamp((slider43 | 0) + wdir * wsteps, 0, 4);
       gfx_slider_mask |= MASK_S43;
     ) : (
-      slider45 = clamp(slider45 * exp(wdir * wsteps * 0.075), 0.35, 2.5);
+      slider45 = clamp(slider45 * exp(wdir * wsteps * 0.105), 0.35, 4.0);
       gfx_slider_mask |= MASK_S45;
     );
     ui_wheel_used = 1;
-  ) : hot_lpf ? (
+  ) : hot_lpf_ctl ? (
     ui_shift ? (
       slider44 = clamp((slider44 | 0) + wdir * wsteps, 0, 4);
       gfx_slider_mask |= MASK_S44;
     ) : (
-      slider46 = clamp(slider46 * exp(wdir * wsteps * 0.075), 0.35, 2.5);
+      slider46 = clamp(slider46 * exp(wdir * wsteps * 0.105), 0.35, 4.0);
       gfx_slider_mask |= MASK_S46;
     );
     ui_wheel_used = 1;
@@ -7023,8 +7095,8 @@ lpf_x = proc_freq_x(slider39, proc_graph_x, proc_graph_w);
 b1_x = proc_freq_x(slider35, proc_graph_x, proc_graph_w);
 b2_x = proc_freq_x(slider36, proc_graph_x, proc_graph_w);
 b3_x = proc_freq_x(slider37, proc_graph_x, proc_graph_w);
-hpf_y = proc_db_y(-15, proc_graph_y, proc_graph_h);
-lpf_y = proc_db_y(-15, proc_graph_y, proc_graph_h);
+hpf_y = proc_db_y(posteq_cut_res_gain_db(slider45), proc_graph_y, proc_graph_h);
+lpf_y = proc_db_y(posteq_cut_res_gain_db(slider46), proc_graph_y, proc_graph_h);
 b1_y = proc_db_y(slider32, proc_graph_y, proc_graph_h);
 b2_y = proc_db_y(slider33, proc_graph_y, proc_graph_h);
 b3_y = proc_db_y(slider34, proc_graph_y, proc_graph_h);
@@ -7114,11 +7186,11 @@ proc_draw_node(b3_x, b3_y, node_r, hot_b3, ui_active == PROC_EQ_B3_ID, 3);
 proc_draw_node(lpf_x, lpf_y, node_r, hot_lpf, ui_active == PROC_EQ_LPF_ID, 4);
 
 // Specific node hover IDs for clear tooltips.
-hot_hpf || ui_active == PROC_EQ_HPF_ID ? ui_hover_id = PROC_EQ_HPF_ID;
-hot_b1 || ui_active == PROC_EQ_B1_ID ? ui_hover_id = PROC_EQ_B1_ID;
-hot_b2 || ui_active == PROC_EQ_B2_ID ? ui_hover_id = PROC_EQ_B2_ID;
-hot_b3 || ui_active == PROC_EQ_B3_ID ? ui_hover_id = PROC_EQ_B3_ID;
-hot_lpf || ui_active == PROC_EQ_LPF_ID ? ui_hover_id = PROC_EQ_LPF_ID;
+hot_hpf_ctl || ui_active == PROC_EQ_HPF_ID ? ui_hover_id = PROC_EQ_HPF_ID;
+hot_b1_ctl || ui_active == PROC_EQ_B1_ID ? ui_hover_id = PROC_EQ_B1_ID;
+hot_b2_ctl || ui_active == PROC_EQ_B2_ID ? ui_hover_id = PROC_EQ_B2_ID;
+hot_b3_ctl || ui_active == PROC_EQ_B3_ID ? ui_hover_id = PROC_EQ_B3_ID;
+hot_lpf_ctl || ui_active == PROC_EQ_LPF_ID ? ui_hover_id = PROC_EQ_LPF_ID;
 
 // Bottom cards.
 card_gap = 5;
@@ -7144,11 +7216,11 @@ while (ci < 5) (
   : (slider39 >= 19000 ? sprintf(#ui_buf, "off") : sprintf(#ui_buf, "%.0f Hz", slider39));
   draw_center_buf(cxv, card_y + 27, card_w);
   gfx_r = 0.62; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
-  ci == 0 ? sprintf(#ui_buf, "Q%.2f %ddB/oct", slider45, proc_cut_slope_db(slider43 | 0))
+  ci == 0 ? sprintf(#ui_buf, "Q%.2f +%.1fdB", slider45, posteq_cut_res_gain_db(slider45))
   : ci == 1 ? sprintf(#ui_buf, "Q %.2f", slider40)
   : ci == 2 ? sprintf(#ui_buf, "Q %.2f", slider41)
   : ci == 3 ? sprintf(#ui_buf, "Q %.2f", slider42)
-  : sprintf(#ui_buf, "Q%.2f %ddB/oct", slider46, proc_cut_slope_db(slider44 | 0));
+  : sprintf(#ui_buf, "Q%.2f +%.1fdB", slider46, posteq_cut_res_gain_db(slider46));
   draw_center_buf(cxv, card_y + 45, card_w);
   ci += 1;
 );
@@ -7326,7 +7398,7 @@ ui_hover_id == 1501 ? (
 );
 ui_hover_id == PROC_EQ_HPF_ID ? (
   sprintf(#tip_title, "HPF");
-  sprintf(#tip_body, "High-pass filter. Drag left/right; wheel Q %.2f; Shift+wheel slope %d dB/oct; right-click resets.", slider45, proc_cut_slope_db(slider43 | 0));
+  sprintf(#tip_body, "High-pass filter. Drag left/right; wheel Q %.2f / resonance +%.1f dB; Shift+wheel slope %d dB/oct; right-click resets.", slider45, posteq_cut_res_gain_db(slider45), proc_cut_slope_db(slider43 | 0));
 );
 ui_hover_id == PROC_EQ_B1_ID ? (
   sprintf(#tip_title, "Band 1");
@@ -7342,7 +7414,7 @@ ui_hover_id == PROC_EQ_B3_ID ? (
 );
 ui_hover_id == PROC_EQ_LPF_ID ? (
   sprintf(#tip_title, "LPF");
-  sprintf(#tip_body, "Low-pass filter. Drag left/right; wheel Q %.2f; Shift+wheel slope %d dB/oct; right-click resets.", slider46, proc_cut_slope_db(slider44 | 0));
+  sprintf(#tip_body, "Low-pass filter. Drag left/right; wheel Q %.2f / resonance +%.1f dB; Shift+wheel slope %d dB/oct; right-click resets.", slider46, posteq_cut_res_gain_db(slider46), proc_cut_slope_db(slider44 | 0));
 );
 
 draw_tooltip_box();
