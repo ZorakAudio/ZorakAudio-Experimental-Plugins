@@ -2512,12 +2512,7 @@ public:
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
     void setCurrentProgram (int) override {}
-
-    const juce::String getProgramName (int index) override
-    {
-        return index == 0 ? juce::String ("Default") : juce::String {};
-    }
-
+    const juce::String getProgramName (int) override { return {}; }
     void changeProgramName (int, const juce::String&) override {}
 
     void prepareToPlay (double sampleRate, int samplesPerBlockExpected) override
@@ -3147,19 +3142,6 @@ public:
             stringSliderTexts[(size_t) index0] = text;
         }
         stringSliderSeq[(size_t) index0].fetch_add (1u, std::memory_order_acq_rel);
-    }
-
-
-    bool isStringSliderAliasVarIndex (int varIndex) const noexcept
-    {
-        if (varIndex < 0)
-            return false;
-
-        for (size_t i = 0; i < sliderAliasVarIndex.size(); ++i)
-            if (sliderStringUsed[i] && sliderAliasVarIndex[i] == varIndex)
-                return true;
-
-        return false;
     }
 
    #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
@@ -10085,13 +10067,14 @@ public:
         genericPrefW = juce::jmax (kMinEditorWidth, genericEditor.preferredWidth());
         genericPrefH = genericEditor.hasAnyVisibleControls() ? genericEditor.preferredHeight() : 0;
 
-        const bool hasGfx      = gfxView.isVisible();
+        const bool hasGfx      = gfxView.hasGfx();
         const bool hasControls = genericEditor.hasAnyVisibleControls();
+        const auto screenBudget = getScreenAwareEditorBudget();
 
         const auto plan = za::pluginui::planEditorSections (kTopBarH,
                                                             kMinEditorWidth,
-                                                            kMaxEditorWidth,
-                                                            kMaxEditorHeight,
+                                                            screenBudget.maxWidth,
+                                                            screenBudget.maxHeight,
                                                             hasControls,
                                                             genericPrefW,
                                                             genericPrefH,
@@ -10101,12 +10084,17 @@ public:
                                                             kSectionGap,
                                                             kMinimumScaledGfxHeight);
 
-        setResizeLimits (plan.minWidth,
-                         juce::jmax (kTopBarH + 120, plan.minHeight),
-                         juce::jmax (kMaxEditorWidth, plan.minWidth),
-                         juce::jmax (kMaxEditorHeight, plan.minHeight));
+        const auto resizeLimits = computeEditorResizeLimits (plan, screenBudget, hasControls, hasGfx);
+        setResizeLimits (resizeLimits.minWidth,
+                         resizeLimits.minHeight,
+                         resizeLimits.maxWidth,
+                         resizeLimits.maxHeight);
 
-        setSize (plan.initialWidth, juce::jmax (plan.minHeight, plan.initialHeight));
+        // The JSFX @gfx declaration is the requested opening GFX area. The
+        // #GFX_RESIZE policy decides whether that declared size is also a
+        // minimum/fixed canvas or only the responsive initial target.
+        setSize (juce::jlimit (resizeLimits.minWidth, resizeLimits.maxWidth, plan.initialWidth),
+                 juce::jlimit (resizeLimits.minHeight, resizeLimits.maxHeight, plan.initialHeight));
     }
 
     ~JSFXJuceEditor() override
@@ -10156,7 +10144,7 @@ public:
         }
        #endif
 
-        const bool hasGfx      = gfxView.isVisible();
+        const bool hasGfx      = gfxView.hasGfx();
         const bool hasControls = genericEditor.hasAnyVisibleControls();
 
         genericPrefW = juce::jmax (kMinEditorWidth, genericEditor.preferredWidth());
@@ -10216,6 +10204,31 @@ public:
        #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
         correctnessOverlay.setBounds (getLocalBounds());
        #endif
+    }
+
+    void parentHierarchyChanged() override
+    {
+        const bool hasGfx = gfxView.hasGfx();
+        const bool hasControls = genericEditor.hasAnyVisibleControls();
+        const auto screenBudget = getScreenAwareEditorBudget();
+        const auto plan = za::pluginui::planEditorSections (kTopBarH,
+                                                            kMinEditorWidth,
+                                                            screenBudget.maxWidth,
+                                                            screenBudget.maxHeight,
+                                                            hasControls,
+                                                            genericPrefW,
+                                                            genericPrefH,
+                                                            hasGfx,
+                                                            getDeclaredGfxPreferredWidth(),
+                                                            getDeclaredGfxPreferredHeight(),
+                                                            kSectionGap,
+                                                            kMinimumScaledGfxHeight);
+
+        const auto resizeLimits = computeEditorResizeLimits (plan, screenBudget, hasControls, hasGfx);
+        setResizeLimits (resizeLimits.minWidth,
+                         resizeLimits.minHeight,
+                         resizeLimits.maxWidth,
+                         resizeLimits.maxHeight);
     }
 
     bool keyPressed (const juce::KeyPress& key) override
@@ -10473,6 +10486,76 @@ private:
     static constexpr int kFallbackGfxWidth = 640;
     static constexpr int kFallbackGfxHeight = 360;
     static constexpr int kMinimumScaledGfxHeight = 240;
+    static constexpr double kMaxScreenWidthFraction = 0.92;
+    static constexpr double kMaxScreenHeightFraction = 0.88;
+
+    struct EditorScreenBudget
+    {
+        int maxWidth = kMaxEditorWidth;
+        int maxHeight = kMaxEditorHeight;
+    };
+
+    struct EditorResizeLimits
+    {
+        int minWidth = kMinEditorWidth;
+        int minHeight = kTopBarH + 120;
+        int maxWidth = kMaxEditorWidth;
+        int maxHeight = kMaxEditorHeight;
+    };
+
+    EditorResizeLimits computeEditorResizeLimits (const za::pluginui::ScaledSectionLayout& plan,
+                                                     const EditorScreenBudget& screenBudget,
+                                                     bool hasControls,
+                                                     bool hasGfx) const noexcept
+    {
+        EditorResizeLimits out;
+        out.maxWidth = juce::jmax (screenBudget.maxWidth, kMinEditorWidth);
+        out.maxHeight = juce::jmax (screenBudget.maxHeight, kTopBarH + 120);
+
+        int desiredMinW = plan.minWidth;
+        int desiredMinH = juce::jmax (kTopBarH + 120, plan.minHeight);
+
+        if (hasGfx && gfxView.declaredSizeIsMinimum())
+        {
+            desiredMinW = juce::jmax (desiredMinW, getDeclaredGfxPreferredWidth());
+
+            const int gap = hasControls ? kSectionGap : 0;
+            const int minControlsH = hasControls ? getMinControlsViewportHeight() : 0;
+            const int declaredGfxH = getDeclaredGfxPreferredHeight();
+            desiredMinH = juce::jmax (desiredMinH, kTopBarH + minControlsH + gap + declaredGfxH);
+        }
+
+        out.minWidth = juce::jlimit (kMinEditorWidth, out.maxWidth, desiredMinW);
+        out.minHeight = juce::jlimit (kTopBarH + 120, out.maxHeight, desiredMinH);
+        out.maxWidth = juce::jmax (out.maxWidth, out.minWidth);
+        out.maxHeight = juce::jmax (out.maxHeight, out.minHeight);
+        return out;
+    }
+
+    EditorScreenBudget getScreenAwareEditorBudget() const
+    {
+        juce::Rectangle<int> userArea;
+
+        const auto& displays = juce::Desktop::getInstance().getDisplays();
+        if (auto* display = displays.getDisplayForRect (getScreenBounds(), false))
+            userArea = display->userArea;
+
+        if (userArea.isEmpty())
+        {
+            if (auto* display = displays.getPrimaryDisplay())
+                userArea = display->userArea;
+        }
+
+        if (userArea.isEmpty())
+            userArea = { 0, 0, kMaxEditorWidth, kMaxEditorHeight };
+
+        return { juce::jlimit (kMinEditorWidth,
+                               kMaxEditorWidth,
+                               (int) std::lround ((double) userArea.getWidth() * kMaxScreenWidthFraction)),
+                 juce::jlimit (kTopBarH + 120,
+                               kMaxEditorHeight,
+                               (int) std::lround ((double) userArea.getHeight() * kMaxScreenHeightFraction)) };
+    }
 
     int getDeclaredGfxPreferredWidth() const noexcept
     {
@@ -10486,18 +10569,12 @@ private:
         return pref > 0 ? pref : kFallbackGfxHeight;
     }
 
-    int getScaledDeclaredGfxPreferredHeightForWidth (int availableWidth) const noexcept
+    int getScaledDeclaredGfxPreferredHeightForWidth (int /*availableWidth*/) const noexcept
     {
-        const int prefW = getDeclaredGfxPreferredWidth();
-        const int prefH = getDeclaredGfxPreferredHeight();
-
-        if (prefW <= 0 || prefH <= 0)
-            return prefH;
-
-        const int width = juce::jmax (1, availableWidth);
-        const double scale = (double) width / (double) prefW;
-        return juce::jmax (kMinimumScaledGfxHeight,
-                           (int) std::llround ((double) prefH * scale));
+        // The preferred @gfx height is authoritative for the initial layout.
+        // Actual resizing is reported to the JSFX by assigning GfxView the real
+        // remaining bounds, not by pre-scaling the declared height here.
+        return getDeclaredGfxPreferredHeight();
     }
 
     int getMinControlsViewportHeight() const noexcept
@@ -11393,10 +11470,22 @@ class GfxView final : public juce::Component,
                       private juce::AsyncUpdater
 {
 public:
+    enum class ResizePolicy
+    {
+        fixed,
+        responsive,
+        scale,
+        scaleUp,
+        scaleDown
+    };
+
     explicit GfxView (JSFXJuceProcessor& p)
         : processor (p)
     {
-        setOpaque (true);
+        // The canvas may deliberately occupy only part of this component
+        // for fixed/scaled modes. Let the editor background show through
+        // instead of painting unused area as a giant black GFX surface.
+        setOpaque (false);
         setInterceptsMouseClicks (true, true);
 
         setWantsKeyboardFocus (true);
@@ -11429,12 +11518,13 @@ public:
             gfxPrefH = interp->preferredHeight();
         }
 
+        gfxResizePolicy = parseGfxResizePolicy (kJsfxSourceText);
+
         if (hasGfxFlag && gfxCompiledOkFlag)
         {
             interp->setMenuPort (&menuBridge);
             processor.registerGfxSnapshotClient();
-            targetWidth.store (juce::jmax (1, getWidth()), std::memory_order_release);
-            targetHeight.store (juce::jmax (1, getHeight()), std::memory_order_release);
+            updateRenderTargetSize();
             startWorker();
         }
     }
@@ -11455,6 +11545,28 @@ public:
     bool hasGfx() const noexcept { return hasGfxFlag; }
     int preferredHeight() const noexcept { return gfxPrefH; }
     int preferredWidth()  const noexcept { return gfxPrefW; }
+    ResizePolicy resizePolicy() const noexcept { return gfxResizePolicy; }
+
+    bool declaredSizeIsMinimum() const noexcept
+    {
+        switch (gfxResizePolicy)
+        {
+            case ResizePolicy::scale:
+            case ResizePolicy::scaleDown:
+                return false;
+
+            case ResizePolicy::fixed:
+            case ResizePolicy::responsive:
+            case ResizePolicy::scaleUp:
+            default:
+                return true;
+        }
+    }
+
+    bool usesResponsiveGfxSize() const noexcept
+    {
+        return gfxResizePolicy == ResizePolicy::responsive;
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -11490,21 +11602,20 @@ public:
         }
 
         if (frame.isNull())
-        {
-            g.fillAll (juce::Colours::black);
             return;
-        }
 
+        const auto placement = getFramePlacement (getWidth(), getHeight());
+        g.saveState();
+        g.addTransform (juce::AffineTransform::scale (placement.scale)
+                            .translated (placement.offsetX, placement.offsetY));
         g.drawImageAt (frame, 0, 0);
+        g.restoreState();
     }
 
     void resized() override
     {
         menuOverlay.setBounds (getLocalBounds());
-
-        targetWidth.store (juce::jmax (1, getWidth()), std::memory_order_release);
-        targetHeight.store (juce::jmax (1, getHeight()), std::memory_order_release);
-        canvasResetRequested.store (true, std::memory_order_release);
+        updateRenderTargetSize();
 
         notifyWorker();
         repaint();
@@ -11537,9 +11648,11 @@ public:
         {
             const std::lock_guard<std::mutex> lock (inputMutex);
 
+            const auto logical = physicalToLogical (e.position);
+
             MouseStateFrame frame;
-            frame.mouseX = (float) e.position.x;
-            frame.mouseY = (float) e.position.y;
+            frame.mouseX = logical.x;
+            frame.mouseY = logical.y;
             frame.mouseCap = mouseCap;
             frame.pendingWheel = (float) (d.deltaY * 120.0);
             frame.pendingHWheel = (float) (d.deltaX * 120.0);
@@ -11944,6 +12057,180 @@ private:
         std::function<void()> workerWake;
     };
 
+    static std::string lowerAsciiLocal (std::string text)
+    {
+        std::transform (text.begin(), text.end(), text.begin(), [] (unsigned char c)
+        {
+            return (char) std::tolower (c);
+        });
+        return text;
+    }
+
+    static ResizePolicy parseGfxResizePolicyToken (std::string token) noexcept
+    {
+        token = lowerAsciiLocal (trimAscii (std::move (token)));
+        std::replace (token.begin(), token.end(), '-', '_');
+
+        if (token == "responsive" || token == "resize" || token == "resizable" || token == "native")
+            return ResizePolicy::responsive;
+
+        if (token == "scale" || token == "scaled" || token == "scale_both" || token == "scaled_both")
+            return ResizePolicy::scale;
+
+        if (token == "scale_up" || token == "up" || token == "grow" || token == "scaleup")
+            return ResizePolicy::scaleUp;
+
+        if (token == "scale_down" || token == "down" || token == "shrink" || token == "scaledown")
+            return ResizePolicy::scaleDown;
+
+        return ResizePolicy::fixed;
+    }
+
+    static ResizePolicy parseGfxResizePolicy (const char* jsfxText)
+    {
+        if (jsfxText == nullptr)
+            return ResizePolicy::responsive;
+
+        std::string text (jsfxText);
+        size_t start = 0;
+
+        const std::regex reComment (R"(^\s*//\s*#GFX_RESIZE:\s*([^\s;#]+).*$)",
+                                    std::regex::ECMAScript | std::regex::icase);
+        const std::regex reOptions (R"(^\s*options\s*:\s*(.*)$)",
+                                    std::regex::ECMAScript | std::regex::icase);
+        const std::regex reOptionValue (R"((?:^|[\s,])gfx_resize\s*=\s*([^\s,]+))",
+                                        std::regex::ECMAScript | std::regex::icase);
+
+        while (start < text.size())
+        {
+            size_t end = text.find_first_of ("\r\n", start);
+            if (end == std::string::npos)
+                end = text.size();
+
+            const std::string line = text.substr (start, end - start);
+
+            size_t next = end;
+            while (next < text.size() && (text[next] == '\r' || text[next] == '\n'))
+                ++next;
+            start = next;
+
+            std::smatch m;
+            if (std::regex_match (line, m, reComment))
+                return parseGfxResizePolicyToken (m[1].str());
+
+            if (std::regex_match (line, m, reOptions))
+            {
+                const std::string payload = m[1].str();
+                std::smatch ov;
+                if (std::regex_search (payload, ov, reOptionValue))
+                    return parseGfxResizePolicyToken (ov[1].str());
+            }
+        }
+
+        // Preserve the v6 behavior when the script has no explicit policy: @gfx
+        // is the requested/minimum responsive size, and user/host resizing is
+        // passed through as live gfx_w/gfx_h. Fixed legacy UIs should declare:
+        // // #GFX_RESIZE: fixed
+        return ResizePolicy::responsive;
+    }
+
+    struct FramePlacement
+    {
+        float scale = 1.0f;
+        float offsetX = 0.0f;
+        float offsetY = 0.0f;
+        int renderW = 1;
+        int renderH = 1;
+    };
+
+    int declaredCanvasWidth() const noexcept
+    {
+        return juce::jmax (1, gfxPrefW > 0 ? gfxPrefW : 640);
+    }
+
+    int declaredCanvasHeight() const noexcept
+    {
+        return juce::jmax (1, gfxPrefH > 0 ? gfxPrefH : 360);
+    }
+
+    FramePlacement getFramePlacement (int viewW, int viewH) const noexcept
+    {
+        FramePlacement out;
+
+        if (gfxResizePolicy == ResizePolicy::responsive)
+        {
+            out.renderW = juce::jmax (1, viewW);
+            out.renderH = juce::jmax (1, viewH);
+            return out;
+        }
+
+        out.renderW = declaredCanvasWidth();
+        out.renderH = declaredCanvasHeight();
+
+        const float sx = (float) juce::jmax (1, viewW) / (float) out.renderW;
+        const float sy = (float) juce::jmax (1, viewH) / (float) out.renderH;
+        const float fit = juce::jmax (0.0001f, juce::jmin (sx, sy));
+
+        switch (gfxResizePolicy)
+        {
+            case ResizePolicy::scale:
+                out.scale = fit;
+                break;
+
+            case ResizePolicy::scaleUp:
+                out.scale = juce::jmax (1.0f, fit);
+                break;
+
+            case ResizePolicy::scaleDown:
+                out.scale = juce::jmin (1.0f, fit);
+                break;
+
+            case ResizePolicy::fixed:
+            case ResizePolicy::responsive:
+            default:
+                out.scale = 1.0f;
+                break;
+        }
+
+        const float visualW = (float) out.renderW * out.scale;
+        const float visualH = (float) out.renderH * out.scale;
+
+        const bool centeringHelps = gfxResizePolicy == ResizePolicy::scale
+                                 || (gfxResizePolicy == ResizePolicy::scaleUp && out.scale > 1.0f)
+                                 || (gfxResizePolicy == ResizePolicy::scaleDown && out.scale < 1.0f);
+
+        if (centeringHelps)
+        {
+            out.offsetX = ((float) viewW - visualW) * 0.5f;
+            out.offsetY = ((float) viewH - visualH) * 0.5f;
+        }
+
+        return out;
+    }
+
+    void updateRenderTargetSize()
+    {
+        const auto placement = getFramePlacement (getWidth(), getHeight());
+        targetWidth.store (placement.renderW, std::memory_order_release);
+        targetHeight.store (placement.renderH, std::memory_order_release);
+        canvasResetRequested.store (true, std::memory_order_release);
+    }
+
+    juce::Point<float> physicalToLogical (juce::Point<float> physical) const noexcept
+    {
+        const auto placement = getFramePlacement (getWidth(), getHeight());
+        const float safeScale = juce::jmax (placement.scale, 0.0001f);
+        return { (physical.x - placement.offsetX) / safeScale,
+                 (physical.y - placement.offsetY) / safeScale };
+    }
+
+    juce::Point<float> logicalToPhysical (juce::Point<float> logical) const noexcept
+    {
+        const auto placement = getFramePlacement (getWidth(), getHeight());
+        return { placement.offsetX + logical.x * placement.scale,
+                 placement.offsetY + logical.y * placement.scale };
+    }
+
     void handleAsyncUpdate() override
     {
         bool repaintNeeded = repaintPending.exchange (false, std::memory_order_acq_rel);
@@ -11962,7 +12249,9 @@ private:
         int menuY = 0;
         if (menuBridge.takePendingOpen (menuDesc, menuX, menuY))
         {
-            menuOverlay.openMenu (menuDesc, { menuX, menuY });
+            const auto menuPos = logicalToPhysical ({ (float) menuX, (float) menuY });
+            menuOverlay.openMenu (menuDesc, { (int) std::lround (menuPos.x),
+                                              (int) std::lround (menuPos.y) });
             if (! menuOverlay.isMenuShowing())
                 menuBridge.completeMenu (0);
             repaintNeeded = true;
@@ -12058,9 +12347,11 @@ private:
         {
             const std::lock_guard<std::mutex> lock (inputMutex);
 
+            const auto logical = physicalToLogical (e.position);
+
             MouseStateFrame frame;
-            frame.mouseX = (float) e.position.x;
-            frame.mouseY = (float) e.position.y;
+            frame.mouseX = logical.x;
+            frame.mouseY = logical.y;
             frame.mouseCap = mouseCap;
             frame.captureStateWrites = markDirty;
             frame.preserveOrdering = preserveOrdering;
@@ -12344,43 +12635,7 @@ private:
 
         interp->setMouse (inputCopy.mouseX, inputCopy.mouseY, inputCopy.mouseCap,
                           inputCopy.pendingWheel, inputCopy.pendingHWheel);
-
-        // Keep @gfx named string variables for string sliders synchronized with
-        // the host-backed string-slider store before the script frame runs.
-        // This makes custom @gfx text boxes and native string sliders agree.
-        for (const auto& sd : processor.getJsfxSliderDecls())
-        {
-            if (! sd.isString || sd.index0 < 0 || sd.index0 >= 64 || sd.varName.isEmpty())
-                continue;
-
-            interp->syncStringVarUtf8 (sd.varName.toRawUTF8(),
-                                       processor.getStringSliderText (sd.index0));
-        }
-
         interp->renderFrame (w, h, s);
-
-        // Read any @gfx-authored string-slider alias changes back into the
-        // processor's authoritative string-slider store. The audio thread will
-        // apply them at the next block via applyStringSlidersToState().
-        bool stringSliderChangedFromGfx = false;
-        for (const auto& sd : processor.getJsfxSliderDecls())
-        {
-            if (! sd.isString || sd.index0 < 0 || sd.index0 >= 64 || sd.varName.isEmpty())
-                continue;
-
-            juce::String gfxText;
-            if (! interp->readStringVarUtf8 (sd.varName.toRawUTF8(), gfxText))
-                continue;
-
-            gfxText = gfxText.substring (0, 1024);
-            if (gfxText != processor.getStringSliderText (sd.index0))
-            {
-                processor.setStringSliderText (sd.index0, gfxText);
-                stringSliderChangedFromGfx = true;
-            }
-        }
-        if (stringSliderChangedFromGfx)
-            wrotePersistentVmState = true;
 
         if (captureStateWrites)
         {
@@ -12398,12 +12653,6 @@ private:
 
                 if (a == b) continue;
                 if (std::isnan (a) && std::isnan (b)) continue;
-
-                // String slider aliases are opaque string handles. Do not
-                // mirror the @gfx VM's numeric handle back into the DSP VM; the
-                // UTF-8 text bridge above owns those updates.
-                if (processor.isStringSliderAliasVarIndex (i))
-                    continue;
 
                 wrotePersistentVmState = true;
                 processor.enqueueGfxVarWrite (i, b);
@@ -12645,6 +12894,7 @@ private:
     juce::String gfxLastError;
     int gfxPrefW = 0;
     int gfxPrefH = 0;
+    ResizePolicy gfxResizePolicy = ResizePolicy::responsive;
 
     GfxMenuOverlay menuOverlay;
     MenuBridge menuBridge;

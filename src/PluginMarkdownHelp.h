@@ -1016,9 +1016,11 @@ inline ScaledSectionLayout planEditorSections (int topBarHeight,
 
     if (hasGfx && gfxW > 0)
     {
-        const double scale = (double) plan.initialWidth / (double) gfxW;
-        plan.initialGfxHeight = juce::jmax (minimumGfxHeight,
-                                            (int) std::llround ((double) gfxH * scale));
+        // Treat the JSFX @gfx dimensions as the requested initial GFX area.
+        // Responsive scripts still receive the actual allocated size after the
+        // host/user resizes the editor; this planner only chooses the opening
+        // request and accounts for generated controls/chrome around it.
+        plan.initialGfxHeight = gfxH;
     }
     else
     {
