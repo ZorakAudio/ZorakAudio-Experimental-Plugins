@@ -1,6 +1,9 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v18-formantdrive)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v23-freeband-posteq)
 tags:instrument sampler ui
 
+// v23 FreeBand PostEQ: three free parametric bands plus HPF/LPF, graph control, Q/slope gestures, and spectrum underlay.
+// v22 PostEQ removed the Shaper page and kept Processing as final-output EQ.
+// v19 AutoRelease: sample-tail analysis adds a release floor and graceful EOF/tail-grain fades.
 // v18 FormantDrive: Shift+drag Pitch controls an audible hidden transient-safe formant/resonance shift.
 // v13 CrossFlow: keeps v12 learned continuation, but prevents same-take reconstruction loops.
 // Slot 0 is the load-and-go sample bank.
@@ -15,21 +18,26 @@ filename:0,sample.wav
 // #HELP: v15 BrightCal uses a filterbank brightness meter and bank-aware Color scaling.
 // #HELP: v16 FocusCal makes Focus bank-aware: high attack-focus banks soften harder and clarify more cautiously; dull banks clarify harder and soften more cautiously.
 // #HELP: v18 strengthens Shift+drag Pitch formant shifting: audible spectral-envelope warp plus resonance drive, still transient-protected.
+// #HELP: v19 AutoRelease analyzes each sample tail, extends too-short MIDI releases when needed, and fades source endings so EOF does not chop.
+// #HELP: v23 FreeBand PostEQ adds a spectrum-underlaid final EQ: HPF, LPF, and three draggable parametric bands with Q and cutoff slope control.
 // #HELP:
 // #HELP: ## Quick start
-// #HELP: 1. Insert Sample. 2. On slot 0, choose Open Multiple... and select files. 3. Play MIDI notes. 4. Choose Random, Sequence, or Walk. 5. Shape with Envelope, Playback, Clean, Room Tame, Push, and Output.
+// #HELP: 1. Insert Sample. 2. On slot 0, choose Open Multiple... and select files. 3. Play MIDI notes. 4. Choose Random, Sequence, or Walk. 5. Shape with Envelope, Playback, Post-Processing, Clean, Room Tame, Push, and Output.
 // #HELP:
 // #HELP: ## Selection modes
 // #HELP: Random picks from the full bank with anti-repeat weighting. Sequence steps through loaded files. Walk bridges from the previous sample using brightness, focus, transient richness, length, pitch confidence, body span, and tail span.
 // #HELP:
 // #HELP: ## Envelope
-// #HELP: Attack, Hold, Decay, Sustain, and Release shape each trigger. Shift+Wheel on Attack, Decay, or Release changes slope from -100% to +100%; 0% is linear. Defaults preserve the original curve behavior.
+// #HELP: Attack, Hold, Decay, Sustain, and Release shape each trigger. Shift+Wheel on Attack, Decay, or Release changes slope from -100% to +100%; 0% is linear. Release is also protected by sample-dependent AutoRelease when a source would otherwise chop; Shift+drag Release changes hidden Tail Grace.
 // #HELP:
 // #HELP: ## Playback engines
 // #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack. Granular uses the stable HybridCore grain layer with the direct path muted, then adds cross-sample learned-flow continuity, restrained swells, phase motion, rare release blooms, and grain-level decorrelation.
 // #HELP:
 // #HELP: ## Cleanup and depth
 // #HELP: Clean reduces low-level hiss/room bed. Room Tame restrains late room smear. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement.
+// #HELP:
+// #HELP: ## Post-Processing
+// #HELP: The Post-Processing panel is a final-output EQ editor with live spectrum underlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope.
 // #HELP:
 // #HELP: ## Tone and feel
 // #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Pitch adjusts hidden formant/resonance shift. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection.
@@ -76,6 +84,21 @@ slider27:0<0,100,0.1>--Push (%)
 slider28:100<-100,100,1>--Attack slope (%)
 slider29:-100<-100,100,1>--Decay slope (%)
 slider30:-100<-100,100,1>--Release slope (%)
+slider32:0<-18,18,0.1>--EQ Band 1 Gain (dB)
+slider33:0<-18,18,0.1>--EQ Band 2 Gain (dB)
+slider34:0<-18,18,0.1>--EQ Band 3 Gain (dB)
+slider35:120<20,20000,1>--EQ Band 1 Freq (Hz)
+slider36:950<20,20000,1>--EQ Band 2 Freq (Hz)
+slider37:6500<20,20000,1>--EQ Band 3 Freq (Hz)
+slider38:20<20,1000,1>--EQ HPF (Hz)
+slider39:20000<1000,20000,1>--EQ LPF (Hz)
+slider40:0.75<0.15,12,0.01>--EQ Band 1 Q
+slider41:0.75<0.15,12,0.01>--EQ Band 2 Q
+slider42:0.75<0.15,12,0.01>--EQ Band 3 Q
+slider43:1<0,4,1{6,12,24,36,48}>--EQ HPF Slope
+slider44:1<0,4,1{6,12,24,36,48}>--EQ LPF Slope
+slider45:0.707<0.35,2.5,0.001>--EQ HPF Q
+slider46:0.707<0.35,2.5,0.001>--EQ LPF Q
 @init
 /*
 Runtime sample-pool API used here:
@@ -1583,6 +1606,98 @@ function estimate_brightness_metric(ptr nch sr start scan) local(
   br;
 );
 
+
+function estimate_sample_tail_grace(sm) local(
+  ptr nch sr frames head tail span len_ms tail_ms
+  chunks chunk_len stride c a b i x ax n e first_e last_e mean_e max_e prev_e rise_e
+  end_ratio rms_ratio tail_presence end_hot end_rise trans bright focus auto_ms fade_ms short_guard hot
+)
+(
+  // v19 AutoRelease: per-sample ending analysis. The goal is not to make every
+  // sample long; it is to stop energetic or room-like endings from being hard-cut
+  // by a short MIDI Release or by reaching EOF before the envelope has time to land.
+  ptr    = sm[SM_PTR] | 0;
+  nch    = max(1, sm[SM_NCH] | 0);
+  sr     = max(1000, sm[SM_SR]);
+  frames = sm[SM_FRAMES] | 0;
+  head   = clamp(sm[SM_HEADEND] | 0, 0, max(0, frames - 2));
+  tail   = clamp(sm[SM_TAILSTART] | 0, head + 1, max(head + 1, frames - 2));
+
+  len_ms = 1000 * frames / max(sr, 1);
+  span = max(1, frames - tail);
+  tail_ms = 1000 * span / max(sr, 1);
+
+  chunks = clamp(floor(tail_ms / 22), 4, 12);
+  chunk_len = max(32, floor(span / chunks));
+  stride = max(1, floor(chunk_len / 192));
+
+  first_e = 0;
+  last_e = 0;
+  mean_e = 0;
+  max_e = 0;
+  prev_e = 0;
+  rise_e = 0;
+
+  c = 0;
+  while (c < chunks) (
+    a = clamp(tail + c * chunk_len, tail, max(tail, frames - 2));
+    b = c == chunks - 1 ? frames - 1 : clamp(a + chunk_len, a + 1, frames - 1);
+    e = 0;
+    n = 0;
+    i = a;
+    while (i < b) (
+      x = mono_frame(ptr, nch, i);
+      ax = abs(x);
+      e += ax;
+      n += 1;
+      i += stride;
+    );
+    e /= max(1, n);
+
+    c == 0 ? first_e = e;
+    c == chunks - 1 ? last_e = e;
+    c > 0 ? rise_e = max(rise_e, e - prev_e);
+    prev_e = e;
+    mean_e += e;
+    max_e = max(max_e, e);
+    c += 1;
+  );
+
+  mean_e /= max(1, chunks);
+  trans = clamp01(sm[SM_FLAGS]);
+  bright = clamp01(sm[SM_BRIGHT]);
+  focus = clamp01(sm[SM_SHARP]);
+
+  end_ratio = clamp01(last_e / max(mean_e, 0.000000001));
+  rms_ratio = clamp01(last_e / max(sm[SM_RMS], 0.000000001));
+  tail_presence = clamp01((tail_ms - 35) / 520);
+  end_hot = clamp01((rms_ratio - 0.020) / 0.22);
+  end_rise = clamp01(rise_e / max(mean_e, 0.000000001));
+  short_guard = clamp01((len_ms - 38) / 220);
+
+  // "Hot" means the end is not safely silent. It can be an abrupt chopped hit,
+  // a room tail, a noisy sustain, or a pitched decay that is still audible.
+  hot = clamp01(end_hot * 0.62 + end_ratio * 0.28 + end_rise * 0.10);
+
+  auto_ms = 18
+    + tail_presence * (36 + 90 * (1 - trans) + 28 * bright)
+    + hot * (52 + 210 * tail_presence + 45 * focus)
+    + end_rise * 70;
+  auto_ms *= lerp(0.42, 1.0, short_guard);
+  auto_ms = clamp(auto_ms, 10, min(900, max(24, len_ms * 0.65)));
+
+  fade_ms = 8
+    + tail_presence * (24 + 76 * (1 - trans))
+    + hot * (34 + 165 * tail_presence + 32 * bright)
+    + end_rise * 72;
+  fade_ms *= lerp(0.48, 1.0, short_guard);
+  fade_ms = clamp(fade_ms, 6, min(650, max(12, len_ms * 0.42)));
+
+  sm[SM_AUTOREL] = auto_ms;
+  sm[SM_ENDFADE] = fade_ms;
+  sm[SM_TAILHOT] = hot;
+);
+
 function analyze_sample_classic(sm) local(
   ptr nch sr frames scan i x ax prev lp hf prevhf
   peak sumsq sumabs sumdiff brightsum roughsum rms bright edge
@@ -1906,6 +2021,7 @@ function analyze_sample_gauss(sm) local(
 function analyze_sample(sm)
 (
   onset_mode_active ? analyze_sample_gauss(sm) : analyze_sample_classic(sm);
+  estimate_sample_tail_grace(sm);
   analyze_sample_flow(sm);
 );
 
@@ -2078,6 +2194,244 @@ function reset_formant_buffers()
   form_env0 = 0; form_env1 = 0; form_env2 = 0; form_env3 = 0; form_env4 = 0; form_env5 = 0;
   form_g0 = 1; form_g1 = 1; form_g2 = 1; form_g3 = 1; form_g4 = 1; form_g5 = 1;
   form_level = 1;
+);
+
+function reset_processing_buffers() local(i total)
+(
+  proc_hpf1_l = 0; proc_hpf2_l = 0;
+  proc_hpf1_r = 0; proc_hpf2_r = 0;
+  proc_lpf1_l = 0; proc_lpf2_l = 0;
+  proc_lpf1_r = 0; proc_lpf2_r = 0;
+
+  i = 0;
+  while (i < POSTEQ_SPEC_BINS) (
+    posteq_spec_lp_base[i] = 0;
+    posteq_spec_env_base[i] = 0;
+    i += 1;
+  );
+
+  i = 0;
+  while (i < POSTEQ_BQ_COUNT) (
+    posteq_bq_base[i * POSTEQ_BQ_STRIDE + 5] = 0;
+    posteq_bq_base[i * POSTEQ_BQ_STRIDE + 6] = 0;
+    posteq_bq_base[i * POSTEQ_BQ_STRIDE + 7] = 0;
+    posteq_bq_base[i * POSTEQ_BQ_STRIDE + 8] = 0;
+    i += 1;
+  );
+);
+
+function posteq_slope_db(idx)
+(
+  idx <= 0 ? 6 : idx * 12;
+);
+
+function posteq_bq_identity(slot) local(base)
+(
+  base = slot * POSTEQ_BQ_STRIDE;
+  posteq_bq_base[base + 0] = 1;
+  posteq_bq_base[base + 1] = 0;
+  posteq_bq_base[base + 2] = 0;
+  posteq_bq_base[base + 3] = 0;
+  posteq_bq_base[base + 4] = 0;
+);
+
+function posteq_bq_set_peak(slot freq q gain_db) local(base A w0 sn cs alpha a0 b0 b1 b2 a1 a2)
+(
+  base = slot * POSTEQ_BQ_STRIDE;
+  abs(gain_db) < 0.000001 ? (
+    posteq_bq_identity(slot);
+  ) : (
+    freq = clamp(freq, 20, min(20000, srate * 0.49));
+    q = clamp(q, 0.15, 12);
+    A = exp(gain_db * 0.05756462732485114); // 10^(dB/40)
+    w0 = 6.283185307179586 * freq / max(srate, 1);
+    sn = sin(w0);
+    cs = cos(w0);
+    alpha = sn / max(0.000001, 2 * q);
+
+    b0 = 1 + alpha * A;
+    b1 = -2 * cs;
+    b2 = 1 - alpha * A;
+    a0 = 1 + alpha / A;
+    a1 = -2 * cs;
+    a2 = 1 - alpha / A;
+
+    posteq_bq_base[base + 0] = b0 / a0;
+    posteq_bq_base[base + 1] = b1 / a0;
+    posteq_bq_base[base + 2] = b2 / a0;
+    posteq_bq_base[base + 3] = a1 / a0;
+    posteq_bq_base[base + 4] = a2 / a0;
+  );
+);
+
+function posteq_bq_set_highpass(slot freq q) local(base w0 sn cs alpha a0 b0 b1 b2 a1 a2)
+(
+  base = slot * POSTEQ_BQ_STRIDE;
+  freq = clamp(freq, 20, min(20000, srate * 0.49));
+  q = clamp(q, 0.35, 2.5);
+  w0 = 6.283185307179586 * freq / max(srate, 1);
+  sn = sin(w0);
+  cs = cos(w0);
+  alpha = sn / max(0.000001, 2 * q);
+  b0 = (1 + cs) * 0.5;
+  b1 = -(1 + cs);
+  b2 = (1 + cs) * 0.5;
+  a0 = 1 + alpha;
+  a1 = -2 * cs;
+  a2 = 1 - alpha;
+  posteq_bq_base[base + 0] = b0 / a0;
+  posteq_bq_base[base + 1] = b1 / a0;
+  posteq_bq_base[base + 2] = b2 / a0;
+  posteq_bq_base[base + 3] = a1 / a0;
+  posteq_bq_base[base + 4] = a2 / a0;
+);
+
+function posteq_bq_set_lowpass(slot freq q) local(base w0 sn cs alpha a0 b0 b1 b2 a1 a2)
+(
+  base = slot * POSTEQ_BQ_STRIDE;
+  freq = clamp(freq, 20, min(20000, srate * 0.49));
+  q = clamp(q, 0.35, 2.5);
+  w0 = 6.283185307179586 * freq / max(srate, 1);
+  sn = sin(w0);
+  cs = cos(w0);
+  alpha = sn / max(0.000001, 2 * q);
+  b0 = (1 - cs) * 0.5;
+  b1 = 1 - cs;
+  b2 = (1 - cs) * 0.5;
+  a0 = 1 + alpha;
+  a1 = -2 * cs;
+  a2 = 1 - alpha;
+  posteq_bq_base[base + 0] = b0 / a0;
+  posteq_bq_base[base + 1] = b1 / a0;
+  posteq_bq_base[base + 2] = b2 / a0;
+  posteq_bq_base[base + 3] = a1 / a0;
+  posteq_bq_base[base + 4] = a2 / a0;
+);
+
+function posteq_bq_process_l(slot x) local(base y)
+(
+  base = slot * POSTEQ_BQ_STRIDE;
+  y = posteq_bq_base[base + 0] * x + posteq_bq_base[base + 5];
+  posteq_bq_base[base + 5] = posteq_bq_base[base + 1] * x - posteq_bq_base[base + 3] * y + posteq_bq_base[base + 6];
+  posteq_bq_base[base + 6] = posteq_bq_base[base + 2] * x - posteq_bq_base[base + 4] * y;
+  y;
+);
+
+function posteq_bq_process_r(slot x) local(base y)
+(
+  base = slot * POSTEQ_BQ_STRIDE;
+  y = posteq_bq_base[base + 0] * x + posteq_bq_base[base + 7];
+  posteq_bq_base[base + 7] = posteq_bq_base[base + 1] * x - posteq_bq_base[base + 3] * y + posteq_bq_base[base + 8];
+  posteq_bq_base[base + 8] = posteq_bq_base[base + 2] * x - posteq_bq_base[base + 4] * y;
+  y;
+);
+
+function posteq_update_coeffs() local(i norm cf c)
+(
+  posteq_bq_set_highpass(0, proc_hpf_hz, proc_hpf_q);
+  posteq_bq_set_highpass(1, proc_hpf_hz, proc_hpf_q);
+  posteq_bq_set_highpass(2, proc_hpf_hz, proc_hpf_q);
+  posteq_bq_set_highpass(3, proc_hpf_hz, proc_hpf_q);
+
+  posteq_bq_set_peak(4, proc_eq_band1_hz, proc_eq_band1_q, proc_eq_band1_db);
+  posteq_bq_set_peak(5, proc_eq_band2_hz, proc_eq_band2_q, proc_eq_band2_db);
+  posteq_bq_set_peak(6, proc_eq_band3_hz, proc_eq_band3_q, proc_eq_band3_db);
+
+  posteq_bq_set_lowpass(7, proc_lpf_hz, proc_lpf_q);
+  posteq_bq_set_lowpass(8, proc_lpf_hz, proc_lpf_q);
+  posteq_bq_set_lowpass(9, proc_lpf_hz, proc_lpf_q);
+  posteq_bq_set_lowpass(10, proc_lpf_hz, proc_lpf_q);
+
+  i = 0;
+  while (i < POSTEQ_SPEC_BINS) (
+    norm = i / max(1, POSTEQ_SPEC_BINS - 1);
+    cf = exp(log(35) + norm * (log(18000) - log(35)));
+    c = clamp(1 - exp(-6.283185307179586 * min(cf, srate * 0.49) / max(srate, 1)), 0.00002, 0.98);
+    posteq_spec_coeff_base[i] = c;
+    i += 1;
+  );
+);
+
+function posteq_analyze_spectrum(l r) local(src prev lp c band det env i)
+(
+  // Cheap log-ish analyzer for the EQ editor. It taps just before Post-EQ.
+  src = 0.5 * (l + r);
+  prev = 0;
+  i = 0;
+  while (i < POSTEQ_SPEC_BINS) (
+    c = posteq_spec_coeff_base[i];
+    lp = posteq_spec_lp_base[i];
+    lp += (src - lp) * c;
+    posteq_spec_lp_base[i] = lp;
+    band = i == 0 ? lp : (lp - prev);
+    prev = lp;
+    det = abs(band);
+    env = posteq_spec_env_base[i];
+    env += (det - env) * (det > env ? posteq_spec_att_coeff : posteq_spec_rel_coeff);
+    posteq_spec_env_base[i] = env;
+    i += 1;
+  );
+);
+
+function apply_posteq_filter() local(xL xR idx count)
+(
+  xL = outL;
+  xR = outR;
+
+  proc_hpf_hz > 22 ? (
+    proc_hpf_slope_idx <= 0 ? (
+      proc_hpf1_l += (xL - proc_hpf1_l) * proc_hpf_coeff;
+      proc_hpf1_r += (xR - proc_hpf1_r) * proc_hpf_coeff;
+      xL = xL - proc_hpf1_l;
+      xR = xR - proc_hpf1_r;
+    ) : (
+      count = min(4, proc_hpf_slope_idx);
+      idx = 0;
+      while (idx < count) (
+        xL = posteq_bq_process_l(idx, xL);
+        xR = posteq_bq_process_r(idx, xR);
+        idx += 1;
+      );
+    );
+  );
+
+  abs(proc_eq_band1_db) > 0.000001 ? (
+    xL = posteq_bq_process_l(4, xL);
+    xR = posteq_bq_process_r(4, xR);
+  );
+  abs(proc_eq_band2_db) > 0.000001 ? (
+    xL = posteq_bq_process_l(5, xL);
+    xR = posteq_bq_process_r(5, xR);
+  );
+  abs(proc_eq_band3_db) > 0.000001 ? (
+    xL = posteq_bq_process_l(6, xL);
+    xR = posteq_bq_process_r(6, xR);
+  );
+
+  proc_lpf_hz < min(19000, srate * 0.47) ? (
+    proc_lpf_slope_idx <= 0 ? (
+      proc_lpf1_l += (xL - proc_lpf1_l) * proc_lpf_coeff;
+      proc_lpf1_r += (xR - proc_lpf1_r) * proc_lpf_coeff;
+      xL = proc_lpf1_l;
+      xR = proc_lpf1_r;
+    ) : (
+      count = min(4, proc_lpf_slope_idx);
+      idx = 0;
+      while (idx < count) (
+        xL = posteq_bq_process_l(7 + idx, xL);
+        xR = posteq_bq_process_r(7 + idx, xR);
+        idx += 1;
+      );
+    );
+  );
+
+  outL = xL;
+  outR = xR;
+);
+
+function apply_processing_strip()
+(
+  (proc_hpf_hz > 22 || proc_lpf_hz < min(19000, srate * 0.47) || abs(proc_eq_band1_db) > 0.0001 || abs(proc_eq_band2_db) > 0.0001 || abs(proc_eq_band3_db) > 0.0001) ? apply_posteq_filter();
 );
 
 function clean_update_gain(idx det amount bias) local(env floorv thresh under tgt g amt upc)
@@ -2548,6 +2902,7 @@ function reset_bank_state() local(i)
   reset_room_buffers();
   reset_push_buffers();
   reset_formant_buffers();
+  reset_processing_buffers();
   init_flow_model();
   transient_guard_s = 0;
   seam_bridge_env = 0;
@@ -2699,7 +3054,12 @@ function configure_memory_layout(selected_count) local(cap) (
   clean_floor_base = clean_env_base + CLEAN_BANDS;
   clean_gain_base  = clean_floor_base + CLEAN_BANDS;
 
-  AUDIO_BASE  = clean_gain_base + CLEAN_BANDS + 256;
+  posteq_spec_lp_base = clean_gain_base + CLEAN_BANDS + 32;
+  posteq_spec_env_base = posteq_spec_lp_base + POSTEQ_SPEC_BINS;
+  posteq_spec_coeff_base = posteq_spec_env_base + POSTEQ_SPEC_BINS;
+  posteq_bq_base = posteq_spec_coeff_base + POSTEQ_SPEC_BINS + 32;
+
+  AUDIO_BASE  = posteq_bq_base + POSTEQ_BQ_COUNT * POSTEQ_BQ_STRIDE + 256;
   MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
 );
 
@@ -2723,6 +3083,7 @@ function load_bank() local(
   ) : (
     configure_memory_layout(max(selected, loaded));
     reset_bank_state();
+    posteq_update_coeffs();
 
     bank_selected_count = selected;
     bank_scan_count = loaded;
@@ -3239,21 +3600,29 @@ function start_voice(note vel chan) local(
   );
 );
 
-function release_voice_internal(v) local(donor donor_sm donor_tail body_start body_end release_src)
+function release_voice_internal(v) local(donor donor_sm donor_tail body_start body_end release_src sid sm auto_len rel_len rel_coef)
 (
   (v[VC_ACTIVE] > 0 && v[VC_STAGE] != ENV_RELEASE) ? (
-    release_samps <= 1 ? (
+    sid = clamp(v[VC_SAMPLE] | 0, 0, max(0, sample_count - 1));
+    sm = sample_meta_base + sid * SM_STRIDE;
+    auto_len = max(1, floor(sm[SM_AUTOREL] * auto_release_amt * srate * 0.001));
+    // Release knob remains the user's intent, but a hot/non-silent sample tail
+    // is allowed to demand a longer minimum so note-off does not sound chopped.
+    rel_len = max(release_samps, auto_len);
+    rel_coef = exp(-6.90775527898214 / max(1, rel_len));
+
+    rel_len <= 1 ? (
       v[VC_ENV] = 0;
       v[VC_STAGE] = ENV_OFF;
       v[VC_ACTIVE] = 0;
     ) : (
       v[VC_STAGE] = ENV_RELEASE;
-      v[VC_RSTEP] = release_coef;
+      v[VC_RSTEP] = rel_coef;
       v[VC_HLEFT] = 0;
       v[VC_TLEFT] = 0;
       v[VC_EPHASE] = 0;
       v[VC_ESTART] = v[VC_ENV];
-      v[VC_RLEN] = release_samps;
+      v[VC_RLEN] = rel_len;
       v[VC_RCURVE] = release_slope_pct;
       (v[VC_GMODE] > 0) ? (
         // Release must continue from the current body/playback position, not
@@ -3642,9 +4011,15 @@ function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local
   (hot || ui_active == id) ? ui_hover_id = id;
 
   mouse_rpressed && hot ? (
-    abs(val - defval) > 0.0000001 ? (
-      val = defval;
+    (id == 204 && ui_shift) ? (
+      auto_release_amt = 1;
       ui_value_changed = 1;
+      ui_alt_release_drag = 0;
+    ) : (
+      abs(val - defval) > 0.0000001 ? (
+        val = defval;
+        ui_value_changed = 1;
+      );
     );
     ui_active == id ? ui_active = -1;
   );
@@ -3655,13 +4030,20 @@ function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local
     ui_last_click_t = ui_now;
 
     dbl ? (
-      abs(val - defval) > 0.0000001 ? (
-        val = defval;
+      (id == 204 && ui_shift) ? (
+        auto_release_amt = 1;
         ui_value_changed = 1;
+      ) : (
+        abs(val - defval) > 0.0000001 ? (
+          val = defval;
+          ui_value_changed = 1;
+        );
       );
+      ui_alt_release_drag = 0;
       ui_active = -1;
     ) : (
       ui_active = id;
+      ui_alt_release_drag = (id == 204 && ui_shift) ? 1 : 0;
     );
   );
 
@@ -3680,13 +4062,21 @@ function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local
   ui_active == id ? (
     mouse_down ? (
       norm = clamp01(1 - ((mouse_y - y) / max(h, 1)));
-      vv = curve_denorm(norm, vmin, vmax, curve_mode);
-      abs(vv - val) > 0.0000001 ? (
-        val = vv;
-        ui_value_changed = 1;
+      (id == 204 && ui_alt_release_drag) ? (
+        abs(norm - auto_release_amt) > 0.0000001 ? (
+          auto_release_amt = norm;
+          ui_value_changed = 1;
+        );
+      ) : (
+        vv = curve_denorm(norm, vmin, vmax, curve_mode);
+        abs(vv - val) > 0.0000001 ? (
+          val = vv;
+          ui_value_changed = 1;
+        );
       );
     ) : (
       ui_active = -1;
+      ui_alt_release_drag = 0;
     );
   );
 
@@ -3770,6 +4160,148 @@ function draw_center_buf(x y w) local(tw th)
   gfx_drawstr(#ui_buf);
 );
 
+
+function ui_tab_button(id x y w h active) local(hot clicked i t)
+(
+  clicked = 0;
+  hot = pt_in(x, y, w, h);
+  (hot || ui_active == id) ? ui_hover_id = id;
+
+  mouse_pressed && hot && ui_active < 0 ? ui_active = id;
+  ui_active == id ? (
+    !mouse_down ? (
+      hot ? clicked = 1;
+      ui_active = -1;
+    );
+  );
+
+  gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.34;
+  gfx_rect(x + 1, y + 2, w, h, 1);
+  i = 0;
+  while (i < h) (
+    t = i / max(1, h - 1);
+    active ? (
+      gfx_r = 0.155 - t * 0.035;
+      gfx_g = 0.214 - t * 0.046;
+      gfx_b = 0.292 - t * 0.050;
+    ) : (
+      gfx_r = (hot || ui_active == id) ? (0.095 - t * 0.026) : (0.055 - t * 0.016);
+      gfx_g = (hot || ui_active == id) ? (0.128 - t * 0.030) : (0.074 - t * 0.020);
+      gfx_b = (hot || ui_active == id) ? (0.172 - t * 0.036) : (0.100 - t * 0.024);
+    );
+    gfx_a = 1;
+    gfx_line(x, y + i, x + w, y + i);
+    i += 1;
+  );
+  gfx_r = active ? 0.82 : ((hot || ui_active == id) ? 0.35 : 0.16);
+  gfx_g = active ? 0.66 : ((hot || ui_active == id) ? 0.62 : 0.25);
+  gfx_b = active ? 0.22 : ((hot || ui_active == id) ? 0.90 : 0.34);
+  gfx_a = 1;
+  gfx_rect(x, y, w, h, 0);
+  active ? (
+    gfx_r = 0.96; gfx_g = 0.72; gfx_b = 0.18; gfx_a = 0.95;
+    gfx_rect(x + 2, y + h - 4, w - 4, 2, 1);
+  );
+
+  clicked;
+);
+
+function proc_freq_x(freq x w) local(n)
+(
+  n = (log(max(20, min(20000, freq))) - log(20)) / (log(20000) - log(20));
+  x + clamp01(n) * w;
+);
+
+function proc_x_freq(mx x w) local(n)
+(
+  n = clamp01((mx - x) / max(w, 1));
+  exp(log(20) + n * (log(20000) - log(20)));
+);
+
+function proc_db_y(db y h) local(n)
+(
+  n = (18 - clamp(db, -18, 18)) / 36;
+  y + clamp01(n) * h;
+);
+
+function proc_y_db(my y h) local(n)
+(
+  n = clamp01((my - y) / max(h, 1));
+  clamp(18 - n * 36, -18, 18);
+);
+
+function proc_band_resp(freq cf q gain_db) local(d width w)
+(
+  cf = max(20, cf);
+  q = clamp(q, 0.15, 12);
+  d = log(max(20, freq) / cf);
+  width = max(0.045, 1.15 / q);
+  w = exp(-(d * d) / max(0.000001, 2 * width * width));
+  gain_db * w;
+);
+
+function proc_cut_slope_db(idx)
+(
+  idx <= 0 ? 6 : idx * 12;
+);
+
+function proc_eq_resp_db(freq) local(resp hpfhz lpfhz slope r octv)
+(
+  // UI response reads sliders directly so graph movement is immediate.
+  resp = 0;
+  resp += proc_band_resp(freq, clamp(slider35, 20, 20000), clamp(slider40, 0.15, 12), clamp(slider32, -18, 18));
+  resp += proc_band_resp(freq, clamp(slider36, 20, 20000), clamp(slider41, 0.15, 12), clamp(slider33, -18, 18));
+  resp += proc_band_resp(freq, clamp(slider37, 20, 20000), clamp(slider42, 0.15, 12), clamp(slider34, -18, 18));
+
+  hpfhz = clamp(slider38, 20, 1000);
+  hpfhz > 22 ? (
+    freq < hpfhz ? (
+      slope = proc_cut_slope_db(clamp(slider43 | 0, 0, 4));
+      octv = log(hpfhz / max(freq, 1)) / log(2);
+      resp -= slope * octv;
+    );
+  );
+
+  lpfhz = clamp(slider39, 1000, 20000);
+  lpfhz < min(19000, srate * 0.47) ? (
+    freq > lpfhz ? (
+      slope = proc_cut_slope_db(clamp(slider44 | 0, 0, 4));
+      octv = log(max(freq, 1) / lpfhz) / log(2);
+      resp -= slope * octv;
+    );
+  );
+
+  clamp(resp, -42, 18);
+);
+
+function proc_draw_node(cx cy r hot active label_id) local(tw th)
+(
+  gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.42;
+  gfx_circle(cx + 1, cy + 2, r + 3, 1);
+  gfx_r = active ? 0.96 : (hot ? 0.34 : 0.08);
+  gfx_g = active ? 0.72 : (hot ? 0.62 : 0.22);
+  gfx_b = active ? 0.18 : (hot ? 0.96 : 0.36);
+  gfx_a = 1;
+  gfx_circle(cx, cy, r + 1, 1);
+  gfx_r = 0.030; gfx_g = 0.040; gfx_b = 0.055; gfx_a = 1;
+  gfx_circle(cx, cy, r - 1, 1);
+  gfx_r = active ? 1.0 : 0.74;
+  gfx_g = active ? 0.86 : 0.88;
+  gfx_b = active ? 0.34 : 1.0;
+  gfx_a = 1;
+  gfx_setfont(1, "Arial", 9, 0);
+  label_id == 0 ? sprintf(#ui_buf, "HP")
+  : label_id == 1 ? sprintf(#ui_buf, "1")
+  : label_id == 2 ? sprintf(#ui_buf, "2")
+  : label_id == 3 ? sprintf(#ui_buf, "3")
+  : label_id == 4 ? sprintf(#ui_buf, "LP")
+  : sprintf(#ui_buf, "?");
+  gfx_measurestr(#ui_buf, tw, th);
+  gfx_x = cx - tw * 0.5;
+  gfx_y = cy - th * 0.5;
+  gfx_drawstr(#ui_buf);
+);
+
 function draw_tooltip_box() local(tw1 th1 tw2 th2 tw th pad bx by bw bh)
 (
   strlen(#tip_title) > 0 ? (
@@ -3845,7 +4377,10 @@ SM_FLAGS     = 16;
 SM_HEADEND   = 17;
 SM_TAILSTART = 18;
 SM_CLUSTER   = 19;
-SM_FLOWBASE  = 20;
+SM_AUTOREL   = 20;
+SM_ENDFADE   = 21;
+SM_TAILHOT   = 22;
+SM_FLOWBASE  = 23;
 FLOW_BINS    = 8;
 FLOW_FEATS   = 3;
 FLOW_IN      = 5;
@@ -3967,8 +4502,27 @@ MASK_S27 = 67108864;
 MASK_S28 = 134217728;
 MASK_S29 = 268435456;
 MASK_S30 = 536870912;
+MASK_S31 = 1073741824;
+MASK_S32 = 2147483648;
+MASK_S33 = 4294967296;
+MASK_S34 = 8589934592;
+MASK_S35 = 17179869184;
+MASK_S36 = 34359738368;
+MASK_S37 = 68719476736;
+MASK_S38 = 137438953472;
+MASK_S39 = 274877906944;
+MASK_S40 = 549755813888;
+MASK_S41 = 1099511627776;
+MASK_S42 = 2199023255552;
+MASK_S43 = 4398046511104;
+MASK_S44 = 8796093022208;
+MASK_S45 = 17592186044416;
+MASK_S46 = 35184372088832;
 
 CLEAN_BANDS = 5;
+POSTEQ_SPEC_BINS = 48;
+POSTEQ_BQ_COUNT = 11;
+POSTEQ_BQ_STRIDE = 9;
 PUSH_EPS = 0.00000000000000000001;
 LOG10_INV = 1 / log(10);
 
@@ -4165,6 +4719,27 @@ push_side_rel_coeff = 0.001;
 
 
 formant_shift_semi = 0;
+auto_release_amt = 1;
+proc_eq_band1_db = 0;
+proc_eq_band2_db = 0;
+proc_eq_band3_db = 0;
+proc_eq_band1_hz = 120;
+proc_eq_band2_hz = 950;
+proc_eq_band3_hz = 6500;
+proc_eq_band1_q = 0.75;
+proc_eq_band2_q = 0.75;
+proc_eq_band3_q = 0.75;
+proc_hpf_hz = 20;
+proc_lpf_hz = 20000;
+proc_hpf_q = 0.707;
+proc_lpf_q = 0.707;
+proc_hpf_slope_idx = 1;
+proc_lpf_slope_idx = 1;
+proc_hpf_coeff = 0.004;
+proc_lpf_coeff = 0.90;
+posteq_spec_att_coeff = 0.18;
+posteq_spec_rel_coeff = 0.02;
+ui_alt_release_drag = 0;
 form_lp_c1 = 0.02;
 form_lp_c2 = 0.05;
 form_lp_c3 = 0.11;
@@ -4234,6 +4809,7 @@ m2e_reset();
 @serialize
 file_var(0, slope_schema);
 file_var(0, formant_shift_semi);
+file_var(0, auto_release_amt);
 
 @slider
 attack_samps = max(1, floor(slider2 * srate * 0.001));
@@ -4271,6 +4847,22 @@ truth_mix = clamp01(slider10);
 out_trim = db2amp(slider11);
 pitch_semi = clamp(slider12, -24, 24);
 formant_shift_semi = clamp(formant_shift_semi, -12, 12);
+auto_release_amt = clamp(auto_release_amt, 0, 1);
+proc_eq_band1_db = clamp(slider32, -18, 18);
+proc_eq_band2_db = clamp(slider33, -18, 18);
+proc_eq_band3_db = clamp(slider34, -18, 18);
+proc_eq_band1_hz = clamp(slider35, 20, 20000);
+proc_eq_band2_hz = clamp(slider36, 20, 20000);
+proc_eq_band3_hz = clamp(slider37, 20, 20000);
+proc_hpf_hz = clamp(slider38, 20, 1000);
+proc_lpf_hz = clamp(slider39, 1000, 20000);
+proc_eq_band1_q = clamp(slider40, 0.15, 12);
+proc_eq_band2_q = clamp(slider41, 0.15, 12);
+proc_eq_band3_q = clamp(slider42, 0.15, 12);
+proc_hpf_slope_idx = clamp(slider43 | 0, 0, 4);
+proc_lpf_slope_idx = clamp(slider44 | 0, 0, 4);
+proc_hpf_q = clamp(slider45, 0.35, 2.5);
+proc_lpf_q = clamp(slider46, 0.35, 2.5);
 selection_mode = clamp(slider13 | 0, 0, 2);
 sequence_mode = selection_mode == 1 ? 1 : 0;
 walk_mode = selection_mode == 2 ? 1 : 0;
@@ -4388,6 +4980,12 @@ push_common_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.070 + 0.045 
 push_common_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.750 + 1.650 * push_amt) * srate)));
 push_side_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.110 + 0.060 * (1 - push_amt)) * srate)));
 push_side_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.900 + 1.900 * push_amt) * srate)));
+
+proc_hpf_coeff = clamp(1 - exp(-6.283185307179586 * min(proc_hpf_hz, srate * 0.49) / max(srate, 1)), 0.00002, 0.72);
+proc_lpf_coeff = clamp(1 - exp(-6.283185307179586 * min(proc_lpf_hz, srate * 0.49) / max(srate, 1)), 0.00010, 0.96);
+posteq_spec_att_coeff = 1 - exp(-1 / max(1, floor(0.018 * srate)));
+posteq_spec_rel_coeff = 1 - exp(-1 / max(1, floor(0.260 * srate)));
+posteq_update_coeffs();
 
 form_lp_c1 = clamp(1 - exp(-6.283185307179586 * min(190, srate * 0.49) / max(srate, 1)), 0.0001, 0.72);
 form_lp_c2 = clamp(1 - exp(-6.283185307179586 * min(520, srate * 0.49) / max(srate, 1)), 0.0002, 0.78);
@@ -4618,6 +5216,17 @@ while (i < MAX_VOICES) (
         rawL = readL;
         rawR = readR;
         direct_alive = got_raw;
+
+        // v19: source-end guard. If a file ends hot, fade the final source
+        // window before EOF instead of letting playback vanish on the last frame.
+        endfade_src = max(2, floor(sm[SM_ENDFADE] * auto_release_amt * sm[SM_SR] * 0.001));
+        endfade_src = min(endfade_src, max(2, floor(frames * 0.42)));
+        rem_src = max(0, frames - 1 - pos);
+        source_end_fade = clamp01(rem_src / max(1, endfade_src));
+        source_end_fade = source_end_fade * source_end_fade * (3 - 2 * source_end_fade);
+        rawL *= source_end_fade;
+        rawR *= source_end_fade;
+        source_end_fade <= 0.0003 ? direct_alive = 0;
 
         play_rate = v[VC_RATE];
         voice_stretch = max(1, v[VC_STRETCH]);
@@ -5089,7 +5698,15 @@ while (i < MAX_VOICES) (
                   gr = gm - gs - gm * gpan;
                 );
 
-                w = stretch_window(age, gsize) * gb[VG_GAIN];
+                // Also fade grains that run into source boundaries. Otherwise a
+                // tail grain can deactivate mid-window and expose a hard edge.
+                gendfade_src = max(2, floor(gsm[SM_ENDFADE] * auto_release_amt * gsm[SM_SR] * 0.001));
+                gendfade_src = min(gendfade_src, max(2, floor(gframes * 0.42)));
+                grem_src = gb[VG_RATE] < 0 ? max(0, srcp) : max(0, gframes - 1 - srcp);
+                gsource_end_fade = clamp01(grem_src / max(1, gendfade_src));
+                gsource_end_fade = gsource_end_fade * gsource_end_fade * (3 - 2 * gsource_end_fade);
+
+                w = stretch_window(age, gsize) * gb[VG_GAIN] * gsource_end_fade;
                 sumL += gl * w;
                 sumR += gr * w;
                 sumW += w;
@@ -5517,11 +6134,13 @@ dynamics_amt > 0.0001 ? (
 );
 
 push_amt > 0.0001 ? apply_push();
+posteq_analyze_spectrum(outL, outR);
+apply_processing_strip();
 
 spl0 += outL * out_trim;
 spl1 += outR * out_trim;
 
-@gfx 1180 740
+@gfx 1380 760
 gfx_getchar();
 mouse_down = mouse_cap & 1;
 mouse_rdown = mouse_cap & 2;
@@ -5641,6 +6260,25 @@ gfx_transport_stopped = play_state == 0;
   push_click_dB = 0;
   push_side_rel_dB = -150;
 
+  proc_hpf1_l = 0; proc_hpf2_l = 0;
+  proc_hpf1_r = 0; proc_hpf2_r = 0;
+  proc_lpf1_l = 0; proc_lpf2_l = 0;
+  proc_lpf1_r = 0; proc_lpf2_r = 0;
+  panic_i = 0;
+  while (panic_i < POSTEQ_SPEC_BINS) (
+    posteq_spec_lp_base[panic_i] = 0;
+    posteq_spec_env_base[panic_i] = 0;
+    panic_i += 1;
+  );
+  panic_i = 0;
+  while (panic_i < POSTEQ_BQ_COUNT) (
+    posteq_bq_base[panic_i * POSTEQ_BQ_STRIDE + 5] = 0;
+    posteq_bq_base[panic_i * POSTEQ_BQ_STRIDE + 6] = 0;
+    posteq_bq_base[panic_i * POSTEQ_BQ_STRIDE + 7] = 0;
+    posteq_bq_base[panic_i * POSTEQ_BQ_STRIDE + 8] = 0;
+    panic_i += 1;
+  );
+
   transient_guard_s = 0;
   dyn_env = 0;
   dyn_comp_gain = 1;
@@ -5741,41 +6379,44 @@ panel_total_w = gfx_w - 20;
 panel_total_h = gfx_h - 112;
 
 left_x = 10; left_y = 104;
-left_w = clamp(floor(panel_total_w * 0.25), 240, 340);
-mid_w  = clamp(floor(panel_total_w * 0.34), 330, 470);
-right_w = panel_total_w - left_w - mid_w - panel_gap * 2;
-right_min_w = 300;
-right_target_max = panel_total_w >= 1280 ? 780 : 860;
-
-right_w > right_target_max ? (
-  excess = right_w - right_target_max;
-  add_mid = min(excess * 0.65, max(0, 460 - mid_w));
-  mid_w += add_mid;
-  excess -= add_mid;
-  add_left = min(excess, max(0, 330 - left_w));
-  left_w += add_left;
-  right_w = panel_total_w - left_w - mid_w - panel_gap * 2;
-);
+left_w = clamp(floor(panel_total_w * 0.19), 215, 290);
+mid_w  = clamp(floor(panel_total_w * 0.27), 300, 410);
+proc_w = clamp(floor(panel_total_w * 0.24), 250, 360);
+right_w = panel_total_w - left_w - mid_w - proc_w - panel_gap * 3;
+right_min_w = 330;
+proc_min_w = 235;
 
 right_w < right_min_w ? (
   deficit = right_min_w - right_w;
-  take_mid = min(deficit * 0.70, max(0, mid_w - 240));
+  take_proc = min(deficit * 0.55, max(0, proc_w - proc_min_w));
+  proc_w -= take_proc;
+  deficit -= take_proc;
+  take_mid = min(deficit * 0.70, max(0, mid_w - 260));
   mid_w -= take_mid;
   deficit -= take_mid;
   take_left = min(deficit, max(0, left_w - 190));
   left_w -= take_left;
-  right_w = panel_total_w - left_w - mid_w - panel_gap * 2;
+  right_w = panel_total_w - left_w - mid_w - proc_w - panel_gap * 3;
+);
+
+right_w > 410 ? (
+  excess = right_w - 410;
+  proc_w += min(excess, max(0, 360 - proc_w));
+  right_w = panel_total_w - left_w - mid_w - proc_w - panel_gap * 3;
 );
 
 mid_x = left_x + left_w + panel_gap; mid_y = left_y;
 right_x = mid_x + mid_w + panel_gap; right_y = left_y;
+proc_x = right_x + right_w + panel_gap; proc_y = left_y;
 left_h = panel_total_h;
 mid_h = panel_total_h;
 right_h = panel_total_h;
+proc_h = panel_total_h;
 
 ui_panel(left_x, left_y, left_w, left_h);
 ui_panel(mid_x, mid_y, mid_w, mid_h);
 ui_panel(right_x, right_y, right_w, right_h);
+ui_panel(proc_x, proc_y, proc_w, proc_h);
 
 // Left panel: bank overview
 gfx_setfont(1, "Arial", 16, 0);
@@ -5961,7 +6602,7 @@ track_x += track_w + track_gap;
 nv = ui_vslider(204, track_x, adsr_y, track_w, adsr_h, slider5, 5, 5000, CURVE_TIME, 180, 0.020); abs(nv - slider5) > 0.0000001 ? (slider5 = nv; gfx_slider_mask |= MASK_S5;);
 nv = ui_shift_wheel_slope(204, slider30, -100); abs(nv - slider30) > 0.0000001 ? (slider30 = nv; gfx_slider_mask |= MASK_S30;);
 gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("R");
-sprintf(#ui_buf, "%.0f", slider5); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+(ui_shift && (ui_hover_id == 204 || ui_active == 204)) ? sprintf(#ui_buf, "G%.2f", auto_release_amt) : sprintf(#ui_buf, "%.0f", slider5); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
 // Right panel: playback controls
 gfx_setfont(1, "Arial", 16, 0);
@@ -6033,7 +6674,7 @@ knob_panel_top = btn_y3 + btn_h + 18;
 knob_panel_bottom = right_y + right_h - 18;
 knob_area_h = max(140, knob_panel_bottom - knob_panel_top);
 knob_count = 15;
-knob_cols = right_inner_w >= 320 ? 3 : 2;
+knob_cols = right_inner_w >= 270 ? 3 : 2;
 knob_rows = floor((knob_count + knob_cols - 1) / knob_cols);
 knob_col_gap = clamp(floor(right_inner_w * 0.016), 10, 16);
 knob_row_gap = 16;
@@ -6230,6 +6871,287 @@ sprintf(#ui_buf, "%.1f", slider11); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc 
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Out"); draw_center_buf(cell_x, label_y, cell_w);
 
+
+// Post-Processing panel: free-band spectrum EQ
+PROC_EQ_HPF_ID = 530;
+PROC_EQ_B1_ID = 531;
+PROC_EQ_B2_ID = 532;
+PROC_EQ_B3_ID = 533;
+PROC_EQ_LPF_ID = 534;
+
+// Dynamics remains the output density/guard tool; this panel is final EQ only.
+post_hot = pt_in(proc_x, proc_y, proc_w, proc_h);
+post_hot ? ui_hover_id = 1500;
+gfx_setfont(1, "Arial", 16, 0);
+gfx_r = 0.88; gfx_g = 0.94; gfx_b = 1.0; gfx_a = 1;
+gfx_x = proc_x + 18; gfx_y = proc_y + 16;
+gfx_drawstr("POST-PROCESSING");
+gfx_r = 0.10; gfx_g = 0.58; gfx_b = 1.0; gfx_a = 0.90; gfx_circle(proc_x + 10, proc_y + 25, 4, 1);
+gfx_r = 0.26; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.35; gfx_line(proc_x + 18, proc_y + 39, proc_x + proc_w - 18, proc_y + 39);
+
+proc_inner_x = proc_x + 12;
+proc_inner_w = max(150, proc_w - 24);
+
+gfx_setfont(1, "Arial", 11, 0);
+gfx_r = 0.62; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
+gfx_x = proc_inner_x + 8; gfx_y = proc_y + 45;
+gfx_drawstr("Free EQ  |  drag bands  |  wheel Q  |  Shift+wheel HP/LP slope");
+
+proc_graph_x = proc_inner_x + 8;
+proc_graph_y = proc_y + 66;
+proc_graph_w = max(100, proc_inner_w - 16);
+proc_graph_h = max(260, min(430, proc_h - 172));
+proc_cards_y = proc_graph_y + proc_graph_h + 12;
+proc_cards_h = max(58, proc_y + proc_h - proc_cards_y - 16);
+
+ui_inner_panel(proc_graph_x, proc_graph_y, proc_graph_w, proc_graph_h);
+pt_in(proc_graph_x, proc_graph_y, proc_graph_w, proc_graph_h) ? ui_hover_id = 1501;
+
+// Node positions from sliders.
+hpf_x = proc_freq_x(slider38, proc_graph_x, proc_graph_w);
+lpf_x = proc_freq_x(slider39, proc_graph_x, proc_graph_w);
+b1_x = proc_freq_x(slider35, proc_graph_x, proc_graph_w);
+b2_x = proc_freq_x(slider36, proc_graph_x, proc_graph_w);
+b3_x = proc_freq_x(slider37, proc_graph_x, proc_graph_w);
+hpf_y = proc_db_y(-15, proc_graph_y, proc_graph_h);
+lpf_y = proc_db_y(-15, proc_graph_y, proc_graph_h);
+b1_y = proc_db_y(slider32, proc_graph_y, proc_graph_h);
+b2_y = proc_db_y(slider33, proc_graph_y, proc_graph_h);
+b3_y = proc_db_y(slider34, proc_graph_y, proc_graph_h);
+node_r = 11;
+
+hot_hpf = ((mouse_x - hpf_x) * (mouse_x - hpf_x) + (mouse_y - hpf_y) * (mouse_y - hpf_y)) <= node_r * node_r * 1.8;
+hot_lpf = ((mouse_x - lpf_x) * (mouse_x - lpf_x) + (mouse_y - lpf_y) * (mouse_y - lpf_y)) <= node_r * node_r * 1.8;
+hot_b1 = ((mouse_x - b1_x) * (mouse_x - b1_x) + (mouse_y - b1_y) * (mouse_y - b1_y)) <= node_r * node_r * 1.8;
+hot_b2 = ((mouse_x - b2_x) * (mouse_x - b2_x) + (mouse_y - b2_y) * (mouse_y - b2_y)) <= node_r * node_r * 1.8;
+hot_b3 = ((mouse_x - b3_x) * (mouse_x - b3_x) + (mouse_y - b3_y) * (mouse_y - b3_y)) <= node_r * node_r * 1.8;
+
+// Right-click reset.
+mouse_rpressed && hot_hpf ? (slider38 = 20; slider43 = 1; slider45 = 0.707; gfx_slider_mask |= MASK_S38 + MASK_S43 + MASK_S45;);
+mouse_rpressed && hot_lpf ? (slider39 = 20000; slider44 = 1; slider46 = 0.707; gfx_slider_mask |= MASK_S39 + MASK_S44 + MASK_S46;);
+mouse_rpressed && hot_b1 ? (slider35 = 120; slider32 = 0; slider40 = 0.75; gfx_slider_mask |= MASK_S35 + MASK_S32 + MASK_S40;);
+mouse_rpressed && hot_b2 ? (slider36 = 950; slider33 = 0; slider41 = 0.75; gfx_slider_mask |= MASK_S36 + MASK_S33 + MASK_S41;);
+mouse_rpressed && hot_b3 ? (slider37 = 6500; slider34 = 0; slider42 = 0.75; gfx_slider_mask |= MASK_S37 + MASK_S34 + MASK_S42;);
+
+// Wheel: Q for all nodes. Shift+Wheel: cutoff slope for HPF/LPF.
+(!ui_wheel_used && abs(ui_wheel) >= 1) ? (
+  wdir = ui_wheel > 0 ? 1 : -1;
+  wsteps = max(1, floor(abs(ui_wheel) / 120 + 0.5));
+  hot_b1 ? (
+    slider40 = clamp(slider40 * exp(wdir * wsteps * 0.115), 0.15, 12);
+    gfx_slider_mask |= MASK_S40; ui_wheel_used = 1;
+  ) : hot_b2 ? (
+    slider41 = clamp(slider41 * exp(wdir * wsteps * 0.115), 0.15, 12);
+    gfx_slider_mask |= MASK_S41; ui_wheel_used = 1;
+  ) : hot_b3 ? (
+    slider42 = clamp(slider42 * exp(wdir * wsteps * 0.115), 0.15, 12);
+    gfx_slider_mask |= MASK_S42; ui_wheel_used = 1;
+  ) : hot_hpf ? (
+    ui_shift ? (
+      slider43 = clamp((slider43 | 0) + wdir * wsteps, 0, 4);
+      gfx_slider_mask |= MASK_S43;
+    ) : (
+      slider45 = clamp(slider45 * exp(wdir * wsteps * 0.075), 0.35, 2.5);
+      gfx_slider_mask |= MASK_S45;
+    );
+    ui_wheel_used = 1;
+  ) : hot_lpf ? (
+    ui_shift ? (
+      slider44 = clamp((slider44 | 0) + wdir * wsteps, 0, 4);
+      gfx_slider_mask |= MASK_S44;
+    ) : (
+      slider46 = clamp(slider46 * exp(wdir * wsteps * 0.075), 0.35, 2.5);
+      gfx_slider_mask |= MASK_S46;
+    );
+    ui_wheel_used = 1;
+  );
+);
+
+mouse_pressed && ui_active < 0 ? (
+  hot_hpf ? ui_active = PROC_EQ_HPF_ID;
+  hot_b1 ? ui_active = PROC_EQ_B1_ID;
+  hot_b2 ? ui_active = PROC_EQ_B2_ID;
+  hot_b3 ? ui_active = PROC_EQ_B3_ID;
+  hot_lpf ? ui_active = PROC_EQ_LPF_ID;
+);
+
+ui_active >= PROC_EQ_HPF_ID && ui_active <= PROC_EQ_LPF_ID ? (
+  mouse_down ? (
+    fine = ui_shift ? 0.22 : 1;
+    ui_active == PROC_EQ_HPF_ID ? (
+      nv = proc_x_freq(mouse_x, proc_graph_x, proc_graph_w);
+      nv = clamp(nv, 20, min(1000, slider39 * 0.72));
+      slider38 = slider38 + (nv - slider38) * fine;
+      gfx_slider_mask |= MASK_S38;
+    );
+    ui_active == PROC_EQ_LPF_ID ? (
+      nv = proc_x_freq(mouse_x, proc_graph_x, proc_graph_w);
+      nv = clamp(nv, max(1000, slider38 * 1.38), 20000);
+      slider39 = slider39 + (nv - slider39) * fine;
+      gfx_slider_mask |= MASK_S39;
+    );
+    ui_active == PROC_EQ_B1_ID ? (
+      nvf = proc_x_freq(mouse_x, proc_graph_x, proc_graph_w);
+      nvg = proc_y_db(mouse_y, proc_graph_y, proc_graph_h);
+      slider35 = slider35 + (clamp(nvf, 20, 20000) - slider35) * fine;
+      slider32 = slider32 + (clamp(nvg, -18, 18) - slider32) * fine;
+      gfx_slider_mask |= MASK_S35 + MASK_S32;
+    );
+    ui_active == PROC_EQ_B2_ID ? (
+      nvf = proc_x_freq(mouse_x, proc_graph_x, proc_graph_w);
+      nvg = proc_y_db(mouse_y, proc_graph_y, proc_graph_h);
+      slider36 = slider36 + (clamp(nvf, 20, 20000) - slider36) * fine;
+      slider33 = slider33 + (clamp(nvg, -18, 18) - slider33) * fine;
+      gfx_slider_mask |= MASK_S36 + MASK_S33;
+    );
+    ui_active == PROC_EQ_B3_ID ? (
+      nvf = proc_x_freq(mouse_x, proc_graph_x, proc_graph_w);
+      nvg = proc_y_db(mouse_y, proc_graph_y, proc_graph_h);
+      slider37 = slider37 + (clamp(nvf, 20, 20000) - slider37) * fine;
+      slider34 = slider34 + (clamp(nvg, -18, 18) - slider34) * fine;
+      gfx_slider_mask |= MASK_S37 + MASK_S34;
+    );
+  ) : (
+    ui_active = -1;
+  );
+);
+
+// Recompute after interaction so graph moves immediately.
+hpf_x = proc_freq_x(slider38, proc_graph_x, proc_graph_w);
+lpf_x = proc_freq_x(slider39, proc_graph_x, proc_graph_w);
+b1_x = proc_freq_x(slider35, proc_graph_x, proc_graph_w);
+b2_x = proc_freq_x(slider36, proc_graph_x, proc_graph_w);
+b3_x = proc_freq_x(slider37, proc_graph_x, proc_graph_w);
+hpf_y = proc_db_y(-15, proc_graph_y, proc_graph_h);
+lpf_y = proc_db_y(-15, proc_graph_y, proc_graph_h);
+b1_y = proc_db_y(slider32, proc_graph_y, proc_graph_h);
+b2_y = proc_db_y(slider33, proc_graph_y, proc_graph_h);
+b3_y = proc_db_y(slider34, proc_graph_y, proc_graph_h);
+
+// Spectrum underlay first.
+spec_base_y = proc_graph_y + proc_graph_h - 4;
+spec_i = 0;
+prevx = proc_graph_x;
+prevy = spec_base_y;
+while (spec_i < POSTEQ_SPEC_BINS) (
+  spec_norm = spec_i / max(1, POSTEQ_SPEC_BINS - 1);
+  spec_freq = exp(log(35) + spec_norm * (log(18000) - log(35)));
+  spec_x = proc_freq_x(spec_freq, proc_graph_x, proc_graph_w);
+  spec_db = 20 * log(max(posteq_spec_env_base[spec_i], 0.000000001)) * LOG10_INV;
+  spec_n = clamp01((spec_db + 72) / 62);
+  spec_y = spec_base_y - spec_n * (proc_graph_h * 0.78);
+  spec_i > 0 ? (
+    gfx_r = 0.10; gfx_g = 0.42; gfx_b = 0.90; gfx_a = 0.20;
+    gfx_line(prevx, spec_base_y, spec_x, spec_base_y);
+    gfx_line(prevx, prevy, spec_x, spec_y);
+    gfx_r = 0.08; gfx_g = 0.30; gfx_b = 0.68; gfx_a = 0.16;
+    gfx_line(spec_x, spec_base_y, spec_x, spec_y);
+  );
+  prevx = spec_x;
+  prevy = spec_y;
+  spec_i += 1;
+);
+
+// EQ grid.
+grid_i = 0;
+while (grid_i < 8) (
+  gf = grid_i == 0 ? 50 : grid_i == 1 ? 100 : grid_i == 2 ? 200 : grid_i == 3 ? 500 : grid_i == 4 ? 1000 : grid_i == 5 ? 2000 : grid_i == 6 ? 5000 : 10000;
+  gxv = proc_freq_x(gf, proc_graph_x, proc_graph_w);
+  gfx_r = 0.16; gfx_g = 0.26; gfx_b = 0.34; gfx_a = 0.34;
+  gfx_line(gxv, proc_graph_y + 8, gxv, proc_graph_y + proc_graph_h - 8);
+  gfx_setfont(1, "Arial", 9, 0);
+  gfx_r = 0.48; gfx_g = 0.56; gfx_b = 0.64; gfx_a = 0.92;
+  gf >= 1000 ? sprintf(#ui_buf, "%dk", floor(gf / 1000)) : sprintf(#ui_buf, "%.0f", gf);
+  gfx_measurestr(#ui_buf, tw, th);
+  gfx_x = gxv - tw * 0.5; gfx_y = proc_graph_y + 4;
+  gfx_drawstr(#ui_buf);
+  grid_i += 1;
+);
+
+grid_i = -18;
+while (grid_i <= 18) (
+  gyv = proc_db_y(grid_i, proc_graph_y, proc_graph_h);
+  gfx_r = grid_i == 0 ? 0.38 : 0.16; gfx_g = grid_i == 0 ? 0.48 : 0.26; gfx_b = grid_i == 0 ? 0.56 : 0.34; gfx_a = grid_i == 0 ? 0.62 : 0.26;
+  gfx_line(proc_graph_x + 8, gyv, proc_graph_x + proc_graph_w - 8, gyv);
+  gfx_setfont(1, "Arial", 9, 0);
+  gfx_r = 0.48; gfx_g = 0.56; gfx_b = 0.64; gfx_a = 0.92;
+  (grid_i % 6 == 0) ? (
+    sprintf(#ui_buf, "%+d", grid_i);
+    gfx_x = proc_graph_x + 4; gfx_y = gyv - 5;
+    gfx_drawstr(#ui_buf);
+  );
+  grid_i += 3;
+);
+
+// EQ response curve.
+ci = 0;
+prevx = proc_graph_x;
+prevy = proc_db_y(proc_eq_resp_db(20), proc_graph_y, proc_graph_h);
+while (ci <= 128) (
+  cn = ci / 128;
+  cf = exp(log(20) + cn * (log(20000) - log(20)));
+  cxv = proc_graph_x + cn * proc_graph_w;
+  cyv = proc_db_y(proc_eq_resp_db(cf), proc_graph_y, proc_graph_h);
+  gfx_r = 0.05; gfx_g = 0.03; gfx_b = 0.01; gfx_a = 0.65;
+  gfx_line(prevx, prevy + 1, cxv, cyv + 1);
+  gfx_r = 0.98; gfx_g = 0.72; gfx_b = 0.19; gfx_a = 0.98;
+  gfx_line(prevx, prevy, cxv, cyv);
+  prevx = cxv; prevy = cyv;
+  ci += 1;
+);
+
+// Cutoff guide lines.
+gfx_r = 0.82; gfx_g = 0.64; gfx_b = 0.24; gfx_a = slider38 > 22 ? 0.58 : 0.18;
+gfx_line(hpf_x, proc_graph_y + 20, hpf_x, proc_graph_y + proc_graph_h - 20);
+gfx_r = 0.82; gfx_g = 0.64; gfx_b = 0.24; gfx_a = slider39 < 19000 ? 0.58 : 0.18;
+gfx_line(lpf_x, proc_graph_y + 20, lpf_x, proc_graph_y + proc_graph_h - 20);
+
+proc_draw_node(hpf_x, hpf_y, node_r, hot_hpf, ui_active == PROC_EQ_HPF_ID, 0);
+proc_draw_node(b1_x, b1_y, node_r, hot_b1, ui_active == PROC_EQ_B1_ID, 1);
+proc_draw_node(b2_x, b2_y, node_r, hot_b2, ui_active == PROC_EQ_B2_ID, 2);
+proc_draw_node(b3_x, b3_y, node_r, hot_b3, ui_active == PROC_EQ_B3_ID, 3);
+proc_draw_node(lpf_x, lpf_y, node_r, hot_lpf, ui_active == PROC_EQ_LPF_ID, 4);
+
+// Specific node hover IDs for clear tooltips.
+hot_hpf || ui_active == PROC_EQ_HPF_ID ? ui_hover_id = PROC_EQ_HPF_ID;
+hot_b1 || ui_active == PROC_EQ_B1_ID ? ui_hover_id = PROC_EQ_B1_ID;
+hot_b2 || ui_active == PROC_EQ_B2_ID ? ui_hover_id = PROC_EQ_B2_ID;
+hot_b3 || ui_active == PROC_EQ_B3_ID ? ui_hover_id = PROC_EQ_B3_ID;
+hot_lpf || ui_active == PROC_EQ_LPF_ID ? ui_hover_id = PROC_EQ_LPF_ID;
+
+// Bottom cards.
+card_gap = 5;
+card_w = (proc_inner_w - card_gap * 4) / 5;
+card_y = proc_cards_y;
+card_h = min(64, proc_cards_h);
+ci = 0;
+while (ci < 5) (
+  cxv = proc_inner_x + ci * (card_w + card_gap);
+  ui_value_pill(cxv, card_y, card_w, card_h);
+  card_id = ci == 0 ? PROC_EQ_HPF_ID : ci == 1 ? PROC_EQ_B1_ID : ci == 2 ? PROC_EQ_B2_ID : ci == 3 ? PROC_EQ_B3_ID : PROC_EQ_LPF_ID;
+  pt_in(cxv, card_y, card_w, card_h) ? ui_hover_id = card_id;
+  gfx_setfont(1, "Arial", 9, 0);
+  gfx_r = 0.54; gfx_g = 0.64; gfx_b = 0.74; gfx_a = 1;
+  ci == 0 ? sprintf(#ui_buf, "HPF") : ci == 1 ? sprintf(#ui_buf, "BAND 1") : ci == 2 ? sprintf(#ui_buf, "BAND 2") : ci == 3 ? sprintf(#ui_buf, "BAND 3") : sprintf(#ui_buf, "LPF");
+  draw_center_buf(cxv, card_y + 7, card_w);
+  gfx_setfont(1, "Arial", 9, 0);
+  gfx_r = 0.88; gfx_g = 0.94; gfx_b = 1.0; gfx_a = 1;
+  ci == 0 ? (slider38 <= 22 ? sprintf(#ui_buf, "off") : sprintf(#ui_buf, "%.0f Hz", slider38))
+  : ci == 1 ? sprintf(#ui_buf, "%.0fHz %+.1f", slider35, slider32)
+  : ci == 2 ? sprintf(#ui_buf, "%.0fHz %+.1f", slider36, slider33)
+  : ci == 3 ? sprintf(#ui_buf, "%.0fHz %+.1f", slider37, slider34)
+  : (slider39 >= 19000 ? sprintf(#ui_buf, "off") : sprintf(#ui_buf, "%.0f Hz", slider39));
+  draw_center_buf(cxv, card_y + 27, card_w);
+  gfx_r = 0.62; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
+  ci == 0 ? sprintf(#ui_buf, "Q%.2f %ddB/oct", slider45, proc_cut_slope_db(slider43 | 0))
+  : ci == 1 ? sprintf(#ui_buf, "Q %.2f", slider40)
+  : ci == 2 ? sprintf(#ui_buf, "Q %.2f", slider41)
+  : ci == 3 ? sprintf(#ui_buf, "Q %.2f", slider42)
+  : sprintf(#ui_buf, "Q%.2f %ddB/oct", slider46, proc_cut_slope_db(slider44 | 0));
+  draw_center_buf(cxv, card_y + 45, card_w);
+  ci += 1;
+);
+
 rescan_flash > 0 ? rescan_flash = max(0, rescan_flash - 0.035);
 rescan_flash > 0 ? (
   gfx_r = 0.35; gfx_g = 0.74; gfx_b = 0.98; gfx_a = rescan_flash * 0.65;
@@ -6306,7 +7228,7 @@ ui_hover_id == 203 ? (
 );
 ui_hover_id == 204 ? (
   sprintf(#tip_title, "Release");
-  sprintf(#tip_body, "%.0f ms | slope %+.0f%%", slider5, slider30);
+  sprintf(#tip_body, "%.0f ms | slope %+.0f%% | Grace %.2f. Shift+drag changes AutoRelease; Shift+Wheel slope.", slider5, slider30, auto_release_amt);
 );
 ui_hover_id == 301 ? (
   sprintf(#tip_title, "Color");
@@ -6392,6 +7314,34 @@ ui_hover_id == 404 ? (
 ui_hover_id == 405 ? (
   sprintf(#tip_title, "Onset");
   (slider23 | 0) ? sprintf(#tip_body, "Gaussian: stronger hit anchor.") : sprintf(#tip_body, "Classic: simpler start detector.");
+);
+ui_hover_id == 1500 ? (
+  sprintf(#tip_title, "Post-Processing");
+  sprintf(#tip_body, "Final output EQ with spectrum. Drag bands in both axes; wheel Q; Shift+wheel HPF/LPF slope.");
+);
+ui_hover_id == 1501 ? (
+  sprintf(#tip_title, "Post-Processing EQ");
+  sprintf(#tip_body, "HPF %.0f | B1 %.0f/%+.1f/Q%.2f | B2 %.0f/%+.1f/Q%.2f | B3 %.0f/%+.1f/Q%.2f | LPF %.0f", slider38, slider35, slider32, slider40, slider36, slider33, slider41, slider37, slider34, slider42, slider39);
+);
+ui_hover_id == PROC_EQ_HPF_ID ? (
+  sprintf(#tip_title, "HPF");
+  sprintf(#tip_body, "High-pass filter. Drag left/right; wheel Q %.2f; Shift+wheel slope %d dB/oct; right-click resets.", slider45, proc_cut_slope_db(slider43 | 0));
+);
+ui_hover_id == PROC_EQ_B1_ID ? (
+  sprintf(#tip_title, "Band 1");
+  sprintf(#tip_body, "%.0f Hz, %+.1f dB, Q %.2f. Drag frequency/gain; wheel Q; right-click resets.", slider35, slider32, slider40);
+);
+ui_hover_id == PROC_EQ_B2_ID ? (
+  sprintf(#tip_title, "Band 2");
+  sprintf(#tip_body, "%.0f Hz, %+.1f dB, Q %.2f. Drag frequency/gain; wheel Q; right-click resets.", slider36, slider33, slider41);
+);
+ui_hover_id == PROC_EQ_B3_ID ? (
+  sprintf(#tip_title, "Band 3");
+  sprintf(#tip_body, "%.0f Hz, %+.1f dB, Q %.2f. Drag frequency/gain; wheel Q; right-click resets.", slider37, slider34, slider42);
+);
+ui_hover_id == PROC_EQ_LPF_ID ? (
+  sprintf(#tip_title, "LPF");
+  sprintf(#tip_body, "Low-pass filter. Drag left/right; wheel Q %.2f; Shift+wheel slope %d dB/oct; right-click resets.", slider46, proc_cut_slope_db(slider44 | 0));
 );
 
 draw_tooltip_box();
