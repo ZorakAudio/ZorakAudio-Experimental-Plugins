@@ -1,7 +1,10 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v25-bandq-calibrated)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v28-prepost-spectrum)
 tags:instrument sampler ui
 // #GFX_RESIZE: responsive
 
+// v28 SpectrumPrePost: Post-Processing now draws detailed pre-EQ and post-EQ spectra on one shared scale.
+// v27 SpectrumDetail: Post-EQ spectrum uses a 96-bin resonant analyzer and thin trace drawing instead of a broad lowpass-difference blob.
+// v26 SpectrumContrast: Post-EQ spectrum underlay is brighter, adaptive, and easier to read on quiet material.
 // v25 BandQCal: Band 1/2/3 Q is calibrated to the actual peaking-biquad response; default Q is tighter and less absurdly wide.
 // v24 PostEQ QFix: HPF/LPF Q now produces visible and audible cutoff resonance, including 6 dB/oct mode.
 // v23 FreeBand PostEQ: three free parametric bands plus HPF/LPF, graph control, Q/slope gestures, and spectrum underlay.
@@ -22,6 +25,9 @@ filename:0,sample.wav
 // #HELP: v16 FocusCal makes Focus bank-aware: high attack-focus banks soften harder and clarify more cautiously; dull banks clarify harder and soften more cautiously.
 // #HELP: v18 strengthens Shift+drag Pitch formant shifting: audible spectral-envelope warp plus resonance drive, still transient-protected.
 // #HELP: v19 AutoRelease analyzes each sample tail, extends too-short MIDI releases when needed, and fades source endings so EOF does not chop.
+// #HELP: v28 SpectrumPrePost shows both pre-EQ and post-EQ spectra with a cleaner high-resolution analyzer.
+// #HELP: v27 SpectrumDetail makes the Post-Processing spectrum sharper with a higher-resolution resonant analyzer and thinner trace display.
+// #HELP: v26 SpectrumContrast makes the Post-Processing spectrum underlay brighter and easier to read on quiet material.
 // #HELP: v25 BandQCal makes Band 1/2/3 Q use the actual peaking-EQ response and changes the default from ultra-wide to generous.
 // #HELP: v24 PostEQ QFix makes HPF/LPF Q visible and audible as cutoff resonance.
 // #HELP: v23 FreeBand PostEQ adds a spectrum-underlaid final EQ: HPF, LPF, and three draggable parametric bands with Q and cutoff slope control.
@@ -42,7 +48,7 @@ filename:0,sample.wav
 // #HELP: Clean reduces low-level hiss/room bed. Room Tame restrains late room smear. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement.
 // #HELP:
 // #HELP: ## Post-Processing
-// #HELP: The Post-Processing panel is a final-output EQ editor with live spectrum underlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope.
+// #HELP: The Post-Processing panel is a final-output EQ editor with pre/post spectrum overlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope.
 // #HELP:
 // #HELP: ## Tone and feel
 // #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Pitch adjusts hidden formant/resonance shift. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection.
@@ -2211,7 +2217,11 @@ function reset_processing_buffers() local(i total)
   i = 0;
   while (i < POSTEQ_SPEC_BINS) (
     posteq_spec_lp_base[i] = 0;
+    posteq_spec_z2_base[i] = 0;
     posteq_spec_env_base[i] = 0;
+    posteq_post_z1_base[i] = 0;
+    posteq_post_z2_base[i] = 0;
+    posteq_post_env_base[i] = 0;
     i += 1;
   );
 
@@ -2370,7 +2380,34 @@ function posteq_bq_process_r(slot x) local(base y)
   y;
 );
 
-function posteq_update_coeffs() local(i norm cf c cutq)
+function posteq_spec_bq_set_band(bin freq q) local(base w0 sn cs alpha a0 b0 b1 b2 a1 a2)
+(
+  // Analyzer-only constant-peak bandpass. This replaces the old adjacent
+  // lowpass-difference display, which was broad enough to read as one fat blob.
+  base = (bin | 0) * POSTEQ_SPEC_COEFFS;
+  freq = clamp(freq, 28, min(19000, srate * 0.49));
+  q = clamp(q, 1.0, 10.0);
+
+  w0 = 6.283185307179586 * freq / max(srate, 1);
+  sn = sin(w0);
+  cs = cos(w0);
+  alpha = sn / max(0.000001, 2 * q);
+
+  b0 = alpha;
+  b1 = 0;
+  b2 = -alpha;
+  a0 = 1 + alpha;
+  a1 = -2 * cs;
+  a2 = 1 - alpha;
+
+  posteq_spec_coeff_base[base + 0] = b0 / a0;
+  posteq_spec_coeff_base[base + 1] = b1 / a0;
+  posteq_spec_coeff_base[base + 2] = b2 / a0;
+  posteq_spec_coeff_base[base + 3] = a1 / a0;
+  posteq_spec_coeff_base[base + 4] = a2 / a0;
+);
+
+function posteq_update_coeffs() local(i norm cf specq cutq)
 (
   cutq = posteq_cut_filter_q(proc_hpf_q);
   posteq_bq_set_highpass(0, proc_hpf_hz, cutq);
@@ -2396,30 +2433,63 @@ function posteq_update_coeffs() local(i norm cf c cutq)
   i = 0;
   while (i < POSTEQ_SPEC_BINS) (
     norm = i / max(1, POSTEQ_SPEC_BINS - 1);
-    cf = exp(log(35) + norm * (log(18000) - log(35)));
-    c = clamp(1 - exp(-6.283185307179586 * min(cf, srate * 0.49) / max(srate, 1)), 0.00002, 0.98);
-    posteq_spec_coeff_base[i] = c;
+    cf = exp(log(32) + norm * (log(19000) - log(32)));
+    // Wider lows, tighter highs. Enough resolution to show useful pockets,
+    // not so much that the tiny panel becomes a nervous FFT waterfall.
+    specq = lerp(2.20, 6.25, norm ^ 0.72);
+    posteq_spec_bq_set_band(i, cf, specq);
     i += 1;
   );
 );
 
-function posteq_analyze_spectrum(l r) local(src prev lp c band det env i)
+function posteq_analyze_spectrum(l r) local(src i base y z1 z2 det env)
 (
-  // Cheap log-ish analyzer for the EQ editor. It taps just before Post-EQ.
+  // Pre-PostEQ analyzer. This taps the final sampler/output path just before
+  // the Post-Processing EQ.
   src = 0.5 * (l + r);
-  prev = 0;
   i = 0;
   while (i < POSTEQ_SPEC_BINS) (
-    c = posteq_spec_coeff_base[i];
-    lp = posteq_spec_lp_base[i];
-    lp += (src - lp) * c;
-    posteq_spec_lp_base[i] = lp;
-    band = i == 0 ? lp : (lp - prev);
-    prev = lp;
-    det = abs(band);
+    base = i * POSTEQ_SPEC_COEFFS;
+
+    z1 = posteq_spec_lp_base[i];
+    z2 = posteq_spec_z2_base[i];
+    y = posteq_spec_coeff_base[base + 0] * src + z1;
+    z1 = posteq_spec_coeff_base[base + 1] * src - posteq_spec_coeff_base[base + 3] * y + z2;
+    z2 = posteq_spec_coeff_base[base + 2] * src - posteq_spec_coeff_base[base + 4] * y;
+
+    posteq_spec_lp_base[i] = z1;
+    posteq_spec_z2_base[i] = z2;
+
+    det = abs(y);
     env = posteq_spec_env_base[i];
     env += (det - env) * (det > env ? posteq_spec_att_coeff : posteq_spec_rel_coeff);
     posteq_spec_env_base[i] = env;
+    i += 1;
+  );
+);
+
+function posteq_analyze_post_spectrum(l r) local(src i base y z1 z2 det env)
+(
+  // Post-PostEQ analyzer. Same filters and visual scale as the pre analyzer,
+  // so the EQ move is visible as an actual pre/post spectral difference.
+  src = 0.5 * (l + r);
+  i = 0;
+  while (i < POSTEQ_SPEC_BINS) (
+    base = i * POSTEQ_SPEC_COEFFS;
+
+    z1 = posteq_post_z1_base[i];
+    z2 = posteq_post_z2_base[i];
+    y = posteq_spec_coeff_base[base + 0] * src + z1;
+    z1 = posteq_spec_coeff_base[base + 1] * src - posteq_spec_coeff_base[base + 3] * y + z2;
+    z2 = posteq_spec_coeff_base[base + 2] * src - posteq_spec_coeff_base[base + 4] * y;
+
+    posteq_post_z1_base[i] = z1;
+    posteq_post_z2_base[i] = z2;
+
+    det = abs(y);
+    env = posteq_post_env_base[i];
+    env += (det - env) * (det > env ? posteq_spec_att_coeff : posteq_spec_rel_coeff);
+    posteq_post_env_base[i] = env;
     i += 1;
   );
 );
@@ -3114,9 +3184,13 @@ function configure_memory_layout(selected_count) local(cap) (
   clean_gain_base  = clean_floor_base + CLEAN_BANDS;
 
   posteq_spec_lp_base = clean_gain_base + CLEAN_BANDS + 32;
-  posteq_spec_env_base = posteq_spec_lp_base + POSTEQ_SPEC_BINS;
-  posteq_spec_coeff_base = posteq_spec_env_base + POSTEQ_SPEC_BINS;
-  posteq_bq_base = posteq_spec_coeff_base + POSTEQ_SPEC_BINS + 32;
+  posteq_spec_z2_base = posteq_spec_lp_base + POSTEQ_SPEC_BINS;
+  posteq_spec_env_base = posteq_spec_z2_base + POSTEQ_SPEC_BINS;
+  posteq_post_z1_base = posteq_spec_env_base + POSTEQ_SPEC_BINS;
+  posteq_post_z2_base = posteq_post_z1_base + POSTEQ_SPEC_BINS;
+  posteq_post_env_base = posteq_post_z2_base + POSTEQ_SPEC_BINS;
+  posteq_spec_coeff_base = posteq_post_env_base + POSTEQ_SPEC_BINS;
+  posteq_bq_base = posteq_spec_coeff_base + POSTEQ_SPEC_BINS * POSTEQ_SPEC_COEFFS + 32;
 
   AUDIO_BASE  = posteq_bq_base + POSTEQ_BQ_COUNT * POSTEQ_BQ_STRIDE + 256;
   MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
@@ -4610,7 +4684,8 @@ MASK_S45 = 17592186044416;
 MASK_S46 = 35184372088832;
 
 CLEAN_BANDS = 5;
-POSTEQ_SPEC_BINS = 48;
+POSTEQ_SPEC_BINS = 96;
+POSTEQ_SPEC_COEFFS = 5;
 POSTEQ_BQ_COUNT = 13;
 POSTEQ_BQ_STRIDE = 9;
 PUSH_EPS = 0.00000000000000000001;
@@ -5094,8 +5169,8 @@ push_side_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.900 + 1.900 * 
 
 proc_hpf_coeff = clamp(1 - exp(-6.283185307179586 * min(proc_hpf_hz, srate * 0.49) / max(srate, 1)), 0.00002, 0.72);
 proc_lpf_coeff = clamp(1 - exp(-6.283185307179586 * min(proc_lpf_hz, srate * 0.49) / max(srate, 1)), 0.00010, 0.96);
-posteq_spec_att_coeff = 1 - exp(-1 / max(1, floor(0.018 * srate)));
-posteq_spec_rel_coeff = 1 - exp(-1 / max(1, floor(0.260 * srate)));
+posteq_spec_att_coeff = 1 - exp(-1 / max(1, floor(0.010 * srate)));
+posteq_spec_rel_coeff = 1 - exp(-1 / max(1, floor(0.145 * srate)));
 posteq_update_coeffs();
 
 form_lp_c1 = clamp(1 - exp(-6.283185307179586 * min(190, srate * 0.49) / max(srate, 1)), 0.0001, 0.72);
@@ -6247,6 +6322,7 @@ dynamics_amt > 0.0001 ? (
 push_amt > 0.0001 ? apply_push();
 posteq_analyze_spectrum(outL, outR);
 apply_processing_strip();
+posteq_analyze_post_spectrum(outL, outR);
 
 spl0 += outL * out_trim;
 spl1 += outR * out_trim;
@@ -6378,7 +6454,11 @@ gfx_transport_stopped = play_state == 0;
   panic_i = 0;
   while (panic_i < POSTEQ_SPEC_BINS) (
     posteq_spec_lp_base[panic_i] = 0;
+    posteq_spec_z2_base[panic_i] = 0;
     posteq_spec_env_base[panic_i] = 0;
+    posteq_post_z1_base[panic_i] = 0;
+    posteq_post_z2_base[panic_i] = 0;
+    posteq_post_env_base[panic_i] = 0;
     panic_i += 1;
   );
   panic_i = 0;
@@ -7006,7 +7086,7 @@ proc_inner_w = max(150, proc_w - 24);
 gfx_setfont(1, "Arial", 11, 0);
 gfx_r = 0.62; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
 gfx_x = proc_inner_x + 8; gfx_y = proc_y + 45;
-gfx_drawstr("Free EQ  |  drag bands  |  wheel Q/resonance  |  Shift+wheel HP/LP slope");
+gfx_drawstr("Pre/Post spectrum  |  drag bands  |  wheel Q/resonance  |  Shift+wheel HP/LP slope");
 
 proc_graph_x = proc_inner_x + 8;
 proc_graph_y = proc_y + 66;
@@ -7151,24 +7231,72 @@ b1_y = proc_db_y(slider32, proc_graph_y, proc_graph_h);
 b2_y = proc_db_y(slider33, proc_graph_y, proc_graph_h);
 b3_y = proc_db_y(slider34, proc_graph_y, proc_graph_h);
 
-// Spectrum underlay first.
-spec_base_y = proc_graph_y + proc_graph_h - 4;
+// Spectrum underlay first. v28: shared-scale pre/post spectrum.
+// Pre is a cool blue ghost. Post is a brighter cyan trace. Both use the same
+// visual floor/range so EQ moves show as real spectral movement, not two
+// independently normalized curves.
+spec_base_y = proc_graph_y + proc_graph_h - 5;
+spec_peak_db = -150;
+spec_sum_db = 0;
+spec_i = 0;
+while (spec_i < POSTEQ_SPEC_BINS) (
+  spec_pre_db = 20 * log(max(posteq_spec_env_base[spec_i], 0.000000001)) * LOG10_INV;
+  spec_post_db = 20 * log(max(posteq_post_env_base[spec_i], 0.000000001)) * LOG10_INV;
+  spec_peak_db = max(spec_peak_db, max(spec_pre_db, spec_post_db));
+  spec_sum_db += spec_pre_db + spec_post_db;
+  spec_i += 1;
+);
+spec_mean_db = spec_sum_db / max(1, POSTEQ_SPEC_BINS * 2);
+spec_active = clamp01((spec_peak_db + 112) / 30);
+spec_floor_db = max(-112, min(spec_peak_db - 44, spec_mean_db - 11));
+spec_range_db = max(30, spec_peak_db - spec_floor_db);
+
+// Pre-EQ spectrum ghost.
 spec_i = 0;
 prevx = proc_graph_x;
 prevy = spec_base_y;
 while (spec_i < POSTEQ_SPEC_BINS) (
   spec_norm = spec_i / max(1, POSTEQ_SPEC_BINS - 1);
-  spec_freq = exp(log(35) + spec_norm * (log(18000) - log(35)));
+  spec_freq = exp(log(32) + spec_norm * (log(19000) - log(32)));
   spec_x = proc_freq_x(spec_freq, proc_graph_x, proc_graph_w);
   spec_db = 20 * log(max(posteq_spec_env_base[spec_i], 0.000000001)) * LOG10_INV;
-  spec_n = clamp01((spec_db + 72) / 62);
-  spec_y = spec_base_y - spec_n * (proc_graph_h * 0.78);
+  spec_n = clamp01((spec_db - spec_floor_db) / spec_range_db);
+  spec_n = spec_n ^ 0.90;
+  spec_y = spec_base_y - spec_n * (proc_graph_h * 0.82);
   spec_i > 0 ? (
-    gfx_r = 0.10; gfx_g = 0.42; gfx_b = 0.90; gfx_a = 0.20;
-    gfx_line(prevx, spec_base_y, spec_x, spec_base_y);
+    gfx_r = 0.05; gfx_g = 0.24; gfx_b = 0.58; gfx_a = (0.12 + 0.24 * spec_n) * spec_active;
     gfx_line(prevx, prevy, spec_x, spec_y);
-    gfx_r = 0.08; gfx_g = 0.30; gfx_b = 0.68; gfx_a = 0.16;
-    gfx_line(spec_x, spec_base_y, spec_x, spec_y);
+    spec_stem_y = spec_y + (spec_base_y - spec_y) * 0.72;
+    gfx_r = 0.04; gfx_g = 0.18; gfx_b = 0.42; gfx_a = (0.025 + 0.070 * spec_n) * spec_active;
+    gfx_line(spec_x, spec_stem_y, spec_x, spec_y);
+  );
+  prevx = spec_x;
+  prevy = spec_y;
+  spec_i += 1;
+);
+
+// Post-EQ spectrum trace.
+spec_i = 0;
+prevx = proc_graph_x;
+prevy = spec_base_y;
+while (spec_i < POSTEQ_SPEC_BINS) (
+  spec_norm = spec_i / max(1, POSTEQ_SPEC_BINS - 1);
+  spec_freq = exp(log(32) + spec_norm * (log(19000) - log(32)));
+  spec_x = proc_freq_x(spec_freq, proc_graph_x, proc_graph_w);
+  spec_db = 20 * log(max(posteq_post_env_base[spec_i], 0.000000001)) * LOG10_INV;
+  spec_n = clamp01((spec_db - spec_floor_db) / spec_range_db);
+  spec_n = spec_n ^ 0.82;
+  spec_y = spec_base_y - spec_n * (proc_graph_h * 0.86);
+  spec_i > 0 ? (
+    spec_stem_y = spec_y + (spec_base_y - spec_y) * 0.60;
+    gfx_r = 0.08; gfx_g = 0.58; gfx_b = 1.00; gfx_a = (0.040 + 0.125 * spec_n) * spec_active;
+    gfx_line(spec_x, spec_stem_y, spec_x, spec_y);
+
+    gfx_r = 0.20; gfx_g = 0.78; gfx_b = 1.00; gfx_a = (0.62 + 0.30 * spec_n) * spec_active;
+    gfx_line(prevx, prevy, spec_x, spec_y);
+
+    gfx_r = 0.82; gfx_g = 0.98; gfx_b = 1.00; gfx_a = (0.14 + 0.28 * spec_n) * spec_active;
+    gfx_line(prevx, prevy - 1, spec_x, spec_y - 1);
   );
   prevx = spec_x;
   prevy = spec_y;
@@ -7205,6 +7333,15 @@ while (grid_i <= 18) (
   );
   grid_i += 3;
 );
+
+// Pre/Post legend.
+gfx_setfont(1, "Arial", 9, 0);
+gfx_r = 0.20; gfx_g = 0.36; gfx_b = 0.78; gfx_a = 0.95;
+gfx_x = proc_graph_x + proc_graph_w - 72; gfx_y = proc_graph_y + 22;
+gfx_drawstr("pre");
+gfx_r = 0.25; gfx_g = 0.86; gfx_b = 1.00; gfx_a = 0.98;
+gfx_x = proc_graph_x + proc_graph_w - 44; gfx_y = proc_graph_y + 22;
+gfx_drawstr("post");
 
 // EQ response curve.
 ci = 0;
@@ -7440,11 +7577,11 @@ ui_hover_id == 405 ? (
 );
 ui_hover_id == 1500 ? (
   sprintf(#tip_title, "Post-Processing");
-  sprintf(#tip_body, "Final output EQ with spectrum. Drag bands in both axes; wheel Q; Shift+wheel HPF/LPF slope.");
+  sprintf(#tip_body, "Final output EQ with pre/post spectrum. Drag bands in both axes; wheel Q; Shift+wheel HPF/LPF slope.");
 );
 ui_hover_id == 1501 ? (
   sprintf(#tip_title, "Post-Processing EQ");
-  sprintf(#tip_body, "HPF %.0f | B1 %.0f/%+.1f/Q%.2f | B2 %.0f/%+.1f/Q%.2f | B3 %.0f/%+.1f/Q%.2f | LPF %.0f", slider38, slider35, slider32, slider40, slider36, slider33, slider41, slider37, slider34, slider42, slider39);
+  sprintf(#tip_body, "Blue=pre EQ, cyan=post EQ | HPF %.0f | B1 %.0f/%+.1f/Q%.2f | B2 %.0f/%+.1f/Q%.2f | B3 %.0f/%+.1f/Q%.2f | LPF %.0f", slider38, slider35, slider32, slider40, slider36, slider33, slider41, slider37, slider34, slider42, slider39);
 );
 ui_hover_id == PROC_EQ_HPF_ID ? (
   sprintf(#tip_title, "HPF");
