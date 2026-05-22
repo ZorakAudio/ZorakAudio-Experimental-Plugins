@@ -1,7 +1,8 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v28-prepost-spectrum)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v30-corpusglue-peakpack)
 tags:instrument sampler ui
 // #GFX_RESIZE: responsive
 
+// v30 CorpusGlue + Peak Pack: Granular corpus gains coherent next-grain glue and gap-free overlap priming; Shift+Focus controls dynamic spectral Peak Pack soothe/accent.
 // v28 SpectrumPrePost: Post-Processing now draws detailed pre-EQ and post-EQ spectra on one shared scale.
 // v27 SpectrumDetail: Post-EQ spectrum uses a 96-bin resonant analyzer and thin trace drawing instead of a broad lowpass-difference blob.
 // v26 SpectrumContrast: Post-EQ spectrum underlay is brighter, adaptive, and easier to read on quiet material.
@@ -28,6 +29,7 @@ filename:0,sample.wav
 // #HELP: v28 SpectrumPrePost shows both pre-EQ and post-EQ spectra with a cleaner high-resolution analyzer.
 // #HELP: v27 SpectrumDetail makes the Post-Processing spectrum sharper with a higher-resolution resonant analyzer and thinner trace display.
 // #HELP: v26 SpectrumContrast makes the Post-Processing spectrum underlay brighter and easier to read on quiet material.
+// #HELP: v29 GrainCorpus builds a load-time grain/event corpus so Granular can transform both single long sources and multi-source banks without doing descriptor analysis at playback time.
 // #HELP: v25 BandQCal makes Band 1/2/3 Q use the actual peaking-EQ response and changes the default from ultra-wide to generous.
 // #HELP: v24 PostEQ QFix makes HPF/LPF Q visible and audible as cutoff resonance.
 // #HELP: v23 FreeBand PostEQ adds a spectrum-underlaid final EQ: HPF, LPF, and three draggable parametric bands with Q and cutoff slope control.
@@ -42,7 +44,7 @@ filename:0,sample.wav
 // #HELP: Attack, Hold, Decay, Sustain, and Release shape each trigger. Shift+Wheel on Attack, Decay, or Release changes slope from -100% to +100%; 0% is linear. Release is also protected by sample-dependent AutoRelease when a source would otherwise chop; Shift+drag Release changes hidden Tail Grace.
 // #HELP:
 // #HELP: ## Playback engines
-// #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack. Granular uses the stable HybridCore grain layer with the direct path muted, then adds cross-sample learned-flow continuity, restrained swells, phase motion, rare release blooms, and grain-level decorrelation.
+// #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack. Granular uses a load-time analyzed grain corpus: long files become many searchable micro-events, multi-source banks become one shared grain field, and playback uses corpus continuity, restrained swells, phase motion, rare release blooms, and grain-level decorrelation.
 // #HELP:
 // #HELP: ## Cleanup and depth
 // #HELP: Clean reduces low-level hiss/room bed. Room Tame restrains late room smear. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement.
@@ -51,7 +53,7 @@ filename:0,sample.wav
 // #HELP: The Post-Processing panel is a final-output EQ editor with pre/post spectrum overlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope.
 // #HELP:
 // #HELP: ## Tone and feel
-// #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Pitch adjusts hidden formant/resonance shift. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection.
+// #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative soothes detected spectral maxima, positive accents them. Shift+drag Pitch adjusts hidden formant/resonance shift. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection.
 // #HELP:
 // #HELP: ## FluxBridge
 // #HELP: When the fixed FluxBridge CC lane block is present, Sample adds subtle motion-driven tone, focus, width, pan, and body contour while protecting transient-rich hits.
@@ -529,6 +531,399 @@ function grain_hist_penalty(vix sid pos lo hi) local(base j pen span phasebin hs
 );
 
 
+function corpus_region_bounds(sid region) local(sm frames sr alo ahi blo bhi tlo thi)
+(
+  sm = sample_meta_base + sid * SM_STRIDE;
+  frames = sm[SM_FRAMES] | 0;
+  sr = max(1000, sm[SM_SR]);
+
+  alo = max(0, floor(sm[SM_ATTACK] - sr * 0.006));
+  ahi = clamp(sm[SM_HEADEND], alo + 1, max(alo + 1, frames - 2));
+  blo = clamp(sm[SM_HEADEND], 0, max(0, frames - 2));
+  bhi = clamp(sm[SM_TAILSTART], blo + 1, max(blo + 1, frames - 2));
+  tlo = clamp(sm[SM_TAILSTART], 0, max(0, frames - 2));
+  thi = max(tlo + 1, frames - 2);
+
+  region == GC_REGION_TAIL ? (
+    corpus_lo = tlo;
+    corpus_hi = thi;
+  ) : region == GC_REGION_ATTACK ? (
+    corpus_lo = alo;
+    corpus_hi = ahi;
+  ) : (
+    corpus_lo = blo;
+    corpus_hi = bhi;
+  );
+);
+
+function corpus_measure_at(sm pos win) local(ptr nch sr frames a b i step x ax prev lp hf sumsq sumabs sumdiff sumhf rough n lpcoef rms edge bright sharp sal)
+(
+  ptr = sm[SM_PTR] | 0;
+  nch = max(1, sm[SM_NCH] | 0);
+  sr = max(1000, sm[SM_SR]);
+  frames = sm[SM_FRAMES] | 0;
+  win = clamp(floor(win), 64, min(4096, max(64, frames - 2)));
+  a = clamp(floor(pos - win * 0.5), 0, max(0, frames - 2));
+  b = clamp(a + win, a + 1, max(a + 1, frames - 1));
+  step = max(1, floor((b - a) / 256));
+
+  lpcoef = clamp(1 - exp(-6.283185307179586 * min(1800, sr * 0.45) / max(sr, 1)), 0.001, 0.92);
+  lp = 0;
+  prev = mono_frame(ptr, nch, a);
+  sumsq = 0;
+  sumabs = 0;
+  sumdiff = 0;
+  sumhf = 0;
+  rough = 0;
+  n = 0;
+
+  i = a;
+  while (i < b) (
+    x = mono_frame(ptr, nch, i);
+    ax = abs(x);
+    lp += (x - lp) * lpcoef;
+    hf = x - lp;
+    sumsq += x * x;
+    sumabs += ax;
+    sumhf += abs(hf);
+    n > 0 ? (
+      sumdiff += abs(x - prev);
+      rough += abs(hf - (prev - lp));
+    );
+    prev = x;
+    n += 1;
+    i += step;
+  );
+
+  rms = sqrt(sumsq / max(1, n));
+  edge = clamp01((sumdiff / max(sumabs, 0.000000001)) * 0.22);
+  bright = clamp01((sumhf / max(sumabs, 0.000000001) - 0.08) * 1.65);
+  sharp = clamp01(edge * 0.62 + bright * 0.20 + sm[SM_SHARP] * 0.18);
+  sal = clamp01(edge * 0.36 + bright * 0.25 + clamp01(rms / max(sm[SM_RMS] * 2.5, 0.000001)) * 0.25 + sm[SM_SHARP] * 0.14);
+
+  corpus_tmp_rms = clamp01(rms / max(sm[SM_RMS] * 2.85, 0.000001));
+  corpus_tmp_bright = bright;
+  corpus_tmp_edge = edge;
+  corpus_tmp_sharp = sharp;
+  corpus_tmp_sal = sal;
+);
+
+function corpus_write_entry(sid region pos glen phase) local(sm gc frames sr nextpos span event_id)
+(
+  corpus_count < corpus_capacity ? (
+    sm = sample_meta_base + sid * SM_STRIDE;
+    frames = sm[SM_FRAMES] | 0;
+    sr = max(1000, sm[SM_SR]);
+    corpus_region_bounds(sid, region);
+    span = max(1, corpus_hi - corpus_lo);
+    pos = region == GC_REGION_BODY ? wrap_in_range(pos, corpus_lo, corpus_hi) : clamp(pos, corpus_lo, max(corpus_lo, corpus_hi - 1));
+    phase = clamp01((pos - corpus_lo) / max(1, span - 1));
+    glen = clamp(floor(glen), 64, max(64, span));
+
+    gc = grain_corpus_base + corpus_count * GC_STRIDE;
+    corpus_measure_at(sm, pos, glen);
+    gc[GC_SID] = sid;
+    gc[GC_POS] = pos;
+    gc[GC_LEN] = glen;
+    gc[GC_REGION] = region;
+    gc[GC_PHASE] = phase;
+    gc[GC_RMS] = corpus_tmp_rms;
+    gc[GC_BRIGHT] = corpus_tmp_bright;
+    gc[GC_EDGE] = corpus_tmp_edge;
+    gc[GC_SHARP] = corpus_tmp_sharp;
+    gc[GC_SAL] = corpus_tmp_sal;
+
+    // v30: next-descriptor flow is phrase-linear. Do not wrap body-end
+    // back to body-start, or the selector learns loop points.
+    nextpos = pos + max(16, floor(glen * 0.65));
+    nextpos = clamp(nextpos, corpus_lo, max(corpus_lo, corpus_hi - 1));
+    corpus_measure_at(sm, nextpos, glen);
+    gc[GC_NRMS] = corpus_tmp_rms;
+    gc[GC_NBRIGHT] = corpus_tmp_bright;
+    gc[GC_NEDGE] = corpus_tmp_edge;
+
+    event_id = floor(pos / max(1, sr * 0.180));
+    gc[GC_EVENT] = sid * 1000000 + event_id;
+
+    sm[SM_GCCOUNT] += 1;
+    corpus_count += 1;
+    1;
+  ) : 0;
+);
+
+function build_sample_corpus_region(sid region lo hi cnt) local(sm sr span j phase pos cell jitter glen)
+(
+  sm = sample_meta_base + sid * SM_STRIDE;
+  sr = max(1000, sm[SM_SR]);
+  span = max(1, hi - lo);
+  cnt = min(cnt | 0, max(0, corpus_capacity - corpus_count));
+  cnt > 0 && span > 8 ? (
+    j = 0;
+    while (j < cnt && corpus_count < corpus_capacity) (
+      phase = (j + 0.5) / max(1, cnt);
+      cell = span / max(1, cnt);
+      jitter = (rand(1) - 0.5) * cell * 0.46;
+      pos = lo + phase * span + jitter;
+      region == GC_REGION_BODY ? pos = wrap_in_range(pos, lo, hi) : pos = clamp(pos, lo, max(lo, hi - 1));
+      glen = region == GC_REGION_ATTACK ? floor(sr * 0.032) : region == GC_REGION_TAIL ? floor(sr * 0.072) : floor(sr * 0.052);
+      glen = clamp(glen, 96, min(4096, max(96, floor(span * 0.55))));
+      corpus_write_entry(sid, region, pos, glen, phase);
+      j += 1;
+    );
+  );
+);
+
+function build_grain_corpus() local(total_frames i sm frames sr lenms target share cnt remain avail reserve atkcnt tailcnt bodycnt alo ahi blo bhi tlo thi span)
+(
+  corpus_count = 0;
+  total_frames = 0;
+  i = 0;
+  while (i < sample_count) (
+    sm = sample_meta_base + i * SM_STRIDE;
+    sm[SM_GCSTART] = 0;
+    sm[SM_GCCOUNT] = 0;
+    total_frames += max(1, sm[SM_FRAMES]);
+    i += 1;
+  );
+
+  i = 0;
+  while (i < sample_count && corpus_count < corpus_capacity) (
+    sm = sample_meta_base + i * SM_STRIDE;
+    frames = sm[SM_FRAMES] | 0;
+    sr = max(1000, sm[SM_SR]);
+    lenms = sm[SM_LENMS];
+    sm[SM_GCSTART] = corpus_count;
+    sm[SM_GCCOUNT] = 0;
+
+    target = clamp(floor(lenms / 55) + 8, 8, 512);
+    sample_count <= 1 ? target = clamp(floor(lenms / 38) + 24, 64, 2048);
+    share = floor((frames / max(1, total_frames)) * corpus_capacity * 0.96) + 4;
+    cnt = min(target, max(6, share));
+    remain = max(0, sample_count - i - 1);
+    avail = max(0, corpus_capacity - corpus_count);
+    reserve = remain * 4;
+    cnt = min(cnt, max(0, avail - reserve));
+
+    cnt > 0 ? (
+      alo = max(0, floor(sm[SM_ATTACK] - sr * 0.006));
+      ahi = clamp(sm[SM_HEADEND], alo + 1, max(alo + 1, frames - 2));
+      blo = clamp(sm[SM_HEADEND], 0, max(0, frames - 2));
+      bhi = clamp(sm[SM_TAILSTART], blo + 1, max(blo + 1, frames - 2));
+      tlo = clamp(sm[SM_TAILSTART], 0, max(0, frames - 2));
+      thi = max(tlo + 1, frames - 2);
+
+      atkcnt = cnt >= 10 ? clamp(floor(cnt * 0.14), 1, 24) : 1;
+      tailcnt = cnt >= 10 ? clamp(floor(cnt * 0.18), 1, 48) : 1;
+      bodycnt = max(0, cnt - atkcnt - tailcnt);
+
+      // Long single sources need the corpus concentrated in the continuous body,
+      // not in one global attack/tail pair.
+      sample_count <= 1 ? (
+        atkcnt = min(atkcnt, 12);
+        tailcnt = min(tailcnt, 24);
+        bodycnt = max(0, cnt - atkcnt - tailcnt);
+      );
+
+      (ahi - alo) > 8 ? build_sample_corpus_region(i, GC_REGION_ATTACK, alo, ahi, atkcnt);
+      (bhi - blo) > 8 ? build_sample_corpus_region(i, GC_REGION_BODY, blo, bhi, bodycnt);
+      (thi - tlo) > 8 ? build_sample_corpus_region(i, GC_REGION_TAIL, tlo, thi, tailcnt);
+
+      // If segmentation produced too few usable regions, backfill from the whole file.
+      sm[SM_GCCOUNT] < 4 ? (
+        span = max(1, frames - 2);
+        build_sample_corpus_region(i, GC_REGION_BODY, 0, max(1, frames - 2), max(4, cnt - sm[SM_GCCOUNT]));
+      );
+    );
+
+    i += 1;
+  );
+);
+
+function grain_run_limit(lively truth spice)
+(
+  // Same-source phrases should be long enough to feel connected but short
+  // enough to avoid reconstructing one original take.
+  max(4, floor(6 + (1 - spice) * 5 + truth * 3 + (1 - lively) * 2));
+);
+
+function corpus_consider_candidate(vix v idx want_region gsize lively truth spice stage fallback_sid) local(
+  gc csid cpos clen creg cphase crms cbright cedge csharp csal cevent sm sr lo hi span
+  lastidx lastgc hasprev prms pbr pedge psid ppos pevent pphase pregion descer phaseerr histpen regionpen saltarget salpen nearwin nearpen runpen regresspen crosspen score runlim force_cross sameevent
+  nextgap seqbonus lowrms_min lowrmspen phase_adv target_phase
+)
+(
+  (idx >= 0 && idx < corpus_count) ? (
+    gc = grain_corpus_base + idx * GC_STRIDE;
+    csid = gc[GC_SID] | 0;
+    (csid >= 0 && csid < sample_count) ? (
+      cpos = gc[GC_POS];
+      clen = max(1, gc[GC_LEN]);
+      creg = gc[GC_REGION] | 0;
+      cphase = clamp01(gc[GC_PHASE]);
+      crms = gc[GC_RMS];
+      cbright = gc[GC_BRIGHT];
+      cedge = gc[GC_EDGE];
+      csharp = gc[GC_SHARP];
+      csal = gc[GC_SAL];
+      cevent = gc[GC_EVENT];
+
+      corpus_region_bounds(csid, creg);
+      lo = corpus_lo;
+      hi = corpus_hi;
+      span = max(1, hi - lo);
+
+      lastidx = v[VC_LGCIDX] | 0;
+      hasprev = (lastidx >= 0 && lastidx < corpus_count) ? 1 : 0;
+      hasprev ? (
+        lastgc = grain_corpus_base + lastidx * GC_STRIDE;
+        psid = lastgc[GC_SID] | 0;
+        ppos = lastgc[GC_POS];
+        pevent = lastgc[GC_EVENT];
+        pphase = clamp01(lastgc[GC_PHASE]);
+        pregion = lastgc[GC_REGION] | 0;
+        prms = lastgc[GC_NRMS];
+        pbr = lastgc[GC_NBRIGHT];
+        pedge = lastgc[GC_NEDGE];
+        nextgap = (csid == psid && creg == pregion) ? (idx - lastidx) : 9999;
+        phase_adv = clamp((clen * 0.32 + abs(v[VC_SRCHOP]) * 0.58) / max(1, span), 0.010, 0.185);
+        target_phase = clamp01(pphase + phase_adv);
+        descer = abs(crms - prms) * 0.72 + abs(cbright - pbr) * 1.12 + abs(cedge - pedge) * 0.92;
+        phaseerr = abs(cphase - target_phase);
+      ) : (
+        psid = fallback_sid;
+        ppos = v[VC_LGPOS];
+        pevent = -999999;
+        pphase = 0.5;
+        pregion = -1;
+        nextgap = 9999;
+        descer = 0;
+        phaseerr = 0;
+      );
+
+      want_region == GC_REGION_TAIL ? (
+        regionpen = creg == GC_REGION_TAIL ? 0 : 4.5;
+      ) : (
+        (stage == ENV_ATTACK || stage == ENV_HOLD) ? (
+          regionpen = creg == GC_REGION_ATTACK ? -0.15 : (creg == GC_REGION_BODY ? 0.36 : 2.8);
+        ) : (
+          regionpen = creg == GC_REGION_BODY ? 0 : (creg == GC_REGION_ATTACK ? (0.55 + 1.05 * (1 - lively)) : 2.0);
+        );
+      );
+
+      histpen = grain_hist_penalty(vix, csid, cpos, lo, hi) * (0.20 + 0.28 * lively + 0.14 * (1 - truth));
+      sm = sample_meta_base + csid * SM_STRIDE;
+      sr = max(1000, sm[SM_SR]);
+      nearwin = max(gsize * (1.20 + 0.62 * lively), sr * 0.082);
+      // v30: adjacent corpus entries are not "repeats"; they are the coherent
+      // continuation stream. Penalize only stalling/regression/re-hitting.
+      nearpen = (hasprev && csid == psid && abs(cpos - ppos) < nearwin) ? (
+        (nextgap >= 1 && nextgap <= 5) ? (0.08 + 0.14 * lively) : (3.2 + 3.6 * lively + 0.85 * (1 - truth))
+      ) : 0;
+      idx == lastidx ? nearpen += 1000;
+
+      runlim = grain_run_limit(lively, truth, spice);
+      force_cross = (sample_count > 1 && hasprev && v[VC_LGRUN] >= runlim) ? 1 : 0;
+      crosspen = (force_cross && csid == psid) ? 1000 : 0;
+      runpen = (hasprev && csid == psid) ? max(0, v[VC_LGRUN] - runlim * 0.72) * (0.22 + 0.34 * lively) : (-0.045 * spice);
+
+      sameevent = hasprev && csid == psid && cevent == pevent;
+      seqbonus = (hasprev && csid == psid && nextgap >= 1 && nextgap <= 5) ? (-(0.72 - nextgap * 0.085) * (0.52 + 0.34 * (1 - spice) + 0.20 * (1 - truth))) : 0;
+      sample_count <= 1 && sameevent ? (
+        (nextgap >= 1 && nextgap <= 5) ? nearpen += 0.04 * lively : nearpen += 2.2 + 2.2 * lively
+      );
+      regresspen = (hasprev && csid == psid && cphase < pphase - 0.14) ? (1.9 + 2.1 * lively) : 0;
+
+      saltarget = (stage == ENV_ATTACK || stage == ENV_HOLD) ? 0.58 : (stage == ENV_RELEASE ? (0.28 + 0.22 * spice) : (0.34 + 0.18 * lively + 0.08 * spice));
+      salpen = abs(csal - saltarget) * 0.50 + max(0, csal - saltarget - 0.30) * (0.78 + 0.82 * lively);
+      lowrms_min = want_region == GC_REGION_TAIL ? 0.016 : (creg == GC_REGION_ATTACK ? 0.030 : 0.046);
+      lowrmspen = max(0, lowrms_min - crms) * (17 + 10 * (1 - truth) + 5 * lively);
+
+      score = regionpen + descer * (1.22 + 0.44 * (1 - truth)) + phaseerr * (0.54 + 0.38 * (1 - spice));
+      score += histpen + nearpen + runpen + regresspen + crosspen + salpen + lowrmspen + seqbonus;
+      csid == fallback_sid ? score -= 0.030 * (1 - spice);
+      score < corpus_best_score ? (
+        corpus_best_score = score;
+        corpus_best_idx = idx;
+        corpus_best_sid = csid;
+        corpus_best_pos = cpos;
+        corpus_best_lo = lo;
+        corpus_best_hi = hi;
+        corpus_best_len = clen;
+      );
+    );
+  );
+);
+
+function corpus_pick_grain(vix v want_region fallback_sid fallback_pos fallback_lo fallback_hi gsize lively truth spice stage) local(
+  tries idx sm start count r lastidx lastgc psid pstart pcount nearidx k phase idx2
+)
+(
+  corpus_best_idx = -1;
+  corpus_best_sid = -1;
+  corpus_best_pos = fallback_pos;
+  corpus_best_lo = fallback_lo;
+  corpus_best_hi = fallback_hi;
+  corpus_best_len = gsize;
+  corpus_best_score = 1000000000;
+
+  corpus_count > 0 ? (
+    // Seed the search with candidates around the anchor sample so Granular still
+    // feels related to the triggered note, then add corpus-wide candidates so a
+    // single long file or mixed bank can transform instead of merely replay.
+    (fallback_sid >= 0 && fallback_sid < sample_count) ? (
+      sm = sample_meta_base + fallback_sid * SM_STRIDE;
+      start = sm[SM_GCSTART] | 0;
+      count = sm[SM_GCCOUNT] | 0;
+      count > 0 ? (
+        k = 0;
+        while (k < 5) (
+          idx = start + floor(rand(count));
+          corpus_consider_candidate(vix, v, idx, want_region, gsize, lively, truth, spice, stage, fallback_sid);
+          k += 1;
+        );
+      );
+    );
+
+    lastidx = v[VC_LGCIDX] | 0;
+    (lastidx >= 0 && lastidx < corpus_count) ? (
+      lastgc = grain_corpus_base + lastidx * GC_STRIDE;
+      psid = lastgc[GC_SID] | 0;
+      (psid >= 0 && psid < sample_count) ? (
+        sm = sample_meta_base + psid * SM_STRIDE;
+        pstart = sm[SM_GCSTART] | 0;
+        pcount = sm[SM_GCCOUNT] | 0;
+        pcount > 0 ? (
+          // v30: feed the selector actual forward continuations before random
+          // candidates. This makes the corpus behave like plausible motion, not
+          // disconnected tiles. No wrap is used at the end.
+          k = 1;
+          while (k <= 6) (
+            nearidx = lastidx + k;
+            (nearidx >= pstart && nearidx < pstart + pcount) ? (
+              corpus_consider_candidate(vix, v, nearidx, want_region, gsize, lively, truth, spice, stage, fallback_sid);
+            );
+            k += 1;
+          );
+          k = 0;
+          while (k < 4) (
+            idx = pstart + floor(rand(pcount));
+            corpus_consider_candidate(vix, v, idx, want_region, gsize, lively, truth, spice, stage, fallback_sid);
+            k += 1;
+          );
+        );
+      );
+    );
+
+    tries = 18 + floor(18 * lively) + floor(8 * spice);
+    while (tries > 0) (
+      idx = floor(rand(corpus_count));
+      corpus_consider_candidate(vix, v, idx, want_region, gsize, lively, truth, spice, stage, fallback_sid);
+      tries -= 1;
+    );
+  );
+);
+
+
 function update_sample_cluster(sm) local(br sh tr len pitch len_norm pitch_norm)
 (
   // Compact descriptor-bin cluster for Walk mode.
@@ -990,12 +1385,7 @@ function grain_follow_phase(v region_mode) local(lo hi span ph step f)
   );
 );
 
-function grain_run_limit(lively truth spice)
-(
-  // Same-source phrases should be long enough to feel connected but short
-  // enough to avoid reconstructing one original take.
-  max(4, floor(6 + (1 - spice) * 5 + truth * 3 + (1 - lively) * 2));
-);
+
 
 function grain_follow_strength(v lively truth spice) local(runw runlim)
 (
@@ -2207,6 +2597,15 @@ function reset_formant_buffers()
   form_level = 1;
 );
 
+function reset_focus_peak_buffers()
+(
+  fpk_lp1_l = 0; fpk_lp2_l = 0; fpk_lp3_l = 0; fpk_lp4_l = 0;
+  fpk_lp1_r = 0; fpk_lp2_r = 0; fpk_lp3_r = 0; fpk_lp4_r = 0;
+  fpk_env0 = 0; fpk_env1 = 0; fpk_env2 = 0; fpk_env3 = 0; fpk_env4 = 0;
+  fpk_g0 = 1; fpk_g1 = 1; fpk_g2 = 1; fpk_g3 = 1; fpk_g4 = 1;
+  fpk_level = 1;
+);
+
 function reset_processing_buffers() local(i total)
 (
   proc_hpf1_l = 0; proc_hpf2_l = 0;
@@ -2993,6 +3392,121 @@ function apply_formant_shift() local(
   );
 );
 
+
+function fpk_peakness(e center) local(p)
+(
+  p = e <= 0.000000000001 ? 0 : max(0, e - center) / max(e + center * 0.35, 0.000000000001);
+  clamp01(p * 2.35);
+);
+
+function apply_focus_peak_pack() local(
+  inL inR b0l b1l b2l b3l b4l b0r b1r b2r b3r b4r
+  e0 e1 e2 e3 e4 p0 p1 p2 p3 p4 amt depth sign protect coeff
+  db0 db1 db2 db3 db4 g0 g1 g2 g3 g4 wetL wetR dryE wetE level wetmix
+)
+(
+  // v30 Peak Pack: hidden Shift+Focus processor. Negative values dynamically
+  // soothe local spectral maxima; positive values accentuate them. It is broad
+  // and attack-aware, not a surgical static EQ.
+  inL = outL;
+  inR = outR;
+
+  fpk_lp1_l += (inL - fpk_lp1_l) * fpk_lp_c1;
+  fpk_lp2_l += (inL - fpk_lp2_l) * fpk_lp_c2;
+  fpk_lp3_l += (inL - fpk_lp3_l) * fpk_lp_c3;
+  fpk_lp4_l += (inL - fpk_lp4_l) * fpk_lp_c4;
+  fpk_lp1_r += (inR - fpk_lp1_r) * fpk_lp_c1;
+  fpk_lp2_r += (inR - fpk_lp2_r) * fpk_lp_c2;
+  fpk_lp3_r += (inR - fpk_lp3_r) * fpk_lp_c3;
+  fpk_lp4_r += (inR - fpk_lp4_r) * fpk_lp_c4;
+
+  b0l = fpk_lp1_l;
+  b1l = fpk_lp2_l - fpk_lp1_l;
+  b2l = fpk_lp3_l - fpk_lp2_l;
+  b3l = fpk_lp4_l - fpk_lp3_l;
+  b4l = inL - fpk_lp4_l;
+  b0r = fpk_lp1_r;
+  b1r = fpk_lp2_r - fpk_lp1_r;
+  b2r = fpk_lp3_r - fpk_lp2_r;
+  b3r = fpk_lp4_r - fpk_lp3_r;
+  b4r = inR - fpk_lp4_r;
+
+  e0 = b0l*b0l + b0r*b0r;
+  e1 = b1l*b1l + b1r*b1r;
+  e2 = b2l*b2l + b2r*b2r;
+  e3 = b3l*b3l + b3r*b3r;
+  e4 = b4l*b4l + b4r*b4r;
+
+  fpk_env0 += (e0 - fpk_env0) * (e0 > fpk_env0 ? fpk_env_att_coeff : fpk_env_rel_coeff);
+  fpk_env1 += (e1 - fpk_env1) * (e1 > fpk_env1 ? fpk_env_att_coeff : fpk_env_rel_coeff);
+  fpk_env2 += (e2 - fpk_env2) * (e2 > fpk_env2 ? fpk_env_att_coeff : fpk_env_rel_coeff);
+  fpk_env3 += (e3 - fpk_env3) * (e3 > fpk_env3 ? fpk_env_att_coeff : fpk_env_rel_coeff);
+  fpk_env4 += (e4 - fpk_env4) * (e4 > fpk_env4 ? fpk_env_att_coeff : fpk_env_rel_coeff);
+
+  amt = clamp(focus_peak_amt, -1, 1);
+  depth = abs(amt);
+  sign = amt >= 0 ? 1 : -1;
+  // Boosting peaks is more transient-protected; soothing is allowed to catch
+  // spiky attacks because that is the point of the negative direction.
+  protect = sign > 0 ? transient_guard_s * (0.45 + 0.15 * trans_mode_mix) : transient_guard_s * 0.12;
+  depth *= 1 - clamp01(protect);
+
+  depth > 0.0001 ? (
+    p0 = fpk_peakness(fpk_env0, fpk_env1 * 1.10);
+    p1 = fpk_peakness(fpk_env1, (fpk_env0 + fpk_env2) * 0.58);
+    p2 = fpk_peakness(fpk_env2, (fpk_env1 + fpk_env3) * 0.55);
+    p3 = fpk_peakness(fpk_env3, (fpk_env2 + fpk_env4) * 0.55);
+    p4 = fpk_peakness(fpk_env4, fpk_env3 * 1.05);
+
+    sign < 0 ? (
+      db0 = -depth * (0.8 +  6.5 * p0) * 0.46;
+      db1 = -depth * (1.0 +  8.2 * p1) * 0.84;
+      db2 = -depth * (1.1 + 10.5 * p2) * 1.00;
+      db3 = -depth * (1.0 +  9.4 * p3) * 0.96;
+      db4 = -depth * (0.8 +  6.0 * p4) * 0.70;
+    ) : (
+      db0 =  depth * (0.4 + 3.2 * p0) * 0.34;
+      db1 =  depth * (0.5 + 4.0 * p1) * 0.70;
+      db2 =  depth * (0.5 + 5.0 * p2) * 0.92;
+      db3 =  depth * (0.5 + 4.7 * p3) * 0.86;
+      db4 =  depth * (0.4 + 3.0 * p4) * 0.58;
+    );
+
+    db0 = clamp(db0, -9.0, 4.0);
+    db1 = clamp(db1, -12.0, 5.5);
+    db2 = clamp(db2, -15.0, 7.0);
+    db3 = clamp(db3, -14.0, 6.5);
+    db4 = clamp(db4, -9.0, 4.5);
+
+    g0 = db2amp(db0); g1 = db2amp(db1); g2 = db2amp(db2); g3 = db2amp(db3); g4 = db2amp(db4);
+    coeff = fpk_gain_coeff * (0.70 + 0.85 * depth);
+    fpk_g0 += (g0 - fpk_g0) * coeff;
+    fpk_g1 += (g1 - fpk_g1) * coeff;
+    fpk_g2 += (g2 - fpk_g2) * coeff;
+    fpk_g3 += (g3 - fpk_g3) * coeff;
+    fpk_g4 += (g4 - fpk_g4) * coeff;
+
+    wetL = b0l*fpk_g0 + b1l*fpk_g1 + b2l*fpk_g2 + b3l*fpk_g3 + b4l*fpk_g4;
+    wetR = b0r*fpk_g0 + b1r*fpk_g1 + b2r*fpk_g2 + b3r*fpk_g3 + b4r*fpk_g4;
+    dryE = inL*inL + inR*inR + 0.000000000001;
+    wetE = wetL*wetL + wetR*wetR + 0.000000000001;
+    level = clamp(sqrt(dryE / wetE), 0.82, 1.18);
+    fpk_level += (level - fpk_level) * fpk_level_coeff;
+    wetL *= fpk_level;
+    wetR *= fpk_level;
+    wetmix = clamp01(0.40 + 0.60 * sqrt(depth));
+    outL = lerp(inL, wetL, wetmix);
+    outR = lerp(inR, wetR, wetmix);
+  ) : (
+    fpk_g0 += (1 - fpk_g0) * fpk_gain_coeff;
+    fpk_g1 += (1 - fpk_g1) * fpk_gain_coeff;
+    fpk_g2 += (1 - fpk_g2) * fpk_gain_coeff;
+    fpk_g3 += (1 - fpk_g3) * fpk_gain_coeff;
+    fpk_g4 += (1 - fpk_g4) * fpk_gain_coeff;
+    fpk_level += (1 - fpk_level) * fpk_level_coeff;
+  );
+);
+
 function reset_bank_state() local(i)
 (
   sample_count = 0;
@@ -3011,6 +3525,9 @@ function reset_bank_state() local(i)
   bank_sharpness_spread = 0;
   bank_sharpness_reliability = 0;
   bank_focus_extreme = 0;
+  corpus_count = 0;
+  corpus_best_idx = -1;
+  corpus_best_sid = -1;
   next_audio = AUDIO_BASE;
   seq_cursor = 0;
   walk_last_sid = -1;
@@ -3031,6 +3548,7 @@ function reset_bank_state() local(i)
   reset_room_buffers();
   reset_push_buffers();
   reset_formant_buffers();
+  reset_focus_peak_buffers();
   reset_processing_buffers();
   init_flow_model();
   transient_guard_s = 0;
@@ -3119,7 +3637,13 @@ function refresh_bank_stats() local(
     bank_focus_extreme = clamp01(abs(bank_sharpness - 0.50) / 0.32) * (0.55 + 0.45 * bank_sharpness_reliability);
   );
 
-  sample_count > 0 ? train_flow_model() : init_flow_model();
+  sample_count > 0 ? (
+    train_flow_model();
+    build_grain_corpus();
+  ) : (
+    init_flow_model();
+    corpus_count = 0;
+  );
   bank_loaded = sample_count > 0;
 );
 
@@ -3136,6 +3660,7 @@ function reanalyze_bank() local(i sm)
   reset_room_buffers();
   reset_push_buffers();
   reset_formant_buffers();
+  reset_focus_peak_buffers();
   transient_guard_s = 0;
   seq_cursor = 0;
   last_sid = -1;
@@ -3157,7 +3682,9 @@ function configure_memory_layout(selected_count) local(cap) (
   sample_pool_capacity = cap;
 
   sample_meta_base = 0;
-  voice_base = sample_meta_base + sample_pool_capacity * SM_STRIDE;
+  corpus_capacity = clamp(max(GRAIN_CORPUS_MIN, (selected_count | 0) * 64), GRAIN_CORPUS_MIN, GRAIN_CORPUS_HARD_MAX) | 0;
+  grain_corpus_base = sample_meta_base + sample_pool_capacity * SM_STRIDE + 32;
+  voice_base = grain_corpus_base + corpus_capacity * GC_STRIDE + 64;
   recent_base = voice_base + MAX_VOICES * VC_STRIDE;
   grain_hist_sid_base = recent_base + RECENT_LEN + 32;
   grain_hist_pos_base = grain_hist_sid_base + MAX_VOICES * GRAIN_HIST_LEN;
@@ -3679,7 +4206,7 @@ function start_voice(note vel chan) local(
     v[VC_GSIZE]    = hybrid_grain_samps;
     // Hybrid waits until transient protection clears because the direct head is audible.
     // Granular has no audible direct head, so its HybridCore grain layer starts immediately.
-    v[VC_GTIMER]   = gran_voice ? 1 : max(1, trans_hold_out + 1);
+    v[VC_GTIMER]   = gran_voice ? (-floor(max(1, hybrid_hop_samps) * 3)) : max(1, trans_hold_out + 1);
     v[VC_NEXTSRC]  = max(bodystart, min(startpos, bodyend - 1));
     (playmode >= 2 && ggrain_amt > 0.0001 && seam_bridge_env > 0.0005 && seam_bridge_phase >= 0) ? (
       // The new Hybrid body cursor starts at the matching normalized body phase
@@ -3720,6 +4247,7 @@ function start_voice(note vel chan) local(
     v[VC_LGHI]    = 1;
     v[VC_LGREG]   = -1;
     v[VC_LGRUN]   = 0;
+    v[VC_LGCIDX]  = -1;
 
     apply_release_attack_bridge(voice_idx);
     fade_same_note_releases_for_retrigger(note, chan, voice_idx);
@@ -3852,6 +4380,7 @@ function release_all_voices_transport(hard) local(i v)
     reset_room_buffers();
     reset_push_buffers();
     reset_formant_buffers();
+    reset_focus_peak_buffers();
   );
 );
 
@@ -4544,7 +5073,9 @@ SM_CLUSTER   = 19;
 SM_AUTOREL   = 20;
 SM_ENDFADE   = 21;
 SM_TAILHOT   = 22;
-SM_FLOWBASE  = 23;
+SM_GCSTART   = 23;
+SM_GCCOUNT   = 24;
+SM_FLOWBASE  = 25;
 FLOW_BINS    = 8;
 FLOW_FEATS   = 3;
 FLOW_IN      = 5;
@@ -4604,10 +5135,11 @@ VC_LGLO      = 49;
 VC_LGHI      = 50;
 VC_LGREG     = 51;
 VC_LGRUN     = 52;
-VC_RAWRATE   = 53;
-VC_ATKRATE   = 54;
-VC_HEADSAFE  = 55;
-VC_GBASE     = 56;
+VC_LGCIDX    = 53;
+VC_RAWRATE   = 54;
+VC_ATKRATE   = 55;
+VC_HEADSAFE  = 56;
+VC_GBASE     = 57;
 
 VG_ACTIVE    = 0;
 VG_AGE       = 1;
@@ -4618,7 +5150,28 @@ VG_GAIN      = 5;
 VG_PAN       = 6;
 VG_SIZE      = 7;
 VG_STRIDE    = 8;
-NUM_GRAINS   = 12;
+NUM_GRAINS   = 16;
+
+GC_SID       = 0;
+GC_POS       = 1;
+GC_LEN       = 2;
+GC_REGION    = 3;
+GC_PHASE     = 4;
+GC_RMS       = 5;
+GC_BRIGHT    = 6;
+GC_EDGE      = 7;
+GC_SHARP     = 8;
+GC_SAL       = 9;
+GC_NRMS      = 10;
+GC_NBRIGHT   = 11;
+GC_NEDGE     = 12;
+GC_EVENT     = 13;
+GC_STRIDE    = 14;
+GRAIN_CORPUS_MIN = 2048;
+GRAIN_CORPUS_HARD_MAX = 65536;
+GC_REGION_BODY = 0;
+GC_REGION_TAIL = 1;
+GC_REGION_ATTACK = 2;
 
 VC_STRIDE    = VC_GBASE + NUM_GRAINS * VG_STRIDE;
 
@@ -4732,6 +5285,19 @@ bank_sharpness_spread = 0;
 bank_sharpness_reliability = 0;
 bank_focus_extreme = 0;
 flow_model_trained = 0;
+corpus_count = 0;
+corpus_capacity = GRAIN_CORPUS_MIN;
+corpus_best_idx = -1;
+corpus_best_sid = -1;
+corpus_best_pos = 0;
+corpus_best_lo = 0;
+corpus_best_hi = 1;
+corpus_best_len = 0;
+corpus_tmp_rms = 0;
+corpus_tmp_bright = 0;
+corpus_tmp_edge = 0;
+corpus_tmp_sharp = 0;
+corpus_tmp_sal = 0;
 learned_sid = -1;
 learned_pos = 0;
 learned_lo = 0;
@@ -4884,6 +5450,7 @@ push_side_rel_coeff = 0.001;
 
 
 formant_shift_semi = 0;
+focus_peak_amt = 0;
 auto_release_amt = 1;
 posteq_q_schema = 0;
 proc_eq_band1_db = 0;
@@ -4922,6 +5489,15 @@ form_lp1_r = 0; form_lp2_r = 0; form_lp3_r = 0; form_lp4_r = 0; form_lp5_r = 0;
 form_env0 = 0; form_env1 = 0; form_env2 = 0; form_env3 = 0; form_env4 = 0; form_env5 = 0;
 form_g0 = 1; form_g1 = 1; form_g2 = 1; form_g3 = 1; form_g4 = 1; form_g5 = 1;
 form_level = 1;
+fpk_lp_c1 = 0.02;
+fpk_lp_c2 = 0.06;
+fpk_lp_c3 = 0.18;
+fpk_lp_c4 = 0.48;
+fpk_env_att_coeff = 0.02;
+fpk_env_rel_coeff = 0.003;
+fpk_gain_coeff = 0.02;
+fpk_level_coeff = 0.004;
+reset_focus_peak_buffers();
 
 slot_signature_loaded = -999999;
 pending_signature = -999999;
@@ -4948,6 +5524,7 @@ ui_last_click_id = -1;
 ui_last_click_t = -10;
 ui_dblclick_time = 0.32;
 pitch_alt_active = 0;
+focus_peak_alt_active = 0;
 
 mix_fast = 0;
 mix_slow = 0;
@@ -4979,6 +5556,7 @@ file_var(0, slope_schema);
 file_var(0, formant_shift_semi);
 file_var(0, auto_release_amt);
 file_var(0, posteq_q_schema);
+file_var(0, focus_peak_amt);
 
 @slider
 attack_samps = max(1, floor(slider2 * srate * 0.001));
@@ -5033,6 +5611,7 @@ truth_mix = clamp01(slider10);
 out_trim = db2amp(slider11);
 pitch_semi = clamp(slider12, -24, 24);
 formant_shift_semi = clamp(formant_shift_semi, -12, 12);
+focus_peak_amt = clamp(focus_peak_amt, -1, 1);
 auto_release_amt = clamp(auto_release_amt, 0, 1);
 proc_eq_band1_db = clamp(slider32, -18, 18);
 proc_eq_band2_db = clamp(slider33, -18, 18);
@@ -5182,6 +5761,14 @@ form_env_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.010 * srate)));
 form_env_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.135 * srate)));
 form_gain_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.018 * srate)));
 form_level_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.045 * srate)));
+fpk_lp_c1 = clamp(1 - exp(-6.283185307179586 * min(320, srate * 0.49) / max(srate, 1)), 0.0001, 0.74);
+fpk_lp_c2 = clamp(1 - exp(-6.283185307179586 * min(980, srate * 0.49) / max(srate, 1)), 0.0002, 0.82);
+fpk_lp_c3 = clamp(1 - exp(-6.283185307179586 * min(2900, srate * 0.49) / max(srate, 1)), 0.0004, 0.90);
+fpk_lp_c4 = clamp(1 - exp(-6.283185307179586 * min(8200, srate * 0.49) / max(srate, 1)), 0.0010, 0.96);
+fpk_env_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.0045 * srate)));
+fpk_env_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.105 * srate)));
+fpk_gain_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.014 * srate)));
+fpk_level_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.040 * srate)));
 
 (onset_mode_target != onset_mode_active) ? (
   onset_mode_active = onset_mode_target;
@@ -5458,13 +6045,15 @@ while (i < MAX_VOICES) (
         gsize = max(hop + 1, floor(v[VC_GSIZE]));
         gran_hop_floor = 1;
         granular_voice ? (
-          gran_hop_floor = max(floor(srate * 0.008), floor(gsize * 0.16));
-          hop = max(gran_hop_floor, floor(hop * (1 - gesture_drive * 0.22)));
+          gran_hop_floor = max(floor(srate * 0.0055), floor(gsize * 0.115));
+          hop = max(gran_hop_floor, floor(hop * (1 - gesture_drive * 0.20)));
         );
         timer = floor(v[VC_GTIMER]) - 1;
+        schedule_prefill = granular_voice ? max(0, -timer) : 0;
         spawn_guard = 0;
 
         while (timer <= 0 && spawn_guard < NUM_GRAINS && v[VC_CANSPAWN] > 0) (
+          schedule_prefill = granular_voice ? max(0, -timer) : 0;
           gslot = -1;
           oldest = 0;
           oldest_age = -1;
@@ -5755,14 +6344,17 @@ while (i < MAX_VOICES) (
             );
           );
 
+          gcorpus_idx = -1;
           granular_voice ? (
-            learned_flow_pick(i, v, cur_region_mode, gsid, gsrc, ghist_lo, ghist_hi, gsize, slider9, truth_mix, v[VC_TAILMIX]);
-            learned_sid >= 0 && learned_sid < sample_count ? (
+            corpus_want_region = cur_region_mode ? GC_REGION_TAIL : ((stage == ENV_ATTACK || stage == ENV_HOLD) ? GC_REGION_ATTACK : GC_REGION_BODY);
+            corpus_pick_grain(i, v, corpus_want_region, gsid, gsrc, ghist_lo, ghist_hi, gsize, slider9, truth_mix, v[VC_TAILMIX], stage);
+            corpus_best_idx >= 0 && corpus_best_sid >= 0 && corpus_best_sid < sample_count ? (
               prev_pick_sid = gsid;
-              gsid = learned_sid;
-              gsrc = learned_pos;
-              ghist_lo = learned_lo;
-              ghist_hi = learned_hi;
+              gsid = corpus_best_sid;
+              gsrc = corpus_best_pos;
+              ghist_lo = corpus_best_lo;
+              ghist_hi = corpus_best_hi;
+              gcorpus_idx = corpus_best_idx;
               (gsid != prev_pick_sid) ? ggain *= 0.975;
               gsm = sample_meta_base + gsid * SM_STRIDE;
               gframes = gsm[SM_FRAMES] | 0;
@@ -5791,6 +6383,10 @@ while (i < MAX_VOICES) (
 
             len_jit = 1 + (rand(1) - 0.5) * slider9 * (0.08 + 0.10 * (1 - truth_mix) + 0.04 * gesture_arc);
             spawn_gsize = clamp(floor(gsize * len_jit), max(hop + 1, floor(gsize * 0.82)), max(hop + 1, floor(gsize * 1.20)));
+            gcorpus_idx >= 0 && corpus_best_len > 0 ? (
+              corpus_out_len = corpus_best_len / max(0.05, abs(grate));
+              spawn_gsize = clamp(floor(lerp(spawn_gsize, corpus_out_len, 0.26 + 0.18 * (1 - truth_mix))), max(hop + 1, floor(gsize * 0.74)), max(hop + 1, floor(gsize * 1.36)));
+            );
 
             reverse_grain = gran_tail_region && slider9 > 0.55 && v[VC_TAILMIX] > 0.25 && rand(1) < (0.006 + 0.030 * slider9 * v[VC_TAILMIX] * gesture_arc);
             reverse_grain ? (
@@ -5808,6 +6404,7 @@ while (i < MAX_VOICES) (
             gpan = (rand(1) - 0.5) * slider8 * slider9 * (0.10 + 0.30 * gesture_arc);
 
             prefill_age = floor(spawn_gsize * slider9 * (0.015 + 0.075 * gesture_arc) * rand(1));
+            schedule_prefill > 0 ? prefill_age = max(prefill_age, min(max(0, spawn_gsize - 2), floor(schedule_prefill)));
             prefill_src = gsrc - prefill_age * grate;
             gran_tail_region ? (
               prefill_src = clamp(prefill_src, ghist_lo, max(ghist_lo, ghist_hi - 1));
@@ -5836,12 +6433,17 @@ while (i < MAX_VOICES) (
             v[VC_LGLO] = ghist_lo;
             v[VC_LGHI] = ghist_hi;
             v[VC_LGREG] = cur_region_mode;
+            v[VC_LGCIDX] = gcorpus_idx;
           );
 
           spawn_hop = hop;
           granular_voice ? (
-            hop_jit = floor(hop * slider9 * (0.08 + 0.18 * (1 - truth_mix)) * ((rand(1) - 0.5) * 2));
-            spawn_hop = max(gran_hop_floor, hop + hop_jit);
+            // v30: hop follows the actual spawned grain length, not the old
+            // HybridCore base length. This prevents audible empty gaps when the
+            // corpus chooses shorter local grains.
+            spawn_hop_base = max(floor(srate * 0.0050), floor(spawn_gsize * lerp(0.19, 0.135, slider9)));
+            hop_jit = floor(spawn_hop_base * slider9 * (0.05 + 0.11 * (1 - truth_mix)) * ((rand(1) - 0.5) * 2));
+            spawn_hop = clamp(spawn_hop_base + hop_jit, max(1, floor(srate * 0.0048)), max(1, floor(spawn_gsize * 0.285)));
           );
           timer += spawn_hop;
           spawn_guard += 1;
@@ -5917,7 +6519,7 @@ while (i < MAX_VOICES) (
           // Do not normalize by the instantaneous overlap sum. That cancels the
           // window fade whenever only one grain is active and makes seams obvious.
           // Instead, target the COLA sum for a periodic Hann window at 25%% hop.
-          ola_norm = max(2.0, sumW);
+          ola_norm = granular_voice ? max(1.42, sumW) : max(2.0, sumW);
           grainL = sumL / ola_norm;
           grainR = sumR / ola_norm;
           got_grain = 1;
@@ -6196,6 +6798,7 @@ focus_exaggerate_guard = clamp(focus_exaggerate_guard, 0.56, 1);
 focus_mix = focus_amt * focus_base_mix * focus_corrective_boost * focus_exaggerate_guard;
 outL += focus_hp_l * focus_mix;
 outR += focus_hp_r * focus_mix;
+abs(focus_peak_amt) > 0.0001 ? apply_focus_peak_pack();
 
 mid = 0.5 * (outL + outR);
 side = 0.5 * (outL - outR);
@@ -6883,6 +7486,7 @@ kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_
 pitch_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
 (mouse_pressed && pitch_hot) ? pitch_alt_active = ui_shift ? 1 : 0;
 (ui_active != 317 && !mouse_down) ? pitch_alt_active = 0;
+focus_peak_alt_active = 0;
 pitch_alt_use = pitch_alt_active || (ui_shift && (pitch_hot || ui_active == 317));
 pitch_alt_use ? (
   nv = ui_knob(317, kc, ky, kb_r, formant_shift_semi, -12, 12, 0, 0.021);
@@ -6951,16 +7555,34 @@ sprintf(#ui_buf, "%.2f", slider6); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc -
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Color"); draw_center_buf(cell_x, label_y, cell_w);
 
-// Focus
+// Focus / hidden Peak Pack
 grid_idx = 5;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
-nv = ui_knob(302, kc, ky, kb_r, slider7, -1, 1, 0, 0.020); abs(nv - slider7) > 0.0000001 ? (slider7 = nv; gfx_slider_mask |= MASK_S7;);
+focus_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
+(mouse_pressed && focus_hot) ? focus_peak_alt_active = ui_shift ? 1 : 0;
+(!mouse_down && ui_active != 318) ? focus_peak_alt_active = 0;
+focus_peak_alt_use = focus_peak_alt_active || (ui_shift && (focus_hot || ui_active == 318));
+focus_peak_alt_use ? (
+  nv = ui_knob(318, kc, ky, kb_r, focus_peak_amt, -1, 1, 0, 0.020);
+  abs(nv - focus_peak_amt) > 0.0000001 ? (
+    focus_peak_amt = clamp(nv, -1, 1);
+    ui_value_changed = 1;
+  );
+  focus_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    focus_peak_amt = clamp(focus_peak_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)), -1, 1);
+    ui_wheel_used = 1;
+    ui_value_changed = 1;
+  );
+) : (
+  nv = ui_knob(302, kc, ky, kb_r, slider7, -1, 1, 0, 0.020); abs(nv - slider7) > 0.0000001 ? (slider7 = nv; gfx_slider_mask |= MASK_S7;);
+);
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.2f", slider7); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
+focus_peak_alt_use ? sprintf(#ui_buf, "Pk%+.2f", focus_peak_amt) : (abs(focus_peak_amt) > 0.04 ? sprintf(#ui_buf, "%.2f/Pk%+.1f", slider7, focus_peak_amt) : sprintf(#ui_buf, "%.2f", slider7));
+gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-sprintf(#ui_buf, "Focus"); draw_center_buf(cell_x, label_y, cell_w);
+focus_peak_alt_use ? sprintf(#ui_buf, "Peak Pack") : (abs(focus_peak_amt) > 0.04 ? sprintf(#ui_buf, "Focus/Peak") : sprintf(#ui_buf, "Focus")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Width
 grid_idx = 6;
@@ -7496,7 +8118,11 @@ ui_hover_id == 301 ? (
 );
 ui_hover_id == 302 ? (
   sprintf(#tip_title, "Focus");
-  sprintf(#tip_body, "%.2f bank-aware soft/clear edge.", slider7);
+  sprintf(#tip_body, "%.2f bank-aware soft/clear edge. Shift+drag for Peak Pack.", slider7);
+);
+ui_hover_id == 318 ? (
+  sprintf(#tip_title, "Peak Pack");
+  sprintf(#tip_body, "%+.2f dynamic spectral peaks: negative soothes maxima, positive accents them.", focus_peak_amt);
 );
 ui_hover_id == 303 ? (
   sprintf(#tip_title, "Width");
