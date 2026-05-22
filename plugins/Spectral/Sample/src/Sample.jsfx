@@ -1,8 +1,8 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v32-phrase-trajectory-peakpack-pro)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v35-macrograin-olaglue-peakpack-pro)
 tags:instrument sampler ui
 // #GFX_RESIZE: responsive
 
-// v32 PhraseTrajectory + PeakPack Pro: Granular adds phrase trajectories, Gaussian corpus markers, source-soft grain starts, and adaptive grain expansion; Shift+Focus Peak Pack becomes a sparse narrow-band resonance smoother/exaggerator.
+// v35 MacroGrain OLAGlue + PeakPack Pro: Granular adds 1ms/10ms/100ms/1000ms-scale load-time corpus analysis, permits event-scale macro-grains for coherent SFX, and smooths OLA/spawn edges to reduce clicks and gaps.
 // v28 SpectrumPrePost: Post-Processing now draws detailed pre-EQ and post-EQ spectra on one shared scale.
 // v27 SpectrumDetail: Post-EQ spectrum uses a 96-bin resonant analyzer and thin trace drawing instead of a broad lowpass-difference blob.
 // v26 SpectrumContrast: Post-EQ spectrum underlay is brighter, adaptive, and easier to read on quiet material.
@@ -30,6 +30,9 @@ filename:0,sample.wav
 // #HELP: v27 SpectrumDetail makes the Post-Processing spectrum sharper with a higher-resolution resonant analyzer and thinner trace display.
 // #HELP: v26 SpectrumContrast makes the Post-Processing spectrum underlay brighter and easier to read on quiet material.
 // #HELP: v29 GrainCorpus builds a load-time grain/event corpus so Granular can transform both single long sources and multi-source banks without doing descriptor analysis at playback time.
+// #HELP: v33 EnvTrajectory teaches Granular to follow learned corpus energy motion so phrases have rises, falls, crests, and decay instead of flat wet grain beds.
+// #HELP: v34 MultiScaleEventGrains analyzes short/mid/long windows at corpus-build time and lets Granular use event-sized grains when the source material wants continuity.
+// #HELP: v35 MacroGrain OLAGlue extends this to micro/short/mid/long/ultra windows, allowing coherent slow material to use 100 ms to 1 s grains while smoothing OLA starts, normalization, and long-grain window shape.
 // #HELP: v25 BandQCal makes Band 1/2/3 Q use the actual peaking-EQ response and changes the default from ultra-wide to generous.
 // #HELP: v24 PostEQ QFix makes HPF/LPF Q visible and audible as cutoff resonance.
 // #HELP: v23 FreeBand PostEQ adds a spectrum-underlaid final EQ: HPF, LPF, and three draggable parametric bands with Q and cutoff slope control.
@@ -44,7 +47,7 @@ filename:0,sample.wav
 // #HELP: Attack, Hold, Decay, Sustain, and Release shape each trigger. Shift+Wheel on Attack, Decay, or Release changes slope from -100% to +100%; 0% is linear. Release is also protected by sample-dependent AutoRelease when a source would otherwise chop; Shift+drag Release changes hidden Tail Grace.
 // #HELP:
 // #HELP: ## Playback engines
-// #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack. Granular uses a load-time analyzed grain corpus: long files become many searchable micro-events, multi-source banks become one shared grain field, and playback uses anchor/texture/spice streams, phrase trajectories, corpus continuity, source-adaptive overlap, restrained swells, release blooms, and grain-level decorrelation.
+// #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack. Granular uses a load-time analyzed grain corpus: long files become many searchable micro-events, multi-source banks become one shared grain field, and playback uses anchor/texture/spice streams, phrase + envelope trajectories, corpus continuity, source-adaptive overlap, restrained swells, release blooms, and grain-level decorrelation.
 // #HELP:
 // #HELP: ## Cleanup and depth
 // #HELP: Clean reduces low-level hiss/room bed. Room Tame restrains late room smear. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement.
@@ -254,6 +257,33 @@ function lerp(a b t)
 (
   a + (b-a)*t;
 );
+
+function stretch_window_morph(age gsize flatness) local(n hann fade edge tuk)
+(
+  // v35 MacroGrain OLAGlue: small grains keep Hann. Long coherent grains morph
+  // toward a cosine-edged flat-top window so full-event material is not forced
+  // through a huge whole-window fade.
+  hann = stretch_window(age, gsize);
+  flatness = clamp01(flatness);
+  flatness <= 0.0001 ? (
+    hann;
+  ) : (
+    n = clamp01(age / max(1, gsize - 1));
+    fade = lerp(0.50, 0.17, flatness);
+    n < fade ? (
+      edge = n / max(0.000001, fade);
+      tuk = 0.5 - 0.5 * cos(3.141592653589793 * edge);
+    ) : n > (1 - fade) ? (
+      edge = (1 - n) / max(0.000001, fade);
+      tuk = 0.5 - 0.5 * cos(3.141592653589793 * edge);
+    ) : (
+      tuk = 1;
+    );
+    lerp(hann, tuk, flatness);
+  );
+);
+
+
 
 function db2amp(db)
 (
@@ -531,7 +561,7 @@ function grain_hist_penalty(vix sid pos lo hi) local(base j pen span phasebin hs
 );
 
 
-function corpus_phrase_targets(v stage lively truth spice) local(gphase arc lift accent rel)
+function corpus_phrase_targets(v stage lively truth spice) local(gphase arc lift accent rel envbase envlift)
 (
   // v32 PhraseTrajectory: hidden per-voice phrase arc. This does not command
   // the selector; it provides a moving descriptor target so Granular can feel
@@ -549,12 +579,18 @@ function corpus_phrase_targets(v stage lively truth spice) local(gphase arc lift
     phrase_sal_t    = 0.54 + 0.18 * lively;
     phrase_phase_t  = 0.10 + 0.18 * lift;
     phrase_attack_pull = 0.74;
+    phrase_env_t = 0.54 + 0.24 * lively + 0.12 * lift;
+    phrase_env_delta_t = 0.16 + 0.18 * lively;
+    phrase_env_peak_t = 0.36 + 0.24 * lively;
   ) : rel ? (
     phrase_bright_t = 0.26 + 0.20 * spice + 0.08 * lift;
     phrase_edge_t   = 0.16 + 0.16 * spice + 0.06 * lift;
     phrase_sal_t    = 0.22 + 0.20 * spice + 0.12 * lift;
     phrase_phase_t  = 0.72 + 0.24 * lift;
     phrase_attack_pull = 0.04 + 0.10 * spice;
+    phrase_env_t = 0.24 + 0.18 * spice + 0.10 * lift;
+    phrase_env_delta_t = -0.22 - 0.08 * (1 - spice);
+    phrase_env_peak_t = 0.12 + 0.12 * spice;
   ) : (
     // Body/sustain trajectory: slow material stays coherent and forward;
     // high Lively crests toward brighter/attack-colored grains without hard
@@ -564,12 +600,20 @@ function corpus_phrase_targets(v stage lively truth spice) local(gphase arc lift
     phrase_sal_t    = 0.30 + 0.26 * lively * lift + 0.10 * spice;
     phrase_phase_t  = 0.30 + 0.50 * gphase;
     phrase_attack_pull = clamp01((lift - 0.58) / 0.42) * lively * (0.30 + 0.40 * spice);
+    envbase = 0.32 + 0.12 * (1 - truth) + 0.08 * spice;
+    envlift = lift * (0.28 + 0.28 * lively + 0.14 * spice);
+    phrase_env_t = envbase + envlift;
+    phrase_env_delta_t = (lift - 0.46) * (0.12 + 0.20 * lively + 0.10 * spice);
+    phrase_env_peak_t = clamp01((lift - 0.38) / 0.62) * (0.22 + 0.28 * lively);
   );
 
   phrase_bright_t = clamp01(phrase_bright_t);
   phrase_edge_t = clamp01(phrase_edge_t);
   phrase_sal_t = clamp01(phrase_sal_t);
   phrase_phase_t = clamp01(phrase_phase_t);
+  phrase_env_t = clamp01(phrase_env_t);
+  phrase_env_delta_t = clamp(phrase_env_delta_t, -1, 1);
+  phrase_env_peak_t = clamp01(phrase_env_peak_t);
 );
 
 function corpus_snap_soft_point(sm pos lo hi glen region) local(ptr nch frames sr strength radius step p best bestscore score x xm xp dist)
@@ -646,7 +690,9 @@ function corpus_measure_at(sm pos win) local(ptr nch sr frames a b i step x ax p
   nch = max(1, sm[SM_NCH] | 0);
   sr = max(1000, sm[SM_SR]);
   frames = sm[SM_FRAMES] | 0;
-  win = clamp(floor(win), 64, min(4096, max(64, frames - 2)));
+  // v35: allow ultra-scale load-time measurements up to ~1.2s.
+  // Runtime cost stays low because corpus analysis happens only at load/rescan.
+  win = clamp(floor(win), 64, min(floor(sr * 1.20), max(64, frames - 2)));
   a = clamp(floor(pos - win * 0.5), 0, max(0, frames - 2));
   b = clamp(a + win, a + 1, max(a + 1, frames - 1));
   step = max(1, floor((b - a) / 256));
@@ -692,7 +738,11 @@ function corpus_measure_at(sm pos win) local(ptr nch sr frames a b i step x ax p
   corpus_tmp_sal = sal;
 );
 
-function corpus_write_entry(sid region pos glen phase) local(sm gc frames sr nextpos span event_id)
+function corpus_write_entry(sid region pos glen phase) local(
+  sm gc frames sr prevpos nextpos span event_id crms cbright cedge csharp csal prms nrms nbright nedge envdir envpeak envlevel
+  microwin shortwin midwin longwin ultrawin microrms micbright micedge micsal srms sbright sedge ssal mrms mbright medge msal lrms lbright ledge lsal urms ubright uedge usal
+  slowmat stable ultrastable mscont mstrans event_len len_goal minlen maxlen lenmix evtfrac eventscale transscale
+)
 (
   corpus_count < corpus_capacity ? (
     sm = sample_meta_base + sid * SM_STRIDE;
@@ -703,32 +753,144 @@ function corpus_write_entry(sid region pos glen phase) local(sm gc frames sr nex
     pos = region == GC_REGION_BODY ? wrap_in_range(pos, corpus_lo, corpus_hi) : clamp(pos, corpus_lo, max(corpus_lo, corpus_hi - 1));
     phase = clamp01((pos - corpus_lo) / max(1, span - 1));
     glen = clamp(floor(glen), 64, max(64, span));
-    pos = corpus_snap_soft_point(sm, pos, corpus_lo, corpus_hi, glen, region);
+
+    // v35 EventScaleOLA: evaluate the same corpus point over micro/short/mid/
+    // long/ultra windows. Fast grains still use short information; slow coherent
+    // events can now request 100ms-1s grains when the source supports it.
+    microwin = clamp(floor(sr * 0.0016), 64, min(max(64, span), floor(sr * 0.010)));
+    shortwin = clamp(floor(max(glen * 0.36, sr * 0.010)), max(64, floor(sr * 0.006)), min(max(64, span), floor(sr * 0.080)));
+    midwin   = clamp(floor(max(glen, sr * 0.030)), max(80, floor(sr * 0.018)), min(max(96, span), floor(sr * 0.220)));
+    longwin  = clamp(floor(max(glen * 3.20, sr * 0.110)), max(midwin + 16, floor(sr * 0.075)), min(max(128, span), floor(sr * 0.620)));
+    ultrawin = clamp(floor(max(glen * 8.00, sr * 0.320)), max(longwin + 32, floor(sr * 0.220)), min(max(160, span), floor(sr * 1.120)));
+
+    corpus_measure_at(sm, pos, microwin);
+    microrms = corpus_tmp_rms;
+    micbright = corpus_tmp_bright;
+    micedge = corpus_tmp_edge;
+    micsal = corpus_tmp_sal;
+
+    corpus_measure_at(sm, pos, shortwin);
+    srms = corpus_tmp_rms;
+    sbright = corpus_tmp_bright;
+    sedge = corpus_tmp_edge;
+    ssal = corpus_tmp_sal;
+
+    corpus_measure_at(sm, pos, midwin);
+    mrms = corpus_tmp_rms;
+    mbright = corpus_tmp_bright;
+    medge = corpus_tmp_edge;
+    msal = corpus_tmp_sal;
+
+    corpus_measure_at(sm, pos, longwin);
+    lrms = corpus_tmp_rms;
+    lbright = corpus_tmp_bright;
+    ledge = corpus_tmp_edge;
+    lsal = corpus_tmp_sal;
+
+    corpus_measure_at(sm, pos, ultrawin);
+    urms = corpus_tmp_rms;
+    ubright = corpus_tmp_bright;
+    uedge = corpus_tmp_edge;
+    usal = corpus_tmp_sal;
+
+    slowmat = clamp01((0.70 - mbright) / 0.56) * clamp01((0.44 - medge) / 0.40);
+    stable = clamp01(1 - abs(srms - lrms) * 1.38) * clamp01(1 - abs(sbright - lbright) * 1.05) * clamp01(1 - abs(sedge - ledge) * 0.96);
+    ultrastable = clamp01(1 - abs(mrms - urms) * 1.20) * clamp01(1 - abs(mbright - ubright) * 0.92) * clamp01(1 - abs(medge - uedge) * 0.84);
+    transscale = clamp01(micedge * 0.72 + max(0, microrms - urms) * 0.54 + sm[SM_FLAGS] * 0.18);
+    mstrans = clamp01(sedge * 0.56 + micedge * 0.30 + sbright * 0.18 + sm[SM_FLAGS] * 0.18 + max(0, srms - lrms) * 0.36);
+    eventscale = clamp01(slowmat * 0.42 + stable * 0.34 + ultrastable * 0.52 + clamp01(urms - 0.035) * 0.18 - transscale * 0.26);
+    mscont = clamp01(slowmat * 0.42 + stable * 0.38 + eventscale * 0.58 + clamp01(lrms - 0.05) * 0.10 - mstrans * 0.22);
+    region == GC_REGION_ATTACK ? (
+      mscont *= 0.24;
+      mstrans = max(mstrans, 0.46 + sm[SM_SHARP] * 0.22);
+    );
+    region == GC_REGION_TAIL ? (
+      mscont = clamp01(mscont * 1.12 + clamp01(0.42 - ledge) * 0.08);
+      mstrans *= 0.76;
+    );
+
+    region == GC_REGION_ATTACK ? (
+      len_goal = sr * lerp(0.018, 0.095, clamp01(1 - mstrans + mscont * 0.22));
+      maxlen = min(max(96, span), floor(sr * 0.130));
+      minlen = max(64, floor(sr * 0.010));
+    ) : region == GC_REGION_TAIL ? (
+      len_goal = sr * lerp(0.055, 1.180, max(mscont, eventscale) ^ 0.78) * lerp(1.0, 0.58, mstrans);
+      maxlen = min(max(128, span), floor(sr * lerp(0.180, 1.250, max(mscont, eventscale))));
+      minlen = max(96, floor(sr * 0.030));
+    ) : (
+      len_goal = sr * lerp(0.030, 1.050, max(mscont, eventscale) ^ 0.74) * lerp(1.0, 0.58, mstrans);
+      // If the body region itself is short or behaves like one coherent event,
+      // use most of the event rather than chopping it into little tiles.
+      span < sr * lerp(0.260, 1.050, eventscale) && mscont > 0.30 ? len_goal = max(len_goal, span * lerp(0.60, 0.94, max(mscont, eventscale)));
+      maxlen = min(max(128, span), floor(sr * lerp(0.120, 1.120, max(mscont, eventscale))));
+      minlen = max(80, floor(sr * 0.016));
+    );
+
+    lenmix = clamp01(0.48 + 0.30 * mscont + 0.34 * eventscale - 0.20 * mstrans);
+    event_len = clamp(floor(lerp(glen, len_goal, lenmix)), minlen, maxlen);
+    event_len = clamp(event_len, 64, max(64, span));
+    evtfrac = clamp01(event_len / max(1, span));
+
+    pos = corpus_snap_soft_point(sm, pos, corpus_lo, corpus_hi, event_len, region);
+    phase = clamp01((pos - corpus_lo) / max(1, span - 1));
 
     gc = grain_corpus_base + corpus_count * GC_STRIDE;
-    corpus_measure_at(sm, pos, glen);
+    corpus_measure_at(sm, pos, event_len);
+    crms = corpus_tmp_rms;
+    cbright = corpus_tmp_bright;
+    cedge = corpus_tmp_edge;
+    csharp = corpus_tmp_sharp;
+    csal = corpus_tmp_sal;
+
+    // v33 EnvTrajectory: learn local energy motion at load time. v34 uses the
+    // adaptive event length for this motion so the envelope follows the same
+    // scale as the grain that will actually be played.
+    prevpos = pos - max(16, floor(event_len * 0.62));
+    prevpos = clamp(prevpos, corpus_lo, max(corpus_lo, corpus_hi - 1));
+    corpus_measure_at(sm, prevpos, max(shortwin, floor(event_len * 0.62)));
+    prms = corpus_tmp_rms;
+
+    // Phrase-linear. Do not wrap body-end back to body-start.
+    nextpos = pos + max(16, floor(event_len * 0.62));
+    nextpos = clamp(nextpos, corpus_lo, max(corpus_lo, corpus_hi - 1));
+    corpus_measure_at(sm, nextpos, max(shortwin, floor(event_len * 0.62)));
+    nrms = corpus_tmp_rms;
+    nbright = corpus_tmp_bright;
+    nedge = corpus_tmp_edge;
+
+    envdir = clamp(nrms - prms, -1, 1);
+    envpeak = clamp01((crms - max(prms, nrms)) * 2.8 + max(0, mrms - lrms) * 0.28);
+    envlevel = clamp01((prms + crms * 2 + nrms + lrms) * 0.20);
+
     gc[GC_SID] = sid;
     gc[GC_POS] = pos;
-    gc[GC_LEN] = glen;
+    gc[GC_LEN] = event_len;
     gc[GC_REGION] = region;
     gc[GC_PHASE] = phase;
-    gc[GC_RMS] = corpus_tmp_rms;
-    gc[GC_BRIGHT] = corpus_tmp_bright;
-    gc[GC_EDGE] = corpus_tmp_edge;
-    gc[GC_SHARP] = corpus_tmp_sharp;
-    gc[GC_SAL] = corpus_tmp_sal;
+    gc[GC_RMS] = crms;
+    gc[GC_BRIGHT] = cbright;
+    gc[GC_EDGE] = cedge;
+    gc[GC_SHARP] = csharp;
+    gc[GC_SAL] = csal;
+    gc[GC_NRMS] = nrms;
+    gc[GC_NBRIGHT] = nbright;
+    gc[GC_NEDGE] = nedge;
 
-    // v30: next-descriptor flow is phrase-linear. Do not wrap body-end
-    // back to body-start, or the selector learns loop points.
-    nextpos = pos + max(16, floor(glen * 0.65));
-    nextpos = clamp(nextpos, corpus_lo, max(corpus_lo, corpus_hi - 1));
-    corpus_measure_at(sm, nextpos, glen);
-    gc[GC_NRMS] = corpus_tmp_rms;
-    gc[GC_NBRIGHT] = corpus_tmp_bright;
-    gc[GC_NEDGE] = corpus_tmp_edge;
-
-    event_id = floor(pos / max(1, sr * 0.180));
+    // Event id is now adaptive: longer coherent grains create wider event cells,
+    // short transient grains keep finer cells.
+    event_id = floor(pos / max(1, max(sr * 0.090, event_len * 1.30)));
     gc[GC_EVENT] = sid * 1000000 + event_id;
+    gc[GC_PRMS] = prms;
+    gc[GC_EDIR] = envdir;
+    gc[GC_EPEAK] = envpeak;
+    gc[GC_ELEVEL] = envlevel;
+    gc[GC_MSCONT] = mscont;
+    gc[GC_MSTRANS] = mstrans;
+    gc[GC_LRMS] = lrms;
+    gc[GC_EVTFRAC] = evtfrac;
+    gc[GC_XCONT] = eventscale;
+    gc[GC_URMS] = urms;
+    gc[GC_UEDGE] = uedge;
 
     sm[SM_GCCOUNT] += 1;
     corpus_count += 1;
@@ -736,7 +898,8 @@ function corpus_write_entry(sid region pos glen phase) local(sm gc frames sr nex
   ) : 0;
 );
 
-function build_sample_corpus_region(sid region lo hi cnt) local(sm sr span j phase pos cell jitter glen)
+
+function build_sample_corpus_region(sid region lo hi cnt) local(sm sr span j phase pos cell jitter glen seed_slow)
 (
   sm = sample_meta_base + sid * SM_STRIDE;
   sr = max(1000, sm[SM_SR]);
@@ -750,8 +913,11 @@ function build_sample_corpus_region(sid region lo hi cnt) local(sm sr span j pha
       jitter = (rand(1) - 0.5) * cell * 0.46;
       pos = lo + phase * span + jitter;
       region == GC_REGION_BODY ? pos = wrap_in_range(pos, lo, hi) : pos = clamp(pos, lo, max(lo, hi - 1));
-      glen = region == GC_REGION_ATTACK ? floor(sr * 0.032) : region == GC_REGION_TAIL ? floor(sr * 0.072) : floor(sr * 0.052);
-      glen = clamp(glen, 96, min(4096, max(96, floor(span * 0.55))));
+      seed_slow = clamp01((0.70 - sm[SM_BRIGHT]) / 0.56) * clamp01((0.44 - sm[SM_EDGE]) / 0.40);
+      glen = region == GC_REGION_ATTACK ? floor(sr * lerp(0.020, 0.048, 1 - seed_slow)) : region == GC_REGION_TAIL ? floor(sr * lerp(0.070, 0.180, seed_slow)) : floor(sr * lerp(0.042, 0.145, seed_slow));
+      // v34: this is only the seed window. corpus_write_entry() expands or
+      // contracts it using multi-scale descriptor stability.
+      glen = clamp(glen, 80, min(8192, max(96, floor(span * 0.88))));
       corpus_write_entry(sid, region, pos, glen, phase);
       j += 1;
     );
@@ -835,7 +1001,7 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
   gc csid cpos clen creg cphase crms cbright cedge csharp csal cevent sm sr lo hi span
   lastidx lastgc hasprev prms pbr pedge psid ppos pevent pphase pregion descer phaseerr histpen regionpen saltarget salpen nearwin nearpen runpen regresspen crosspen score runlim force_cross sameevent
   nextgap seqbonus lowrms_min lowrmspen phase_adv target_phase role rolepen motion_slow
-  trajpen crossneeded loopbackpen phrase_boundary phrase_cross_bonus
+  trajpen crossneeded loopbackpen phrase_boundary phrase_cross_bonus cedir cepeak celevel penvdir penvpeak envpen envtarget envdeltatarget envpeaktarget cmscont cmstrans clongrms cevtfrac cxcont curms cuedge lenpen
 )
 (
   (idx >= 0 && idx < corpus_count) ? (
@@ -852,6 +1018,16 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
       csharp = gc[GC_SHARP];
       csal = gc[GC_SAL];
       cevent = gc[GC_EVENT];
+      cedir = gc[GC_EDIR];
+      cepeak = gc[GC_EPEAK];
+      celevel = gc[GC_ELEVEL];
+      cmscont = gc[GC_MSCONT];
+      cmstrans = gc[GC_MSTRANS];
+      clongrms = gc[GC_LRMS];
+      cevtfrac = gc[GC_EVTFRAC];
+      cxcont = gc[GC_XCONT];
+      curms = gc[GC_URMS];
+      cuedge = gc[GC_UEDGE];
 
       corpus_region_bounds(csid, creg);
       lo = corpus_lo;
@@ -870,6 +1046,8 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
         prms = lastgc[GC_NRMS];
         pbr = lastgc[GC_NBRIGHT];
         pedge = lastgc[GC_NEDGE];
+        penvdir = lastgc[GC_EDIR];
+        penvpeak = lastgc[GC_EPEAK];
         nextgap = (csid == psid && creg == pregion) ? (idx - lastidx) : 9999;
         phase_adv = clamp((clen * 0.32 + abs(v[VC_SRCHOP]) * 0.58) / max(1, span), 0.010, 0.185);
         target_phase = clamp01(pphase + phase_adv);
@@ -884,6 +1062,8 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
         nextgap = 9999;
         descer = 0;
         phaseerr = 0;
+        penvdir = 0;
+        penvpeak = 0;
       );
 
       corpus_phrase_targets(v, stage, lively, truth, spice);
@@ -930,23 +1110,27 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
       // texture, and a rare spice stream is allowed to be more salient. This is a
       // lightweight role bias over the same corpus selector, not a separate engine.
       role = corpus_pick_role | 0;
-      motion_slow = clamp01((0.58 - cbright) / 0.48) * clamp01((0.34 - cedge) / 0.30);
+      motion_slow = max(clamp01((0.58 - cbright) / 0.48) * clamp01((0.34 - cedge) / 0.30), max(cmscont * 0.82 - cmstrans * 0.18, cxcont * 0.95 - cmstrans * 0.10));
       rolepen = 0;
       role == 0 ? (
         // Anchor: prefer same-source/event forward motion and penalize jumpy tiles.
         rolepen += (hasprev && csid == psid && creg == pregion && nextgap >= 1 && nextgap <= 6) ? -0.52 : 0.38;
         rolepen += (hasprev && csid != psid) ? (0.45 + 0.34 * (1 - spice)) : 0;
         rolepen += abs(csal - (0.30 + 0.10 * lively)) * 0.20;
+        rolepen -= cmscont * (0.22 + 0.22 * motion_slow);
+        rolepen += cmstrans * 0.10;
       ) : role == 1 ? (
         // Texture: prefer filler that masks seams without becoming a hero grain.
         rolepen += max(0, csal - (0.34 + 0.10 * lively)) * (1.10 + 0.55 * lively);
         rolepen += sameevent ? 0.18 : -0.08;
         rolepen += motion_slow * -0.18;
+        rolepen -= cmscont * 0.16;
       ) : (
         // Spice: rare high-character grains are allowed, but still scored.
         rolepen += -csal * (0.42 + 0.42 * spice + 0.32 * lively);
         rolepen += creg == GC_REGION_ATTACK ? -0.12 * lively : 0;
         rolepen += sameevent ? 0.36 : -0.08;
+        rolepen -= cmstrans * (0.14 + 0.18 * lively);
         salpen *= 0.42;
         regionpen *= 0.62;
       );
@@ -958,6 +1142,25 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
       trajpen = abs(cbright - phrase_bright_t) * (0.18 + 0.42 * lively)
               + abs(cedge - phrase_edge_t) * (0.16 + 0.40 * lively)
               + abs(csal - phrase_sal_t) * (0.14 + 0.28 * lively);
+
+      // v33 EnvTrajectory: phrase target and learned corpus envelope must agree.
+      // This is the first pass at co-determining phrase and amplitude motion.
+      envtarget = phrase_env_t;
+      envdeltatarget = phrase_env_delta_t;
+      envpeaktarget = phrase_env_peak_t;
+      hasprev ? (
+        // Prefer grains whose current energy plausibly follows the previous
+        // grain's learned next energy, then blend toward the phrase envelope.
+        envtarget = lerp(prms, phrase_env_t, 0.28 + 0.26 * lively + 0.18 * spice);
+        envdeltatarget = lerp(penvdir, phrase_env_delta_t, 0.35 + 0.30 * lively);
+        envpeaktarget = lerp(penvpeak, phrase_env_peak_t, 0.42 + 0.24 * lively);
+      );
+      envpen = abs(celevel - envtarget) * (0.72 + 0.55 * (1 - truth) + 0.45 * motion_slow)
+             + abs(cedir - envdeltatarget) * (0.42 + 0.48 * lively + 0.30 * motion_slow)
+             + abs(cepeak - envpeaktarget) * (0.20 + 0.34 * lively);
+      role == 0 ? ( envpen *= 1.18; ); // anchor owns the prosody
+      role == 1 ? ( envpen *= 0.72; ); // texture can be flatter as seam glue
+      role == 2 ? ( envpen *= 0.52; ); // spice can violate the curve
       motion_slow > 0.18 && hasprev ? (
         // Slow/bassy material needs continuity more than novelty. Bright squelch
         // can jump around; low-motion material must flow.
@@ -965,8 +1168,15 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
         (csid == psid && nextgap >= 1 && nextgap <= 8) ? seqbonus -= motion_slow * (0.38 + 0.30 * (1 - truth));
       );
 
+      // v34: prefer event-scale grains when the multi-scale analysis says this
+      // point wants continuity, but do not force huge windows on bright attacks.
+      lenpen = 0;
+      cmscont > 0.30 ? lenpen -= cmscont * clamp01(cevtfrac * 2.2) * (0.20 + 0.22 * (1 - truth));
+      cxcont > 0.35 ? lenpen -= cxcont * clamp01(cevtfrac * 1.65) * (0.18 + 0.30 * (1 - truth));
+      cmstrans > 0.55 ? lenpen += max(0, cevtfrac - 0.36) * cmstrans * (0.48 + 0.40 * lively);
+
       score = regionpen + descer * (1.28 + 0.52 * (1 - truth) + 0.55 * motion_slow) + phaseerr * (0.62 + 0.46 * (1 - spice) + 0.38 * motion_slow);
-      score += histpen + nearpen + runpen + regresspen + crosspen + salpen + lowrmspen + seqbonus + rolepen + trajpen + loopbackpen + phrase_cross_bonus;
+      score += histpen + nearpen + runpen + regresspen + crosspen + salpen + lowrmspen + seqbonus + rolepen + trajpen + envpen + lenpen + loopbackpen + phrase_cross_bonus;
       csid == fallback_sid ? score -= 0.030 * (1 - spice);
       score < corpus_best_score ? (
         corpus_best_score = score;
@@ -4545,6 +4755,8 @@ function start_voice(note vel chan) local(
     v[VC_RAWRATE]  = raw_rate;
     v[VC_ATKRATE]  = attack_rate;
     v[VC_HEADSAFE] = sm[SM_HEADEND];
+    v[VC_GENV]     = 0.36;
+    v[VC_GENVDELTA]= 0;
 
     gesture_len = floor(srate * lerp(0.22, 1.20, rand(1)) * lerp(0.82, 1.22, stretch_norm));
     gesture_len = max(64, gesture_len);
@@ -5454,7 +5666,10 @@ VC_LGCIDX    = 53;
 VC_RAWRATE   = 54;
 VC_ATKRATE   = 55;
 VC_HEADSAFE  = 56;
-VC_GBASE     = 57;
+VC_GENV      = 57;
+VC_GENVDELTA = 58;
+VC_GOLA      = 59;
+VC_GBASE     = 60;
 
 VG_ACTIVE    = 0;
 VG_AGE       = 1;
@@ -5465,8 +5680,12 @@ VG_GAIN      = 5;
 VG_PAN       = 6;
 VG_SIZE      = 7;
 VG_XPAND     = 8;
-VG_STRIDE    = 9;
-NUM_GRAINS   = 24;
+VG_EDIR      = 9;
+VG_EPEAK     = 10;
+VG_EAMT      = 11;
+VG_LIFE      = 12;
+VG_STRIDE    = 13;
+NUM_GRAINS   = 32;
 
 GC_SID       = 0;
 GC_POS       = 1;
@@ -5482,7 +5701,18 @@ GC_NRMS      = 10;
 GC_NBRIGHT   = 11;
 GC_NEDGE     = 12;
 GC_EVENT     = 13;
-GC_STRIDE    = 14;
+GC_PRMS      = 14;
+GC_EDIR      = 15;
+GC_EPEAK     = 16;
+GC_ELEVEL    = 17;
+GC_MSCONT    = 18;
+GC_MSTRANS   = 19;
+GC_LRMS      = 20;
+GC_EVTFRAC   = 21;
+GC_XCONT     = 22;
+GC_URMS      = 23;
+GC_UEDGE     = 24;
+GC_STRIDE    = 25;
 GRAIN_CORPUS_MIN = 2048;
 GRAIN_CORPUS_HARD_MAX = 65536;
 GC_REGION_BODY = 0;
@@ -5617,6 +5847,10 @@ corpus_tmp_bright = 0;
 corpus_tmp_edge = 0;
 corpus_tmp_sharp = 0;
 corpus_tmp_sal = 0;
+corpus_multiscale_ready = 1;
+phrase_env_t = 0.36;
+phrase_env_delta_t = 0;
+phrase_env_peak_t = 0;
 learned_sid = -1;
 learned_pos = 0;
 learned_lo = 0;
@@ -6693,22 +6927,41 @@ while (i < MAX_VOICES) (
           gran_cbright = gsm[SM_BRIGHT];
           gran_cedge = gsm[SM_EDGE];
           gran_crms = 0.22;
+          gran_mscont = 0;
+          gran_mstrans = 0;
+          gran_evtfrac = 0;
+          gran_xcont = 0;
+          gran_region = corpus_want_region;
+          gpan = 0;
+          gxpand = 0;
+          genv_dir = 0;
+          genv_peak = 0;
+          genv_amt = 0;
+          genv_level = 0.36;
+          prefill_age = 0;
+          prefill_src = gsrc;
           gcorpus_idx >= 0 ? (
             gran_gc = grain_corpus_base + gcorpus_idx * GC_STRIDE;
             gran_cbright = gran_gc[GC_BRIGHT];
             gran_cedge = gran_gc[GC_EDGE];
             gran_crms = gran_gc[GC_RMS];
+            genv_dir = gran_gc[GC_EDIR];
+            genv_peak = gran_gc[GC_EPEAK];
+            genv_level = gran_gc[GC_ELEVEL];
+            gran_mscont = gran_gc[GC_MSCONT];
+            gran_mstrans = gran_gc[GC_MSTRANS];
+            gran_evtfrac = gran_gc[GC_EVTFRAC];
+            gran_xcont = gran_gc[GC_XCONT];
+            gran_region = gran_gc[GC_REGION] | 0;
           );
           // Slow, dark, low-edge material exposes grain boundaries. Give it
           // longer grains, tighter overlap, and less micro-jitter. Bright/HF
           // squelch remains short and lively because it masks edges naturally.
           gran_slow_glue = clamp01((0.70 - gran_cbright) / 0.56) * clamp01((0.42 - gran_cedge) / 0.38);
+          // v34: multi-scale continuity is a stronger signal than brightness alone.
+          gran_slow_glue = max(gran_slow_glue, max(gran_mscont * 0.92 - gran_mstrans * 0.22, gran_xcont * 0.98 - gran_mstrans * 0.12));
           gran_slow_glue *= clamp01(0.35 + 0.65 * (1 - truth_mix));
           gran_crms < 0.055 ? gran_slow_glue *= 0.55;
-          gpan = 0;
-          gxpand = 0;
-          prefill_age = 0;
-          prefill_src = gsrc;
 
           granular_voice ? (
             gran_tail_region = cur_region_mode;
@@ -6723,11 +6976,22 @@ while (i < MAX_VOICES) (
             pitch_jit_cents = (rand(1) - 0.5) * 2 * slider9 * (0.85 + 3.20 * (1 - truth_mix)) * lerp(1.00, 0.45, clamp01(gsm[SM_PITCHCONF] * bank_pitchiness)) * (1 - 0.72 * gran_slow_glue);
             grate *= cents_ratio(pitch_jit_cents);
 
-            len_jit = 1 + (rand(1) - 0.5) * slider9 * (0.08 + 0.10 * (1 - truth_mix) + 0.04 * gesture_arc) * (1 - 0.60 * gran_slow_glue);
-            spawn_gsize = clamp(floor(gsize * len_jit * (1 + gran_slow_glue * (0.52 + 0.46 * (1 - slider9)))), max(hop + 1, floor(gsize * 0.82)), max(hop + 1, floor(gsize * (1.30 + 0.95 * gran_slow_glue))));
+            len_jit = 1 + (rand(1) - 0.5) * slider9 * (0.08 + 0.10 * (1 - truth_mix) + 0.04 * gesture_arc) * (1 - 0.66 * gran_slow_glue) * (1 - 0.62 * max(gran_mscont, gran_xcont));
+            spawn_gsize = clamp(
+              floor(gsize * len_jit * (1 + gran_slow_glue * (0.70 + 0.62 * (1 - slider9)) + gran_mscont * 0.42 + gran_xcont * 1.10)),
+              max(hop + 1, floor(gsize * 0.72)),
+              max(hop + 1, floor(gsize * (1.42 + 2.20 * gran_slow_glue + 0.76 * gran_mscont + 3.20 * gran_xcont)))
+            );
             gcorpus_idx >= 0 && corpus_best_len > 0 ? (
               corpus_out_len = corpus_best_len / max(0.05, abs(grate));
-              spawn_gsize = clamp(floor(lerp(spawn_gsize, corpus_out_len * (1 + 0.42 * gran_slow_glue), 0.26 + 0.18 * (1 - truth_mix))), max(hop + 1, floor(gsize * 0.74)), max(hop + 1, floor(gsize * (1.38 + 0.78 * gran_slow_glue))));
+              gran_len_scale = max(gran_slow_glue, gran_xcont);
+              gran_max_ms = gran_region == GC_REGION_ATTACK ? 0.125 : (gran_region == GC_REGION_TAIL ? lerp(0.420, 1.250, gran_len_scale) : lerp(0.520, 1.120, gran_len_scale));
+              gran_len_amt = clamp01(0.38 + 0.26 * gran_mscont + 0.40 * gran_xcont + 0.22 * (1 - truth_mix) - 0.20 * gran_mstrans);
+              spawn_gsize = clamp(
+                floor(lerp(spawn_gsize, corpus_out_len * (1 + 0.62 * gran_slow_glue + 0.34 * gran_mscont + 0.68 * gran_xcont), gran_len_amt)),
+                max(hop + 1, floor(gsize * 0.62)),
+                max(hop + 1, min(floor(srate * gran_max_ms), floor(gsize * (1.80 + 6.50 * gran_slow_glue + 2.20 * gran_mscont + 4.80 * gran_xcont))))
+              );
             );
 
             reverse_grain = gran_tail_region && slider9 > 0.55 && v[VC_TAILMIX] > 0.25 && rand(1) < (0.006 + 0.030 * slider9 * v[VC_TAILMIX] * gesture_arc);
@@ -6741,6 +7005,19 @@ while (i < MAX_VOICES) (
             norm_match = clamp(gsm[SM_NORM] / max(sm[SM_NORM], 0.000001), 0.45, 2.10);
             ggain *= lerp(norm_match, 1, truth_mix);
             ggain *= 1 + gesture_drive * (0.08 + 0.10 * v[VC_GMIX]);
+
+            // v33 EnvTrajectory: preserve learned corpus prosody. Previous
+            // versions normalized grain gains away in the OLA sum, making wet
+            // grains sound monotonic. This macro gain is intentionally moderate;
+            // the per-grain shape below carries the motion.
+            genv_amt = clamp01((0.30 + 0.34 * slider9 + 0.24 * (1 - truth_mix) + 0.18 * gesture_arc) * (0.72 + 0.28 * v[VC_GMIX]));
+            genv_level = clamp01(genv_level);
+            v[VC_GENV] <= 0 ? ( v[VC_GENV] = genv_level; );
+            v[VC_GENV] = lerp(v[VC_GENV], genv_level, 0.16 + 0.18 * slider9 + 0.12 * gesture_arc);
+            v[VC_GENVDELTA] = lerp(v[VC_GENVDELTA], genv_dir, 0.12 + 0.18 * slider9);
+            genv_macro = clamp((0.58 + 1.30 * v[VC_GENV]) / 1.02, 0.55, 1.72);
+            ggain *= lerp(1, genv_macro, genv_amt * 0.74);
+
             amp_jit_db = (rand(1) - 0.5) * 2 * slider9 * (0.22 + 0.78 * (1 - truth_mix)) * (1 - 0.58 * gran_slow_glue);
             ggain *= db2amp(amp_jit_db);
             gpan = (rand(1) - 0.5) * slider8 * slider9 * (0.10 + 0.30 * gesture_arc) * (1 - 0.65 * gran_slow_glue);
@@ -6751,7 +7028,7 @@ while (i < MAX_VOICES) (
             gxpand *= slider9 * (0.10 + 0.38 * v[VC_TAILMIX] + 0.18 * gesture_arc) * (1 - 0.88 * gran_slow_glue);
             gxpand = clamp01(gxpand);
 
-            prefill_age = floor(spawn_gsize * (slider9 * (0.015 + 0.075 * gesture_arc) + gran_slow_glue * 0.095) * rand(1));
+            prefill_age = floor(spawn_gsize * (slider9 * (0.015 + 0.075 * gesture_arc) + gran_slow_glue * 0.110 + gran_mscont * 0.060) * rand(1));
             schedule_prefill > 0 ? prefill_age = max(prefill_age, min(max(0, spawn_gsize - 2), floor(schedule_prefill)));
             prefill_src = gsrc - prefill_age * grate;
             gran_tail_region ? (
@@ -6770,6 +7047,10 @@ while (i < MAX_VOICES) (
           gb[VG_PAN] = gpan;
           gb[VG_SIZE] = spawn_gsize;
           gb[VG_XPAND] = gxpand;
+          gb[VG_EDIR] = genv_dir;
+          gb[VG_EPEAK] = genv_peak;
+          gb[VG_EAMT] = genv_amt;
+          gb[VG_LIFE] = 0;
           grain_hist_push(i, gsid, gsrc, ghist_lo, ghist_hi);
           granular_voice ? (
             prev_lgsid = v[VC_LGSID] | 0;
@@ -6790,9 +7071,10 @@ while (i < MAX_VOICES) (
             // v30: hop follows the actual spawned grain length, not the old
             // HybridCore base length. This prevents audible empty gaps when the
             // corpus chooses shorter local grains.
-            spawn_hop_base = max(floor(srate * lerp(0.0050, 0.0030, gran_slow_glue)), floor(spawn_gsize * lerp(lerp(0.19, 0.135, slider9), lerp(0.105, 0.078, slider9), gran_slow_glue)));
-            hop_jit = floor(spawn_hop_base * slider9 * (0.05 + 0.11 * (1 - truth_mix)) * (1 - 0.70 * gran_slow_glue) * ((rand(1) - 0.5) * 2));
-            spawn_hop = clamp(spawn_hop_base + hop_jit, max(1, floor(srate * lerp(0.0048, 0.0028, gran_slow_glue))), max(1, floor(spawn_gsize * lerp(0.285, 0.160, gran_slow_glue))));
+            gran_hop_scale = max(gran_slow_glue, max(gran_mscont, gran_xcont));
+            spawn_hop_base = max(floor(srate * lerp(0.0048, 0.0028, gran_hop_scale)), floor(spawn_gsize * lerp(lerp(0.19, 0.135, slider9), lerp(0.112, 0.070, slider9), gran_hop_scale)));
+            hop_jit = floor(spawn_hop_base * slider9 * (0.05 + 0.11 * (1 - truth_mix)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.65 * max(gran_mscont, gran_xcont)) * ((rand(1) - 0.5) * 2));
+            spawn_hop = clamp(spawn_hop_base + hop_jit, max(1, floor(srate * lerp(0.0046, 0.0026, gran_hop_scale))), max(1, floor(spawn_gsize * lerp(0.285, 0.118, gran_hop_scale))));
           );
           timer += spawn_hop;
           spawn_guard += 1;
@@ -6816,6 +7098,7 @@ while (i < MAX_VOICES) (
             gnch = max(1, gsm[SM_NCH] | 0);
             gframes = gsm[SM_FRAMES] | 0;
             age = gb[VG_AGE];
+            glife = max(0, floor(gb[VG_LIFE]));
             gsize = max(1, floor(gb[VG_SIZE]));
             gsize <= 1 ? gsize = max(1, floor(v[VC_GSIZE]));
 
@@ -6845,6 +7128,21 @@ while (i < MAX_VOICES) (
                   gr *= lerp(1, ggate, gxpand);
                 );
 
+                // v33 EnvTrajectory: learned intra-grain energy motion. Rising
+                // grains lean later, falling grains lean earlier, and crest
+                // grains receive a small natural mid-arc. This restores prosody
+                // without adding a visible control.
+                genv_amt_play = gb[VG_EAMT];
+                genv_amt_play > 0.0001 ? (
+                  gn = clamp01(age / max(1, gsize - 1));
+                  edir = clamp(gb[VG_EDIR], -1, 1);
+                  epeak = clamp01(gb[VG_EPEAK]);
+                  eshape = edir * (gn - 0.5) * 1.08 + epeak * (sin(gn * 3.141592653589793) - 0.60) * 0.72;
+                  eshape = exp(clamp(eshape * genv_amt_play, -0.62, 0.76));
+                  gl *= eshape;
+                  gr *= eshape;
+                );
+
                 // Also fade grains that run into source boundaries. Otherwise a
                 // tail grain can deactivate mid-window and expose a hard edge.
                 gendfade_src = max(2, floor(gsm[SM_ENDFADE] * auto_release_amt * gsm[SM_SR] * 0.001));
@@ -6853,14 +7151,31 @@ while (i < MAX_VOICES) (
                 gsource_end_fade = clamp01(grem_src / max(1, gendfade_src));
                 gsource_end_fade = gsource_end_fade * gsource_end_fade * (3 - 2 * gsource_end_fade);
 
-                w = stretch_window(age, gsize) * gb[VG_GAIN] * gsource_end_fade;
-                sumL += gl * w;
-                sumR += gr * w;
-                sumW += w;
+                // v35: prefilled grains used to enter mid-window at nonzero
+                // amplitude, which could click. Every Granular grain now gets a
+                // short real-time entry ramp independent of its logical window age.
+                entry_fade = 1;
+                granular_voice ? (
+                  entry_len = clamp(floor(gsize * 0.10), max(2, floor(srate * 0.0025)), max(3, floor(srate * 0.030)));
+                  entry_fade = clamp01(glife / max(1, entry_len));
+                  entry_fade = entry_fade * entry_fade * (3 - 2 * entry_fade);
+                );
+
+                win_flat = granular_voice ? clamp01((gsize - srate * 0.140) / max(1, srate * 0.720)) : 0;
+                w = (granular_voice ? stretch_window_morph(age, gsize, win_flat) : stretch_window(age, gsize)) * gsource_end_fade * entry_fade;
+                gw = w * gb[VG_GAIN];
+                sumL += gl * gw;
+                sumR += gr * gw;
+                // v33: in pure Granular, normalize by the window overlap, not
+                // by gain-weighted overlap. Otherwise learned envelope/gain
+                // motion is mathematically erased by OLA normalization.
+                granular_voice ? ( sumW += w; ) : ( sumW += gw; );
               );
 
               age += 1;
+              glife += 1;
               gb[VG_AGE] = age;
+              gb[VG_LIFE] = glife;
               ((age >= gsize) || (srcp < 0) || (srcp >= (gframes - 1))) ? (
                 gb[VG_ACTIVE] = 0;
               ) : (
@@ -6881,7 +7196,15 @@ while (i < MAX_VOICES) (
           // v32: pure Granular should not leave audible level holes when slow/
           // low-motion sources expose OLA underlap. Use a lower floor than
           // Hybrid while still guarding against tiny-window blowups.
-          ola_norm = granular_voice ? max(0.58, sumW) : max(2.0, sumW);
+          target_ola_norm = granular_voice ? max(0.54, sumW) : max(2.0, sumW);
+          granular_voice ? (
+            v[VC_GOLA] <= 0 ? v[VC_GOLA] = target_ola_norm;
+            ola_coeff = target_ola_norm > v[VC_GOLA] ? 0.24 : 0.075;
+            v[VC_GOLA] += (target_ola_norm - v[VC_GOLA]) * ola_coeff;
+            ola_norm = max(0.42, v[VC_GOLA]);
+          ) : (
+            ola_norm = target_ola_norm;
+          );
           grainL = sumL / ola_norm;
           grainR = sumR / ola_norm;
           got_grain = 1;
