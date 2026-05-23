@@ -1,7 +1,11 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v35-macrograin-olaglue-peakpack-pro)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v39-room-scrub)
 tags:instrument sampler ui
 // #GFX_RESIZE: responsive
 
+// v39 RoomScrub: Room Tame is upgraded into a stronger transient-protected multiband de-room/de-smear path with per-band late/diffuse detection, side wash reduction, and fail-fast obvious high settings.
+// v38 DenormalGuard: adds internal anti-denormal keepalive/zapping, gates silent visual analyzers, decimates the visual spectrum analyzer 4x, and keeps v37 Granular perf gates intact.
+// v37 PerfGate: Grain corpus build is lazy/gated to Granular mode, dead learned-flow training is disabled, and Granular runtime selection plus 32-slot grain scans are gated so Raw/Tape/Hybrid avoid corpus work and Hybrid avoids Granular slot cost.
+// v36 GranStretch EventScale + PeakPack Pro: in Granular only, Stretch is repurposed from fast purposeful grains at 1x toward slower, larger, more coherent event playback at 4x; Raw/Tape/Hybrid Stretch behavior is preserved.
 // v35 MacroGrain OLAGlue + PeakPack Pro: Granular adds 1ms/10ms/100ms/1000ms-scale load-time corpus analysis, permits event-scale macro-grains for coherent SFX, and smooths OLA/spawn edges to reduce clicks and gaps.
 // v28 SpectrumPrePost: Post-Processing now draws detailed pre-EQ and post-EQ spectra on one shared scale.
 // v27 SpectrumDetail: Post-EQ spectrum uses a 96-bin resonant analyzer and thin trace drawing instead of a broad lowpass-difference blob.
@@ -31,8 +35,12 @@ filename:0,sample.wav
 // #HELP: v26 SpectrumContrast makes the Post-Processing spectrum underlay brighter and easier to read on quiet material.
 // #HELP: v29 GrainCorpus builds a load-time grain/event corpus so Granular can transform both single long sources and multi-source banks without doing descriptor analysis at playback time.
 // #HELP: v33 EnvTrajectory teaches Granular to follow learned corpus energy motion so phrases have rises, falls, crests, and decay instead of flat wet grain beds.
+// #HELP: v39 RoomScrub makes Room Tame a stronger general de-room control: it detects late/diffuse band energy, trims low-mid/presence room wash, narrows roomy side smear, and protects attacks.
+// #HELP: v38 DenormalGuard protects internal recursive filters/analyzers from near-zero denormal stalls, gates silent spectrum analysis, and preserves v37 Granular gating.
 // #HELP: v34 MultiScaleEventGrains analyzes short/mid/long windows at corpus-build time and lets Granular use event-sized grains when the source material wants continuity.
 // #HELP: v35 MacroGrain OLAGlue extends this to micro/short/mid/long/ultra windows, allowing coherent slow material to use 100 ms to 1 s grains while smoothing OLA starts, normalization, and long-grain window shape.
+// #HELP: v37 PerfGate lazily builds the GrainCorpus only when Granular mode is active or selected, disables obsolete learned-flow training, and caps Hybrid grain scans below the Granular-only 32-slot pool.
+// #HELP: v36 GranStretch repurposes Stretch inside Granular only: 1x keeps the current fast purposeful grain feel, while higher values bias toward slower, larger, more coherent event playback.
 // #HELP: v25 BandQCal makes Band 1/2/3 Q use the actual peaking-EQ response and changes the default from ultra-wide to generous.
 // #HELP: v24 PostEQ QFix makes HPF/LPF Q visible and audible as cutoff resonance.
 // #HELP: v23 FreeBand PostEQ adds a spectrum-underlaid final EQ: HPF, LPF, and three draggable parametric bands with Q and cutoff slope control.
@@ -50,7 +58,7 @@ filename:0,sample.wav
 // #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack. Granular uses a load-time analyzed grain corpus: long files become many searchable micro-events, multi-source banks become one shared grain field, and playback uses anchor/texture/spice streams, phrase + envelope trajectories, corpus continuity, source-adaptive overlap, restrained swells, release blooms, and grain-level decorrelation.
 // #HELP:
 // #HELP: ## Cleanup and depth
-// #HELP: Clean reduces low-level hiss/room bed. Room Tame restrains late room smear. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement.
+// #HELP: Clean reduces low-level hiss/room bed. Room Tame is a transient-protected de-room/de-smear macro: low values restrain late room wash, high values make the correction obvious quickly. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement.
 // #HELP:
 // #HELP: ## Post-Processing
 // #HELP: The Post-Processing panel is a final-output EQ editor with pre/post spectrum overlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope.
@@ -141,6 +149,22 @@ function clamp(x lo hi)
 function clamp01(x)
 (
   clamp(x, 0, 1);
+);
+
+function denorm_zap(x)
+(
+  abs(x) < DENORM_CUT ? 0 : x;
+);
+
+function denorm_guard_tick()
+(
+  denorm_flip = -denorm_flip;
+  denorm_flip * DENORM_GUARD;
+);
+
+function denorm_near_silence(l r)
+(
+  (abs(l) + abs(r)) < DENORM_AUDIO_FLOOR;
 );
 
 function wrap_in_range(x lo hi) local(span)
@@ -282,7 +306,6 @@ function stretch_window_morph(age gsize flatness) local(n hann fade edge tuk)
     lerp(hann, tuk, flatness);
   );
 );
-
 
 
 function db2amp(db)
@@ -560,6 +583,13 @@ function grain_hist_penalty(vix sid pos lo hi) local(base j pen span phasebin hs
   pen;
 );
 
+
+function grain_run_limit(lively truth spice)
+(
+  // Same-source phrases should be long enough to feel connected but short
+  // enough to avoid reconstructing one original take.
+  max(4, floor(6 + (1 - spice) * 5 + truth * 3 + (1 - lively) * 2 + granular_event_stretch * (5 + 9 * (1 - spice) + 4 * truth)));
+);
 
 function corpus_phrase_targets(v stage lively truth spice) local(gphase arc lift accent rel envbase envlift)
 (
@@ -899,6 +929,110 @@ function corpus_write_entry(sid region pos glen phase) local(
 );
 
 
+function estimate_granular_corpus_markers(sm) local(
+  ptr nch sr frames onset_scan hop onset_lpcoef nov_count i j x ax lp hf env_prev hf_prev env_now hf_now cnt nov novsum
+  peaki peakv mean_nov smoothv starti peakthr lowthr onset_conf attack onset_rise onset_rise_ms head_ms head_end tail_start fallback_attack fallback_scan fallback_peak fallback_sumsq fallback_rms thresh
+)
+(
+  // v32: Granular prefers Gaussian/novelty markers. This is corpus-only and
+  // does not rewrite the playback markers used by Raw/Tape/Hybrid.
+  ptr = sm[SM_PTR] | 0;
+  nch = max(1, sm[SM_NCH] | 0);
+  sr = max(1000, sm[SM_SR]);
+  frames = sm[SM_FRAMES] | 0;
+
+  attack = sm[SM_ATTACK];
+  head_end = sm[SM_HEADEND];
+  tail_start = sm[SM_TAILSTART];
+
+  frames > 256 ? (
+    onset_scan = min(frames, max(4096, floor(sr * 1.50)));
+    hop = max(1, floor(sr * 0.00075));
+    hop = max(hop, floor((onset_scan + ONSET_SCRATCH_MAX - 1) / max(1, ONSET_SCRATCH_MAX)));
+    onset_lpcoef = clamp(2200 / max(sr, 1), 0.015, 0.40);
+
+    lp = 0; env_prev = 0; hf_prev = 0; nov_count = 0; novsum = 0; i = 0;
+    while (i < onset_scan && nov_count < ONSET_SCRATCH_MAX) (
+      env_now = 0; hf_now = 0; cnt = 0; j = 0;
+      while (j < hop && (i + j) < onset_scan) (
+        x = mono_frame(ptr, nch, i + j);
+        ax = abs(x);
+        lp += (x - lp) * onset_lpcoef;
+        hf = x - lp;
+        env_now += ax;
+        hf_now += abs(hf);
+        cnt += 1;
+        j += 1;
+      );
+      env_now /= max(cnt, 1);
+      hf_now /= max(cnt, 1);
+      nov = max(0, hf_now - hf_prev * 0.90) + 0.32 * max(0, env_now - env_prev * 0.94);
+      nov += 0.10 * max(0, hf_now - env_now * 0.22);
+      onset_raw_base[nov_count] = nov;
+      novsum += nov;
+      env_prev = env_now;
+      hf_prev = hf_now;
+      nov_count += 1;
+      i += hop;
+    );
+
+    peaki = 0; peakv = 0; i = 0;
+    while (i < nov_count) (
+      smoothv = (
+        onset_raw_base[clamp(i - 3, 0, max(0, nov_count - 1))] +
+        onset_raw_base[clamp(i - 2, 0, max(0, nov_count - 1))] * 6 +
+        onset_raw_base[clamp(i - 1, 0, max(0, nov_count - 1))] * 15 +
+        onset_raw_base[i] * 20 +
+        onset_raw_base[clamp(i + 1, 0, max(0, nov_count - 1))] * 15 +
+        onset_raw_base[clamp(i + 2, 0, max(0, nov_count - 1))] * 6 +
+        onset_raw_base[clamp(i + 3, 0, max(0, nov_count - 1))]
+      ) * 0.015625;
+      onset_smooth_base[i] = smoothv;
+      smoothv > peakv ? (peakv = smoothv; peaki = i;);
+      i += 1;
+    );
+
+    fallback_scan = min(frames, onset_scan);
+    fallback_peak = 0; fallback_sumsq = 0; i = 0;
+    while (i < fallback_scan) (
+      x = mono_frame(ptr, nch, i);
+      ax = abs(x);
+      fallback_peak = max(fallback_peak, ax);
+      fallback_sumsq += x * x;
+      i += 1;
+    );
+    fallback_rms = sqrt(fallback_sumsq / max(fallback_scan, 1));
+    thresh = max(fallback_peak * 0.12, fallback_rms * 1.8);
+    fallback_attack = -1; i = 0;
+    while (i < fallback_scan && fallback_attack < 0) (
+      abs(mono_frame(ptr, nch, i)) >= thresh ? fallback_attack = i;
+      i += 1;
+    );
+    fallback_attack < 0 ? fallback_attack = 0;
+
+    mean_nov = nov_count > 0 ? (novsum / nov_count) : 0;
+    onset_conf = peakv > 0 ? clamp01((peakv - mean_nov * 1.35) / max(peakv, 0.000001)) : 0;
+    starti = peaki;
+    peakthr = peakv * (0.18 + 0.08 * (1 - onset_conf));
+    while (starti > 0 && onset_smooth_base[starti - 1] >= peakthr) (starti -= 1;);
+    lowthr = peakv * 0.10;
+    while (starti > 0 && onset_smooth_base[starti - 1] > lowthr && (peaki - starti) < 8) (starti -= 1;);
+
+    onset_conf >= 0.10 && peakv > 0.00001 ? attack = floor(starti * hop) : attack = fallback_attack;
+    attack = clamp(attack, 0, max(0, frames - 2));
+    onset_rise = max(hop, (peaki - starti) * hop);
+    onset_rise_ms = 1000 * onset_rise / max(sr, 1);
+
+    head_ms = 5 + clamp01(sm[SM_FLAGS]) * 34 + min(15, onset_rise_ms * 0.34);
+    head_end = clamp(attack + floor(sr * head_ms * 0.001), attack + 8, max(attack + 8, frames - 2));
+    tail_start = clamp(sm[SM_TAILSTART], head_end + 1, max(head_end + 1, frames - 2));
+  );
+
+  sm[SM_GCATTACK] = attack;
+  sm[SM_GCHEAD] = head_end;
+  sm[SM_GCTAIL] = tail_start;
+);
+
 function build_sample_corpus_region(sid region lo hi cnt) local(sm sr span j phase pos cell jitter glen seed_slow)
 (
   sm = sample_meta_base + sid * SM_STRIDE;
@@ -940,6 +1074,9 @@ function build_grain_corpus() local(total_frames i sm frames sr lenms target sha
   i = 0;
   while (i < sample_count && corpus_count < corpus_capacity) (
     sm = sample_meta_base + i * SM_STRIDE;
+    // v37 PerfGate: Granular Gaussian corpus markers are calculated lazily
+    // while building the corpus, not during non-Granular bank analysis.
+    estimate_granular_corpus_markers(sm);
     frames = sm[SM_FRAMES] | 0;
     sr = max(1000, sm[SM_SR]);
     lenms = sm[SM_LENMS];
@@ -988,19 +1125,13 @@ function build_grain_corpus() local(total_frames i sm frames sr lenms target sha
 
     i += 1;
   );
-);
-
-function grain_run_limit(lively truth spice)
-(
-  // Same-source phrases should be long enough to feel connected but short
-  // enough to avoid reconstructing one original take.
-  max(4, floor(6 + (1 - spice) * 5 + truth * 3 + (1 - lively) * 2));
+  corpus_dirty = 0;
 );
 
 function corpus_consider_candidate(vix v idx want_region gsize lively truth spice stage fallback_sid) local(
   gc csid cpos clen creg cphase crms cbright cedge csharp csal cevent sm sr lo hi span
   lastidx lastgc hasprev prms pbr pedge psid ppos pevent pphase pregion descer phaseerr histpen regionpen saltarget salpen nearwin nearpen runpen regresspen crosspen score runlim force_cross sameevent
-  nextgap seqbonus lowrms_min lowrmspen phase_adv target_phase role rolepen motion_slow
+  nextgap seqbonus lowrms_min lowrmspen phase_adv target_phase role rolepen motion_slow gstretch cohscore
   trajpen crossneeded loopbackpen phrase_boundary phrase_cross_bonus cedir cepeak celevel penvdir penvpeak envpen envtarget envdeltatarget envpeaktarget cmscont cmstrans clongrms cevtfrac cxcont curms cuedge lenpen
 )
 (
@@ -1111,6 +1242,10 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
       // lightweight role bias over the same corpus selector, not a separate engine.
       role = corpus_pick_role | 0;
       motion_slow = max(clamp01((0.58 - cbright) / 0.48) * clamp01((0.34 - cedge) / 0.30), max(cmscont * 0.82 - cmstrans * 0.18, cxcont * 0.95 - cmstrans * 0.10));
+      // v36 GranStretch: higher Stretch in Granular biases selection toward
+      // coherent event playback. At 1x this is exactly zero, preserving v35.
+      gstretch = granular_event_stretch * ((stage == ENV_ATTACK || stage == ENV_HOLD) ? 0.30 : 1.0);
+      cohscore = clamp01(max(cmscont, cxcont) - cmstrans * 0.20 + motion_slow * 0.28);
       rolepen = 0;
       role == 0 ? (
         // Anchor: prefer same-source/event forward motion and penalize jumpy tiles.
@@ -1133,6 +1268,14 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
         rolepen -= cmstrans * (0.14 + 0.18 * lively);
         salpen *= 0.42;
         regionpen *= 0.62;
+      );
+
+      gstretch > 0 && hasprev ? (
+        // Slow-event Stretch should sound like a plausible continuation of the
+        // same source/event when possible, not a fresh patchwork tile.
+        csid != psid ? rolepen += gstretch * cohscore * (0.62 + 0.48 * (1 - spice)) * (role == 0 ? 1.0 : 0.48);
+        (csid == psid && creg == pregion && nextgap >= 1 && nextgap <= 12) ? seqbonus -= gstretch * cohscore * (0.30 + 0.34 * (1 - truth));
+        (csid == psid && nextgap > 12) ? nearpen += gstretch * cohscore * 0.40;
       );
 
       phrase_boundary = hasprev && csid == psid && pphase > (0.72 - 0.14 * lively) ? clamp01((pphase - (0.72 - 0.14 * lively)) / max(0.05, 0.28 + 0.14 * lively)) : 0;
@@ -1173,9 +1316,10 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
       lenpen = 0;
       cmscont > 0.30 ? lenpen -= cmscont * clamp01(cevtfrac * 2.2) * (0.20 + 0.22 * (1 - truth));
       cxcont > 0.35 ? lenpen -= cxcont * clamp01(cevtfrac * 1.65) * (0.18 + 0.30 * (1 - truth));
-      cmstrans > 0.55 ? lenpen += max(0, cevtfrac - 0.36) * cmstrans * (0.48 + 0.40 * lively);
+      gstretch > 0 ? lenpen -= gstretch * cohscore * clamp01(cevtfrac * 2.35) * (0.30 + 0.42 * (1 - truth));
+      cmstrans > 0.55 ? lenpen += max(0, cevtfrac - lerp(0.36, 0.56, gstretch)) * cmstrans * (0.48 + 0.40 * lively) * (1 - 0.35 * gstretch);
 
-      score = regionpen + descer * (1.28 + 0.52 * (1 - truth) + 0.55 * motion_slow) + phaseerr * (0.62 + 0.46 * (1 - spice) + 0.38 * motion_slow);
+      score = regionpen + descer * (1.28 + 0.52 * (1 - truth) + 0.55 * motion_slow + 0.34 * gstretch * cohscore) + phaseerr * (0.62 + 0.46 * (1 - spice) + 0.38 * motion_slow + 0.44 * gstretch * cohscore);
       score += histpen + nearpen + runpen + regresspen + crosspen + salpen + lowrmspen + seqbonus + rolepen + trajpen + envpen + lenpen + loopbackpen + phrase_cross_bonus;
       csid == fallback_sid ? score -= 0.030 * (1 - spice);
       score < corpus_best_score ? (
@@ -1234,7 +1378,7 @@ function corpus_pick_grain(vix v want_region fallback_sid fallback_pos fallback_
           // candidates. This makes the corpus behave like plausible motion, not
           // disconnected tiles. No wrap is used at the end.
           k = 1;
-          while (k <= 16) (
+          while (k <= (16 + floor(24 * granular_event_stretch))) (
             nearidx = lastidx + k;
             (nearidx >= pstart && nearidx < pstart + pcount) ? (
               corpus_consider_candidate(vix, v, nearidx, want_region, gsize, lively, truth, spice, stage, fallback_sid);
@@ -1251,7 +1395,8 @@ function corpus_pick_grain(vix v want_region fallback_sid fallback_pos fallback_
       );
     );
 
-    tries = 22 + floor(20 * lively) + floor(10 * spice);
+    tries = floor((22 + floor(20 * lively) + floor(10 * spice)) * lerp(1.0, 0.58, granular_event_stretch));
+    tries = max(10, tries);
     while (tries > 0) (
       idx = floor(rand(corpus_count));
       corpus_consider_candidate(vix, v, idx, want_region, gsize, lively, truth, spice, stage, fallback_sid);
@@ -1721,7 +1866,6 @@ function grain_follow_phase(v region_mode) local(lo hi span ph step f)
     clamp01(f);
   );
 );
-
 
 
 function grain_follow_strength(v lively truth spice) local(runw runlim)
@@ -2756,116 +2900,14 @@ function analyze_sample_gauss(sm) local(
   estimate_pitch(sm);
 );
 
-function estimate_granular_corpus_markers(sm) local(
-  ptr nch sr frames onset_scan hop onset_lpcoef nov_count i j x ax lp hf env_prev hf_prev env_now hf_now cnt nov novsum
-  peaki peakv mean_nov smoothv starti peakthr lowthr onset_conf attack onset_rise onset_rise_ms head_ms head_end tail_start fallback_attack fallback_scan fallback_peak fallback_sumsq fallback_rms thresh
-)
-(
-  // v32: Granular prefers Gaussian/novelty markers. This is corpus-only and
-  // does not rewrite the playback markers used by Raw/Tape/Hybrid.
-  ptr = sm[SM_PTR] | 0;
-  nch = max(1, sm[SM_NCH] | 0);
-  sr = max(1000, sm[SM_SR]);
-  frames = sm[SM_FRAMES] | 0;
-
-  attack = sm[SM_ATTACK];
-  head_end = sm[SM_HEADEND];
-  tail_start = sm[SM_TAILSTART];
-
-  frames > 256 ? (
-    onset_scan = min(frames, max(4096, floor(sr * 1.50)));
-    hop = max(1, floor(sr * 0.00075));
-    hop = max(hop, floor((onset_scan + ONSET_SCRATCH_MAX - 1) / max(1, ONSET_SCRATCH_MAX)));
-    onset_lpcoef = clamp(2200 / max(sr, 1), 0.015, 0.40);
-
-    lp = 0; env_prev = 0; hf_prev = 0; nov_count = 0; novsum = 0; i = 0;
-    while (i < onset_scan && nov_count < ONSET_SCRATCH_MAX) (
-      env_now = 0; hf_now = 0; cnt = 0; j = 0;
-      while (j < hop && (i + j) < onset_scan) (
-        x = mono_frame(ptr, nch, i + j);
-        ax = abs(x);
-        lp += (x - lp) * onset_lpcoef;
-        hf = x - lp;
-        env_now += ax;
-        hf_now += abs(hf);
-        cnt += 1;
-        j += 1;
-      );
-      env_now /= max(cnt, 1);
-      hf_now /= max(cnt, 1);
-      nov = max(0, hf_now - hf_prev * 0.90) + 0.32 * max(0, env_now - env_prev * 0.94);
-      nov += 0.10 * max(0, hf_now - env_now * 0.22);
-      onset_raw_base[nov_count] = nov;
-      novsum += nov;
-      env_prev = env_now;
-      hf_prev = hf_now;
-      nov_count += 1;
-      i += hop;
-    );
-
-    peaki = 0; peakv = 0; i = 0;
-    while (i < nov_count) (
-      smoothv = (
-        onset_raw_base[clamp(i - 3, 0, max(0, nov_count - 1))] +
-        onset_raw_base[clamp(i - 2, 0, max(0, nov_count - 1))] * 6 +
-        onset_raw_base[clamp(i - 1, 0, max(0, nov_count - 1))] * 15 +
-        onset_raw_base[i] * 20 +
-        onset_raw_base[clamp(i + 1, 0, max(0, nov_count - 1))] * 15 +
-        onset_raw_base[clamp(i + 2, 0, max(0, nov_count - 1))] * 6 +
-        onset_raw_base[clamp(i + 3, 0, max(0, nov_count - 1))]
-      ) * 0.015625;
-      onset_smooth_base[i] = smoothv;
-      smoothv > peakv ? (peakv = smoothv; peaki = i;);
-      i += 1;
-    );
-
-    fallback_scan = min(frames, onset_scan);
-    fallback_peak = 0; fallback_sumsq = 0; i = 0;
-    while (i < fallback_scan) (
-      x = mono_frame(ptr, nch, i);
-      ax = abs(x);
-      fallback_peak = max(fallback_peak, ax);
-      fallback_sumsq += x * x;
-      i += 1;
-    );
-    fallback_rms = sqrt(fallback_sumsq / max(fallback_scan, 1));
-    thresh = max(fallback_peak * 0.12, fallback_rms * 1.8);
-    fallback_attack = -1; i = 0;
-    while (i < fallback_scan && fallback_attack < 0) (
-      abs(mono_frame(ptr, nch, i)) >= thresh ? fallback_attack = i;
-      i += 1;
-    );
-    fallback_attack < 0 ? fallback_attack = 0;
-
-    mean_nov = nov_count > 0 ? (novsum / nov_count) : 0;
-    onset_conf = peakv > 0 ? clamp01((peakv - mean_nov * 1.35) / max(peakv, 0.000001)) : 0;
-    starti = peaki;
-    peakthr = peakv * (0.18 + 0.08 * (1 - onset_conf));
-    while (starti > 0 && onset_smooth_base[starti - 1] >= peakthr) (starti -= 1;);
-    lowthr = peakv * 0.10;
-    while (starti > 0 && onset_smooth_base[starti - 1] > lowthr && (peaki - starti) < 8) (starti -= 1;);
-
-    onset_conf >= 0.10 && peakv > 0.00001 ? attack = floor(starti * hop) : attack = fallback_attack;
-    attack = clamp(attack, 0, max(0, frames - 2));
-    onset_rise = max(hop, (peaki - starti) * hop);
-    onset_rise_ms = 1000 * onset_rise / max(sr, 1);
-
-    head_ms = 5 + clamp01(sm[SM_FLAGS]) * 34 + min(15, onset_rise_ms * 0.34);
-    head_end = clamp(attack + floor(sr * head_ms * 0.001), attack + 8, max(attack + 8, frames - 2));
-    tail_start = clamp(sm[SM_TAILSTART], head_end + 1, max(head_end + 1, frames - 2));
-  );
-
-  sm[SM_GCATTACK] = attack;
-  sm[SM_GCHEAD] = head_end;
-  sm[SM_GCTAIL] = tail_start;
-);
 
 function analyze_sample(sm)
 (
   onset_mode_active ? analyze_sample_gauss(sm) : analyze_sample_classic(sm);
-  estimate_granular_corpus_markers(sm);
   estimate_sample_tail_grace(sm);
-  analyze_sample_flow(sm);
+  // v37 PerfGate: skip Granular-only corpus markers and obsolete learned-flow
+  // extraction during normal bank analysis. Corpus markers are computed lazily
+  // inside build_grain_corpus(), only when Granular mode needs them.
 );
 
 
@@ -2992,6 +3034,13 @@ function reset_room_buffers()
 
   room_fast_env = 0;
   room_slow_env = 0;
+  room_late_s = 0;
+  room_diffuse_s = 0;
+  room_side_g = 1;
+
+  room_b0_fast = 0; room_b1_fast = 0; room_b2_fast = 0; room_b3_fast = 0; room_b4_fast = 0;
+  room_b0_slow = 0; room_b1_slow = 0; room_b2_slow = 0; room_b3_slow = 0; room_b4_slow = 0;
+
   room_g0 = 1;
   room_g1 = 1;
   room_g2 = 1;
@@ -3223,18 +3272,18 @@ function posteq_bq_process_l(slot x) local(base y)
 (
   base = slot * POSTEQ_BQ_STRIDE;
   y = posteq_bq_base[base + 0] * x + posteq_bq_base[base + 5];
-  posteq_bq_base[base + 5] = posteq_bq_base[base + 1] * x - posteq_bq_base[base + 3] * y + posteq_bq_base[base + 6];
-  posteq_bq_base[base + 6] = posteq_bq_base[base + 2] * x - posteq_bq_base[base + 4] * y;
-  y;
+  posteq_bq_base[base + 5] = denorm_zap(posteq_bq_base[base + 1] * x - posteq_bq_base[base + 3] * y + posteq_bq_base[base + 6]);
+  posteq_bq_base[base + 6] = denorm_zap(posteq_bq_base[base + 2] * x - posteq_bq_base[base + 4] * y);
+  denorm_zap(y);
 );
 
 function posteq_bq_process_r(slot x) local(base y)
 (
   base = slot * POSTEQ_BQ_STRIDE;
   y = posteq_bq_base[base + 0] * x + posteq_bq_base[base + 7];
-  posteq_bq_base[base + 7] = posteq_bq_base[base + 1] * x - posteq_bq_base[base + 3] * y + posteq_bq_base[base + 8];
-  posteq_bq_base[base + 8] = posteq_bq_base[base + 2] * x - posteq_bq_base[base + 4] * y;
-  y;
+  posteq_bq_base[base + 7] = denorm_zap(posteq_bq_base[base + 1] * x - posteq_bq_base[base + 3] * y + posteq_bq_base[base + 8]);
+  posteq_bq_base[base + 8] = denorm_zap(posteq_bq_base[base + 2] * x - posteq_bq_base[base + 4] * y);
+  denorm_zap(y);
 );
 
 function posteq_spec_bq_set_band(bin freq q) local(base w0 sn cs alpha a0 b0 b1 b2 a1 a2)
@@ -3299,67 +3348,123 @@ function posteq_update_coeffs() local(i norm cf specq cutq)
   );
 );
 
-function posteq_analyze_spectrum(l r) local(src i base y z1 z2 det env)
+function posteq_zero_pre_spectrum() local(i)
 (
-  // Pre-PostEQ analyzer. This taps the final sampler/output path just before
-  // the Post-Processing EQ.
-  src = 0.5 * (l + r);
   i = 0;
   while (i < POSTEQ_SPEC_BINS) (
-    base = i * POSTEQ_SPEC_COEFFS;
-
-    z1 = posteq_spec_lp_base[i];
-    z2 = posteq_spec_z2_base[i];
-    y = posteq_spec_coeff_base[base + 0] * src + z1;
-    z1 = posteq_spec_coeff_base[base + 1] * src - posteq_spec_coeff_base[base + 3] * y + z2;
-    z2 = posteq_spec_coeff_base[base + 2] * src - posteq_spec_coeff_base[base + 4] * y;
-
-    posteq_spec_lp_base[i] = z1;
-    posteq_spec_z2_base[i] = z2;
-
-    det = abs(y);
-    env = posteq_spec_env_base[i];
-    env += (det - env) * (det > env ? posteq_spec_att_coeff : posteq_spec_rel_coeff);
-    posteq_spec_env_base[i] = env;
+    posteq_spec_lp_base[i] = 0;
+    posteq_spec_z2_base[i] = 0;
+    posteq_spec_env_base[i] = 0;
     i += 1;
+  );
+);
+
+function posteq_zero_post_spectrum() local(i)
+(
+  i = 0;
+  while (i < POSTEQ_SPEC_BINS) (
+    posteq_post_z1_base[i] = 0;
+    posteq_post_z2_base[i] = 0;
+    posteq_post_env_base[i] = 0;
+    i += 1;
+  );
+);
+
+function posteq_zero_filter_states() local(i base)
+(
+  proc_hpf1_l = 0; proc_hpf2_l = 0;
+  proc_hpf1_r = 0; proc_hpf2_r = 0;
+  proc_lpf1_l = 0; proc_lpf2_l = 0;
+  proc_lpf1_r = 0; proc_lpf2_r = 0;
+  i = 0;
+  while (i < POSTEQ_BQ_COUNT) (
+    base = i * POSTEQ_BQ_STRIDE;
+    posteq_bq_base[base + 5] = 0;
+    posteq_bq_base[base + 6] = 0;
+    posteq_bq_base[base + 7] = 0;
+    posteq_bq_base[base + 8] = 0;
+    i += 1;
+  );
+);
+
+function posteq_analyze_spectrum(l r) local(src i base y z1 z2 det env)
+(
+  // Pre-PostEQ analyzer. Silence is gated so the 96 visual-only resonant
+  // bandpass states cannot decay into denormals across parallel instances.
+  src = 0.5 * (l + r);
+  abs(src) < DENORM_AUDIO_FLOOR ? (
+    posteq_pre_silent += 1;
+    posteq_pre_silent >= DENORM_ANALYZER_HOLD ? (
+      posteq_zero_pre_spectrum();
+      posteq_pre_silent = DENORM_ANALYZER_HOLD;
+    );
+  ) : (
+    posteq_pre_silent = 0;
+    i = 0;
+    while (i < POSTEQ_SPEC_BINS) (
+      base = i * POSTEQ_SPEC_COEFFS;
+
+      z1 = posteq_spec_lp_base[i];
+      z2 = posteq_spec_z2_base[i];
+      y = posteq_spec_coeff_base[base + 0] * src + z1;
+      z1 = posteq_spec_coeff_base[base + 1] * src - posteq_spec_coeff_base[base + 3] * y + z2;
+      z2 = posteq_spec_coeff_base[base + 2] * src - posteq_spec_coeff_base[base + 4] * y;
+
+      posteq_spec_lp_base[i] = denorm_zap(z1);
+      posteq_spec_z2_base[i] = denorm_zap(z2);
+
+      det = abs(y);
+      env = posteq_spec_env_base[i];
+      env += (det - env) * (det > env ? posteq_spec_att_coeff : posteq_spec_rel_coeff);
+      posteq_spec_env_base[i] = denorm_zap(env);
+      i += 1;
+    );
   );
 );
 
 function posteq_analyze_post_spectrum(l r) local(src i base y z1 z2 det env)
 (
-  // Post-PostEQ analyzer. Same filters and visual scale as the pre analyzer,
-  // so the EQ move is visible as an actual pre/post spectral difference.
+  // Post-PostEQ analyzer. Same silence gate as the pre analyzer.
   src = 0.5 * (l + r);
-  i = 0;
-  while (i < POSTEQ_SPEC_BINS) (
-    base = i * POSTEQ_SPEC_COEFFS;
+  abs(src) < DENORM_AUDIO_FLOOR ? (
+    posteq_post_silent += 1;
+    posteq_post_silent >= DENORM_ANALYZER_HOLD ? (
+      posteq_zero_post_spectrum();
+      posteq_post_silent = DENORM_ANALYZER_HOLD;
+    );
+  ) : (
+    posteq_post_silent = 0;
+    i = 0;
+    while (i < POSTEQ_SPEC_BINS) (
+      base = i * POSTEQ_SPEC_COEFFS;
 
-    z1 = posteq_post_z1_base[i];
-    z2 = posteq_post_z2_base[i];
-    y = posteq_spec_coeff_base[base + 0] * src + z1;
-    z1 = posteq_spec_coeff_base[base + 1] * src - posteq_spec_coeff_base[base + 3] * y + z2;
-    z2 = posteq_spec_coeff_base[base + 2] * src - posteq_spec_coeff_base[base + 4] * y;
+      z1 = posteq_post_z1_base[i];
+      z2 = posteq_post_z2_base[i];
+      y = posteq_spec_coeff_base[base + 0] * src + z1;
+      z1 = posteq_spec_coeff_base[base + 1] * src - posteq_spec_coeff_base[base + 3] * y + z2;
+      z2 = posteq_spec_coeff_base[base + 2] * src - posteq_spec_coeff_base[base + 4] * y;
 
-    posteq_post_z1_base[i] = z1;
-    posteq_post_z2_base[i] = z2;
+      posteq_post_z1_base[i] = denorm_zap(z1);
+      posteq_post_z2_base[i] = denorm_zap(z2);
 
-    det = abs(y);
-    env = posteq_post_env_base[i];
-    env += (det - env) * (det > env ? posteq_spec_att_coeff : posteq_spec_rel_coeff);
-    posteq_post_env_base[i] = env;
-    i += 1;
+      det = abs(y);
+      env = posteq_post_env_base[i];
+      env += (det - env) * (det > env ? posteq_spec_att_coeff : posteq_spec_rel_coeff);
+      posteq_post_env_base[i] = denorm_zap(env);
+      i += 1;
+    );
   );
 );
 
 function apply_posteq_filter() local(xL xR idx count)
 (
-  xL = outL;
-  xR = outR;
+  xL = outL + denorm_guard;
+  xR = outR - denorm_guard;
 
   proc_hpf_hz > 22 ? (
     proc_hpf_slope_idx <= 0 ? (
-      proc_hpf1_l += (xL - proc_hpf1_l) * proc_hpf_coeff;
-      proc_hpf1_r += (xR - proc_hpf1_r) * proc_hpf_coeff;
+      proc_hpf1_l = denorm_zap(proc_hpf1_l + (xL - proc_hpf1_l) * proc_hpf_coeff);
+      proc_hpf1_r = denorm_zap(proc_hpf1_r + (xR - proc_hpf1_r) * proc_hpf_coeff);
       xL = xL - proc_hpf1_l;
       xR = xR - proc_hpf1_r;
     ) : (
@@ -3396,8 +3501,8 @@ function apply_posteq_filter() local(xL xR idx count)
       xR = posteq_bq_process_r(12, xR);
     );
     proc_lpf_slope_idx <= 0 ? (
-      proc_lpf1_l += (xL - proc_lpf1_l) * proc_lpf_coeff;
-      proc_lpf1_r += (xR - proc_lpf1_r) * proc_lpf_coeff;
+      proc_lpf1_l = denorm_zap(proc_lpf1_l + (xL - proc_lpf1_l) * proc_lpf_coeff);
+      proc_lpf1_r = denorm_zap(proc_lpf1_r + (xR - proc_lpf1_r) * proc_lpf_coeff);
       xL = proc_lpf1_l;
       xR = proc_lpf1_r;
     ) : (
@@ -3411,8 +3516,15 @@ function apply_posteq_filter() local(xL xR idx count)
     );
   );
 
-  outL = xL;
-  outR = xR;
+  outL = denorm_zap(xL);
+  outR = denorm_zap(xR);
+  denorm_near_silence(outL, outR) ? (
+    posteq_filter_silent += 1;
+    posteq_filter_silent == DENORM_ANALYZER_HOLD ? posteq_zero_filter_states();
+    posteq_filter_silent > DENORM_ANALYZER_HOLD ? posteq_filter_silent = DENORM_ANALYZER_HOLD;
+  ) : (
+    posteq_filter_silent = 0;
+  );
 );
 
 function apply_processing_strip()
@@ -3505,27 +3617,34 @@ function apply_cleaner() local(
 );
 
 function apply_room_tame() local(
-  inL inR det
+  inL inR det eps
   b0l b1l b2l b3l b4l b0r b1r b2r b3r b4r
-  mid1 side1 mid2 side2 mid3 side3
-  late protect region amount side_trim
-  target0 target1 target2 target3 target4
+  d0 d1 d2 d3 d4
+  late0 late1 late2 late3 late4 late_raw late_s
+  mid1 side1 mid2 side2 mid3 side3 side4 sideE midE side_rel diffuse diffuse_s
+  protect tail_region amount base_amt room_power
+  a0 a1 a2 a3 a4
+  target0 target1 target2 target3 target4 side_target side_trim
+  dryL dryR wetL wetR wetmix artifact_guard
 )
 (
-  // Late-tail room suppressor: broad, detector-driven, and deliberately mild.
-  // It mostly trims low-mid / presence smear during decays and release tails.
+  // v39 RoomScrub: transient-protected multiband de-room/de-smear.
+  // The old path was deliberately mild. This one detects late/diffuse energy per band,
+  // trims low-mid/presence room wash harder, narrows roomy side smear, and backs off
+  // quickly around attacks. High values are intentionally obvious rather than subtle.
   inL = outL;
   inR = outR;
+  eps = 0.000000000001;
 
-  room_lp1_l += (inL - room_lp1_l) * room_lp_c1;
-  room_lp2_l += (inL - room_lp2_l) * room_lp_c2;
-  room_lp3_l += (inL - room_lp3_l) * room_lp_c3;
-  room_lp4_l += (inL - room_lp4_l) * room_lp_c4;
+  room_lp1_l = denorm_zap(room_lp1_l + (inL - room_lp1_l) * room_lp_c1);
+  room_lp2_l = denorm_zap(room_lp2_l + (inL - room_lp2_l) * room_lp_c2);
+  room_lp3_l = denorm_zap(room_lp3_l + (inL - room_lp3_l) * room_lp_c3);
+  room_lp4_l = denorm_zap(room_lp4_l + (inL - room_lp4_l) * room_lp_c4);
 
-  room_lp1_r += (inR - room_lp1_r) * room_lp_c1;
-  room_lp2_r += (inR - room_lp2_r) * room_lp_c2;
-  room_lp3_r += (inR - room_lp3_r) * room_lp_c3;
-  room_lp4_r += (inR - room_lp4_r) * room_lp_c4;
+  room_lp1_r = denorm_zap(room_lp1_r + (inR - room_lp1_r) * room_lp_c1);
+  room_lp2_r = denorm_zap(room_lp2_r + (inR - room_lp2_r) * room_lp_c2);
+  room_lp3_r = denorm_zap(room_lp3_r + (inR - room_lp3_r) * room_lp_c3);
+  room_lp4_r = denorm_zap(room_lp4_r + (inR - room_lp4_r) * room_lp_c4);
 
   b0l = room_lp1_l;
   b1l = room_lp2_l - room_lp1_l;
@@ -3539,35 +3658,92 @@ function apply_room_tame() local(
   b3r = room_lp4_r - room_lp3_r;
   b4r = inR - room_lp4_r;
 
+  d0 = max(abs(b0l), abs(b0r)) * 0.58 + abs(0.5 * (b0l + b0r)) * 0.42;
+  d1 = max(abs(b1l), abs(b1r)) * 0.58 + abs(0.5 * (b1l + b1r)) * 0.42;
+  d2 = max(abs(b2l), abs(b2r)) * 0.58 + abs(0.5 * (b2l + b2r)) * 0.42;
+  d3 = max(abs(b3l), abs(b3r)) * 0.58 + abs(0.5 * (b3l + b3r)) * 0.42;
+  d4 = max(abs(b4l), abs(b4r)) * 0.58 + abs(0.5 * (b4l + b4r)) * 0.42;
+
   det = max(abs(inL), abs(inR)) * 0.54 + abs(0.5 * (inL + inR)) * 0.46;
-  room_fast_env += (det - room_fast_env) * (det > room_fast_env ? room_env_att_coeff : room_env_fast_rel_coeff);
-  room_slow_env += (det - room_slow_env) * (det > room_slow_env ? room_env_slow_att_coeff : room_env_slow_rel_coeff);
+  room_fast_env = denorm_zap(room_fast_env + (det - room_fast_env) * (det > room_fast_env ? room_env_att_coeff : room_env_fast_rel_coeff));
+  room_slow_env = denorm_zap(room_slow_env + (det - room_slow_env) * (det > room_slow_env ? room_env_slow_att_coeff : room_env_slow_rel_coeff));
 
-  late = clamp01((room_slow_env - room_fast_env) / max(room_slow_env, 0.0000001));
-  protect = clamp01(transient_guard_s * (0.90 + 0.10 * trans_mode_mix) + room_head_bus * 0.92);
-  region = clamp01(room_tail_bus * 0.92 + late * (0.22 + 0.50 * room_amt));
-  amount = clamp01(room_amt * (1 - protect) * region);
-  amount = clamp01(amount * (0.72 + 0.28 * room_amt));
+  room_b0_fast = denorm_zap(room_b0_fast + (d0 - room_b0_fast) * (d0 > room_b0_fast ? room_band_att_coeff : room_band_fast_rel_coeff));
+  room_b1_fast = denorm_zap(room_b1_fast + (d1 - room_b1_fast) * (d1 > room_b1_fast ? room_band_att_coeff : room_band_fast_rel_coeff));
+  room_b2_fast = denorm_zap(room_b2_fast + (d2 - room_b2_fast) * (d2 > room_b2_fast ? room_band_att_coeff : room_band_fast_rel_coeff));
+  room_b3_fast = denorm_zap(room_b3_fast + (d3 - room_b3_fast) * (d3 > room_b3_fast ? room_band_att_coeff : room_band_fast_rel_coeff));
+  room_b4_fast = denorm_zap(room_b4_fast + (d4 - room_b4_fast) * (d4 > room_b4_fast ? room_band_att_coeff : room_band_fast_rel_coeff));
 
-  target0 = clamp(1 - amount * 0.08, room_min_gain0, 1);
-  target1 = clamp(1 - amount * (0.24 + 0.14 * room_amt), room_min_gain1, 1);
-  target2 = clamp(1 - amount * (0.20 + 0.12 * room_amt), room_min_gain2, 1);
-  target3 = clamp(1 - amount * (0.11 + 0.07 * room_amt), room_min_gain3, 1);
-  target4 = clamp(1 - amount * 0.035, room_min_gain4, 1);
+  room_b0_slow = denorm_zap(room_b0_slow + (d0 - room_b0_slow) * (d0 > room_b0_slow ? room_band_slow_att_coeff : room_band_slow_rel_coeff));
+  room_b1_slow = denorm_zap(room_b1_slow + (d1 - room_b1_slow) * (d1 > room_b1_slow ? room_band_slow_att_coeff : room_band_slow_rel_coeff));
+  room_b2_slow = denorm_zap(room_b2_slow + (d2 - room_b2_slow) * (d2 > room_b2_slow ? room_band_slow_att_coeff : room_band_slow_rel_coeff));
+  room_b3_slow = denorm_zap(room_b3_slow + (d3 - room_b3_slow) * (d3 > room_b3_slow ? room_band_slow_att_coeff : room_band_slow_rel_coeff));
+  room_b4_slow = denorm_zap(room_b4_slow + (d4 - room_b4_slow) * (d4 > room_b4_slow ? room_band_slow_att_coeff : room_band_slow_rel_coeff));
 
-  room_g0 += (target0 - room_g0) * (target0 < room_g0 ? room_gain_down_coeff : room_gain_up_coeff);
-  room_g1 += (target1 - room_g1) * (target1 < room_g1 ? room_gain_down_coeff : room_gain_up_coeff);
-  room_g2 += (target2 - room_g2) * (target2 < room_g2 ? room_gain_down_coeff : room_gain_up_coeff);
-  room_g3 += (target3 - room_g3) * (target3 < room_g3 ? room_gain_down_coeff : room_gain_up_coeff);
-  room_g4 += (target4 - room_g4) * (target4 < room_g4 ? room_gain_down_coeff : room_gain_up_coeff);
+  late0 = clamp01((room_b0_slow - room_b0_fast) / max(room_b0_slow, eps));
+  late1 = clamp01((room_b1_slow - room_b1_fast) / max(room_b1_slow, eps));
+  late2 = clamp01((room_b2_slow - room_b2_fast) / max(room_b2_slow, eps));
+  late3 = clamp01((room_b3_slow - room_b3_fast) / max(room_b3_slow, eps));
+  late4 = clamp01((room_b4_slow - room_b4_fast) / max(room_b4_slow, eps));
+  late_raw = clamp01((room_slow_env - room_fast_env) / max(room_slow_env, eps));
+  late_raw = clamp01(max(late_raw, late1 * 0.70 + late2 * 0.85 + late3 * 0.48 + late4 * 0.20));
+  room_late_s = denorm_zap(room_late_s + (late_raw - room_late_s) * (late_raw > room_late_s ? room_late_att_coeff : room_late_rel_coeff));
+  late_s = room_late_s;
 
-  side_trim = clamp01(amount * (0.08 + 0.14 * room_amt));
-  mid1 = 0.5 * (b1l + b1r); side1 = 0.5 * (b1l - b1r) * (1 - side_trim * 0.80);
-  mid2 = 0.5 * (b2l + b2r); side2 = 0.5 * (b2l - b2r) * (1 - side_trim);
-  mid3 = 0.5 * (b3l + b3r); side3 = 0.5 * (b3l - b3r) * (1 - side_trim * 0.55);
+  mid1 = 0.5 * (b1l + b1r); side1 = 0.5 * (b1l - b1r);
+  mid2 = 0.5 * (b2l + b2r); side2 = 0.5 * (b2l - b2r);
+  mid3 = 0.5 * (b3l + b3r); side3 = 0.5 * (b3l - b3r);
+  side4 = 0.5 * (b4l - b4r);
+  sideE = side1*side1 + side2*side2 + side3*side3 + side4*side4;
+  midE = mid1*mid1 + mid2*mid2 + mid3*mid3 + eps;
+  side_rel = sideE / max(sideE + midE, eps);
+  diffuse = clamp01((side_rel - 0.16) / 0.62);
+  room_diffuse_s = denorm_zap(room_diffuse_s + (diffuse - room_diffuse_s) * (diffuse > room_diffuse_s ? room_late_att_coeff : room_late_rel_coeff));
+  diffuse_s = room_diffuse_s;
 
-  outL = b0l * room_g0 + (mid1 + side1) * room_g1 + (mid2 + side2) * room_g2 + (mid3 + side3) * room_g3 + b4l * room_g4;
-  outR = b0r * room_g0 + (mid1 - side1) * room_g1 + (mid2 - side2) * room_g2 + (mid3 - side3) * room_g3 + b4r * room_g4;
+  protect = clamp01(transient_guard_s * (0.98 + 0.12 * trans_mode_mix) + room_head_bus * 1.10);
+  tail_region = clamp01(room_tail_bus * 0.92 + late_s * (0.42 + 0.45 * room_amt) + diffuse_s * late_s * 0.42);
+  room_power = room_amt ^ 0.78;
+  base_amt = room_power * (1 - protect) * tail_region;
+  // fail-fast: above the midpoint, the knob moves from useful restraint into obvious de-rooming.
+  amount = clamp01(base_amt * (0.82 + 0.55 * room_amt + 0.70 * max(0, room_amt - 0.50)));
+
+  a0 = clamp01(amount * (0.20 + 0.52 * late0 + 0.10 * diffuse_s));
+  a1 = clamp01(amount * (0.42 + 1.38 * late1 + 0.44 * diffuse_s + 0.12 * late_s));
+  a2 = clamp01(amount * (0.36 + 1.30 * late2 + 0.38 * diffuse_s + 0.10 * late_s));
+  a3 = clamp01(amount * (0.22 + 0.86 * late3 + 0.30 * diffuse_s));
+  a4 = clamp01(amount * (0.10 + 0.48 * late4 + 0.14 * diffuse_s));
+
+  target0 = max(room_min_gain0, db2amp(-(0.8 + 4.6 * room_amt) * a0));
+  target1 = max(room_min_gain1, db2amp(-(2.2 + 18.0 * room_amt) * a1));
+  target2 = max(room_min_gain2, db2amp(-(1.8 + 15.5 * room_amt) * a2));
+  target3 = max(room_min_gain3, db2amp(-(0.9 + 9.8 * room_amt) * a3));
+  target4 = max(room_min_gain4, db2amp(-(0.4 + 5.4 * room_amt) * a4));
+
+  room_g0 = denorm_zap(room_g0 + (target0 - room_g0) * (target0 < room_g0 ? room_gain_down_coeff : room_gain_up_coeff));
+  room_g1 = denorm_zap(room_g1 + (target1 - room_g1) * (target1 < room_g1 ? room_gain_down_coeff : room_gain_up_coeff));
+  room_g2 = denorm_zap(room_g2 + (target2 - room_g2) * (target2 < room_g2 ? room_gain_down_coeff : room_gain_up_coeff));
+  room_g3 = denorm_zap(room_g3 + (target3 - room_g3) * (target3 < room_g3 ? room_gain_down_coeff : room_gain_up_coeff));
+  room_g4 = denorm_zap(room_g4 + (target4 - room_g4) * (target4 < room_g4 ? room_gain_down_coeff : room_gain_up_coeff));
+
+  side_target = db2amp(-(1.0 + 11.0 * room_amt) * clamp01(amount * (0.16 + 0.92 * diffuse_s + 0.45 * late_s)));
+  side_target = clamp(side_target, db2amp(-(1.0 + 12.0 * room_amt)), 1);
+  room_side_g = denorm_zap(room_side_g + (side_target - room_side_g) * (side_target < room_side_g ? room_gain_down_coeff : room_gain_up_coeff));
+  side_trim = clamp01(1 - room_side_g);
+
+  side1 *= room_side_g * (1 - side_trim * 0.28);
+  side2 *= room_side_g;
+  side3 *= room_side_g * (1 - side_trim * 0.18);
+
+  wetL = b0l * room_g0 + (mid1 + side1) * room_g1 + (mid2 + side2) * room_g2 + (mid3 + side3) * room_g3 + b4l * room_g4;
+  wetR = b0r * room_g0 + (mid1 - side1) * room_g1 + (mid2 - side2) * room_g2 + (mid3 - side3) * room_g3 + b4r * room_g4;
+
+  // Keep high settings obvious, but avoid turning uncertain full-range material into gated rubble.
+  artifact_guard = clamp01(0.30 + late_s * 0.44 + diffuse_s * 0.22 + room_tail_bus * 0.24 + room_amt * 0.22);
+  wetmix = clamp01(0.52 + room_amt * 0.48);
+  wetmix *= artifact_guard;
+  outL = denorm_zap(lerp(inL, wetL, wetmix));
+  outR = denorm_zap(lerp(inR, wetR, wetmix));
 );
 
 function apply_push() local(
@@ -3728,17 +3904,17 @@ function apply_formant_shift() local(
   inL = outL;
   inR = outR;
 
-  form_lp1_l += (inL - form_lp1_l) * form_lp_c1;
-  form_lp2_l += (inL - form_lp2_l) * form_lp_c2;
-  form_lp3_l += (inL - form_lp3_l) * form_lp_c3;
-  form_lp4_l += (inL - form_lp4_l) * form_lp_c4;
-  form_lp5_l += (inL - form_lp5_l) * form_lp_c5;
+  form_lp1_l = denorm_zap(form_lp1_l + (inL - form_lp1_l) * form_lp_c1);
+  form_lp2_l = denorm_zap(form_lp2_l + (inL - form_lp2_l) * form_lp_c2);
+  form_lp3_l = denorm_zap(form_lp3_l + (inL - form_lp3_l) * form_lp_c3);
+  form_lp4_l = denorm_zap(form_lp4_l + (inL - form_lp4_l) * form_lp_c4);
+  form_lp5_l = denorm_zap(form_lp5_l + (inL - form_lp5_l) * form_lp_c5);
 
-  form_lp1_r += (inR - form_lp1_r) * form_lp_c1;
-  form_lp2_r += (inR - form_lp2_r) * form_lp_c2;
-  form_lp3_r += (inR - form_lp3_r) * form_lp_c3;
-  form_lp4_r += (inR - form_lp4_r) * form_lp_c4;
-  form_lp5_r += (inR - form_lp5_r) * form_lp_c5;
+  form_lp1_r = denorm_zap(form_lp1_r + (inR - form_lp1_r) * form_lp_c1);
+  form_lp2_r = denorm_zap(form_lp2_r + (inR - form_lp2_r) * form_lp_c2);
+  form_lp3_r = denorm_zap(form_lp3_r + (inR - form_lp3_r) * form_lp_c3);
+  form_lp4_r = denorm_zap(form_lp4_r + (inR - form_lp4_r) * form_lp_c4);
+  form_lp5_r = denorm_zap(form_lp5_r + (inR - form_lp5_r) * form_lp_c5);
 
   b0l = form_lp1_l;
   b1l = form_lp2_l - form_lp1_l;
@@ -3761,12 +3937,12 @@ function apply_formant_shift() local(
   e4 = b4l*b4l + b4r*b4r;
   e5 = b5l*b5l + b5r*b5r;
 
-  form_env0 += (e0 - form_env0) * (e0 > form_env0 ? form_env_att_coeff : form_env_rel_coeff);
-  form_env1 += (e1 - form_env1) * (e1 > form_env1 ? form_env_att_coeff : form_env_rel_coeff);
-  form_env2 += (e2 - form_env2) * (e2 > form_env2 ? form_env_att_coeff : form_env_rel_coeff);
-  form_env3 += (e3 - form_env3) * (e3 > form_env3 ? form_env_att_coeff : form_env_rel_coeff);
-  form_env4 += (e4 - form_env4) * (e4 > form_env4 ? form_env_att_coeff : form_env_rel_coeff);
-  form_env5 += (e5 - form_env5) * (e5 > form_env5 ? form_env_att_coeff : form_env_rel_coeff);
+  form_env0 = denorm_zap(form_env0 + (e0 - form_env0) * (e0 > form_env0 ? form_env_att_coeff : form_env_rel_coeff));
+  form_env1 = denorm_zap(form_env1 + (e1 - form_env1) * (e1 > form_env1 ? form_env_att_coeff : form_env_rel_coeff));
+  form_env2 = denorm_zap(form_env2 + (e2 - form_env2) * (e2 > form_env2 ? form_env_att_coeff : form_env_rel_coeff));
+  form_env3 = denorm_zap(form_env3 + (e3 - form_env3) * (e3 > form_env3 ? form_env_att_coeff : form_env_rel_coeff));
+  form_env4 = denorm_zap(form_env4 + (e4 - form_env4) * (e4 > form_env4 ? form_env_att_coeff : form_env_rel_coeff));
+  form_env5 = denorm_zap(form_env5 + (e5 - form_env5) * (e5 > form_env5 ? form_env_att_coeff : form_env_rel_coeff));
 
   amt = clamp01(abs(formant_shift_semi) / 12);
   // v17 often vanished on short/transient-heavy sources because protection could
@@ -3833,6 +4009,7 @@ function apply_formant_shift() local(
     // Keep level sane, but do not normalize the audible formant contrast away.
     level = clamp(sqrt(dryE / wetE), 0.78, 1.22);
     form_level += (level - form_level) * form_level_coeff;
+    abs(form_level - 1) < DENORM_CUT ? form_level = 1;
     wetL *= form_level;
     wetR *= form_level;
 
@@ -3847,6 +4024,7 @@ function apply_formant_shift() local(
     form_g4 += (1 - form_g4) * form_gain_coeff;
     form_g5 += (1 - form_g5) * form_gain_coeff;
     form_level += (1 - form_level) * form_level_coeff;
+    abs(form_level - 1) < DENORM_CUT ? form_level = 1;
   );
 );
 
@@ -3903,18 +4081,18 @@ function fpk_bq_process_l(slot x) local(base y)
 (
   base = slot * FPK_BQ_STRIDE;
   y = fpk_bq_base[base + 0] * x + fpk_bq_base[base + 5];
-  fpk_bq_base[base + 5] = fpk_bq_base[base + 1] * x - fpk_bq_base[base + 3] * y + fpk_bq_base[base + 6];
-  fpk_bq_base[base + 6] = fpk_bq_base[base + 2] * x - fpk_bq_base[base + 4] * y;
-  y;
+  fpk_bq_base[base + 5] = denorm_zap(fpk_bq_base[base + 1] * x - fpk_bq_base[base + 3] * y + fpk_bq_base[base + 6]);
+  fpk_bq_base[base + 6] = denorm_zap(fpk_bq_base[base + 2] * x - fpk_bq_base[base + 4] * y);
+  denorm_zap(y);
 );
 
 function fpk_bq_process_r(slot x) local(base y)
 (
   base = slot * FPK_BQ_STRIDE;
   y = fpk_bq_base[base + 0] * x + fpk_bq_base[base + 7];
-  fpk_bq_base[base + 7] = fpk_bq_base[base + 1] * x - fpk_bq_base[base + 3] * y + fpk_bq_base[base + 8];
-  fpk_bq_base[base + 8] = fpk_bq_base[base + 2] * x - fpk_bq_base[base + 4] * y;
-  y;
+  fpk_bq_base[base + 7] = denorm_zap(fpk_bq_base[base + 1] * x - fpk_bq_base[base + 3] * y + fpk_bq_base[base + 8]);
+  fpk_bq_base[base + 8] = denorm_zap(fpk_bq_base[base + 2] * x - fpk_bq_base[base + 4] * y);
+  denorm_zap(y);
 );
 
 function fpk_update_coeffs() local(i freq q)
@@ -3941,6 +4119,12 @@ function apply_focus_peak_pack() local(
   inR = outR;
   depth = abs(clamp(focus_peak_amt, -1, 1));
   sign = focus_peak_amt >= 0 ? 1 : -1;
+
+  denorm_near_silence(inL, inR) ? (
+    reset_focus_peak_buffers();
+    depth = 0;
+  );
+
   protect = sign > 0 ? transient_guard_s * (0.30 + 0.10 * trans_mode_mix) : transient_guard_s * 0.02;
   depth *= 1 - clamp01(protect);
 
@@ -3959,7 +4143,7 @@ function apply_focus_peak_pack() local(
       e = bl*bl + br*br;
       env = fpk_env_base[i];
       env += (e - env) * (e > env ? fpk_env_att_coeff : fpk_env_rel_coeff);
-      fpk_env_base[i] = env;
+      fpk_env_base[i] = denorm_zap(env);
       avgE += env;
       maxE = max(maxE, env);
       i += 1;
@@ -3994,7 +4178,7 @@ function apply_focus_peak_pack() local(
       );
 
       coeff = fpk_gain_coeff * (0.82 + 1.20 * sane + 1.30 * extreme);
-      fpk_gain_base[i] += (db - fpk_gain_base[i]) * coeff;
+      fpk_gain_base[i] = denorm_zap(fpk_gain_base[i] + (db - fpk_gain_base[i]) * coeff);
       g = db2amp(fpk_gain_base[i]) - 1;
       wetL += fpk_band_l_base[i] * g;
       wetR += fpk_band_r_base[i] * g;
@@ -4005,7 +4189,7 @@ function apply_focus_peak_pack() local(
     wetE = wetL*wetL + wetR*wetR + 0.000000000001;
     level = sign > 0 ? clamp(sqrt(dryE / wetE), 0.40, 1.06) : clamp(sqrt(dryE / wetE), 0.58, 1.18);
     level = lerp(1, level, sign > 0 ? 0.72 : 0.52);
-    fpk_level += (level - fpk_level) * fpk_level_coeff;
+    fpk_level = denorm_zap(fpk_level + (level - fpk_level) * fpk_level_coeff);
     wetL *= fpk_level;
     wetR *= fpk_level;
 
@@ -4015,13 +4199,61 @@ function apply_focus_peak_pack() local(
   ) : (
     i = 0;
     while (i < FPK_BANDS) (
-      fpk_gain_base[i] += (0 - fpk_gain_base[i]) * fpk_gain_coeff;
+      fpk_gain_base[i] = denorm_zap(fpk_gain_base[i] + (0 - fpk_gain_base[i]) * fpk_gain_coeff);
       i += 1;
     );
-    fpk_level += (1 - fpk_level) * fpk_level_coeff;
+    fpk_level = denorm_zap(fpk_level + (1 - fpk_level) * fpk_level_coeff);
   );
 );
 
+
+function denorm_flush_scalar_states()
+(
+  mix_fast = denorm_zap(mix_fast);
+  mix_slow = denorm_zap(mix_slow);
+  transient_guard_s = denorm_zap(transient_guard_s);
+  tone_lp_l = denorm_zap(tone_lp_l); tone_lp_r = denorm_zap(tone_lp_r);
+  focus_lp_l = denorm_zap(focus_lp_l); focus_lp_r = denorm_zap(focus_lp_r);
+  dyn_env = denorm_zap(dyn_env);
+
+  clean_lp1_l = denorm_zap(clean_lp1_l); clean_lp2_l = denorm_zap(clean_lp2_l); clean_lp3_l = denorm_zap(clean_lp3_l); clean_lp4_l = denorm_zap(clean_lp4_l);
+  clean_lp1_r = denorm_zap(clean_lp1_r); clean_lp2_r = denorm_zap(clean_lp2_r); clean_lp3_r = denorm_zap(clean_lp3_r); clean_lp4_r = denorm_zap(clean_lp4_r);
+
+  room_lp1_l = denorm_zap(room_lp1_l); room_lp2_l = denorm_zap(room_lp2_l); room_lp3_l = denorm_zap(room_lp3_l); room_lp4_l = denorm_zap(room_lp4_l);
+  room_lp1_r = denorm_zap(room_lp1_r); room_lp2_r = denorm_zap(room_lp2_r); room_lp3_r = denorm_zap(room_lp3_r); room_lp4_r = denorm_zap(room_lp4_r);
+  room_fast_env = denorm_zap(room_fast_env); room_slow_env = denorm_zap(room_slow_env);
+  room_late_s = denorm_zap(room_late_s); room_diffuse_s = denorm_zap(room_diffuse_s); room_side_g = denorm_zap(room_side_g);
+  room_b0_fast = denorm_zap(room_b0_fast); room_b1_fast = denorm_zap(room_b1_fast); room_b2_fast = denorm_zap(room_b2_fast); room_b3_fast = denorm_zap(room_b3_fast); room_b4_fast = denorm_zap(room_b4_fast);
+  room_b0_slow = denorm_zap(room_b0_slow); room_b1_slow = denorm_zap(room_b1_slow); room_b2_slow = denorm_zap(room_b2_slow); room_b3_slow = denorm_zap(room_b3_slow); room_b4_slow = denorm_zap(room_b4_slow);
+
+  form_lp1_l = denorm_zap(form_lp1_l); form_lp2_l = denorm_zap(form_lp2_l); form_lp3_l = denorm_zap(form_lp3_l); form_lp4_l = denorm_zap(form_lp4_l); form_lp5_l = denorm_zap(form_lp5_l);
+  form_lp1_r = denorm_zap(form_lp1_r); form_lp2_r = denorm_zap(form_lp2_r); form_lp3_r = denorm_zap(form_lp3_r); form_lp4_r = denorm_zap(form_lp4_r); form_lp5_r = denorm_zap(form_lp5_r);
+  form_env0 = denorm_zap(form_env0); form_env1 = denorm_zap(form_env1); form_env2 = denorm_zap(form_env2); form_env3 = denorm_zap(form_env3); form_env4 = denorm_zap(form_env4); form_env5 = denorm_zap(form_env5);
+
+  push_m_lp15 = denorm_zap(push_m_lp15); push_m_lp32 = denorm_zap(push_m_lp32); push_m_lp55 = denorm_zap(push_m_lp55);
+  push_s_lp15 = denorm_zap(push_s_lp15); push_s_lp32 = denorm_zap(push_s_lp32); push_s_lp55 = denorm_zap(push_s_lp55);
+  push_bodyE = denorm_zap(push_bodyE); push_formE = denorm_zap(push_formE); push_edgeE = denorm_zap(push_edgeE); push_airE = denorm_zap(push_airE); push_srcE = denorm_zap(push_srcE);
+  push_m_hiE = denorm_zap(push_m_hiE); push_s_hiE = denorm_zap(push_s_hiE); push_click_fastE = denorm_zap(push_click_fastE); push_click_slowE = denorm_zap(push_click_slowE);
+);
+
+function denorm_flush_silent_tail_state()
+(
+  reset_weight_buffers();
+  reset_clean_buffers();
+  reset_room_buffers();
+  reset_push_buffers();
+  reset_formant_buffers();
+  reset_focus_peak_buffers();
+  reset_processing_buffers();
+  posteq_update_coeffs();
+  fpk_update_coeffs();
+  mix_fast = 0;
+  mix_slow = 0;
+  tone_lp_l = 0; tone_lp_r = 0;
+  focus_lp_l = 0; focus_lp_r = 0;
+  transient_guard_s = 0;
+  dyn_env = 0;
+);
 
 function reset_bank_state() local(i)
 (
@@ -4067,6 +4299,12 @@ function reset_bank_state() local(i)
   reset_focus_peak_buffers();
   reset_processing_buffers();
   init_flow_model();
+  corpus_dirty = 1;
+  posteq_pre_silent = 0;
+  posteq_post_silent = 0;
+  posteq_filter_silent = 0;
+  denorm_silence_samps = 0;
+  denorm_flush_counter = 0;
   transient_guard_s = 0;
   seam_bridge_env = 0;
   seam_bridge_idx = -1;
@@ -4154,11 +4392,21 @@ function refresh_bank_stats() local(
   );
 
   sample_count > 0 ? (
-    train_flow_model();
-    build_grain_corpus();
+    // v37 PerfGate: learned_flow_pick() is no longer called, so training the
+    // tiny flow model was pure load-time overhead. The GrainCorpus is useful
+    // only for Granular, so build it only when Granular is currently selected;
+    // otherwise mark it dirty and build lazily on mode switch.
+    init_flow_model();
+    playback_mode == 3 ? (
+      build_grain_corpus();
+    ) : (
+      corpus_count = 0;
+      corpus_dirty = 1;
+    );
   ) : (
     init_flow_model();
     corpus_count = 0;
+    corpus_dirty = 0;
   );
   bank_loaded = sample_count > 0;
 );
@@ -4725,7 +4973,7 @@ function start_voice(note vel chan) local(
 
     v[VC_GMODE]    = (playmode >= 2) ? 1 : 0;
     v[VC_OHOP]     = hybrid_hop_samps;
-    v[VC_GSIZE]    = hybrid_grain_samps;
+    v[VC_GSIZE]    = gran_voice ? max(hybrid_hop_samps + 1, floor(hybrid_grain_samps * lerp(1.0, 2.20, granular_event_stretch))) : hybrid_grain_samps;
     // Hybrid waits until transient protection clears because the direct head is audible.
     // Granular has no audible direct head, so its HybridCore grain layer starts immediately.
     v[VC_GTIMER]   = gran_voice ? (-floor(max(1, hybrid_hop_samps) * 3)) : max(1, trans_hold_out + 1);
@@ -4758,7 +5006,7 @@ function start_voice(note vel chan) local(
     v[VC_GENV]     = 0.36;
     v[VC_GENVDELTA]= 0;
 
-    gesture_len = floor(srate * lerp(0.22, 1.20, rand(1)) * lerp(0.82, 1.22, stretch_norm));
+    gesture_len = floor(srate * lerp(0.22, 1.20, rand(1)) * lerp(0.82, 1.22, stretch_norm) * (gran_voice ? lerp(1.0, 2.75, granular_event_stretch) : 1));
     gesture_len = max(64, gesture_len);
     gesture_depth = lively * (0.38 + 0.62 * ggrain_amt) * (gran_voice ? 1.0 : 0.32);
     v[VC_GPHASE]  = rand(1);
@@ -5686,6 +5934,7 @@ VG_EAMT      = 11;
 VG_LIFE      = 12;
 VG_STRIDE    = 13;
 NUM_GRAINS   = 32;
+HYBRID_GRAINS = 12;
 
 GC_SID       = 0;
 GC_POS       = 1;
@@ -5790,6 +6039,13 @@ POSTEQ_BQ_STRIDE = 9;
 FPK_BANDS = 12;
 FPK_BQ_STRIDE = 9;
 PUSH_EPS = 0.00000000000000000001;
+DENORM_GUARD = 0.00000000000000000001;
+DENORM_CUT   = 0.000000000000000001;
+POSTEQ_SPEC_STRIDE = 4;
+DENORM_AUDIO_FLOOR = 0.000000000001;
+DENORM_ANALYZER_HOLD = 64;
+DENORM_SILENCE_RESET_SAMPS = 1024;
+DENORM_FLUSH_INTERVAL = 128;
 LOG10_INV = 1 / log(10);
 
 M2E_LANE_COUNT = 35;
@@ -5879,6 +6135,7 @@ granular_amt = 0.55;
 tail_borrow = 0.35;
 stretch_ratio = 1;
 stretch_norm = 0;
+granular_event_stretch = 0;
 hybrid_grain_samps = 1536;
 hybrid_hop_samps = 256;
 hybrid_body_jitter = 64;
@@ -6004,6 +6261,13 @@ push_side_rel_coeff = 0.001;
 
 formant_shift_semi = 0;
 focus_peak_amt = 0;
+denorm_flip = 1;
+denorm_guard = 0;
+posteq_pre_silent = 0;
+posteq_post_silent = 0;
+posteq_filter_silent = 0;
+denorm_silence_samps = 0;
+denorm_flush_counter = 0;
 auto_release_amt = 1;
 posteq_q_schema = 0;
 proc_eq_band1_db = 0;
@@ -6025,6 +6289,9 @@ proc_hpf_coeff = 0.004;
 proc_lpf_coeff = 0.90;
 posteq_spec_att_coeff = 0.18;
 posteq_spec_rel_coeff = 0.02;
+posteq_spec_stride = POSTEQ_SPEC_STRIDE;
+posteq_spec_tick = 0;
+posteq_spec_do = 0;
 posteq_hpf_res_db = 0;
 posteq_lpf_res_db = 0;
 ui_alt_release_drag = 0;
@@ -6186,9 +6453,16 @@ sequence_mode = selection_mode == 1 ? 1 : 0;
 walk_mode = selection_mode == 2 ? 1 : 0;
 stretch_ratio = clamp(slider14, 1, 4);
 stretch_norm = clamp01((stretch_ratio - 1) / 3);
+// v36: in Granular only, Stretch becomes an event-scale control. Smoothstep
+// keeps 1x identical and most of the range sane, with the slow coherent behavior
+// arriving progressively toward 4x.
+granular_event_stretch = stretch_norm * stretch_norm * (3 - 2 * stretch_norm);
 weight_amt = clamp01(slider15);
 transient_mode = clamp(slider16 | 0, 0, 2);
 playback_mode = clamp(slider17 | 0, 0, 3);
+// v37 PerfGate: switching to Granular after a bank was loaded in Raw/Tape/Hybrid
+// builds the corpus here, not per-block and not inside Raw/Tape/Hybrid playback.
+(playback_mode == 3 && corpus_dirty > 0 && sample_count > 0) ? build_grain_corpus();
 granular_amt = clamp01(slider18);
 tail_borrow = clamp01(slider19);
 poll_interval_samps = max(1024, floor(0.35 * srate));
@@ -6273,13 +6547,19 @@ room_env_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.010 * srate)));
 room_env_fast_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.085 * srate)));
 room_env_slow_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.180 * srate)));
 room_env_slow_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.850 * srate)));
-room_gain_down_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.026 * srate)));
-room_gain_up_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.180 * srate)));
-room_min_gain0 = db2amp(-(0.4 + 1.4 * room_amt));
-room_min_gain1 = db2amp(-(1.0 + 5.4 * room_amt));
-room_min_gain2 = db2amp(-(0.8 + 4.6 * room_amt));
-room_min_gain3 = db2amp(-(0.5 + 2.8 * room_amt));
-room_min_gain4 = db2amp(-(0.2 + 1.0 * room_amt));
+room_band_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.006 * srate)));
+room_band_fast_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.060 * srate)));
+room_band_slow_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.190 * srate)));
+room_band_slow_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.900 * srate)));
+room_late_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.035 * srate)));
+room_late_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.260 * srate)));
+room_gain_down_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.011 + 0.012 * (1 - room_amt)) * srate)));
+room_gain_up_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.180 + 0.260 * room_amt) * srate)));
+room_min_gain0 = db2amp(-(0.6 + 3.2 * room_amt));
+room_min_gain1 = db2amp(-(2.2 + 17.0 * room_amt));
+room_min_gain2 = db2amp(-(1.8 + 14.5 * room_amt));
+room_min_gain3 = db2amp(-(0.9 + 9.0 * room_amt));
+room_min_gain4 = db2amp(-(0.4 + 5.0 * room_amt));
 
 push_lp15_c = clamp(1 - exp(-6.283185307179586 * min(1500, srate * 0.49) / max(srate, 1)), 0.0001, 0.80);
 push_lp32_c = clamp(1 - exp(-6.283185307179586 * min(3200, srate * 0.49) / max(srate, 1)), 0.0002, 0.88);
@@ -6301,8 +6581,9 @@ push_side_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.900 + 1.900 * 
 
 proc_hpf_coeff = clamp(1 - exp(-6.283185307179586 * min(proc_hpf_hz, srate * 0.49) / max(srate, 1)), 0.00002, 0.72);
 proc_lpf_coeff = clamp(1 - exp(-6.283185307179586 * min(proc_lpf_hz, srate * 0.49) / max(srate, 1)), 0.00010, 0.96);
-posteq_spec_att_coeff = 1 - exp(-1 / max(1, floor(0.010 * srate)));
-posteq_spec_rel_coeff = 1 - exp(-1 / max(1, floor(0.145 * srate)));
+posteq_spec_stride = POSTEQ_SPEC_STRIDE;
+posteq_spec_att_coeff = 1 - exp(-posteq_spec_stride / max(1, floor(0.010 * srate)));
+posteq_spec_rel_coeff = 1 - exp(-posteq_spec_stride / max(1, floor(0.145 * srate)));
 posteq_update_coeffs();
 
 form_lp_c1 = clamp(1 - exp(-6.283185307179586 * min(190, srate * 0.49) / max(srate, 1)), 0.0001, 0.72);
@@ -6467,17 +6748,20 @@ rescan_pending ? (
 @sample
 outL = 0;
 outR = 0;
+active_voice_seen = 0;
 punch_bus = 0;
 clean_head_bus = 0;
 clean_tail_bus = 0;
 room_head_bus = 0;
 room_tail_bus = 0;
+denorm_guard = denorm_guard_tick();
 
 i = 0;
 while (i < MAX_VOICES) (
   v = voice_base + i * VC_STRIDE;
 
   v[VC_ACTIVE] > 0 ? (
+    active_voice_seen = 1;
     sid = v[VC_SAMPLE] | 0;
     sm  = sample_meta_base + sid * SM_STRIDE;
     frames = sm[SM_FRAMES] | 0;
@@ -6493,13 +6777,14 @@ while (i < MAX_VOICES) (
     tailstart = clamp(floor(v[VC_TAILSTART]), body_start, max(body_start, frames - 2));
     body_end = clamp(floor(v[VC_BODYEND]), body_start + 1, max(body_start + 1, frames - 2));
     granular_voice = (v[VC_MODE] == 3) ? 1 : 0;
+    grain_slot_limit = granular_voice ? NUM_GRAINS : HYBRID_GRAINS;
     gesture_arc = 0;
     gesture_drive = 0;
     v[VC_GMODE] > 0 ? (
       gphase = v[VC_GPHASE] + 1 / max(1, v[VC_GLEN]);
       gphase >= 1 ? (
         gphase -= floor(gphase);
-        v[VC_GLEN] = max(64, floor(srate * lerp(0.24, 1.35, rand(1)) * lerp(0.82, 1.18, stretch_norm)));
+        v[VC_GLEN] = max(64, floor(srate * lerp(0.24, 1.35, rand(1)) * lerp(0.82, 1.18, stretch_norm) * (granular_voice ? lerp(1.0, 2.75, granular_event_stretch) : 1)));
         v[VC_GACCENT] = rand(1);
       );
       v[VC_GPHASE] = gphase;
@@ -6606,18 +6891,18 @@ while (i < MAX_VOICES) (
         schedule_prefill = granular_voice ? max(0, -timer) : 0;
         spawn_guard = 0;
 
-        while (timer <= 0 && spawn_guard < NUM_GRAINS && v[VC_CANSPAWN] > 0) (
+        while (timer <= 0 && spawn_guard < grain_slot_limit && v[VC_CANSPAWN] > 0) (
           schedule_prefill = granular_voice ? max(0, -timer) : 0;
           gslot = -1;
           oldest = 0;
           oldest_age = -1;
 
           gk = 0;
-          while (gk < NUM_GRAINS) (
+          while (gk < grain_slot_limit) (
             gb = v + VC_GBASE + gk * VG_STRIDE;
             gb[VG_ACTIVE] <= 0 ? (
               gslot = gk;
-              gk = NUM_GRAINS;
+              gk = grain_slot_limit;
             ) : (
               gb[VG_AGE] > oldest_age ? (
                 oldest_age = gb[VG_AGE];
@@ -6900,6 +7185,8 @@ while (i < MAX_VOICES) (
 
           gcorpus_idx = -1;
           granular_voice ? (
+            // v37 PerfGate: the expensive corpus selector is called only for
+            // active Granular voices. Hybrid keeps the legacy body/tail donor path.
             corpus_want_region = cur_region_mode ? GC_REGION_TAIL : ((stage == ENV_ATTACK || stage == ENV_HOLD) ? GC_REGION_ATTACK : GC_REGION_BODY);
             // v32 stream role: anchor grains preserve phrase glue, texture grains
             // fill overlap, spice grains are rare accents controlled by Lively/Spice.
@@ -6962,35 +7249,42 @@ while (i < MAX_VOICES) (
           gran_slow_glue = max(gran_slow_glue, max(gran_mscont * 0.92 - gran_mstrans * 0.22, gran_xcont * 0.98 - gran_mstrans * 0.12));
           gran_slow_glue *= clamp01(0.35 + 0.65 * (1 - truth_mix));
           gran_crms < 0.055 ? gran_slow_glue *= 0.55;
+          // v36 GranStretch: higher Stretch in Granular favors coherent event
+          // playback, but only when the corpus analysis says the material can
+          // support it. Bright/transient grains stay fast and purposeful.
+          gran_stretch_glue = granular_event_stretch * clamp01(0.14 + 0.36 * gran_mscont + 0.58 * gran_xcont + 0.26 * gran_slow_glue - 0.38 * gran_mstrans);
+          gran_slow_glue = clamp01(gran_slow_glue + gran_stretch_glue * (0.42 + 0.26 * (1 - truth_mix)));
 
           granular_voice ? (
             gran_tail_region = cur_region_mode;
 
-            src_phase_jit = source_phase_jitter_samples(gsid, gran_tail_region, slider9, truth_mix, v[VC_TAILMIX]) * (1 - 0.90 * gran_slow_glue);
+            src_phase_jit = source_phase_jitter_samples(gsid, gran_tail_region, slider9, truth_mix, v[VC_TAILMIX]) * (1 - 0.90 * gran_slow_glue) * (1 - 0.70 * granular_event_stretch);
             gran_tail_region ? (
               gsrc = clamp(gsrc + src_phase_jit, ghist_lo, max(ghist_lo, ghist_hi - 1));
             ) : (
               gsrc = wrap_in_range(gsrc + src_phase_jit, ghist_lo, ghist_hi);
             );
 
-            pitch_jit_cents = (rand(1) - 0.5) * 2 * slider9 * (0.85 + 3.20 * (1 - truth_mix)) * lerp(1.00, 0.45, clamp01(gsm[SM_PITCHCONF] * bank_pitchiness)) * (1 - 0.72 * gran_slow_glue);
+            pitch_jit_cents = (rand(1) - 0.5) * 2 * slider9 * (0.85 + 3.20 * (1 - truth_mix)) * lerp(1.00, 0.45, clamp01(gsm[SM_PITCHCONF] * bank_pitchiness)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.64 * granular_event_stretch);
             grate *= cents_ratio(pitch_jit_cents);
 
-            len_jit = 1 + (rand(1) - 0.5) * slider9 * (0.08 + 0.10 * (1 - truth_mix) + 0.04 * gesture_arc) * (1 - 0.66 * gran_slow_glue) * (1 - 0.62 * max(gran_mscont, gran_xcont));
+            len_jit = 1 + (rand(1) - 0.5) * slider9 * (0.08 + 0.10 * (1 - truth_mix) + 0.04 * gesture_arc) * (1 - 0.66 * gran_slow_glue) * (1 - 0.62 * max(gran_mscont, gran_xcont)) * (1 - 0.58 * granular_event_stretch);
             spawn_gsize = clamp(
-              floor(gsize * len_jit * (1 + gran_slow_glue * (0.70 + 0.62 * (1 - slider9)) + gran_mscont * 0.42 + gran_xcont * 1.10)),
+              floor(gsize * len_jit * (1 + gran_slow_glue * (0.70 + 0.62 * (1 - slider9)) + gran_mscont * 0.42 + gran_xcont * 1.10 + gran_stretch_glue * (1.10 + 1.10 * gran_mscont + 2.30 * gran_xcont))),
               max(hop + 1, floor(gsize * 0.72)),
-              max(hop + 1, floor(gsize * (1.42 + 2.20 * gran_slow_glue + 0.76 * gran_mscont + 3.20 * gran_xcont)))
+              max(hop + 1, floor(gsize * (1.42 + 2.20 * gran_slow_glue + 0.76 * gran_mscont + 3.20 * gran_xcont + granular_event_stretch * (1.80 + 2.60 * gran_mscont + 4.80 * gran_xcont))))
             );
             gcorpus_idx >= 0 && corpus_best_len > 0 ? (
               corpus_out_len = corpus_best_len / max(0.05, abs(grate));
               gran_len_scale = max(gran_slow_glue, gran_xcont);
-              gran_max_ms = gran_region == GC_REGION_ATTACK ? 0.125 : (gran_region == GC_REGION_TAIL ? lerp(0.420, 1.250, gran_len_scale) : lerp(0.520, 1.120, gran_len_scale));
-              gran_len_amt = clamp01(0.38 + 0.26 * gran_mscont + 0.40 * gran_xcont + 0.22 * (1 - truth_mix) - 0.20 * gran_mstrans);
+              gran_max_ms_base = gran_region == GC_REGION_ATTACK ? 0.125 : (gran_region == GC_REGION_TAIL ? lerp(0.420, 1.250, gran_len_scale) : lerp(0.520, 1.120, gran_len_scale));
+              gran_max_ms_slow = gran_region == GC_REGION_ATTACK ? 0.180 : (gran_region == GC_REGION_TAIL ? lerp(0.760, 2.350, gran_len_scale) : lerp(0.820, 2.050, gran_len_scale));
+              gran_max_ms = lerp(gran_max_ms_base, gran_max_ms_slow, granular_event_stretch * clamp01(0.22 + 0.78 * gran_len_scale));
+              gran_len_amt = clamp01(0.38 + 0.26 * gran_mscont + 0.40 * gran_xcont + 0.22 * (1 - truth_mix) - 0.20 * gran_mstrans + granular_event_stretch * (0.14 + 0.30 * gran_mscont + 0.42 * gran_xcont));
               spawn_gsize = clamp(
-                floor(lerp(spawn_gsize, corpus_out_len * (1 + 0.62 * gran_slow_glue + 0.34 * gran_mscont + 0.68 * gran_xcont), gran_len_amt)),
+                floor(lerp(spawn_gsize, corpus_out_len * (1 + 0.62 * gran_slow_glue + 0.34 * gran_mscont + 0.68 * gran_xcont + granular_event_stretch * (0.42 + 0.92 * gran_mscont + 1.80 * gran_xcont)), gran_len_amt)),
                 max(hop + 1, floor(gsize * 0.62)),
-                max(hop + 1, min(floor(srate * gran_max_ms), floor(gsize * (1.80 + 6.50 * gran_slow_glue + 2.20 * gran_mscont + 4.80 * gran_xcont))))
+                max(hop + 1, min(floor(srate * gran_max_ms), floor(gsize * (1.80 + 6.50 * gran_slow_glue + 2.20 * gran_mscont + 4.80 * gran_xcont + granular_event_stretch * (3.20 + 3.60 * gran_mscont + 7.80 * gran_xcont)))))
               );
             );
 
@@ -7018,9 +7312,9 @@ while (i < MAX_VOICES) (
             genv_macro = clamp((0.58 + 1.30 * v[VC_GENV]) / 1.02, 0.55, 1.72);
             ggain *= lerp(1, genv_macro, genv_amt * 0.74);
 
-            amp_jit_db = (rand(1) - 0.5) * 2 * slider9 * (0.22 + 0.78 * (1 - truth_mix)) * (1 - 0.58 * gran_slow_glue);
+            amp_jit_db = (rand(1) - 0.5) * 2 * slider9 * (0.22 + 0.78 * (1 - truth_mix)) * (1 - 0.58 * gran_slow_glue) * (1 - 0.55 * granular_event_stretch);
             ggain *= db2amp(amp_jit_db);
-            gpan = (rand(1) - 0.5) * slider8 * slider9 * (0.10 + 0.30 * gesture_arc) * (1 - 0.65 * gran_slow_glue);
+            gpan = (rand(1) - 0.5) * slider8 * slider9 * (0.10 + 0.30 * gesture_arc) * (1 - 0.65 * gran_slow_glue) * (1 - 0.50 * granular_event_stretch);
             // Adaptive per-grain downward expansion: useful for noisy/bright grains,
             // harmful for slow bassy grains. So it is disabled by slow glue.
             gxpand = clamp01((gran_cedge - 0.24) / 0.44) * clamp01((gran_cbright - 0.34) / 0.50);
@@ -7028,7 +7322,7 @@ while (i < MAX_VOICES) (
             gxpand *= slider9 * (0.10 + 0.38 * v[VC_TAILMIX] + 0.18 * gesture_arc) * (1 - 0.88 * gran_slow_glue);
             gxpand = clamp01(gxpand);
 
-            prefill_age = floor(spawn_gsize * (slider9 * (0.015 + 0.075 * gesture_arc) + gran_slow_glue * 0.110 + gran_mscont * 0.060) * rand(1));
+            prefill_age = floor(spawn_gsize * (slider9 * (0.015 + 0.075 * gesture_arc) + gran_slow_glue * 0.110 + gran_mscont * 0.060 + gran_stretch_glue * 0.075) * rand(1));
             schedule_prefill > 0 ? prefill_age = max(prefill_age, min(max(0, spawn_gsize - 2), floor(schedule_prefill)));
             prefill_src = gsrc - prefill_age * grate;
             gran_tail_region ? (
@@ -7072,9 +7366,13 @@ while (i < MAX_VOICES) (
             // HybridCore base length. This prevents audible empty gaps when the
             // corpus chooses shorter local grains.
             gran_hop_scale = max(gran_slow_glue, max(gran_mscont, gran_xcont));
+            gran_hop_scale = clamp01(gran_hop_scale + granular_event_stretch * (0.18 + 0.42 * gran_hop_scale));
             spawn_hop_base = max(floor(srate * lerp(0.0048, 0.0028, gran_hop_scale)), floor(spawn_gsize * lerp(lerp(0.19, 0.135, slider9), lerp(0.112, 0.070, slider9), gran_hop_scale)));
-            hop_jit = floor(spawn_hop_base * slider9 * (0.05 + 0.11 * (1 - truth_mix)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.65 * max(gran_mscont, gran_xcont)) * ((rand(1) - 0.5) * 2));
-            spawn_hop = clamp(spawn_hop_base + hop_jit, max(1, floor(srate * lerp(0.0046, 0.0026, gran_hop_scale))), max(1, floor(spawn_gsize * lerp(0.285, 0.118, gran_hop_scale))));
+            spawn_hop_base = floor(spawn_hop_base * lerp(1.0, 1.72, gran_stretch_glue));
+            hop_jit = floor(spawn_hop_base * slider9 * (0.05 + 0.11 * (1 - truth_mix)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.65 * max(gran_mscont, gran_xcont)) * (1 - 0.58 * granular_event_stretch) * ((rand(1) - 0.5) * 2));
+            gran_min_hop = floor(srate * lerp(lerp(0.0046, 0.0026, gran_hop_scale), lerp(0.0100, 0.0064, gran_hop_scale), granular_event_stretch));
+            gran_max_hop_ratio = lerp(lerp(0.285, 0.118, gran_hop_scale), lerp(0.360, 0.220, gran_hop_scale), granular_event_stretch);
+            spawn_hop = clamp(spawn_hop_base + hop_jit, max(1, gran_min_hop), max(1, floor(spawn_gsize * gran_max_hop_ratio)));
           );
           timer += spawn_hop;
           spawn_guard += 1;
@@ -7088,7 +7386,7 @@ while (i < MAX_VOICES) (
         activeg = 0;
 
         gk = 0;
-        while (gk < NUM_GRAINS) (
+        while (gk < grain_slot_limit) (
           gb = v + VC_GBASE + gk * VG_STRIDE;
 
           gb[VG_ACTIVE] > 0 ? (
@@ -7161,7 +7459,7 @@ while (i < MAX_VOICES) (
                   entry_fade = entry_fade * entry_fade * (3 - 2 * entry_fade);
                 );
 
-                win_flat = granular_voice ? clamp01((gsize - srate * 0.140) / max(1, srate * 0.720)) : 0;
+                win_flat = granular_voice ? clamp01((gsize - srate * 0.140) / max(1, srate * 0.720) + granular_event_stretch * 0.42 * clamp01((gsize - srate * 0.060) / max(1, srate * 0.620))) : 0;
                 w = (granular_voice ? stretch_window_morph(age, gsize, win_flat) : stretch_window(age, gsize)) * gsource_end_fade * entry_fade;
                 gw = w * gb[VG_GAIN];
                 sumL += gl * gw;
@@ -7355,27 +7653,33 @@ while (i < MAX_VOICES) (
   i += 1;
 );
 
+outL += denorm_guard;
+outR -= denorm_guard;
+
 midm = abs(0.5 * (outL + outR));
-mix_fast += (midm - mix_fast) * (midm > mix_fast ? env_att_coeff : env_rel_coeff);
-mix_slow += (midm - mix_slow) * env_rel_coeff;
+mix_fast = denorm_zap(mix_fast + (midm - mix_fast) * (midm > mix_fast ? env_att_coeff : env_rel_coeff));
+mix_slow = denorm_zap(mix_slow + (midm - mix_slow) * env_rel_coeff);
+mix_fast = denorm_zap(mix_fast);
+mix_slow = denorm_zap(mix_slow);
 transient = clamp01((mix_fast - mix_slow) * 10);
 transient_guard = clamp01(max(punch_bus, transient * (0.72 + 0.28 * punch_bus)));
-transient_guard_s += (transient_guard - transient_guard_s) * (transient_guard > transient_guard_s ? 0.12 : 0.02);
+transient_guard_s = denorm_zap(transient_guard_s + (transient_guard - transient_guard_s) * (transient_guard > transient_guard_s ? 0.12 : 0.02));
+transient_guard_s = denorm_zap(transient_guard_s);
 
-m2e_mix += (m2e_target - m2e_mix) * m2e_mode_coeff;
+m2e_mix = denorm_zap(m2e_mix + (m2e_target - m2e_mix) * m2e_mode_coeff);
 m2e_env_s += (m2e_env_raw - m2e_env_s) * m2e_smooth_coeff;
-m2e_rigid_s += (m2e_rigid_raw - m2e_rigid_s) * m2e_smooth_coeff;
-m2e_impact_s += (m2e_impact_raw - m2e_impact_s) * m2e_smooth_coeff;
+m2e_rigid_s = denorm_zap(m2e_rigid_s + (m2e_rigid_raw - m2e_rigid_s) * m2e_smooth_coeff);
+m2e_impact_s = denorm_zap(m2e_impact_s + (m2e_impact_raw - m2e_impact_s) * m2e_smooth_coeff);
 m2e_pan_s += (m2e_pan_raw - m2e_pan_s) * m2e_smooth_coeff;
-m2e_entropy_s += (m2e_entropy_raw - m2e_entropy_s) * m2e_smooth_coeff;
-m2e_axis_v_s += (m2e_axis_v_raw - m2e_axis_v_s) * m2e_smooth_coeff;
-m2e_axis_acc_s += (m2e_axis_acc_raw - m2e_axis_acc_s) * m2e_smooth_coeff;
-m2e_lat_v_s += (m2e_lat_v_raw - m2e_lat_v_s) * m2e_smooth_coeff;
-m2e_lat_amp_s += (m2e_lat_amp_raw - m2e_lat_amp_s) * m2e_smooth_coeff;
-m2e_micro_s += (m2e_micro_raw - m2e_micro_s) * m2e_smooth_coeff;
-m2e_meso_s += (m2e_meso_raw - m2e_meso_s) * m2e_smooth_coeff;
-m2e_macro_s += (m2e_macro_raw - m2e_macro_s) * m2e_smooth_coeff;
-m2e_excite_s += (m2e_excite_raw - m2e_excite_s) * m2e_smooth_coeff;
+m2e_entropy_s = denorm_zap(m2e_entropy_s + (m2e_entropy_raw - m2e_entropy_s) * m2e_smooth_coeff);
+m2e_axis_v_s = denorm_zap(m2e_axis_v_s + (m2e_axis_v_raw - m2e_axis_v_s) * m2e_smooth_coeff);
+m2e_axis_acc_s = denorm_zap(m2e_axis_acc_s + (m2e_axis_acc_raw - m2e_axis_acc_s) * m2e_smooth_coeff);
+m2e_lat_v_s = denorm_zap(m2e_lat_v_s + (m2e_lat_v_raw - m2e_lat_v_s) * m2e_smooth_coeff);
+m2e_lat_amp_s = denorm_zap(m2e_lat_amp_s + (m2e_lat_amp_raw - m2e_lat_amp_s) * m2e_smooth_coeff);
+m2e_micro_s = denorm_zap(m2e_micro_s + (m2e_micro_raw - m2e_micro_s) * m2e_smooth_coeff);
+m2e_meso_s = denorm_zap(m2e_meso_s + (m2e_meso_raw - m2e_meso_s) * m2e_smooth_coeff);
+m2e_macro_s = denorm_zap(m2e_macro_s + (m2e_macro_raw - m2e_macro_s) * m2e_smooth_coeff);
+m2e_excite_s = denorm_zap(m2e_excite_s + (m2e_excite_raw - m2e_excite_s) * m2e_smooth_coeff);
 m2e_activity_s += (m2e_activity_raw - m2e_activity_s) * m2e_smooth_coeff;
 
 m2e_depth = m2e_mix * (0.22 + 0.78 * max(0.18, slider9));
@@ -7438,10 +7742,10 @@ clean_amt > 0.0001 ? apply_cleaner();
 room_amt > 0.0001 ? apply_room_tame();
 abs(formant_shift_semi) > 0.0001 ? apply_formant_shift();
 
-tone_lp_l += (outL - tone_lp_l) * tone_lp_coeff;
-tone_lp_r += (outR - tone_lp_r) * tone_lp_coeff;
-focus_lp_l += (outL - focus_lp_l) * focus_lp_coeff;
-focus_lp_r += (outR - focus_lp_r) * focus_lp_coeff;
+tone_lp_l = denorm_zap(tone_lp_l + (outL - tone_lp_l) * tone_lp_coeff);
+tone_lp_r = denorm_zap(tone_lp_r + (outR - tone_lp_r) * tone_lp_coeff);
+focus_lp_l = denorm_zap(focus_lp_l + (outL - focus_lp_l) * focus_lp_coeff);
+focus_lp_r = denorm_zap(focus_lp_r + (outR - focus_lp_r) * focus_lp_coeff);
 
 tone_hp_l = outL - tone_lp_l;
 tone_hp_r = outR - tone_lp_r;
@@ -7505,32 +7809,32 @@ weight_amt > 0.0001 ? (
   weight_in_src_l = outL * 0.74 + wmid * 0.42 - wside * 0.06;
   weight_in_src_r = outR * 0.74 + wmid * 0.42 + wside * 0.06;
 
-  weight_in_lp_l += (weight_in_src_l - weight_in_lp_l) * weight_in_coeff;
-  weight_in_lp_r += (weight_in_src_r - weight_in_lp_r) * weight_in_coeff;
+  weight_in_lp_l = denorm_zap(weight_in_lp_l + (weight_in_src_l - weight_in_lp_l) * weight_in_coeff);
+  weight_in_lp_r = denorm_zap(weight_in_lp_r + (weight_in_src_r - weight_in_lp_r) * weight_in_coeff);
 
   ap_idx = weight_ap1_pos;
   ap_del = weight_ap1_l_base[ap_idx];
   ap1L = -weight_ap_g1 * weight_in_lp_l + ap_del;
-  weight_ap1_l_base[ap_idx] = weight_in_lp_l + weight_ap_g1 * ap1L;
+  weight_ap1_l_base[ap_idx] = denorm_zap(weight_in_lp_l + weight_ap_g1 * ap1L);
   ap_del = weight_ap1_r_base[ap_idx];
   ap1R = -weight_ap_g1 * weight_in_lp_r + ap_del;
-  weight_ap1_r_base[ap_idx] = weight_in_lp_r + weight_ap_g1 * ap1R;
+  weight_ap1_r_base[ap_idx] = denorm_zap(weight_in_lp_r + weight_ap_g1 * ap1R);
   weight_ap1_pos += 1;
   weight_ap1_pos >= weight_ap1_len ? weight_ap1_pos = 0;
 
   ap_idx = weight_ap2_pos;
   ap_del = weight_ap2_l_base[ap_idx];
   ap2L = -weight_ap_g2 * ap1L + ap_del;
-  weight_ap2_l_base[ap_idx] = ap1L + weight_ap_g2 * ap2L;
+  weight_ap2_l_base[ap_idx] = denorm_zap(ap1L + weight_ap_g2 * ap2L);
   ap_del = weight_ap2_r_base[ap_idx];
   ap2R = -weight_ap_g2 * ap1R + ap_del;
-  weight_ap2_r_base[ap_idx] = ap1R + weight_ap_g2 * ap2R;
+  weight_ap2_r_base[ap_idx] = denorm_zap(ap1R + weight_ap_g2 * ap2R);
   weight_ap2_pos += 1;
   weight_ap2_pos >= weight_ap2_len ? weight_ap2_pos = 0;
 
   er_idx = weight_er_pos;
-  weight_er_l_base[er_idx] = ap2L;
-  weight_er_r_base[er_idx] = ap2R;
+  weight_er_l_base[er_idx] = denorm_zap(ap2L);
+  weight_er_r_base[er_idx] = denorm_zap(ap2R);
 
   rd1 = er_idx - weight_tap1; rd1 < 0 ? rd1 += ER_BUF_LEN;
   rd2 = er_idx - weight_tap2; rd2 < 0 ? rd2 += ER_BUF_LEN;
@@ -7555,8 +7859,8 @@ weight_amt > 0.0001 ? (
   weight_er_pos += 1;
   weight_er_pos >= ER_BUF_LEN ? weight_er_pos = 0;
 
-  weight_wet_lp_l += (wetL - weight_wet_lp_l) * weight_wet_coeff;
-  weight_wet_lp_r += (wetR - weight_wet_lp_r) * weight_wet_coeff;
+  weight_wet_lp_l = denorm_zap(weight_wet_lp_l + (wetL - weight_wet_lp_l) * weight_wet_coeff);
+  weight_wet_lp_r = denorm_zap(weight_wet_lp_r + (wetR - weight_wet_lp_r) * weight_wet_coeff);
 
   wet_damp = 0.52 + 0.22 * stretch_norm;
   wetL = lerp(wetL, weight_wet_lp_l, wet_damp);
@@ -7578,11 +7882,11 @@ dynamics_amt > 0.0001 ? (
   dynR = outR * dyn_drive;
 
   dyn_det = max(abs(dynL), abs(dynR));
-  dyn_env += (dyn_det - dyn_env) * (dyn_det > dyn_env ? dyn_att_coeff : dyn_rel_coeff);
+  dyn_env = denorm_zap(dyn_env + (dyn_det - dyn_env) * (dyn_det > dyn_env ? dyn_att_coeff : dyn_rel_coeff));
 
   dyn_over = max(0, dyn_env - dyn_thresh);
   dyn_target_gain = dyn_over > 0 ? (dyn_thresh + dyn_over / dyn_ratio) / max(dyn_env, 0.000001) : 1;
-  dyn_comp_gain += (dyn_target_gain - dyn_comp_gain) * (dyn_target_gain < dyn_comp_gain ? dyn_gain_att_coeff : dyn_gain_rel_coeff);
+  dyn_comp_gain = denorm_zap(dyn_comp_gain + (dyn_target_gain - dyn_comp_gain) * (dyn_target_gain < dyn_comp_gain ? dyn_gain_att_coeff : dyn_gain_rel_coeff));
 
   dynL *= dyn_comp_gain;
   dynR *= dyn_comp_gain;
@@ -7597,21 +7901,47 @@ dynamics_amt > 0.0001 ? (
 
   dyn_post = max(abs(dynL), abs(dynR));
   dyn_lim_tgt = dyn_post > dyn_ceiling ? dyn_ceiling / dyn_post : 1;
-  dyn_lim_gain += (dyn_lim_tgt - dyn_lim_gain) * (dyn_lim_tgt < dyn_lim_gain ? dyn_lim_att_coeff : dyn_lim_rel_coeff);
+  dyn_lim_gain = denorm_zap(dyn_lim_gain + (dyn_lim_tgt - dyn_lim_gain) * (dyn_lim_tgt < dyn_lim_gain ? dyn_lim_att_coeff : dyn_lim_rel_coeff));
 
   outL = dynL * dyn_lim_gain;
   outR = dynR * dyn_lim_gain;
 ) : (
-  dyn_env += (0 - dyn_env) * dyn_rel_coeff;
-  dyn_comp_gain += (1 - dyn_comp_gain) * dyn_gain_rel_coeff;
-  dyn_lim_gain += (1 - dyn_lim_gain) * dyn_lim_rel_coeff;
+  dyn_env = denorm_zap(dyn_env + (0 - dyn_env) * dyn_rel_coeff);
+  dyn_comp_gain = denorm_zap(dyn_comp_gain + (1 - dyn_comp_gain) * dyn_gain_rel_coeff);
+  dyn_lim_gain = denorm_zap(dyn_lim_gain + (1 - dyn_lim_gain) * dyn_lim_rel_coeff);
 );
 
 push_amt > 0.0001 ? apply_push();
-posteq_analyze_spectrum(outL, outR);
-apply_processing_strip();
-posteq_analyze_post_spectrum(outL, outR);
 
+// v38: PostEQ spectrum is visual-only. Running two 96-band analyzers every
+// audio sample across several instances can look like a stall even when audio
+// CPU meters stay modest, so analyze every 4th sample with compensated envelope
+// coefficients. Audio EQ processing is unchanged.
+posteq_spec_tick += 1;
+posteq_spec_do = posteq_spec_tick >= posteq_spec_stride ? 1 : 0;
+posteq_spec_do ? (
+  posteq_spec_tick = 0;
+  posteq_analyze_spectrum(outL, outR);
+);
+apply_processing_strip();
+posteq_spec_do ? posteq_analyze_post_spectrum(outL, outR);
+
+denorm_flush_counter += 1;
+denorm_flush_counter >= DENORM_FLUSH_INTERVAL ? (
+  denorm_flush_scalar_states();
+  denorm_flush_counter = 0;
+);
+
+(!active_voice_seen && denorm_near_silence(outL, outR)) ? (
+  denorm_silence_samps += 1;
+  denorm_silence_samps == DENORM_SILENCE_RESET_SAMPS ? denorm_flush_silent_tail_state();
+  denorm_silence_samps > DENORM_SILENCE_RESET_SAMPS ? denorm_silence_samps = DENORM_SILENCE_RESET_SAMPS;
+) : (
+  denorm_silence_samps = 0;
+);
+
+outL = denorm_zap(outL);
+outR = denorm_zap(outR);
 spl0 += outL * out_trim;
 spl1 += outR * out_trim;
 
@@ -8831,7 +9161,7 @@ ui_hover_id == 313 ? (
 );
 ui_hover_id == 314 ? (
   sprintf(#tip_title, "Room Tame");
-  sprintf(#tip_body, "%.2f late-room restraint.", slider26);
+  sprintf(#tip_body, "%.2f de-room/de-smear. High = obvious fail-fast room suppression.", slider26);
 );
 ui_hover_id == 315 ? (
   sprintf(#tip_title, "Push");
@@ -8852,7 +9182,11 @@ ui_hover_id == 312 ? (
 );
 ui_hover_id == 308 ? (
   sprintf(#tip_title, "Stretch");
-  sprintf(#tip_body, "%.2fx Tape/Hybrid speed.", slider14);
+  playback_mode == 3 ? (
+    sprintf(#tip_body, "%.2fx Granular event scale: 1x fast grains, 4x slow coherent events.", slider14);
+  ) : (
+    sprintf(#tip_body, "%.2fx Tape/Hybrid speed.", slider14);
+  );
 );
 ui_hover_id == 309 ? (
   sprintf(#tip_title, "Weight");
