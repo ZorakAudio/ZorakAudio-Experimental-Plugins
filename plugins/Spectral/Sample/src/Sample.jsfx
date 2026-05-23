@@ -1,7 +1,8 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v40-clean-scrub)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v41-dyn-expand)
 tags:instrument sampler ui
 // #GFX_RESIZE: responsive
 
+// v41 DynExpand: Shift+drag Dynamics controls hidden Expansion, a transient-aware contrast/punch separator that lowers low-level material and can exaggerate attacks without adding a knob.
 // v40 CleanScrub: Clean is upgraded into a stronger transient-protected multiband de-noise/de-bed path with SNR-aware gating, sustained-noise detection, high-band hiss targeting, and fail-fast obvious high settings.
 // v39 RoomScrub: Room Tame is upgraded into a stronger transient-protected multiband de-room/de-smear path with per-band late/diffuse detection, side wash reduction, and fail-fast obvious high settings.
 // v38 DenormalGuard: adds internal anti-denormal keepalive/zapping, gates silent visual analyzers, decimates the visual spectrum analyzer 4x, and keeps v37 Granular perf gates intact.
@@ -66,7 +67,7 @@ filename:0,sample.wav
 // #HELP: The Post-Processing panel is a final-output EQ editor with pre/post spectrum overlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope.
 // #HELP:
 // #HELP: ## Tone and feel
-// #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection.
+// #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection; Shift+drag Dynamics adds hidden Expansion for punch/space contrast.
 // #HELP:
 // #HELP: ## FluxBridge
 // #HELP: When the fixed FluxBridge CC lane block is present, Sample adds subtle motion-driven tone, focus, width, pan, and body contour while protecting transient-rich hits.
@@ -4269,6 +4270,92 @@ function apply_focus_peak_pack() local(
   );
 );
 
+function reset_dynamics_expand_buffers()
+(
+  dynx_fast = 0;
+  dynx_slow = 0;
+  dynx_gain = 1;
+  dynx_lim_gain = 1;
+);
+
+function apply_dynamics_expand() local(
+  inL inR depth sane extreme det ratio low crest down_db up_db target_db target_gain
+  coeff wetmix wetL wetR post lim_tgt protect gate_floor side mid side_boost body_keep
+)
+(
+  // v41 DynExpand: hidden Shift+Dynamics processor. It is the useful opposite
+  // of density compression: low-level bed gets pushed down, attacks and clear
+  // crests can step forward. It is intentionally broad-band and transient-aware
+  // so it behaves like a fast sound-design contrast macro, not a gate plugin.
+  inL = outL;
+  inR = outR;
+  depth = clamp01(dynamics_expand_amt);
+
+  denorm_near_silence(inL, inR) ? (
+    reset_dynamics_expand_buffers();
+    depth = 0;
+  );
+
+  depth > 0.0001 ? (
+    sane = depth ^ 1.38;
+    extreme = depth ^ 3.70;
+
+    det = max(abs(inL), abs(inR));
+    dynx_fast = denorm_zap(dynx_fast + (det - dynx_fast) * (det > dynx_fast ? dynx_fast_att_coeff : dynx_fast_rel_coeff));
+    dynx_slow = denorm_zap(dynx_slow + (det - dynx_slow) * (det > dynx_slow ? dynx_slow_att_coeff : dynx_slow_rel_coeff));
+
+    ratio = dynx_fast / max(dynx_slow, 0.00000001);
+
+    // Downward expansion: remove low-level/sustained bed, but do not chop heads.
+    low = clamp01(((0.94 - 0.10 * extreme) - ratio) / (0.70 - 0.18 * extreme));
+    gate_floor = clamp01((dynx_slow - 0.000030) / 0.0060);
+    low *= gate_floor;
+    protect = clamp01(transient_guard_s * (0.72 + 0.18 * trans_mode_mix));
+    low *= 1 - protect;
+
+    // Upward expansion: accent actual crests. Extreme values make it obvious.
+    crest = clamp01((ratio - (1.10 - 0.16 * extreme)) / (0.88 - 0.24 * extreme));
+    crest = crest ^ lerp(1.55, 0.82, extreme);
+
+    down_db = -(sane * (1.8 + 8.0 * low) + extreme * (7.5 + 26.0 * low)) * low;
+    up_db   =  (sane * (1.2 + 5.4 * crest) + extreme * (3.5 + 14.0 * crest)) * crest;
+
+    target_db = clamp(down_db + up_db, -36, 16);
+    target_gain = db2amp(target_db);
+    coeff = target_gain > dynx_gain ? dynx_gain_up_coeff : dynx_gain_down_coeff;
+    dynx_gain = denorm_zap(dynx_gain + (target_gain - dynx_gain) * coeff);
+
+    wetL = inL * dynx_gain;
+    wetR = inR * dynx_gain;
+
+    // Expansion can also separate width subtly: crests get a little wider, beds
+    // get a little narrower. This keeps it sound-design useful without a panel.
+    mid = 0.5 * (wetL + wetR);
+    side = 0.5 * (wetL - wetR);
+    side_boost = 1 + crest * (0.05 + 0.16 * sane + 0.12 * extreme) - low * (0.06 + 0.20 * sane);
+    side_boost = clamp(side_boost, 0.62, 1.32);
+    wetL = mid + side * side_boost;
+    wetR = mid - side * side_boost;
+
+    wetmix = clamp01(0.20 + 0.58 * sqrt(depth) + 0.18 * extreme);
+    outL = lerp(inL, wetL, wetmix);
+    outR = lerp(inR, wetR, wetmix);
+
+    // Fail-safe limiter only catches expansion overs. It should be transparent
+    // unless the hidden knob is pushed hard.
+    post = max(abs(outL), abs(outR));
+    lim_tgt = post > 1.02 ? 1.02 / post : 1;
+    dynx_lim_gain = denorm_zap(dynx_lim_gain + (lim_tgt - dynx_lim_gain) * (lim_tgt < dynx_lim_gain ? dyn_lim_att_coeff : dyn_lim_rel_coeff));
+    outL *= dynx_lim_gain;
+    outR *= dynx_lim_gain;
+  ) : (
+    dynx_fast = denorm_zap(dynx_fast + (0 - dynx_fast) * dynx_fast_rel_coeff);
+    dynx_slow = denorm_zap(dynx_slow + (0 - dynx_slow) * dynx_slow_rel_coeff);
+    dynx_gain = denorm_zap(dynx_gain + (1 - dynx_gain) * dynx_gain_down_coeff);
+    dynx_lim_gain = denorm_zap(dynx_lim_gain + (1 - dynx_lim_gain) * dyn_lim_rel_coeff);
+  );
+);
+
 
 function denorm_flush_scalar_states()
 (
@@ -4278,6 +4365,7 @@ function denorm_flush_scalar_states()
   tone_lp_l = denorm_zap(tone_lp_l); tone_lp_r = denorm_zap(tone_lp_r);
   focus_lp_l = denorm_zap(focus_lp_l); focus_lp_r = denorm_zap(focus_lp_r);
   dyn_env = denorm_zap(dyn_env);
+  dynx_fast = denorm_zap(dynx_fast); dynx_slow = denorm_zap(dynx_slow); dynx_gain = denorm_zap(dynx_gain); dynx_lim_gain = denorm_zap(dynx_lim_gain);
 
   clean_lp1_l = denorm_zap(clean_lp1_l); clean_lp2_l = denorm_zap(clean_lp2_l); clean_lp3_l = denorm_zap(clean_lp3_l); clean_lp4_l = denorm_zap(clean_lp4_l);
   clean_lp1_r = denorm_zap(clean_lp1_r); clean_lp2_r = denorm_zap(clean_lp2_r); clean_lp3_r = denorm_zap(clean_lp3_r); clean_lp4_r = denorm_zap(clean_lp4_r);
@@ -4307,6 +4395,7 @@ function denorm_flush_silent_tail_state()
   reset_push_buffers();
   reset_formant_buffers();
   reset_focus_peak_buffers();
+  reset_dynamics_expand_buffers();
   reset_processing_buffers();
   posteq_update_coeffs();
   fpk_update_coeffs();
@@ -4316,6 +4405,7 @@ function denorm_flush_silent_tail_state()
   focus_lp_l = 0; focus_lp_r = 0;
   transient_guard_s = 0;
   dyn_env = 0;
+  reset_dynamics_expand_buffers();
 );
 
 function reset_bank_state() local(i)
@@ -6237,6 +6327,17 @@ dyn_ceiling = 0.985;
 dyn_env = 0;
 dyn_comp_gain = 1;
 dyn_lim_gain = 1;
+dynamics_expand_amt = 0;
+dynx_fast = 0;
+dynx_slow = 0;
+dynx_gain = 1;
+dynx_lim_gain = 1;
+dynx_fast_att_coeff = 0.08;
+dynx_fast_rel_coeff = 0.006;
+dynx_slow_att_coeff = 0.002;
+dynx_slow_rel_coeff = 0.0004;
+dynx_gain_up_coeff = 0.035;
+dynx_gain_down_coeff = 0.010;
 release_handoff_samps = 256;
 attack_coef = 1;
 decay_coef = 1;
@@ -6411,6 +6512,7 @@ ui_last_click_t = -10;
 ui_dblclick_time = 0.32;
 pitch_alt_active = 0;
 focus_peak_alt_active = 0;
+dyn_expand_alt_active = 0;
 
 mix_fast = 0;
 mix_slow = 0;
@@ -6443,6 +6545,7 @@ file_var(0, formant_shift_semi);
 file_var(0, auto_release_amt);
 file_var(0, posteq_q_schema);
 file_var(0, focus_peak_amt);
+file_var(0, dynamics_expand_amt);
 
 @slider
 attack_samps = max(1, floor(slider2 * srate * 0.001));
@@ -6452,6 +6555,7 @@ release_samps = max(1, floor(slider5 * srate * 0.001));
 hold_samps = max(0, floor(slider20 * srate * 0.001));
 mono_source = (slider21 | 0) ? 1 : 0;
 dynamics_amt = clamp01(slider22);
+dynamics_expand_amt = clamp01(dynamics_expand_amt);
 clean_amt = clamp01(slider25);
 room_amt = clamp01(slider26);
 push_amt = clamp01(slider27 / 100);
@@ -6587,6 +6691,12 @@ dyn_gain_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.120 * srate)));
 dyn_lim_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.0015 * srate)));
 dyn_lim_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.070 * srate)));
 dyn_ceiling = 0.985 - 0.01 * dynamics_amt;
+dynx_fast_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.0025 * srate)));
+dynx_fast_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.060 * srate)));
+dynx_slow_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.110 * srate)));
+dynx_slow_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.620 * srate)));
+dynx_gain_up_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.0040 * srate)));
+dynx_gain_down_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.038 * srate)));
 
 clean_lp_c1 = clamp(1 - exp(-6.283185307179586 * 180 / max(srate, 1)), 0.0001, 0.60);
 clean_lp_c2 = clamp(1 - exp(-6.283185307179586 * 720 / max(srate, 1)), 0.0002, 0.72);
@@ -7979,6 +8089,17 @@ dynamics_amt > 0.0001 ? (
   dyn_lim_gain = denorm_zap(dyn_lim_gain + (1 - dyn_lim_gain) * dyn_lim_rel_coeff);
 );
 
+// Hidden Shift+Dynamics expansion runs after the normal density/guard stage so
+// it can restore contrast when desired. It is fully bypassed at zero.
+dynamics_expand_amt > 0.0001 ? (
+  apply_dynamics_expand();
+) : (
+  dynx_fast = denorm_zap(dynx_fast + (0 - dynx_fast) * dynx_fast_rel_coeff);
+  dynx_slow = denorm_zap(dynx_slow + (0 - dynx_slow) * dynx_slow_rel_coeff);
+  dynx_gain = denorm_zap(dynx_gain + (1 - dynx_gain) * dynx_gain_down_coeff);
+  dynx_lim_gain = denorm_zap(dynx_lim_gain + (1 - dynx_lim_gain) * dyn_lim_rel_coeff);
+);
+
 push_amt > 0.0001 ? apply_push();
 
 // v38: PostEQ spectrum is visual-only. Running two 96-band analyzers every
@@ -8746,16 +8867,35 @@ sprintf(#ui_buf, "%.0f%%", slider27); gfx_measurestr(#ui_buf, tw, th); gfx_x = k
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Push"); draw_center_buf(cell_x, label_y, cell_w);
 
-// Dynamics
+// Dynamics / hidden Expansion
+// Shift+drag or Shift+wheel this knob to adjust expansion/contrast without adding a visible control.
 grid_idx = 13;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
-nv = ui_knob(312, kc, ky, kb_r, slider22, 0, 1, 0, 0.018); abs(nv - slider22) > 0.0000001 ? (slider22 = nv; gfx_slider_mask |= MASK_S22;);
+dyn_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
+(mouse_pressed && dyn_hot) ? dyn_expand_alt_active = ui_shift ? 1 : 0;
+(!mouse_down && ui_active != 319) ? dyn_expand_alt_active = 0;
+dyn_expand_alt_use = dyn_expand_alt_active || (ui_shift && (dyn_hot || ui_active == 319));
+dyn_expand_alt_use ? (
+  nv = ui_knob(319, kc, ky, kb_r, dynamics_expand_amt, 0, 1, 0, 0.018);
+  abs(nv - dynamics_expand_amt) > 0.0000001 ? (
+    dynamics_expand_amt = clamp01(nv);
+    ui_value_changed = 1;
+  );
+  dyn_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    dynamics_expand_amt = clamp01(dynamics_expand_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
+    ui_wheel_used = 1;
+    ui_value_changed = 1;
+  );
+) : (
+  nv = ui_knob(312, kc, ky, kb_r, slider22, 0, 1, 0, 0.018); abs(nv - slider22) > 0.0000001 ? (slider22 = nv; gfx_slider_mask |= MASK_S22;);
+);
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.2f", slider22); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
+dyn_expand_alt_use ? sprintf(#ui_buf, "Ex%.2f", dynamics_expand_amt) : (dynamics_expand_amt > 0.04 ? sprintf(#ui_buf, "%.2f/Ex%.1f", slider22, dynamics_expand_amt) : sprintf(#ui_buf, "%.2f", slider22));
+gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-sprintf(#ui_buf, "Dynamics"); draw_center_buf(cell_x, label_y, cell_w);
+dyn_expand_alt_use ? sprintf(#ui_buf, "Expand") : (dynamics_expand_amt > 0.04 ? sprintf(#ui_buf, "Dyn/Expand") : sprintf(#ui_buf, "Dynamics")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Output
 grid_idx = 14;
@@ -9238,7 +9378,11 @@ ui_hover_id == 315 ? (
 );
 ui_hover_id == 312 ? (
   sprintf(#tip_title, "Dynamics");
-  sprintf(#tip_body, "%.2f density and guard.", slider22);
+  sprintf(#tip_body, "%.2f density and guard. Shift+drag for Expansion.", slider22);
+);
+ui_hover_id == 319 ? (
+  sprintf(#tip_title, "Expansion");
+  sprintf(#tip_body, "%.2f contrast/punch separator: lows recede, crests step forward.", dynamics_expand_amt);
 );
 ((ui_hover_id == 307) || (ui_hover_id == 317)) ? (
   (ui_shift || pitch_alt_active || ui_hover_id == 317) ? (
