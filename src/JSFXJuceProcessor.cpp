@@ -22,6 +22,7 @@
 #include <functional>
 #include <chrono>
 #include <type_traits>
+#include <optional>
 
 #if JUCE_WINDOWS
  // Keep Win32's min/max macros out of JUCE/std headers.
@@ -183,6 +184,25 @@ static std::map<DSPJSFX_State*, double*> gMemOwner;
 static std::map<DSPJSFX_State*, int64_t> gMemSize;
 static std::map<DSPJSFX_State*, int64_t> gMemUsed;
 static std::map<DSPJSFX_State*, JSFXJuceProcessor*> gFileOwner;
+static std::mutex gPersistentFileUiStateMutex;
+
+static bool copyTrackPropertyName (const juce::String& name, juce::String& out)
+{
+    if (name.isEmpty())
+        return false;
+
+    out = name;
+    return true;
+}
+
+static bool copyTrackPropertyName (const std::optional<juce::String>& name, juce::String& out)
+{
+    if (! name.has_value() || name->isEmpty())
+        return false;
+
+    out = *name;
+    return true;
+}
 
 // @gfx only needs a bounded shared-state view, not the entire DSP heap.
 //
@@ -2809,6 +2829,31 @@ public:
         st.midiOutCount = 0;
     }
 
+    void updateTrackProperties (const TrackProperties& properties) override
+    {
+        juce::String suppliedName;
+
+        // Some hosts send partial updates. Preserve the last known name when
+        // the current update does not include a usable host-supplied track name.
+        if (! copyTrackPropertyName (properties.name, suppliedName))
+            return;
+
+        jsfxRuntime.setHostTrackName (std::string (suppliedName.toRawUTF8()));
+        pendingExternalWakeEvent.store (true, std::memory_order_release);
+    }
+
+    juce::String getHostTrackName() const
+    {
+        const auto name = jsfxRuntime.hostTrackName();
+        return juce::String::fromUTF8 (name.c_str(), (int) name.size());
+    }
+
+    std::pair<juce::String, std::uint64_t> getHostTrackNameSnapshot() const
+    {
+        const auto snapshot = jsfxRuntime.hostTrackNameSnapshot();
+        return { juce::String::fromUTF8 (snapshot.first.c_str(), (int) snapshot.first.size()), snapshot.second };
+    }
+
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override
     {
         const auto busSizeOrZero = [] (const juce::AudioChannelSet& set) -> int
@@ -3772,7 +3817,10 @@ public:
             const auto resolvedCategory = sanitiseFavoriteCategory (requestedCategory);
 
             if (resolvedCategory.isNotEmpty())
+            {
                 changed = addFavoriteCategoryToList (favoriteCategories, resolvedCategory) || changed;
+                rememberFavoriteCategoryUpsertLocked (resolvedCategory);
+            }
 
             auto it = std::find_if (favoriteFileSelections.begin(), favoriteFileSelections.end(),
                                     [&normalised] (const FavoriteFileSelection& existing)
@@ -3799,6 +3847,9 @@ public:
                     it->category = resolvedCategory;
                     changed = true;
                 }
+
+                if (changed)
+                    rememberFavoriteUpsertLocked (*it);
             }
             else
             {
@@ -3809,6 +3860,7 @@ public:
                 favorite.selection = normalised;
                 favorite.addedUtcMs = juce::Time::getCurrentTime().toMilliseconds();
                 favoriteFileSelections.push_back (std::move (favorite));
+                rememberFavoriteUpsertLocked (favoriteFileSelections.back());
                 sortFavoritesNewestFirst (favoriteFileSelections);
                 changed = true;
             }
@@ -3838,7 +3890,10 @@ public:
                 const auto resolvedCategory = sanitiseFavoriteCategory (requestedCategory);
 
                 if (resolvedCategory.isNotEmpty())
+                {
                     changed = addFavoriteCategoryToList (favoriteCategories, resolvedCategory) || changed;
+                    rememberFavoriteCategoryUpsertLocked (resolvedCategory);
+                }
 
                 if (favorite.name != resolvedName)
                 {
@@ -3851,6 +3906,9 @@ public:
                     favorite.category = resolvedCategory;
                     changed = true;
                 }
+
+                if (changed)
+                    rememberFavoriteUpsertLocked (favorite);
 
                 break;
             }
@@ -3875,6 +3933,8 @@ public:
                                           });
             changed = (newEnd != favoriteFileSelections.end());
             favoriteFileSelections.erase (newEnd, favoriteFileSelections.end());
+            if (changed)
+                rememberFavoriteDeleteLocked (favoriteId);
         }
 
         if (changed)
@@ -3890,6 +3950,8 @@ public:
         {
             std::lock_guard<std::mutex> lk (filePathMutex);
             changed = addFavoriteCategoryToList (favoriteCategories, requestedCategory);
+            if (changed)
+                rememberFavoriteCategoryUpsertLocked (requestedCategory);
         }
 
         if (changed)
@@ -3955,6 +4017,9 @@ public:
             addFavoriteCategoryToList (remappedCategories, newCategory);
             sortFavoriteCategories (remappedCategories);
             favoriteCategories = std::move (remappedCategories);
+
+            if (changed)
+                rememberFavoriteCategoryRenameLocked (oldCategory, newCategory);
         }
 
         if (changed)
@@ -3991,6 +4056,9 @@ public:
                     changed = true;
                 }
             }
+
+            if (changed)
+                rememberFavoriteCategoryDeleteLocked (category);
         }
 
         if (changed)
@@ -6494,6 +6562,11 @@ private:
         recentFileSelections.clear();
         favoriteFileSelections.clear();
         favoriteCategories.clear();
+        pendingFavoriteUpserts.clear();
+        pendingFavoriteDeleteIds.clear();
+        pendingFavoriteCategoryUpserts.clear();
+        pendingFavoriteCategoryRenames.clear();
+        pendingFavoriteCategoryDeletePaths.clear();
     }
 
     void rememberFileSelectionLocked (const std::vector<juce::File>& files,
@@ -6530,31 +6603,429 @@ private:
         pushRecentSelectionToFront (recentFileSelections, selection);
     }
 
-    void savePersistentFileUiState() const
+    struct PersistentFileUiSnapshot
     {
         juce::String lastDir;
-        std::vector<RecentFileSelection> recentSelections;
-        std::vector<FavoriteFileSelection> favoriteSelections;
+        std::vector<RecentFileSelection> recent;
+        std::vector<FavoriteFileSelection> favorites;
         std::vector<juce::String> categories;
 
+        // Per-instance mutation intent since the last successful persistent save.
+        // The transaction applies these to the newest on-disk snapshot instead of
+        // serializing this instance's possibly stale favorites/categories vector.
+        std::vector<FavoriteFileSelection> favoriteUpserts;
+        std::vector<juce::String> favoriteDeleteIds;
+        std::vector<juce::String> categoryUpserts;
+        std::vector<std::pair<juce::String, juce::String>> categoryRenames;
+        std::vector<juce::String> categoryDeletePaths;
+    };
+
+    PersistentFileUiSnapshot capturePersistentFileUiSnapshot (bool includePendingMutations = true) const
+    {
+        std::lock_guard<std::mutex> lk (filePathMutex);
+
+        PersistentFileUiSnapshot snapshot;
+        snapshot.lastDir = lastFileDialogDirectory;
+        snapshot.recent = recentFileSelections;
+        snapshot.favorites = favoriteFileSelections;
+        snapshot.categories = favoriteCategories;
+
+        if (includePendingMutations)
         {
-            std::lock_guard<std::mutex> lk (filePathMutex);
-            lastDir = lastFileDialogDirectory;
-            recentSelections = recentFileSelections;
-            favoriteSelections = favoriteFileSelections;
-            categories = favoriteCategories;
-
-            for (const auto& favorite : favoriteSelections)
-                addFavoriteCategoryToList (categories, favorite.category);
-
-            sortFavoriteCategories (categories);
+            snapshot.favoriteUpserts = pendingFavoriteUpserts;
+            snapshot.favoriteDeleteIds = pendingFavoriteDeleteIds;
+            snapshot.categoryUpserts = pendingFavoriteCategoryUpserts;
+            snapshot.categoryRenames = pendingFavoriteCategoryRenames;
+            snapshot.categoryDeletePaths = pendingFavoriteCategoryDeletePaths;
         }
 
-        juce::ValueTree fileUi ("FILE_UI");
-        if (lastDir.isNotEmpty())
-            fileUi.setProperty ("lastDir", lastDir, nullptr);
+        return snapshot;
+    }
 
-        for (const auto& selection : recentSelections)
+    void applyPersistentFileUiSnapshot (const PersistentFileUiSnapshot& snapshot)
+    {
+        std::lock_guard<std::mutex> lk (filePathMutex);
+        lastFileDialogDirectory = snapshot.lastDir;
+        recentFileSelections = snapshot.recent;
+        favoriteFileSelections = snapshot.favorites;
+        favoriteCategories = snapshot.categories;
+    }
+
+    static bool favoriteUpsertEntriesEqual (const FavoriteFileSelection& a,
+                                            const FavoriteFileSelection& b)
+    {
+        return favoriteEntriesEqualIgnoreCase (a, b)
+            && stringEqualsIgnoreCase (a.name, b.name)
+            && stringEqualsIgnoreCase (a.category, b.category)
+            && a.addedUtcMs == b.addedUtcMs;
+    }
+
+    void clearAppliedPendingPersistentFileUiMutations (const PersistentFileUiSnapshot& applied)
+    {
+        std::lock_guard<std::mutex> lk (filePathMutex);
+
+        pendingFavoriteUpserts.erase (std::remove_if (pendingFavoriteUpserts.begin(), pendingFavoriteUpserts.end(), [&applied] (const FavoriteFileSelection& pending)
+        {
+            return std::any_of (applied.favoriteUpserts.begin(), applied.favoriteUpserts.end(), [&pending] (const FavoriteFileSelection& done)
+            {
+                return favoriteUpsertEntriesEqual (pending, done);
+            });
+        }), pendingFavoriteUpserts.end());
+
+        pendingFavoriteDeleteIds.erase (std::remove_if (pendingFavoriteDeleteIds.begin(), pendingFavoriteDeleteIds.end(), [&applied] (const juce::String& pending)
+        {
+            return std::any_of (applied.favoriteDeleteIds.begin(), applied.favoriteDeleteIds.end(), [&pending] (const juce::String& done)
+            {
+                return favoriteIdsEqualIgnoreCase (pending, done);
+            });
+        }), pendingFavoriteDeleteIds.end());
+
+        pendingFavoriteCategoryUpserts.erase (std::remove_if (pendingFavoriteCategoryUpserts.begin(), pendingFavoriteCategoryUpserts.end(), [&applied] (const juce::String& pending)
+        {
+            return std::any_of (applied.categoryUpserts.begin(), applied.categoryUpserts.end(), [&pending] (const juce::String& done)
+            {
+                return stringEqualsIgnoreCase (pending, done);
+            });
+        }), pendingFavoriteCategoryUpserts.end());
+
+        pendingFavoriteCategoryRenames.erase (std::remove_if (pendingFavoriteCategoryRenames.begin(), pendingFavoriteCategoryRenames.end(), [&applied] (const std::pair<juce::String, juce::String>& pending)
+        {
+            return std::any_of (applied.categoryRenames.begin(), applied.categoryRenames.end(), [&pending] (const std::pair<juce::String, juce::String>& done)
+            {
+                return stringEqualsIgnoreCase (pending.first, done.first)
+                    && stringEqualsIgnoreCase (pending.second, done.second);
+            });
+        }), pendingFavoriteCategoryRenames.end());
+
+        pendingFavoriteCategoryDeletePaths.erase (std::remove_if (pendingFavoriteCategoryDeletePaths.begin(), pendingFavoriteCategoryDeletePaths.end(), [&applied] (const juce::String& pending)
+        {
+            return std::any_of (applied.categoryDeletePaths.begin(), applied.categoryDeletePaths.end(), [&pending] (const juce::String& done)
+            {
+                return stringEqualsIgnoreCase (pending, done);
+            });
+        }), pendingFavoriteCategoryDeletePaths.end());
+    }
+
+    static void appendCaseInsensitiveUnique (std::vector<juce::String>& items, const juce::String& value)
+    {
+        const auto trimmed = value.trim();
+        if (trimmed.isEmpty())
+            return;
+
+        const auto exists = std::any_of (items.begin(), items.end(), [&trimmed] (const juce::String& existing)
+        {
+            return stringEqualsIgnoreCase (existing, trimmed);
+        });
+
+        if (! exists)
+            items.push_back (trimmed);
+    }
+
+    void rememberFavoriteCategoryUpsertLocked (const juce::String& requestedCategory)
+    {
+        const auto category = sanitiseFavoriteCategory (requestedCategory);
+        if (category.isEmpty())
+            return;
+
+        appendCaseInsensitiveUnique (pendingFavoriteCategoryUpserts, category);
+    }
+
+    void rememberFavoriteUpsertLocked (FavoriteFileSelection favorite)
+    {
+        normaliseSelectionPaths (favorite.selection);
+        if (favorite.selection.paths.empty())
+            return;
+
+        if (favorite.id.isEmpty())
+            favorite.id = juce::Uuid().toString();
+
+        if (favorite.name.trim().isEmpty())
+            favorite.name = sanitiseFavoriteName ({}, favorite.selection);
+
+        favorite.category = sanitiseFavoriteCategory (favorite.category);
+
+        if (favorite.addedUtcMs <= 0)
+            favorite.addedUtcMs = juce::Time::getCurrentTime().toMilliseconds();
+
+        if (favorite.category.isNotEmpty())
+            rememberFavoriteCategoryUpsertLocked (favorite.category);
+
+        pendingFavoriteDeleteIds.erase (std::remove_if (pendingFavoriteDeleteIds.begin(), pendingFavoriteDeleteIds.end(), [&favorite] (const juce::String& id)
+        {
+            return favoriteIdsEqualIgnoreCase (id, favorite.id);
+        }), pendingFavoriteDeleteIds.end());
+
+        auto it = std::find_if (pendingFavoriteUpserts.begin(), pendingFavoriteUpserts.end(), [&favorite] (const FavoriteFileSelection& existing)
+        {
+            return favoriteIdsEqualIgnoreCase (existing.id, favorite.id)
+                || selectionsEqualIgnoreCase (existing.selection, favorite.selection);
+        });
+
+        if (it == pendingFavoriteUpserts.end())
+            pendingFavoriteUpserts.push_back (std::move (favorite));
+        else
+            *it = std::move (favorite);
+    }
+
+    void rememberFavoriteDeleteLocked (const juce::String& favoriteId)
+    {
+        const auto id = favoriteId.trim();
+        if (id.isEmpty())
+            return;
+
+        appendCaseInsensitiveUnique (pendingFavoriteDeleteIds, id);
+
+        pendingFavoriteUpserts.erase (std::remove_if (pendingFavoriteUpserts.begin(), pendingFavoriteUpserts.end(), [&id] (const FavoriteFileSelection& favorite)
+        {
+            return favoriteIdsEqualIgnoreCase (favorite.id, id);
+        }), pendingFavoriteUpserts.end());
+    }
+
+    void rememberFavoriteCategoryRenameLocked (const juce::String& requestedOldCategory,
+                                               const juce::String& requestedNewCategory)
+    {
+        const auto oldCategory = sanitiseFavoriteCategory (requestedOldCategory);
+        const auto newCategory = sanitiseFavoriteCategory (requestedNewCategory);
+        if (oldCategory.isEmpty() || newCategory.isEmpty() || stringEqualsIgnoreCase (oldCategory, newCategory))
+            return;
+
+        pendingFavoriteCategoryDeletePaths.erase (std::remove_if (pendingFavoriteCategoryDeletePaths.begin(), pendingFavoriteCategoryDeletePaths.end(), [&oldCategory] (const juce::String& existing)
+        {
+            return stringEqualsIgnoreCase (existing, oldCategory);
+        }), pendingFavoriteCategoryDeletePaths.end());
+
+        pendingFavoriteCategoryRenames.push_back ({ oldCategory, newCategory });
+        rememberFavoriteCategoryUpsertLocked (newCategory);
+    }
+
+    void rememberFavoriteCategoryDeleteLocked (const juce::String& requestedCategory)
+    {
+        const auto category = sanitiseFavoriteCategory (requestedCategory);
+        if (category.isEmpty())
+            return;
+
+        appendCaseInsensitiveUnique (pendingFavoriteCategoryDeletePaths, category);
+
+        pendingFavoriteCategoryUpserts.erase (std::remove_if (pendingFavoriteCategoryUpserts.begin(), pendingFavoriteCategoryUpserts.end(), [&category] (const juce::String& existing)
+        {
+            return favoriteCategoryMatchesOrIsChild (existing, category);
+        }), pendingFavoriteCategoryUpserts.end());
+    }
+
+    static bool writeTextFileTransactionally (const juce::File& target, const juce::String& text)
+    {
+        const auto dir = target.getParentDirectory();
+        if (dir.createDirectory().failed())
+            return false;
+
+        const auto temp = dir.getNonexistentChildFile (target.getFileNameWithoutExtension() + "." + juce::Uuid().toString(),
+                                                       target.getFileExtension() + ".tmp",
+                                                       false);
+
+        if (! temp.replaceWithText (text, false, false, "\n"))
+        {
+            temp.deleteFile();
+            return false;
+        }
+
+        const bool replaced = target.existsAsFile() ? temp.replaceFileIn (target)
+                                                    : temp.moveFileTo (target);
+        if (! replaced)
+        {
+            temp.deleteFile();
+            return false;
+        }
+
+        return true;
+    }
+
+    static void normalisePersistentSnapshotForSave (PersistentFileUiSnapshot& snapshot)
+    {
+        std::vector<RecentFileSelection> recent;
+        recent.reserve (snapshot.recent.size());
+
+        for (auto selection : snapshot.recent)
+        {
+            normaliseSelectionPaths (selection);
+            if (selection.paths.empty())
+                continue;
+
+            const bool alreadySeen = std::any_of (recent.begin(), recent.end(), [&selection] (const RecentFileSelection& existing)
+            {
+                return selectionsEqualIgnoreCase (existing, selection);
+            });
+
+            if (alreadySeen)
+                continue;
+
+            recent.push_back (std::move (selection));
+            if ((int) recent.size() >= kMaxRecentFiles)
+                break;
+        }
+
+        snapshot.recent = std::move (recent);
+
+        std::vector<FavoriteFileSelection> favorites;
+        favorites.reserve (snapshot.favorites.size());
+
+        for (auto favorite : snapshot.favorites)
+        {
+            normaliseSelectionPaths (favorite.selection);
+            if (favorite.selection.paths.empty())
+                continue;
+
+            if (favorite.id.isEmpty())
+                favorite.id = juce::Uuid().toString();
+
+            favorite.name = sanitiseFavoriteName (favorite.name, favorite.selection);
+            favorite.category = sanitiseFavoriteCategory (favorite.category);
+
+            if (favorite.addedUtcMs <= 0)
+                favorite.addedUtcMs = juce::Time::getCurrentTime().toMilliseconds();
+
+            auto it = std::find_if (favorites.begin(), favorites.end(), [&favorite] (const FavoriteFileSelection& existing)
+            {
+                return favoriteEntriesEqualIgnoreCase (existing, favorite);
+            });
+
+            if (it == favorites.end())
+                favorites.push_back (std::move (favorite));
+            else
+                *it = std::move (favorite);
+        }
+
+        snapshot.favorites = std::move (favorites);
+
+        std::vector<juce::String> categories;
+        categories.reserve (snapshot.categories.size() + snapshot.favorites.size());
+
+        for (const auto& category : snapshot.categories)
+            addFavoriteCategoryToList (categories, category);
+
+        for (const auto& favorite : snapshot.favorites)
+            addFavoriteCategoryToList (categories, favorite.category);
+
+        sortFavoritesNewestFirst (snapshot.favorites);
+        sortFavoriteCategories (categories);
+        snapshot.categories = std::move (categories);
+    }
+
+    PersistentFileUiSnapshot snapshotFromPersistentFileUiTree (const juce::ValueTree& fileUi) const
+    {
+        PersistentFileUiSnapshot snapshot;
+        if (! fileUi.isValid())
+            return snapshot;
+
+        snapshot.lastDir = fileUi.getProperty ("lastDir").toString();
+        snapshot.recent.reserve ((size_t) juce::jmax (0, fileUi.getNumChildren()));
+        snapshot.favorites.reserve ((size_t) juce::jmax (0, fileUi.getNumChildren()));
+        snapshot.categories.reserve ((size_t) juce::jmax (0, fileUi.getNumChildren()));
+
+        for (int i = 0; i < fileUi.getNumChildren(); ++i)
+        {
+            const auto child = fileUi.getChild (i);
+
+            if (child.hasType ("RECENT"))
+            {
+                if ((int) snapshot.recent.size() >= kMaxRecentFiles)
+                    continue;
+
+                auto selection = getSelectionFromValueTree (child);
+                if (selection.paths.empty())
+                    continue;
+
+                const bool alreadySeen = std::any_of (snapshot.recent.begin(), snapshot.recent.end(), [&selection] (const RecentFileSelection& existing)
+                {
+                    return selectionsEqualIgnoreCase (existing, selection);
+                });
+
+                if (! alreadySeen)
+                    snapshot.recent.push_back (std::move (selection));
+            }
+            else if (child.hasType ("FAVORITE"))
+            {
+                auto favorite = getFavoriteFromValueTree (child);
+                if (favorite.selection.paths.empty())
+                    continue;
+
+                addFavoriteCategoryToList (snapshot.categories, favorite.category);
+
+                const bool alreadySeen = std::any_of (snapshot.favorites.begin(), snapshot.favorites.end(), [&favorite] (const FavoriteFileSelection& existing)
+                {
+                    return favoriteEntriesEqualIgnoreCase (existing, favorite);
+                });
+
+                if (! alreadySeen)
+                    snapshot.favorites.push_back (std::move (favorite));
+            }
+            else if (child.hasType ("CATEGORY"))
+            {
+                addFavoriteCategoryToList (snapshot.categories, child.getProperty ("name").toString());
+            }
+        }
+
+        if (snapshot.lastDir.isEmpty())
+        {
+            for (const auto& selection : snapshot.recent)
+            {
+                if (selection.paths.empty())
+                    continue;
+
+                const auto dir = juce::File (selection.paths.front()).getParentDirectory();
+                if (dir.isDirectory())
+                {
+                    snapshot.lastDir = dir.getFullPathName();
+                    break;
+                }
+            }
+
+            if (snapshot.lastDir.isEmpty())
+            {
+                for (const auto& favorite : snapshot.favorites)
+                {
+                    if (favorite.selection.paths.empty())
+                        continue;
+
+                    const auto dir = juce::File (favorite.selection.paths.front()).getParentDirectory();
+                    if (dir.isDirectory())
+                    {
+                        snapshot.lastDir = dir.getFullPathName();
+                        break;
+                    }
+                }
+            }
+        }
+
+        normalisePersistentSnapshotForSave (snapshot);
+        return snapshot;
+    }
+
+    PersistentFileUiSnapshot readPersistentFileUiSnapshotFromDiskOnly() const
+    {
+        const auto stateFile = getPersistentFileUiStateFile();
+        if (! stateFile.existsAsFile())
+            return {};
+
+        std::unique_ptr<juce::XmlElement> xml (juce::parseXML (stateFile));
+        if (xml == nullptr)
+            return {};
+
+        const auto tree = juce::ValueTree::fromXml (*xml);
+        if (! tree.isValid())
+            return {};
+
+        return snapshotFromPersistentFileUiTree (tree);
+    }
+
+    static juce::ValueTree makePersistentFileUiValueTree (PersistentFileUiSnapshot snapshot)
+    {
+        normalisePersistentSnapshotForSave (snapshot);
+
+        juce::ValueTree fileUi ("FILE_UI");
+        if (snapshot.lastDir.isNotEmpty())
+            fileUi.setProperty ("lastDir", snapshot.lastDir, nullptr);
+
+        for (const auto& selection : snapshot.recent)
         {
             if (selection.paths.empty())
                 continue;
@@ -6564,7 +7035,7 @@ private:
             fileUi.addChild (recent, -1, nullptr);
         }
 
-        for (const auto& category : categories)
+        for (const auto& category : snapshot.categories)
         {
             const auto name = sanitiseFavoriteCategory (category);
             if (name.isEmpty())
@@ -6575,7 +7046,7 @@ private:
             fileUi.addChild (categoryTree, -1, nullptr);
         }
 
-        for (const auto& favorite : favoriteSelections)
+        for (const auto& favorite : snapshot.favorites)
         {
             if (favorite.selection.paths.empty())
                 continue;
@@ -6585,20 +7056,159 @@ private:
             fileUi.addChild (favoriteTree, -1, nullptr);
         }
 
+        return fileUi;
+    }
+
+    void mergeFavoriteIntoSnapshot (PersistentFileUiSnapshot& target, FavoriteFileSelection incoming) const
+    {
+        normaliseSelectionPaths (incoming.selection);
+        if (incoming.selection.paths.empty())
+            return;
+
+        if (incoming.id.isEmpty())
+            incoming.id = juce::Uuid().toString();
+
+        incoming.name = sanitiseFavoriteName (incoming.name, incoming.selection);
+        incoming.category = sanitiseFavoriteCategory (incoming.category);
+
+        if (incoming.addedUtcMs <= 0)
+            incoming.addedUtcMs = juce::Time::getCurrentTime().toMilliseconds();
+
+        auto it = std::find_if (target.favorites.begin(), target.favorites.end(), [&incoming] (const FavoriteFileSelection& existing)
+        {
+            return favoriteIdsEqualIgnoreCase (existing.id, incoming.id);
+        });
+
+        if (it == target.favorites.end())
+        {
+            it = std::find_if (target.favorites.begin(), target.favorites.end(), [&incoming] (const FavoriteFileSelection& existing)
+            {
+                return selectionsEqualIgnoreCase (existing.selection, incoming.selection);
+            });
+        }
+
+        if (it == target.favorites.end())
+            target.favorites.push_back (std::move (incoming));
+        else
+            *it = std::move (incoming);
+    }
+
+    PersistentFileUiSnapshot mergePersistentFileUiSnapshots (PersistentFileUiSnapshot disk,
+                                                             PersistentFileUiSnapshot local) const
+    {
+        normalisePersistentSnapshotForSave (disk);
+        normalisePersistentSnapshotForSave (local);
+
+        if (local.lastDir.isNotEmpty())
+            disk.lastDir = local.lastDir;
+
+        if (! local.recent.empty())
+        {
+            for (auto it = local.recent.rbegin(); it != local.recent.rend(); ++it)
+                pushRecentSelectionToFront (disk.recent, *it);
+        }
+
+        for (const auto& rename : local.categoryRenames)
+        {
+            std::vector<juce::String> remappedCategories;
+            remappedCategories.reserve (disk.categories.size() + 1);
+
+            for (const auto& category : disk.categories)
+                addFavoriteCategoryToList (remappedCategories, remapFavoriteCategoryPath (category, rename.first, rename.second));
+
+            for (auto& favorite : disk.favorites)
+            {
+                favorite.category = remapFavoriteCategoryPath (favorite.category, rename.first, rename.second);
+                addFavoriteCategoryToList (remappedCategories, favorite.category);
+            }
+
+            addFavoriteCategoryToList (remappedCategories, rename.second);
+            sortFavoriteCategories (remappedCategories);
+            disk.categories = std::move (remappedCategories);
+        }
+
+        for (const auto& category : local.categoryDeletePaths)
+        {
+            disk.categories.erase (std::remove_if (disk.categories.begin(), disk.categories.end(), [&category] (const juce::String& existing)
+            {
+                return favoriteCategoryMatchesOrIsChild (existing, category);
+            }), disk.categories.end());
+
+            for (auto& favorite : disk.favorites)
+                if (favoriteCategoryMatchesOrIsChild (favorite.category, category))
+                    favorite.category.clear();
+        }
+
+        for (const auto& id : local.favoriteDeleteIds)
+        {
+            disk.favorites.erase (std::remove_if (disk.favorites.begin(), disk.favorites.end(), [&id] (const FavoriteFileSelection& favorite)
+            {
+                return favoriteIdsEqualIgnoreCase (favorite.id, id);
+            }), disk.favorites.end());
+        }
+
+        for (const auto& category : local.categoryUpserts)
+            addFavoriteCategoryToList (disk.categories, category);
+
+        for (const auto& favorite : local.favoriteUpserts)
+            mergeFavoriteIntoSnapshot (disk, favorite);
+
+        // First-run/project-load fallback: when there is no persisted favorite
+        // state yet and this instance has an in-memory favorite list, seed disk
+        // with that list without ever replacing a non-empty disk snapshot.
+        if (disk.favorites.empty() && local.favoriteUpserts.empty())
+        {
+            for (const auto& favorite : local.favorites)
+                mergeFavoriteIntoSnapshot (disk, favorite);
+        }
+
+        if (disk.categories.empty() && local.categoryUpserts.empty())
+        {
+            for (const auto& category : local.categories)
+                addFavoriteCategoryToList (disk.categories, category);
+        }
+
+        normalisePersistentSnapshotForSave (disk);
+        return disk;
+    }
+
+    bool writePersistentFileUiStateSnapshotUnlocked (const PersistentFileUiSnapshot& snapshot) const
+    {
+        const auto stateFile = getPersistentFileUiStateFile();
+        const auto fileUi = makePersistentFileUiValueTree (snapshot);
         std::unique_ptr<juce::XmlElement> xml (fileUi.createXml());
         if (xml == nullptr)
-            return;
+            return false;
 
-        const auto stateFile = getPersistentFileUiStateFile();
-        stateFile.getParentDirectory().createDirectory();
+        return writeTextFileTransactionally (stateFile, xml->toString());
+    }
+
+    void savePersistentFileUiState()
+    {
+        const auto local = capturePersistentFileUiSnapshot (true);
+
+        std::lock_guard<std::mutex> sameProcessGuard (gPersistentFileUiStateMutex);
 
         juce::InterProcessLock fileLock (getPersistentFileUiStateLockName());
-        if (! fileLock.enter (1500))
+        if (! fileLock.enter (10000))
+        {
+            DBG ("Could not acquire persistent FILE_UI lock; skipping save to avoid clobbering favorites.");
             return;
+        }
 
-        const auto ok = stateFile.replaceWithText (xml->toString(), false, false, "\n");
-        juce::ignoreUnused (ok);
-        fileLock.exit();
+        struct ScopedFileUiLockExit
+        {
+            juce::InterProcessLock& lock;
+            ~ScopedFileUiLockExit() { lock.exit(); }
+        } releaseLock { fileLock };
+
+        const auto merged = mergePersistentFileUiSnapshots (readPersistentFileUiSnapshotFromDiskOnly(), local);
+
+        if (writePersistentFileUiStateSnapshotUnlocked (merged))
+        {
+            applyPersistentFileUiSnapshot (merged);
+            clearAppliedPendingPersistentFileUiMutations (local);
+        }
     }
 
     void restoreFileUiState (const juce::ValueTree& fileUi,
@@ -6665,6 +7275,9 @@ private:
 
         sortFavoritesNewestFirst (restoredFavorites);
         sortFavoriteCategories (restoredCategories);
+
+        const auto persistentRestoreFavoriteUpserts = restoredFavorites;
+        const auto persistentRestoreCategoryUpserts = restoredCategories;
 
         if (restoredLastDir.isEmpty())
         {
@@ -6795,7 +7408,19 @@ private:
         }
 
         if (saveAsPersistent)
+        {
+            {
+                std::lock_guard<std::mutex> lk (filePathMutex);
+
+                for (const auto& category : persistentRestoreCategoryUpserts)
+                    rememberFavoriteCategoryUpsertLocked (category);
+
+                for (const auto& favorite : persistentRestoreFavoriteUpserts)
+                    rememberFavoriteUpsertLocked (favorite);
+            }
+
             savePersistentFileUiState();
+        }
     }
 
     void loadPersistentFileUiState()
@@ -8139,6 +8764,11 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     std::vector<RecentFileSelection> recentFileSelections;
     std::vector<FavoriteFileSelection> favoriteFileSelections;
     std::vector<juce::String> favoriteCategories;
+    std::vector<FavoriteFileSelection> pendingFavoriteUpserts;
+    std::vector<juce::String> pendingFavoriteDeleteIds;
+    std::vector<juce::String> pendingFavoriteCategoryUpserts;
+    std::vector<std::pair<juce::String, juce::String>> pendingFavoriteCategoryRenames;
+    std::vector<juce::String> pendingFavoriteCategoryDeletePaths;
 
     std::mutex fileLoadMutex;
     std::condition_variable fileLoadCv;
@@ -12946,6 +13576,8 @@ private:
 
         std::array<jsfx_gfx::MemSpanView, kMaxGfxMemSpans> snapMemSpans {};
 
+        const auto hostTrackNameSnapshot = processor.getHostTrackNameSnapshot();
+
         jsfx_gfx::Interpreter::Snapshot s;
         s.sliders = effectiveSliders.data();
         s.slidersCount = 64;
@@ -12954,6 +13586,8 @@ private:
         s.logicalMemN = snap->logicalMemN;
         s.srate = snap->srate;
         s.samplesblock = snap->samplesblock;
+        s.hostTrackName = hostTrackNameSnapshot.first;
+        s.hostTrackNameSeq = hostTrackNameSnapshot.second;
         s.memSpans = nullptr;
         s.memSpanCount = 0;
         s.mem = nullptr;

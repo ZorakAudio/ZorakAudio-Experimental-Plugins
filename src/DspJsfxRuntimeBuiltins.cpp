@@ -99,6 +99,39 @@ extern "C" int jsfx_instance_get_name(DSPJSFX_State* st, double* outStr)
     return 0;
 }
 
+extern "C" int jsfx_track_name(DSPJSFX_State* st, double* outStr)
+{
+    if (outStr == nullptr)
+        return 0;
+
+    if (auto* rt = runtimeFor(st); rt != nullptr)
+    {
+        const auto name = rt->hostTrackName();
+        if (name.empty())
+            return 0;
+
+        return jsfx_string_assign_utf8(st, outStr, name.c_str(), static_cast<int> (name.size()));
+    }
+
+    return 0;
+}
+
+extern "C" double jsfx_track_name_available(DSPJSFX_State* st)
+{
+    if (auto* rt = runtimeFor(st); rt != nullptr)
+        return rt->hasHostTrackName() ? 1.0 : 0.0;
+
+    return 0.0;
+}
+
+extern "C" double jsfx_track_name_seq(DSPJSFX_State* st)
+{
+    if (auto* rt = runtimeFor(st); rt != nullptr)
+        return static_cast<double> (rt->hostTrackNameSequence());
+
+    return 0.0;
+}
+
 extern "C" int jsfx_comm_join(DSPJSFX_State* st, double domainHandle)
 {
     if (auto* rt = runtimeFor(st); rt != nullptr)

@@ -8,6 +8,7 @@
 #include <limits>
 #include <random>
 #include <unordered_set>
+#include <utility>
 
 #if JUCE_WINDOWS || defined(_WIN32)
  #ifndef NOMINMAX
@@ -258,6 +259,39 @@ bool DspJsfxRuntime::setNameHandle(std::int64_t handle)
     nameHandle_ = handle;
     DspJsfxMessageBus::instance().updateNameHandle(instanceId_, nameHandle_);
     return true;
+}
+
+void DspJsfxRuntime::setHostTrackName(std::string name)
+{
+    std::lock_guard<std::mutex> lock(hostInfoMutex_);
+    if (hostTrackName_ != name)
+    {
+        hostTrackName_ = std::move(name);
+        hostTrackNameSequence_.fetch_add(1u, std::memory_order_acq_rel);
+    }
+}
+
+std::string DspJsfxRuntime::hostTrackName() const
+{
+    std::lock_guard<std::mutex> lock(hostInfoMutex_);
+    return hostTrackName_;
+}
+
+std::pair<std::string, std::uint64_t> DspJsfxRuntime::hostTrackNameSnapshot() const
+{
+    std::lock_guard<std::mutex> lock(hostInfoMutex_);
+    return { hostTrackName_, hostTrackNameSequence_.load(std::memory_order_acquire) };
+}
+
+bool DspJsfxRuntime::hasHostTrackName() const
+{
+    std::lock_guard<std::mutex> lock(hostInfoMutex_);
+    return ! hostTrackName_.empty();
+}
+
+std::uint64_t DspJsfxRuntime::hostTrackNameSequence() const noexcept
+{
+    return hostTrackNameSequence_.load(std::memory_order_acquire);
 }
 
 bool DspJsfxRuntime::subscribe(std::uint64_t channelHash)

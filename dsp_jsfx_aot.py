@@ -1369,6 +1369,14 @@ COMM_BLOCK_FUNCTIONS: Set[str] = {
     "msg_peer_count", "msg_peer_id", "msg_peer_name", "msg_peer_uid", "msg_peer_caps", "msg_peer_alive",
 }
 COMM_MISC_FUNCTIONS: Set[str] = {"instance_id", "instance_uid", "instance_get_name"}
+HOST_TRACK_FUNCTIONS: Set[str] = {
+    "track_name",
+    "track_name_available",
+    "track_name_seq",
+    "host_track_name",
+    "host_track_name_available",
+    "host_track_name_seq",
+}
 
 SAMPLE_POOL_SETUP_FUNCTIONS: Set[str] = {
     "sample_pool_from_slot", "sample_pool_set_mode", "sample_pool_set_budget_mb", "sample_pool_commit",
@@ -1388,7 +1396,7 @@ LEGACY_FILE_FUNCTIONS: Set[str] = {
     "file_open", "file_open_multi", "file_close", "file_rewind", "file_seek", "file_avail",
     "file_text", "file_riff", "file_var", "file_mem", "file_multi_count", "file_multi_select",
 }
-COMM_IMPURE_FUNCTIONS: Set[str] = COMM_SETUP_FUNCTIONS | COMM_BLOCK_FUNCTIONS | COMM_MISC_FUNCTIONS | GMEM_SETUP_FUNCTIONS | GMEM_BULK_FUNCTIONS | GMEM_QUERY_FUNCTIONS | SAMPLE_POOL_SETUP_FUNCTIONS | SAMPLE_POOL_EXPORT_FUNCTIONS
+COMM_IMPURE_FUNCTIONS: Set[str] = COMM_SETUP_FUNCTIONS | COMM_BLOCK_FUNCTIONS | COMM_MISC_FUNCTIONS | HOST_TRACK_FUNCTIONS | GMEM_SETUP_FUNCTIONS | GMEM_BULK_FUNCTIONS | GMEM_QUERY_FUNCTIONS | SAMPLE_POOL_SETUP_FUNCTIONS | SAMPLE_POOL_EXPORT_FUNCTIONS
 COMM_SEND_FUNCTIONS: Set[str] = {"msg_send", "msg_sendto", "msg_send_buf", "msg_sendto_buf"}
 COMM_RECV_FUNCTIONS: Set[str] = {"msg_recv", "msg_recv_buf"}
 COMM_DISCOVERY_FUNCTIONS: Set[str] = {"msg_peer_count", "msg_peer_id", "msg_peer_name", "msg_peer_uid", "msg_peer_caps", "msg_peer_alive"}
@@ -1424,7 +1432,7 @@ def detect_comm_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, Functi
             rec(n.target); rec(n.value); return
         if isinstance(n, Call):
             fn = n.fn
-            if fn in COMM_SEND_FUNCTIONS or fn in COMM_RECV_FUNCTIONS or fn in COMM_DISCOVERY_FUNCTIONS or fn in {"msg_subscribe", "msg_unsubscribe", "msg_advertise", "msg_avail", "msg_kind", "msg_length", "msg_dropped", "msg_clear", "instance_id", "instance_uid", "instance_get_name", "instance_set_name", "comm_join"}:
+            if fn in COMM_SEND_FUNCTIONS or fn in COMM_RECV_FUNCTIONS or fn in COMM_DISCOVERY_FUNCTIONS or fn in {"msg_subscribe", "msg_unsubscribe", "msg_advertise", "msg_avail", "msg_kind", "msg_length", "msg_dropped", "msg_clear", "instance_id", "instance_uid", "instance_get_name", "instance_set_name", "comm_join"} or fn in HOST_TRACK_FUNCTIONS:
                 uses_msg = True
             if fn in {"msg_send_buf", "msg_sendto_buf", "msg_recv_buf"}:
                 uses_msg_buffers = True
@@ -1545,7 +1553,7 @@ def validate_builtin_sections(programs: Dict[str, List[Node]]) -> None:
     # Bus/string-slider setup calls are intentionally valid from @slider so a
     # per-instance text slider can rebind message/gmem endpoints without forcing
     # users to reopen the plugin. Operational message traffic remains @block-only.
-    init_slider_block_setup = {"comm_join", "msg_subscribe", "msg_unsubscribe", "msg_advertise", "instance_set_name", "instance_get_name", "instance_uid", "gmem_attach", "gmem_attach_size"} | SAMPLE_POOL_SETUP_FUNCTIONS
+    init_slider_block_setup = {"comm_join", "msg_subscribe", "msg_unsubscribe", "msg_advertise", "instance_set_name", "instance_get_name", "instance_uid", "gmem_attach", "gmem_attach_size"} | HOST_TRACK_FUNCTIONS | SAMPLE_POOL_SETUP_FUNCTIONS
     init_slider_block = {"instance_id"}
     sample_pool_runtime = SAMPLE_POOL_QUERY_FUNCTIONS | SAMPLE_POOL_READ_FUNCTIONS
 
@@ -2555,7 +2563,7 @@ def _summarize_loop_mutations(node: Node, user_fn_names: Set[str]) -> _LoopMutat
                 out.writes_unknown_state = True
                 return
 
-            if fn in ("instance_uid", "instance_get_name") and len(n.args) >= 1:
+            if fn in ("instance_uid", "instance_get_name", "track_name", "host_track_name") and len(n.args) >= 1:
                 _note_mutated_lvalue(n.args[0], out)
                 out.writes_unknown_state = True
                 return
@@ -2985,7 +2993,7 @@ def _collect_section_rw(node: Node, user_fn_names: Set[str], out: _SectionRWInfo
             out.writes_mem = True
             out.writes_unknown_state = True
             return
-        if fn in ("instance_uid", "instance_get_name"):
+        if fn in ("instance_uid", "instance_get_name", "track_name", "host_track_name"):
             for a in node.args[:1]:
                 _collect_section_lvalue_rw(a, user_fn_names, out)
             out.writes_unknown_state = True
@@ -3452,6 +3460,21 @@ class LLVMModuleEmitter:
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer()]),
             name="jsfx_instance_get_name"
+        )
+        self.fn_track_name = ir.Function(
+            self.module,
+            ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer()]),
+            name="jsfx_track_name"
+        )
+        self.fn_track_name_available = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr]),
+            name="jsfx_track_name_available"
+        )
+        self.fn_track_name_seq = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr]),
+            name="jsfx_track_name_seq"
         )
         self.fn_comm_join = ir.Function(
             self.module,
@@ -4505,6 +4528,23 @@ class LLVMModuleEmitter:
                 out_str = self._get_out_lvalue_ptr(builder, st, n.args[0], "instance_get_name")
                 ret = builder.call(self.fn_instance_get_name, [st, out_str])
                 return self._to_f64(builder, ret)
+
+            if fn in ("track_name", "host_track_name"):
+                if len(n.args) != 1:
+                    raise ValueError("track_name expects 1 arg")
+                out_str = self._get_out_lvalue_ptr(builder, st, n.args[0], "track_name")
+                ret = builder.call(self.fn_track_name, [st, out_str])
+                return self._to_f64(builder, ret)
+
+            if fn in ("track_name_available", "host_track_name_available"):
+                if len(n.args) != 0:
+                    raise ValueError("track_name_available expects 0 args")
+                return builder.call(self.fn_track_name_available, [st])
+
+            if fn in ("track_name_seq", "host_track_name_seq"):
+                if len(n.args) != 0:
+                    raise ValueError("track_name_seq expects 0 args")
+                return builder.call(self.fn_track_name_seq, [st])
 
             if fn == "comm_join":
                 if len(n.args) != 1:
@@ -6082,6 +6122,9 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("int jsfx_instance_uid(DSPJSFX_State* st, double* outStr);")
     lines.append("int jsfx_instance_set_name(DSPJSFX_State* st, double strHandle);")
     lines.append("int jsfx_instance_get_name(DSPJSFX_State* st, double* outStr);")
+    lines.append("int jsfx_track_name(DSPJSFX_State* st, double* outStr);")
+    lines.append("double jsfx_track_name_available(DSPJSFX_State* st);")
+    lines.append("double jsfx_track_name_seq(DSPJSFX_State* st);")
     lines.append("int jsfx_comm_join(DSPJSFX_State* st, double domainHandle);")
     lines.append("int jsfx_gmem_attach(DSPJSFX_State* st, double nameHandle);")
     lines.append("int jsfx_gmem_attach_size(DSPJSFX_State* st, double nameHandle, double cells);")

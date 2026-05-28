@@ -709,6 +709,12 @@ public:
     if (samplesblock_var) *samplesblock_var = (EEL_F)samplesblock;
   }
 
+  void setHostTrackName(const juce::String& name, std::uint64_t sequence)
+  {
+    hostTrackName = name;
+    hostTrackNameSequence = sequence;
+  }
+
   // -------------------------------------------------------------------
   // Output commands
   // -------------------------------------------------------------------
@@ -989,6 +995,16 @@ public:
     NSEEL_addfunc_varparm_ex("sliderchange",   1, 0, NSEEL_PProc_THIS, &eel_sliderchange,   nullptr);
     NSEEL_addfunc_varparm_ex("slider_automate",1, 0, NSEEL_PProc_THIS, &eel_slider_automate,nullptr);
     NSEEL_addfunc_varparm_ex("slider_show",    1, 0, NSEEL_PProc_THIS, &eel_slider_show,    nullptr);
+
+    // DSP-JSFX host track metadata helpers. These mirror the AOT/DSP API and
+    // are intentionally registered in the real @gfx VM rather than the inert
+    // comm-compat table so UI code can query the current host track name.
+    NSEEL_addfunc_varparm_ex("track_name",                 1, 0, NSEEL_PProc_THIS, &eel_track_name,                 nullptr);
+    NSEEL_addfunc_varparm_ex("host_track_name",            1, 0, NSEEL_PProc_THIS, &eel_track_name,                 nullptr);
+    NSEEL_addfunc_varparm_ex("track_name_available",       0, 0, NSEEL_PProc_THIS, &eel_track_name_available,       nullptr);
+    NSEEL_addfunc_varparm_ex("host_track_name_available",  0, 0, NSEEL_PProc_THIS, &eel_track_name_available,       nullptr);
+    NSEEL_addfunc_varparm_ex("track_name_seq",             0, 0, NSEEL_PProc_THIS, &eel_track_name_seq,             nullptr);
+    NSEEL_addfunc_varparm_ex("host_track_name_seq",        0, 0, NSEEL_PProc_THIS, &eel_track_name_seq,             nullptr);
 
     // JSFX dynamic access helpers (REAPER dialect)
     // Many scripts use slider(i) / slider(i)=v and spl(i) / spl(i)=v.
@@ -1654,6 +1670,54 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     return (EEL_F)code;
   }
 
+  static bool writeUtf8ToStringArgument(void* opaque, EEL_F* slot, const juce::String& text)
+  {
+    auto* self = (GfxVm*) opaque;
+    if (!self || slot == nullptr || !self->m_string_context)
+      return false;
+
+    EEL_STRING_MUTEXLOCK_SCOPE
+    EEL_STRING_STORAGECLASS* wr = nullptr;
+    EEL_STRING_GET_FOR_WRITE(*slot, &wr);
+    if (!wr)
+      return false;
+
+    const juce::String limited = text.substring(0, 1024);
+    const char* utf8 = limited.toRawUTF8();
+    wr->SetRaw(utf8, (int) std::strlen(utf8));
+    return true;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_track_name(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*) opaque;
+    if (!self || np < 1 || parms == nullptr || parms[0] == nullptr)
+      return 0.0;
+
+    if (self->hostTrackName.isEmpty())
+      return 0.0;
+
+    return writeUtf8ToStringArgument(opaque, parms[0], self->hostTrackName) ? 1.0 : 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_track_name_available(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void) np;
+    (void) parms;
+
+    auto* self = (GfxVm*) opaque;
+    return (self != nullptr && self->hostTrackName.isNotEmpty()) ? 1.0 : 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_track_name_seq(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    (void) np;
+    (void) parms;
+
+    auto* self = (GfxVm*) opaque;
+    return self != nullptr ? (EEL_F) (double) self->hostTrackNameSequence : 0.0;
+  }
+
   static EEL_F NSEEL_CGEN_CALL eel_sliderchange(void* opaque, INT_PTR np, EEL_F** parms)
   {
     auto* self = (GfxVm*)opaque;
@@ -1945,6 +2009,9 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   EEL_F* srate_var = nullptr;
   EEL_F* samplesblock_var = nullptr;
 
+  juce::String hostTrackName;
+  std::uint64_t hostTrackNameSequence = 0;
+
   // Current JSFX mem[] size (in doubles) synced into the EEL VM RAM.
   int memSize = 0;
 
@@ -1994,6 +2061,9 @@ public:
 
     double srate = 0.0;
     double samplesblock = 0.0;
+
+    juce::String hostTrackName;
+    std::uint64_t hostTrackNameSeq = 0;
   };
 
   Interpreter(const char* jsfxSourceText)
@@ -2128,6 +2198,8 @@ public:
   void renderFrame(int width, int height, const Snapshot& snap)
   {
     if (!hasGfxSection() || !gfxCompiledOk()) return;
+
+    vm->setHostTrackName(snap.hostTrackName, snap.hostTrackNameSeq);
 
     // One-time init, with current snapshot state applied first.
     if (!initRan && code_init)

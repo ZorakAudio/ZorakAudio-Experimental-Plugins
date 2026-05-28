@@ -1,7 +1,7 @@
-desc:Hyperreal 3D Panner V6.19.0 (Centerline / Rear Stability)
+desc:Hyperreal 3D Panner V6.21.0 (Larger Default GFX)
 
 // #HELP: Headphone-focused 3D panner using softened perceptual placement, microdelay, head shadow, pinna cues, distance loss, occlusion, and room cues.
-// #HELP: Drag the orange source in the stage canvas. X = Lateral, Y = Front/Rear. Mouse wheel changes Distance.
+// #HELP: Drag the orange source in the stage canvas. Default canvas drag uses the POV range limiter for fast near-center placement. Mouse wheel changes Distance.
 // #HELP: Spatial Throw controls how strongly the placement asserts itself without changing output gain.
 // #HELP: Solid orange = visual object position. Ghost orange = effective cue position after Throw / Cue Curve compression.
 // #HELP: Cyan wall markers are EARLY BOUNCES: first reflection hits used for out-of-head placement.
@@ -11,7 +11,7 @@ desc:Hyperreal 3D Panner V6.19.0 (Centerline / Rear Stability)
 // #HELP: Manager Link is opt-in. New instances start in Standalone mode and only follow a Manager after switching Mode to Manager.
 // #HELP: V6.13.0 overhauls long-distance psychoacoustics: extended manager distances stay far/clear instead of just becoming reverby.
 // #HELP: V6.14.0 adds Elevation: a non-HRTF height-feel macro for lifted/grounded perception, not exact vertical localization.
-// #HELP: V6.15.0 adds Manager third-person camera support: orbit radius/angle with parallax-aware distance and optional look-at pivot. V6.16 adds middle-drag Elevation. V6.17 fixes LookAt orbit yaw. V6.18 adds Source Modes for mono emitters, stereo emitters, ambience beds, and dual emitters. V6.19 stabilizes centerline/rear motion by smoothing cue vectors instead of raw wrapped angles.
+// #HELP: V6.15.0 adds Manager third-person camera support: orbit radius/angle with parallax-aware distance and optional look-at pivot. V6.16 adds middle-drag Elevation. V6.17 fixes LookAt orbit yaw. V6.18 adds Source Modes for mono emitters, stereo emitters, ambience beds, and dual emitters. V6.19 stabilizes centerline/rear motion. V6.20 adds a UI-only POV canvas range limiter and canvas wheel remaps. V6.21 increases the default GFX window size for a more readable first-load UI. V6.22 makes POV canvas drag visually follow the mouse while projecting the actual sound target into the POV cone.
 // #HELP: V6.2.2 stabilizes Occlusion by applying blocked-source coloration after localization, preventing opposite-ear flicker.
 // #TOOLTIP: UI-only perceptual object panner. Main controls stay standalone-clean; Manager mode is explicit and opt-in.
 
@@ -82,6 +82,8 @@ slider22:0<0,3,1{Mono,Stereo,Bed,Dual}>-Source Mode
 slider23:0.75<0,1,0.001>-Input Width Preserve
 // #TOOLTIP: Ambience Bed only. Lower = broad stable bed; higher = more world-locked bed biased by object/camera placement.
 slider24:0.45<0,1,0.001>-Bed Anchor
+// #TOOLTIP: UI-only canvas drag limiter. Default +-10 deg makes POV placement quick; Quick Controls and snap chips still allow full-range placement.
+slider25:10<0,90,0.1>-POV Canvas Range (deg)
 
 // V6.15.0 Manager model:
 //   Sliders 6/8 store the object's fixed world placement.
@@ -97,6 +99,7 @@ slider24:0.45<0,1,0.001>-Bed Anchor
 //   Elevation                 = non-HRTF lifted/grounded height feel.
 //   Source Mode               = mono point emitter vs stereo/ambience preservation.
 //   Cue Curve                 = how much mid-angle positions are softened.
+//   POV Canvas Range          = UI-only drag cone for fast near-center placement.
 
 @init
 za_idle_mode = 4;
@@ -1187,7 +1190,7 @@ slider_show(1,1); slider_show(2,1); slider_show(3,0); slider_show(4,1); slider_s
 slider_show(6,0); slider_show(7,0); slider_show(8,0); slider_show(9,0); slider_show(10,0);
 slider_show(11,0); slider_show(12,0); slider_show(13,0); slider_show(14,0); slider_show(15,0);
 slider_show(16,0); slider_show(17,0); slider_show(18,0); slider_show(19,0); slider_show(20,0); slider_show(21,0);
-slider_show(22,0); slider_show(23,0); slider_show(24,0);
+slider_show(22,0); slider_show(23,0); slider_show(24,0); slider_show(25,0);
 
 
 @slider
@@ -1480,7 +1483,7 @@ cue_side *= 0.50 + 0.50*throw_dsp;
 cue_side > 0.999 ? cue_side = 0.999;
 cue_side < -0.999 ? cue_side = -0.999;
 // Dead-zone numerical side around the center axis.  Without this, rear-center
-// can randomly choose a left/right “near ear” because +180 and -180 are the
+// can randomly choose a left/right "near ear" because +180 and -180 are the
 // same place geometrically but different signs numerically.
 abs(cue_side) < 0.00001 ? cue_side = 0;
 cue_front_abs = sqrt(1 - cue_side*cue_side);
@@ -2237,7 +2240,7 @@ meter_direct += (max(abs(dir_l), abs(dir_r)) - meter_direct) * meter_k;
 meter_er     += (max(abs(er_l),  abs(er_r))  - meter_er)     * meter_k;
 
 
-@gfx 820 500
+@gfx 1180 720
 // V6.5 perceptual-position UI: standalone-clean main surface plus opt-in Manager Link side drawer.
 
 winflags = gfx_getchar(65536);
@@ -2252,7 +2255,7 @@ noop = 0;
 base_w = 820; base_h = 500;
 ui_s = min(gfx_w/base_w, gfx_h/base_h);
 ui_s < 0.56 ? ui_s = 0.56;
-ui_s > 1.45 ? ui_s = 1.45;
+ui_s > 1.65 ? ui_s = 1.65;
 
 pad = 16*ui_s;
 pad < 10 ? pad = 10;
@@ -2329,6 +2332,7 @@ ui_source_mode < 0 ? ui_source_mode = 0;
 ui_source_mode > 3 ? ui_source_mode = 3;
 ui_src_width = slider23;
 ui_bed_anchor = slider24;
+ui_pov_deg = slider25;
 ui_link = slider4 >= 0.5 ? 1 : 0;
 ui_obj_id = floor(slider3 + 0.5);
 ui_mgr_amt = slider5;
@@ -2478,6 +2482,20 @@ source_btn_w = 96*ui_s;
 source_btn_h = 22*ui_s;
 hover_source_btn = mouse_x >= source_btn_x && mouse_x <= source_btn_x+source_btn_w && mouse_y >= source_btn_y && mouse_y <= source_btn_y+source_btn_h;
 
+// UI-only POV canvas drag limiter.  This does not change DSP mapping or any
+// existing automation lanes; it only changes how the canvas translates mouse
+// X into Lateral for fast near-center POV placement.
+pov_x = canvas_x + canvas_w - 160*ui_s;
+pov_y = canvas_y + 14*ui_s;
+pov_w = 138*ui_s;
+pov_h = 24*ui_s;
+pov_bar_x = pov_x + 52*ui_s;
+pov_bar_y = pov_y + 14*ui_s;
+pov_bar_w = pov_w - 64*ui_s;
+pov_bar_h = 6*ui_s;
+pov_bar_w < 44*ui_s ? pov_bar_w = 44*ui_s;
+hover_pov = mouse_x >= pov_x && mouse_x <= pov_x+pov_w && mouse_y >= pov_y && mouse_y <= pov_y+pov_h;
+
 // Optional Manager Link side drawer. Closed by default so the panner stays clean
 // for standalone use. Hitboxes are inactive unless the drawer is open.
 drawer_w = 282*ui_s;
@@ -2608,6 +2626,7 @@ tip_hot ? (
   hover_adv > 0 ? tip_id = 200 + hover_adv;
   hover_safe ? tip_id = 30;
   hover_source_btn ? tip_id = 112;
+  hover_pov ? tip_id = 32;
   hover_chip > 0 ? tip_id = 40 + hover_chip;
 
   // Recompute visible-cue hit zones from the current object/canvas geometry.
@@ -2749,6 +2768,12 @@ mouse_wheel != 0 ? (
 
   ui_text_active > 0 ? (
     noop = 0;
+  ) : hover_pov ? (
+    pov_step = mouse_shift ? 0.25 : 1.0;
+    slider25 += wstep * pov_step;
+    slider25 < 0 ? slider25 = 0;
+    slider25 > 90 ? slider25 = 90;
+    sliderchange(-1.0);
   ) : hover_adv == 1 ? (
     slider17 += wstep * 0.035 * wheel_scale;
     slider17 < 1 ? slider17 = 1; slider17 > 3 ? slider17 = 3;
@@ -2815,13 +2840,16 @@ mouse_wheel != 0 ? (
     sliderchange(-1.0);
   ) : inside_canvas ? (
     mouse_ctrl ? (
-      slider9 += wstep * 0.035 * wheel_scale;
-      slider9 < 0 ? slider9 = 0; slider9 > 1 ? slider9 = 1;
+      slider13 += wstep * 0.035;
+      slider13 < 0 ? slider13 = 0; slider13 > 1 ? slider13 = 1;
+    ) : mouse_shift ? (
+      slider21 += wstep * 0.045;
+      slider21 < -1 ? slider21 = -1; slider21 > 1 ? slider21 = 1;
     ) : mouse_alt ? (
-      slider11 += wstep * 0.035 * wheel_scale;
+      slider11 += wstep * 0.035;
       slider11 < 0 ? slider11 = 0; slider11 > 1 ? slider11 = 1;
     ) : (
-      slider7 += wstep * 0.035 * wheel_scale;
+      slider7 += wstep * 0.035;
       slider7 < 0 ? slider7 = 0; slider7 > 1 ? slider7 = 1;
     );
     sliderchange(-1.0);
@@ -2831,7 +2859,10 @@ mouse_wheel != 0 ? (
 
 // --- press actions ---
 (!ui_prev_r && mouse_r) ? (
-  inside_canvas ? (
+  hover_pov ? (
+    slider25 = 10;
+    sliderchange(-1.0);
+  ) : inside_canvas ? (
     slider6 = 0;
     slider7 = 0.25;
     slider8 = 0.82;
@@ -2953,6 +2984,10 @@ mouse_wheel != 0 ? (
     slider22 += 1;
     slider22 > 3 ? slider22 = 0;
     sliderchange(-1.0);
+  ) : hover_pov ? (
+    ui_mode = 400;
+    ui_drag_start_x = mouse_x;
+    ui_drag_start_v1 = slider25;
   ) : hover_adv > 0 ? (
     ui_mode = 200 + hover_adv;
     ui_drag_start_x = mouse_x;
@@ -3012,18 +3047,38 @@ mouse_wheel != 0 ? (
     slider8 = ui_drag_start_v2 - (mouse_y - ui_drag_start_y) * 0.00135 / ui_s;
     slider6 < -1 ? slider6 = -1; slider6 > 1 ? slider6 = 1;
     slider8 < -1 ? slider8 = -1; slider8 > 1 ? slider8 = 1;
+    slider25 < 89.5 ? (
+      pov_rad = slider25 * $pi / 180;
+      pov_max_lat = abs(slider8) * sin(pov_rad) / (abs(cos(pov_rad)) + 0.000000000000000001);
+      abs(slider6) > pov_max_lat ? (slider6 = slider6 >= 0 ? pov_max_lat : -pov_max_lat;);
+    );
     rr = sqrt(slider6*slider6 + slider8*slider8);
     rr > 1 ? (slider6 /= rr; slider8 /= rr;);
   ) : (
-    dxn = (mouse_x - cx) / (room_hw*0.82);
-    dyn = (cy - mouse_y) / (room_hd*0.82);
-    rr = sqrt(dxn*dxn + dyn*dyn);
-    rr > 1 ? (
-      dxn /= rr;
-      dyn /= rr;
+    slider25 < 89.5 ? (
+      xnorm = (mouse_x - cx) / (room_hw*0.82);
+      xnorm < -1 ? xnorm = -1;
+      xnorm > 1 ? xnorm = 1;
+      dyn = (cy - mouse_y) / (room_hd*0.82);
+      dyn < -1 ? dyn = -1;
+      dyn > 1 ? dyn = 1;
+      pov_rad = xnorm * slider25 * $pi / 180;
+      dxn = abs(dyn) * sin(pov_rad) / (abs(cos(pov_rad)) + 0.000000000000000001);
+      rr = sqrt(dxn*dxn + dyn*dyn);
+      rr > 1 ? (dxn /= rr; dyn /= rr;);
+      slider6 = dxn;
+      slider8 = dyn;
+    ) : (
+      dxn = (mouse_x - cx) / (room_hw*0.82);
+      dyn = (cy - mouse_y) / (room_hd*0.82);
+      rr = sqrt(dxn*dxn + dyn*dyn);
+      rr > 1 ? (
+        dxn /= rr;
+        dyn /= rr;
+      );
+      slider6 = dxn;
+      slider8 = dyn;
     );
-    slider6 = dxn;
-    slider8 = dyn;
   );
   sliderchange(-1.0);
 );
@@ -3090,6 +3145,20 @@ mouse_wheel != 0 ? (
   sliderchange(-1.0);
 );
 
+(mouse_l && ui_mode == 400) ? (
+  mouse_shift ? (
+    slider25 = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) * 0.12 / ui_s;
+  ) : (
+    pov_n = (mouse_x - pov_bar_x) / pov_bar_w;
+    pov_n < 0 ? pov_n = 0;
+    pov_n > 1 ? pov_n = 1;
+    slider25 = pov_n * 90;
+  );
+  slider25 < 0 ? slider25 = 0;
+  slider25 > 90 ? slider25 = 90;
+  sliderchange(-1.0);
+);
+
 // finalize drag
 (!mouse_l && ui_prev_l && ui_mode != 300) ? (
   ui_mode = 0;
@@ -3134,6 +3203,7 @@ ui_source_mode < 0 ? ui_source_mode = 0;
 ui_source_mode > 3 ? ui_source_mode = 3;
 ui_src_width = slider23;
 ui_bed_anchor = slider24;
+ui_pov_deg = slider25;
 ui_link = slider4 >= 0.5 ? 1 : 0;
 ui_obj_id = floor(slider3 + 0.5);
 ui_mgr_amt = slider5;
@@ -3151,6 +3221,29 @@ pos_r > 1 ? (
 );
 sx = cx + draw_lat * room_hw * 0.82;
 sy = cy - draw_fb  * room_hd * 0.82;
+
+// V6.22 visual-only POV drag projection:
+// During normal POV-limited canvas drag, the orange drag handle follows the
+// mouse/raw stage position, while the actual sliders still receive the projected
+// POV-cone target. This changes only the GFX affordance, not automation or DSP
+// coordinate law.
+src_draw_x = sx;
+src_draw_y = sy;
+drag_pov_project = (mouse_l && ui_mode == 1 && !mouse_alt && !mouse_ctrl && !mouse_shift && slider25 < 89.5) ? 1 : 0;
+drag_pov_project ? (
+  raw_dxn = (mouse_x - cx) / (room_hw*0.82);
+  raw_dyn = (cy - mouse_y) / (room_hd*0.82);
+  raw_dxn < -1 ? raw_dxn = -1; raw_dxn > 1 ? raw_dxn = 1;
+  raw_dyn < -1 ? raw_dyn = -1; raw_dyn > 1 ? raw_dyn = 1;
+  raw_rr = sqrt(raw_dxn*raw_dxn + raw_dyn*raw_dyn);
+  raw_rr > 1 ? (
+    raw_dxn /= raw_rr;
+    raw_dyn /= raw_rr;
+  );
+  src_draw_x = cx + raw_dxn * room_hw * 0.82;
+  src_draw_y = cy - raw_dyn * room_hd * 0.82;
+);
+
 cue_rad = last_cue_az * $pi/180;
 ghost_x = sin(cue_rad) * draw_r;
 ghost_y = cos(cue_rad) * draw_r;
@@ -3205,7 +3298,7 @@ fs1 < 12 ? fs1 = 12; fs2 < 10 ? fs2 = 10; fs3 < 9 ? fs3 = 9; fs4 < 8 ? fs4 = 8;
 // title
 gfx_setfont(1,"Arial",fs1,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.19.0");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.22.0");
 
 gfx_setfont(2,"Arial",fs2);
 gfx_set(mut_r,mut_g,mut_b,1);
@@ -3323,6 +3416,19 @@ gfx_line(cx, cy, sx, sy);
 gfx_set(src_cr,src_cg,src_cb,0.22 + 0.12*ui_throw);
 gfx_line(cx, cy, gsx, gsy);
 
+// While dragging with the POV visual limiter, show that the mouse-following
+// handle is being projected to the actual sound target. The target uses the
+// same orange family as the source; the bridge line is blue so it reads as UI
+// projection instead of audio path.
+drag_pov_project ? (
+  gfx_set(0.36,0.62,1.0,0.38);
+  gfx_line(src_draw_x, src_draw_y, sx, sy);
+  gfx_set(0.36,0.62,1.0,0.62);
+  gfx_circle(sx, sy, dot_r + 6*ui_s, 0, 1);
+  gfx_set(src_cr,src_cg,src_cb,0.78);
+  gfx_circle(sx, sy, 3.2*ui_s, 1, 1);
+);
+
 // --- visual cue: Room = cyan early-bounce paths and wall-hit markers ---
 bounce_a = 0.04 + 0.72*ui_room;
 gfx_set(bounce_r,bounce_g,bounce_b,bounce_a);
@@ -3390,17 +3496,17 @@ head_r = 17*ui_s;
 elev_abs_ui = abs(ui_elev);
 (elev_abs_ui > 0.002) ? (
   elev_stem = (12 + 46*elev_abs_ui)*ui_s;
-  elev_tip_y = ui_elev >= 0 ? sy - elev_stem : sy + elev_stem;
+  elev_tip_y = ui_elev >= 0 ? src_draw_y - elev_stem : src_draw_y + elev_stem;
   // Upward = airy cyan/violet lift; downward = grounded violet shadow. This is visualized as height feel, not literal HRTF altitude.
   ui_elev >= 0 ? gfx_set(0.55,0.76,1.0,0.16 + 0.30*elev_abs_ui) : gfx_set(0.72,0.45,0.95,0.16 + 0.30*elev_abs_ui);
-  gfx_line(sx, sy, sx, elev_tip_y);
-  gfx_circle(sx, elev_tip_y, (4 + 10*elev_abs_ui)*ui_s, 0, 1);
+  gfx_line(src_draw_x, src_draw_y, src_draw_x, elev_tip_y);
+  gfx_circle(src_draw_x, elev_tip_y, (4 + 10*elev_abs_ui)*ui_s, 0, 1);
   ui_elev < 0 ? (
     gfx_set(0.50,0.30,0.72,0.10 + 0.22*elev_abs_ui);
-    gfx_circle(sx, sy + elev_stem*0.72, (10 + 24*elev_abs_ui)*ui_s, 0, 1);
+    gfx_circle(src_draw_x, src_draw_y + elev_stem*0.72, (10 + 24*elev_abs_ui)*ui_s, 0, 1);
   ) : (
     gfx_set(0.58,0.80,1.0,0.08 + 0.18*elev_abs_ui);
-    gfx_circle(sx, sy - elev_stem*0.72, (8 + 22*elev_abs_ui)*ui_s, 0, 1);
+    gfx_circle(src_draw_x, src_draw_y - elev_stem*0.72, (8 + 22*elev_abs_ui)*ui_s, 0, 1);
   );
 );
 
@@ -3421,15 +3527,15 @@ gfx_circle(gsx, gsy, ghost_r + 3*ui_s, 0, 1);
     trail_t = trail_i / (trail_n - 1);
     trail_a = trail_phase - trail_t*(1.45 + 2.20*ui_motion)*$pi;
     trail_rr = trail_amp * (0.35 + 0.65*trail_t);
-    tx = sx + cos(trail_a) * trail_rr;
-    ty = sy + sin(trail_a) * trail_rr * 0.58;
+    tx = src_draw_x + cos(trail_a) * trail_rr;
+    ty = src_draw_y + sin(trail_a) * trail_rr * 0.58;
     ta = (0.06 + 0.30*ui_motion) * (1 - trail_t);
     gfx_set(ok_r,ok_g,ok_b,ta);
     gfx_circle(tx, ty, (1.2 + 2.4*ui_motion)*ui_s, 1, 1);
     trail_i += 1;
   );
   gfx_set(ok_r,ok_g,ok_b,0.08 + 0.18*ui_motion);
-  gfx_circle(sx, sy, trail_amp, 0, 1);
+  gfx_circle(src_draw_x, src_draw_y, trail_amp, 0, 1);
 );
 
 // --- visual cue: Size = orange source extent / diffusion ---
@@ -3437,9 +3543,9 @@ size_pow = ui_size^0.72;
 halo_r = dot_r + (8 + 46*size_pow)*ui_s;
 halo_a = 0.05 + 0.24*ui_size;
 gfx_set(src_cr,src_cg,src_cb,halo_a);
-gfx_circle(sx, sy, halo_r, 0, 1);
+gfx_circle(src_draw_x, src_draw_y, halo_r, 0, 1);
 gfx_set(src_cr,src_cg,src_cb,0.04 + 0.14*ui_size);
-gfx_circle(sx, sy, halo_r*0.58, 0, 1);
+gfx_circle(src_draw_x, src_draw_y, halo_r*0.58, 0, 1);
 
 (ui_size > 0.12) ? (
   cloud_n = floor(4 + 14*ui_size);
@@ -3448,8 +3554,8 @@ gfx_circle(sx, sy, halo_r*0.58, 0, 1);
     cloud_t = cloud_i / (cloud_n + 0.000001);
     ca = cloud_t*2*$pi + 0.55;
     cr = halo_r * (0.24 + 0.58*(cloud_i + 1)/(cloud_n + 1));
-    px = sx + cos(ca)*cr;
-    py = sy + sin(ca)*cr*0.68;
+    px = src_draw_x + cos(ca)*cr;
+    py = src_draw_y + sin(ca)*cr*0.68;
     pa = (0.06 + 0.20*ui_size) * (0.55 + 0.45*(cloud_n - cloud_i)/(cloud_n + 1));
     gfx_set(src_cr,src_cg,src_cb,pa);
     gfx_circle(px, py, (1.2 + 2.5*ui_size)*ui_s, 1, 1);
@@ -3461,17 +3567,17 @@ gfx_circle(sx, sy, halo_r*0.58, 0, 1);
 focus_a_ui = 0.62 * (1 - ui_size);
 (focus_a_ui > 0.02) ? (
   gfx_set(1,1,1,focus_a_ui);
-  gfx_line(sx-13*ui_s, sy, sx+13*ui_s, sy);
-  gfx_line(sx, sy-13*ui_s, sx, sy+13*ui_s);
+  gfx_line(src_draw_x-13*ui_s, src_draw_y, src_draw_x+13*ui_s, src_draw_y);
+  gfx_line(src_draw_x, src_draw_y-13*ui_s, src_draw_x, src_draw_y+13*ui_s);
 );
 
 // main source orb: size changes mildly; distance only dims the edge, avoiding size/distance confusion
 core_a = 1 - 0.16*ui_dist_vis;
 gfx_set(src_cr,src_cg,src_cb,core_a);
-gfx_circle(sx, sy, dot_r, 1, 1);
+gfx_circle(src_draw_x, src_draw_y, dot_r, 1, 1);
 gfx_set(1,0.88,0.55,0.35 + 0.20*(1-ui_dist_vis));
-gfx_circle(sx, sy, dot_r + 1.8*ui_s, 0, 1);
-gfx_set(0.12,0.12,0.13,1); gfx_circle(sx, sy, 2.6*ui_s, 1, 1);
+gfx_circle(src_draw_x, src_draw_y, dot_r + 1.8*ui_s, 0, 1);
+gfx_set(0.12,0.12,0.13,1); gfx_circle(src_draw_x, src_draw_y, 2.6*ui_s, 1, 1);
 
 // listener
 gfx_set(0.60,0.66,0.76,1);
@@ -3490,6 +3596,24 @@ gfx_set(0.78,0.82,0.92,0.82);
 gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s + (fs4 + 4*ui_s)*2; gfx_printf("rings = Distance | shell = Push Out");
 gfx_set(ok_r,ok_g,ok_b,0.82);
 gfx_x = canvas_x + 14*ui_s; gfx_y = canvas_y + 12*ui_s + (fs4 + 4*ui_s)*3; gfx_printf("green trail = Motion | stem = Elevation");
+
+// UI-only POV canvas range control. This is a drag affordance only; it does not
+// touch the actual DSP coordinate law or existing automation mappings.
+pov_n = ui_pov_deg / 90;
+pov_n < 0 ? pov_n = 0; pov_n > 1 ? pov_n = 1;
+gfx_set(0.11,0.14,0.19, hover_pov ? 0.96 : 0.82);
+gfx_rect(pov_x,pov_y,pov_w,pov_h); gfx_roundrect(pov_x,pov_y,pov_w,pov_h,8*ui_s,1);
+gfx_set(0.25,0.55,0.95, hover_pov ? 0.95 : 0.62);
+gfx_roundrect(pov_x,pov_y,pov_w,pov_h,8*ui_s,0);
+gfx_setfont(4,"Arial",fs4,'b');
+gfx_set(0.86,0.92,1.0,1);
+gfx_x = pov_x + 7*ui_s; gfx_y = pov_y + 5*ui_s; gfx_printf("POV");
+gfx_set(0.20,0.23,0.29,1); gfx_rect(pov_bar_x,pov_bar_y,pov_bar_w,pov_bar_h); gfx_roundrect(pov_bar_x,pov_bar_y,pov_bar_w,pov_bar_h,4*ui_s,1);
+gfx_set(0.36,0.62,1.0,1); gfx_rect(pov_bar_x,pov_bar_y,pov_bar_w*pov_n,pov_bar_h);
+gfx_set(1,1,1, hover_pov ? 0.95 : 0.72); gfx_circle(pov_bar_x + pov_bar_w*pov_n, pov_bar_y+pov_bar_h*0.5, 3.2*ui_s,1,1);
+gfx_setfont(4,"Arial",fs4);
+gfx_set(0.74,0.82,0.94,1);
+gfx_x = pov_x + pov_w - 47*ui_s; gfx_y = pov_y + 5*ui_s; gfx_printf("+/-%2.0f", ui_pov_deg);
 
 // chips
 gfx_setfont(4,"Arial",fs4,'b');
@@ -3734,7 +3858,7 @@ gfx_set(mut_r,mut_g,mut_b,1); gfx_x = adv_valx; gfx_y = adv5y - 2*ui_s; gfx_prin
 gfx_setfont(4,"Arial",fs4);
 gfx_set(mut_r,mut_g,mut_b,1);
 gfx_x = pad; gfx_y = gfx_h - foot_h + 7*ui_s;
-gfx_printf("V6.18.0: Source Modes preserve stereo beds; Mono Emitter remains default for point sources.");
+gfx_printf("V6.22.0: POV drag handle follows the mouse; projected sound target stays inside the POV cone. Wheel = Distance, Ctrl = Occlusion, Shift = Elevation, Alt = Push Out.");
 
 // --- Manager Link side tab + drawer overlay ---
 // Tab is the only visible Manager affordance in standalone mode.
@@ -3903,6 +4027,7 @@ ui_drawer_open ? (
   tip_id == 109 || tip_id == 29 ? gfx_set(occ_cr,occ_cg,occ_cb,0.96) :
   tip_id == 110 || tip_id == 28 ? gfx_set(ok_r,ok_g,ok_b,0.96) :
   tip_id == 107 || tip_id == 31 ? gfx_set(0.55,0.76,1.0,0.96) :
+  tip_id == 32 ? gfx_set(0.36,0.62,1.0,0.96) :
   tip_id == 103 || tip_id == 27 ? gfx_set(0.78,0.82,0.92,0.96) :
   tip_id == 106 || tip_id == 23 ? gfx_set(0.95,0.66,0.24,0.96) :
   gfx_set(src_cr,src_cg,src_cb,0.96);
@@ -3928,6 +4053,7 @@ ui_drawer_open ? (
   tip_id == 28 ? gfx_printf("Motion Trail") :
   tip_id == 29 ? gfx_printf("Occlusion Wedge") :
   tip_id == 31 ? gfx_printf("Elevation Stem") :
+  tip_id == 32 ? gfx_printf("POV Canvas Range") :
   tip_id == 30 ? gfx_printf("Automation Safe") :
   tip_id >= 41 && tip_id <= 48 ? gfx_printf("Snap Placement") :
   tip_id == 101 ? gfx_printf("Lateral") :
@@ -3968,13 +4094,13 @@ ui_drawer_open ? (
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Push Out helps leave the head.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Not distance, not gain.");
   ) : tip_id == 24 ? (
-    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("X = Lateral, Y = Front/Rear.");
-    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Wheel = Distance.");
-    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Middle-drag = Elevation.");
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("POV drag handle follows mouse.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Wheel Distance | Ctrl Occlusion.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Shift Elevation | Alt Push Out.");
   ) : tip_id == 25 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Drag source/room to place object.");
-    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Middle-drag = Elevation feel.");
-    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Ctrl-wheel Throw, Alt-wheel Push Out.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Wheel Distance | Ctrl Occlusion.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Shift Elevation | Alt Push Out.");
   ) : tip_id == 26 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Size means source extent/diffusion.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("It grows the orange halo/cloud.");
@@ -3995,6 +4121,10 @@ ui_drawer_open ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Elevation is non-HRTF height feel.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("It suggests lifted/grounded perception.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Not exact overhead/below localization.");
+  ) : tip_id == 32 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("UI-only POV projection: %+.1f deg", slider25);
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Handle follows mouse; sound target is projected.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Quick Controls/snap chips still use full range.");
   ) : tip_id == 30 ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Caps aggressive cue motion.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Use for fast drawn automation.");

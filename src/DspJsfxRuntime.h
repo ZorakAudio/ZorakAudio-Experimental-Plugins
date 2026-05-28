@@ -11,6 +11,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace za::jsfx
@@ -40,6 +41,12 @@ public:
     std::uint64_t instanceId() const noexcept { return instanceId_; }
     const std::string& instanceUid() const noexcept { return uid_; }
     std::int64_t instanceNameHandle() const noexcept { return nameHandle_; }
+
+    void setHostTrackName(std::string name);
+    std::string hostTrackName() const;
+    std::pair<std::string, std::uint64_t> hostTrackNameSnapshot() const;
+    bool hasHostTrackName() const;
+    std::uint64_t hostTrackNameSequence() const noexcept;
 
     bool joinDomain(std::uint64_t domainHash);
     std::uint64_t domainHash() const noexcept { return domainHash_; }
@@ -91,6 +98,9 @@ private:
     std::uint64_t instanceId_ = 0;
     std::string uid_;
     std::int64_t nameHandle_ = 0;
+    mutable std::mutex hostInfoMutex_;
+    std::string hostTrackName_;
+    std::atomic<std::uint64_t> hostTrackNameSequence_ { 0 };
     std::uint64_t domainHash_ = 0x9ae16a3b2f90404full;
 
     std::unordered_set<std::uint64_t> subscriptions_;
