@@ -1,10 +1,10 @@
-desc:3DPannerManager V1.12.0 (Orbit Control Fix)
+desc:3DPannerManager V1.14.0 (SceneVerb Metadata, default-off)
 
 // #HELP: Manager-named camera controller for linked 3DPanner instances.
 // #HELP: Manager publishes its Name; panners choose that Manager Name and all routing IDs stay hidden.
 // #HELP: V1.8.3 keeps the working Manager-Name link and drives the panner's psychoacoustic extended-distance model.
 // #HELP: V1.9.0 adds global Elevation: non-HRTF lifted/grounded height feel for linked panners, not exact vertical localization.
-// #HELP: V1.12.0 fixes orbit interaction: canvas radius uses a slower perceptual curve and LookAt orbit keeps Camera Rotation locked.
+// #HELP: V1.12.0 fixes orbit interaction: canvas radius uses a slower perceptual curve and LookAt orbit keeps Camera Rotation locked. V1.14 publishes default-off SceneVerb Lite metadata for opted-in panners.
 // #HELP: Camera Rotation rotates POV yaw. Third Person moves the camera around a scene pivot, then panners recompute angle and distance from that camera.
 // #HELP: The linked-ID list is scrollable with the mouse wheel or the Linked List Scroll slider.
 // #TOOLTIP: UI-only manager. All visible controls live in GFX; hidden sliders remain the saved/automation backend.
@@ -46,6 +46,18 @@ slider13:0<-180,180,0.1>-Orbit Angle (deg)
 slider14:0<0,100,0.1>-Orbit Radius (m)
 // #TOOLTIP: When on, the orbit camera turns to face the scene pivot. When off, Camera Rotation remains a manual yaw.
 slider15:1<0,1,1{Manual,YawToPivot}>-Look At Pivot
+// #TOOLTIP: Master enable for Manager-published SceneVerb values. Panners still require local SceneVerb Lite opt-in.
+slider16:0<0,1,1{Off,On}>-SceneVerb Enable
+// #TOOLTIP: Manager-published late field amount. Default 0 means inert.
+slider17:0<0,1,0.001>-Late Field
+// #TOOLTIP: Manager-published neutral scene size for SceneVerb Lite.
+slider18:0.55<0,1,0.001>-Scene Size
+// #TOOLTIP: Manager-published damping for SceneVerb Lite.
+slider19:0.45<0,1,0.001>-Scene Damping
+// #TOOLTIP: Manager-published low-end protection for SceneVerb Lite.
+slider20:0.75<0,1,0.001>-Low Protect
+// #TOOLTIP: Manager-published ducking amount for SceneVerb Lite.
+slider21:0.50<0,1,0.001>-Verb Duck
 
 @init
 za_idle_mode = 4;
@@ -498,6 +510,17 @@ function publish_manager_gmem() local(mb) (
   gmem[mb + P3D_MGR_ORBIT_ANGLE] = mgr_orbit_angle;
   gmem[mb + P3D_MGR_ORBIT_RADIUS] = mgr_orbit_radius;
   gmem[mb + P3D_MGR_LOOK_AT] = mgr_look_at;
+  // Optional SceneVerb metadata. Default values publish an inert state.
+  mgr_sceneverb_on = slider16 >= 0.5 ? 1 : 0;
+  mgr_late_field = mgr_sceneverb_on ? clamp(slider17, 0, 1) : 0;
+  gmem[mb + P3D_MGR_SCENEVERB_MAGIC] = P3D_SCENEVERB_MAGIC;
+  gmem[mb + P3D_MGR_SCENEVERB_HB] = mgr_tick;
+  gmem[mb + P3D_MGR_SCENEVERB_ON] = mgr_sceneverb_on;
+  gmem[mb + P3D_MGR_LATE_FIELD] = mgr_late_field;
+  gmem[mb + P3D_MGR_SCENE_SIZE] = clamp(slider18, 0, 1);
+  gmem[mb + P3D_MGR_SCENE_DAMPING] = clamp(slider19, 0, 1);
+  gmem[mb + P3D_MGR_LOW_PROTECT] = clamp(slider20, 0, 1);
+  gmem[mb + P3D_MGR_VERB_DUCK] = clamp(slider21, 0, 1);
   gmem[mb + P3D_MGR_SMOOTH_MS] = mgr_smooth;
   gmem[mb + P3D_MGR_SEQ] = mgr_seq;
   gmem[mb + P3D_MGR_TRACKER] = mgr_tracker;
@@ -588,6 +611,16 @@ P3D_MGR_VIEW_BLEND = 49;
 P3D_MGR_ORBIT_ANGLE = 50;
 P3D_MGR_ORBIT_RADIUS = 51;
 P3D_MGR_LOOK_AT = 52;
+// Optional SceneVerb metadata extension. P3D_VERSION intentionally stays unchanged.
+P3D_MGR_SCENEVERB_MAGIC = 53;
+P3D_MGR_SCENEVERB_HB = 54;
+P3D_MGR_SCENEVERB_ON = 55;
+P3D_MGR_LATE_FIELD = 56;
+P3D_MGR_SCENE_SIZE = 57;
+P3D_MGR_SCENE_DAMPING = 58;
+P3D_MGR_LOW_PROTECT = 59;
+P3D_MGR_VERB_DUCK = 60;
+P3D_SCENEVERB_MAGIC = 30261301;
 P3D_MAX_SCENES = 32;
 P3D_SCENE_NAME_LEN = 36;
 P3D_SCENE_BASE = P3D_MGR_BASE + P3D_MAX_MANAGER_SLOTS * P3D_MGR_STRIDE;
@@ -645,6 +678,7 @@ strcpy(#mgr_edit_name, #manager_name);
 slider_show(1,0); slider_show(2,1); slider_show(3,0); slider_show(4,0); slider_show(5,0);
 slider_show(6,0); slider_show(7,0); slider_show(8,0); slider_show(9,0); slider_show(10,0); slider_show(11,0);
 slider_show(12,0); slider_show(13,0); slider_show(14,0); slider_show(15,0);
+slider_show(16,0); slider_show(17,0); slider_show(18,0); slider_show(19,0); slider_show(20,0); slider_show(21,0);
 
 mgr_attach();
 
@@ -820,7 +854,7 @@ fs_small = floor(10*ui_s); fs_small < 8 ? fs_small = 8;
 
 gfx_setfont(1,"Arial",fs_title,'b');
 gfx_set(0.94,0.96,0.99,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("3DPannerManager V1.12.0");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("3DPannerManager V1.14.0");
 gfx_setfont(2,"Arial",fs_body);
 gfx_set(0.58,0.64,0.74,1);
 gfx_x = pad; gfx_y = pad*0.45 + fs_title + 2*ui_s; gfx_printf("Camera Controller | only panners in Manager mode follow this Name | fixed objects, moving listener");
@@ -1242,6 +1276,8 @@ ui_prev_m = mouse_m;
 gfx_setfont(2,"Arial",fs_body,'b');
 gfx_set(0.94,0.96,0.99,1);
 gfx_x = panel_x + 16*ui_s; gfx_y = panel_y + 14*ui_s; gfx_printf("Manager");
+gfx_setfont(3,"Arial",fs_small); gfx_set(0.62,0.72,0.88,1);
+gfx_x = panel_x + 100*ui_s; gfx_y = panel_y + 17*ui_s; slider16>=0.5 ? gfx_printf("SceneVerb %.0f%%", slider17*100) : gfx_printf("SceneVerb Off");
 
 // Internal manager key is hidden; panners subscribe to Manager Name.
 // Manager Name box

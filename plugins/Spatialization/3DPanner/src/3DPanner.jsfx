@@ -1,4 +1,4 @@
-desc:Hyperreal 3D Panner V6.21.0 (Larger Default GFX)
+desc:Hyperreal 3D Panner V6.24.0 (SceneVerb Macro Drawer)
 
 // #HELP: Headphone-focused 3D panner using softened perceptual placement, microdelay, head shadow, pinna cues, distance loss, occlusion, and room cues.
 // #HELP: Drag the orange source in the stage canvas. Default canvas drag uses the POV range limiter for fast near-center placement. Mouse wheel changes Distance.
@@ -11,7 +11,7 @@ desc:Hyperreal 3D Panner V6.21.0 (Larger Default GFX)
 // #HELP: Manager Link is opt-in. New instances start in Standalone mode and only follow a Manager after switching Mode to Manager.
 // #HELP: V6.13.0 overhauls long-distance psychoacoustics: extended manager distances stay far/clear instead of just becoming reverby.
 // #HELP: V6.14.0 adds Elevation: a non-HRTF height-feel macro for lifted/grounded perception, not exact vertical localization.
-// #HELP: V6.15.0 adds Manager third-person camera support: orbit radius/angle with parallax-aware distance and optional look-at pivot. V6.16 adds middle-drag Elevation. V6.17 fixes LookAt orbit yaw. V6.18 adds Source Modes for mono emitters, stereo emitters, ambience beds, and dual emitters. V6.19 stabilizes centerline/rear motion. V6.20 adds a UI-only POV canvas range limiter and canvas wheel remaps. V6.21 increases the default GFX window size for a more readable first-load UI. V6.22 makes POV canvas drag visually follow the mouse while projecting the actual sound target into the POV cone.
+// #HELP: V6.15.0 adds Manager third-person camera support: orbit radius/angle with parallax-aware distance and optional look-at pivot. V6.16 adds middle-drag Elevation. V6.17 fixes LookAt orbit yaw. V6.18 adds Source Modes for mono emitters, stereo emitters, ambience beds, and dual emitters. V6.19 stabilizes centerline/rear motion. V6.20 adds a UI-only POV canvas range limiter and canvas wheel remaps. V6.21 increases the default GFX window size for a more readable first-load UI. V6.22 makes POV canvas drag visually follow the mouse while projecting the actual sound target into the POV cone. V6.23 adds a default-off SceneVerb Lite side drawer and manager metadata receive path. V6.23.1 makes the SceneVerb drawer consume mouse events so wheel/clicks do not leak to controls underneath. V6.23.2 adds SceneVerb Guard and quick role presets. V6.24 reduces SceneVerb to a macro drawer: Late Field is the on/off switch, Manager Link auto-overrides local values, and Guard is always internal.
 // #HELP: V6.2.2 stabilizes Occlusion by applying blocked-source coloration after localization, preventing opposite-ear flicker.
 // #TOOLTIP: UI-only perceptual object panner. Main controls stay standalone-clean; Manager mode is explicit and opt-in.
 
@@ -84,6 +84,30 @@ slider23:0.75<0,1,0.001>-Input Width Preserve
 slider24:0.45<0,1,0.001>-Bed Anchor
 // #TOOLTIP: UI-only canvas drag limiter. Default +-10 deg makes POV placement quick; Quick Controls and snap chips still allow full-range placement.
 slider25:10<0,90,0.1>-POV Canvas Range (deg)
+
+// SCENEVERB LITE / OPTIONAL LATE FIELD
+// Hard compatibility rule: sliders 1-25 remain the legacy panner contract.
+// SceneVerb is macro-only here: Late Field at 0% is the off state; >0% activates it.
+// #TOOLTIP: Internal legacy toggle kept for slot compatibility. SceneVerb activation is controlled by Late Field > 0%.
+slider26:0<0,1,1{Unused,Unused}>-Internal SceneVerb Legacy Toggle
+// #TOOLTIP: Optional late diffuse field amount. 0% is legacy-identical and fully bypassed. Any value above 0% activates SceneVerb Lite.
+slider27:0<0,1,0.001>-Late Field (0=Off)
+// #TOOLTIP: Macro size/spread. Lower = tight/short/near; higher = wider/longer/more cinematic.
+slider28:0.55<0,1,0.001>-Space Size
+// #TOOLTIP: Macro safety/protection. Higher = more low-end protection, stronger ducking, darker/safer field. Lower = more open/lush.
+slider29:0.72<0,1,0.001>-Protect
+// #TOOLTIP: Internal derived damping storage. Not user-facing in the macro drawer.
+slider30:0<0,1,0.001>-Internal SceneVerb Damping
+// #TOOLTIP: Internal derived ducking storage. Not user-facing in the macro drawer.
+slider31:0<0,1,0.001>-Internal SceneVerb Duck
+// #TOOLTIP: Source type for the hidden guard rails. Use the drawer preset chips instead of manually editing this.
+slider32:0<0,5,1{Generic,Vocal,Impact,Wet_Internal,Wet_External,Ambience}>-SceneVerb Type
+// #TOOLTIP: Internal return trim for presets. Default 0 dB; not exposed in the macro drawer.
+slider33:0<-18,18,0.1>-Internal SceneVerb Trim (dB)
+// #TOOLTIP: Internal compatibility slot. Manager Link automatically overrides local SceneVerb values when active.
+slider34:0<0,1,1{Local,Manager}>-Internal SceneVerb Source
+// #TOOLTIP: Internal guard compatibility slot. Guard rails are always on in V6.24.
+slider35:1<0,1,1{Off,On}>-Internal SceneVerb Guard
 
 // V6.15.0 Manager model:
 //   Sliders 6/8 store the object's fixed world placement.
@@ -744,6 +768,13 @@ function p3d_service_registry() local(mb wr depth_delta side_delta topology dist
     p3d_cached_orbit_angle = 0;
     p3d_cached_orbit_radius = 0;
     p3d_cached_look_at = 1;
+p3d_cached_sceneverb_valid = 0;
+p3d_cached_sceneverb_on = 0;
+p3d_cached_late_field = 0;
+p3d_cached_scene_size = 0.55;
+p3d_cached_scene_damping = 0.45;
+p3d_cached_low_protect = 0.75;
+p3d_cached_verb_duck = 0.50;
   );
   p3d_mgr_slot >= 0 ? (
     mb = P3D_MGR_BASE + p3d_mgr_slot * P3D_MGR_STRIDE;
@@ -764,6 +795,22 @@ function p3d_service_registry() local(mb wr depth_delta side_delta topology dist
       p3d_cached_orbit_angle = p3d_wrap_deg(gmem[mb + P3D_MGR_ORBIT_ANGLE]);
       p3d_cached_orbit_radius = p3d_clamp(gmem[mb + P3D_MGR_ORBIT_RADIUS], 0, 100);
       p3d_cached_look_at = gmem[mb + P3D_MGR_LOOK_AT] >= 0.5 ? 1 : 0;
+      // Optional SceneVerb metadata. Valid only if magic + heartbeat match the manager slot heartbeat.
+      p3d_sv_magic = gmem[mb + P3D_MGR_SCENEVERB_MAGIC];
+      p3d_sv_hb = gmem[mb + P3D_MGR_SCENEVERB_HB];
+      p3d_cached_sceneverb_valid = (p3d_sv_magic == P3D_SCENEVERB_MAGIC && abs(p3d_sv_hb - mgr_hb) < 0.5) ? 1 : 0;
+      p3d_cached_sceneverb_valid ? (
+        p3d_cached_sceneverb_on = gmem[mb + P3D_MGR_SCENEVERB_ON] >= 0.5 ? 1 : 0;
+        p3d_cached_late_field = p3d_clamp(gmem[mb + P3D_MGR_LATE_FIELD], 0, 1);
+        p3d_cached_scene_size = p3d_clamp(gmem[mb + P3D_MGR_SCENE_SIZE], 0, 1);
+        p3d_cached_scene_damping = p3d_clamp(gmem[mb + P3D_MGR_SCENE_DAMPING], 0, 1);
+        p3d_cached_low_protect = p3d_clamp(gmem[mb + P3D_MGR_LOW_PROTECT], 0, 1);
+        p3d_cached_verb_duck = p3d_clamp(gmem[mb + P3D_MGR_VERB_DUCK], 0, 1);
+        p3d_cached_sceneverb_on < 0.5 ? p3d_cached_late_field = 0;
+      ) : (
+        p3d_cached_sceneverb_on = 0;
+        p3d_cached_late_field = 0;
+      );
       p3d_mgr_hold = P3D_MANAGER_HOLD_BLOCKS;
     ) : (
       p3d_mgr_hold > 0 ? p3d_mgr_hold -= 1;
@@ -890,6 +937,16 @@ P3D_MGR_VIEW_BLEND = 49;
 P3D_MGR_ORBIT_ANGLE = 50;
 P3D_MGR_ORBIT_RADIUS = 51;
 P3D_MGR_LOOK_AT = 52;
+// Optional SceneVerb metadata extension. P3D_VERSION intentionally stays unchanged.
+P3D_MGR_SCENEVERB_MAGIC = 53;
+P3D_MGR_SCENEVERB_HB = 54;
+P3D_MGR_SCENEVERB_ON = 55;
+P3D_MGR_LATE_FIELD = 56;
+P3D_MGR_SCENE_SIZE = 57;
+P3D_MGR_SCENE_DAMPING = 58;
+P3D_MGR_LOW_PROTECT = 59;
+P3D_MGR_VERB_DUCK = 60;
+P3D_SCENEVERB_MAGIC = 30261301;
 P3D_MAX_SCENES = 32;
 P3D_SCENE_NAME_LEN = 36;
 P3D_SCENE_BASE = P3D_MGR_BASE + P3D_MAX_MANAGER_SLOTS * P3D_MGR_STRIDE;
@@ -944,6 +1001,13 @@ p3d_cached_view_blend = 0;
 p3d_cached_orbit_angle = 0;
 p3d_cached_orbit_radius = 0;
 p3d_cached_look_at = 1;
+p3d_cached_sceneverb_valid = 0;
+p3d_cached_sceneverb_on = 0;
+p3d_cached_late_field = 0;
+p3d_cached_scene_size = 0.55;
+p3d_cached_scene_damping = 0.45;
+p3d_cached_low_protect = 0.75;
+p3d_cached_verb_duck = 0.50;
 p3d_camera_view_blend = 0;
 p3d_camera_orbit_angle = 0;
 p3d_camera_orbit_radius = 0;
@@ -967,6 +1031,15 @@ itd_wpos = 0;
 itdbuf = erbuf + er_bufsize;
 // Keep UI mirror memory out of the audio delay lines.
 p3d_ui_scene_base = itdbuf + itd_bufsize + 4096;
+// SceneVerb Lite buffers live after UI mirror memory. They are read/written only when SceneVerb Lite is active.
+sceneverb_bufsize = 65536;
+sceneverb_mask = sceneverb_bufsize - 1;
+sceneverb_buf = p3d_ui_scene_base + p3d_ui_scene_stride * p3d_ui_scene_max + 4096;
+sceneverb_wpos = 0;
+sceneverb_lp = 0;
+sceneverb_damp_l = 0;
+sceneverb_damp_r = 0;
+sceneverb_env = 0;
 
 loop_cnt = 0;
 loop(er_bufsize,
@@ -1180,6 +1253,7 @@ ui_text_active = 0; // 0 none, 1 Manager, 2 Object Name
 ui_text_frames = 0;
 ui_text_select_all = 0;
 ui_drawer_open = 0; // Manager Link side drawer; closed by default so standalone use stays clean.
+ui_sceneverb_drawer_open = 0; // SceneVerb Lite drawer; closed by default and default-off.
 ui_scene_menu = 0;
 strcpy(#p3d_edit_text, "");
 strcpy(#p3d_keychar, "");
@@ -1191,6 +1265,7 @@ slider_show(6,0); slider_show(7,0); slider_show(8,0); slider_show(9,0); slider_s
 slider_show(11,0); slider_show(12,0); slider_show(13,0); slider_show(14,0); slider_show(15,0);
 slider_show(16,0); slider_show(17,0); slider_show(18,0); slider_show(19,0); slider_show(20,0); slider_show(21,0);
 slider_show(22,0); slider_show(23,0); slider_show(24,0); slider_show(25,0);
+slider_show(26,0); slider_show(27,0); slider_show(28,0); slider_show(29,0); slider_show(30,0); slider_show(31,0); slider_show(32,0); slider_show(33,0); slider_show(34,0); slider_show(35,0);
 
 
 @slider
@@ -1299,6 +1374,22 @@ p3d_mgr_slot >= 0 ? (
     p3d_cached_orbit_angle = p3d_wrap_deg(gmem[p3d_mgr_base + P3D_MGR_ORBIT_ANGLE]);
     p3d_cached_orbit_radius = p3d_clamp(gmem[p3d_mgr_base + P3D_MGR_ORBIT_RADIUS], 0, 100);
     p3d_cached_look_at = gmem[p3d_mgr_base + P3D_MGR_LOOK_AT] >= 0.5 ? 1 : 0;
+    // Optional SceneVerb metadata. Valid only if magic + heartbeat match the manager slot heartbeat.
+    p3d_sv_magic = gmem[p3d_mgr_base + P3D_MGR_SCENEVERB_MAGIC];
+    p3d_sv_hb = gmem[p3d_mgr_base + P3D_MGR_SCENEVERB_HB];
+    p3d_cached_sceneverb_valid = (p3d_sv_magic == P3D_SCENEVERB_MAGIC && abs(p3d_sv_hb - p3d_mgr_hb) < 0.5) ? 1 : 0;
+    p3d_cached_sceneverb_valid ? (
+      p3d_cached_sceneverb_on = gmem[p3d_mgr_base + P3D_MGR_SCENEVERB_ON] >= 0.5 ? 1 : 0;
+      p3d_cached_late_field = p3d_clamp(gmem[p3d_mgr_base + P3D_MGR_LATE_FIELD], 0, 1);
+      p3d_cached_scene_size = p3d_clamp(gmem[p3d_mgr_base + P3D_MGR_SCENE_SIZE], 0, 1);
+      p3d_cached_scene_damping = p3d_clamp(gmem[p3d_mgr_base + P3D_MGR_SCENE_DAMPING], 0, 1);
+      p3d_cached_low_protect = p3d_clamp(gmem[p3d_mgr_base + P3D_MGR_LOW_PROTECT], 0, 1);
+      p3d_cached_verb_duck = p3d_clamp(gmem[p3d_mgr_base + P3D_MGR_VERB_DUCK], 0, 1);
+      p3d_cached_sceneverb_on < 0.5 ? p3d_cached_late_field = 0;
+    ) : (
+      p3d_cached_sceneverb_on = 0;
+      p3d_cached_late_field = 0;
+    );
     p3d_mgr_hold = P3D_MANAGER_HOLD_BLOCKS;
   ) : (
     p3d_mgr_hold > 0 ? p3d_mgr_hold -= 1;
@@ -2230,6 +2321,159 @@ src_mode == 1 ? (
 out_l *= sm_trim;
 out_r *= sm_trim;
 
+// --- Optional SceneVerb Lite late field ---
+// Hard bypass contract: Late Field == 0 means legacy_l/r pass through unchanged.
+// V6.24 removes the redundant on/off toggle. Late Field is the switch.
+legacy_l = out_l;
+legacy_r = out_r;
+
+// Manager Link auto-overrides local SceneVerb values when the panner is actually linked.
+// If no valid manager SceneVerb metadata exists, local macro values are used.
+sv_mgr_mode = (p3d_link_active && p3d_cached_sceneverb_valid) ? 1 : 0;
+sv_late = sv_mgr_mode ? p3d_cached_late_field : slider27;
+sv_size = sv_mgr_mode ? p3d_cached_scene_size : slider28;
+sv_protect = sv_mgr_mode ? p3d_cached_low_protect : slider29;
+sv_mgr_mode && p3d_cached_sceneverb_on < 0.5 ? sv_late = 0;
+
+sv_late < 0 ? sv_late = 0; sv_late > 1 ? sv_late = 1;
+sv_size < 0 ? sv_size = 0; sv_size > 1 ? sv_size = 1;
+sv_protect < 0 ? sv_protect = 0; sv_protect > 1 ? sv_protect = 1;
+
+// Three macro model:
+//   Late Field = amount / activation.
+//   Space Size = delay spread + decay + width.
+//   Protect    = low-end protection + ducking + damping safety.
+sv_damp_amt = sv_mgr_mode ? p3d_cached_scene_damping : (0.26 + 0.56*sv_protect);
+sv_lowprotect = sv_mgr_mode ? p3d_cached_low_protect : (0.56 + 0.43*sv_protect);
+sv_duck_amt = sv_mgr_mode ? p3d_cached_verb_duck : (0.20 + 0.74*sv_protect);
+sv_damp_amt < 0 ? sv_damp_amt = 0; sv_damp_amt > 1 ? sv_damp_amt = 1;
+sv_lowprotect < 0 ? sv_lowprotect = 0; sv_lowprotect > 1 ? sv_lowprotect = 1;
+sv_duck_amt < 0 ? sv_duck_amt = 0; sv_duck_amt > 1 ? sv_duck_amt = 1;
+
+sceneverb_active = (sv_late > 0.00001) ? 1 : 0;
+sceneverb_active ? (
+  sv_role = floor(slider32 + 0.5);
+  sv_send = sv_late;
+  sv_decay = 0.38 + 0.36*sv_size;
+  sv_width = 0.46 + 0.42*sv_size;
+
+  // Role modifiers: inert unless SceneVerb Lite is active.
+  sv_role == 1 ? ( // Vocal
+    sv_send *= 0.58; sv_duck_amt = max(sv_duck_amt, 0.72); sv_lowprotect = max(sv_lowprotect, 0.86); sv_decay *= 0.86;
+  ) : sv_role == 2 ? ( // Impact
+    sv_send *= 0.42; sv_duck_amt = max(sv_duck_amt, 0.86); sv_lowprotect = max(sv_lowprotect, 0.94); sv_decay *= 0.68;
+  ) : sv_role == 3 ? ( // Wet_Internal
+    sv_send *= 0.75; sv_damp_amt = max(sv_damp_amt, 0.62); sv_decay *= 0.78; sv_width *= 0.82;
+  ) : sv_role == 4 ? ( // Wet_External
+    sv_send *= 1.08; sv_damp_amt *= 0.82; sv_width *= 1.10;
+  ) : sv_role == 5 ? ( // Ambience
+    sv_send *= 1.18; sv_decay *= 1.10; sv_width *= 1.16; sv_duck_amt *= 0.70;
+  );
+  sv_width > 1 ? sv_width = 1;
+  sv_trim_db = slider33;
+
+  // Guard rails are always on in V6.24. They only run when SceneVerb is active,
+  // so old projects and zero-Late-Field instances remain legacy-identical.
+  sv_role == 1 ? ( // Vocal: close, clean, clear.
+    sv_send > 0.34 ? sv_send = 0.34;
+    sv_decay > 0.60 ? sv_decay = 0.60;
+    sv_width > 0.66 ? sv_width = 0.66;
+    sv_lowprotect < 0.90 ? sv_lowprotect = 0.90;
+    sv_duck_amt < 0.78 ? sv_duck_amt = 0.78;
+    sv_trim_db > 6 ? sv_trim_db = 6;
+  ) : sv_role == 2 ? ( // Impact: bloom only, no low-end fog.
+    sv_send > 0.22 ? sv_send = 0.22;
+    sv_decay > 0.50 ? sv_decay = 0.50;
+    sv_width > 0.58 ? sv_width = 0.58;
+    sv_lowprotect < 0.96 ? sv_lowprotect = 0.96;
+    sv_duck_amt < 0.90 ? sv_duck_amt = 0.90;
+    sv_trim_db > 4 ? sv_trim_db = 4;
+  ) : sv_role == 3 ? ( // Wet_Internal: dark, short, body-adjacent.
+    sv_send > 0.48 ? sv_send = 0.48;
+    sv_decay > 0.62 ? sv_decay = 0.62;
+    sv_width > 0.68 ? sv_width = 0.68;
+    sv_damp_amt < 0.64 ? sv_damp_amt = 0.64;
+    sv_lowprotect < 0.82 ? sv_lowprotect = 0.82;
+    sv_duck_amt < 0.52 ? sv_duck_amt = 0.52;
+    sv_trim_db > 7 ? sv_trim_db = 7;
+  ) : sv_role == 4 ? ( // Wet_External: brighter/wider but still bounded.
+    sv_send > 0.68 ? sv_send = 0.68;
+    sv_decay > 0.76 ? sv_decay = 0.76;
+    sv_width > 0.92 ? sv_width = 0.92;
+    sv_lowprotect < 0.68 ? sv_lowprotect = 0.68;
+    sv_duck_amt < 0.34 ? sv_duck_amt = 0.34;
+    sv_trim_db > 8 ? sv_trim_db = 8;
+  ) : sv_role == 5 ? ( // Ambience: largest safe halo.
+    sv_send > 0.80 ? sv_send = 0.80;
+    sv_decay > 0.84 ? sv_decay = 0.84;
+    sv_width > 0.98 ? sv_width = 0.98;
+    sv_lowprotect < 0.55 ? sv_lowprotect = 0.55;
+    sv_duck_amt < 0.18 ? sv_duck_amt = 0.18;
+    sv_trim_db > 9 ? sv_trim_db = 9;
+  ) : ( // Generic: conservative neutral depth.
+    sv_send > 0.56 ? sv_send = 0.56;
+    sv_decay > 0.72 ? sv_decay = 0.72;
+    sv_width > 0.86 ? sv_width = 0.86;
+    sv_lowprotect < 0.72 ? sv_lowprotect = 0.72;
+    sv_duck_amt < 0.36 ? sv_duck_amt = 0.36;
+    sv_trim_db > 6 ? sv_trim_db = 6;
+  );
+
+  sv_in = (legacy_l + legacy_r) * 0.5;
+  // Low protect: remove sub/low body pressure from the late tank, preserving the existing dry/body feel.
+  sv_hp_fc = 70 + 260*sv_lowprotect;
+  sv_hp_a = exp(-2*$pi*sv_hp_fc/srate);
+  sceneverb_lp = (1 - sv_hp_a)*sv_in + sv_hp_a*sceneverb_lp;
+  sv_feed = sv_in - sceneverb_lp;
+
+  // Dry-envelope ducking. Fast-ish attack, slower release, no effect when duck=0.
+  sv_env_t = max(abs(legacy_l), abs(legacy_r));
+  sv_env_k = sv_env_t > sceneverb_env ? 0.025 : 0.0018;
+  sceneverb_env += (sv_env_t - sceneverb_env) * sv_env_k;
+  sv_duck_g = 1 / (1 + sv_duck_amt * sceneverb_env * 8.0);
+
+  // Minimal neutral late field: four decorrelated taps with damped feedback.
+  // This is intentionally low-identity; use external/bus reverbs for strong room flavor.
+  sv_d1 = floor((0.031 + 0.067*sv_size) * srate);
+  sv_d2 = floor((0.047 + 0.083*sv_size) * srate);
+  sv_d3 = floor((0.071 + 0.121*sv_size) * srate);
+  sv_d4 = floor((0.103 + 0.163*sv_size) * srate);
+  sv_d1 > sceneverb_bufsize-2 ? sv_d1 = sceneverb_bufsize-2;
+  sv_d2 > sceneverb_bufsize-2 ? sv_d2 = sceneverb_bufsize-2;
+  sv_d3 > sceneverb_bufsize-2 ? sv_d3 = sceneverb_bufsize-2;
+  sv_d4 > sceneverb_bufsize-2 ? sv_d4 = sceneverb_bufsize-2;
+
+  sv_t1 = sceneverb_buf[(sceneverb_wpos - sv_d1) & sceneverb_mask];
+  sv_t2 = sceneverb_buf[(sceneverb_wpos - sv_d2) & sceneverb_mask];
+  sv_t3 = sceneverb_buf[(sceneverb_wpos - sv_d3) & sceneverb_mask];
+  sv_t4 = sceneverb_buf[(sceneverb_wpos - sv_d4) & sceneverb_mask];
+
+  sv_l_raw = sv_t1*0.62 - sv_t2*0.32 + sv_t3*0.24 - sv_t4*0.18;
+  sv_r_raw = sv_t2*0.61 + sv_t1*0.27 - sv_t4*0.25 + sv_t3*0.17;
+
+  sv_damp_fc = 2400 + (1 - sv_damp_amt) * 9800;
+  sv_damp_a = exp(-2*$pi*sv_damp_fc/srate);
+  sceneverb_damp_l = (1 - sv_damp_a)*sv_l_raw + sv_damp_a*sceneverb_damp_l;
+  sceneverb_damp_r = (1 - sv_damp_a)*sv_r_raw + sv_damp_a*sceneverb_damp_r;
+
+  // Feedback uses mid of damped tank. Kept conservative to avoid obvious reverb identity.
+  sv_fb = (sceneverb_damp_l + sceneverb_damp_r) * 0.5;
+  sceneverb_buf[sceneverb_wpos] = sv_feed * 0.48 + sv_fb * sv_decay;
+  sceneverb_wpos = (sceneverb_wpos + 1) & sceneverb_mask;
+
+  sv_mid = (sceneverb_damp_l + sceneverb_damp_r) * 0.5;
+  sv_side = (sceneverb_damp_l - sceneverb_damp_r) * 0.5 * sv_width;
+  sv_return_trim = 10^(sv_trim_db/20);
+  scene_l = (sv_mid + sv_side) * sv_send * sv_duck_g * sv_return_trim;
+  scene_r = (sv_mid - sv_side) * sv_send * sv_duck_g * sv_return_trim;
+
+  out_l = legacy_l + scene_l;
+  out_r = legacy_r + scene_r;
+) : (
+  out_l = legacy_l;
+  out_r = legacy_r;
+);
+
 spl0 = out_l;
 spl1 = out_r;
 // advance ER buffer
@@ -2337,6 +2581,13 @@ ui_link = slider4 >= 0.5 ? 1 : 0;
 ui_obj_id = floor(slider3 + 0.5);
 ui_mgr_amt = slider5;
 ui_target_mgr = floor(slider20 + 0.5);
+ui_sceneverb_using_manager = (ui_link_view && p3d_cached_sceneverb_valid) ? 1 : 0;
+ui_sceneverb_late = ui_sceneverb_using_manager ? p3d_cached_late_field : slider27;
+ui_sceneverb_size = ui_sceneverb_using_manager ? p3d_cached_scene_size : slider28;
+ui_sceneverb_protect = ui_sceneverb_using_manager ? p3d_cached_low_protect : slider29;
+ui_sceneverb_on = ui_sceneverb_late > 0.00001 ? 1 : 0;
+ui_sceneverb_role = floor(slider32 + 0.5);
+ui_sceneverb_trim = slider33;
 
 pos_r = sqrt(ui_lat*ui_lat + ui_fb*ui_fb);
 pos_r > 1 ? (
@@ -2512,6 +2763,72 @@ drawer_tab_y = canvas_y + 82*ui_s;
 hover_drawer_tab = mouse_x >= drawer_tab_x && mouse_x <= drawer_tab_x+drawer_tab_w && mouse_y >= drawer_tab_y && mouse_y <= drawer_tab_y+drawer_tab_h;
 inside_drawer = ui_drawer_open && mouse_x >= drawer_x && mouse_x <= drawer_x+drawer_w && mouse_y >= drawer_y && mouse_y <= drawer_y+drawer_h;
 
+
+// Optional SceneVerb side drawer. Separate from Manager drawer so the main UI stays clean.
+sv_tab_w = drawer_tab_w;
+sv_tab_h = 122*ui_s;
+sv_tab_x = drawer_tab_x;
+sv_tab_y = drawer_tab_y + drawer_tab_h + 10*ui_s;
+hover_sceneverb_tab = mouse_x >= sv_tab_x && mouse_x <= sv_tab_x+sv_tab_w && mouse_y >= sv_tab_y && mouse_y <= sv_tab_y+sv_tab_h;
+sv_drawer_w = drawer_w;
+sv_drawer_x = drawer_x;
+sv_drawer_y = canvas_y;
+sv_drawer_h = field_h;
+inside_sceneverb_drawer = ui_sceneverb_drawer_open && mouse_x >= sv_drawer_x && mouse_x <= sv_drawer_x+sv_drawer_w && mouse_y >= sv_drawer_y && mouse_y <= sv_drawer_y+sv_drawer_h;
+
+sv_pad = 14*ui_s;
+sv_field_x = sv_drawer_x + sv_pad;
+sv_field_w = sv_drawer_w - sv_pad*2;
+sv_box_h = 24*ui_s; sv_box_h < 19 ? sv_box_h = 19;
+sv_status_x = sv_field_x;
+sv_status_y = sv_drawer_y + 64*ui_s;
+sv_status_w = sv_field_w;
+sv_status_h = sv_box_h;
+
+// Removed explicit enable/source/guard/role buttons in V6.24.
+// These variables stay defined so legacy event logic has safe false values.
+hover_sv_enable = 0;
+hover_sv_source = 0;
+hover_sv_guard = 0;
+hover_sv_role = 0;
+
+sv_preset_gap = 6*ui_s;
+sv_preset_h = 22*ui_s; sv_preset_h < 17 ? sv_preset_h = 17;
+sv_preset_w = (sv_field_w - sv_preset_gap*2) / 3;
+sv_preset_y1 = sv_status_y + sv_status_h + 32*ui_s;
+sv_preset_y2 = sv_preset_y1 + sv_preset_h + 5*ui_s;
+sv_preset1_x = sv_field_x;
+sv_preset2_x = sv_preset1_x + sv_preset_w + sv_preset_gap;
+sv_preset3_x = sv_preset2_x + sv_preset_w + sv_preset_gap;
+hover_sv_preset = 0;
+inside_sceneverb_drawer ? (
+  mouse_y >= sv_preset_y1 && mouse_y <= sv_preset_y1+sv_preset_h ? (
+    mouse_x >= sv_preset1_x && mouse_x <= sv_preset1_x+sv_preset_w ? hover_sv_preset = 1;
+    mouse_x >= sv_preset2_x && mouse_x <= sv_preset2_x+sv_preset_w ? hover_sv_preset = 2;
+    mouse_x >= sv_preset3_x && mouse_x <= sv_preset3_x+sv_preset_w ? hover_sv_preset = 3;
+  );
+  mouse_y >= sv_preset_y2 && mouse_y <= sv_preset_y2+sv_preset_h ? (
+    mouse_x >= sv_preset1_x && mouse_x <= sv_preset1_x+sv_preset_w ? hover_sv_preset = 4;
+    mouse_x >= sv_preset2_x && mouse_x <= sv_preset2_x+sv_preset_w ? hover_sv_preset = 5;
+    mouse_x >= sv_preset3_x && mouse_x <= sv_preset3_x+sv_preset_w ? hover_sv_preset = 6;
+  );
+);
+
+sv_bar_x = sv_field_x;
+sv_bar_w = sv_field_w - 58*ui_s;
+sv_val_x = sv_bar_x + sv_bar_w + 8*ui_s;
+sv_bar_h = 9*ui_s; sv_bar_h < 6 ? sv_bar_h = 6;
+sv_row_h = 42*ui_s; sv_row_h < 30 ? sv_row_h = 30;
+sv_b1y = sv_preset_y2 + sv_preset_h + 44*ui_s;
+sv_b2y = sv_b1y + sv_row_h;
+sv_b3y = sv_b2y + sv_row_h;
+hover_sv_bar = 0;
+inside_sceneverb_drawer ? (
+  (mouse_x >= sv_bar_x && mouse_x <= sv_bar_x+sv_bar_w && mouse_y >= sv_b1y && mouse_y <= sv_b1y+sv_bar_h) ? hover_sv_bar = 1;
+  (mouse_x >= sv_bar_x && mouse_x <= sv_bar_x+sv_bar_w && mouse_y >= sv_b2y && mouse_y <= sv_b2y+sv_bar_h) ? hover_sv_bar = 2;
+  (mouse_x >= sv_bar_x && mouse_x <= sv_bar_x+sv_bar_w && mouse_y >= sv_b3y && mouse_y <= sv_b3y+sv_bar_h) ? hover_sv_bar = 3;
+);
+
 box_h = 18*ui_s;
 box_h < 15 ? box_h = 15;
 link_pad = 14*ui_s;
@@ -2615,21 +2932,54 @@ hover_chip = 0;
   mouse_x >= chip8x && mouse_x <= chip8x+chip_w ? hover_chip = 8;
 );
 
+// SceneVerb drawer is a modal overlay.  When the mouse is over the pop-out,
+// it must consume all pointer/wheel intent so controls underneath do not move.
+// SceneVerb-specific hovers are preserved; only the underlying main UI hovers
+// are suppressed.
+inside_sceneverb_drawer ? (
+  hover_pov = 0;
+  hover_adv = 0;
+  hover_bar = 0;
+  hover_tip_bar = 0;
+  hover_safe = 0;
+  hover_source_btn = 0;
+  hover_chip = 0;
+  hover_drawer_tab = 0;
+  hover_scene_btn = 0;
+  hover_bus_box = 0;
+  hover_name_box = 0;
+  hover_link_btn = 0;
+  inside_scene_menu = 0;
+  scene_hover_idx = -1;
+  inside_canvas = 0;
+  inside_room = 0;
+  near_src = 0;
+);
+
 // --- tooltip target routing ---
 // Numeric IDs keep this JSFX-safe:
 // 20s canvas/visual cues, 30 Auto Safe, 40s snap chips, 100s lanes.
 tip_id = 0;
-tip_hot = (!mouse_l && !mouse_r && !mouse_m && ui_mode == 0 && ui_text_active == 0 && !hover_drawer_tab && !inside_drawer && !inside_scene_menu);
+tip_hot = (!mouse_l && !mouse_r && !mouse_m && ui_mode == 0 && ui_text_active == 0 && !hover_drawer_tab && !inside_drawer && !inside_scene_menu && !hover_sceneverb_tab);
 
 tip_hot ? (
-  hover_tip_bar > 0 ? tip_id = 100 + hover_tip_bar;
-  hover_adv > 0 ? tip_id = 200 + hover_adv;
-  hover_safe ? tip_id = 30;
-  hover_source_btn ? tip_id = 112;
-  hover_pov ? tip_id = 32;
-  hover_chip > 0 ? tip_id = 40 + hover_chip;
+  inside_sceneverb_drawer ? (
+    hover_sv_preset > 0 ? tip_id = 300 + hover_sv_preset;
+    hover_sv_bar > 0 ? tip_id = 310 + hover_sv_bar;
+    tip_id == 0 ? tip_id = 320;
+  ) : (
+    hover_tip_bar > 0 ? tip_id = 100 + hover_tip_bar;
+    hover_adv > 0 ? tip_id = 200 + hover_adv;
+    hover_safe ? tip_id = 30;
+    hover_source_btn ? tip_id = 112;
+    hover_pov ? tip_id = 32;
+    hover_chip > 0 ? tip_id = 40 + hover_chip;
+  );
 
   // Recompute visible-cue hit zones from the current object/canvas geometry.
+  inside_sceneverb_drawer ? (
+    noop = 0;
+  ) : (
   src_dx = mouse_x - sx;
   src_dy = mouse_y - sy;
   src_d2 = src_dx*src_dx + src_dy*src_dy;
@@ -2690,6 +3040,7 @@ tip_hot ? (
   tip_id == 0 && head_hot ? tip_id = 24;
   tip_id == 0 && inside_room ? tip_id = 24;
   tip_id == 0 && inside_canvas ? tip_id = 25;
+  );
 );
 
 // Small hover delay: prevents flashing while passing over dense controls.
@@ -2767,6 +3118,15 @@ mouse_wheel != 0 ? (
   wheel_scale = mouse_shift ? 0.25 : 1.0;
 
   ui_text_active > 0 ? (
+    noop = 0;
+  ) : hover_sv_bar == 1 ? (
+    slider27 += wstep * 0.035 * wheel_scale; slider27 < 0 ? slider27 = 0; slider27 > 1 ? slider27 = 1; sliderchange(-1.0);
+  ) : hover_sv_bar == 2 ? (
+    slider28 += wstep * 0.035 * wheel_scale; slider28 < 0 ? slider28 = 0; slider28 > 1 ? slider28 = 1; sliderchange(-1.0);
+  ) : hover_sv_bar == 3 ? (
+    slider29 += wstep * 0.035 * wheel_scale; slider29 < 0 ? slider29 = 0; slider29 > 1 ? slider29 = 1; sliderchange(-1.0);
+  ) : inside_sceneverb_drawer ? (
+    // Modal SceneVerb drawer: mouse wheel over empty drawer space must not leak to controls behind it.
     noop = 0;
   ) : hover_pov ? (
     pov_step = mouse_shift ? 0.25 : 1.0;
@@ -2859,6 +3219,11 @@ mouse_wheel != 0 ? (
 
 // --- press actions ---
 (!ui_prev_r && mouse_r) ? (
+  hover_sv_preset > 0 ? (noop = 0;) :
+  hover_sv_bar == 1 ? (slider27 = 0; sliderchange(-1.0);) :
+  hover_sv_bar == 2 ? (slider28 = 0.55; sliderchange(-1.0);) :
+  hover_sv_bar == 3 ? (slider29 = 0.72; sliderchange(-1.0);) :
+  inside_sceneverb_drawer ? (noop = 0;) :
   hover_pov ? (
     slider25 = 10;
     sliderchange(-1.0);
@@ -2915,6 +3280,13 @@ mouse_wheel != 0 ? (
     p3d_cached_orbit_angle = 0;
     p3d_cached_orbit_radius = 0;
     p3d_cached_look_at = 1;
+p3d_cached_sceneverb_valid = 0;
+p3d_cached_sceneverb_on = 0;
+p3d_cached_late_field = 0;
+p3d_cached_scene_size = 0.55;
+p3d_cached_scene_damping = 0.45;
+p3d_cached_low_protect = 0.75;
+p3d_cached_verb_duck = 0.50;
     p3d_target_mgr_iid = 0;
     p3d_manager_iid = 0;
     p3d_mgr_slot = -1;
@@ -2929,8 +3301,37 @@ mouse_wheel != 0 ? (
     p3d_allow_msg = 0;
     p3d_service_registry();
     sliderchange(-1.0);
+  ) : hover_sceneverb_tab ? (
+    ui_sceneverb_drawer_open = 1 - ui_sceneverb_drawer_open;
+    ui_drawer_open = 0;
+    ui_text_active = 0;
+    ui_scene_menu = 0;
+  ) : hover_sv_preset > 0 ? (
+    // Macro presets: pick source type + three sane macro values. Late Field > 0 activates SceneVerb.
+    hover_sv_preset == 1 ? ( // Safe Depth
+      slider32 = 0; slider27 = 0.22; slider28 = 0.52; slider29 = 0.72; slider33 = 0;
+    ) : hover_sv_preset == 2 ? ( // Vocal
+      slider32 = 1; slider27 = 0.24; slider28 = 0.44; slider29 = 0.88; slider33 = 1;
+    ) : hover_sv_preset == 3 ? ( // Impact
+      slider32 = 2; slider27 = 0.14; slider28 = 0.34; slider29 = 0.96; slider33 = 0;
+    ) : hover_sv_preset == 4 ? ( // Goo / internal wet
+      slider32 = 3; slider27 = 0.38; slider28 = 0.46; slider29 = 0.80; slider33 = 1;
+    ) : hover_sv_preset == 5 ? ( // Splash / external wet
+      slider32 = 4; slider27 = 0.52; slider28 = 0.66; slider29 = 0.58; slider33 = 1;
+    ) : ( // ASMR / ambience halo
+      slider32 = 5; slider27 = 0.58; slider28 = 0.78; slider29 = 0.42; slider33 = 2;
+    );
+    sliderchange(-1.0);
+  ) : hover_sv_bar > 0 ? (
+    ui_mode = 600 + hover_sv_bar;
+    ui_drag_start_x = mouse_x;
+    ui_drag_start_v1 = hover_sv_bar == 1 ? slider27 : hover_sv_bar == 2 ? slider28 : slider29;
+  ) : inside_sceneverb_drawer ? (
+    // Modal drawer: empty clicks do not fall through to Manager tab/canvas/controls behind it.
+    noop = 0;
   ) : hover_drawer_tab ? (
     ui_drawer_open = 1 - ui_drawer_open;
+    ui_sceneverb_drawer_open = 0;
     ui_text_active = 0;
     ui_scene_menu = 0;
     p3d_allow_msg = 0;
@@ -2976,6 +3377,13 @@ mouse_wheel != 0 ? (
     p3d_cached_orbit_angle = 0;
     p3d_cached_orbit_radius = 0;
     p3d_cached_look_at = 1;
+p3d_cached_sceneverb_valid = 0;
+p3d_cached_sceneverb_on = 0;
+p3d_cached_late_field = 0;
+p3d_cached_scene_size = 0.55;
+p3d_cached_scene_damping = 0.45;
+p3d_cached_low_protect = 0.75;
+p3d_cached_verb_duck = 0.50;
     p3d_rebind_pending = 1;
     p3d_allow_msg = 0;
     p3d_service_registry();
@@ -3137,6 +3545,21 @@ mouse_wheel != 0 ? (
   sliderchange(-1.0);
 );
 
+(mouse_l && ui_mode >= 601 && ui_mode < 700) ? (
+  sid = ui_mode - 600;
+  mn = 0; mx = 1;
+  mouse_shift ? (
+    v = ui_drag_start_v1 + (mouse_x - ui_drag_start_x) / sv_bar_w * (mx - mn) * 0.25;
+  ) : (
+    nrm = (mouse_x - sv_bar_x) / sv_bar_w;
+    nrm < 0 ? nrm = 0; nrm > 1 ? nrm = 1;
+    v = mn + nrm * (mx - mn);
+  );
+  v < mn ? v = mn; v > mx ? v = mx;
+  sid == 1 ? slider27 = v : sid == 2 ? slider28 = v : slider29 = v;
+  sliderchange(-1.0);
+);
+
 (mouse_m && ui_mode == 300) ? (
   elev_step = mouse_shift ? 0.0016 : 0.0042;
   slider21 = ui_drag_start_v1 - (mouse_y - ui_drag_start_y) * elev_step / ui_s;
@@ -3208,6 +3631,13 @@ ui_link = slider4 >= 0.5 ? 1 : 0;
 ui_obj_id = floor(slider3 + 0.5);
 ui_mgr_amt = slider5;
 ui_target_mgr = floor(slider20 + 0.5);
+ui_sceneverb_using_manager = (ui_link_view && p3d_cached_sceneverb_valid) ? 1 : 0;
+ui_sceneverb_late = ui_sceneverb_using_manager ? p3d_cached_late_field : slider27;
+ui_sceneverb_size = ui_sceneverb_using_manager ? p3d_cached_scene_size : slider28;
+ui_sceneverb_protect = ui_sceneverb_using_manager ? p3d_cached_low_protect : slider29;
+ui_sceneverb_on = ui_sceneverb_late > 0.00001 ? 1 : 0;
+ui_sceneverb_role = floor(slider32 + 0.5);
+ui_sceneverb_trim = slider33;
 
 pos_r = sqrt(ui_lat*ui_lat + ui_fb*ui_fb);
 pos_r > 1 ? (
@@ -3298,7 +3728,7 @@ fs1 < 12 ? fs1 = 12; fs2 < 10 ? fs2 = 10; fs3 < 9 ? fs3 = 9; fs4 < 8 ? fs4 = 8;
 // title
 gfx_setfont(1,"Arial",fs1,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.22.0");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V6.23.2");
 
 gfx_setfont(2,"Arial",fs2);
 gfx_set(mut_r,mut_g,mut_b,1);
@@ -3858,7 +4288,65 @@ gfx_set(mut_r,mut_g,mut_b,1); gfx_x = adv_valx; gfx_y = adv5y - 2*ui_s; gfx_prin
 gfx_setfont(4,"Arial",fs4);
 gfx_set(mut_r,mut_g,mut_b,1);
 gfx_x = pad; gfx_y = gfx_h - foot_h + 7*ui_s;
-gfx_printf("V6.22.0: POV drag handle follows the mouse; projected sound target stays inside the POV cone. Wheel = Distance, Ctrl = Occlusion, Shift = Elevation, Alt = Push Out.");
+gfx_printf("V6.24.0: SceneVerb macro drawer. Late Field 0%% = bypass; Manager Link auto-overrides local SceneVerb.");
+
+// --- SceneVerb Lite side tab + drawer overlay ---
+gfx_set(ui_sceneverb_drawer_open ? 0.16 : 0.12, ui_sceneverb_drawer_open ? 0.28 : 0.16, ui_sceneverb_drawer_open ? 0.38 : 0.22, 0.98);
+gfx_rect(sv_tab_x, sv_tab_y, sv_tab_w, sv_tab_h);
+gfx_roundrect(sv_tab_x, sv_tab_y, sv_tab_w, sv_tab_h, 10*ui_s, 1);
+gfx_set(0.62,0.82,1.0, hover_sceneverb_tab ? 0.95 : 0.68);
+gfx_roundrect(sv_tab_x, sv_tab_y, sv_tab_w, sv_tab_h, 10*ui_s, 0);
+gfx_setfont(4,"Arial",fs4,'b');
+gfx_set(0.80,0.90,1.0,1);
+gfx_x = sv_tab_x + 8*ui_s; gfx_y = sv_tab_y + 16*ui_s; gfx_printf("SCN");
+gfx_x = sv_tab_x + 7*ui_s; gfx_y = sv_tab_y + 34*ui_s; gfx_printf("VRB");
+gfx_set(ui_sceneverb_on ? ok_r : mut_r, ui_sceneverb_on ? ok_g : mut_g, ui_sceneverb_on ? ok_b : mut_b, 1);
+gfx_circle(sv_tab_x + sv_tab_w*0.5, sv_tab_y + sv_tab_h - 16*ui_s, 4.5*ui_s, 1, 1);
+
+ui_sceneverb_drawer_open ? (
+  gfx_set(0,0,0,0.38);
+  gfx_rect(sv_drawer_x + 5*ui_s, sv_drawer_y + 5*ui_s, sv_drawer_w, sv_drawer_h);
+  gfx_roundrect(sv_drawer_x + 5*ui_s, sv_drawer_y + 5*ui_s, sv_drawer_w, sv_drawer_h, 14*ui_s, 1);
+  gfx_set(0.065,0.078,0.108,0.98);
+  gfx_rect(sv_drawer_x, sv_drawer_y, sv_drawer_w, sv_drawer_h);
+  gfx_roundrect(sv_drawer_x, sv_drawer_y, sv_drawer_w, sv_drawer_h, 14*ui_s, 1);
+  gfx_set(0.62,0.82,1.0,0.74);
+  gfx_roundrect(sv_drawer_x, sv_drawer_y, sv_drawer_w, sv_drawer_h, 14*ui_s, 0);
+
+  gfx_setfont(2,"Arial",fs2,'b'); gfx_set(txt_r,txt_g,txt_b,1);
+  gfx_x = sv_drawer_x + 14*ui_s; gfx_y = sv_drawer_y + 12*ui_s; gfx_printf("SceneVerb Lite");
+  gfx_setfont(4,"Arial",fs4); gfx_set(mut_r,mut_g,mut_b,1);
+  gfx_x = sv_drawer_x + 14*ui_s; gfx_y = sv_drawer_y + 31*ui_s; gfx_printf("Three macros. Late Field 0%% = fully bypassed.");
+
+  gfx_set(ui_sceneverb_on ? ok_r : 0.18, ui_sceneverb_on ? ok_g : 0.21, ui_sceneverb_on ? ok_b : 0.28, 0.88);
+  gfx_rect(sv_status_x,sv_status_y,sv_status_w,sv_status_h); gfx_roundrect(sv_status_x,sv_status_y,sv_status_w,sv_status_h,9*ui_s,1);
+  gfx_set(0.07,0.08,0.10,1); gfx_setfont(4,"Arial",fs4,'b');
+  gfx_x = sv_status_x + 12*ui_s; gfx_y = sv_status_y + 7*ui_s;
+  ui_sceneverb_on ? (
+    ui_sceneverb_using_manager ? gfx_printf("MANAGER SCENE %.0f%%", ui_sceneverb_late*100) : gfx_printf("LOCAL SCENE %.0f%%", ui_sceneverb_late*100);
+  ) : (
+    ui_sceneverb_using_manager ? gfx_printf("MANAGER SCENE OFF") : gfx_printf("SCENEVERB OFF");
+  );
+
+  gfx_setfont(4,"Arial",fs4); gfx_set(mut_r,mut_g,mut_b,1);
+  gfx_x = sv_field_x; gfx_y = sv_status_y + sv_status_h + 10*ui_s;
+  ui_sceneverb_using_manager ? gfx_printf("Manager Link active: Manager values override local macros.") : gfx_printf("Click a chip, then adjust Late Field / Size / Protect.");
+
+  gfx_setfont(4,"Arial",fs4,'b');
+  // Macro presets: click to set source type + three macro values. Late Field >0 activates SceneVerb.
+  gfx_set(hover_sv_preset==1 ? 0.24 : 0.13, hover_sv_preset==1 ? 0.30 : 0.17, hover_sv_preset==1 ? 0.40 : 0.24, 0.96); gfx_rect(sv_preset1_x,sv_preset_y1,sv_preset_w,sv_preset_h); gfx_roundrect(sv_preset1_x,sv_preset_y1,sv_preset_w,sv_preset_h,7*ui_s,1); gfx_set(0.84,0.91,1,1); gfx_x=sv_preset1_x+6*ui_s; gfx_y=sv_preset_y1+5*ui_s; gfx_printf("SAFE");
+  gfx_set(hover_sv_preset==2 ? 0.24 : 0.13, hover_sv_preset==2 ? 0.30 : 0.17, hover_sv_preset==2 ? 0.40 : 0.24, 0.96); gfx_rect(sv_preset2_x,sv_preset_y1,sv_preset_w,sv_preset_h); gfx_roundrect(sv_preset2_x,sv_preset_y1,sv_preset_w,sv_preset_h,7*ui_s,1); gfx_set(0.84,0.91,1,1); gfx_x=sv_preset2_x+6*ui_s; gfx_y=sv_preset_y1+5*ui_s; gfx_printf("VOCAL");
+  gfx_set(hover_sv_preset==3 ? 0.24 : 0.13, hover_sv_preset==3 ? 0.30 : 0.17, hover_sv_preset==3 ? 0.40 : 0.24, 0.96); gfx_rect(sv_preset3_x,sv_preset_y1,sv_preset_w,sv_preset_h); gfx_roundrect(sv_preset3_x,sv_preset_y1,sv_preset_w,sv_preset_h,7*ui_s,1); gfx_set(0.84,0.91,1,1); gfx_x=sv_preset3_x+6*ui_s; gfx_y=sv_preset_y1+5*ui_s; gfx_printf("IMPACT");
+  gfx_set(hover_sv_preset==4 ? 0.24 : 0.13, hover_sv_preset==4 ? 0.30 : 0.17, hover_sv_preset==4 ? 0.40 : 0.24, 0.96); gfx_rect(sv_preset1_x,sv_preset_y2,sv_preset_w,sv_preset_h); gfx_roundrect(sv_preset1_x,sv_preset_y2,sv_preset_w,sv_preset_h,7*ui_s,1); gfx_set(0.84,0.91,1,1); gfx_x=sv_preset1_x+6*ui_s; gfx_y=sv_preset_y2+5*ui_s; gfx_printf("GOO");
+  gfx_set(hover_sv_preset==5 ? 0.24 : 0.13, hover_sv_preset==5 ? 0.30 : 0.17, hover_sv_preset==5 ? 0.40 : 0.24, 0.96); gfx_rect(sv_preset2_x,sv_preset_y2,sv_preset_w,sv_preset_h); gfx_roundrect(sv_preset2_x,sv_preset_y2,sv_preset_w,sv_preset_h,7*ui_s,1); gfx_set(0.84,0.91,1,1); gfx_x=sv_preset2_x+6*ui_s; gfx_y=sv_preset_y2+5*ui_s; gfx_printf("SPLASH");
+  gfx_set(hover_sv_preset==6 ? 0.24 : 0.13, hover_sv_preset==6 ? 0.30 : 0.17, hover_sv_preset==6 ? 0.40 : 0.24, 0.96); gfx_rect(sv_preset3_x,sv_preset_y2,sv_preset_w,sv_preset_h); gfx_roundrect(sv_preset3_x,sv_preset_y2,sv_preset_w,sv_preset_h,7*ui_s,1); gfx_set(0.84,0.91,1,1); gfx_x=sv_preset3_x+6*ui_s; gfx_y=sv_preset_y2+5*ui_s; gfx_printf("ASMR");
+
+  // Bars: Late Field, Space Size, Protect.
+  gfx_setfont(4,"Arial",fs4);
+  sv_n = ui_sceneverb_late; gfx_set(0.90,0.92,0.96,1); gfx_x=sv_bar_x; gfx_y=sv_b1y-12*ui_s; gfx_printf("Late Field"); gfx_set(0.18,0.20,0.24,1); gfx_rect(sv_bar_x,sv_b1y,sv_bar_w,sv_bar_h); gfx_set(0.62,0.82,1,1); gfx_rect(sv_bar_x,sv_b1y,sv_bar_w*sv_n,sv_bar_h); gfx_set(mut_r,mut_g,mut_b,1); gfx_x=sv_val_x; gfx_y=sv_b1y-2*ui_s; gfx_printf("%.0f%%",ui_sceneverb_late*100);
+  sv_n = ui_sceneverb_size; gfx_set(0.90,0.92,0.96,1); gfx_x=sv_bar_x; gfx_y=sv_b2y-12*ui_s; gfx_printf("Space Size"); gfx_set(0.18,0.20,0.24,1); gfx_rect(sv_bar_x,sv_b2y,sv_bar_w,sv_bar_h); gfx_set(0.62,0.82,1,1); gfx_rect(sv_bar_x,sv_b2y,sv_bar_w*sv_n,sv_bar_h); gfx_set(mut_r,mut_g,mut_b,1); gfx_x=sv_val_x; gfx_y=sv_b2y-2*ui_s; gfx_printf("%.0f%%",ui_sceneverb_size*100);
+  sv_n = ui_sceneverb_protect; gfx_set(0.90,0.92,0.96,1); gfx_x=sv_bar_x; gfx_y=sv_b3y-12*ui_s; gfx_printf("Protect"); gfx_set(0.18,0.20,0.24,1); gfx_rect(sv_bar_x,sv_b3y,sv_bar_w,sv_bar_h); gfx_set(0.62,0.82,1,1); gfx_rect(sv_bar_x,sv_b3y,sv_bar_w*sv_n,sv_bar_h); gfx_set(mut_r,mut_g,mut_b,1); gfx_x=sv_val_x; gfx_y=sv_b3y-2*ui_s; gfx_printf("%.0f%%",ui_sceneverb_protect*100);
+);
 
 // --- Manager Link side tab + drawer overlay ---
 // Tab is the only visible Manager affordance in standalone mode.
@@ -4072,7 +4560,12 @@ ui_drawer_open ? (
   tip_id == 202 ? gfx_printf("Motion Smooth") :
   tip_id == 203 ? gfx_printf("Room Size") :
   tip_id == 204 ? gfx_printf("Input Width") :
-  tip_id == 205 ? gfx_printf("Bed Anchor") : gfx_printf("Help");
+  tip_id == 205 ? gfx_printf("Bed Anchor") :
+  tip_id >= 301 && tip_id <= 306 ? gfx_printf("SceneVerb Preset") :
+  tip_id == 311 ? gfx_printf("Late Field") :
+  tip_id == 312 ? gfx_printf("Space Size") :
+  tip_id == 313 ? gfx_printf("Protect") :
+  tip_id == 320 ? gfx_printf("SceneVerb Lite") : gfx_printf("Help");
 
   gfx_setfont(4,"Arial",fs4);
   gfx_set(0.82,0.86,0.93,1);
@@ -4208,5 +4701,30 @@ ui_drawer_open ? (
     gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Ambience Bed placement strength.");
     gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("0 = broad stable bed, 1 = scene-biased.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Only affects Ambience Bed mode.");
+  ) : tip_id >= 301 && tip_id <= 306 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1;
+    tip_id == 301 ? gfx_printf("Safe neutral depth starting point.") :
+    tip_id == 302 ? gfx_printf("Keeps vocals close and protected.") :
+    tip_id == 303 ? gfx_printf("Short bloom; protects impact punch.") :
+    tip_id == 304 ? gfx_printf("Dark body-space for internal wet layers.") :
+    tip_id == 305 ? gfx_printf("Brighter/wider space for splashes.") : gfx_printf("Wide halo for beds or ASMR motion.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Preset sets Type + 3 macros.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Late Field above 0 activates SceneVerb.");
+  ) : tip_id == 311 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Amount of optional late spatial field.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("0%% = fully bypassed / legacy-safe.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Raise until bypass feels flatter.");
+  ) : tip_id == 312 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Macro for size, spread, and decay.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Low = tight. High = cinematic/wide.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Too high can feel distant or fake.");
+  ) : tip_id == 313 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("One-knob safety: low-end + duck + darkening.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("High protects punch/intimacy.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Low is more open/lush but riskier.");
+  ) : tip_id == 320 ? (
+    gfx_x = tip_tx; gfx_y = tip_l1; gfx_printf("Optional late field over legacy panner.");
+    gfx_x = tip_tx; gfx_y = tip_l2; gfx_printf("Manager Link active = Manager overrides.");
+    gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Room still means early bounces.");
   );
 );

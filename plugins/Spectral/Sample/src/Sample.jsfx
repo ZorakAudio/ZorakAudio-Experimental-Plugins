@@ -1,8 +1,12 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v49-posteq-solo-fix)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v54-spaceverb-voicesend)
 tags:instrument sampler ui
 options:gmem=SampleGroupSync
 // #GFX_RESIZE: responsive
 
+// v54 SpaceVerb VoiceSend: SpaceVerb is driven by per-voice envelope sends into one shared room/tail tank, with tail-energy governance instead of obvious transient ducking.
+// v53 PopCue: Shift+Push adds a CPU-gated concrete-detail cue extractor; it lifts short perceptual object cues without making Push bipolar.
+// v52 Harmonics: Shift+Output adds an 8-band ERB/gammatone-ish parallel harmonic enrichment layer; it is fully bypassed unless the hidden amount is above 0.
+// v51 SpaceVerb: Shift+Room adds designed space amount; Alt+Room sets space character. RoomScrub remains normal Room, and the additive SpaceVerb is zero-PDC/non-FFT/denormal-safe.
 // v48 CompileFixStrings: removes illegal string parameter from GroupSync hash helper; keeps JSFX functions top-down-safe.
 // v47 DeCrustCompileFix: restores cubic_mid() before the DeCrust curvature helper uses it.
 // v46 CleanDeCrust: Shift+Clean adds an FFT-512 spectral-kurtosis decrust mode for crunchy/crusty SFX; FFT work runs only while the hidden mode is active.
@@ -18,6 +22,7 @@ options:gmem=SampleGroupSync
 // v35 MacroGrain OLAGlue + PeakPack Pro: Granular adds 1ms/10ms/100ms/1000ms-scale load-time corpus analysis, permits event-scale macro-grains for coherent SFX, and smooths OLA/spawn edges to reduce clicks and gaps.
 // v49 PostEQSoloFix: restores Ctrl+click/drag temporary Post-EQ band/cut solo audition.
 // v28 SpectrumPrePost: Post-Processing now draws detailed pre-EQ and post-EQ spectra on one shared scale.
+// v50 AttackReleaseMinimal: note-off during Attack uses the user Release time, without retrigger interruption or changing release grain behavior.
 // v27 SpectrumDetail: Post-EQ spectrum uses a 96-bin resonant analyzer and thin trace drawing instead of a broad lowpass-difference blob.
 // v26 SpectrumContrast: Post-EQ spectrum underlay is brighter, adaptive, and easier to read on quiet material.
 // v25 BandQCal: Band 1/2/3 Q is calibrated to the actual peaking-biquad response; default Q is tighter and less absurdly wide.
@@ -51,6 +56,10 @@ filename:0,sample.wav
 // #HELP: v46 CleanDeCrust adds Shift+drag Clean as an FFT-512 spectral-kurtosis decrust mode for crunchy/crusty SFX. It is intentionally fail-fast at high values and the FFT path is inactive unless the hidden mode is nonzero.
 // #HELP: v40 CleanScrub makes Clean a stronger general cleanup control: it detects low-SNR/sustained bed noise per band, suppresses hiss and static tails harder, preserves attacks, and becomes deliberately obvious at high values.
 // #HELP: v39 RoomScrub makes Room Tame a stronger general de-room control: it detects late/diffuse band energy, trims low-mid/presence room wash, narrows roomy side smear, and protects attacks.
+// #HELP: v51 SpaceVerb adds Shift+drag Room as hidden Space amount and Alt+drag Room as hidden Space character: scrub bad room with Room, then add intentional sound-design space.
+// #HELP: v54 SpaceVerb feeds that space from per-voice envelope send buses into a shared room/tail tank, so impacts can ring naturally without obvious sidechain ducking.
+// #HELP: v53 PopCue adds Shift+drag Push as a concrete-detail cue extractor: it lifts short object cues in parallel without becoming inverse Push, and it is bypassed at 0.
+// #HELP: v52 Harmonics adds Shift+drag Output as a clean 8-band psychoacoustic harmonic enrichment macro: it generates a parallel, band-limited harmonic layer instead of driving the dry signal into saturation, and it is bypassed at 0.
 // #HELP: v38 DenormalGuard protects internal recursive filters/analyzers from near-zero denormal stalls, gates silent spectrum analysis, and preserves v37 Granular gating.
 // #HELP: v34 MultiScaleEventGrains analyzes short/mid/long windows at corpus-build time and lets Granular use event-sized grains when the source material wants continuity.
 // #HELP: v35 MacroGrain OLAGlue extends this to micro/short/mid/long/ultra windows, allowing coherent slow material to use 100 ms to 1 s grains while smoothing OLA starts, normalization, and long-grain window shape.
@@ -73,13 +82,13 @@ filename:0,sample.wav
 // #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack. Granular uses a load-time analyzed grain corpus: long files become many searchable micro-events, multi-source banks become one shared grain field, and playback uses anchor/texture/spice streams, phrase + envelope trajectories, corpus continuity, source-adaptive overlap, restrained swells, release blooms, and grain-level decorrelation.
 // #HELP:
 // #HELP: ## Cleanup and depth
-// #HELP: Clean is a transient-protected de-noise/de-bed macro: low values clean hiss/static tails gently, high values aggressively scrub low-SNR sustained noise and become obvious quickly. Shift+drag Clean controls DeCrust, a hidden FFT-512 spectral-kurtosis crust repair mode for crunchy SFX; it is bypassed completely at 0. Room Tame is a transient-protected de-room/de-smear macro: low values restrain late room wash, high values make the correction obvious quickly. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement.
+// #HELP: Clean is a transient-protected de-noise/de-bed macro: low values clean hiss/static tails gently, high values aggressively scrub low-SNR sustained noise and become obvious quickly. Shift+drag Clean controls DeCrust, a hidden FFT-512 spectral-kurtosis crust repair mode for crunchy SFX; it is bypassed completely at 0. Room Tame is a transient-protected de-room/de-smear macro: low values restrain late room wash, high values make the correction obvious quickly. Shift+drag Room adds intentional designed Space; Alt+drag Room changes Space character from tight early room to wide dark bloom. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement. Shift+drag Push adds PopCue, a parallel concrete-detail cue extractor that restores object/tactile detail without broadly brightening.
 // #HELP:
 // #HELP: ## Post-Processing
 // #HELP: The Post-Processing panel is a final-output EQ editor with pre/post spectrum overlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope; Ctrl+click/drag temporarily solos the selected band/cut for auditioning.
 // #HELP:
 // #HELP: ## Tone and feel
-// #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Shift+drag Grain adjusts hidden Granular Input amount: dry input passes through, and its dBFS envelope injects/scales generated Granular texture. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection; Shift+drag Dynamics adds hidden Expansion for punch/space contrast.
+// #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Shift+drag Grain adjusts hidden Granular Input amount: dry input passes through, and its dBFS envelope injects/scales generated Granular texture. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection; Shift+drag Dynamics adds hidden Expansion for punch/space contrast. Shift+drag Push adds hidden PopCue for concrete detail; Shift+drag Output adds clean parallel Harmonics.
 // #HELP:
 // #HELP: ## FluxBridge
 // #HELP: When the fixed FluxBridge CC lane block is present, Sample adds subtle motion-driven tone, focus, width, pan, and body contour while protecting transient-rich hits.
@@ -3356,6 +3365,162 @@ function reset_room_buffers()
   room_tail_bus = 0;
 );
 
+function reset_space_verb_buffers()
+(
+  memset(space_l_base, 0, SPACE_BUF_LEN);
+  memset(space_r_base, 0, SPACE_BUF_LEN);
+  space_pos = 0;
+  space_fb_l = 0;
+  space_fb_r = 0;
+  space_damp_l = 0;
+  space_damp_r = 0;
+  space_low_l = 0;
+  space_low_r = 0;
+  space_early_s_l = 0;
+  space_early_s_r = 0;
+  space_late_s_l = 0;
+  space_late_s_r = 0;
+  space_tank_energy = 0;
+  space_governor_s = 1;
+  space_env = 0;
+  space_tail_meter = 0;
+  space_mod_phase = 0;
+  space_room_runtime_active = 0;
+);
+
+
+function reset_output_harmonics_buffers()
+(
+  memset(harm_lpa_l_base, 0, HARM_XOVERS);
+  memset(harm_lpb_l_base, 0, HARM_XOVERS);
+  memset(harm_lpa_r_base, 0, HARM_XOVERS);
+  memset(harm_lpb_r_base, 0, HARM_XOVERS);
+  memset(harm_band_l_base, 0, HARM_BANDS);
+  memset(harm_band_r_base, 0, HARM_BANDS);
+  memset(harm_env_base, 0, HARM_BANDS);
+  memset(harm_dcx_l_base, 0, HARM_BANDS);
+  memset(harm_dcy_l_base, 0, HARM_BANDS);
+  memset(harm_dcx_r_base, 0, HARM_BANDS);
+  memset(harm_dcy_r_base, 0, HARM_BANDS);
+  output_harm_runtime_active = 0;
+);
+
+
+function reset_push_pop_buffers()
+(
+  memset(pop_lpa_l_base, 0, POP_XOVERS);
+  memset(pop_lpb_l_base, 0, POP_XOVERS);
+  memset(pop_lpa_r_base, 0, POP_XOVERS);
+  memset(pop_lpb_r_base, 0, POP_XOVERS);
+  memset(pop_band_l_base, 0, POP_BANDS);
+  memset(pop_band_r_base, 0, POP_BANDS);
+  memset(pop_fast_l_base, 0, POP_BANDS);
+  memset(pop_fast_r_base, 0, POP_BANDS);
+  memset(pop_mid_l_base, 0, POP_BANDS);
+  memset(pop_mid_r_base, 0, POP_BANDS);
+  memset(pop_slow_l_base, 0, POP_BANDS);
+  memset(pop_slow_r_base, 0, POP_BANDS);
+  memset(pop_env_fast_base, 0, POP_BANDS);
+  memset(pop_env_slow_base, 0, POP_BANDS);
+  memset(pop_floor_base, 0, POP_BANDS);
+  pop_dcx_l = 0;
+  pop_dcy_l = 0;
+  pop_dcx_r = 0;
+  pop_dcy_r = 0;
+  pop_air_guard_s = 1;
+  push_pop_runtime_active = 0;
+);
+
+function pop_xover_freq(idx)
+(
+  idx <= 0 ? 520
+  : idx == 1 ? 1200
+  : idx == 2 ? 3800
+  : 9000;
+);
+
+function pop_band_weight(idx air_guard)
+(
+  idx <= 0 ? 0.04
+  : idx == 1 ? 0.34
+  : idx == 2 ? 1.00
+  : idx == 3 ? 0.88
+  : 0.30 * air_guard;
+);
+
+function pop_update_coeffs() local(i f msf msm mss)
+(
+  i = 0;
+  while (i < POP_XOVERS) (
+    f = min(pop_xover_freq(i), srate * 0.46);
+    pop_xover_coeff_base[i] = clamp(1 - exp(-6.283185307179586 * f / max(srate, 1)), 0.00002, 0.98);
+    i += 1;
+  );
+
+  i = 0;
+  while (i < POP_BANDS) (
+    i <= 0 ? (
+      msf = 3.2; msm = 18; mss = 90;
+    ) : i == 1 ? (
+      msf = 1.8; msm = 9.5; mss = 52;
+    ) : i == 2 ? (
+      msf = 0.90; msm = 5.0; mss = 28;
+    ) : i == 3 ? (
+      msf = 0.42; msm = 2.3; mss = 14;
+    ) : (
+      msf = 0.28; msm = 1.4; mss = 8.0;
+    );
+
+    pop_fast_coeff_base[i] = clamp(1 - exp(-1 / max(1, floor(msf * 0.001 * srate))), 0.0001, 0.98);
+    pop_mid_coeff_base[i]  = clamp(1 - exp(-1 / max(1, floor(msm * 0.001 * srate))), 0.0001, 0.72);
+    pop_slow_coeff_base[i] = clamp(1 - exp(-1 / max(1, floor(mss * 0.001 * srate))), 0.00001, 0.36);
+    i += 1;
+  );
+
+  pop_env_fast_att = 1 - exp(-1 / max(1, floor(0.0035 * srate)));
+  pop_env_fast_rel = 1 - exp(-1 / max(1, floor(0.0400 * srate)));
+  pop_env_slow_coeff = 1 - exp(-1 / max(1, floor(0.1800 * srate)));
+  pop_floor_up_coeff = 1 - exp(-1 / max(1, floor(3.5000 * srate)));
+  pop_floor_down_coeff = 1 - exp(-1 / max(1, floor(0.2400 * srate)));
+);
+
+function pop_dcblock_l(x) local(y)
+(
+  y = x - pop_dcx_l + 0.995 * pop_dcy_l;
+  pop_dcx_l = x;
+  pop_dcy_l = denorm_zap(y);
+  pop_dcy_l;
+);
+
+function pop_dcblock_r(x) local(y)
+(
+  y = x - pop_dcx_r + 0.995 * pop_dcy_r;
+  pop_dcx_r = x;
+  pop_dcy_r = denorm_zap(y);
+  pop_dcy_r;
+);
+
+function harm_xover_freq(idx)
+(
+  idx <= 0 ? 140
+  : idx == 1 ? 260
+  : idx == 2 ? 480
+  : idx == 3 ? 900
+  : idx == 4 ? 1700
+  : idx == 5 ? 3200
+  : 6200;
+);
+
+function harm_update_coeffs() local(i f)
+(
+  i = 0;
+  while (i < HARM_XOVERS) (
+    f = min(harm_xover_freq(i), srate * 0.46);
+    harm_coeff_base[i] = clamp(1 - exp(-6.283185307179586 * f / max(srate, 1)), 0.00002, 0.98);
+    i += 1;
+  );
+);
+
 function reset_push_buffers()
 (
   push_m_lp15 = 0;
@@ -4267,6 +4432,343 @@ function apply_room_tame() local(
   outR = denorm_zap(lerp(inR, wetR, wetmix));
 );
 
+function space_softclip(x)
+(
+  x / (1 + abs(x) * 0.42);
+);
+
+function space_tap_l(delay_samps) local(d idx)
+(
+  d = clamp(floor(delay_samps), 1, SPACE_BUF_LEN - 2) | 0;
+  idx = (space_pos - d) & SPACE_BUF_MASK;
+  space_l_base[idx];
+);
+
+function space_tap_r(delay_samps) local(d idx)
+(
+  d = clamp(floor(delay_samps), 1, SPACE_BUF_LEN - 2) | 0;
+  idx = (space_pos - d) & SPACE_BUF_MASK;
+  space_r_base[idx];
+);
+
+function apply_space_verb() local(
+  dryL dryR amount char amt ch base_size pred early_scale late_scale wet_gain
+  send_amt low_hz damp_hz low_c damp_c fb maxd
+  dE1 dE2 dE3 d1 d2 d3 d4 d5 d6
+  eL eR l1L l1R l2L l2R l3L l3R l4L l4R l5L l5R l6L l6R
+  lateL lateR writeL writeR verbL verbR vmid vside width modv taildet
+  earlyInL earlyInR lateInL lateInR sendL sendR bodyL bodyR
+  in_att in_rel tank_hot governor_target governor send_drive late_drive early_drive
+)
+(
+  // v54 SpaceVerb VoiceSend: additive sound-design space is fed by per-voice
+  // envelope send buses into one shared room/tail tank. There is no audible
+  // sidechain-style transient ducking; impacts excite early reflections and the
+  // tank decays naturally. Only new send/feedback are gently governed when the
+  // shared tail is already too hot.
+  dryL = outL;
+  dryR = outR;
+  amount = clamp01(space_room_amt);
+  char = clamp01(space_room_char);
+  amt = amount ^ 1.18;
+  ch = char;
+
+  // Character maps from tight early room to wide/dark long bloom.
+  base_size = lerp(0.42, 1.82, ch ^ 1.35) * lerp(0.82, 1.24, amt);
+  pred = srate * lerp(0.004, 0.046, ch ^ 1.25);
+
+  dE1 = pred + srate * lerp(0.0065, 0.018, ch);
+  dE2 = pred + srate * lerp(0.0130, 0.034, ch);
+  dE3 = pred + srate * lerp(0.0240, 0.057, ch);
+
+  d1 = srate * 0.061 * base_size + pred;
+  d2 = srate * 0.083 * base_size + pred;
+  d3 = srate * 0.127 * base_size + pred;
+  d4 = srate * 0.181 * base_size + pred;
+  d5 = srate * 0.293 * base_size + pred;
+  d6 = srate * 0.421 * base_size + pred;
+  maxd = SPACE_BUF_LEN - 4;
+  d1 = min(d1, maxd); d2 = min(d2, maxd); d3 = min(d3, maxd);
+  d4 = min(d4, maxd); d5 = min(d5, maxd); d6 = min(d6, maxd);
+
+  eL = space_tap_l(dE1) * 0.48 + space_tap_r(dE2) * 0.26 + space_tap_l(dE3) * 0.18;
+  eR = space_tap_r(dE1 * 1.07) * 0.48 + space_tap_l(dE2 * 0.93) * 0.26 + space_tap_r(dE3 * 1.11) * 0.18;
+
+  l1L = space_tap_l(d1);       l1R = space_tap_r(d1 * 1.09);
+  l2L = space_tap_l(d2 * 1.03); l2R = space_tap_r(d2 * 0.97);
+  l3L = space_tap_l(d3 * 0.91); l3R = space_tap_r(d3 * 1.06);
+  l4L = space_tap_l(d4 * 1.07); l4R = space_tap_r(d4 * 0.94);
+  l5L = space_tap_l(d5 * 0.98); l5R = space_tap_r(d5 * 1.04);
+  l6L = space_tap_l(d6 * 1.03); l6R = space_tap_r(d6 * 0.96);
+
+  lateL = l1R * 0.34 + l2L * 0.28 - l3R * 0.22 + l4L * 0.18 + l5R * 0.12 - l6L * 0.08;
+  lateR = l1L * 0.34 + l2R * 0.28 - l3L * 0.22 + l4R * 0.18 + l5L * 0.12 - l6R * 0.08;
+
+  damp_hz = lerp(9200, 1250, ch ^ 0.82);
+  damp_c = clamp(1 - exp(-6.283185307179586 * min(damp_hz, srate * 0.45) / max(srate, 1)), 0.0002, 0.92);
+  space_damp_l = denorm_zap(space_damp_l + (lateL - space_damp_l) * damp_c);
+  space_damp_r = denorm_zap(space_damp_r + (lateR - space_damp_r) * damp_c);
+
+  // Smooth cross-voice send changes. This is the anti-click / anti-pump layer;
+  // it is not output ducking. Fast attacks still enter the space quickly.
+  in_att = clamp(1 - exp(-6.90775527898214 / max(1, floor(srate * lerp(0.0025, 0.0090, ch)))), 0.001, 1);
+  in_rel = clamp(1 - exp(-6.90775527898214 / max(1, floor(srate * lerp(0.0550, 0.2100, ch)))), 0.00002, 1);
+  earlyInL = space_early_bus_l;
+  earlyInR = space_early_bus_r;
+  lateInL = space_late_bus_l;
+  lateInR = space_late_bus_r;
+  space_early_s_l = denorm_zap(space_early_s_l + (earlyInL - space_early_s_l) * (abs(earlyInL) > abs(space_early_s_l) ? in_att : in_rel));
+  space_early_s_r = denorm_zap(space_early_s_r + (earlyInR - space_early_s_r) * (abs(earlyInR) > abs(space_early_s_r) ? in_att : in_rel));
+  space_late_s_l  = denorm_zap(space_late_s_l  + (lateInL  - space_late_s_l)  * (abs(lateInL)  > abs(space_late_s_l)  ? in_att * 0.72 : in_rel));
+  space_late_s_r  = denorm_zap(space_late_s_r  + (lateInR  - space_late_s_r)  * (abs(lateInR)  > abs(space_late_s_r)  ? in_att * 0.72 : in_rel));
+
+  // Keep subs mostly dry; Space is body/air/room, not a low-end mud generator.
+  sendL = space_early_s_l * lerp(0.68, 0.36, ch) + space_late_s_l * lerp(0.46, 0.84, ch);
+  sendR = space_early_s_r * lerp(0.68, 0.36, ch) + space_late_s_r * lerp(0.46, 0.84, ch);
+  low_hz = lerp(135, 310, ch);
+  low_c = clamp(1 - exp(-6.283185307179586 * low_hz / max(srate, 1)), 0.0001, 0.16);
+  space_low_l = denorm_zap(space_low_l + (sendL - space_low_l) * low_c);
+  space_low_r = denorm_zap(space_low_r + (sendR - space_low_r) * low_c);
+  bodyL = sendL - space_low_l * lerp(0.42, 0.72, ch);
+  bodyR = sendR - space_low_r * lerp(0.42, 0.72, ch);
+
+  // Tail-energy governor. This reduces new excitation/feedback only when the
+  // shared tank is already overloaded; it does not duck the audible verb output.
+  space_tank_energy = denorm_zap(space_tank_energy + (space_tail_meter - space_tank_energy) * (space_tail_meter > space_tank_energy ? 0.006 : 0.0012));
+  tank_hot = clamp01((space_tank_energy - lerp(0.24, 0.46, 1 - amt)) / max(0.0001, lerp(0.54, 0.28, amt)));
+  governor_target = 1 - tank_hot * lerp(0.18, 0.48, amt) * lerp(0.65, 1.05, ch);
+  governor_target = clamp(governor_target, 0.48, 1);
+  space_governor_s = denorm_zap(space_governor_s + (governor_target - space_governor_s) * (governor_target < space_governor_s ? 0.0035 : 0.0008));
+  governor = clamp(space_governor_s, 0.44, 1);
+
+  early_drive = amt * lerp(0.72, 0.30, ch);
+  late_drive = amt * lerp(0.28, 0.95, ch ^ 0.82);
+  send_drive = (early_drive + late_drive) * 0.62 * governor;
+
+  fb = clamp(lerp(0.34, 0.865, ch ^ 1.18) * lerp(0.78, 1.08, amt) * lerp(1.0, 0.84, tank_hot), 0.12, 0.895);
+  modv = sin(space_mod_phase) * srate * 0.00075 * amt * clamp01((ch - 0.38) / 0.62);
+  space_mod_phase += 6.283185307179586 * lerp(0.045, 0.155, ch) / max(srate, 1);
+  space_mod_phase > 6.283185307179586 ? space_mod_phase -= 6.283185307179586;
+
+  writeL = bodyL * send_drive
+         + (space_damp_r * 0.62 + space_damp_l * 0.20 + space_tap_r(min(maxd, d4 + modv)) * 0.10) * fb;
+  writeR = bodyR * send_drive
+         + (space_damp_l * 0.62 + space_damp_r * 0.20 + space_tap_l(min(maxd, d4 - modv)) * 0.10) * fb;
+
+  writeL = denorm_zap(space_softclip(writeL));
+  writeR = denorm_zap(space_softclip(writeR));
+  space_l_base[space_pos] = writeL;
+  space_r_base[space_pos] = writeR;
+  space_pos = (space_pos + 1) & SPACE_BUF_MASK;
+
+  early_scale = amt * lerp(0.38, 0.15, ch);
+  late_scale  = amt * lerp(0.12, 0.86, ch ^ 0.88);
+  verbL = eL * early_scale + (lateL * 0.45 + space_damp_l * 0.78) * late_scale;
+  verbR = eR * early_scale + (lateR * 0.45 + space_damp_r * 0.78) * late_scale;
+
+  vmid = 0.5 * (verbL + verbR);
+  vside = 0.5 * (verbL - verbR);
+  width = lerp(0.05, 1.05, ch) * amt;
+  vside *= 1 + width;
+  verbL = vmid + vside;
+  verbR = vmid - vside;
+
+  wet_gain = lerp(0.78, 1.50, amt) * lerp(0.90, 1.12, ch);
+  verbL = space_softclip(verbL * wet_gain);
+  verbR = space_softclip(verbR * wet_gain);
+
+  taildet = max(abs(verbL), abs(verbR));
+  space_tail_meter = denorm_zap(space_tail_meter + (taildet - space_tail_meter) * (taildet > space_tail_meter ? 0.020 : 0.002));
+
+  outL = denorm_zap(dryL + verbL);
+  outR = denorm_zap(dryR + verbR);
+);
+
+
+function harm_smoothstep(e0 e1 x) local(t)
+(
+  t = clamp01((x - e0) / max(0.000001, e1 - e0));
+  t * t * (3 - 2 * t);
+);
+
+function harm_band_weight(idx)
+(
+  idx <= 0 ? 0.16
+  : idx == 1 ? 0.56
+  : idx == 2 ? 0.86
+  : idx == 3 ? 1.00
+  : idx == 4 ? 0.92
+  : idx == 5 ? 0.66
+  : idx == 6 ? 0.28
+  : 0.08;
+);
+
+function harm_hi_weight(idx)
+(
+  idx <= 0 ? 0.08
+  : idx == 1 ? 0.54
+  : idx == 2 ? 1.00
+  : idx == 3 ? 0.72
+  : idx == 4 ? 0.30
+  : idx == 5 ? 0.08
+  : 0;
+);
+
+function harm_ultra_weight(idx)
+(
+  idx <= 0 ? 0
+  : idx == 1 ? 0.36
+  : idx == 2 ? 0.72
+  : idx == 3 ? 0.42
+  : idx == 4 ? 0.10
+  : 0;
+);
+
+function harm_dc_l(idx x) local(y)
+(
+  y = x - harm_dcx_l_base[idx] + 0.995 * harm_dcy_l_base[idx];
+  harm_dcx_l_base[idx] = x;
+  harm_dcy_l_base[idx] = denorm_zap(y);
+  harm_dcy_l_base[idx];
+);
+
+function harm_dc_r(idx x) local(y)
+(
+  y = x - harm_dcx_r_base[idx] + 0.995 * harm_dcy_r_base[idx];
+  harm_dcx_r_base[idx] = x;
+  harm_dcy_r_base[idx] = denorm_zap(y);
+  harm_dcy_r_base[idx];
+);
+
+function harm_safe(x)
+(
+  x / (1 + abs(x) * 0.34);
+);
+
+function apply_output_harmonics() local(
+  a h2 h3 h4 h5 h7
+  inL inR prevL prevR i c lp1 lp2 bL bR bandE totalE highE bright_guard trans_guard
+  env xL xR x2L x3L x4L x5L x7L x2R x3R x4R x5R x7R
+  evenL evenR oddL oddR busL busR bw hw uw harmL harmR mix_gain wet ceiling det lim
+)
+(
+  // v52 Harmonics: clean parallel enrichment, not saturation.
+  // An 8-band ERB/gammatone-ish scaffold controls where harmonic residuals are
+  // generated. The dry signal is not driven; a guarded harmonic layer is added.
+  a = clamp01(output_harmonics_amt);
+  a > 0.0001 ? (
+    output_harm_runtime_active = 1;
+    inL = outL;
+    inR = outR;
+
+    h2 = 0.30 * (a ^ 0.92);
+    h3 = 0.22 * (a ^ 1.14);
+    h4 = 0.13 * harm_smoothstep(0.30, 0.88, a);
+    h5 = 0.12 * harm_smoothstep(0.44, 0.96, a);
+    h7 = 0.075 * harm_smoothstep(0.70, 1.00, a);
+
+    prevL = 0;
+    prevR = 0;
+    totalE = 0;
+    highE = 0;
+
+    i = 0;
+    while (i < HARM_XOVERS) (
+      c = harm_coeff_base[i];
+      lp1 = harm_lpa_l_base[i] + (inL - harm_lpa_l_base[i]) * c;
+      harm_lpa_l_base[i] = denorm_zap(lp1);
+      lp2 = harm_lpb_l_base[i] + (lp1 - harm_lpb_l_base[i]) * c;
+      harm_lpb_l_base[i] = denorm_zap(lp2);
+      bL = lp2 - prevL;
+      prevL = lp2;
+
+      lp1 = harm_lpa_r_base[i] + (inR - harm_lpa_r_base[i]) * c;
+      harm_lpa_r_base[i] = denorm_zap(lp1);
+      lp2 = harm_lpb_r_base[i] + (lp1 - harm_lpb_r_base[i]) * c;
+      harm_lpb_r_base[i] = denorm_zap(lp2);
+      bR = lp2 - prevR;
+      prevR = lp2;
+
+      harm_band_l_base[i] = bL;
+      harm_band_r_base[i] = bR;
+      bandE = abs(bL) + abs(bR);
+      totalE += bandE;
+      i >= 5 ? highE += bandE;
+      i += 1;
+    );
+
+    bL = inL - prevL;
+    bR = inR - prevR;
+    harm_band_l_base[HARM_BANDS - 1] = bL;
+    harm_band_r_base[HARM_BANDS - 1] = bR;
+    bandE = abs(bL) + abs(bR);
+    totalE += bandE;
+    highE += bandE;
+
+    bright_guard = clamp01(1 - clamp01(highE / max(totalE, 0.000000001)) * (0.42 + 0.46 * a));
+    trans_guard = clamp(1 - transient_guard_s * (0.30 + 0.45 * a), 0.25, 1);
+
+    harmL = 0;
+    harmR = 0;
+    i = 0;
+    while (i < HARM_BANDS) (
+      bL = harm_band_l_base[i];
+      bR = harm_band_r_base[i];
+      bandE = max(abs(bL), abs(bR));
+      env = harm_env_base[i];
+      env += (bandE - env) * (bandE > env ? harm_env_att_coeff : harm_env_rel_coeff);
+      env = denorm_zap(env);
+      harm_env_base[i] = env;
+
+      xL = clamp(bL / max(0.0000009, env * 1.55), -1, 1);
+      xR = clamp(bR / max(0.0000009, env * 1.55), -1, 1);
+
+      x2L = xL * xL; x3L = x2L * xL; x4L = x2L * x2L; x5L = x4L * xL; x7L = x5L * x2L;
+      x2R = xR * xR; x3R = x2R * xR; x4R = x2R * x2R; x5R = x4R * xR; x7R = x5R * x2R;
+
+      bw = harm_band_weight(i);
+      hw = harm_hi_weight(i);
+      uw = harm_ultra_weight(i);
+
+      evenL = h2 * (2 * x2L - 1) * bw + h4 * (8 * x4L - 8 * x2L + 1) * hw;
+      evenR = h2 * (2 * x2R - 1) * bw + h4 * (8 * x4R - 8 * x2R + 1) * hw;
+      evenL = harm_dc_l(i, evenL);
+      evenR = harm_dc_r(i, evenR);
+
+      oddL = h3 * (4 * x3L - 3 * xL) * bw
+           + h5 * (16 * x5L - 20 * x3L + 5 * xL) * hw
+           + h7 * (64 * x7L - 112 * x5L + 56 * x3L - 7 * xL) * uw;
+      oddR = h3 * (4 * x3R - 3 * xR) * bw
+           + h5 * (16 * x5R - 20 * x3R + 5 * xR) * hw
+           + h7 * (64 * x7R - 112 * x5R + 56 * x3R - 7 * xR) * uw;
+
+      // The generated layer follows the original band envelope. This keeps the
+      // effect in the realm of enrichment rather than crunchy full-band drive.
+      mix_gain = env * (0.22 + 0.78 * (a ^ 1.22)) * trans_guard * bright_guard;
+      harmL += (evenL + oddL) * mix_gain;
+      harmR += (evenR + oddR) * mix_gain;
+
+      i += 1;
+    );
+
+    wet = clamp01(0.20 + 0.88 * (a ^ 1.18));
+    busL = harm_safe(harmL * wet);
+    busR = harm_safe(harmR * wet);
+
+    outL = inL + busL;
+    outR = inR + busR;
+
+    // Protection only. This is not intended as the tone source.
+    ceiling = 1.14;
+    det = max(abs(outL), abs(outR));
+    det > ceiling ? (
+      lim = ceiling / max(det, 0.000001);
+      outL *= lim;
+      outR *= lim;
+    );
+  );
+);
+
 function apply_push() local(
   inL inR M S
   M_body M_form M_edge M_air S_body S_form S_edge S_air
@@ -4409,6 +4911,155 @@ function formant_gain_from_ratio(cur target depth band_depth) local(r g d)
   // but the envelope move is now strong enough to A/B at +/-12.
   g = exp(log(r) * 0.92 * d);
   clamp(g, db2amp(-15.0 * d), db2amp(13.0 * d));
+);
+
+
+function apply_push_pop() local(
+  a sane extreme gain inL inR prevL prevR i c lp1 lp2 bL bR
+  fl fr ml mr sl sr fc mc sc microL microR edgeL edgeR shapeL shapeR
+  detailL detailR det efast eslow floorv event snr cue bed roomg bandw airg
+  popL popR total_fast air_fast air_ratio air_excess target_air trans_shape lim
+)
+(
+  a = clamp01(push_pop_amt);
+  a > 0.0001 ? (
+    push_pop_runtime_active = 1;
+
+    // v53 PopCue: a parallel concrete-cue bus. Source is captured before Push,
+    // then reintroduced after Push so high Push can remain distant but legible.
+    inL = pop_src_l + denorm_guard;
+    inR = pop_src_r - denorm_guard;
+
+    prevL = 0;
+    prevR = 0;
+    i = 0;
+    while (i < POP_XOVERS) (
+      c = pop_xover_coeff_base[i];
+
+      lp1 = pop_lpa_l_base[i] + (inL - pop_lpa_l_base[i]) * c;
+      pop_lpa_l_base[i] = denorm_zap(lp1);
+      lp2 = pop_lpb_l_base[i] + (lp1 - pop_lpb_l_base[i]) * c;
+      pop_lpb_l_base[i] = denorm_zap(lp2);
+      bL = lp2 - prevL;
+      prevL = lp2;
+
+      lp1 = pop_lpa_r_base[i] + (inR - pop_lpa_r_base[i]) * c;
+      pop_lpa_r_base[i] = denorm_zap(lp1);
+      lp2 = pop_lpb_r_base[i] + (lp1 - pop_lpb_r_base[i]) * c;
+      pop_lpb_r_base[i] = denorm_zap(lp2);
+      bR = lp2 - prevR;
+      prevR = lp2;
+
+      pop_band_l_base[i] = bL;
+      pop_band_r_base[i] = bR;
+      i += 1;
+    );
+    pop_band_l_base[POP_BANDS - 1] = inL - prevL;
+    pop_band_r_base[POP_BANDS - 1] = inR - prevR;
+
+    popL = 0;
+    popR = 0;
+    total_fast = 0;
+    air_fast = 0;
+    sane = a ^ 1.25;
+    extreme = a ^ 3.20;
+
+    i = 0;
+    while (i < POP_BANDS) (
+      bL = pop_band_l_base[i];
+      bR = pop_band_r_base[i];
+      fc = pop_fast_coeff_base[i];
+      mc = pop_mid_coeff_base[i];
+      sc = pop_slow_coeff_base[i];
+
+      fl = pop_fast_l_base[i] + (bL - pop_fast_l_base[i]) * fc;
+      fr = pop_fast_r_base[i] + (bR - pop_fast_r_base[i]) * fc;
+      ml = pop_mid_l_base[i] + (fl - pop_mid_l_base[i]) * mc;
+      mr = pop_mid_r_base[i] + (fr - pop_mid_r_base[i]) * mc;
+      sl = pop_slow_l_base[i] + (ml - pop_slow_l_base[i]) * sc;
+      sr = pop_slow_r_base[i] + (mr - pop_slow_r_base[i]) * sc;
+
+      pop_fast_l_base[i] = denorm_zap(fl);
+      pop_fast_r_base[i] = denorm_zap(fr);
+      pop_mid_l_base[i] = denorm_zap(ml);
+      pop_mid_r_base[i] = denorm_zap(mr);
+      pop_slow_l_base[i] = denorm_zap(sl);
+      pop_slow_r_base[i] = denorm_zap(sr);
+
+      microL = bL - fl;
+      microR = bR - fr;
+      edgeL = fl - ml;
+      edgeR = fr - mr;
+      shapeL = ml - sl;
+      shapeR = mr - sr;
+
+      // Temporal-detail ladder: mostly micro/edge, only a small amount of contour.
+      detailL = microL * (0.38 + 0.38 * sane) + edgeL * (0.76 + 0.34 * sane) + shapeL * (0.14 + 0.22 * extreme);
+      detailR = microR * (0.38 + 0.38 * sane) + edgeR * (0.76 + 0.34 * sane) + shapeR * (0.14 + 0.22 * extreme);
+      det = max(abs(detailL), abs(detailR)) * 0.58 + abs(0.5 * (detailL + detailR)) * 0.42;
+
+      efast = pop_env_fast_base[i];
+      efast += (det - efast) * (det > efast ? pop_env_fast_att : pop_env_fast_rel);
+      efast = denorm_zap(efast);
+      pop_env_fast_base[i] = efast;
+
+      eslow = pop_env_slow_base[i];
+      eslow += (det - eslow) * pop_env_slow_coeff;
+      eslow = denorm_zap(eslow);
+      pop_env_slow_base[i] = eslow;
+
+      floorv = pop_floor_base[i];
+      floorv += (det - floorv) * (det > floorv ? pop_floor_up_coeff : pop_floor_down_coeff);
+      floorv = min(floorv, eslow * 0.86 + 0.00000003);
+      floorv = denorm_zap(max(0, floorv));
+      pop_floor_base[i] = floorv;
+
+      event = clamp01((efast - eslow * (0.88 - 0.16 * sane)) / max(0.0000002, eslow * (0.88 - 0.36 * sane) + 0.0000002));
+      snr = clamp01((efast - floorv * (1.65 - 0.52 * sane)) / max(0.0000002, floorv * (5.0 - 2.8 * sane) + 0.0000002));
+      bed = clamp01(eslow / max(efast + eslow, 0.000000000001));
+      cue = event * snr * (1 - bed * (0.16 + 0.26 * sane));
+      cue = clamp01(cue);
+      cue = cue ^ max(0.42, 1.20 - 0.62 * sane);
+
+      roomg = 1 - clamp01(room_tail_bus * (0.20 + 0.46 * sane) + clean_tail_bus * 0.18 * sane);
+      airg = i >= (POP_BANDS - 1) ? pop_air_guard_s : 1;
+      bandw = pop_band_weight(i, airg);
+
+      popL += detailL * cue * roomg * bandw;
+      popR += detailR * cue * roomg * bandw;
+
+      total_fast += efast;
+      i >= (POP_BANDS - 1) ? air_fast += efast;
+      i += 1;
+    );
+
+    air_ratio = air_fast / max(total_fast, 0.000000000001);
+    air_excess = clamp01((air_ratio - 0.30) / 0.42);
+    target_air = 1 - air_excess * (0.35 + 0.48 * sane);
+    pop_air_guard_s = denorm_zap(pop_air_guard_s + (target_air - pop_air_guard_s) * 0.010);
+    pop_air_guard_s = clamp(pop_air_guard_s, 0.16, 1);
+
+    popL = pop_dcblock_l(popL);
+    popR = pop_dcblock_r(popR);
+
+    gain = 0.16 + 1.58 * sane + 3.10 * extreme;
+    trans_shape = 1 - clamp01(max(0, transient_guard_s - 0.82) * (0.18 + 0.16 * sane));
+    popL *= gain * trans_shape;
+    popR *= gain * trans_shape;
+
+    // Safety only: keep Pop from becoming a clipper/distortion macro.
+    lim = max(abs(popL), abs(popR));
+    lim > 0.85 ? (
+      lim = 0.85 / max(lim, 0.0000001);
+      popL *= lim;
+      popR *= lim;
+    );
+
+    outL = denorm_zap(outL + popL);
+    outR = denorm_zap(outR + popR);
+  ) : (
+    push_pop_runtime_active > 0 ? reset_push_pop_buffers();
+  );
 );
 
 function apply_formant_shift() local(
@@ -5069,7 +5720,7 @@ function group_can_input_fire(env_amt) local(
   );
 );
 
-function denorm_flush_scalar_states()
+function denorm_flush_scalar_states() local(i)
 (
   mix_fast = denorm_zap(mix_fast);
   mix_slow = denorm_zap(mix_slow);
@@ -5090,6 +5741,59 @@ function denorm_flush_scalar_states()
   room_b0_fast = denorm_zap(room_b0_fast); room_b1_fast = denorm_zap(room_b1_fast); room_b2_fast = denorm_zap(room_b2_fast); room_b3_fast = denorm_zap(room_b3_fast); room_b4_fast = denorm_zap(room_b4_fast);
   room_b0_slow = denorm_zap(room_b0_slow); room_b1_slow = denorm_zap(room_b1_slow); room_b2_slow = denorm_zap(room_b2_slow); room_b3_slow = denorm_zap(room_b3_slow); room_b4_slow = denorm_zap(room_b4_slow);
 
+  space_fb_l = denorm_zap(space_fb_l); space_fb_r = denorm_zap(space_fb_r);
+  space_damp_l = denorm_zap(space_damp_l); space_damp_r = denorm_zap(space_damp_r);
+  space_low_l = denorm_zap(space_low_l); space_low_r = denorm_zap(space_low_r);
+  space_early_s_l = denorm_zap(space_early_s_l); space_early_s_r = denorm_zap(space_early_s_r);
+  space_late_s_l = denorm_zap(space_late_s_l); space_late_s_r = denorm_zap(space_late_s_r);
+  space_tank_energy = denorm_zap(space_tank_energy); space_governor_s = denorm_zap(space_governor_s);
+  space_env = denorm_zap(space_env); space_tail_meter = denorm_zap(space_tail_meter);
+  (output_harmonics_amt > 0.0001 || output_harm_runtime_active > 0) ? (
+    // v52: only touch harmonic recursive states while the hidden mode is/was active.
+    i = 0;
+    while (i < HARM_XOVERS) (
+      harm_lpa_l_base[i] = denorm_zap(harm_lpa_l_base[i]);
+      harm_lpb_l_base[i] = denorm_zap(harm_lpb_l_base[i]);
+      harm_lpa_r_base[i] = denorm_zap(harm_lpa_r_base[i]);
+      harm_lpb_r_base[i] = denorm_zap(harm_lpb_r_base[i]);
+      i += 1;
+    );
+    i = 0;
+    while (i < HARM_BANDS) (
+      harm_env_base[i] = denorm_zap(harm_env_base[i]);
+      harm_dcy_l_base[i] = denorm_zap(harm_dcy_l_base[i]);
+      harm_dcy_r_base[i] = denorm_zap(harm_dcy_r_base[i]);
+      i += 1;
+    );
+  );
+
+  (push_pop_amt > 0.0001 || push_pop_runtime_active > 0) ? (
+    i = 0;
+    while (i < POP_XOVERS) (
+      pop_lpa_l_base[i] = denorm_zap(pop_lpa_l_base[i]);
+      pop_lpb_l_base[i] = denorm_zap(pop_lpb_l_base[i]);
+      pop_lpa_r_base[i] = denorm_zap(pop_lpa_r_base[i]);
+      pop_lpb_r_base[i] = denorm_zap(pop_lpb_r_base[i]);
+      i += 1;
+    );
+    i = 0;
+    while (i < POP_BANDS) (
+      pop_fast_l_base[i] = denorm_zap(pop_fast_l_base[i]);
+      pop_fast_r_base[i] = denorm_zap(pop_fast_r_base[i]);
+      pop_mid_l_base[i] = denorm_zap(pop_mid_l_base[i]);
+      pop_mid_r_base[i] = denorm_zap(pop_mid_r_base[i]);
+      pop_slow_l_base[i] = denorm_zap(pop_slow_l_base[i]);
+      pop_slow_r_base[i] = denorm_zap(pop_slow_r_base[i]);
+      pop_env_fast_base[i] = denorm_zap(pop_env_fast_base[i]);
+      pop_env_slow_base[i] = denorm_zap(pop_env_slow_base[i]);
+      pop_floor_base[i] = denorm_zap(pop_floor_base[i]);
+      i += 1;
+    );
+    pop_dcy_l = denorm_zap(pop_dcy_l);
+    pop_dcy_r = denorm_zap(pop_dcy_r);
+    pop_air_guard_s = denorm_zap(pop_air_guard_s);
+  );
+
   form_lp1_l = denorm_zap(form_lp1_l); form_lp2_l = denorm_zap(form_lp2_l); form_lp3_l = denorm_zap(form_lp3_l); form_lp4_l = denorm_zap(form_lp4_l); form_lp5_l = denorm_zap(form_lp5_l);
   form_lp1_r = denorm_zap(form_lp1_r); form_lp2_r = denorm_zap(form_lp2_r); form_lp3_r = denorm_zap(form_lp3_r); form_lp4_r = denorm_zap(form_lp4_r); form_lp5_r = denorm_zap(form_lp5_r);
   form_env0 = denorm_zap(form_env0); form_env1 = denorm_zap(form_env1); form_env2 = denorm_zap(form_env2); form_env3 = denorm_zap(form_env3); form_env4 = denorm_zap(form_env4); form_env5 = denorm_zap(form_env5);
@@ -5105,7 +5809,10 @@ function denorm_flush_silent_tail_state()
   reset_weight_buffers();
   reset_clean_buffers();
   reset_room_buffers();
+  reset_space_verb_buffers();
+  reset_output_harmonics_buffers();
   reset_push_buffers();
+  reset_push_pop_buffers();
   reset_formant_buffers();
   reset_focus_peak_buffers();
   reset_dynamics_expand_buffers();
@@ -5162,7 +5869,10 @@ function reset_bank_state() local(i)
   reset_weight_buffers();
   reset_clean_buffers();
   reset_room_buffers();
+  reset_space_verb_buffers();
+  reset_output_harmonics_buffers();
   reset_push_buffers();
+  reset_push_pop_buffers();
   reset_formant_buffers();
   reset_focus_peak_buffers();
   reset_input_trigger_buffers();
@@ -5291,6 +6001,8 @@ function reanalyze_bank() local(i sm)
   reset_weight_buffers();
   reset_clean_buffers();
   reset_room_buffers();
+  reset_space_verb_buffers();
+  reset_output_harmonics_buffers();
   reset_push_buffers();
   reset_formant_buffers();
   reset_focus_peak_buffers();
@@ -5375,7 +6087,43 @@ function configure_memory_layout(selected_count) local(cap) (
   dc_m4_base = dc_m3_base + DECRUST_BINS;
   dc_gain_base = dc_m4_base + DECRUST_BINS;
 
-  AUDIO_BASE  = dc_gain_base + DECRUST_BINS + 256;
+  space_l_base = dc_gain_base + DECRUST_BINS + 256;
+  space_r_base = space_l_base + SPACE_BUF_LEN;
+
+  harm_lpa_l_base = space_r_base + SPACE_BUF_LEN + 256;
+  harm_lpb_l_base = harm_lpa_l_base + HARM_XOVERS;
+  harm_lpa_r_base = harm_lpb_l_base + HARM_XOVERS;
+  harm_lpb_r_base = harm_lpa_r_base + HARM_XOVERS;
+  harm_band_l_base = harm_lpb_r_base + HARM_XOVERS;
+  harm_band_r_base = harm_band_l_base + HARM_BANDS;
+  harm_env_base = harm_band_r_base + HARM_BANDS;
+  harm_dcx_l_base = harm_env_base + HARM_BANDS;
+  harm_dcy_l_base = harm_dcx_l_base + HARM_BANDS;
+  harm_dcx_r_base = harm_dcy_l_base + HARM_BANDS;
+  harm_dcy_r_base = harm_dcx_r_base + HARM_BANDS;
+  harm_coeff_base = harm_dcy_r_base + HARM_BANDS;
+
+  pop_lpa_l_base = harm_coeff_base + HARM_XOVERS + 32;
+  pop_lpb_l_base = pop_lpa_l_base + POP_XOVERS;
+  pop_lpa_r_base = pop_lpb_l_base + POP_XOVERS;
+  pop_lpb_r_base = pop_lpa_r_base + POP_XOVERS;
+  pop_band_l_base = pop_lpb_r_base + POP_XOVERS;
+  pop_band_r_base = pop_band_l_base + POP_BANDS;
+  pop_fast_l_base = pop_band_r_base + POP_BANDS;
+  pop_fast_r_base = pop_fast_l_base + POP_BANDS;
+  pop_mid_l_base = pop_fast_r_base + POP_BANDS;
+  pop_mid_r_base = pop_mid_l_base + POP_BANDS;
+  pop_slow_l_base = pop_mid_r_base + POP_BANDS;
+  pop_slow_r_base = pop_slow_l_base + POP_BANDS;
+  pop_env_fast_base = pop_slow_r_base + POP_BANDS;
+  pop_env_slow_base = pop_env_fast_base + POP_BANDS;
+  pop_floor_base = pop_env_slow_base + POP_BANDS;
+  pop_xover_coeff_base = pop_floor_base + POP_BANDS;
+  pop_fast_coeff_base = pop_xover_coeff_base + POP_XOVERS;
+  pop_mid_coeff_base = pop_fast_coeff_base + POP_BANDS;
+  pop_slow_coeff_base = pop_mid_coeff_base + POP_BANDS;
+
+  AUDIO_BASE  = pop_slow_coeff_base + POP_BANDS + 256;
   MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
 );
 
@@ -5401,6 +6149,7 @@ function load_bank() local(
     reset_bank_state();
     posteq_update_coeffs();
     fpk_update_coeffs();
+    harm_update_coeffs();
 
     bank_selected_count = selected;
     bank_scan_count = loaded;
@@ -5924,15 +6673,19 @@ function start_voice(note vel chan) local(
   );
 );
 
-function release_voice_internal(v) local(donor donor_sm donor_tail body_start body_end release_src sid sm auto_len rel_len rel_coef)
+function release_voice_internal(v) local(donor donor_sm donor_tail body_start body_end release_src sid sm auto_len rel_len rel_coef stage_now attack_interrupt)
 (
   (v[VC_ACTIVE] > 0 && v[VC_STAGE] != ENV_RELEASE) ? (
+    stage_now = v[VC_STAGE] | 0;
+    attack_interrupt = stage_now == ENV_ATTACK ? 1 : 0;
+
     sid = clamp(v[VC_SAMPLE] | 0, 0, max(0, sample_count - 1));
     sm = sample_meta_base + sid * SM_STRIDE;
     auto_len = max(1, floor(sm[SM_AUTOREL] * auto_release_amt * srate * 0.001));
-    // Release knob remains the user's intent, but a hot/non-silent sample tail
-    // is allowed to demand a longer minimum so note-off does not sound chopped.
-    rel_len = max(release_samps, auto_len);
+    // Minimal Attack interrupt: if Note Off arrives while the envelope is still
+    // rising, go straight to the user Release time. All normal release grain /
+    // tail behavior remains unchanged.
+    rel_len = attack_interrupt ? release_samps : max(release_samps, auto_len);
     rel_coef = exp(-6.90775527898214 / max(1, rel_len));
 
     rel_len <= 1 ? (
@@ -7077,12 +7830,18 @@ DECRUST_LATENCY = 514;
 DECRUST_RING = 2048;
 DECRUST_RINGMASK = 2047;
 DECRUST_BINS = 257;
+SPACE_BUF_LEN = 131072;
+SPACE_BUF_MASK = 131071;
 POSTEQ_SPEC_BINS = 96;
 POSTEQ_SPEC_COEFFS = 5;
 POSTEQ_BQ_COUNT = 13;
 POSTEQ_BQ_STRIDE = 9;
 FPK_BANDS = 12;
 FPK_BQ_STRIDE = 9;
+HARM_BANDS = 8;
+HARM_XOVERS = 7;
+POP_BANDS = 5;
+POP_XOVERS = 4;
 PUSH_EPS = 0.00000000000000000001;
 DENORM_GUARD = 0.00000000000000000001;
 DENORM_CUT   = 0.000000000000000001;
@@ -7132,6 +7891,7 @@ M2E_CHAN       = 0;
 
 
 configure_memory_layout(SAMPLE_POOL_MIN);
+harm_update_coeffs();
 
 SAMPLE_MODE_RESIDENT = 0;
 SAMPLE_MODE_BUDGETED = 1;
@@ -7188,6 +7948,17 @@ learned_hi = 1;
 learned_best_score = 0;
 truth_mix = 0;
 out_trim = 1;
+output_harmonics_amt = 0;
+output_harmonics_active_prev = 0;
+output_harm_alt_active = 0;
+output_harm_runtime_active = 0;
+push_pop_amt = 0;
+push_pop_active_prev = 0;
+push_pop_alt_active = 0;
+push_pop_runtime_active = 0;
+pop_air_guard_s = 1;
+pop_src_l = 0;
+pop_src_r = 0;
 pitch_semi = 0;
 selection_mode = 0;
 sequence_mode = 0;
@@ -7236,6 +8007,34 @@ dc_extreme = 0;
 dc_neighbor = 0.65;
 dc_curve_amt = 0;
 room_amt = 0;
+space_room_amt = 0;
+space_room_char = 0.50;
+space_room_active_prev = 0;
+space_room_runtime_active = 0;
+room_space_amt_alt_active = 0;
+room_space_char_alt_active = 0;
+space_pos = 0;
+space_fb_l = 0;
+space_fb_r = 0;
+space_damp_l = 0;
+space_damp_r = 0;
+space_low_l = 0;
+space_low_r = 0;
+space_early_bus_l = 0;
+space_early_bus_r = 0;
+space_late_bus_l = 0;
+space_late_bus_r = 0;
+space_early_s_l = 0;
+space_early_s_r = 0;
+space_late_s_l = 0;
+space_late_s_r = 0;
+space_tank_energy = 0;
+space_governor_s = 1;
+space_env = 0;
+space_tail_meter = 0;
+space_mod_phase = 0;
+harm_env_att_coeff = 0.08;
+harm_env_rel_coeff = 0.004;
 attack_slope_pct = 100;
 decay_slope_pct = -100;
 release_slope_pct = -100;
@@ -7535,6 +8334,10 @@ file_var(0, focus_peak_amt);
 file_var(0, dynamics_expand_amt);
 file_var(0, input_trigger_amt);
 file_var(0, clean_decrust_amt);
+file_var(0, space_room_amt);
+file_var(0, space_room_char);
+file_var(0, output_harmonics_amt);
+file_var(0, push_pop_amt);
 
 @slider
 attack_samps = max(1, floor(slider2 * srate * 0.001));
@@ -7557,7 +8360,15 @@ clean_decrust_amt = clamp01(clean_decrust_amt);
 );
 clean_decrust_active_prev = clean_decrust_amt > 0.0001 ? 1 : 0;
 room_amt = clamp01(slider26);
+space_room_amt = clamp01(space_room_amt);
+space_room_char = clamp01(space_room_char);
+(space_room_amt <= 0.0001 && space_room_active_prev > 0) ? reset_space_verb_buffers();
+space_room_active_prev = space_room_amt > 0.0001 ? 1 : 0;
 push_amt = clamp01(slider27 / 100);
+push_pop_amt = clamp01(push_pop_amt);
+(push_pop_amt <= 0.0001 && push_pop_active_prev > 0) ? reset_push_pop_buffers();
+(push_pop_amt > 0.0001 && push_pop_active_prev <= 0) ? pop_update_coeffs();
+push_pop_active_prev = push_pop_amt > 0.0001 ? 1 : 0;
 (slope_schema < 0.5) ? (
   slider28 = env_migrate_old_slope(slider28, ENV_RISE);
   slider29 = env_migrate_old_slope(slider29, ENV_FALL);
@@ -7598,6 +8409,10 @@ decay_coef = decay_samps <= 1 ? 1 : (1 - exp(-6.90775527898214 / decay_samps));
 release_coef = release_samps <= 1 ? 0 : exp(-6.90775527898214 / release_samps);
 truth_mix = clamp01(slider10);
 out_trim = db2amp(slider11);
+output_harmonics_amt = clamp01(output_harmonics_amt);
+(output_harmonics_amt <= 0.0001 && output_harmonics_active_prev > 0) ? reset_output_harmonics_buffers();
+(output_harmonics_amt > 0.0001 && output_harmonics_active_prev <= 0) ? harm_update_coeffs();
+output_harmonics_active_prev = output_harmonics_amt > 0.0001 ? 1 : 0;
 pitch_semi = clamp(slider12, -24, 24);
 formant_shift_semi = clamp(formant_shift_semi, -12, 12);
 focus_peak_amt = clamp(focus_peak_amt, -1, 1);
@@ -7780,6 +8595,10 @@ form_env_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.010 * srate)));
 form_env_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.135 * srate)));
 form_gain_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.018 * srate)));
 form_level_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.045 * srate)));
+harm_env_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.005 * srate)));
+harm_env_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.090 * srate)));
+output_harmonics_amt > 0.0001 ? harm_update_coeffs();
+push_pop_amt > 0.0001 ? pop_update_coeffs();
 fpk_lp_c1 = clamp(1 - exp(-6.283185307179586 * min(320, srate * 0.49) / max(srate, 1)), 0.0001, 0.74);
 fpk_lp_c2 = clamp(1 - exp(-6.283185307179586 * min(980, srate * 0.49) / max(srate, 1)), 0.0002, 0.82);
 fpk_lp_c3 = clamp(1 - exp(-6.283185307179586 * min(2900, srate * 0.49) / max(srate, 1)), 0.0004, 0.90);
@@ -7970,6 +8789,10 @@ clean_head_bus = 0;
 clean_tail_bus = 0;
 room_head_bus = 0;
 room_tail_bus = 0;
+space_early_bus_l = 0;
+space_early_bus_r = 0;
+space_late_bus_l = 0;
+space_late_bus_r = 0;
 denorm_guard = denorm_guard_tick();
 
 i = 0;
@@ -8852,8 +9675,53 @@ while (i < MAX_VOICES) (
     keepalive = direct_alive || got_grain || activeg > 0 || (v[VC_GMODE] > 0 && stage != ENV_OFF && (stage != ENV_RELEASE || v[VC_CANSPAWN] > 0));
 
     (g > 0 && got_sig) ? (
-      outL += l * g;
-      outR += r * g;
+      voice_out_l = l * g;
+      voice_out_r = r * g;
+      outL += voice_out_l;
+      outR += voice_out_r;
+
+      // v54 SpaceVerb VoiceSend: each voice feeds the shared space using its
+      // current envelope/phase. The tank decays independently after the voice
+      // releases, so impacts can ring naturally while overlapping voices share
+      // one coherent room instead of restarting separate reverbs.
+      space_room_amt > 0.0001 ? (
+        vstage_for_space = stage | 0;
+        vtail_hot = clamp01(sm[SM_TAILHOT]);
+        vtail_phase = clamp01((v[VC_POS] - tailstart) / max(1, frames - tailstart));
+        vhead = clamp01(v[VC_TPROT]);
+        venv_for_space = clamp01(env * 1.35);
+
+        vstage_for_space == ENV_ATTACK ? (
+          space_early_w = 0.68 + 0.38 * vhead;
+          space_late_w = 0.16 + 0.30 * vhead + 0.16 * vtail_hot;
+        ) : vstage_for_space == ENV_HOLD ? (
+          space_early_w = 0.58 + 0.20 * vhead;
+          space_late_w = 0.24 + 0.20 * vhead + 0.16 * vtail_hot;
+        ) : vstage_for_space == ENV_DECAY ? (
+          space_early_w = 0.30 + 0.18 * vhead;
+          space_late_w = 0.36 + 0.30 * vtail_phase + 0.18 * vtail_hot;
+        ) : vstage_for_space == ENV_SUSTAIN ? (
+          space_early_w = 0.18;
+          space_late_w = 0.42 + 0.24 * vtail_phase + 0.18 * vtail_hot;
+        ) : vstage_for_space == ENV_RELEASE ? (
+          space_early_w = 0.08;
+          space_late_w = 0.62 + 0.26 * clamp01(v[VC_TAILMIX]) + 0.20 * vtail_hot;
+        ) : (
+          space_early_w = 0.12;
+          space_late_w = 0.28;
+        );
+
+        // Character chooses whether the current voice mostly excites early room
+        // or darker late bloom. Send is voice-envelope weighted; verb output is not.
+        space_char_now = clamp01(space_room_char);
+        space_amt_now = clamp01(space_room_amt);
+        space_voice_scale = (0.42 + 0.76 * space_amt_now) * venv_for_space;
+        space_early_bus_l += voice_out_l * space_early_w * lerp(1.05, 0.46, space_char_now) * space_voice_scale;
+        space_early_bus_r += voice_out_r * space_early_w * lerp(1.05, 0.46, space_char_now) * space_voice_scale;
+        space_late_bus_l += voice_out_l * space_late_w * lerp(0.52, 1.18, space_char_now) * space_voice_scale;
+        space_late_bus_r += voice_out_r * space_late_w * lerp(0.52, 1.18, space_char_now) * space_voice_scale;
+      );
+
       (v[VC_TLEFT] > 0) ? (
         punch_bus = max(punch_bus, v[VC_TPROT]);
         clean_head_bus = max(clean_head_bus, v[VC_TPROT]);
@@ -8965,6 +9833,12 @@ m2e_sat_mix *= 0.16 + 0.84 * m2e_transient_damp * m2e_transient_damp;
 clean_amt > 0.0001 ? apply_cleaner();
 clean_decrust_amt > 0.0001 ? apply_clean_decrust();
 room_amt > 0.0001 ? apply_room_tame();
+space_room_amt > 0.0001 ? (
+  space_room_runtime_active = 1;
+  apply_space_verb();
+) : (
+  space_room_runtime_active > 0 ? reset_space_verb_buffers();
+);
 abs(formant_shift_semi) > 0.0001 ? apply_formant_shift();
 
 tone_lp_l = denorm_zap(tone_lp_l + (outL - tone_lp_l) * tone_lp_coeff);
@@ -9147,7 +10021,19 @@ dynamics_expand_amt > 0.0001 ? (
   dynx_lim_gain = denorm_zap(dynx_lim_gain + (1 - dynx_lim_gain) * dyn_lim_rel_coeff);
 );
 
+pop_src_l = outL;
+pop_src_r = outR;
 push_amt > 0.0001 ? apply_push();
+push_pop_amt > 0.0001 ? (
+  apply_push_pop();
+) : (
+  push_pop_runtime_active > 0 ? reset_push_pop_buffers();
+);
+output_harmonics_amt > 0.0001 ? (
+  apply_output_harmonics();
+) : (
+  output_harm_runtime_active > 0 ? reset_output_harmonics_buffers();
+);
 
 // v38: PostEQ spectrum is visual-only. Running two 96-band analyzers every
 // audio sample across several instances can look like a stall even when audio
@@ -9189,6 +10075,7 @@ mouse_down = mouse_cap & 1;
 mouse_rdown = mouse_cap & 2;
 ui_shift = (mouse_cap & 8) ? 1 : 0;
 ui_ctrl = (mouse_cap & 4) ? 1 : 0;
+ui_alt = (mouse_cap & 16) ? 1 : 0;
 (!mouse_down || !ui_ctrl) ? posteq_solo_target = 0;
 mouse_pressed = mouse_down && !ui_prev_down;
 mouse_rpressed = mouse_rdown && !ui_prev_rdown;
@@ -9961,27 +10848,85 @@ gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a 
 clean_decrust_alt_use ? sprintf(#ui_buf, "DeCrust") : (clean_decrust_amt > 0.04 ? sprintf(#ui_buf, "Clean/Crust") : sprintf(#ui_buf, "Clean")); draw_center_buf(cell_x, label_y, cell_w);
 
 
-// Room Tame
+// Room / hidden SpaceVerb
+// Normal drag = RoomScrub. Shift+drag = Space amount. Alt+drag = Space character.
 grid_idx = 11;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
-nv = ui_knob(314, kc, ky, kb_r, slider26, 0, 1, 0, 0.018); abs(nv - slider26) > 0.0000001 ? (slider26 = nv; gfx_slider_mask |= MASK_S26;);
+room_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
+(mouse_pressed && room_hot) ? (
+  room_space_char_alt_active = ui_alt ? 1 : 0;
+  room_space_amt_alt_active = (!ui_alt && ui_shift) ? 1 : 0;
+);
+(!mouse_down && ui_active != 331 && ui_active != 332) ? (
+  room_space_amt_alt_active = 0;
+  room_space_char_alt_active = 0;
+);
+room_space_char_alt_use = room_space_char_alt_active || (ui_alt && (room_hot || ui_active == 332));
+room_space_amt_alt_use = (!room_space_char_alt_use) && (room_space_amt_alt_active || (ui_shift && (room_hot || ui_active == 331)));
+room_space_char_alt_use ? (
+  nv = ui_knob(332, kc, ky, kb_r, space_room_char, 0, 1, 0.50, 0.018);
+  abs(nv - space_room_char) > 0.0000001 ? (
+    space_room_char = clamp01(nv);
+    ui_value_changed = 1;
+  );
+  room_hot && ui_alt && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    space_room_char = clamp01(space_room_char + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
+    ui_wheel_used = 1;
+    ui_value_changed = 1;
+  );
+) : room_space_amt_alt_use ? (
+  nv = ui_knob(331, kc, ky, kb_r, space_room_amt, 0, 1, 0, 0.018);
+  abs(nv - space_room_amt) > 0.0000001 ? (
+    space_room_amt = clamp01(nv);
+    ui_value_changed = 1;
+  );
+  room_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    space_room_amt = clamp01(space_room_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
+    ui_wheel_used = 1;
+    ui_value_changed = 1;
+  );
+) : (
+  nv = ui_knob(314, kc, ky, kb_r, slider26, 0, 1, 0, 0.018); abs(nv - slider26) > 0.0000001 ? (slider26 = nv; gfx_slider_mask |= MASK_S26;);
+);
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.2f", slider26); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
+room_space_char_alt_use ? sprintf(#ui_buf, "Ch %.2f", space_room_char) : (room_space_amt_alt_use ? sprintf(#ui_buf, "Sp %.2f", space_room_amt) : (space_room_amt > 0.04 ? sprintf(#ui_buf, "%.2f/Sp%.1f", slider26, space_room_amt) : sprintf(#ui_buf, "%.2f", slider26)));
+gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-sprintf(#ui_buf, "Room"); draw_center_buf(cell_x, label_y, cell_w);
+room_space_char_alt_use ? sprintf(#ui_buf, "Space Char") : (room_space_amt_alt_use ? sprintf(#ui_buf, "Space") : (space_room_amt > 0.04 ? sprintf(#ui_buf, "Room/Space") : sprintf(#ui_buf, "Room"))); draw_center_buf(cell_x, label_y, cell_w);
 
-// Push
+// Push / hidden PopCue
+// Normal drag = salience pushback. Shift+drag = concrete-detail cue lift.
 grid_idx = 12;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
-nv = ui_knob(315, kc, ky, kb_r, slider27, 0, 100, 0, 0.016); abs(nv - slider27) > 0.0000001 ? (slider27 = nv; gfx_slider_mask |= MASK_S27;);
+push_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
+(mouse_pressed && push_hot) ? push_pop_alt_active = ui_shift ? 1 : 0;
+(!mouse_down && ui_active != 334) ? push_pop_alt_active = 0;
+push_pop_alt_use = push_pop_alt_active || (ui_shift && (push_hot || ui_active == 334));
+push_pop_alt_use ? (
+  nv = ui_knob(334, kc, ky, kb_r, push_pop_amt, 0, 1, 0, 0.018);
+  abs(nv - push_pop_amt) > 0.0000001 ? (
+    push_pop_amt = clamp01(nv);
+    push_pop_amt > 0.0001 ? pop_update_coeffs();
+    ui_value_changed = 1;
+  );
+  push_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    push_pop_amt = clamp01(push_pop_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
+    push_pop_amt > 0.0001 ? pop_update_coeffs();
+    ui_wheel_used = 1;
+    ui_value_changed = 1;
+  );
+) : (
+  nv = ui_knob(315, kc, ky, kb_r, slider27, 0, 100, 0, 0.016); abs(nv - slider27) > 0.0000001 ? (slider27 = nv; gfx_slider_mask |= MASK_S27;);
+);
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.0f%%", slider27); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
+push_pop_alt_use ? sprintf(#ui_buf, "P%.2f", push_pop_amt) : (push_pop_amt > 0.04 ? sprintf(#ui_buf, "%.0f/P%.1f", slider27, push_pop_amt) : sprintf(#ui_buf, "%.0f%%", slider27));
+gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-sprintf(#ui_buf, "Push"); draw_center_buf(cell_x, label_y, cell_w);
+push_pop_alt_use ? sprintf(#ui_buf, "Pop") : (push_pop_amt > 0.04 ? sprintf(#ui_buf, "Push/Pop") : sprintf(#ui_buf, "Push")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Dynamics / hidden Expansion
 // Shift+drag or Shift+wheel this knob to adjust expansion/contrast without adding a visible control.
@@ -10013,16 +10958,37 @@ gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; g
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 dyn_expand_alt_use ? sprintf(#ui_buf, "Expand") : (dynamics_expand_amt > 0.04 ? sprintf(#ui_buf, "Dyn/Expand") : sprintf(#ui_buf, "Dynamics")); draw_center_buf(cell_x, label_y, cell_w);
 
-// Output
+// Output / hidden Harmonics
+// Normal drag = output trim. Shift+drag = clean parallel harmonic enrichment.
 grid_idx = 14;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
-nv = ui_knob(306, kc, ky, kb_r, slider11, -24, 12, -9, 0.018); abs(nv - slider11) > 0.0000001 ? (slider11 = nv; gfx_slider_mask |= MASK_S11;);
+out_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
+(mouse_pressed && out_hot) ? output_harm_alt_active = ui_shift ? 1 : 0;
+(!mouse_down && ui_active != 333) ? output_harm_alt_active = 0;
+output_harm_alt_use = output_harm_alt_active || (ui_shift && (out_hot || ui_active == 333));
+output_harm_alt_use ? (
+  nv = ui_knob(333, kc, ky, kb_r, output_harmonics_amt, 0, 1, 0, 0.018);
+  abs(nv - output_harmonics_amt) > 0.0000001 ? (
+    output_harmonics_amt = clamp01(nv);
+    output_harmonics_amt > 0.0001 ? harm_update_coeffs();
+    ui_value_changed = 1;
+  );
+  out_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    output_harmonics_amt = clamp01(output_harmonics_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
+    output_harmonics_amt > 0.0001 ? harm_update_coeffs();
+    ui_wheel_used = 1;
+    ui_value_changed = 1;
+  );
+) : (
+  nv = ui_knob(306, kc, ky, kb_r, slider11, -24, 12, -9, 0.018); abs(nv - slider11) > 0.0000001 ? (slider11 = nv; gfx_slider_mask |= MASK_S11;);
+);
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.1f", slider11); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
+output_harm_alt_use ? sprintf(#ui_buf, "H%.2f", output_harmonics_amt) : (output_harmonics_amt > 0.04 ? sprintf(#ui_buf, "%.1f/H%.1f", slider11, output_harmonics_amt) : sprintf(#ui_buf, "%.1f", slider11));
+gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-sprintf(#ui_buf, "Out"); draw_center_buf(cell_x, label_y, cell_w);
+output_harm_alt_use ? sprintf(#ui_buf, "Harmonics") : (output_harmonics_amt > 0.04 ? sprintf(#ui_buf, "Out/Harm") : sprintf(#ui_buf, "Out")); draw_center_buf(cell_x, label_y, cell_w);
 
 
 // Post-Processing panel: free-band spectrum EQ
@@ -10669,7 +11635,11 @@ ui_hover_id == 305 ? (
 );
 ui_hover_id == 306 ? (
   sprintf(#tip_title, "Output");
-  sprintf(#tip_body, "%.1f dB final trim.", slider11);
+  sprintf(#tip_body, "%.1f dB final trim. Shift+drag for Harmonics %.2f.", slider11, output_harmonics_amt);
+);
+ui_hover_id == 333 ? (
+  sprintf(#tip_title, "Harmonics");
+  sprintf(#tip_body, "%.2f clean 8-band parallel harmonic enrichment. Bypassed at 0; higher values add higher-order harmonics.", output_harmonics_amt);
 );
 ui_hover_id == 313 ? (
   sprintf(#tip_title, "Clean");
@@ -10681,11 +11651,23 @@ ui_hover_id == 330 ? (
 );
 ui_hover_id == 314 ? (
   sprintf(#tip_title, "Room Tame");
-  sprintf(#tip_body, "%.2f de-room/de-smear. High = obvious fail-fast room suppression.", slider26);
+  sprintf(#tip_body, "%.2f de-room/de-smear. Shift+drag Space %.2f, Alt+drag Character %.2f.", slider26, space_room_amt, space_room_char);
+);
+ui_hover_id == 331 ? (
+  sprintf(#tip_title, "Space Amount");
+  sprintf(#tip_body, "%.2f designed additive room/bloom. Works with RoomScrub; zero-PDC/non-FFT.", space_room_amt);
+);
+ui_hover_id == 332 ? (
+  sprintf(#tip_title, "Space Character");
+  sprintf(#tip_body, "%.2f: 0=tight early room, 0.5=chamber, 1=wide dark bloom.", space_room_char);
 );
 ui_hover_id == 315 ? (
   sprintf(#tip_title, "Push");
-  sprintf(#tip_body, "%.0f%% salience pushback.", slider27);
+  sprintf(#tip_body, "%.0f%% salience pushback. Shift+drag for Pop %.2f.", slider27, push_pop_amt);
+);
+ui_hover_id == 334 ? (
+  sprintf(#tip_title, "PopCue");
+  sprintf(#tip_body, "%.2f parallel concrete-detail cue lift. CPU-gated at 0; not inverse Push or a brightener.", push_pop_amt);
 );
 ui_hover_id == 312 ? (
   sprintf(#tip_title, "Dynamics");
