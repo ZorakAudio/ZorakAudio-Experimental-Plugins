@@ -1889,15 +1889,350 @@ static const JsfxRuntimeMidiEvent* jsfxPopInputEvent (DSPJSFX_State* st) noexcep
     return ev;
 }
 
-static void appendAllNotesOffMessages (juce::MidiBuffer& midiMessages, int sampleOffset)
+// ZA_MIDI_RUNAWAY_FIX_V2: minimal active-note/sustain tracking for unsafe transport boundaries.
+// This deliberately avoids sample-position heuristics and avoids blanket CC120 spam.
+struct RuntimeMidiNoteTracker
 {
-    const int clampedOffset = juce::jmax (0, sampleOffset);
-    for (int ch = 1; ch <= 16; ++ch)
+    struct NoteState
     {
-        midiMessages.addEvent (juce::MidiMessage::controllerEvent (ch, 120, 0), clampedOffset);
-        midiMessages.addEvent (juce::MidiMessage::controllerEvent (ch, 123, 0), clampedOffset);
+        bool held = false;
+        bool sustained = false;
+    };
+
+    void clear() noexcept
+    {
+        sustainDown.fill (false);
+        for (auto& channelNotes : notes)
+            for (auto& note : channelNotes)
+                note = {};
     }
-}
+
+    bool hasAnyUnsafeState() const noexcept
+    {
+        for (bool down : sustainDown)
+            if (down)
+                return true;
+
+        for (const auto& channelNotes : notes)
+            for (const auto& note : channelNotes)
+                if (note.held || note.sustained)
+                    return true;
+
+        return false;
+    }
+
+    bool hasChannelUnsafeState (int channel) const noexcept
+    {
+        if (channel < 0 || channel >= 16)
+            return false;
+
+        if (sustainDown[(size_t) channel])
+            return true;
+
+        for (const auto& note : notes[(size_t) channel])
+            if (note.held || note.sustained)
+                return true;
+
+        return false;
+    }
+
+    bool hasActiveNotesOnChannel (int channel) const noexcept
+    {
+        if (channel < 0 || channel >= 16)
+            return false;
+
+        for (const auto& note : notes[(size_t) channel])
+            if (note.held || note.sustained)
+                return true;
+
+        return false;
+    }
+
+    static bool isChannelVoiceClearMessage (const juce::uint8* data, int len, int& channel) noexcept
+    {
+        channel = -1;
+
+        if (data == nullptr || len < 3)
+            return false;
+
+        const int status = (int) data[0] & 0xff;
+        if ((status & 0xf0) != 0xb0)
+            return false;
+
+        const int controller = (int) data[1] & 0x7f;
+        if (controller != 120 && (controller < 123 || controller > 127)) // All Sound Off / Channel Mode note clear.
+            return false;
+
+        channel = status & 0x0f;
+        return true;
+    }
+
+    void observeRawMidi (const juce::uint8* data, int len) noexcept
+    {
+        if (data == nullptr || len <= 0)
+            return;
+
+        const int status = (int) data[0] & 0xff;
+        const int type = status & 0xf0;
+
+        if (type == 0xf0)
+            return;
+
+        const int channel = status & 0x0f;
+        if (channel < 0 || channel >= 16)
+            return;
+
+        if ((type == 0x90 || type == 0x80) && len >= 3)
+        {
+            const int noteNumber = (int) data[1] & 0x7f;
+            const int velocity = (int) data[2] & 0x7f;
+            auto& note = notes[(size_t) channel][(size_t) noteNumber];
+
+            if (type == 0x90 && velocity > 0)
+            {
+                note.held = true;
+                note.sustained = false;
+                return;
+            }
+
+            if (sustainDown[(size_t) channel] && (note.held || note.sustained))
+            {
+                note.held = false;
+                note.sustained = true;
+                return;
+            }
+
+            note = {};
+            return;
+        }
+
+        if (type == 0xb0 && len >= 3)
+        {
+            const int controller = (int) data[1] & 0x7f;
+            const int value = (int) data[2] & 0x7f;
+
+            if (controller == 64) // Damper/sustain pedal.
+            {
+                const bool down = value >= 64;
+                sustainDown[(size_t) channel] = down;
+
+                if (! down)
+                    releaseSustainedNotesOnChannel (channel);
+
+                return;
+            }
+
+            if (controller == 120 || (controller >= 123 && controller <= 127)) // All Sound Off / Channel Mode note clear.
+            {
+                sustainDown[(size_t) channel] = false;
+                for (auto& note : notes[(size_t) channel])
+                    note = {};
+                return;
+            }
+
+            if (controller == 121) // Reset All Controllers: release sustain, but do not kill physically held notes.
+            {
+                sustainDown[(size_t) channel] = false;
+                releaseSustainedNotesOnChannel (channel);
+                return;
+            }
+        }
+    }
+
+    size_t activeNoteCountOnChannel (int channel) const noexcept
+    {
+        if (channel < 0 || channel >= 16)
+            return 0;
+
+        size_t count = 0;
+        for (const auto& note : notes[(size_t) channel])
+            if (note.held || note.sustained)
+                ++count;
+
+        return count;
+    }
+
+    size_t unsafeEventReserveCount (bool includeAllNotesOff) const noexcept
+    {
+        size_t count = 0;
+
+        for (int ch = 0; ch < 16; ++ch)
+        {
+            if (! hasChannelUnsafeState (ch))
+                continue;
+
+            if (sustainDown[(size_t) ch])
+                ++count;
+
+            const auto active = activeNoteCountOnChannel (ch);
+            count += active;
+
+            if (includeAllNotesOff && active > 0)
+                ++count;
+        }
+
+        return count;
+    }
+
+    void appendActiveNoteOffsForChannelToMidiBuffer (juce::MidiBuffer& midiMessages,
+                                                     int sampleOffset,
+                                                     int channel) const
+    {
+        if (channel < 0 || channel >= 16 || ! hasActiveNotesOnChannel (channel))
+            return;
+
+        const int clampedOffset = juce::jmax (0, sampleOffset);
+        const int juceChannel = channel + 1;
+        midiMessages.ensureSize (juce::jmax ((size_t) 128, activeNoteCountOnChannel (channel) * 3u));
+
+        for (int noteNumber = 0; noteNumber < 128; ++noteNumber)
+        {
+            const auto& note = notes[(size_t) channel][(size_t) noteNumber];
+            if (note.held || note.sustained)
+                midiMessages.addEvent (juce::MidiMessage::noteOff (juceChannel, noteNumber), clampedOffset);
+        }
+    }
+
+    void appendUnsafeNoteEndsToMidiBuffer (juce::MidiBuffer& midiMessages,
+                                           int sampleOffset,
+                                           bool includeAllNotesOff) const
+    {
+        if (! hasAnyUnsafeState())
+            return;
+
+        const int clampedOffset = juce::jmax (0, sampleOffset);
+        midiMessages.ensureSize (juce::jmax ((size_t) 128, unsafeEventReserveCount (includeAllNotesOff) * 3u));
+
+        for (int ch = 0; ch < 16; ++ch)
+        {
+            if (! hasChannelUnsafeState (ch))
+                continue;
+
+            const int juceChannel = ch + 1;
+            const bool hasNotes = hasActiveNotesOnChannel (ch);
+
+            if (sustainDown[(size_t) ch])
+                midiMessages.addEvent (juce::MidiMessage::controllerEvent (juceChannel, 64, 0), clampedOffset);
+
+            for (int noteNumber = 0; noteNumber < 128; ++noteNumber)
+            {
+                const auto& note = notes[(size_t) ch][(size_t) noteNumber];
+                if (note.held || note.sustained)
+                    midiMessages.addEvent (juce::MidiMessage::noteOff (juceChannel, noteNumber), clampedOffset);
+            }
+
+            if (includeAllNotesOff && hasNotes)
+                midiMessages.addEvent (juce::MidiMessage::controllerEvent (juceChannel, 123, 0), clampedOffset);
+        }
+    }
+
+    void appendActiveNoteOffsForChannelToRuntimeQueue (std::vector<JsfxRuntimeMidiEvent>& queue,
+                                                       int sampleOffset,
+                                                       int bus,
+                                                       int channel) const
+    {
+        if (channel < 0 || channel >= 16 || ! hasActiveNotesOnChannel (channel))
+            return;
+
+        const int clampedOffset = juce::jmax (0, sampleOffset);
+        const int clampedBus = juce::jlimit (0, 15, bus);
+
+        try
+        {
+            queue.reserve (queue.size() + activeNoteCountOnChannel (channel));
+        }
+        catch (...)
+        {
+        }
+
+        const auto noteOffStatus = (juce::uint8) (0x80 | channel);
+        for (int noteNumber = 0; noteNumber < 128; ++noteNumber)
+        {
+            const auto& note = notes[(size_t) channel][(size_t) noteNumber];
+            if (note.held || note.sustained)
+                pushShortEventToRuntimeQueue (queue, clampedOffset, clampedBus, noteOffStatus, (juce::uint8) noteNumber, 0);
+        }
+    }
+
+    void appendUnsafeNoteEndsToRuntimeQueue (std::vector<JsfxRuntimeMidiEvent>& queue,
+                                             int sampleOffset,
+                                             int bus,
+                                             bool includeAllNotesOff) const
+    {
+        if (! hasAnyUnsafeState())
+            return;
+
+        const int clampedOffset = juce::jmax (0, sampleOffset);
+        const int clampedBus = juce::jlimit (0, 15, bus);
+
+        try
+        {
+            queue.reserve (queue.size() + unsafeEventReserveCount (includeAllNotesOff));
+        }
+        catch (...)
+        {
+        }
+
+        for (int ch = 0; ch < 16; ++ch)
+        {
+            if (! hasChannelUnsafeState (ch))
+                continue;
+
+            const auto ccStatus = (juce::uint8) (0xb0 | ch);
+            const auto noteOffStatus = (juce::uint8) (0x80 | ch);
+            const bool hasNotes = hasActiveNotesOnChannel (ch);
+
+            if (sustainDown[(size_t) ch])
+                pushShortEventToRuntimeQueue (queue, clampedOffset, clampedBus, ccStatus, 64, 0);
+
+            for (int noteNumber = 0; noteNumber < 128; ++noteNumber)
+            {
+                const auto& note = notes[(size_t) ch][(size_t) noteNumber];
+                if (note.held || note.sustained)
+                    pushShortEventToRuntimeQueue (queue, clampedOffset, clampedBus, noteOffStatus, (juce::uint8) noteNumber, 0);
+            }
+
+            if (includeAllNotesOff && hasNotes)
+                pushShortEventToRuntimeQueue (queue, clampedOffset, clampedBus, ccStatus, 123, 0);
+        }
+    }
+
+private:
+    void releaseSustainedNotesOnChannel (int channel) noexcept
+    {
+        if (channel < 0 || channel >= 16)
+            return;
+
+        for (auto& note : notes[(size_t) channel])
+            if (! note.held && note.sustained)
+                note = {};
+    }
+
+    static void pushShortEventToRuntimeQueue (std::vector<JsfxRuntimeMidiEvent>& queue,
+                                              int sampleOffset,
+                                              int bus,
+                                              juce::uint8 a,
+                                              juce::uint8 b,
+                                              juce::uint8 c)
+    {
+        try
+        {
+            JsfxRuntimeMidiEvent ev;
+            ev.sampleOffset = sampleOffset;
+            ev.bus = bus;
+            const juce::uint8 bytes[3] { a, b, c };
+            ev.assign (bytes, 3);
+            if (ev.length > 0 && ev.data() != nullptr)
+                queue.push_back (std::move (ev));
+        }
+        catch (...)
+        {
+        }
+    }
+
+    std::array<std::array<NoteState, 128>, 16> notes {};
+    std::array<bool, 16> sustainDown {};
+};
 }
 
 extern "C" int jsfx_midirecv (DSPJSFX_State* st, double* offset, double* msg1, double* msg2, double* msg3)
@@ -3010,14 +3345,25 @@ public:
         jsfxRuntime.beginBlock (st, numSamples);
         const bool hasIncomingMidi = ! midiMessages.isEmpty();
         const bool hasIncomingJsfxMessages = jsfxRuntime.hasReadyMessages();
-        importMidiToState (midiMessages, numSamples);
+        const bool emergencyMidiCleanupRequested = pendingEmergencyMidiCleanup.exchange (false, std::memory_order_acq_rel)
+                                               || st.pendingNoteCleanup != 0;
+        const bool transportStatusChangedForMidiCleanup = detectMidiTransportStatusChangedForCleanup();
+        const bool transportInputCleanupRequested = transportStatusChangedForMidiCleanup
+                                                && midiInputNoteTracker.hasAnyUnsafeState();
+        const bool transportOutputCleanupRequested = transportStatusChangedForMidiCleanup
+                                                 && midiOutputNoteTracker.hasAnyUnsafeState();
+        const bool prependInputMidiCleanup = emergencyMidiCleanupRequested || transportInputCleanupRequested;
+        const bool appendOutputMidiCleanup = emergencyMidiCleanupRequested || transportOutputCleanupRequested;
+        const bool needsMidiCleanup = prependInputMidiCleanup || appendOutputMidiCleanup;
+
+        importMidiToState (midiMessages, numSamples, prependInputMidiCleanup, emergencyMidiCleanupRequested);
         midiMessages.clear();
 
-        if (pendingEmergencyMidiCleanup.exchange (false, std::memory_order_acq_rel) || st.pendingNoteCleanup != 0)
-        {
-            appendAllNotesOffMessages (midiMessages, 0);
+        if (appendOutputMidiCleanup)
+            appendTrackedOutputMidiCleanupToBuffer (midiMessages, 0, emergencyMidiCleanupRequested);
+
+        if (emergencyMidiCleanupRequested)
             st.pendingNoteCleanup = 0;
-        }
 
        #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
         if (shadow != nullptr)
@@ -8080,6 +8426,74 @@ private:
         midiRuntime.reserveQueues ((size_t) reserveHint);
         midiRuntime.resetAll();
         bindMidiRuntimeBuffers();
+        midiInputNoteTracker.clear();
+        midiOutputNoteTracker.clear();
+        resetMidiTransportStatusForCleanup();
+    }
+
+    void resetMidiTransportStatusForCleanup() noexcept
+    {
+        midiTransportHaveLastPlaying = false;
+        midiTransportLastPlaying = false;
+    }
+
+    bool queryMidiTransportPlayingForCleanup (bool& isPlaying)
+    {
+        isPlaying = false;
+
+        auto* playHead = getPlayHead();
+        if (playHead == nullptr)
+            return false;
+
+       #if JUCE_MAJOR_VERSION >= 7
+        const auto position = playHead->getPosition();
+        if (! position)
+            return false;
+
+        isPlaying = position->getIsPlaying();
+        return true;
+       #else
+        juce::AudioPlayHead::CurrentPositionInfo position;
+        if (! playHead->getCurrentPosition (position))
+            return false;
+
+        isPlaying = position.isPlaying;
+        return true;
+       #endif
+    }
+
+    bool detectMidiTransportStatusChangedForCleanup()
+    {
+        bool playing = false;
+        if (! queryMidiTransportPlayingForCleanup (playing))
+        {
+            resetMidiTransportStatusForCleanup();
+            return false;
+        }
+
+        const bool changed = midiTransportHaveLastPlaying && midiTransportLastPlaying != playing;
+        midiTransportHaveLastPlaying = true;
+        midiTransportLastPlaying = playing;
+        return changed;
+    }
+
+    void appendTrackedInputMidiCleanupToRuntimeQueue (int sampleOffset, bool includeAllNotesOff)
+    {
+        midiInputNoteTracker.appendUnsafeNoteEndsToRuntimeQueue (midiRuntime.midiInEvents,
+                                                                 sampleOffset,
+                                                                 0,
+                                                                 includeAllNotesOff);
+        midiInputNoteTracker.clear();
+    }
+
+    void appendTrackedOutputMidiCleanupToBuffer (juce::MidiBuffer& midiMessages,
+                                                int sampleOffset,
+                                                bool includeAllNotesOff)
+    {
+        midiOutputNoteTracker.appendUnsafeNoteEndsToMidiBuffer (midiMessages,
+                                                                sampleOffset,
+                                                                includeAllNotesOff);
+        midiOutputNoteTracker.clear();
     }
 
     void requestEmergencyMidiCleanup()
@@ -8088,7 +8502,10 @@ private:
         st.pendingNoteCleanup = 1;
     }
 
-    void importMidiToState (const juce::MidiBuffer& midiMessages, int numSamples)
+    void importMidiToState (const juce::MidiBuffer& midiMessages,
+                            int numSamples,
+                            bool prependUnsafeMidiCleanup,
+                            bool includeAllNotesOffInPrependedCleanup)
     {
         st.currentBlockSize = numSamples;
         st.midiInCount = 0;
@@ -8099,6 +8516,9 @@ private:
 
         midiRuntime.beginBlock();
         midiRuntime.reserveQueues ((size_t) kInitialMidiQueueCapacity);
+
+        if (prependUnsafeMidiCleanup)
+            appendTrackedInputMidiCleanupToRuntimeQueue (0, includeAllNotesOffInPrependedCleanup);
 
         for (const auto metadata : midiMessages)
         {
@@ -8116,6 +8536,15 @@ private:
                 ev.assign (reinterpret_cast<const juce::uint8*> (raw), rawSize);
                 if (ev.length <= 0 || ev.data() == nullptr)
                     continue;
+
+                int clearChannel = -1;
+                if (RuntimeMidiNoteTracker::isChannelVoiceClearMessage (ev.data(), ev.length, clearChannel))
+                    midiInputNoteTracker.appendActiveNoteOffsForChannelToRuntimeQueue (midiRuntime.midiInEvents,
+                                                                                       ev.sampleOffset,
+                                                                                       ev.bus,
+                                                                                       clearChannel);
+
+                midiInputNoteTracker.observeRawMidi (ev.data(), ev.length);
                 midiRuntime.midiInEvents.push_back (std::move (ev));
             }
             catch (...)
@@ -8154,6 +8583,13 @@ private:
             if (raw == nullptr || ev.length <= 0)
                 continue;
 
+            int clearChannel = -1;
+            if (RuntimeMidiNoteTracker::isChannelVoiceClearMessage (raw, ev.length, clearChannel))
+                midiOutputNoteTracker.appendActiveNoteOffsForChannelToMidiBuffer (midiMessages,
+                                                                                  ev.sampleOffset,
+                                                                                  clearChannel);
+
+            midiOutputNoteTracker.observeRawMidi (raw, ev.length);
             midiMessages.addEvent (raw, ev.length, juce::jmax (0, ev.sampleOffset));
         }
 
@@ -8533,6 +8969,10 @@ private:
     DSPJSFX_State st {};
     za::jsfx::DspJsfxRuntime jsfxRuntime;
     JsfxMidiRuntime midiRuntime;
+    RuntimeMidiNoteTracker midiInputNoteTracker;
+    RuntimeMidiNoteTracker midiOutputNoteTracker;
+    bool midiTransportHaveLastPlaying = false;
+    bool midiTransportLastPlaying = false;
     std::vector<DSPJSFX_MidiEvent> midiInStorage;
     std::vector<DSPJSFX_MidiEvent> midiOutStorage;
     std::atomic<bool> pendingEmergencyMidiCleanup { false };

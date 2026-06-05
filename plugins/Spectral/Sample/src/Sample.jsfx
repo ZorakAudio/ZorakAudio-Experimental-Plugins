@@ -1,9 +1,10 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v54-spaceverb-voicesend)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v57-spaceverb-softrollback)
 tags:instrument sampler ui
 options:gmem=SampleGroupSync
 // #GFX_RESIZE: responsive
 
-// v54 SpaceVerb VoiceSend: SpaceVerb is driven by per-voice envelope sends into one shared room/tail tank, with tail-energy governance instead of obvious transient ducking.
+// v57 SpaceVerb SoftRollback: reverts v55 loud SpaceVerb feed/gain tuning back toward the subtler v54 voice-send behavior while preserving v56 host-backed hidden states.
+// v56 HiddenStateSliders: hidden Shift/Alt macro states are mirrored to host-owned sliders so 48/96 kHz rebuilds and renders preserve them.
 // v53 PopCue: Shift+Push adds a CPU-gated concrete-detail cue extractor; it lifts short perceptual object cues without making Push bipolar.
 // v52 Harmonics: Shift+Output adds an 8-band ERB/gammatone-ish parallel harmonic enrichment layer; it is fully bypassed unless the hidden amount is above 0.
 // v51 SpaceVerb: Shift+Room adds designed space amount; Alt+Room sets space character. RoomScrub remains normal Room, and the additive SpaceVerb is zero-PDC/non-FFT/denormal-safe.
@@ -57,7 +58,7 @@ filename:0,sample.wav
 // #HELP: v40 CleanScrub makes Clean a stronger general cleanup control: it detects low-SNR/sustained bed noise per band, suppresses hiss and static tails harder, preserves attacks, and becomes deliberately obvious at high values.
 // #HELP: v39 RoomScrub makes Room Tame a stronger general de-room control: it detects late/diffuse band energy, trims low-mid/presence room wash, narrows roomy side smear, and protects attacks.
 // #HELP: v51 SpaceVerb adds Shift+drag Room as hidden Space amount and Alt+drag Room as hidden Space character: scrub bad room with Room, then add intentional sound-design space.
-// #HELP: v54 SpaceVerb feeds that space from per-voice envelope send buses into a shared room/tail tank, so impacts can ring naturally without obvious sidechain ducking.
+// #HELP: v57 SpaceVerb SoftRollback returns SpaceVerb to the subtler v54-style voice-send balance; Shift+Room/Alt+Room state still persists through render/sample-rate rebuilds via v56 hidden sliders.
 // #HELP: v53 PopCue adds Shift+drag Push as a concrete-detail cue extractor: it lifts short object cues in parallel without becoming inverse Push, and it is bypassed at 0.
 // #HELP: v52 Harmonics adds Shift+drag Output as a clean 8-band psychoacoustic harmonic enrichment macro: it generates a parallel, band-limited harmonic layer instead of driving the dry signal into saturation, and it is bypassed at 0.
 // #HELP: v38 DenormalGuard protects internal recursive filters/analyzers from near-zero denormal stalls, gates silent spectrum analysis, and preserves v37 Granular gating.
@@ -147,6 +148,16 @@ slider43:1<0,4,1{6,12,24,36,48}>--EQ HPF Slope
 slider44:1<0,4,1{6,12,24,36,48}>--EQ LPF Slope
 slider45:0.707<0.35,4,0.001>--EQ HPF Q
 slider46:0.707<0.35,4,0.001>--EQ LPF Q
+slider47:0<-12,12,0.01>--Hidden Formant Shift
+slider48:1<0,1,0.001>--Hidden Tail Grace
+slider49:0<-1,1,0.001>--Hidden Peak Pack
+slider50:0<0,1,0.001>--Hidden Dynamics Expand
+slider51:0<0,1,0.001>--Hidden Granular Input Env
+slider52:0<0,1,0.001>--Hidden Clean DeCrust
+slider53:0<0,1,0.001>--Hidden Space Amount
+slider54:0.5<0,1,0.001>--Hidden Space Character
+slider55:0<0,1,0.001>--Hidden Harmonics
+slider56:0<0,1,0.001>--Hidden PopCue
 @init
 /*
 Runtime sample-pool API used here:
@@ -4461,11 +4472,10 @@ function apply_space_verb() local(
   in_att in_rel tank_hot governor_target governor send_drive late_drive early_drive
 )
 (
-  // v54 SpaceVerb VoiceSend: additive sound-design space is fed by per-voice
-  // envelope send buses into one shared room/tail tank. There is no audible
-  // sidechain-style transient ducking; impacts excite early reflections and the
-  // tank decays naturally. Only new send/feedback are gently governed when the
-  // shared tail is already too hot.
+  // v57 SpaceVerb SoftRollback: keep the v54 voice-envelope send architecture
+  // and shared tank, but undo the v55 audibility boost/fallback feed that made
+  // Space too loud and forward. Voice envelopes feed the room; the room output
+  // is not sidechain-ducked or hard-tied to the voice envelope.
   dryL = outL;
   dryR = outR;
   amount = clamp01(space_room_amt);
@@ -6945,6 +6955,38 @@ function process_granular_input_trigger(inL inR) local(
   );
 );
 
+function flush_hidden_state_sliders()
+(
+  // Hidden alt-mode controls are real host sliders under the hood. JSFX @init can
+  // run again during sample-rate/render-engine changes; sliders survive that,
+  // plain internal variables do not. Keep these mirrors current whenever the
+  // custom UI edits a hidden control.
+  slider47 = clamp(formant_shift_semi, -12, 12);
+  slider48 = clamp01(auto_release_amt);
+  slider49 = clamp(focus_peak_amt, -1, 1);
+  slider50 = clamp01(dynamics_expand_amt);
+  slider51 = clamp01(input_trigger_amt);
+  slider52 = clamp01(clean_decrust_amt);
+  slider53 = clamp01(space_room_amt);
+  slider54 = clamp01(space_room_char);
+  slider55 = clamp01(output_harmonics_amt);
+  slider56 = clamp01(push_pop_amt);
+
+  // Use individual sliderchange calls instead of a giant summed mask. Powers
+  // above 2^53 are exact, but sums can lose precision in double-based EEL2.
+  sliderchange(MASK_S47);
+  sliderchange(MASK_S48);
+  sliderchange(MASK_S49);
+  sliderchange(MASK_S50);
+  sliderchange(MASK_S51);
+  sliderchange(MASK_S52);
+  sliderchange(MASK_S53);
+  sliderchange(MASK_S54);
+  sliderchange(MASK_S55);
+  sliderchange(MASK_S56);
+  hidden_state_dirty = 0;
+);
+
 function ui_panel(x y w h) local(i t)
 (
   gfx_r = 0.000; gfx_g = 0.000; gfx_b = 0.000; gfx_a = 0.34;
@@ -7237,6 +7279,7 @@ function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local
     (id == 204 && ui_shift) ? (
       auto_release_amt = 1;
       ui_value_changed = 1;
+      hidden_state_dirty = 1;
       ui_alt_release_drag = 0;
     ) : (
       abs(val - defval) > 0.0000001 ? (
@@ -7256,6 +7299,7 @@ function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local
       (id == 204 && ui_shift) ? (
         auto_release_amt = 1;
         ui_value_changed = 1;
+        hidden_state_dirty = 1;
       ) : (
         abs(val - defval) > 0.0000001 ? (
           val = defval;
@@ -7289,6 +7333,7 @@ function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local
         abs(norm - auto_release_amt) > 0.0000001 ? (
           auto_release_amt = norm;
           ui_value_changed = 1;
+          hidden_state_dirty = 1;
         );
       ) : (
         vv = curve_denorm(norm, vmin, vmax, curve_mode);
@@ -7822,6 +7867,16 @@ MASK_S43 = 4398046511104;
 MASK_S44 = 8796093022208;
 MASK_S45 = 17592186044416;
 MASK_S46 = 35184372088832;
+MASK_S47 = 70368744177664;
+MASK_S48 = 140737488355328;
+MASK_S49 = 281474976710656;
+MASK_S50 = 562949953421312;
+MASK_S51 = 1125899906842624;
+MASK_S52 = 2251799813685248;
+MASK_S53 = 4503599627370496;
+MASK_S54 = 9007199254740992;
+MASK_S55 = 18014398509481984;
+MASK_S56 = 36028797018963968;
 
 CLEAN_BANDS = 5;
 DECRUST_FFT = 512;
@@ -8242,6 +8297,7 @@ ui_down_val = 0;
 ui_prev_down = 0;
 ui_prev_rdown = 0;
 ui_value_changed = 0;
+hidden_state_dirty = 0;
 ui_hover_id = -1;
 ui_wheel = 0;
 ui_wheel_used = 0;
@@ -8347,10 +8403,10 @@ release_samps = max(1, floor(slider5 * srate * 0.001));
 hold_samps = max(0, floor(slider20 * srate * 0.001));
 mono_source = (slider21 | 0) ? 1 : 0;
 dynamics_amt = clamp01(slider22);
-dynamics_expand_amt = clamp01(dynamics_expand_amt);
-input_trigger_amt = clamp01(input_trigger_amt);
+dynamics_expand_amt = clamp01(slider50);
+input_trigger_amt = clamp01(slider51);
 clean_amt = clamp01(slider25);
-clean_decrust_amt = clamp01(clean_decrust_amt);
+clean_decrust_amt = clamp01(slider52);
 (clean_decrust_amt <= 0.0001 && clean_decrust_active_prev > 0) ? (
   decrust_clear_state();
 );
@@ -8360,12 +8416,12 @@ clean_decrust_amt = clamp01(clean_decrust_amt);
 );
 clean_decrust_active_prev = clean_decrust_amt > 0.0001 ? 1 : 0;
 room_amt = clamp01(slider26);
-space_room_amt = clamp01(space_room_amt);
-space_room_char = clamp01(space_room_char);
+space_room_amt = clamp01(slider53);
+space_room_char = clamp01(slider54);
 (space_room_amt <= 0.0001 && space_room_active_prev > 0) ? reset_space_verb_buffers();
 space_room_active_prev = space_room_amt > 0.0001 ? 1 : 0;
 push_amt = clamp01(slider27 / 100);
-push_pop_amt = clamp01(push_pop_amt);
+push_pop_amt = clamp01(slider56);
 (push_pop_amt <= 0.0001 && push_pop_active_prev > 0) ? reset_push_pop_buffers();
 (push_pop_amt > 0.0001 && push_pop_active_prev <= 0) ? pop_update_coeffs();
 push_pop_active_prev = push_pop_amt > 0.0001 ? 1 : 0;
@@ -8409,14 +8465,14 @@ decay_coef = decay_samps <= 1 ? 1 : (1 - exp(-6.90775527898214 / decay_samps));
 release_coef = release_samps <= 1 ? 0 : exp(-6.90775527898214 / release_samps);
 truth_mix = clamp01(slider10);
 out_trim = db2amp(slider11);
-output_harmonics_amt = clamp01(output_harmonics_amt);
+output_harmonics_amt = clamp01(slider55);
 (output_harmonics_amt <= 0.0001 && output_harmonics_active_prev > 0) ? reset_output_harmonics_buffers();
 (output_harmonics_amt > 0.0001 && output_harmonics_active_prev <= 0) ? harm_update_coeffs();
 output_harmonics_active_prev = output_harmonics_amt > 0.0001 ? 1 : 0;
 pitch_semi = clamp(slider12, -24, 24);
-formant_shift_semi = clamp(formant_shift_semi, -12, 12);
-focus_peak_amt = clamp(focus_peak_amt, -1, 1);
-auto_release_amt = clamp(auto_release_amt, 0, 1);
+formant_shift_semi = clamp(slider47, -12, 12);
+focus_peak_amt = clamp(slider49, -1, 1);
+auto_release_amt = clamp01(slider48);
 proc_eq_band1_db = clamp(slider32, -18, 18);
 proc_eq_band2_db = clamp(slider33, -18, 18);
 proc_eq_band3_db = clamp(slider34, -18, 18);
@@ -10662,11 +10718,13 @@ pitch_alt_use ? (
   abs(nv - formant_shift_semi) > 0.0000001 ? (
     formant_shift_semi = clamp(nv, -12, 12);
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
   pitch_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     formant_shift_semi = clamp(formant_shift_semi + (ui_wheel > 0 ? 0.25 : -0.25) * max(1, floor(abs(ui_wheel) / 120 + 0.5)), -12, 12);
     ui_wheel_used = 1;
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
 ) : (
   nv = ui_knob(307, kc, ky, kb_r, slider12, -24, 24, 0, 0.021);
@@ -10706,11 +10764,13 @@ grain_input_alt_use ? (
   abs(nv - input_trigger_amt) > 0.0000001 ? (
     input_trigger_amt = clamp01(nv);
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
   grain_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     input_trigger_amt = clamp01(input_trigger_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
     ui_wheel_used = 1;
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
 ) : (
   nv = ui_knob(310, kc, ky, kb_r, slider18, 0, 1, 0.55, 0.018);
@@ -10758,11 +10818,13 @@ focus_peak_alt_use ? (
   abs(nv - focus_peak_amt) > 0.0000001 ? (
     focus_peak_amt = clamp(nv, -1, 1);
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
   focus_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     focus_peak_amt = clamp(focus_peak_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)), -1, 1);
     ui_wheel_used = 1;
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
 ) : (
   nv = ui_knob(302, kc, ky, kb_r, slider7, -1, 1, 0, 0.020); abs(nv - slider7) > 0.0000001 ? (slider7 = nv; gfx_slider_mask |= MASK_S7;);
@@ -10832,11 +10894,13 @@ clean_decrust_alt_use ? (
   abs(nv - clean_decrust_amt) > 0.0000001 ? (
     clean_decrust_amt = clamp01(nv);
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
   clean_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     clean_decrust_amt = clamp01(clean_decrust_amt + (ui_wheel > 0 ? 0.018 : -0.018) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
     ui_wheel_used = 1;
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
 ) : (
   nv = ui_knob(313, kc, ky, kb_r, slider25, 0, 1, 0, 0.018); abs(nv - slider25) > 0.0000001 ? (slider25 = nv; gfx_slider_mask |= MASK_S25;);
@@ -10870,22 +10934,26 @@ room_space_char_alt_use ? (
   abs(nv - space_room_char) > 0.0000001 ? (
     space_room_char = clamp01(nv);
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
   room_hot && ui_alt && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     space_room_char = clamp01(space_room_char + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
     ui_wheel_used = 1;
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
 ) : room_space_amt_alt_use ? (
   nv = ui_knob(331, kc, ky, kb_r, space_room_amt, 0, 1, 0, 0.018);
   abs(nv - space_room_amt) > 0.0000001 ? (
     space_room_amt = clamp01(nv);
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
   room_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     space_room_amt = clamp01(space_room_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
     ui_wheel_used = 1;
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
 ) : (
   nv = ui_knob(314, kc, ky, kb_r, slider26, 0, 1, 0, 0.018); abs(nv - slider26) > 0.0000001 ? (slider26 = nv; gfx_slider_mask |= MASK_S26;);
@@ -10912,12 +10980,14 @@ push_pop_alt_use ? (
     push_pop_amt = clamp01(nv);
     push_pop_amt > 0.0001 ? pop_update_coeffs();
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
   push_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     push_pop_amt = clamp01(push_pop_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
     push_pop_amt > 0.0001 ? pop_update_coeffs();
     ui_wheel_used = 1;
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
 ) : (
   nv = ui_knob(315, kc, ky, kb_r, slider27, 0, 100, 0, 0.016); abs(nv - slider27) > 0.0000001 ? (slider27 = nv; gfx_slider_mask |= MASK_S27;);
@@ -10943,11 +11013,13 @@ dyn_expand_alt_use ? (
   abs(nv - dynamics_expand_amt) > 0.0000001 ? (
     dynamics_expand_amt = clamp01(nv);
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
   dyn_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     dynamics_expand_amt = clamp01(dynamics_expand_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
     ui_wheel_used = 1;
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
 ) : (
   nv = ui_knob(312, kc, ky, kb_r, slider22, 0, 1, 0, 0.018); abs(nv - slider22) > 0.0000001 ? (slider22 = nv; gfx_slider_mask |= MASK_S22;);
@@ -10974,12 +11046,14 @@ output_harm_alt_use ? (
     output_harmonics_amt = clamp01(nv);
     output_harmonics_amt > 0.0001 ? harm_update_coeffs();
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
   out_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     output_harmonics_amt = clamp01(output_harmonics_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
     output_harmonics_amt > 0.0001 ? harm_update_coeffs();
     ui_wheel_used = 1;
     ui_value_changed = 1;
+    hidden_state_dirty = 1;
   );
 ) : (
   nv = ui_knob(306, kc, ky, kb_r, slider11, -24, 12, -9, 0.018); abs(nv - slider11) > 0.0000001 ? (slider11 = nv; gfx_slider_mask |= MASK_S11;);
@@ -11655,7 +11729,7 @@ ui_hover_id == 314 ? (
 );
 ui_hover_id == 331 ? (
   sprintf(#tip_title, "Space Amount");
-  sprintf(#tip_body, "%.2f designed additive room/bloom. Works with RoomScrub; zero-PDC/non-FFT.", space_room_amt);
+  sprintf(#tip_body, "%.2f designed additive room/bloom. Subtler v54-style voice-fed Space balance.", space_room_amt);
 );
 ui_hover_id == 332 ? (
   sprintf(#tip_title, "Space Character");
@@ -11762,5 +11836,6 @@ ui_hover_id == PROC_EQ_LPF_ID ? (
 draw_tooltip_box();
 
 gfx_slider_mask ? sliderchange(gfx_slider_mask);
+hidden_state_dirty ? flush_hidden_state_sliders();
 ui_prev_down = mouse_down;
 ui_prev_rdown = mouse_rdown;
