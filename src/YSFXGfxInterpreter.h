@@ -2199,6 +2199,8 @@ public:
   {
     if (!hasGfxSection() || !gfxCompiledOk()) return;
 
+    juce::ScopedNoDenormals noDenormals;
+
     vm->setHostTrackName(snap.hostTrackName, snap.hostTrackNameSeq);
 
     // One-time init, with current snapshot state applied first.

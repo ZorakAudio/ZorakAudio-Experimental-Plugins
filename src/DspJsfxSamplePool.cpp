@@ -1,6 +1,8 @@
 #include "DspJsfxSamplePool.h"
+#include "DspJsfxAudioFilePreflight.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <limits>
 
@@ -27,6 +29,82 @@ static std::uint64_t safeAudioBytes(std::int64_t frames, int channels) noexcept
     if (items > std::numeric_limits<std::uint64_t>::max() / sizeof(float))
         return std::numeric_limits<std::uint64_t>::max();
     return items * sizeof(float);
+}
+
+static bool shouldResampleToTarget(double sourceRate, double targetRate) noexcept
+{
+    return std::isfinite(sourceRate)
+        && std::isfinite(targetRate)
+        && sourceRate > 1000.0
+        && targetRate > 1000.0
+        && std::abs(sourceRate - targetRate) > 1.0;
+}
+
+static bool resampleInterleavedLinear(const float* src,
+                                      std::uint64_t srcFrames,
+                                      int channels,
+                                      double sourceRate,
+                                      double targetRate,
+                                      std::vector<float>& out,
+                                      std::uint64_t& outFrames)
+{
+    out.clear();
+    outFrames = 0;
+
+    if (src == nullptr || srcFrames == 0 || channels <= 0)
+        return false;
+
+    if (! shouldResampleToTarget(sourceRate, targetRate))
+        return false;
+
+    const double ratio = targetRate / sourceRate;
+    if (! std::isfinite(ratio) || ratio <= 0.0)
+        return false;
+
+    const double dstFramesD = std::max(1.0, std::round(static_cast<double>(srcFrames) * ratio));
+    if (! std::isfinite(dstFramesD) || dstFramesD > static_cast<double>(std::numeric_limits<std::uint32_t>::max()))
+        return false;
+
+    outFrames = static_cast<std::uint64_t>(dstFramesD);
+    const auto bytes = safeAudioBytes(static_cast<std::int64_t>(outFrames), channels);
+    if (bytes == 0 || bytes == std::numeric_limits<std::uint64_t>::max())
+        return false;
+
+    const auto totalItems = outFrames * static_cast<std::uint64_t>(channels);
+    if (totalItems > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / sizeof(float)))
+        return false;
+
+    try
+    {
+        out.resize(static_cast<std::size_t>(totalItems));
+    }
+    catch (...)
+    {
+        out.clear();
+        outFrames = 0;
+        return false;
+    }
+
+    for (std::uint64_t frame = 0; frame < outFrames; ++frame)
+    {
+        const double srcPos = static_cast<double>(frame) * sourceRate / targetRate;
+        const auto pos0 = static_cast<std::uint64_t>(std::min<double>(static_cast<double>(srcFrames - 1), std::floor(srcPos)));
+        const auto pos1 = std::min<std::uint64_t>(srcFrames - 1, pos0 + 1);
+        const float frac = static_cast<float>(std::max(0.0, std::min(1.0, srcPos - static_cast<double>(pos0))));
+
+        const auto dstBase = static_cast<std::size_t>(frame * static_cast<std::uint64_t>(channels));
+        const auto srcBase0 = static_cast<std::size_t>(pos0 * static_cast<std::uint64_t>(channels));
+        const auto srcBase1 = static_cast<std::size_t>(pos1 * static_cast<std::uint64_t>(channels));
+
+        for (int ch = 0; ch < channels; ++ch)
+        {
+            const float a = src[srcBase0 + static_cast<std::size_t>(ch)];
+            const float b = src[srcBase1 + static_cast<std::size_t>(ch)];
+            out[dstBase + static_cast<std::size_t>(ch)] = a + (b - a) * frac;
+        }
+    }
+
+    return true;
 }
 
 static void buildPreviewForEntry(DspJsfxSamplePoolGeneration& gen, DspJsfxSamplePoolEntry& entry)
@@ -109,16 +187,33 @@ void DspJsfxSamplePool::setBudgetMB(double mb) noexcept
     budgetBytes_.store(clamped, std::memory_order_release);
 }
 
+void DspJsfxSamplePool::setTargetSampleRate(double sampleRate) noexcept
+{
+    if (! std::isfinite(sampleRate) || sampleRate <= 1000.0)
+        sampleRate = 0.0;
+
+    targetSampleRate_.store(sampleRate, std::memory_order_release);
+}
+
+void DspJsfxSamplePool::setCompletionCallback(CompletionCallback callback)
+{
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    completionCallback_ = std::move(callback);
+}
+
 bool DspJsfxSamplePool::commitFromPaths(const std::vector<juce::String>& paths, std::uint64_t sourceGeneration)
 {
     const int currentMode = mode_.load(std::memory_order_acquire);
     const auto currentBudget = budgetBytes_.load(std::memory_order_acquire);
+    const double currentTargetRate = targetSampleRate_.load(std::memory_order_acquire);
+    const double committedTargetRate = lastCommittedTargetSampleRate_.load(std::memory_order_acquire);
 
     if (sourceGeneration != 0
         && lastCommittedSourceGeneration_.load(std::memory_order_acquire) == sourceGeneration
         && lastCommittedMode_.load(std::memory_order_acquire) == currentMode
         && lastCommittedBudgetBytes_.load(std::memory_order_acquire) == currentBudget
-        && lastCommittedSourceKind_.load(std::memory_order_acquire) == 0)
+        && lastCommittedSourceKind_.load(std::memory_order_acquire) == 0
+        && std::abs(committedTargetRate - currentTargetRate) <= 0.5)
         return true;
 
     ensureWorker();
@@ -128,6 +223,7 @@ bool DspJsfxSamplePool::commitFromPaths(const std::vector<juce::String>& paths, 
     req.sourceGeneration = sourceGeneration;
     req.mode = currentMode;
     req.budgetBytes = currentBudget;
+    req.targetSampleRate = currentTargetRate;
     req.requestId = nextRequestId_.fetch_add(1, std::memory_order_acq_rel);
 
     selected_.store(static_cast<int>(req.paths.size()), std::memory_order_release);
@@ -145,6 +241,7 @@ bool DspJsfxSamplePool::commitFromPaths(const std::vector<juce::String>& paths, 
     lastCommittedMode_.store(currentMode, std::memory_order_release);
     lastCommittedBudgetBytes_.store(currentBudget, std::memory_order_release);
     lastCommittedSourceKind_.store(0, std::memory_order_release);
+    lastCommittedTargetSampleRate_.store(currentTargetRate, std::memory_order_release);
     return true;
 }
 
@@ -153,12 +250,15 @@ bool DspJsfxSamplePool::commitFromMemory(std::shared_ptr<const DspJsfxSamplePool
 {
     const int currentMode = mode_.load(std::memory_order_acquire);
     const auto currentBudget = budgetBytes_.load(std::memory_order_acquire);
+    const double currentTargetRate = targetSampleRate_.load(std::memory_order_acquire);
+    const double committedTargetRate = lastCommittedTargetSampleRate_.load(std::memory_order_acquire);
 
     if (sourceGeneration != 0
         && lastCommittedSourceGeneration_.load(std::memory_order_acquire) == sourceGeneration
         && lastCommittedMode_.load(std::memory_order_acquire) == currentMode
         && lastCommittedBudgetBytes_.load(std::memory_order_acquire) == currentBudget
-        && lastCommittedSourceKind_.load(std::memory_order_acquire) == 1)
+        && lastCommittedSourceKind_.load(std::memory_order_acquire) == 1
+        && std::abs(committedTargetRate - currentTargetRate) <= 0.5)
         return true;
 
     ensureWorker();
@@ -168,6 +268,7 @@ bool DspJsfxSamplePool::commitFromMemory(std::shared_ptr<const DspJsfxSamplePool
     req.sourceGeneration = sourceGeneration;
     req.mode = currentMode;
     req.budgetBytes = currentBudget;
+    req.targetSampleRate = currentTargetRate;
     req.requestId = nextRequestId_.fetch_add(1, std::memory_order_acq_rel);
 
     const int selected = req.memorySources != nullptr ? static_cast<int>(req.memorySources->size()) : 0;
@@ -186,6 +287,7 @@ bool DspJsfxSamplePool::commitFromMemory(std::shared_ptr<const DspJsfxSamplePool
     lastCommittedMode_.store(currentMode, std::memory_order_release);
     lastCommittedBudgetBytes_.store(currentBudget, std::memory_order_release);
     lastCommittedSourceKind_.store(1, std::memory_order_release);
+    lastCommittedTargetSampleRate_.store(currentTargetRate, std::memory_order_release);
     return true;
 }
 
@@ -412,7 +514,27 @@ std::shared_ptr<DspJsfxSamplePoolGeneration> DspJsfxSamplePool::buildGeneration(
                 continue;
             }
 
-            const auto bytes = safeAudioBytes(static_cast<std::int64_t>(frames64), channels);
+            std::vector<float> resampledAudio;
+            std::uint64_t resampledFrames = 0;
+            const float* sourceAudio = src.audio.data();
+            std::uint64_t sourceFrames = frames64;
+            std::uint32_t sourceSampleRate = std::max<std::uint32_t>(1u, src.sampleRate);
+
+            if (resampleInterleavedLinear(src.audio.data(),
+                                          frames64,
+                                          channels,
+                                          static_cast<double>(sourceSampleRate),
+                                          request.targetSampleRate,
+                                          resampledAudio,
+                                          resampledFrames)
+                && resampledFrames > 0)
+            {
+                sourceAudio = resampledAudio.data();
+                sourceFrames = resampledFrames;
+                sourceSampleRate = static_cast<std::uint32_t>(std::max<int>(1, static_cast<int>(std::llround(request.targetSampleRate))));
+            }
+
+            const auto bytes = safeAudioBytes(static_cast<std::int64_t>(sourceFrames), channels);
             if (bytes == 0 || bytes == std::numeric_limits<std::uint64_t>::max())
             {
                 ++gen->failedCount;
@@ -428,12 +550,13 @@ std::shared_ptr<DspJsfxSamplePoolGeneration> DspJsfxSamplePool::buildGeneration(
             DspJsfxSamplePoolEntry entry;
             entry.id = static_cast<std::uint64_t>(gen->entries.size() + 1);
             entry.offsetItems = static_cast<std::uint64_t>(gen->audio.size());
-            entry.frames = static_cast<std::uint32_t>(std::min<std::uint64_t>(frames64, std::numeric_limits<std::uint32_t>::max()));
+            entry.frames = static_cast<std::uint32_t>(std::min<std::uint64_t>(sourceFrames, std::numeric_limits<std::uint32_t>::max()));
             entry.channels = static_cast<std::uint16_t>(channels);
-            entry.sampleRate = std::max<std::uint32_t>(1u, src.sampleRate);
+            entry.sampleRate = sourceSampleRate;
 
             const std::uint64_t keptItems = static_cast<std::uint64_t>(entry.frames) * static_cast<std::uint64_t>(entry.channels);
-            if (keptItems > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / sizeof(float)))
+            if (keptItems > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / sizeof(float))
+                || keptItems > static_cast<std::uint64_t>(std::numeric_limits<std::ptrdiff_t>::max()))
             {
                 ++gen->failedCount;
                 continue;
@@ -441,7 +564,7 @@ std::shared_ptr<DspJsfxSamplePoolGeneration> DspJsfxSamplePool::buildGeneration(
 
             try
             {
-                gen->audio.insert(gen->audio.end(), src.audio.begin(), src.audio.begin() + static_cast<std::ptrdiff_t>(keptItems));
+                gen->audio.insert(gen->audio.end(), sourceAudio, sourceAudio + static_cast<std::ptrdiff_t>(keptItems));
             }
             catch (...)
             {
@@ -486,14 +609,87 @@ std::shared_ptr<DspJsfxSamplePoolGeneration> DspJsfxSamplePool::buildGeneration(
         }
 
         const int channels = std::max<int>(1, std::min<int>(64, static_cast<int>(reader->numChannels)));
-        const auto frames64 = reader->lengthInSamples;
-        if (frames64 <= 0)
+
+        bool skipUnsafeMalformedFile = false;
+        const auto safeFrames = chooseSafeDecodedFrameCount(file, *reader, skipUnsafeMalformedFile);
+        if (skipUnsafeMalformedFile || safeFrames <= 0)
         {
             ++gen->failedCount;
             continue;
         }
 
-        const auto bytes = safeAudioBytes(frames64, channels);
+        const auto nativeFrames64 = std::min<std::int64_t>(safeFrames, std::numeric_limits<std::uint32_t>::max());
+        const auto nativeItems = static_cast<std::uint64_t>(nativeFrames64) * static_cast<std::uint64_t>(channels);
+        if (nativeItems == 0 || nativeItems > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / sizeof(float)))
+        {
+            ++gen->failedCount;
+            continue;
+        }
+
+        std::vector<float> decoded;
+        try
+        {
+            decoded.resize(static_cast<std::size_t>(nativeItems));
+        }
+        catch (...)
+        {
+            ++gen->failedCount;
+            continue;
+        }
+
+        juce::AudioBuffer<float> temp;
+        constexpr int chunk = 65536;
+        bool ok = true;
+
+        for (std::int64_t pos = 0; pos < nativeFrames64; pos += chunk)
+        {
+            const int toRead = static_cast<int>(std::min<std::int64_t>(chunk, nativeFrames64 - pos));
+            temp.setSize(channels, toRead, false, false, true);
+            temp.clear();
+            if (! reader->read(&temp, 0, toRead, pos, true, true))
+            {
+                ok = false;
+                break;
+            }
+
+            for (int i = 0; i < toRead; ++i)
+            {
+                const auto frame = static_cast<std::uint64_t>(pos + i);
+                const auto base = static_cast<std::size_t>(frame * static_cast<std::uint64_t>(channels));
+                for (int ch = 0; ch < channels; ++ch)
+                    decoded[base + static_cast<std::size_t>(ch)] = temp.getSample(ch, i);
+            }
+        }
+
+        if (! ok)
+        {
+            ++gen->failedCount;
+            continue;
+        }
+
+        const double nativeSampleRate = reader->sampleRate > 1000.0 ? reader->sampleRate : 48000.0;
+        std::vector<float> resampledAudio;
+        std::uint64_t resampledFrames = 0;
+        const float* sourceAudio = decoded.data();
+        std::uint64_t sourceFrames = static_cast<std::uint64_t>(nativeFrames64);
+        std::uint32_t sourceSampleRate = static_cast<std::uint32_t>(std::max<int>(1, static_cast<int>(std::llround(nativeSampleRate))));
+
+        if (resampleInterleavedLinear(decoded.data(),
+                                      sourceFrames,
+                                      channels,
+                                      nativeSampleRate,
+                                      request.targetSampleRate,
+                                      resampledAudio,
+                                      resampledFrames)
+            && resampledFrames > 0)
+        {
+            sourceAudio = resampledAudio.data();
+            sourceFrames = resampledFrames;
+            sourceSampleRate = static_cast<std::uint32_t>(std::max<int>(1, static_cast<int>(std::llround(request.targetSampleRate))));
+        }
+
+        const auto entryFrames64 = std::min<std::uint64_t>(sourceFrames, std::numeric_limits<std::uint32_t>::max());
+        const auto bytes = safeAudioBytes(static_cast<std::int64_t>(entryFrames64), channels);
         if (bytes == 0 || bytes == std::numeric_limits<std::uint64_t>::max())
         {
             ++gen->failedCount;
@@ -509,12 +705,13 @@ std::shared_ptr<DspJsfxSamplePoolGeneration> DspJsfxSamplePool::buildGeneration(
         DspJsfxSamplePoolEntry entry;
         entry.id = static_cast<std::uint64_t>(gen->entries.size() + 1);
         entry.offsetItems = static_cast<std::uint64_t>(gen->audio.size());
-        entry.frames = static_cast<std::uint32_t>(std::min<std::int64_t>(frames64, std::numeric_limits<std::uint32_t>::max()));
+        entry.frames = static_cast<std::uint32_t>(entryFrames64);
         entry.channels = static_cast<std::uint16_t>(channels);
-        entry.sampleRate = static_cast<std::uint32_t>(std::max<int>(1, static_cast<int>(std::llround(reader->sampleRate))));
+        entry.sampleRate = sourceSampleRate;
 
         const auto totalItems = static_cast<std::uint64_t>(entry.frames) * static_cast<std::uint64_t>(entry.channels);
-        if (totalItems > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / sizeof(float)))
+        if (totalItems > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / sizeof(float))
+            || totalItems > static_cast<std::uint64_t>(std::numeric_limits<std::ptrdiff_t>::max()))
         {
             ++gen->failedCount;
             continue;
@@ -523,50 +720,22 @@ std::shared_ptr<DspJsfxSamplePoolGeneration> DspJsfxSamplePool::buildGeneration(
         const auto oldSize = gen->audio.size();
         try
         {
-            gen->audio.resize(oldSize + static_cast<std::size_t>(totalItems));
+            gen->audio.insert(gen->audio.end(), sourceAudio, sourceAudio + static_cast<std::ptrdiff_t>(totalItems));
         }
         catch (...)
-        {
-            ++gen->failedCount;
-            continue;
-        }
-
-        juce::AudioBuffer<float> temp;
-        constexpr int chunk = 65536;
-        double sumSq = 0.0;
-        float peak = 0.0f;
-        bool ok = true;
-
-        for (std::int64_t pos = 0; pos < static_cast<std::int64_t>(entry.frames); pos += chunk)
-        {
-            const int toRead = static_cast<int>(std::min<std::int64_t>(chunk, static_cast<std::int64_t>(entry.frames) - pos));
-            temp.setSize(channels, toRead, false, false, true);
-            temp.clear();
-            if (! reader->read(&temp, 0, toRead, pos, true, true))
-            {
-                ok = false;
-                break;
-            }
-
-            for (int i = 0; i < toRead; ++i)
-            {
-                const auto frame = static_cast<std::uint64_t>(pos + i);
-                const auto base = static_cast<std::size_t>(entry.offsetItems + frame * entry.channels);
-                for (int ch = 0; ch < channels; ++ch)
-                {
-                    const float v = temp.getSample(ch, i);
-                    gen->audio[base + static_cast<std::size_t>(ch)] = v;
-                    peak = std::max(peak, std::abs(v));
-                    sumSq += static_cast<double>(v) * static_cast<double>(v);
-                }
-            }
-        }
-
-        if (! ok)
         {
             gen->audio.resize(oldSize);
             ++gen->failedCount;
             continue;
+        }
+
+        double sumSq = 0.0;
+        float peak = 0.0f;
+        for (std::uint64_t i = 0; i < totalItems; ++i)
+        {
+            const float v = gen->audio[static_cast<std::size_t>(entry.offsetItems + i)];
+            peak = std::max(peak, std::abs(v));
+            sumSq += static_cast<double>(v) * static_cast<double>(v);
         }
 
         entry.peak = peak;
@@ -586,6 +755,13 @@ void DspJsfxSamplePool::publishGeneration(std::shared_ptr<DspJsfxSamplePoolGener
     if (! gen)
     {
         state_.store(kSamplePoolFailed, std::memory_order_release);
+        CompletionCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(callbackMutex_);
+            callback = completionCallback_;
+        }
+        if (callback)
+            callback(0, kSamplePoolFailed);
         return;
     }
 
@@ -605,12 +781,21 @@ void DspJsfxSamplePool::publishGeneration(std::shared_ptr<DspJsfxSamplePoolGener
     decodedBytes_.store(gen->decodedBytes, std::memory_order_release);
     publishedGeneration_.store(gen->sourceGeneration, std::memory_order_release);
 
+    int finalState = kSamplePoolReady;
     if (gen->entries.empty())
-        state_.store(gen->selectedCount > 0 ? kSamplePoolFailed : kSamplePoolEmpty, std::memory_order_release);
+        finalState = gen->selectedCount > 0 ? kSamplePoolFailed : kSamplePoolEmpty;
     else if (gen->failedCount > 0 || static_cast<int>(gen->entries.size()) < gen->selectedCount)
-        state_.store(kSamplePoolPartial, std::memory_order_release);
-    else
-        state_.store(kSamplePoolReady, std::memory_order_release);
+        finalState = kSamplePoolPartial;
+
+    state_.store(finalState, std::memory_order_release);
+
+    CompletionCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        callback = completionCallback_;
+    }
+    if (callback)
+        callback(gen->sourceGeneration, finalState);
 }
 
 } // namespace za::jsfx

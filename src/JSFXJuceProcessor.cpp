@@ -53,6 +53,7 @@
 #include "ZAAudioImportRecipe.h"
 #include "DspJsfxRuntime.h"
 #include "DspJsfxSamplePool.h"
+#include "DspJsfxAudioFilePreflight.h"
 
 // Back-compat: older generated headers may not export bus inference macros.
 // Back-compat: accept newer AOT macro names too
@@ -2479,9 +2480,13 @@ extern "C" int jsfx_slider_automate (DSPJSFX_State* st, double sliderMask, doubl
 class JSFXJuceEditor;
 
 
-class JSFXJuceProcessor final : public juce::AudioProcessor
+class JSFXJuceProcessor final : public juce::AudioProcessor,
+                                private juce::AsyncUpdater,
+                                private juce::AudioProcessorValueTreeState::Listener
 {
 public:
+    static const char* kOversamplingParamId() noexcept { return "ZA_INTERNAL_OVERSAMPLING"; }
+
     // Per-slider runtime metadata so we can map JUCE parameters back to the JSFX
     // numeric slider values (especially important for step{A,B,C} enums).
     struct SliderParamInfo
@@ -2874,6 +2879,12 @@ public:
             }
         }
 
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            kOversamplingParamId(),
+            "Oversampling",
+            juce::StringArray { "Off", "2x", "4x", "8x" },
+            0));
+
         apvts = std::make_unique<juce::AudioProcessorValueTreeState> (*this, nullptr, "PARAMS", std::move (layout));
 
         paramAtomics.fill (nullptr);
@@ -2884,6 +2895,9 @@ public:
             const auto& info = sliderParamInfo[i];
             paramAtomics[i] = apvts->getRawParameterValue (info.pid);
         }
+
+        oversamplingParamAtomic = apvts->getRawParameterValue (kOversamplingParamId());
+        registerParameterWakeListeners();
 
         jsfxDeclaredMaxMem = parseJsfxDeclaredMaxMem (kJsfxSourceText);
         gfxSyncMemRanges = parseJsfxGfxSyncMemRanges (kJsfxSourceText);
@@ -2901,6 +2915,10 @@ public:
 
     ~JSFXJuceProcessor() override
     {
+        processorShuttingDown.store (true, std::memory_order_release);
+        cancelPendingUpdate();
+        unregisterParameterWakeListeners();
+
         // Unregister runtime owners (prevents file/mem callbacks from touching freed objects).
         gFileOwner.erase (&st);
 
@@ -2918,6 +2936,32 @@ public:
     }
 
     juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return *apvts; }
+
+    void registerParameterWakeListeners()
+    {
+        if (apvts == nullptr)
+            return;
+
+        for (size_t i = 0; i < 64; ++i)
+            if (sliderParamUsed[i] && sliderParamInfo[i].pid.isNotEmpty())
+                apvts->addParameterListener (sliderParamInfo[i].pid, this);
+
+        apvts->addParameterListener (kOversamplingParamId(), this);
+        parameterWakeListenersRegistered = true;
+    }
+
+    void unregisterParameterWakeListeners()
+    {
+        if (apvts == nullptr || ! parameterWakeListenersRegistered)
+            return;
+
+        for (size_t i = 0; i < 64; ++i)
+            if (sliderParamUsed[i] && sliderParamInfo[i].pid.isNotEmpty())
+                apvts->removeParameterListener (sliderParamInfo[i].pid, this);
+
+        apvts->removeParameterListener (kOversamplingParamId(), this);
+        parameterWakeListenersRegistered = false;
+    }
     
     // Called by the UI thread (@gfx) to push persistent VM state back to the DSP VM.
     void enqueueGfxVarWrite (int index, double value) noexcept { enqueueGfxStateWrite (GfxStateWrite::Kind::Var, index, value); }
@@ -2957,7 +3001,10 @@ public:
         }
 
         if (stagedAny)
+        {
             gfxSnapshotForcePublish.store (true, std::memory_order_release);
+            requestExternalWakeEvent (true);
+        }
     }
 
     void syncGfxSliderAliasVarsToSliderValues (double* sliders,
@@ -3052,6 +3099,137 @@ public:
     }
     double getTailLengthSeconds() const override { return smartIdleTailLengthSeconds; }
 
+    static int oversamplingChoiceIndexToFactor (int choiceIndex) noexcept
+    {
+        switch (choiceIndex)
+        {
+            case 1:  return 2;
+            case 2:  return 4;
+            case 3:  return 8;
+            case 0:
+            default: return 1;
+        }
+    }
+
+    static int oversamplingFactorToChoiceIndex (int factor) noexcept
+    {
+        switch (factor)
+        {
+            case 2:  return 1;
+            case 4:  return 2;
+            case 8:  return 3;
+            case 1:
+            default: return 0;
+        }
+    }
+
+    static int safeOversampledBlockSize (int hostSamples, int factor) noexcept
+    {
+        hostSamples = juce::jmax (0, hostSamples);
+        factor = juce::jlimit (1, 8, factor);
+        if (hostSamples > std::numeric_limits<int>::max() / factor)
+            return std::numeric_limits<int>::max();
+        return hostSamples * factor;
+    }
+
+    juce::String getOversamplingParameterIdForUi() const { return kOversamplingParamId(); }
+
+    int getRequestedOversamplingFactor() const noexcept
+    {
+        if (oversamplingParamAtomic == nullptr)
+            return 1;
+
+        const int choice = juce::jlimit (0, 3, (int) std::llround (oversamplingParamAtomic->load (std::memory_order_acquire)));
+        return oversamplingChoiceIndexToFactor (choice);
+    }
+
+    int getActiveOversamplingFactor() const noexcept
+    {
+        return juce::jlimit (1, 8, oversamplingActiveFactor.load (std::memory_order_acquire));
+    }
+
+    double getEffectiveEngineSampleRate() const noexcept
+    {
+        const double hostRate = oversamplingHostSampleRate.load (std::memory_order_acquire);
+        const int factor = getActiveOversamplingFactor();
+        const double fallback = st.srate > 1000.0 ? st.srate : 44100.0;
+
+        if (std::isfinite (hostRate) && hostRate > 1000.0)
+            return hostRate * (double) factor;
+
+        return fallback;
+    }
+
+    double getCurrentFileCacheTargetSampleRate() const noexcept
+    {
+        // File/cache rebuilds are async, so target the user-requested factor rather
+        // than the currently-active factor. The DSP engine applies the same request
+        // at the next block boundary; this prevents stopped hosts/state restores from
+        // rebuilding caches at a stale rate while waiting for audio to run again.
+        const int factor = getRequestedOversamplingFactor();
+        if (factor <= 1)
+            return 0.0; // native-rate file caches when oversampling is off
+
+        const double hostRate = oversamplingHostSampleRate.load (std::memory_order_acquire);
+        if (std::isfinite (hostRate) && hostRate > 1000.0)
+            return hostRate * (double) factor;
+
+        const double rate = oversamplingEngineSampleRate.load (std::memory_order_acquire);
+        return (std::isfinite (rate) && rate > 1000.0) ? rate : getEffectiveEngineSampleRate();
+    }
+
+    void requestUiWakeAsync()
+    {
+        if (processorShuttingDown.load (std::memory_order_acquire))
+            return;
+
+        if (! uiAsyncWakePending.exchange (true, std::memory_order_acq_rel))
+            triggerAsyncUpdate();
+    }
+
+    void requestExternalWakeEvent (bool mayTriggerAsyncUi = true)
+    {
+        pendingExternalWakeEvent.store (true, std::memory_order_release);
+        pendingEventWakeCount.fetch_add (1u, std::memory_order_acq_rel);
+        gfxSnapshotForcePublish.store (true, std::memory_order_release);
+
+        if (mayTriggerAsyncUi)
+            requestUiWakeAsync();
+    }
+
+    void parameterChanged (const juce::String& parameterID, float) override
+    {
+        pendingParameterWakeEvent.store (true, std::memory_order_release);
+        requestExternalWakeEvent (true);
+
+        if (parameterID == kOversamplingParamId())
+        {
+            pendingOversamplingParameterChange.store (true, std::memory_order_release);
+            pendingFileReloadForEngineRate.store (true, std::memory_order_release);
+            pendingSamplePoolRecommitForEngineRate.store (true, std::memory_order_release);
+        }
+    }
+
+    void handleAsyncUpdate() override
+    {
+        uiAsyncWakePending.store (false, std::memory_order_release);
+
+        if (processorShuttingDown.load (std::memory_order_acquire))
+            return;
+
+        if (pendingFileReloadForEngineRate.exchange (false, std::memory_order_acq_rel))
+            reloadCurrentFileSlotsForEngineRate();
+
+        if (pendingSamplePoolRecommitForEngineRate.exchange (false, std::memory_order_acq_rel))
+            recommitAllSamplePoolsForEngineRate();
+
+        gfxSnapshotForcePublish.store (true, std::memory_order_release);
+        updateHostDisplay();
+
+        if (auto* editor = getActiveEditor())
+            editor->repaint();
+    }
+
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
     void setCurrentProgram (int) override {}
@@ -3060,24 +3238,47 @@ public:
 
     void prepareToPlay (double sampleRate, int samplesPerBlockExpected) override
     {
+        const int factor = getRequestedOversamplingFactor();
+        const int engineBlockExpected = safeOversampledBlockSize (samplesPerBlockExpected, factor);
+        const double engineSampleRate = sampleRate > 1000.0 ? sampleRate * (double) factor : sampleRate;
+
+        oversamplingHostSampleRate.store (sampleRate, std::memory_order_release);
+        oversamplingEngineSampleRate.store (engineSampleRate, std::memory_order_release);
+        oversamplingHostBlockSizeExpected.store (samplesPerBlockExpected, std::memory_order_release);
+        oversamplingActiveFactor.store (factor, std::memory_order_release);
+        pendingOversamplingParameterChange.store (false, std::memory_order_release);
+
         resetStateStructOnly();
-        st.srate = sampleRate;
-        st.currentSampleRate = sampleRate;
-        prepareMidiRuntime (samplesPerBlockExpected);
+        st.srate = engineSampleRate;
+        st.currentSampleRate = engineSampleRate;
+        prepareMidiRuntime (engineBlockExpected);
         requestEmergencyMidiCleanup();
-        updateSmartIdleSampleRate (sampleRate);
+        updateSmartIdleSampleRate (engineSampleRate);
         resetSmartIdleRuntime();
 
         // Pre-size scratch buffers to avoid allocation in the audio callback.
         if (samplesPerBlockExpected > 0)
         {
-            zeroIn.assign ((size_t) samplesPerBlockExpected, 0.0f);
+            zeroIn.assign ((size_t) juce::jmax (samplesPerBlockExpected, engineBlockExpected), 0.0f);
 
             const int outCh = juce::jlimit (0, 64, getTotalNumOutputChannels());
             const int inCh  = juce::jlimit (0, 64, getTotalNumInputChannels());
             const int requiredCh = juce::jlimit (0, 64, juce::jmax ((int) DSPJSFX_NUM_INPUTS, (int) DSPJSFX_NUM_OUTPUTS));
             const int numCh = juce::jmin (64, juce::jmax (requiredCh, juce::jmax (inCh, outCh)));
             const int scratchCh = juce::jmax (0, numCh - outCh);
+
+            if (factor > 1 && numCh > 0 && engineBlockExpected > 0)
+            {
+                oversampledInput.setSize (numCh, engineBlockExpected, false, false, true);
+                oversampledOutput.setSize (numCh, engineBlockExpected, false, false, true);
+                oversampledInput.clear();
+                oversampledOutput.clear();
+            }
+            else
+            {
+                oversampledInput.setSize (0, 0);
+                oversampledOutput.setSize (0, 0);
+            }
 
             if (scratchCh > 0)
             {
@@ -3090,7 +3291,7 @@ public:
             }
         }
 
-        gfxSnapPeriodSamples = (int64_t) juce::jmax (128.0, sampleRate / 30.0);
+        gfxSnapPeriodSamples = (int64_t) juce::jmax (128.0, engineSampleRate / 30.0);
         gfxSnapCountdown = 0;
 
         // Push params BEFORE @init, matching REAPER JSFX behaviour (sliders are valid in @init).
@@ -3119,7 +3320,7 @@ public:
        #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
         if (correctnessRuntime != nullptr)
         {
-            correctnessRuntime->setRingSampleRate (sampleRate);
+            correctnessRuntime->setRingSampleRate (engineSampleRate);
             correctnessRuntime->resetAndPrime (st);
             if (correctnessRuntime->isReady())
             {
@@ -3134,6 +3335,10 @@ public:
         gfxSnapCountdown = 0;
         gfxSnapshotForcePublish.store (true, std::memory_order_release);
         updateGfxSnapshotIfNeeded ((int) gfxSnapPeriodSamples);
+
+        pendingFileReloadForEngineRate.store (true, std::memory_order_release);
+        pendingSamplePoolRecommitForEngineRate.store (true, std::memory_order_release);
+        requestUiWakeAsync();
     }
 
     void releaseResources() override
@@ -3174,7 +3379,7 @@ public:
             return;
 
         jsfxRuntime.setHostTrackName (std::string (suppliedName.toRawUTF8()));
-        pendingExternalWakeEvent.store (true, std::memory_order_release);
+        requestExternalWakeEvent (true);
     }
 
     juce::String getHostTrackName() const
@@ -3232,6 +3437,9 @@ public:
         juce::ScopedNoDenormals _;
 
         const int numSamples = buffer.getNumSamples();
+        applyOversamplingFactorChangeIfNeeded (numSamples);
+        const int oversamplingFactor = getActiveOversamplingFactor();
+        const int processSamples = safeOversampledBlockSize (numSamples, oversamplingFactor);
         int activityInputChannels = 0;
         int activityOutputChannels = 0;
 
@@ -3240,6 +3448,10 @@ public:
         // Skipping the generic bus/scratch setup removes a large fixed cost when
         // hosts drive the plugin with tiny MIDI-only blocks.
         const int numCh = 0;
+        inPtrs.clear();
+        outPtrs.clear();
+        hostInPtrs.clear();
+        hostOutPtrs.clear();
 #else
         juce::AudioBuffer<float> mainIn;
         juce::AudioBuffer<float> mainOut;
@@ -3311,6 +3523,12 @@ public:
             outPtrs[(size_t) ch] = mainOut.getWritePointer (ch);
         for (int ch = totalOutCh; ch < numCh; ++ch)
             outPtrs[(size_t) ch] = scratchOut.getWritePointer (ch - totalOutCh);
+
+        hostInPtrs = inPtrs;
+        hostOutPtrs = outPtrs;
+
+        if (oversamplingFactor > 1 && numCh > 0 && numSamples > 0)
+            prepareOversampledAudioPointers (numCh, numSamples, processSamples, oversamplingFactor);
 #endif
 
         const bool fileLoadsPromoted = promotePendingFileLoads();
@@ -3339,12 +3557,14 @@ public:
 
         const bool gfxWritesApplied = applyQueuedGfxStateWrites();
 
-        st.currentBlockSize = numSamples;
+        st.currentBlockSize = processSamples;
         st.currentSampleRate = st.srate;
-        st.samplesblock = (double) numSamples;
-        jsfxRuntime.beginBlock (st, numSamples);
+        st.samplesblock = (double) processSamples;
+        jsfxRuntime.beginBlock (st, processSamples);
         const bool hasIncomingMidi = ! midiMessages.isEmpty();
-        const bool hasIncomingJsfxMessages = jsfxRuntime.hasReadyMessages();
+        const bool hasIncomingJsfxMessages = jsfxRuntime.hasReadyMessages() || jsfxRuntime.hasPendingForThisInstance();
+        const bool parameterWakeEvent = pendingParameterWakeEvent.exchange (false, std::memory_order_acq_rel);
+        const bool explicitWakeEvent = pendingEventWakeCount.exchange (0u, std::memory_order_acq_rel) != 0u;
         const bool emergencyMidiCleanupRequested = pendingEmergencyMidiCleanup.exchange (false, std::memory_order_acq_rel)
                                                || st.pendingNoteCleanup != 0;
         const bool transportStatusChangedForMidiCleanup = detectMidiTransportStatusChangedForCleanup();
@@ -3355,8 +3575,9 @@ public:
         const bool prependInputMidiCleanup = emergencyMidiCleanupRequested || transportInputCleanupRequested;
         const bool appendOutputMidiCleanup = emergencyMidiCleanupRequested || transportOutputCleanupRequested;
         const bool needsMidiCleanup = prependInputMidiCleanup || appendOutputMidiCleanup;
+        juce::ignoreUnused (needsMidiCleanup);
 
-        importMidiToState (midiMessages, numSamples, prependInputMidiCleanup, emergencyMidiCleanupRequested);
+        importMidiToState (midiMessages, numSamples, processSamples, oversamplingFactor, prependInputMidiCleanup, emergencyMidiCleanupRequested);
         midiMessages.clear();
 
         if (appendOutputMidiCleanup)
@@ -3369,15 +3590,15 @@ public:
         if (shadow != nullptr)
         {
             const int blockIndex = correctnessRuntime->getNextBlockIndex();
-            shadow->beginBlock (st, numSamples);
+            shadow->beginBlock (st, processSamples);
 
             if (slidersChanged || stringSlidersChanged)
                 correctnessRuntime->compareSliderAndVarState (st, blockIndex, -1, "pre-@block/@slider");
 
             correctnessRuntime->compareSliderAndVarState (st, blockIndex, -1, "pre-@block");
 
-            st.samplesblock = (double) numSamples;
-            st.currentBlockSize = numSamples;
+            st.samplesblock = (double) processSamples;
+            st.currentBlockSize = processSamples;
             st.currentSampleRate = st.srate;
 
            #if DSPJSFX_HAS_SAMPLE_SECTION
@@ -3387,7 +3608,7 @@ public:
                                 numCh > 0 ? inPtrs.data() : nullptr,
                                 numCh > 0 ? outPtrs.data() : nullptr,
                                 numCh,
-                                numSamples);
+                                processSamples);
            #endif
             shadow->runBlock();
 
@@ -3411,10 +3632,10 @@ public:
             }
 
            #if DSPJSFX_HAS_SAMPLE_SECTION
-            if (numSamples > 0)
+            if (processSamples > 0)
             {
                 const float* const* inData = numCh > 0 ? inPtrs.data() : nullptr;
-                for (int sample = 0; sample < numSamples; ++sample)
+                for (int sample = 0; sample < processSamples; ++sample)
                 {
                     for (int ch = 0; ch < numCh; ++ch)
                         st.spl[ch] = (double) (inData != nullptr && inData[ch] != nullptr ? inData[ch][sample] : 0.0f);
@@ -3438,14 +3659,21 @@ public:
            #endif
 
             correctnessRuntime->compareMidiOutput (st, blockIndex, "post-block");
-            correctnessRuntime->compareMemoryPages (st, blockIndex, numSamples > 0 ? (numSamples - 1) : -1, "post-block");
+            correctnessRuntime->compareMemoryPages (st, blockIndex, processSamples > 0 ? (processSamples - 1) : -1, "post-block");
             correctnessRuntime->noteBlockCompared();
 
+#if ! ((DSPJSFX_NUM_INPUTS == 0) && (DSPJSFX_NUM_OUTPUTS == 0))
+            if (oversamplingFactor > 1)
+                downsampleOversampledOutputToHost (activityOutputChannels, numSamples, processSamples, oversamplingFactor);
+
+            mixQueuedImportPreviewAudition (hostOutPtrs.empty() ? nullptr : hostOutPtrs.data(), activityOutputChannels, numSamples);
+#endif
+
             consumeDspSliderChanges();
-            (void) flushMidiFromState (midiMessages);
+            (void) flushMidiFromState (midiMessages, oversamplingFactor, numSamples);
             jsfxRuntime.endBlock (st);
             publishSmartIdleUiRuntimeSnapshot (resolveSmartIdleModeForCurrentState(), false, 0.0f, 0.0f, 0);
-            updateGfxSnapshotIfNeeded (numSamples);
+            updateGfxSnapshotIfNeeded (processSamples);
             return;
         }
        #endif
@@ -3455,7 +3683,7 @@ public:
 
         float inputPeak = 0.0f;
         const bool inputActive = (preIdleMode == SmartIdleMode::InputDriven)
-                                   && channelPointersExceedThreshold (numCh > 0 ? inPtrs.data() : nullptr,
+                                   && channelPointersExceedThreshold (numCh > 0 ? hostInPtrs.data() : nullptr,
                                                                       activityInputChannels,
                                                                       numSamples,
                                                                       smartIdleConfig.inputThreshold,
@@ -3466,6 +3694,8 @@ public:
         const bool externalWakeEvent = pendingExternalWakeEvent.exchange (false, std::memory_order_acq_rel);
         const bool preProcessWakeEvent = fileLoadsPromoted
                                       || externalWakeEvent
+                                      || parameterWakeEvent
+                                      || explicitWakeEvent
                                       || slidersChanged
                                       || stringSlidersChanged
                                       || gfxWritesApplied
@@ -3486,24 +3716,27 @@ public:
         }
         else if (smartIdleRuntime.sleeping)
         {
-            clearWritableChannelPointers (numCh > 0 ? outPtrs.data() : nullptr, numCh, numSamples);
+            clearWritableChannelPointers (numCh > 0 ? hostOutPtrs.data() : nullptr, numCh, numSamples);
             smartIdleRuntime.lastOutputPeak = 0.0f;
             consumeDspSliderChanges();
-            (void) flushMidiFromState (midiMessages);
+            (void) flushMidiFromState (midiMessages, oversamplingFactor, numSamples);
             jsfxRuntime.endBlock (st);
             publishSmartIdleUiRuntimeSnapshot (preIdleMode,
                                                true,
                                                inputPeak,
                                                0.0f,
                                                smartIdleRuntime.quietSamples);
-            updateGfxSnapshotIfNeeded (numSamples);
+            updateGfxSnapshotIfNeeded (processSamples);
             return;
         }
 
-        jsfx_process_block (&st, numCh > 0 ? inPtrs.data() : nullptr, numCh > 0 ? outPtrs.data() : nullptr, numCh, numSamples);
+        jsfx_process_block (&st, numCh > 0 ? inPtrs.data() : nullptr, numCh > 0 ? outPtrs.data() : nullptr, numCh, processSamples);
 
 #if ! ((DSPJSFX_NUM_INPUTS == 0) && (DSPJSFX_NUM_OUTPUTS == 0))
-        mixQueuedImportPreviewAudition (numCh > 0 ? outPtrs.data() : nullptr, activityOutputChannels, numSamples);
+        if (oversamplingFactor > 1)
+            downsampleOversampledOutputToHost (activityOutputChannels, numSamples, processSamples, oversamplingFactor);
+
+        mixQueuedImportPreviewAudition (numCh > 0 ? hostOutPtrs.data() : nullptr, activityOutputChannels, numSamples);
 #endif
 
         const bool dspSliderActivity = (st.pendingSliderChangeMask != 0)
@@ -3512,14 +3745,14 @@ public:
         consumeDspSliderChanges();
 
         float outputPeak = 0.0f;
-        const bool outputActive = channelPointersExceedThreshold (numCh > 0 ? outPtrs.data() : nullptr,
+        const bool outputActive = channelPointersExceedThreshold (numCh > 0 ? hostOutPtrs.data() : nullptr,
                                                                   activityOutputChannels,
                                                                   numSamples,
                                                                   smartIdleConfig.outputThreshold,
                                                                   outputPeak);
         smartIdleRuntime.lastOutputPeak = outputPeak;
 
-        const bool hadOutgoingMidi = flushMidiFromState (midiMessages);
+        const bool hadOutgoingMidi = flushMidiFromState (midiMessages, oversamplingFactor, numSamples);
         const SmartIdleMode postIdleMode = resolveSmartIdleModeForCurrentState();
         const bool keepAwakeAfter = getSmartIdleKeepAwakeFlag();
         noteSmartIdlePostBlock (postIdleMode,
@@ -3528,13 +3761,13 @@ public:
                                 keepAwakeAfter,
                                 hadOutgoingMidi,
                                 dspSliderActivity,
-                                numSamples);
+                                processSamples);
         publishSmartIdleUiRuntimeSnapshot (postIdleMode,
                                            smartIdleRuntime.sleeping,
                                            inputPeak,
                                            outputPeak,
                                            smartIdleRuntime.quietSamples);
-        updateGfxSnapshotIfNeeded (numSamples);
+        updateGfxSnapshotIfNeeded (processSamples);
         jsfxRuntime.endBlock (st);
     }
 
@@ -3631,6 +3864,16 @@ public:
                 tree.addChild (stringState, -1, nullptr);
         }
 
+        {
+            const SmartIdleMode userOverride = storedSmartIdleModeToEnum (smartIdleUserOverrideMode.load (std::memory_order_acquire));
+            if (userOverride != SmartIdleMode::Auto)
+            {
+                juce::ValueTree smartIdleState ("SMART_IDLE");
+                smartIdleState.setProperty ("userOverrideMode", (int) userOverride, nullptr);
+                tree.addChild (smartIdleState, -1, nullptr);
+            }
+        }
+
         std::unique_ptr<juce::XmlElement> xml (tree.createXml());
         copyXmlToBinary (*xml, destData);
     }
@@ -3653,6 +3896,10 @@ public:
             auto stringSliders = tree.getChildWithName ("STRING_SLIDERS");
             if (stringSliders.isValid())
                 tree.removeChild (stringSliders, nullptr);
+
+            auto smartIdleState = tree.getChildWithName ("SMART_IDLE");
+            if (smartIdleState.isValid())
+                tree.removeChild (smartIdleState, nullptr);
 
             apvts->replaceState (tree);
             requestEmergencyMidiCleanup();
@@ -3693,6 +3940,23 @@ public:
 
             if (stringSliders.isValid())
                 restoreStringSliderState (stringSliders);
+
+            SmartIdleMode restoredUserOverride = SmartIdleMode::Auto;
+            if (smartIdleState.isValid())
+            {
+                const auto raw = smartIdleState.getProperty ("userOverrideMode", 0);
+                if (raw.isString())
+                    restoredUserOverride = parseSmartIdleModeToken (raw.toString().toStdString());
+                else
+                    restoredUserOverride = storedSmartIdleModeToEnum ((int) raw);
+            }
+            setSmartIdleUserOverrideModeForUi ((int) restoredUserOverride);
+
+            pendingOversamplingParameterChange.store (true, std::memory_order_release);
+            pendingFileReloadForEngineRate.store (true, std::memory_order_release);
+            pendingSamplePoolRecommitForEngineRate.store (true, std::memory_order_release);
+            requestEmergencyMidiCleanup();
+            requestExternalWakeEvent (true);
         }
     }
 
@@ -3746,8 +4010,7 @@ public:
             importPreviewAuditionPending.store (true, std::memory_order_release);
         }
 
-        pendingExternalWakeEvent.store (true, std::memory_order_release);
-        updateHostDisplay();
+        requestExternalWakeEvent (true);
     }
 
     void stopImportPreviewAudition()
@@ -3759,8 +4022,7 @@ public:
         }
 
         importPreviewAuditionStopRequested.store (true, std::memory_order_release);
-        pendingExternalWakeEvent.store (true, std::memory_order_release);
-        updateHostDisplay();
+        requestExternalWakeEvent (true);
     }
 
     juce::String getStringSliderText (int index0) const
@@ -3865,6 +4127,7 @@ public:
         const SmartIdleMode effectiveMode = storedSmartIdleModeToEnum (smartIdleUiEffectiveMode.load (std::memory_order_relaxed));
         const SmartIdleMode optionMode = storedSmartIdleModeToEnum (smartIdleUiOptionMode.load (std::memory_order_relaxed));
         const SmartIdleMode inferredMode = storedSmartIdleModeToEnum (smartIdleUiInferredMode.load (std::memory_order_relaxed));
+        const SmartIdleMode userOverrideMode = storedSmartIdleModeToEnum (smartIdleUiUserOverrideMode.load (std::memory_order_relaxed));
         const float inputPeak = smartIdleUiInputPeak.load (std::memory_order_relaxed);
         const float outputPeak = smartIdleUiOutputPeak.load (std::memory_order_relaxed);
         const int64_t quietSamples = smartIdleUiQuietSamples.load (std::memory_order_relaxed);
@@ -3873,6 +4136,7 @@ public:
         const double tailMs = smartIdleUiTailMs.load (std::memory_order_relaxed);
 
         const SmartIdleMode configuredMode = optionMode == SmartIdleMode::Auto ? inferredMode : optionMode;
+        const bool userOverrideActive = userOverrideMode != SmartIdleMode::Auto;
         const bool runtimeOverride = effectiveMode != configuredMode;
 
         status.sleeping = sleeping;
@@ -3884,7 +4148,9 @@ public:
         tooltip << "Smart Idle: " << (sleeping ? "Sleeping" : "Active")
                 << "\nEffective mode: " << smartIdleModeDisplayName (effectiveMode);
 
-        if (runtimeOverride)
+        if (userOverrideActive)
+            tooltip << " (user override)";
+        else if (runtimeOverride)
             tooltip << " (runtime override)";
 
         tooltip << '\n';
@@ -3893,6 +4159,9 @@ public:
             tooltip << "Configured: Auto -> " << smartIdleModeDisplayName (inferredMode) << '\n';
         else
             tooltip << "Configured: " << smartIdleModeDisplayName (optionMode) << '\n';
+
+        if (userOverrideActive)
+            tooltip << "User override: " << smartIdleModeDisplayName (userOverrideMode) << '\n';
 
         if (status.sleepEligible)
         {
@@ -3911,6 +4180,19 @@ public:
 
         status.tooltip = tooltip.trimEnd();
         return status;
+    }
+
+    int getSmartIdleUserOverrideModeForUi() const noexcept
+    {
+        return (int) storedSmartIdleModeToEnum (smartIdleUserOverrideMode.load (std::memory_order_acquire));
+    }
+
+    void setSmartIdleUserOverrideModeForUi (int storedMode) noexcept
+    {
+        const SmartIdleMode mode = storedSmartIdleModeToEnum (storedMode);
+        smartIdleUserOverrideMode.store ((int) mode, std::memory_order_release);
+        smartIdleUiUserOverrideMode.store ((int) mode, std::memory_order_release);
+        requestExternalWakeEvent (true);
     }
 
     static juce::String summariseSelectedFilePaths (const std::vector<juce::String>& paths,
@@ -4954,6 +5236,7 @@ public:
         h->slot = slot;
         h->nameHash = nameHash;
         h->pool = std::make_unique<za::jsfx::DspJsfxSamplePool>();
+        configureSamplePoolForCurrentEngineRate (*h->pool);
         const int idx = (int) samplePools.size();
         samplePools.push_back (std::move (h));
         samplePoolByKey[key] = idx;
@@ -4999,6 +5282,8 @@ public:
 
         if (pool == nullptr || slot < 0 || slot >= (int) fileSlots.size())
             return 0.0;
+
+        configureSamplePoolForCurrentEngineRate (*pool);
 
         std::vector<juce::String> paths;
         std::shared_ptr<const za::jsfx::DspJsfxSamplePoolMemorySourceList> memorySources;
@@ -5572,6 +5857,9 @@ public:
                 out->items[base + (size_t) ch] = (double) src.buffer.getSample (ch, (int) i);
         }
 
+        if (auto converted = resampleCachedAudioForCurrentEngineIfNeeded (*out))
+            return converted;
+
         return out;
     }
 
@@ -5754,9 +6042,7 @@ public:
         // Force any running @gfx view and host wrapper to repaint/refetch state. This is
         // required in stopped/sleeping hosts where a new file selection would otherwise
         // remain invisible until transport playback causes another processBlock().
-        pendingExternalWakeEvent.store (true, std::memory_order_release);
-        gfxSnapshotForcePublish.store (true, std::memory_order_release);
-        updateHostDisplay();
+        requestExternalWakeEvent (true);
     }
 
     void recommitSamplePoolsForSlot (int slotIndex0)
@@ -5789,6 +6075,8 @@ public:
         {
             if (pool == nullptr)
                 continue;
+
+            configureSamplePoolForCurrentEngineRate (*pool);
 
             if (memorySources != nullptr && ! memorySources->empty())
                 pool->commitFromMemory (memorySources, gen);
@@ -6000,13 +6288,13 @@ private:
         token = lowerAscii (trimAscii (std::move (token)));
         if (token.empty() || token == "auto" || token == "default")
             return SmartIdleMode::Auto;
-        if (token == "1" || token == "input" || token == "audio" || token == "inputdriven" || token == "input_driven" || token == "input-driven")
+        if (token == "1" || token == "input" || token == "audio" || token == "silence" || token == "sleep_on_silence" || token == "sleep-on-silence" || token == "inputdriven" || token == "input_driven" || token == "input-driven")
             return SmartIdleMode::InputDriven;
-        if (token == "2" || token == "event" || token == "midi" || token == "eventdriven" || token == "event_driven" || token == "event-driven")
+        if (token == "2" || token == "event" || token == "events" || token == "midi" || token == "sleep_on_events" || token == "sleep-on-events" || token == "eventdriven" || token == "event_driven" || token == "event-driven")
             return SmartIdleMode::EventDriven;
         if (token == "3" || token == "free" || token == "generator" || token == "freerunning" || token == "free_running" || token == "free-running")
             return SmartIdleMode::FreeRunning;
-        if (token == "4" || token == "always" || token == "awake" || token == "alwaysawake" || token == "always_awake" || token == "always-awake" || token == "off" || token == "never" || token == "disabled")
+        if (token == "4" || token == "always" || token == "awake" || token == "neversleep" || token == "never_sleep" || token == "never-sleep" || token == "alwaysawake" || token == "always_awake" || token == "always-awake" || token == "off" || token == "never" || token == "disabled")
             return SmartIdleMode::AlwaysAwake;
         return SmartIdleMode::Auto;
     }
@@ -6133,6 +6421,7 @@ private:
     {
         smartIdleUiOptionMode.store ((int) smartIdleConfig.optionMode, std::memory_order_relaxed);
         smartIdleUiInferredMode.store ((int) smartIdleConfig.inferredMode, std::memory_order_relaxed);
+        smartIdleUiUserOverrideMode.store ((int) storedSmartIdleModeToEnum (smartIdleUserOverrideMode.load (std::memory_order_acquire)), std::memory_order_relaxed);
         smartIdleUiHoldMs.store (smartIdleConfig.holdMs, std::memory_order_relaxed);
         smartIdleUiTailMs.store (smartIdleConfig.tailMs, std::memory_order_relaxed);
     }
@@ -6153,7 +6442,7 @@ private:
     void resetSmartIdleRuntime() noexcept
     {
         smartIdleRuntime = SmartIdleRuntimeState {};
-        publishSmartIdleUiRuntimeSnapshot (getConfiguredSmartIdleMode(), false, 0.0f, 0.0f, 0);
+        publishSmartIdleUiRuntimeSnapshot (resolveSmartIdleModeForCurrentState(), false, 0.0f, 0.0f, 0);
     }
 
     void initSmartIdleConfig()
@@ -6221,6 +6510,10 @@ private:
             if (runtimeMode != SmartIdleMode::Auto)
                 resolved = runtimeMode;
         }
+
+        const SmartIdleMode userOverride = storedSmartIdleModeToEnum (smartIdleUserOverrideMode.load (std::memory_order_acquire));
+        if (userOverride != SmartIdleMode::Auto)
+            resolved = userOverride;
 
         return resolved;
     }
@@ -7964,6 +8257,7 @@ private:
             {
                 slot.errorCode.store (2);
                 slot.state.store (FileState::Error);
+                notifyFileSlotChangedForUiAndSamplePools (req.slot);
                 continue;
             }
 
@@ -7987,7 +8281,7 @@ private:
 
     std::unique_ptr<CachedFileData> convertAudioDataToFormat (const CachedFileData& src,
                                                                int dstChannels,
-                                                               double dstSampleRate)
+                                                               double dstSampleRate) const
     {
         if (src.isText || src.channels <= 0 || src.sampleRate <= 0.0)
             return nullptr;
@@ -8008,14 +8302,29 @@ private:
         }
 
         const auto scaledFrames = (double) src.frames * dstSampleRate / src.sampleRate;
+        if (! std::isfinite (scaledFrames)
+            || scaledFrames <= 0.0
+            || scaledFrames > (double) std::numeric_limits<int64_t>::max())
+            return nullptr;
+
         out->frames = juce::jmax<int64_t> (1, (int64_t) std::llround (scaledFrames));
+
+        if (out->frames > std::numeric_limits<int64_t>::max() / (int64_t) dstChannels)
+            return nullptr;
 
         const int64_t totalItems64 = out->frames * (int64_t) dstChannels;
         if (totalItems64 <= 0
             || totalItems64 > (int64_t) (std::numeric_limits<size_t>::max() / sizeof (double)))
             return nullptr;
 
-        out->items.resize ((size_t) totalItems64);
+        try
+        {
+            out->items.resize ((size_t) totalItems64);
+        }
+        catch (...)
+        {
+            return nullptr;
+        }
 
         auto sampleForDestChannelAtFrame = [&src, dstChannels] (int64_t frameIndex, int dstChannel) -> double
         {
@@ -8228,28 +8537,44 @@ private:
         if (! reader)
             return nullptr;
 
+        bool skipUnsafeMalformedFile = false;
+        const int64_t safeFrames = za::jsfx::chooseSafeDecodedFrameCount (file, *reader, skipUnsafeMalformedFile);
+        if (skipUnsafeMalformedFile)
+            return nullptr;
+
         auto out = std::make_unique<CachedFileData>();
         out->isText = false;
         out->channels = std::max<int> (1, (int) reader->numChannels);
         out->channels = std::min (out->channels, 64);
-        out->frames = reader->lengthInSamples;
-        if (out->frames < 0)
-            out->frames = 0;
-
+        out->frames = juce::jmax<int64_t> (0, safeFrames);
         out->sampleRate = reader->sampleRate;
+
+        if (out->frames <= 0)
+            return out;
+
+        if (out->frames > std::numeric_limits<int64_t>::max() / (int64_t) out->channels)
+            return nullptr;
 
         const int64_t totalItems64 = out->frames * (int64_t) out->channels;
         if (totalItems64 <= 0)
             return out;
 
-        // Guard against overflow / absurd allocations.
+        // Guard against overflow / absurd allocations before the decode buffer is sized.
         if (totalItems64 > (int64_t) (std::numeric_limits<size_t>::max() / sizeof (double)))
             return nullptr;
 
-        out->items.resize ((size_t) totalItems64);
+        try
+        {
+            out->items.resize ((size_t) totalItems64);
+        }
+        catch (...)
+        {
+            return nullptr;
+        }
 
         juce::AudioBuffer<float> temp;
         const int chunk = 65536;
+        int64_t decodedFrames = 0;
 
         for (int64_t pos = 0; pos < out->frames; pos += chunk)
         {
@@ -8258,7 +8583,8 @@ private:
             temp.setSize (out->channels, toRead, false, false, true);
             temp.clear();
 
-            reader->read (&temp, 0, toRead, pos, true, true);
+            if (! reader->read (&temp, 0, toRead, pos, true, true))
+                break;
 
             for (int i = 0; i < toRead; ++i)
             {
@@ -8268,7 +8594,18 @@ private:
                 for (int ch = 0; ch < out->channels; ++ch)
                     out->items[base + (size_t) ch] = (double) temp.getSample (ch, i);
             }
+
+            decodedFrames = pos + toRead;
         }
+
+        if (decodedFrames < out->frames)
+        {
+            out->frames = juce::jmax<int64_t> (0, decodedFrames);
+            out->items.resize ((size_t) (out->frames * (int64_t) out->channels));
+        }
+
+        if (auto converted = resampleCachedAudioForCurrentEngineIfNeeded (*out))
+            return converted;
 
         return out;
     }
@@ -8362,6 +8699,260 @@ private:
         }
 
         return out;
+    }
+
+    static void upsampleLinearBlock (const float* src, float* dst, int hostSamples, int factor) noexcept
+    {
+        if (dst == nullptr || hostSamples <= 0 || factor <= 1)
+            return;
+
+        if (src == nullptr)
+        {
+            std::fill (dst, dst + (size_t) hostSamples * (size_t) factor, 0.0f);
+            return;
+        }
+
+        for (int i = 0; i < hostSamples; ++i)
+        {
+            const float a = src[i];
+            const float b = (i + 1 < hostSamples) ? src[i + 1] : a;
+            float* out = dst + (size_t) i * (size_t) factor;
+
+            for (int sub = 0; sub < factor; ++sub)
+            {
+                const float t = (float) sub / (float) factor;
+                out[sub] = a + (b - a) * t;
+            }
+        }
+    }
+
+    void prepareOversampledAudioPointers (int numCh, int hostSamples, int engineSamples, int factor)
+    {
+        if (numCh <= 0 || hostSamples <= 0 || engineSamples <= 0 || factor <= 1)
+            return;
+
+        if (oversampledInput.getNumChannels() != numCh || oversampledInput.getNumSamples() != engineSamples)
+            oversampledInput.setSize (numCh, engineSamples, false, false, true);
+        if (oversampledOutput.getNumChannels() != numCh || oversampledOutput.getNumSamples() != engineSamples)
+            oversampledOutput.setSize (numCh, engineSamples, false, false, true);
+
+        for (int ch = 0; ch < numCh; ++ch)
+        {
+            const float* src = (ch < (int) hostInPtrs.size()) ? hostInPtrs[(size_t) ch] : nullptr;
+            upsampleLinearBlock (src, oversampledInput.getWritePointer (ch), hostSamples, factor);
+        }
+
+        oversampledOutput.clear();
+
+        inPtrs.resize ((size_t) numCh);
+        outPtrs.resize ((size_t) numCh);
+        for (int ch = 0; ch < numCh; ++ch)
+        {
+            inPtrs[(size_t) ch] = oversampledInput.getReadPointer (ch);
+            outPtrs[(size_t) ch] = oversampledOutput.getWritePointer (ch);
+        }
+    }
+
+    void downsampleOversampledOutputToHost (int numOutputChannels, int hostSamples, int engineSamples, int factor) noexcept
+    {
+        if (numOutputChannels <= 0 || hostSamples <= 0 || engineSamples <= 0 || factor <= 1)
+            return;
+
+        const int channels = juce::jmin (numOutputChannels,
+                                         juce::jmin (oversampledOutput.getNumChannels(),
+                                                     (int) hostOutPtrs.size()));
+
+        for (int ch = 0; ch < channels; ++ch)
+        {
+            float* dst = hostOutPtrs[(size_t) ch];
+            const float* src = oversampledOutput.getReadPointer (ch);
+            if (dst == nullptr || src == nullptr)
+                continue;
+
+            for (int i = 0; i < hostSamples; ++i)
+            {
+                const int base = i * factor;
+                if (base >= engineSamples)
+                {
+                    dst[i] = 0.0f;
+                    continue;
+                }
+
+                const int n = juce::jmin (factor, engineSamples - base);
+                double sum = 0.0;
+                for (int sub = 0; sub < n; ++sub)
+                    sum += (double) src[base + sub];
+
+                dst[i] = (float) (sum / (double) juce::jmax (1, n));
+            }
+        }
+    }
+
+    void reinitialiseJsfxForCurrentEngineRate (int hostBlockSamples)
+    {
+        const int factor = getActiveOversamplingFactor();
+        const int engineBlock = safeOversampledBlockSize (hostBlockSamples, factor);
+        const double engineRate = getEffectiveEngineSampleRate();
+
+        endAllDspGestures();
+        resetStateStructOnly();
+        st.srate = engineRate;
+        st.currentSampleRate = engineRate;
+        prepareMidiRuntime (engineBlock);
+        requestEmergencyMidiCleanup();
+        updateSmartIdleSampleRate (engineRate);
+        resetSmartIdleRuntime();
+
+        gfxSnapPeriodSamples = (int64_t) juce::jmax (128.0, engineRate / 30.0);
+        gfxSnapCountdown = 0;
+
+        lastSlidersValid = false;
+        internalSliderPendingMask = 0;
+        dspGestureActive.fill (false);
+        resetGfxSliderPreviewState();
+        (void) pushParamsToStateSliders();
+        (void) applyStringSlidersToState (true);
+
+        jsfx_init (&st);
+
+        const int varsCap = (int) (sizeof (st.vars) / sizeof (st.vars[0]));
+        for (size_t i = 0; i < sliderAliasVarIndex.size(); ++i)
+        {
+            const int vIdx = sliderAliasVarIndex[i];
+            if (vIdx >= 0 && vIdx < varsCap)
+                st.vars[vIdx] = st.sliders[i];
+        }
+
+        jsfx_slider (&st);
+
+       #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+        if (correctnessRuntime != nullptr)
+        {
+            correctnessRuntime->setRingSampleRate (engineRate);
+            correctnessRuntime->resetAndPrime (st);
+        }
+       #endif
+
+        gfxSnapshotForcePublish.store (true, std::memory_order_release);
+        updateGfxSnapshotIfNeeded ((int) gfxSnapPeriodSamples);
+        requestExternalWakeEvent (false);
+    }
+
+    void applyOversamplingFactorChangeIfNeeded (int hostBlockSamples)
+    {
+        const int requestedFactor = getRequestedOversamplingFactor();
+        const int currentFactor = getActiveOversamplingFactor();
+        const double hostRate = getSampleRate() > 1000.0 ? getSampleRate() : oversamplingHostSampleRate.load (std::memory_order_acquire);
+
+        if (hostRate > 1000.0)
+            oversamplingHostSampleRate.store (hostRate, std::memory_order_release);
+
+        const double currentEngineRate = (hostRate > 1000.0 ? hostRate * (double) requestedFactor : st.srate);
+        const bool factorChanged = requestedFactor != currentFactor;
+        const bool rateChanged = currentEngineRate > 1000.0 && std::abs (currentEngineRate - oversamplingEngineSampleRate.load (std::memory_order_acquire)) > 1.0;
+
+        if (! factorChanged && ! rateChanged)
+        {
+            pendingOversamplingParameterChange.store (false, std::memory_order_release);
+            return;
+        }
+
+        oversamplingActiveFactor.store (requestedFactor, std::memory_order_release);
+        oversamplingEngineSampleRate.store (currentEngineRate, std::memory_order_release);
+        pendingOversamplingParameterChange.store (false, std::memory_order_release);
+
+        reinitialiseJsfxForCurrentEngineRate (hostBlockSamples);
+
+        pendingFileReloadForEngineRate.store (true, std::memory_order_release);
+        pendingSamplePoolRecommitForEngineRate.store (true, std::memory_order_release);
+        requestUiWakeAsync();
+    }
+
+    void configureSamplePoolForCurrentEngineRate (za::jsfx::DspJsfxSamplePool& pool)
+    {
+        pool.setTargetSampleRate (getCurrentFileCacheTargetSampleRate());
+        pool.setCompletionCallback ([this] (std::uint64_t, int)
+        {
+            requestExternalWakeEvent (true);
+        });
+    }
+
+    void recommitAllSamplePoolsForEngineRate()
+    {
+        std::vector<int> slots;
+        {
+            std::lock_guard<std::mutex> lock (samplePoolMutex);
+            for (auto& handle : samplePools)
+            {
+                if (handle == nullptr || handle->pool == nullptr)
+                    continue;
+
+                configureSamplePoolForCurrentEngineRate (*handle->pool);
+                if (handle->slot >= 0)
+                    slots.push_back (handle->slot);
+            }
+        }
+
+        std::sort (slots.begin(), slots.end());
+        slots.erase (std::unique (slots.begin(), slots.end()), slots.end());
+
+        for (int slot : slots)
+            recommitSamplePoolsForSlot (slot);
+    }
+
+    void reloadCurrentFileSlotsForEngineRate()
+    {
+        struct ReloadJob
+        {
+            int slot = -1;
+            std::vector<juce::File> files;
+            FileLoadMode mode = FileLoadMode::SeparateEntries;
+            juce::String recipeXml;
+        };
+
+        std::vector<ReloadJob> jobs;
+        {
+            std::lock_guard<std::mutex> lk (filePathMutex);
+            for (int i = 0; i < (int) fileSlots.size(); ++i)
+            {
+                const auto& slot = fileSlots[(size_t) i];
+                if (slot.currentPaths.empty())
+                    continue;
+
+                ReloadJob job;
+                job.slot = i;
+                job.mode = slot.loadMode;
+                job.recipeXml = slot.currentRecipeXml;
+
+                for (const auto& path : slot.currentPaths)
+                    if (path.isNotEmpty())
+                        job.files.emplace_back (path);
+
+                if (! job.files.empty())
+                    jobs.push_back (std::move (job));
+            }
+        }
+
+        for (auto& job : jobs)
+            setFileSlotPathsWithMode (job.slot, job.files, job.mode, false, job.recipeXml);
+    }
+
+    static bool shouldResampleCachedAudioToTarget (double sourceRate, double targetRate) noexcept
+    {
+        return std::isfinite (sourceRate)
+            && std::isfinite (targetRate)
+            && sourceRate > 1000.0
+            && targetRate > 1000.0
+            && std::abs (sourceRate - targetRate) > 1.0;
+    }
+
+    std::unique_ptr<CachedFileData> resampleCachedAudioForCurrentEngineIfNeeded (const CachedFileData& src) const
+    {
+        const double target = getCurrentFileCacheTargetSampleRate();
+        if (! shouldResampleCachedAudioToTarget (src.sampleRate, target))
+            return nullptr;
+
+        return convertAudioDataToFormat (src, src.channels, target);
     }
 
     void initStateMemory()
@@ -8503,11 +9094,17 @@ private:
     }
 
     void importMidiToState (const juce::MidiBuffer& midiMessages,
-                            int numSamples,
+                            int hostSamples,
+                            int engineSamples,
+                            int offsetScale,
                             bool prependUnsafeMidiCleanup,
                             bool includeAllNotesOffInPrependedCleanup)
     {
-        st.currentBlockSize = numSamples;
+        hostSamples = juce::jmax (0, hostSamples);
+        engineSamples = juce::jmax (0, engineSamples);
+        offsetScale = juce::jlimit (1, 8, offsetScale);
+
+        st.currentBlockSize = engineSamples;
         st.midiInCount = 0;
         st.midiInReadIndex = 0;
         st.midiOutCount = 0;
@@ -8531,7 +9128,8 @@ private:
             try
             {
                 JsfxRuntimeMidiEvent ev;
-                ev.sampleOffset = juce::jlimit (0, juce::jmax (0, numSamples - 1), metadata.samplePosition);
+                const int hostOffset = juce::jlimit (0, juce::jmax (0, hostSamples - 1), metadata.samplePosition);
+                ev.sampleOffset = juce::jlimit (0, juce::jmax (0, engineSamples - 1), hostOffset * offsetScale);
                 ev.bus = 0;
                 ev.assign (reinterpret_cast<const juce::uint8*> (raw), rawSize);
                 if (ev.length <= 0 || ev.data() == nullptr)
@@ -8559,10 +9157,12 @@ private:
         st.midiInPeak = juce::jmax (st.midiInPeak, st.midiInCount);
     }
 
-    bool flushMidiFromState (juce::MidiBuffer& midiMessages)
+    bool flushMidiFromState (juce::MidiBuffer& midiMessages, int offsetDivisor = 1, int hostSamples = -1)
     {
         if (midiRuntime.midiOutEvents.empty())
             return false;
+
+        offsetDivisor = juce::jlimit (1, 8, offsetDivisor);
 
         if (! runtimeMidiEventsAlreadySortedByOffset (midiRuntime.midiOutEvents))
             stableSortRuntimeMidiEventsByOffset (midiRuntime.midiOutEvents);
@@ -8583,14 +9183,23 @@ private:
             if (raw == nullptr || ev.length <= 0)
                 continue;
 
+            int hostOffset = ev.sampleOffset;
+            if (offsetDivisor > 1)
+                hostOffset = (int) std::floor ((double) ev.sampleOffset / (double) offsetDivisor);
+
+            if (hostSamples >= 0)
+                hostOffset = juce::jlimit (0, juce::jmax (0, hostSamples - 1), hostOffset);
+            else
+                hostOffset = juce::jmax (0, hostOffset);
+
             int clearChannel = -1;
             if (RuntimeMidiNoteTracker::isChannelVoiceClearMessage (raw, ev.length, clearChannel))
                 midiOutputNoteTracker.appendActiveNoteOffsForChannelToMidiBuffer (midiMessages,
-                                                                                  ev.sampleOffset,
+                                                                                  hostOffset,
                                                                                   clearChannel);
 
             midiOutputNoteTracker.observeRawMidi (raw, ev.length);
-            midiMessages.addEvent (raw, ev.length, juce::jmax (0, ev.sampleOffset));
+            midiMessages.addEvent (raw, ev.length, hostOffset);
         }
 
         midiRuntime.midiOutEvents.clear();
@@ -9149,6 +9758,17 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     std::atomic<bool> importPreviewAuditionPending { false };
     std::atomic<bool> importPreviewAuditionStopRequested { false };
     std::atomic<bool> pendingExternalWakeEvent { false };
+    std::atomic<std::uint32_t> pendingEventWakeCount { 0 };
+    std::atomic<bool> pendingParameterWakeEvent { false };
+    std::atomic<bool> uiAsyncWakePending { false };
+    std::atomic<bool> processorShuttingDown { false };
+    std::atomic<bool> pendingOversamplingParameterChange { false };
+    std::atomic<bool> pendingFileReloadForEngineRate { false };
+    std::atomic<bool> pendingSamplePoolRecommitForEngineRate { false };
+    std::atomic<int> oversamplingActiveFactor { 1 };
+    std::atomic<double> oversamplingHostSampleRate { 44100.0 };
+    std::atomic<double> oversamplingEngineSampleRate { 44100.0 };
+    std::atomic<int> oversamplingHostBlockSizeExpected { 0 };
     int64_t gfxSnapPeriodSamples = 0;
     int64_t gfxSnapCountdown = 0;
     int64_t jsfxDeclaredMaxMem = 0;
@@ -9157,8 +9777,10 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     SmartIdleConfig smartIdleConfig {};
     SmartIdleRuntimeState smartIdleRuntime {};
     std::atomic<bool> smartIdleUiSleeping { false };
+    std::atomic<int> smartIdleUserOverrideMode { (int) SmartIdleMode::Auto };
     std::atomic<int> smartIdleUiOptionMode { (int) SmartIdleMode::Auto };
     std::atomic<int> smartIdleUiInferredMode { (int) SmartIdleMode::AlwaysAwake };
+    std::atomic<int> smartIdleUiUserOverrideMode { (int) SmartIdleMode::Auto };
     std::atomic<int> smartIdleUiEffectiveMode { (int) SmartIdleMode::AlwaysAwake };
     std::atomic<float> smartIdleUiInputPeak { 0.0f };
     std::atomic<float> smartIdleUiOutputPeak { 0.0f };
@@ -9168,6 +9790,8 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     std::atomic<double> smartIdleUiTailMs { kDefaultSmartIdleTailMs };
 
     std::array<std::atomic<float>*, 64> paramAtomics {};
+    std::atomic<float>* oversamplingParamAtomic = nullptr;
+    bool parameterWakeListenersRegistered = false;
 
     // Low-latency @gfx -> audio slider shadow lane.
     //
@@ -9231,12 +9855,16 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
 
     std::vector<const float*> inPtrs;
     std::vector<float*> outPtrs;
+    std::vector<const float*> hostInPtrs;
+    std::vector<float*> hostOutPtrs;
 
     // Scratch buffers for sidechain / missing channels.
     // - zeroIn provides a read-only silent input channel.
     // - scratchOut captures writes for channels that don't map to a host output.
     std::vector<float> zeroIn;
     juce::AudioBuffer<float> scratchOut;
+    juce::AudioBuffer<float> oversampledInput;
+    juce::AudioBuffer<float> oversampledOutput;
     std::array<double, 64> lastSliders {};
     bool lastSlidersValid = false;
     std::array<bool, 64> dspGestureActive {};
@@ -11443,6 +12071,47 @@ public:
             g.drawText (modeText, modeArea, juce::Justification::centredRight, true);
         }
 
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            if (! e.mods.isPopupMenu())
+            {
+                juce::Component::mouseDown (e);
+                return;
+            }
+
+            const int current = processor.getSmartIdleUserOverrideModeForUi();
+
+            juce::PopupMenu menu;
+            menu.addItem (1, "Default / Auto", true, current == 0);
+            menu.addSeparator();
+            menu.addItem (2, "Never Sleep", true, current == 4);
+            menu.addItem (3, "Sleep on Silence", true, current == 1);
+            menu.addItem (4, "Sleep on Events", true, current == 2);
+            menu.addItem (5, "Free-running", true, current == 3);
+
+            juce::Component::SafePointer<SmartIdleBadge> safeThis (this);
+            menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+                                [safeThis] (int result)
+                                {
+                                    if (safeThis == nullptr || result <= 0)
+                                        return;
+
+                                    int mode = 0;
+                                    switch (result)
+                                    {
+                                        case 2:  mode = 4; break;
+                                        case 3:  mode = 1; break;
+                                        case 4:  mode = 2; break;
+                                        case 5:  mode = 3; break;
+                                        case 1:
+                                        default: mode = 0; break;
+                                    }
+
+                                    safeThis->processor.setSmartIdleUserOverrideModeForUi (mode);
+                                    safeThis->refreshNow();
+                                });
+        }
+
     private:
         void timerCallback() override
         {
@@ -11498,6 +12167,15 @@ public:
         gfxView.setVisible (gfxView.hasGfx());
 
         addAndMakeVisible (smartIdleBadge);
+
+        oversamplingBox.addItem ("OS Off", 1);
+        oversamplingBox.addItem ("OS 2x", 2);
+        oversamplingBox.addItem ("OS 4x", 3);
+        oversamplingBox.addItem ("OS 8x", 4);
+        oversamplingBox.setTooltip ("Run JSFX DSP and sample caches at an integer multiple of the host sample rate.");
+        addAndMakeVisible (oversamplingBox);
+        oversamplingAttach = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
+            processor.getApvts(), processor.getOversamplingParameterIdForUi(), oversamplingBox);
 
         helpButton.setButtonText ("?");
         helpButton.setTooltip ("Open embedded README");
@@ -11599,9 +12277,14 @@ public:
         int right = top.getRight() - 8;
 
         const int badgeH = 24;
-        const int badgeW = juce::jmin (smartIdleBadge.preferredWidth(), juce::jmax (140, top.getWidth() - 120));
+        const int badgeW = juce::jmin (smartIdleBadge.preferredWidth(), juce::jmax (140, top.getWidth() - 230));
         smartIdleBadge.setBounds (8, (kTopBarH - badgeH) / 2, badgeW, badgeH);
         smartIdleBadge.toFront (false);
+
+        const int osW = 96;
+        oversamplingBox.setBounds (right - osW, (kTopBarH - btnSize) / 2, osW, btnSize);
+        oversamplingBox.toFront (false);
+        right -= osW + 6;
 
         helpButton.setBounds (right - btnSize, (kTopBarH - btnSize) / 2, btnSize, btnSize);
         helpButton.toFront (false);
@@ -14475,6 +15158,9 @@ private:
 
     GfxView gfxView;
     SmartIdleBadge smartIdleBadge;
+
+    juce::ComboBox oversamplingBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> oversamplingAttach;
 
     juce::TextButton helpButton;
     za::pluginui::MarkdownHelpOverlay helpOverlay;

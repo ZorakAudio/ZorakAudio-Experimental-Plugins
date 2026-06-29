@@ -7,6 +7,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -90,6 +91,8 @@ using DspJsfxSamplePoolMemorySourceList = std::vector<DspJsfxSamplePoolMemorySou
 class DspJsfxSamplePool
 {
 public:
+    using CompletionCallback = std::function<void(std::uint64_t sourceGeneration, int state)>;
+
     DspJsfxSamplePool();
     ~DspJsfxSamplePool();
 
@@ -98,9 +101,12 @@ public:
 
     void setMode(int mode) noexcept;
     void setBudgetMB(double mb) noexcept;
+    void setTargetSampleRate(double sampleRate) noexcept;
+    void setCompletionCallback(CompletionCallback callback);
 
     int mode() const noexcept { return mode_.load(std::memory_order_acquire); }
     double budgetMB() const noexcept { return static_cast<double>(budgetBytes_.load(std::memory_order_acquire)) / (1024.0 * 1024.0); }
+    double targetSampleRate() const noexcept { return targetSampleRate_.load(std::memory_order_acquire); }
 
     // Schedules a background scan/decode if paths or settings changed.
     // The completed generation is immutable and atomically published.
@@ -141,6 +147,7 @@ private:
         std::uint64_t sourceGeneration = 0;
         int mode = kSamplePoolModeResident;
         std::uint64_t budgetBytes = 0;
+        double targetSampleRate = 0.0; // <= 0 keeps native source rates
         std::uint64_t requestId = 0;
     };
 
@@ -153,6 +160,7 @@ private:
 
     std::atomic<int> mode_ { kSamplePoolModeResident };
     std::atomic<std::uint64_t> budgetBytes_ { 0 }; // 0 = unlimited in resident mode
+    std::atomic<double> targetSampleRate_ { 0.0 };
     std::atomic<int> state_ { kSamplePoolEmpty };
     std::atomic<int> selected_ { 0 };
     std::atomic<int> failed_ { 0 };
@@ -164,6 +172,10 @@ private:
     std::atomic<std::uint64_t> lastCommittedBudgetBytes_ { 0 };
     std::atomic<int> lastCommittedMode_ { -1 };
     std::atomic<int> lastCommittedSourceKind_ { -1 }; // 0 = paths, 1 = in-memory
+    std::atomic<double> lastCommittedTargetSampleRate_ { -1.0 };
+
+    mutable std::mutex callbackMutex_;
+    CompletionCallback completionCallback_;
 
     mutable std::mutex generationMutex_;
     std::vector<std::shared_ptr<const DspJsfxSamplePoolGeneration>> generations_; // retains immutable generations for lock-free readers
