@@ -1,4 +1,4 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v57-spaceverb-softrollback)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v58-edgemelt)
 tags:instrument sampler ui
 options:gmem=SampleGroupSync
 // #GFX_RESIZE: responsive
@@ -11,13 +11,12 @@ options:gmem=SampleGroupSync
 // v48 CompileFixStrings: removes illegal string parameter from GroupSync hash helper; keeps JSFX functions top-down-safe.
 // v47 DeCrustCompileFix: restores cubic_mid() before the DeCrust curvature helper uses it.
 // v46 CleanDeCrust: Shift+Clean adds an FFT-512 spectral-kurtosis decrust mode for crunchy/crusty SFX; FFT work runs only while the hidden mode is active.
-// v45 GroupSync Ordering: uses host track_name()/track_name_seq() for default group naming, shares peers via gmem, and adds strict drag-rank ordering for Granular input texture triggers.
-// v44 TextureInjection GateFix: dry input is explicitly restored at output, and Granular Input Env uses a dBFS soft-knee envelope with no retrigger while held.
-// v42 InputEnv: Shift+drag Grain arms Granular-only audio input triggering; input is used as detector/envelope to scale generated texture and auto-release safely when silence returns.
+// v45 GroupSync Ordering: uses host track_name()/track_name_seq() for default group naming, shares peers via gmem, and adds a strict drag-rank ordering editor.
 // v41 DynExpand: Shift+drag Dynamics controls hidden Expansion, a transient-aware contrast/punch separator that lowers low-level material and can exaggerate attacks without adding a knob.
 // v40 CleanScrub: Clean is upgraded into a stronger transient-protected multiband de-noise/de-bed path with SNR-aware gating, sustained-noise detection, high-band hiss targeting, and fail-fast obvious high settings.
 // v39 RoomScrub: Room Tame is upgraded into a stronger transient-protected multiband de-room/de-smear path with per-band late/diffuse detection, side wash reduction, and fail-fast obvious high settings.
 // v38 DenormalGuard: adds internal anti-denormal keepalive/zapping, gates silent visual analyzers, decimates the visual spectrum analyzer 4x, and keeps v37 Granular perf gates intact.
+// v58 EdgeMelt: Shift+drag Grain replaces the old input-trigger mode with a Granular-only edge smoothing macro controlling grain starts, windows, overlap, jitter, per-grain HF smoothing, and post-grain cleanup.
 // v37 PerfGate: Grain corpus build is lazy/gated to Granular mode, dead learned-flow training is disabled, and Granular runtime selection plus 32-slot grain scans are gated so Raw/Tape/Hybrid avoid corpus work and Hybrid avoids Granular slot cost.
 // v36 GranStretch EventScale + PeakPack Pro: in Granular only, Stretch is repurposed from fast purposeful grains at 1x toward slower, larger, more coherent event playback at 4x; Raw/Tape/Hybrid Stretch behavior is preserved.
 // v35 MacroGrain OLAGlue + PeakPack Pro: Granular adds 1ms/10ms/100ms/1000ms-scale load-time corpus analysis, permits event-scale macro-grains for coherent SFX, and smooths OLA/spawn edges to reduce clicks and gaps.
@@ -26,6 +25,8 @@ options:gmem=SampleGroupSync
 // v50 AttackReleaseMinimal: note-off during Attack uses the user Release time, without retrigger interruption or changing release grain behavior.
 // v27 SpectrumDetail: Post-EQ spectrum uses a 96-bin resonant analyzer and thin trace drawing instead of a broad lowpass-difference blob.
 // v26 SpectrumContrast: Post-EQ spectrum underlay is brighter, adaptive, and easier to read on quiet material.
+// v61 PostEQ Character Fix: per-filter Character/Drive are front-buffered as independent values; Drive no longer pops between selected bands.
+// v60 PostEQ Ladder Character: Post-EQ bands can add Clean/Transistor/Diode driven band character with per-band drive.
 // v25 BandQCal: Band 1/2/3 Q is calibrated to the actual peaking-biquad response; default Q is tighter and less absurdly wide.
 // v24 PostEQ QFix: HPF/LPF Q now produces visible and audible cutoff resonance, including 6 dB/oct mode.
 // v23 FreeBand PostEQ: three free parametric bands plus HPF/LPF, graph control, Q/slope gestures, and spectrum underlay.
@@ -44,16 +45,14 @@ filename:0,sample.wav
 // #HELP: Sample is a load-and-go psycho multisampler: load files into slot 0, play notes, and shape the bank with compact macro controls.
 // #HELP: v15 BrightCal uses a filterbank brightness meter and bank-aware Color scaling.
 // #HELP: v16 FocusCal makes Focus bank-aware: high attack-focus banks soften harder and clarify more cautiously; dull banks clarify harder and soften more cautiously.
-// #HELP: v18 strengthens Shift+drag Pitch formant shifting: audible spectral-envelope warp plus resonance drive, still transient-protected.
+// #HELP: v18 strengthens Shift+drag Pitch formant shifting: audible spectral-envelope warp plus resonance drive, still transient-protected. Alt+drag Pitch controls Pitch Mix, a latency-aligned unpitched/pitched parallel blend.
 // #HELP: v19 AutoRelease analyzes each sample tail, extends too-short MIDI releases when needed, and fades source endings so EOF does not chop.
 // #HELP: v28 SpectrumPrePost shows both pre-EQ and post-EQ spectra with a cleaner high-resolution analyzer.
 // #HELP: v27 SpectrumDetail makes the Post-Processing spectrum sharper with a higher-resolution resonant analyzer and thinner trace display.
 // #HELP: v26 SpectrumContrast makes the Post-Processing spectrum underlay brighter and easier to read on quiet material.
-// #HELP: v45 GroupSync adds decentralized same-name Sampler coordination: Auto Track Name grouping, lowest-ID leader display, and a strict drag-rank order editor for texture-injection triggers.
+// #HELP: v45 GroupSync ordering has been retired in v59; its runtime path is inert/reserved so old projects are not forced into grouped triggering.
 // #HELP: v29 GrainCorpus builds a load-time grain/event corpus so Granular can transform both single long sources and multi-source banks without doing descriptor analysis at playback time.
 // #HELP: v33 EnvTrajectory teaches Granular to follow learned corpus energy motion so phrases have rises, falls, crests, and decay instead of flat wet grain beds.
-// #HELP: v44 TextureInjection GateFix makes Granular Input Env a true texture-injection path: dry input is passed through untouched, while a dBFS soft-knee input envelope triggers and amplitude-shapes only the generated Granular layer.
-// #HELP: v42 InputEnv adds Shift+drag Grain for Granular-only audio-trigger amount: incoming audio can trigger and envelope-scale the generated granular texture.
 // #HELP: v46 CleanDeCrust adds Shift+drag Clean as an FFT-512 spectral-kurtosis decrust mode for crunchy/crusty SFX. It is intentionally fail-fast at high values and the FFT path is inactive unless the hidden mode is nonzero.
 // #HELP: v40 CleanScrub makes Clean a stronger general cleanup control: it detects low-SNR/sustained bed noise per band, suppresses hiss and static tails harder, preserves attacks, and becomes deliberately obvious at high values.
 // #HELP: v39 RoomScrub makes Room Tame a stronger general de-room control: it detects late/diffuse band energy, trims low-mid/presence room wash, narrows roomy side smear, and protects attacks.
@@ -62,6 +61,7 @@ filename:0,sample.wav
 // #HELP: v53 PopCue adds Shift+drag Push as a concrete-detail cue extractor: it lifts short object cues in parallel without becoming inverse Push, and it is bypassed at 0.
 // #HELP: v52 Harmonics adds Shift+drag Output as a clean 8-band psychoacoustic harmonic enrichment macro: it generates a parallel, band-limited harmonic layer instead of driving the dry signal into saturation, and it is bypassed at 0.
 // #HELP: v38 DenormalGuard protects internal recursive filters/analyzers from near-zero denormal stalls, gates silent spectrum analysis, and preserves v37 Granular gating.
+// #HELP: v58 EdgeMelt replaces the old Shift+Grain input-trigger mode with a Granular-only grain-edge smoothing macro: safer starts, smoother windows, more overlap, less jitter, and post-grain micro-edge cleanup.
 // #HELP: v34 MultiScaleEventGrains analyzes short/mid/long windows at corpus-build time and lets Granular use event-sized grains when the source material wants continuity.
 // #HELP: v35 MacroGrain OLAGlue extends this to micro/short/mid/long/ultra windows, allowing coherent slow material to use 100 ms to 1 s grains while smoothing OLA starts, normalization, and long-grain window shape.
 // #HELP: v37 PerfGate lazily builds the GrainCorpus only when Granular mode is active or selected, disables obsolete learned-flow training, and caps Hybrid grain scans below the Granular-only 32-slot pool.
@@ -89,7 +89,7 @@ filename:0,sample.wav
 // #HELP: The Post-Processing panel is a final-output EQ editor with pre/post spectrum overlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope; Ctrl+click/drag temporarily solos the selected band/cut for auditioning.
 // #HELP:
 // #HELP: ## Tone and feel
-// #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Shift+drag Grain adjusts hidden Granular Input amount: dry input passes through, and its dBFS envelope injects/scales generated Granular texture. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection; Shift+drag Dynamics adds hidden Expansion for punch/space contrast. Shift+drag Push adds hidden PopCue for concrete detail; Shift+drag Output adds clean parallel Harmonics.
+// #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Shift+drag Grain adjusts hidden Edge Melt for Granular-only grain-border smoothing. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection; Shift+drag Dynamics adds hidden Expansion for punch/space contrast. Shift+drag Push adds hidden PopCue for concrete detail; Shift+drag Output adds clean parallel Harmonics.
 // #HELP:
 // #HELP: ## FluxBridge
 // #HELP: When the fixed FluxBridge CC lane block is present, Sample adds subtle motion-driven tone, focus, width, pan, and body contour while protecting transient-rich hits.
@@ -152,12 +152,19 @@ slider47:0<-12,12,0.01>--Hidden Formant Shift
 slider48:1<0,1,0.001>--Hidden Tail Grace
 slider49:0<-1,1,0.001>--Hidden Peak Pack
 slider50:0<0,1,0.001>--Hidden Dynamics Expand
-slider51:0<0,1,0.001>--Hidden Granular Input Env
+slider51:0<0,1,0.001>--Hidden Edge Melt
 slider52:0<0,1,0.001>--Hidden Clean DeCrust
 slider53:0<0,1,0.001>--Hidden Space Amount
 slider54:0.5<0,1,0.001>--Hidden Space Character
 slider55:0<0,1,0.001>--Hidden Harmonics
 slider56:0<0,1,0.001>--Hidden PopCue
+slider57:0<0,1,1{reserved,reserved}>--Reserved GroupSync Mode (unmapped)
+slider58:0<0,4,1>--Reserved GroupSync Rank (unmapped)
+slider59:0<0,1,0.001>--Reserved GroupSync A (unmapped)
+slider60:0<0,1,0.001>--Reserved GroupSync B (unmapped)
+slider61:1<0,1,0.001>--Hidden Pitch Mix
+slider62:0<0,242,1>--Hidden EQ Character Pack
+slider63:0<0,812990017200,1>--Hidden EQ Drive Pack (v61 compact/migrates old)
 @init
 /*
 Runtime sample-pool API used here:
@@ -200,6 +207,32 @@ function denorm_guard_tick()
 function denorm_near_silence(l r)
 (
   (abs(l) + abs(r)) < DENORM_AUDIO_FLOOR;
+);
+
+
+function pack_get_base(pack idx base) local(v i)
+(
+  v = floor(pack + 0.5);
+  i = 0;
+  while (i < idx) (
+    v = floor(v / base);
+    i += 1;
+  );
+  v % base;
+);
+
+function pack_set_base(pack idx base val) local(v i pow cur nv)
+(
+  v = floor(pack + 0.5);
+  pow = 1;
+  i = 0;
+  while (i < idx) (
+    pow *= base;
+    i += 1;
+  );
+  cur = floor(v / pow) % base;
+  nv = clamp(val | 0, 0, base - 1);
+  v + (nv - cur) * pow;
 );
 
 function wrap_in_range(x lo hi) local(span)
@@ -1354,8 +1387,24 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
       gstretch > 0 ? lenpen -= gstretch * cohscore * clamp01(cevtfrac * 2.35) * (0.30 + 0.42 * (1 - truth));
       cmstrans > 0.55 ? lenpen += max(0, cevtfrac - lerp(0.36, 0.56, gstretch)) * cmstrans * (0.48 + 0.40 * lively) * (1 - 0.35 * gstretch);
 
-      score = regionpen + descer * (1.28 + 0.52 * (1 - truth) + 0.55 * motion_slow + 0.34 * gstretch * cohscore) + phaseerr * (0.62 + 0.46 * (1 - spice) + 0.38 * motion_slow + 0.44 * gstretch * cohscore);
-      score += histpen + nearpen + runpen + regresspen + crosspen + salpen + lowrmspen + seqbonus + rolepen + trajpen + envpen + lenpen + loopbackpen + phrase_cross_bonus;
+      // v58 EdgeMelt: as the macro rises, prefer smoother corpus points and
+      // stronger forward continuity. Salient/transient edge grains can still be
+      // used as Spice, but they no longer dominate the smoothing path.
+      melt_score = edge_melt_amt * edge_melt_amt * (3 - 2 * edge_melt_amt);
+      meltpen = melt_score * (
+        cedge * (0.34 + 0.22 * motion_slow)
+        + cmstrans * 0.52
+        + csharp * 0.16
+        + max(0, csal - 0.52) * 0.46
+      );
+      meltbonus = 0;
+      melt_score > 0 && hasprev ? (
+        (csid == psid && creg == pregion && nextgap >= 1 && nextgap <= 10) ? meltbonus -= melt_score * cohscore * (0.32 + 0.28 * motion_slow + 0.16 * (1 - truth));
+        csid != psid ? meltbonus += melt_score * motion_slow * (0.28 + 0.24 * (1 - spice));
+      );
+
+      score = regionpen + descer * (1.28 + 0.52 * (1 - truth) + 0.55 * motion_slow + 0.34 * gstretch * cohscore + 0.28 * melt_score * motion_slow) + phaseerr * (0.62 + 0.46 * (1 - spice) + 0.38 * motion_slow + 0.44 * gstretch * cohscore + 0.36 * melt_score * motion_slow);
+      score += histpen + nearpen + runpen + regresspen + crosspen + salpen + lowrmspen + seqbonus + rolepen + trajpen + envpen + lenpen + loopbackpen + phrase_cross_bonus + meltpen + meltbonus;
       csid == fallback_sid ? score -= 0.030 * (1 - spice);
       score < corpus_best_score ? (
         corpus_best_score = score;
@@ -3625,6 +3674,15 @@ function reset_processing_buffers() local(i total)
     posteq_bq_base[i * POSTEQ_BQ_STRIDE + 8] = 0;
     i += 1;
   );
+
+  i = 0;
+  while (i < POSTEQ_CHAR_BQ_COUNT) (
+    posteq_char_bq_base[i * POSTEQ_CHAR_BQ_STRIDE + 5] = 0;
+    posteq_char_bq_base[i * POSTEQ_CHAR_BQ_STRIDE + 6] = 0;
+    posteq_char_bq_base[i * POSTEQ_CHAR_BQ_STRIDE + 7] = 0;
+    posteq_char_bq_base[i * POSTEQ_CHAR_BQ_STRIDE + 8] = 0;
+    i += 1;
+  );
 );
 
 function posteq_slope_db(idx)
@@ -3772,6 +3830,179 @@ function posteq_bq_process_r(slot x) local(base y)
   denorm_zap(y);
 );
 
+
+function posteq_char_bq_set_band(slot freq q) local(base w0 sn cs alpha a0 b0 b1 b2 a1 a2)
+(
+  base = slot * POSTEQ_CHAR_BQ_STRIDE;
+  freq = clamp(freq, 35, min(18000, srate * 0.46));
+  q = clamp(q, 0.45, 6.0);
+  w0 = 6.283185307179586 * freq / max(srate, 1);
+  sn = sin(w0);
+  cs = cos(w0);
+  alpha = sn / max(0.000001, 2 * q);
+
+  // Constant-skirt bandpass extractor used only for nonlinear character.
+  b0 = alpha;
+  b1 = 0;
+  b2 = -alpha;
+  a0 = 1 + alpha;
+  a1 = -2 * cs;
+  a2 = 1 - alpha;
+
+  posteq_char_bq_base[base + 0] = b0 / a0;
+  posteq_char_bq_base[base + 1] = b1 / a0;
+  posteq_char_bq_base[base + 2] = b2 / a0;
+  posteq_char_bq_base[base + 3] = a1 / a0;
+  posteq_char_bq_base[base + 4] = a2 / a0;
+);
+
+function posteq_char_bq_process_l(slot x) local(base y)
+(
+  base = slot * POSTEQ_CHAR_BQ_STRIDE;
+  y = posteq_char_bq_base[base + 0] * x + posteq_char_bq_base[base + 5];
+  posteq_char_bq_base[base + 5] = denorm_zap(posteq_char_bq_base[base + 1] * x - posteq_char_bq_base[base + 3] * y + posteq_char_bq_base[base + 6]);
+  posteq_char_bq_base[base + 6] = denorm_zap(posteq_char_bq_base[base + 2] * x - posteq_char_bq_base[base + 4] * y);
+  y;
+);
+
+function posteq_char_bq_process_r(slot x) local(base y)
+(
+  base = slot * POSTEQ_CHAR_BQ_STRIDE;
+  y = posteq_char_bq_base[base + 0] * x + posteq_char_bq_base[base + 7];
+  posteq_char_bq_base[base + 7] = denorm_zap(posteq_char_bq_base[base + 1] * x - posteq_char_bq_base[base + 3] * y + posteq_char_bq_base[base + 8]);
+  posteq_char_bq_base[base + 8] = denorm_zap(posteq_char_bq_base[base + 2] * x - posteq_char_bq_base[base + 4] * y);
+  y;
+);
+
+function posteq_topology_shape(x topo) local(ax y)
+(
+  ax = abs(x);
+  topo <= 0 ? x
+  : topo == 1 ? (
+    // Transistor-ish: slightly asymmetric forward grit, still residual/parallel.
+    y = x + 0.18 * x * x - 0.10 * x * x * x;
+    y / (1 + abs(y) * 0.62);
+  ) : (
+    // Diode-ish: rounder/smoother, compresses hard edges more than it crunches.
+    y = x / sqrt(1 + x * x * 1.45);
+    y + 0.055 * (x * x / (1 + ax * 1.8) - 0.18 * x);
+  );
+);
+
+function posteq_char_mode(slot)
+(
+  slot == 0 ? posteq_hpf_char
+  : slot == 1 ? posteq_b1_char
+  : slot == 2 ? posteq_b2_char
+  : slot == 3 ? posteq_b3_char
+  : posteq_lpf_char;
+);
+
+function posteq_char_drive(slot)
+(
+  slot == 0 ? posteq_hpf_drive
+  : slot == 1 ? posteq_b1_drive
+  : slot == 2 ? posteq_b2_drive
+  : slot == 3 ? posteq_b3_drive
+  : posteq_lpf_drive;
+);
+
+function posteq_set_char_var(slot val)
+(
+  val = clamp(val | 0, 0, 2);
+  slot == 0 ? posteq_hpf_char = val
+  : slot == 1 ? posteq_b1_char = val
+  : slot == 2 ? posteq_b2_char = val
+  : slot == 3 ? posteq_b3_char = val
+  : posteq_lpf_char = val;
+);
+
+function posteq_set_drive_var(slot val)
+(
+  // v61: store Drive as the live per-filter front buffer. The hidden pack is
+  // now just persistence, not the value source for the currently selected band.
+  // Quantize to 0.5 dB to keep the packed host parameter stable and independent
+  // per filter. This fixes Drive snapping to another band's value while editing.
+  val = clamp(floor(clamp(val, 0, 24) * 2 + 0.5) * 0.5, 0, 24);
+  slot == 0 ? posteq_hpf_drive = val
+  : slot == 1 ? posteq_b1_drive = val
+  : slot == 2 ? posteq_b2_drive = val
+  : slot == 3 ? posteq_b3_drive = val
+  : posteq_lpf_drive = val;
+);
+
+function posteq_pack_char_state() local(p)
+(
+  p = 0;
+  p = pack_set_base(p, 0, 3, posteq_hpf_char);
+  p = pack_set_base(p, 1, 3, posteq_b1_char);
+  p = pack_set_base(p, 2, 3, posteq_b2_char);
+  p = pack_set_base(p, 3, 3, posteq_b3_char);
+  p = pack_set_base(p, 4, 3, posteq_lpf_char);
+  p;
+);
+
+function posteq_pack_drive_state() local(p)
+(
+  // New compact 0.5 dB pack: base 49, values 0..48 = 0..24 dB.
+  // The slider range remains wide enough to migrate v60's old base-241 pack.
+  p = 0;
+  p = pack_set_base(p, 0, 49, floor(posteq_hpf_drive * 2 + 0.5));
+  p = pack_set_base(p, 1, 49, floor(posteq_b1_drive * 2 + 0.5));
+  p = pack_set_base(p, 2, 49, floor(posteq_b2_drive * 2 + 0.5));
+  p = pack_set_base(p, 3, 49, floor(posteq_b3_drive * 2 + 0.5));
+  p = pack_set_base(p, 4, 49, floor(posteq_lpf_drive * 2 + 0.5));
+  p;
+);
+
+function posteq_update_char_active()
+(
+  posteq_char_active = ((posteq_hpf_char > 0 && posteq_hpf_drive > 0.0001)
+    || (posteq_b1_char > 0 && posteq_b1_drive > 0.0001)
+    || (posteq_b2_char > 0 && posteq_b2_drive > 0.0001)
+    || (posteq_b3_char > 0 && posteq_b3_drive > 0.0001)
+    || (posteq_lpf_char > 0 && posteq_lpf_drive > 0.0001)) ? 1 : 0;
+);
+
+function posteq_apply_character_band(slot l r) local(topo drive driveamp invdrive wet bpL bpR shL shR resL resR air_guard)
+(
+  topo = posteq_char_mode(slot);
+  drive = posteq_char_drive(slot);
+  (topo > 0 && drive > 0.0001) ? (
+    bpL = posteq_char_bq_process_l(slot, l + denorm_guard);
+    bpR = posteq_char_bq_process_r(slot, r - denorm_guard);
+    driveamp = db2amp(drive);
+    invdrive = 1 / max(driveamp, 0.000001);
+    wet = clamp01((drive / 24) ^ 0.72);
+
+    shL = posteq_topology_shape(bpL * driveamp, topo) * invdrive;
+    shR = posteq_topology_shape(bpR * driveamp, topo) * invdrive;
+
+    resL = shL - bpL;
+    resR = shR - bpR;
+
+    // High-band diode is meant to smooth clicky brightness, not add fizz.
+    air_guard = slot >= 3 ? (topo == 2 ? 0.78 : 0.62) : 1;
+    posteq_char_wet = max(posteq_char_wet, wet * max(abs(resL), abs(resR)) * 8);
+    outL += denorm_zap(resL * wet * air_guard);
+    outR += denorm_zap(resR * wet * air_guard);
+  );
+);
+
+function apply_posteq_character() local(l r)
+(
+  posteq_char_wet = 0;
+  l = outL;
+  r = outR;
+  posteq_apply_character_band(0, l, r);
+  posteq_apply_character_band(1, l, r);
+  posteq_apply_character_band(2, l, r);
+  posteq_apply_character_band(3, l, r);
+  posteq_apply_character_band(4, l, r);
+  outL = denorm_zap(outL);
+  outR = denorm_zap(outR);
+);
+
 function posteq_spec_bq_set_band(bin freq q) local(base w0 sn cs alpha a0 b0 b1 b2 a1 a2)
 (
   // Analyzer-only constant-peak bandpass. This replaces the old adjacent
@@ -3832,6 +4063,12 @@ function posteq_update_coeffs() local(i norm cf specq cutq)
     posteq_spec_bq_set_band(i, cf, specq);
     i += 1;
   );
+
+  posteq_char_bq_set_band(0, max(70, proc_hpf_hz * 1.25), clamp(proc_hpf_q, 0.45, 4));
+  posteq_char_bq_set_band(1, proc_eq_band1_hz, proc_eq_band1_q);
+  posteq_char_bq_set_band(2, proc_eq_band2_hz, proc_eq_band2_q);
+  posteq_char_bq_set_band(3, proc_eq_band3_hz, proc_eq_band3_q);
+  posteq_char_bq_set_band(4, min(16000, max(1200, proc_lpf_hz * 0.72)), clamp(proc_lpf_q, 0.45, 4));
 );
 
 function posteq_zero_pre_spectrum() local(i)
@@ -3869,6 +4106,15 @@ function posteq_zero_filter_states() local(i base)
     posteq_bq_base[base + 6] = 0;
     posteq_bq_base[base + 7] = 0;
     posteq_bq_base[base + 8] = 0;
+    i += 1;
+  );
+  i = 0;
+  while (i < POSTEQ_CHAR_BQ_COUNT) (
+    base = i * POSTEQ_CHAR_BQ_STRIDE;
+    posteq_char_bq_base[base + 5] = 0;
+    posteq_char_bq_base[base + 6] = 0;
+    posteq_char_bq_base[base + 7] = 0;
+    posteq_char_bq_base[base + 8] = 0;
     i += 1;
   );
 );
@@ -4165,6 +4411,7 @@ function apply_posteq_filter() local(xL xR idx count)
 function apply_processing_strip()
 (
   (proc_hpf_hz > 22 || proc_lpf_hz < min(19000, srate * 0.47) || abs(proc_eq_band1_db) > 0.0001 || abs(proc_eq_band2_db) > 0.0001 || abs(proc_eq_band3_db) > 0.0001) ? apply_posteq_filter();
+  posteq_char_active ? apply_posteq_character();
   (posteq_solo_target > 0 || posteq_solo_mix > 0.0001) ? apply_posteq_solo();
 );
 
@@ -5490,6 +5737,56 @@ function reset_input_trigger_buffers()
 );
 
 
+function reset_edge_melt_buffers()
+(
+  edge_melt_post_lp_l = 0;
+  edge_melt_post_lp_r = 0;
+  edge_melt_post_hi_l = 0;
+  edge_melt_post_hi_r = 0;
+  edge_melt_post_smooth_l = 0;
+  edge_melt_post_smooth_r = 0;
+  edge_melt_post_fast = 0;
+  edge_melt_post_slow = 0;
+  edge_melt_runtime_active = 0;
+);
+
+function apply_edge_melt_post() local(m mm blur declick post_mix hiL hiR smoothL smoothR det ratio gate lpL lpR)
+(
+  m = (playback_mode == 3) ? edge_melt_amt : 0;
+  m > 0.0001 ? (
+    edge_melt_runtime_active = 1;
+    mm = m * m * (3 - 2 * m);
+    // High-mid micro-edge smoother: acts mostly on 2-8 kHz grain-border scratch.
+    edge_melt_post_lp_l = denorm_zap(edge_melt_post_lp_l + (outL - edge_melt_post_lp_l) * edge_melt_post_hi_coeff);
+    edge_melt_post_lp_r = denorm_zap(edge_melt_post_lp_r + (outR - edge_melt_post_lp_r) * edge_melt_post_hi_coeff);
+    hiL = outL - edge_melt_post_lp_l;
+    hiR = outR - edge_melt_post_lp_r;
+
+    edge_melt_post_smooth_l = denorm_zap(edge_melt_post_smooth_l + (hiL - edge_melt_post_smooth_l) * edge_melt_post_smooth_coeff);
+    edge_melt_post_smooth_r = denorm_zap(edge_melt_post_smooth_r + (hiR - edge_melt_post_smooth_r) * edge_melt_post_smooth_coeff);
+    smoothL = edge_melt_post_smooth_l;
+    smoothR = edge_melt_post_smooth_r;
+
+    det = max(abs(hiL - smoothL), abs(hiR - smoothR));
+    edge_melt_post_fast = denorm_zap(edge_melt_post_fast + (det - edge_melt_post_fast) * edge_melt_post_fast_coeff);
+    edge_melt_post_slow = denorm_zap(edge_melt_post_slow + (det - edge_melt_post_slow) * edge_melt_post_slow_coeff);
+    ratio = edge_melt_post_fast / max(edge_melt_post_slow * 1.22 + 0.00000008, 0.00000008);
+    gate = clamp01((ratio - 1.0) * 0.72);
+
+    declick = 0.50 * (m ^ 1.20);
+    blur = max(0, (m - 0.50) * 2);
+    blur = (blur ^ 1.50) * 0.35;
+    post_mix = clamp01(declick * (0.25 + 0.75 * gate) + blur);
+
+    lpL = edge_melt_post_lp_l;
+    lpR = edge_melt_post_lp_r;
+    outL = lpL + lerp(hiL, smoothL, post_mix);
+    outR = lpR + lerp(hiR, smoothR, post_mix);
+  ) : (
+    edge_melt_runtime_active > 0 ? reset_edge_melt_buffers();
+  );
+);
+
 function group_hash_current_name() local(i n c h)
 (
   // Cheap deterministic hash for track-name grouping. Kept numeric for gmem.
@@ -5740,6 +6037,9 @@ function denorm_flush_scalar_states() local(i)
   dyn_env = denorm_zap(dyn_env);
   dynx_fast = denorm_zap(dynx_fast); dynx_slow = denorm_zap(dynx_slow); dynx_gain = denorm_zap(dynx_gain); dynx_lim_gain = denorm_zap(dynx_lim_gain);
   input_trig_fast = denorm_zap(input_trig_fast); input_trig_slow = denorm_zap(input_trig_slow); input_trig_floor = denorm_zap(input_trig_floor); input_trig_env = denorm_zap(input_trig_env);
+  edge_melt_post_lp_l = denorm_zap(edge_melt_post_lp_l); edge_melt_post_lp_r = denorm_zap(edge_melt_post_lp_r);
+  edge_melt_post_smooth_l = denorm_zap(edge_melt_post_smooth_l); edge_melt_post_smooth_r = denorm_zap(edge_melt_post_smooth_r);
+  edge_melt_post_fast = denorm_zap(edge_melt_post_fast); edge_melt_post_slow = denorm_zap(edge_melt_post_slow);
 
   clean_lp1_l = denorm_zap(clean_lp1_l); clean_lp2_l = denorm_zap(clean_lp2_l); clean_lp3_l = denorm_zap(clean_lp3_l); clean_lp4_l = denorm_zap(clean_lp4_l);
   clean_lp1_r = denorm_zap(clean_lp1_r); clean_lp2_r = denorm_zap(clean_lp2_r); clean_lp3_r = denorm_zap(clean_lp3_r); clean_lp4_r = denorm_zap(clean_lp4_r);
@@ -6074,7 +6374,8 @@ function configure_memory_layout(selected_count) local(cap) (
   posteq_post_env_base = posteq_post_z2_base + POSTEQ_SPEC_BINS;
   posteq_spec_coeff_base = posteq_post_env_base + POSTEQ_SPEC_BINS;
   posteq_bq_base = posteq_spec_coeff_base + POSTEQ_SPEC_BINS * POSTEQ_SPEC_COEFFS + 32;
-  fpk_env_base = posteq_bq_base + POSTEQ_BQ_COUNT * POSTEQ_BQ_STRIDE + 32;
+  posteq_char_bq_base = posteq_bq_base + POSTEQ_BQ_COUNT * POSTEQ_BQ_STRIDE + 32;
+  fpk_env_base = posteq_char_bq_base + POSTEQ_CHAR_BQ_COUNT * POSTEQ_CHAR_BQ_STRIDE + 32;
   fpk_gain_base = fpk_env_base + FPK_BANDS;
   fpk_band_l_base = fpk_gain_base + FPK_BANDS;
   fpk_band_r_base = fpk_band_l_base + FPK_BANDS;
@@ -6655,6 +6956,9 @@ function start_voice(note vel chan) local(
     v[VC_AUDIOTRIG] = 0;
     v[VC_AUDIOENV]  = 1;
     v[VC_AUTOVEL]   = velnorm;
+    v[VC_PRATIO]    = max(0.000001, midi_ratio(pitch_semi));
+    v[VC_PDRYPOS]   = startpos;
+    v[VC_PDRYRATE]  = base_rate / max(0.000001, v[VC_PRATIO]);
 
     gesture_len = floor(srate * lerp(0.22, 1.20, rand(1)) * lerp(0.82, 1.22, stretch_norm) * (gran_voice ? lerp(1.0, 2.75, granular_event_stretch) : 1));
     gesture_len = max(64, gesture_len);
@@ -6901,23 +7205,23 @@ function process_granular_input_trigger(inL inR) local(
   det_db = 20 * log(max(input_trig_fast, 0.000000001)) * LOG10_INV;
   floor_db = 20 * log(max(input_trig_floor, 0.000000001)) * LOG10_INV;
 
-  knee_lo = lerp(-42, -36, input_trigger_amt);
-  knee_hi = lerp(-4, -2, input_trigger_amt);
+  knee_lo = lerp(-42, -36, edge_melt_amt);
+  knee_hi = lerp(-4, -2, edge_melt_amt);
   knee_t = clamp01((det_db - knee_lo) / max(0.001, knee_hi - knee_lo));
   // Smoothstep knee, then extra curvature so low-level input does not behave
-  // like a hair-trigger. Extremes still reach full-scale texture injection.
+  // like a hair-trigger. This legacy input-trigger function is no longer called by v58.
   env_norm = knee_t * knee_t * (3 - 2 * knee_t);
-  env_norm = env_norm ^ lerp(2.30, 1.58, input_trigger_amt);
+  env_norm = env_norm ^ lerp(2.30, 1.58, edge_melt_amt);
   input_trig_norm = env_norm;
   input_trig_env += (env_norm - input_trig_env) * (env_norm > input_trig_env ? input_trig_env_att : input_trig_env_rel);
   input_trig_env = denorm_zap(input_trig_env);
 
   input_trig_cooldown > 0 ? input_trig_cooldown -= 1;
-  silence_target = max(8, floor(srate * lerp(0.055, 0.150, input_trigger_amt)));
-  cooldown_samps = max(8, floor(srate * lerp(0.080, 0.160, input_trigger_amt)));
-  on_env = lerp(0.18, 0.115, input_trigger_amt);
-  off_env = on_env * lerp(0.38, 0.25, input_trigger_amt);
-  noise_ok = det_db > (floor_db + lerp(9.5, 6.5, input_trigger_amt));
+  silence_target = max(8, floor(srate * lerp(0.055, 0.150, edge_melt_amt)));
+  cooldown_samps = max(8, floor(srate * lerp(0.080, 0.160, edge_melt_amt)));
+  on_env = lerp(0.18, 0.115, edge_melt_amt);
+  off_env = on_env * lerp(0.38, 0.25, edge_melt_amt);
+  noise_ok = det_db > (floor_db + lerp(9.5, 6.5, edge_melt_amt));
 
   input_trig_gate <= 0 ? (
     (input_trig_env >= on_env && noise_ok && input_trig_cooldown <= 0 && count_audio_trigger_voices() <= 0) ? (
@@ -6955,6 +7259,7 @@ function process_granular_input_trigger(inL inR) local(
   );
 );
 
+
 function flush_hidden_state_sliders()
 (
   // Hidden alt-mode controls are real host sliders under the hood. JSFX @init can
@@ -6965,12 +7270,13 @@ function flush_hidden_state_sliders()
   slider48 = clamp01(auto_release_amt);
   slider49 = clamp(focus_peak_amt, -1, 1);
   slider50 = clamp01(dynamics_expand_amt);
-  slider51 = clamp01(input_trigger_amt);
+  slider51 = clamp01(edge_melt_amt);
   slider52 = clamp01(clean_decrust_amt);
   slider53 = clamp01(space_room_amt);
   slider54 = clamp01(space_room_char);
   slider55 = clamp01(output_harmonics_amt);
   slider56 = clamp01(push_pop_amt);
+  slider61 = clamp01(pitch_parallel_mix);
 
   // Use individual sliderchange calls instead of a giant summed mask. Powers
   // above 2^53 are exact, but sums can lose precision in double-based EEL2.
@@ -6984,6 +7290,7 @@ function flush_hidden_state_sliders()
   sliderchange(MASK_S54);
   sliderchange(MASK_S55);
   sliderchange(MASK_S56);
+  sliderchange(MASK_S61);
   hidden_state_dirty = 0;
 );
 
@@ -7754,7 +8061,10 @@ VC_GOLA      = 59;
 VC_AUDIOTRIG = 60;
 VC_AUDIOENV  = 61;
 VC_AUTOVEL   = 62;
-VC_GBASE     = 63;
+VC_PDRYPOS   = 63;
+VC_PDRYRATE  = 64;
+VC_PRATIO    = 65;
+VC_GBASE     = 66;
 
 VG_ACTIVE    = 0;
 VG_AGE       = 1;
@@ -7769,7 +8079,10 @@ VG_EDIR      = 9;
 VG_EPEAK     = 10;
 VG_EAMT      = 11;
 VG_LIFE      = 12;
-VG_STRIDE    = 13;
+VG_LPL       = 13;
+VG_LPR       = 14;
+VG_DRYRATE   = 15;
+VG_STRIDE    = 16;
 NUM_GRAINS   = 32;
 HYBRID_GRAINS = 12;
 
@@ -7877,6 +8190,13 @@ MASK_S53 = 4503599627370496;
 MASK_S54 = 9007199254740992;
 MASK_S55 = 18014398509481984;
 MASK_S56 = 36028797018963968;
+MASK_S57 = 72057594037927936;
+MASK_S58 = 144115188075855872;
+MASK_S59 = 288230376151711744;
+MASK_S60 = 576460752303423488;
+MASK_S61 = 1152921504606846976;
+MASK_S62 = 2305843009213693952;
+MASK_S63 = 4611686018427387904;
 
 CLEAN_BANDS = 5;
 DECRUST_FFT = 512;
@@ -7891,6 +8211,8 @@ POSTEQ_SPEC_BINS = 96;
 POSTEQ_SPEC_COEFFS = 5;
 POSTEQ_BQ_COUNT = 13;
 POSTEQ_BQ_STRIDE = 9;
+POSTEQ_CHAR_BQ_COUNT = 5;
+POSTEQ_CHAR_BQ_STRIDE = 9;
 FPK_BANDS = 12;
 FPK_BQ_STRIDE = 9;
 HARM_BANDS = 8;
@@ -8113,7 +8435,7 @@ dyn_env = 0;
 dyn_comp_gain = 1;
 dyn_lim_gain = 1;
 dynamics_expand_amt = 0;
-input_trigger_amt = 0;
+edge_melt_amt = 0;
 dynx_fast = 0;
 dynx_slow = 0;
 dynx_gain = 1;
@@ -8306,6 +8628,7 @@ ui_last_click_id = -1;
 ui_last_click_t = -10;
 ui_dblclick_time = 0.32;
 pitch_alt_active = 0;
+pitch_mix_alt_active = 0;
 focus_peak_alt_active = 0;
 dyn_expand_alt_active = 0;
 grain_input_alt_active = 0;
@@ -8352,7 +8675,7 @@ transport_play_state_prev = -1;
 
 
 
-group_enabled = 1;
+group_enabled = 0; // v59: GroupSync ordering retired/inert. Reserved sliders remain unmapped.
 group_instance_id = 0;
 group_name_hash = 0;
 group_track_seq = -999999;
@@ -8373,10 +8696,12 @@ group_peer_draw_count = 0;
 input_trig_wait = 0;
 input_trig_wait_event = 0;
 sprintf(#group_name, "Sample");
-group_init_memory();
-group_poll_track_name(1);
-group_write_heartbeat(0, 0);
-group_refresh_state();
+group_enabled > 0 ? (
+  group_init_memory();
+  group_poll_track_name(1);
+  group_write_heartbeat(0, 0);
+  group_refresh_state();
+);
 
 reset_bank_state();
 m2e_reset();
@@ -8388,7 +8713,7 @@ file_var(0, auto_release_amt);
 file_var(0, posteq_q_schema);
 file_var(0, focus_peak_amt);
 file_var(0, dynamics_expand_amt);
-file_var(0, input_trigger_amt);
+file_var(0, edge_melt_amt);
 file_var(0, clean_decrust_amt);
 file_var(0, space_room_amt);
 file_var(0, space_room_char);
@@ -8404,7 +8729,16 @@ hold_samps = max(0, floor(slider20 * srate * 0.001));
 mono_source = (slider21 | 0) ? 1 : 0;
 dynamics_amt = clamp01(slider22);
 dynamics_expand_amt = clamp01(slider50);
-input_trigger_amt = clamp01(slider51);
+edge_melt_amt = clamp01(slider51);
+(edge_melt_amt <= 0.0001 && edge_melt_active_prev > 0) ? reset_edge_melt_buffers();
+edge_melt_active_prev = edge_melt_amt > 0.0001 ? 1 : 0;
+edge_melt_curve = edge_melt_amt * edge_melt_amt * (3 - 2 * edge_melt_amt);
+edge_melt_lpf_cutoff = exp(lerp(log(18000), log(6500), edge_melt_amt ^ 1.20));
+edge_melt_lpf_coeff = clamp(1 - exp(-6.283185307179586 * min(edge_melt_lpf_cutoff, srate * 0.49) / max(srate, 1)), 0.0002, 0.96);
+edge_melt_post_hi_coeff = clamp(1 - exp(-6.283185307179586 * min(4200 + 2600 * (1 - edge_melt_curve), srate * 0.49) / max(srate, 1)), 0.0002, 0.92);
+edge_melt_post_smooth_coeff = clamp(1 - exp(-6.283185307179586 * min(900 + 1800 * (1 - edge_melt_curve), srate * 0.49) / max(srate, 1)), 0.0001, 0.70);
+edge_melt_post_fast_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.0035 * srate)));
+edge_melt_post_slow_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.048 + 0.032 * edge_melt_amt) * srate)));
 clean_amt = clamp01(slider25);
 clean_decrust_amt = clamp01(slider52);
 (clean_decrust_amt <= 0.0001 && clean_decrust_active_prev > 0) ? (
@@ -8422,6 +8756,7 @@ space_room_char = clamp01(slider54);
 space_room_active_prev = space_room_amt > 0.0001 ? 1 : 0;
 push_amt = clamp01(slider27 / 100);
 push_pop_amt = clamp01(slider56);
+pitch_parallel_mix = clamp01(slider61);
 (push_pop_amt <= 0.0001 && push_pop_active_prev > 0) ? reset_push_pop_buffers();
 (push_pop_amt > 0.0001 && push_pop_active_prev <= 0) ? pop_update_coeffs();
 push_pop_active_prev = push_pop_amt > 0.0001 ? 1 : 0;
@@ -8488,6 +8823,33 @@ proc_hpf_slope_idx = clamp(slider43 | 0, 0, 4);
 proc_lpf_slope_idx = clamp(slider44 | 0, 0, 4);
 proc_hpf_q = clamp(slider45, 0.35, 4.0);
 proc_lpf_q = clamp(slider46, 0.35, 4.0);
+posteq_char_pack = clamp(floor(slider62 + 0.5), 0, 242);
+posteq_drive_pack = clamp(floor(slider63 + 0.5), 0, 812990017200);
+posteq_hpf_char = clamp(pack_get_base(posteq_char_pack, 0, 3) | 0, 0, 2);
+posteq_b1_char = clamp(pack_get_base(posteq_char_pack, 1, 3) | 0, 0, 2);
+posteq_b2_char = clamp(pack_get_base(posteq_char_pack, 2, 3) | 0, 0, 2);
+posteq_b3_char = clamp(pack_get_base(posteq_char_pack, 3, 3) | 0, 0, 2);
+posteq_lpf_char = clamp(pack_get_base(posteq_char_pack, 4, 3) | 0, 0, 2);
+
+// v61: compact per-filter drive pack. Values <= 49^5-1 use the new
+// independent 0.5 dB/base-49 layout. Larger values are migrated once from
+// v60's old 0.1 dB/base-241 layout.
+posteq_drive_pack > 282475248 ? (
+  posteq_hpf_drive = clamp(floor(pack_get_base(posteq_drive_pack, 0, 241) * 0.1 * 2 + 0.5) * 0.5, 0, 24);
+  posteq_b1_drive  = clamp(floor(pack_get_base(posteq_drive_pack, 1, 241) * 0.1 * 2 + 0.5) * 0.5, 0, 24);
+  posteq_b2_drive  = clamp(floor(pack_get_base(posteq_drive_pack, 2, 241) * 0.1 * 2 + 0.5) * 0.5, 0, 24);
+  posteq_b3_drive  = clamp(floor(pack_get_base(posteq_drive_pack, 3, 241) * 0.1 * 2 + 0.5) * 0.5, 0, 24);
+  posteq_lpf_drive = clamp(floor(pack_get_base(posteq_drive_pack, 4, 241) * 0.1 * 2 + 0.5) * 0.5, 0, 24);
+  slider63 = posteq_pack_drive_state();
+  sliderchange(MASK_S63);
+) : (
+  posteq_hpf_drive = clamp(pack_get_base(posteq_drive_pack, 0, 49) * 0.5, 0, 24);
+  posteq_b1_drive  = clamp(pack_get_base(posteq_drive_pack, 1, 49) * 0.5, 0, 24);
+  posteq_b2_drive  = clamp(pack_get_base(posteq_drive_pack, 2, 49) * 0.5, 0, 24);
+  posteq_b3_drive  = clamp(pack_get_base(posteq_drive_pack, 3, 49) * 0.5, 0, 24);
+  posteq_lpf_drive = clamp(pack_get_base(posteq_drive_pack, 4, 49) * 0.5, 0, 24);
+);
+posteq_update_char_active();
 selection_mode = clamp(slider13 | 0, 0, 2);
 sequence_mode = selection_mode == 1 ? 1 : 0;
 walk_mode = selection_mode == 2 ? 1 : 0;
@@ -8682,12 +9044,14 @@ fpk_update_coeffs();
 @block
 m2e_clock_samps += samplesblock;
 
-group_poll_counter += samplesblock;
-(group_poll_counter >= group_poll_interval_samps || group_poll_counter < 0) ? (
-  group_poll_counter = 0;
-  group_poll_track_name(0);
-  group_write_heartbeat(count_active_voices() > 0 || input_trig_gate > 0, max(input_trig_env, mix_fast));
-  group_refresh_state();
+group_enabled > 0 ? (
+  group_poll_counter += samplesblock;
+  (group_poll_counter >= group_poll_interval_samps || group_poll_counter < 0) ? (
+    group_poll_counter = 0;
+    group_poll_track_name(0);
+    group_write_heartbeat(count_active_voices() > 0 || input_trig_gate > 0, max(input_trig_env, mix_fast));
+    group_refresh_state();
+  );
 );
 
 // Transport panic/seek reconciliation. REAPER does not guarantee MIDI note-offs
@@ -8817,25 +9181,18 @@ rescan_pending ? (
 @sample
 dry_in_l = spl0;
 dry_in_r = spl1;
-input_detect_l = dry_in_l;
-input_detect_r = dry_in_r;
-input_trigger_armed = (playback_mode == 3 && input_trigger_amt > 0.0001 && bank_loaded) ? 1 : 0;
-input_trigger_armed ? (
-  input_trigger_was_armed = 1;
-  // Texture-injection mode: the incoming audio is never processed or muted here.
-  // It passes through dry, while its dBFS envelope triggers/scales only Granular.
-  process_granular_input_trigger(input_detect_l, input_detect_r);
-) : (
-  input_trigger_was_armed ? (
-    (input_trig_gate > 0 || count_audio_trigger_voices() > 0) ? release_audio_trigger_voices(0);
-    input_trigger_was_armed = 0;
-  );
-  input_trig_gate = 0;
-  input_trig_silence = 0;
-  input_trig_env += (0 - input_trig_env) * input_trig_env_rel;
-  input_trig_fast += (0 - input_trig_fast) * input_trig_fast_rel;
-  input_trig_slow += (0 - input_trig_slow) * input_trig_slow_rel;
+// v58 EdgeMelt removed the old input-trigger / texture-injection path.
+// Dry input still passes through at output, but it no longer creates voices or
+// gates GroupSync. Shift+Grain is now a Granular-only grain-edge smoothing macro.
+input_trigger_was_armed ? (
+  (input_trig_gate > 0 || count_audio_trigger_voices() > 0) ? release_audio_trigger_voices(0);
+  input_trigger_was_armed = 0;
 );
+input_trig_gate = 0;
+input_trig_silence = 0;
+input_trig_env = denorm_zap(input_trig_env + (0 - input_trig_env) * input_trig_env_rel);
+input_trig_fast = denorm_zap(input_trig_fast + (0 - input_trig_fast) * input_trig_fast_rel);
+input_trig_slow = denorm_zap(input_trig_slow + (0 - input_trig_slow) * input_trig_slow_rel);
 
 outL = 0;
 outR = 0;
@@ -8850,6 +9207,7 @@ space_early_bus_r = 0;
 space_late_bus_l = 0;
 space_late_bus_r = 0;
 denorm_guard = denorm_guard_tick();
+pitch_parallel_active = (pitch_parallel_mix < 0.999 && abs(pitch_semi) > 0.0001) ? 1 : 0;
 
 i = 0;
 while (i < MAX_VOICES) (
@@ -8903,8 +9261,14 @@ while (i < MAX_VOICES) (
     rawR = 0;
     grainL = 0;
     grainR = 0;
+    pitchDryRawL = 0;
+    pitchDryRawR = 0;
+    pitchDryGrainL = 0;
+    pitchDryGrainR = 0;
     got_raw = 0;
     got_grain = 0;
+    got_pitch_dry_raw = 0;
+    got_pitch_dry_grain = 0;
     direct_alive = 0;
     activeg = 0;
 
@@ -8935,6 +9299,19 @@ while (i < MAX_VOICES) (
         rawR *= source_end_fade;
         source_end_fade <= 0.0003 ? direct_alive = 0;
 
+        pitch_parallel_active ? (
+          ppos = v[VC_PDRYPOS];
+          (ppos >= 0 && ppos < (frames - 1)) ? (
+            prem_src = max(0, frames - 1 - ppos);
+            pdry_end_fade = clamp01(prem_src / max(1, endfade_src));
+            pdry_end_fade = pdry_end_fade * pdry_end_fade * (3 - 2 * pdry_end_fade);
+            sample_frame2(ptr, nch, ppos);
+            pitchDryRawL = readL * pdry_end_fade;
+            pitchDryRawR = readR * pdry_end_fade;
+            pdry_end_fade > 0.0003 ? got_pitch_dry_raw = 1;
+          );
+        );
+
         play_rate = v[VC_RATE];
         voice_stretch = max(1, v[VC_STRETCH]);
         (tleft > 0 && v[VC_TPROT] > 0) ? (
@@ -8942,6 +9319,18 @@ while (i < MAX_VOICES) (
           // Smoothstep crossfade from protected transient rate to stretched / pitched body rate.
           holdn = holdn * holdn * (3 - 2 * holdn);
           play_rate = lerp(play_rate, v[VC_ATKRATE], holdn * v[VC_TPROT]);
+          pitch_parallel_active ? (
+            dry_attack_rate = v[VC_RAWRATE] / max(0.000001, v[VC_PRATIO]);
+            dry_play_rate = lerp(v[VC_PDRYRATE], dry_attack_rate, holdn * v[VC_TPROT]);
+          );
+        ) : (
+          pitch_parallel_active ? dry_play_rate = v[VC_PDRYRATE];
+        );
+
+        pitch_parallel_active ? (
+          ppos += dry_play_rate;
+          held_body_only && ppos >= body_cutoff ? ppos = body_cutoff;
+          v[VC_PDRYPOS] = ppos;
         );
 
         pos += play_rate;
@@ -9353,17 +9742,34 @@ while (i < MAX_VOICES) (
           granular_voice ? (
             gran_tail_region = cur_region_mode;
 
-            src_phase_jit = source_phase_jitter_samples(gsid, gran_tail_region, slider9, truth_mix, v[VC_TAILMIX]) * (1 - 0.90 * gran_slow_glue) * (1 - 0.70 * granular_event_stretch);
+            // v58 EdgeMelt: smooth source-position motion instead of making
+            // grain starts teleport. This attacks the root of patchwork/edge fizz.
+            edge_melt_active = edge_melt_amt * ((stage == ENV_ATTACK || stage == ENV_HOLD) ? 0.55 : 1.0);
+            edge_melt_slew = (edge_melt_active ^ 1.30) * clamp01(0.22 + 0.78 * max(gran_slow_glue, max(gran_mscont, gran_xcont)));
+            edge_melt_slew > 0.0001 && (v[VC_LGSID] | 0) == gsid && (v[VC_LGREG] | 0) == cur_region_mode ? (
+              melt_pred = v[VC_LGPOS] + max(1, abs(v[VC_SRCHOP]) * (0.68 + 0.20 * edge_melt_active));
+              gran_tail_region ? (
+                melt_pred = clamp(melt_pred, ghist_lo, max(ghist_lo, ghist_hi - 1));
+                gsrc = lerp(gsrc, melt_pred, clamp01(0.12 + 0.48 * edge_melt_slew));
+                gsrc = clamp(gsrc, ghist_lo, max(ghist_lo, ghist_hi - 1));
+              ) : (
+                melt_pred = wrap_in_range(melt_pred, ghist_lo, ghist_hi);
+                gsrc = lerp(gsrc, melt_pred, clamp01(0.10 + 0.42 * edge_melt_slew));
+                gsrc = wrap_in_range(gsrc, ghist_lo, ghist_hi);
+              );
+            );
+
+            src_phase_jit = source_phase_jitter_samples(gsid, gran_tail_region, slider9, truth_mix, v[VC_TAILMIX]) * (1 - 0.90 * gran_slow_glue) * (1 - 0.70 * granular_event_stretch) * (1 - 0.78 * edge_melt_active);
             gran_tail_region ? (
               gsrc = clamp(gsrc + src_phase_jit, ghist_lo, max(ghist_lo, ghist_hi - 1));
             ) : (
               gsrc = wrap_in_range(gsrc + src_phase_jit, ghist_lo, ghist_hi);
             );
 
-            pitch_jit_cents = (rand(1) - 0.5) * 2 * slider9 * (0.85 + 3.20 * (1 - truth_mix)) * lerp(1.00, 0.45, clamp01(gsm[SM_PITCHCONF] * bank_pitchiness)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.64 * granular_event_stretch);
+            pitch_jit_cents = (rand(1) - 0.5) * 2 * slider9 * (0.85 + 3.20 * (1 - truth_mix)) * lerp(1.00, 0.45, clamp01(gsm[SM_PITCHCONF] * bank_pitchiness)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.64 * granular_event_stretch) * (1 - 0.76 * edge_melt_active);
             grate *= cents_ratio(pitch_jit_cents);
 
-            len_jit = 1 + (rand(1) - 0.5) * slider9 * (0.08 + 0.10 * (1 - truth_mix) + 0.04 * gesture_arc) * (1 - 0.66 * gran_slow_glue) * (1 - 0.62 * max(gran_mscont, gran_xcont)) * (1 - 0.58 * granular_event_stretch);
+            len_jit = 1 + (rand(1) - 0.5) * slider9 * (0.08 + 0.10 * (1 - truth_mix) + 0.04 * gesture_arc) * (1 - 0.66 * gran_slow_glue) * (1 - 0.62 * max(gran_mscont, gran_xcont)) * (1 - 0.58 * granular_event_stretch) * (1 - 0.64 * edge_melt_active);
             spawn_gsize = clamp(
               floor(gsize * len_jit * (1 + gran_slow_glue * (0.70 + 0.62 * (1 - slider9)) + gran_mscont * 0.42 + gran_xcont * 1.10 + gran_stretch_glue * (1.10 + 1.10 * gran_mscont + 2.30 * gran_xcont))),
               max(hop + 1, floor(gsize * 0.72)),
@@ -9383,7 +9789,15 @@ while (i < MAX_VOICES) (
               );
             );
 
-            reverse_grain = gran_tail_region && slider9 > 0.55 && v[VC_TAILMIX] > 0.25 && rand(1) < (0.006 + 0.030 * slider9 * v[VC_TAILMIX] * gesture_arc);
+            edge_melt_active > 0.0001 ? (
+              melt_len_score = clamp01(max(gran_slow_glue, max(gran_mscont, gran_xcont)) + 0.18 * clamp01(gran_evtfrac * 1.6) - 0.30 * gran_mstrans);
+              melt_len_mul = 1 + (edge_melt_active ^ 1.35) * lerp(0.34, 2.55, melt_len_score);
+              gran_region == GC_REGION_ATTACK ? ( melt_len_mul = 1 + (melt_len_mul - 1) * 0.36; );
+              melt_max_ms = gran_region == GC_REGION_ATTACK ? 0.190 : (gran_region == GC_REGION_TAIL ? lerp(0.520, 1.650, melt_len_score) : lerp(0.440, 1.350, melt_len_score));
+              spawn_gsize = clamp(floor(spawn_gsize * melt_len_mul), max(hop + 1, floor(gsize * 0.62)), max(hop + 1, floor(srate * melt_max_ms)));
+            );
+
+            reverse_grain = gran_tail_region && slider9 > 0.55 && v[VC_TAILMIX] > 0.25 && rand(1) < (0.006 + 0.030 * slider9 * v[VC_TAILMIX] * gesture_arc) * (1 - 0.85 * edge_melt_active);
             reverse_grain ? (
               rev_span = min(max(1, ghist_hi - ghist_lo - 2), (spawn_gsize - 1) * abs(grate));
               gsrc = clamp(gsrc + rev_span, ghist_lo + rev_span, max(ghist_lo + rev_span, ghist_hi - 1));
@@ -9407,17 +9821,17 @@ while (i < MAX_VOICES) (
             genv_macro = clamp((0.58 + 1.30 * v[VC_GENV]) / 1.02, 0.55, 1.72);
             ggain *= lerp(1, genv_macro, genv_amt * 0.74);
 
-            amp_jit_db = (rand(1) - 0.5) * 2 * slider9 * (0.22 + 0.78 * (1 - truth_mix)) * (1 - 0.58 * gran_slow_glue) * (1 - 0.55 * granular_event_stretch);
+            amp_jit_db = (rand(1) - 0.5) * 2 * slider9 * (0.22 + 0.78 * (1 - truth_mix)) * (1 - 0.58 * gran_slow_glue) * (1 - 0.55 * granular_event_stretch) * (1 - 0.54 * edge_melt_active);
             ggain *= db2amp(amp_jit_db);
-            gpan = (rand(1) - 0.5) * slider8 * slider9 * (0.10 + 0.30 * gesture_arc) * (1 - 0.65 * gran_slow_glue) * (1 - 0.50 * granular_event_stretch);
+            gpan = (rand(1) - 0.5) * slider8 * slider9 * (0.10 + 0.30 * gesture_arc) * (1 - 0.65 * gran_slow_glue) * (1 - 0.50 * granular_event_stretch) * (1 - 0.45 * edge_melt_active);
             // Adaptive per-grain downward expansion: useful for noisy/bright grains,
             // harmful for slow bassy grains. So it is disabled by slow glue.
             gxpand = clamp01((gran_cedge - 0.24) / 0.44) * clamp01((gran_cbright - 0.34) / 0.50);
             corpus_pick_role == 2 ? gxpand *= 1.25;
-            gxpand *= slider9 * (0.10 + 0.38 * v[VC_TAILMIX] + 0.18 * gesture_arc) * (1 - 0.88 * gran_slow_glue);
+            gxpand *= slider9 * (0.10 + 0.38 * v[VC_TAILMIX] + 0.18 * gesture_arc) * (1 - 0.88 * gran_slow_glue) * (1 - 0.86 * edge_melt_active);
             gxpand = clamp01(gxpand);
 
-            prefill_age = floor(spawn_gsize * (slider9 * (0.015 + 0.075 * gesture_arc) + gran_slow_glue * 0.110 + gran_mscont * 0.060 + gran_stretch_glue * 0.075) * rand(1));
+            prefill_age = floor(spawn_gsize * (slider9 * (0.015 + 0.075 * gesture_arc) + gran_slow_glue * 0.110 + gran_mscont * 0.060 + gran_stretch_glue * 0.075 + edge_melt_active * (0.045 + 0.085 * max(gran_slow_glue, max(gran_mscont, gran_xcont)))) * rand(1));
             schedule_prefill > 0 ? prefill_age = max(prefill_age, min(max(0, spawn_gsize - 2), floor(schedule_prefill)));
             prefill_src = gsrc - prefill_age * grate;
             gran_tail_region ? (
@@ -9440,6 +9854,9 @@ while (i < MAX_VOICES) (
           gb[VG_EPEAK] = genv_peak;
           gb[VG_EAMT] = genv_amt;
           gb[VG_LIFE] = 0;
+          gb[VG_LPL] = 0;
+          gb[VG_LPR] = 0;
+          gb[VG_DRYRATE] = grate / max(0.000001, v[VC_PRATIO]);
           grain_hist_push(i, gsid, gsrc, ghist_lo, ghist_hi);
           granular_voice ? (
             prev_lgsid = v[VC_LGSID] | 0;
@@ -9464,9 +9881,16 @@ while (i < MAX_VOICES) (
             gran_hop_scale = clamp01(gran_hop_scale + granular_event_stretch * (0.18 + 0.42 * gran_hop_scale));
             spawn_hop_base = max(floor(srate * lerp(0.0048, 0.0028, gran_hop_scale)), floor(spawn_gsize * lerp(lerp(0.19, 0.135, slider9), lerp(0.112, 0.070, slider9), gran_hop_scale)));
             spawn_hop_base = floor(spawn_hop_base * lerp(1.0, 1.72, gran_stretch_glue));
-            hop_jit = floor(spawn_hop_base * slider9 * (0.05 + 0.11 * (1 - truth_mix)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.65 * max(gran_mscont, gran_xcont)) * (1 - 0.58 * granular_event_stretch) * ((rand(1) - 0.5) * 2));
+            edge_melt_overlap = edge_melt_active ^ 1.50;
+            edge_melt_overlap > 0.0001 ? (
+              melt_overlap_w = clamp01(0.32 + 0.68 * max(gran_slow_glue, max(gran_mscont, gran_xcont)));
+              spawn_hop_base = floor(spawn_hop_base * lerp(1.0, 0.52, edge_melt_overlap * melt_overlap_w));
+            );
+            hop_jit = floor(spawn_hop_base * slider9 * (0.05 + 0.11 * (1 - truth_mix)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.65 * max(gran_mscont, gran_xcont)) * (1 - 0.58 * granular_event_stretch) * (1 - 0.82 * edge_melt_active) * ((rand(1) - 0.5) * 2));
             gran_min_hop = floor(srate * lerp(lerp(0.0046, 0.0026, gran_hop_scale), lerp(0.0100, 0.0064, gran_hop_scale), granular_event_stretch));
+            gran_min_hop = max(floor(srate * 0.0040), floor(lerp(gran_min_hop, srate * 0.0046, edge_melt_overlap)));
             gran_max_hop_ratio = lerp(lerp(0.285, 0.118, gran_hop_scale), lerp(0.360, 0.220, gran_hop_scale), granular_event_stretch);
+            gran_max_hop_ratio *= lerp(1.0, 0.56, edge_melt_overlap * clamp01(0.42 + 0.58 * max(gran_slow_glue, max(gran_mscont, gran_xcont))));
             spawn_hop = clamp(spawn_hop_base + hop_jit, max(1, gran_min_hop), max(1, floor(spawn_gsize * gran_max_hop_ratio)));
           );
           timer += spawn_hop;
@@ -9477,6 +9901,8 @@ while (i < MAX_VOICES) (
 
         sumL = 0;
         sumR = 0;
+        sumDryL = 0;
+        sumDryR = 0;
         sumW = 0;
         activeg = 0;
 
@@ -9502,6 +9928,31 @@ while (i < MAX_VOICES) (
                 sample_frame2(gptr, gnch, srcp);
                 gl = readL;
                 gr = readR;
+                pitch_parallel_active ? (
+                  dry_srcp = gb[VG_SRC] + age * gb[VG_DRYRATE];
+                  (dry_srcp >= 0 && dry_srcp < (gframes - 1)) ? (
+                    sample_frame2(gptr, gnch, dry_srcp);
+                    gdry_l = readL;
+                    gdry_r = readR;
+                  ) : (
+                    gdry_l = 0;
+                    gdry_r = 0;
+                  );
+                );
+
+                granular_voice && edge_melt_amt > 0.0001 ? (
+                  // Per-grain pre-rolloff: smooths HF edge before panning/gain
+                  // without dulling already-dark material. State is per grain.
+                  glife <= 0 ? (
+                    gb[VG_LPL] = gl;
+                    gb[VG_LPR] = gr;
+                  );
+                  gb[VG_LPL] = denorm_zap(gb[VG_LPL] + (gl - gb[VG_LPL]) * edge_melt_lpf_coeff);
+                  gb[VG_LPR] = denorm_zap(gb[VG_LPR] + (gr - gb[VG_LPR]) * edge_melt_lpf_coeff);
+                  melt_lpf_mix = edge_melt_amt * clamp01(0.12 + 0.88 * clamp01(gsm[SM_BRIGHT] * 0.52 + gsm[SM_EDGE] * 0.74));
+                  gl = lerp(gl, gb[VG_LPL], melt_lpf_mix);
+                  gr = lerp(gr, gb[VG_LPR], melt_lpf_mix);
+                );
 
                 gpan = gb[VG_PAN];
                 abs(gpan) > 0.000001 ? (
@@ -9509,6 +9960,12 @@ while (i < MAX_VOICES) (
                   gs = 0.5 * (gl - gr);
                   gl = gm + gs + gm * gpan;
                   gr = gm - gs - gm * gpan;
+                  pitch_parallel_active ? (
+                    gdm = 0.5 * (gdry_l + gdry_r);
+                    gds = 0.5 * (gdry_l - gdry_r);
+                    gdry_l = gdm + gds + gdm * gpan;
+                    gdry_r = gdm - gds - gdm * gpan;
+                  );
                 );
 
                 gxpand = gb[VG_XPAND];
@@ -9519,6 +9976,10 @@ while (i < MAX_VOICES) (
                   ggate = max(0.22, ggate ^ (1.20 + 2.35 * gxpand));
                   gl *= lerp(1, ggate, gxpand);
                   gr *= lerp(1, ggate, gxpand);
+                  pitch_parallel_active ? (
+                    gdry_l *= lerp(1, ggate, gxpand);
+                    gdry_r *= lerp(1, ggate, gxpand);
+                  );
                 );
 
                 // v33 EnvTrajectory: learned intra-grain energy motion. Rising
@@ -9534,6 +9995,10 @@ while (i < MAX_VOICES) (
                   eshape = exp(clamp(eshape * genv_amt_play, -0.62, 0.76));
                   gl *= eshape;
                   gr *= eshape;
+                  pitch_parallel_active ? (
+                    gdry_l *= eshape;
+                    gdry_r *= eshape;
+                  );
                 );
 
                 // Also fade grains that run into source boundaries. Otherwise a
@@ -9555,10 +10020,22 @@ while (i < MAX_VOICES) (
                 );
 
                 win_flat = granular_voice ? clamp01((gsize - srate * 0.140) / max(1, srate * 0.720) + granular_event_stretch * 0.42 * clamp01((gsize - srate * 0.060) / max(1, srate * 0.620))) : 0;
-                w = (granular_voice ? stretch_window_morph(age, gsize, win_flat) : stretch_window(age, gsize)) * gsource_end_fade * entry_fade;
+                granular_voice ? ( win_flat *= (1 - 0.88 * edge_melt_amt); );
+                wbase = granular_voice ? stretch_window_morph(age, gsize, win_flat) : stretch_window(age, gsize);
+                granular_voice && edge_melt_amt > 0.0001 ? (
+                  wn = clamp01(age / max(1, gsize - 1));
+                  black = 0.42 - 0.5 * cos(6.283185307179586 * wn) + 0.08 * cos(12.566370614359172 * wn);
+                  wbase = lerp(wbase, black, (edge_melt_amt ^ 1.35) * 0.62);
+                );
+                w = wbase * gsource_end_fade * entry_fade;
                 gw = w * gb[VG_GAIN];
                 sumL += gl * gw;
                 sumR += gr * gw;
+                pitch_parallel_active ? (
+                  sumDryL += gdry_l * gw;
+                  sumDryR += gdry_r * gw;
+                  got_pitch_dry_grain = 1;
+                );
                 // v33: in pure Granular, normalize by the window overlap, not
                 // by gain-weighted overlap. Otherwise learned envelope/gain
                 // motion is mathematically erased by OLA normalization.
@@ -9589,7 +10066,7 @@ while (i < MAX_VOICES) (
           // v32: pure Granular should not leave audible level holes when slow/
           // low-motion sources expose OLA underlap. Use a lower floor than
           // Hybrid while still guarding against tiny-window blowups.
-          target_ola_norm = granular_voice ? max(0.54, sumW) : max(2.0, sumW);
+          target_ola_norm = granular_voice ? max(lerp(0.54, 0.46, edge_melt_amt), sumW) : max(2.0, sumW);
           granular_voice ? (
             v[VC_GOLA] <= 0 ? v[VC_GOLA] = target_ola_norm;
             ola_coeff = target_ola_norm > v[VC_GOLA] ? 0.24 : 0.075;
@@ -9600,6 +10077,10 @@ while (i < MAX_VOICES) (
           );
           grainL = sumL / ola_norm;
           grainR = sumR / ola_norm;
+          pitch_parallel_active && got_pitch_dry_grain ? (
+            pitchDryGrainL = sumDryL / ola_norm;
+            pitchDryGrainR = sumDryR / ola_norm;
+          );
           got_grain = 1;
         );
       );
@@ -9719,14 +10200,34 @@ while (i < MAX_VOICES) (
       got_sig = 1;
     );
 
+    pitch_parallel_active && got_sig ? (
+      got_pitch_dry = 0;
+      got_pitch_dry_raw && got_pitch_dry_grain ? (
+        pdryL = lerp(pitchDryRawL, pitchDryGrainL, mix);
+        pdryR = lerp(pitchDryRawR, pitchDryGrainR, mix);
+        got_pitch_dry = 1;
+      ) : got_pitch_dry_raw ? (
+        pdryL = pitchDryRawL;
+        pdryR = pitchDryRawR;
+        got_pitch_dry = 1;
+      ) : got_pitch_dry_grain ? (
+        pdryL = pitchDryGrainL;
+        pdryR = pitchDryGrainR;
+        got_pitch_dry = 1;
+      );
+      got_pitch_dry ? (
+        l = lerp(pdryL, l, pitch_parallel_mix);
+        r = lerp(pdryR, r, pitch_parallel_mix);
+      );
+    );
+
     g = v[VC_BASE] * env;
     v[VC_AUDIOTRIG] > 0 ? (
       aud_env = clamp01(v[VC_AUDIOENV]);
       aud_env = aud_env * aud_env * (3 - 2 * aud_env);
-      // Envelope -> Input Envelope: the normal AHDSR still shapes the voice,
-      // then the dry input's dBFS amplitude envelope scales the Granular layer.
-      // No threshold-relative makeup is added here; use Grain/Output for amount.
-      g *= lerp(1, aud_env, input_trigger_amt);
+      // Dormant legacy audio-trigger voice path. v58 no longer creates these
+      // voices; keep the branch neutral if an old in-flight voice is present.
+      g *= aud_env;
     );
     keepalive = direct_alive || got_grain || activeg > 0 || (v[VC_GMODE] > 0 && stage != ENV_OFF && (stage != ENV_RELEASE || v[VC_CANSPAWN] > 0));
 
@@ -9886,6 +10387,7 @@ m2e_pan_bias *= 0.30 + 0.70 * m2e_transient_damp;
 m2e_body_bias *= 0.56 + 0.44 * m2e_transient_damp;
 m2e_sat_mix *= 0.16 + 0.84 * m2e_transient_damp * m2e_transient_damp;
 
+(playback_mode == 3 && edge_melt_amt > 0.0001) ? apply_edge_melt_post() : (edge_melt_runtime_active > 0 ? reset_edge_melt_buffers());
 clean_amt > 0.0001 ? apply_cleaner();
 clean_decrust_amt > 0.0001 ? apply_clean_decrust();
 room_amt > 0.0001 ? apply_room_tame();
@@ -10120,8 +10622,8 @@ denorm_flush_counter >= DENORM_FLUSH_INTERVAL ? (
 
 outL = denorm_zap(outL);
 outR = denorm_zap(outR);
-// Texture-injection guarantee: dry input is restored exactly and bypasses all
-// sampler processing, Output trim, PostEQ, Clean/Room/Push, etc.
+// Dry input is restored exactly and bypasses sampler processing, Output trim,
+// PostEQ, Clean/Room/Push, etc. EdgeMelt is internal to generated Granular only.
 spl0 = dry_in_l + outL * out_trim;
 spl1 = dry_in_r + outR * out_trim;
 
@@ -10131,6 +10633,7 @@ mouse_down = mouse_cap & 1;
 mouse_rdown = mouse_cap & 2;
 ui_shift = (mouse_cap & 8) ? 1 : 0;
 ui_ctrl = (mouse_cap & 4) ? 1 : 0;
+ui_alt = (mouse_cap & 16) ? 1 : 0;
 ui_alt = (mouse_cap & 16) ? 1 : 0;
 (!mouse_down || !ui_ctrl) ? posteq_solo_target = 0;
 mouse_pressed = mouse_down && !ui_prev_down;
@@ -10370,26 +10873,28 @@ gfx_drawstr(#ui_buf);
 pt_in(m2e_lamp_x - 8, m2e_lamp_y - 2, 170, 48) ? ui_hover_id = 1003;
 pt_in(lamp_x - 8, lamp_y - 2, 180, 48) ? ui_hover_id = 1002;
 
-group_poll_track_name(0);
-group_write_heartbeat(count_active_voices() > 0 || input_trig_gate > 0, max(input_trig_env, mix_fast));
-group_refresh_state();
-grp_btn_x = x0 + 420;
-grp_btn_y = y0 + 18;
-grp_btn_w = max(260, min(380, gfx_w - grp_btn_x - 500));
-grp_btn_w > 0 ? (
-  ui_button(GROUP_UI_BTN_ID, grp_btn_x, grp_btn_y, grp_btn_w, 34) ? group_popup_open = 1 - group_popup_open;
-  gfx_setfont(1, "Arial", 11, 0);
-  gfx_r = 0.58; gfx_g = 0.68; gfx_b = 0.80; gfx_a = 1;
-  gfx_x = grp_btn_x + 12; gfx_y = grp_btn_y + 6;
-  gfx_drawstr("GROUP");
-  gfx_r = 0.90; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
-  gfx_x = grp_btn_x + 58; gfx_y = grp_btn_y + 6;
-  strlen(#group_name) > 0 ? gfx_drawstr(#group_name) : (sprintf(#ui_buf, "Sample"); gfx_drawstr(#ui_buf););
-  gfx_r = group_strict_active ? 0.98 : 0.60; gfx_g = group_strict_active ? 0.76 : 0.72; gfx_b = group_strict_active ? 0.24 : 0.82; gfx_a = 1;
-  gfx_x = grp_btn_x + 12; gfx_y = grp_btn_y + 21;
-  group_strict_active ? sprintf(#ui_buf, "ORDER Strict | ID %d | Lead %d | Peers %d", group_instance_id, group_leader_id, group_peer_count) : sprintf(#ui_buf, "ORDER Unordered | ID %d | Lead %d | Peers %d", group_instance_id, group_leader_id, group_peer_count);
-  gfx_drawstr(#ui_buf);
-  pt_in(grp_btn_x, grp_btn_y, grp_btn_w, 34) ? ui_hover_id = GROUP_UI_BTN_ID;
+group_enabled > 0 ? (
+  group_poll_track_name(0);
+  group_write_heartbeat(count_active_voices() > 0 || input_trig_gate > 0, max(input_trig_env, mix_fast));
+  group_refresh_state();
+  grp_btn_x = x0 + 420;
+  grp_btn_y = y0 + 18;
+  grp_btn_w = max(260, min(380, gfx_w - grp_btn_x - 500));
+  grp_btn_w > 0 ? (
+    ui_button(GROUP_UI_BTN_ID, grp_btn_x, grp_btn_y, grp_btn_w, 34) ? group_popup_open = 1 - group_popup_open;
+    gfx_setfont(1, "Arial", 11, 0);
+    gfx_r = 0.58; gfx_g = 0.68; gfx_b = 0.80; gfx_a = 1;
+    gfx_x = grp_btn_x + 12; gfx_y = grp_btn_y + 6;
+    gfx_drawstr("GROUP");
+    gfx_r = 0.90; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
+    gfx_x = grp_btn_x + 58; gfx_y = grp_btn_y + 6;
+    strlen(#group_name) > 0 ? gfx_drawstr(#group_name) : (sprintf(#ui_buf, "Sample"); gfx_drawstr(#ui_buf););
+    gfx_r = group_strict_active ? 0.98 : 0.60; gfx_g = group_strict_active ? 0.76 : 0.72; gfx_b = group_strict_active ? 0.24 : 0.82; gfx_a = 1;
+    gfx_x = grp_btn_x + 12; gfx_y = grp_btn_y + 21;
+    group_strict_active ? sprintf(#ui_buf, "ORDER Strict | ID %d | Lead %d | Peers %d", group_instance_id, group_leader_id, group_peer_count) : sprintf(#ui_buf, "ORDER Unordered | ID %d | Lead %d | Peers %d", group_instance_id, group_leader_id, group_peer_count);
+    gfx_drawstr(#ui_buf);
+    pt_in(grp_btn_x, grp_btn_y, grp_btn_w, 34) ? ui_hover_id = GROUP_UI_BTN_ID;
+  );
 );
 
 // Panels - responsive layout
@@ -10702,25 +11207,44 @@ cell_h = floor((knob_area_h - knob_row_gap * max(0, knob_rows - 1)) / max(1, kno
 cell_h = min(cell_h, 112);
 kb_r = clamp(min(cell_w * 0.18, cell_h * 0.24), 18, knob_cols >= 6 ? 24 : 22);
 
-// Pitch / hidden Formant shift
-// Shift+drag or Shift+wheel this knob to adjust formant/resonance shift without adding a visible control.
+// Pitch / hidden Formant / hidden Pitch Mix
+// Shift+drag adjusts formant/resonance. Alt+drag adjusts the latency-aligned
+// parallel unpitched/pitched mix without adding another visible knob.
 grid_idx = 0;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
 pitch_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
-(mouse_pressed && pitch_hot) ? pitch_alt_active = ui_shift ? 1 : 0;
+(mouse_pressed && pitch_hot) ? (
+  pitch_alt_active = (ui_shift && !ui_alt) ? 1 : 0;
+  pitch_mix_alt_active = ui_alt ? 1 : 0;
+);
 (ui_active != 317 && !mouse_down) ? pitch_alt_active = 0;
+(ui_active != 335 && !mouse_down) ? pitch_mix_alt_active = 0;
 focus_peak_alt_active = 0;
-pitch_alt_use = pitch_alt_active || (ui_shift && (pitch_hot || ui_active == 317));
-pitch_alt_use ? (
+pitch_mix_alt_use = pitch_mix_alt_active || (ui_alt && (pitch_hot || ui_active == 335));
+pitch_alt_use = (!pitch_mix_alt_use) && (pitch_alt_active || (ui_shift && !ui_alt && (pitch_hot || ui_active == 317)));
+pitch_mix_alt_use ? (
+  nv = ui_knob(335, kc, ky, kb_r, pitch_parallel_mix, 0, 1, 1, 0.018);
+  abs(nv - pitch_parallel_mix) > 0.0000001 ? (
+    pitch_parallel_mix = clamp01(nv);
+    ui_value_changed = 1;
+    hidden_state_dirty = 1;
+  );
+  pitch_hot && ui_alt && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    pitch_parallel_mix = clamp01(pitch_parallel_mix + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
+    ui_wheel_used = 1;
+    ui_value_changed = 1;
+    hidden_state_dirty = 1;
+  );
+) : pitch_alt_use ? (
   nv = ui_knob(317, kc, ky, kb_r, formant_shift_semi, -12, 12, 0, 0.021);
   abs(nv - formant_shift_semi) > 0.0000001 ? (
     formant_shift_semi = clamp(nv, -12, 12);
     ui_value_changed = 1;
     hidden_state_dirty = 1;
   );
-  pitch_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+  pitch_hot && ui_shift && !ui_alt && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     formant_shift_semi = clamp(formant_shift_semi + (ui_wheel > 0 ? 0.25 : -0.25) * max(1, floor(abs(ui_wheel) / 120 + 0.5)), -12, 12);
     ui_wheel_used = 1;
     ui_value_changed = 1;
@@ -10731,12 +11255,12 @@ pitch_alt_use ? (
   abs(nv - slider12) > 0.0000001 ? (slider12 = nv; gfx_slider_mask |= MASK_S12;);
 );
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-pitch_alt_use ? sprintf(#ui_buf, "F%+.1f", formant_shift_semi) : (
-  abs(formant_shift_semi) > 0.05 ? sprintf(#ui_buf, "P%+.0f/F%+.0f", slider12, formant_shift_semi) : sprintf(#ui_buf, "%+.1f", slider12)
+pitch_mix_alt_use ? sprintf(#ui_buf, "Mix %.0f%%", pitch_parallel_mix * 100) : pitch_alt_use ? sprintf(#ui_buf, "F%+.1f", formant_shift_semi) : (
+  abs(formant_shift_semi) > 0.05 || pitch_parallel_mix < 0.995 ? sprintf(#ui_buf, "P%+.2f/M%.0f", slider12, pitch_parallel_mix * 100) : sprintf(#ui_buf, "%+.2f", slider12)
 );
 gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-pitch_alt_use ? sprintf(#ui_buf, "Formant") : (abs(formant_shift_semi) > 0.05 ? sprintf(#ui_buf, "Pitch/Form") : sprintf(#ui_buf, "Pitch")); draw_center_buf(cell_x, label_y, cell_w);
+pitch_mix_alt_use ? sprintf(#ui_buf, "Pitch Mix") : pitch_alt_use ? sprintf(#ui_buf, "Formant") : (abs(formant_shift_semi) > 0.05 || pitch_parallel_mix < 0.995 ? sprintf(#ui_buf, "Pitch+Alt") : sprintf(#ui_buf, "Pitch")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Stretch
 grid_idx = 1;
@@ -10749,8 +11273,8 @@ sprintf(#ui_buf, "%.2fx", slider14); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Stretch"); draw_center_buf(cell_x, label_y, cell_w);
 
-// Grain / hidden Input Env trigger
-// Shift+drag or Shift+wheel this knob to arm Granular audio-trigger/envelope mode.
+// Grain / hidden Edge Melt
+// Shift+drag or Shift+wheel this knob to smooth Granular grain borders.
 grid_idx = 2;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
@@ -10760,14 +11284,14 @@ grain_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) 
 (!mouse_down && ui_active != 320) ? grain_input_alt_active = 0;
 grain_input_alt_use = grain_input_alt_active || (ui_shift && (grain_hot || ui_active == 320));
 grain_input_alt_use ? (
-  nv = ui_knob(320, kc, ky, kb_r, input_trigger_amt, 0, 1, 0, 0.018);
-  abs(nv - input_trigger_amt) > 0.0000001 ? (
-    input_trigger_amt = clamp01(nv);
+  nv = ui_knob(320, kc, ky, kb_r, edge_melt_amt, 0, 1, 0, 0.018);
+  abs(nv - edge_melt_amt) > 0.0000001 ? (
+    edge_melt_amt = clamp01(nv);
     ui_value_changed = 1;
     hidden_state_dirty = 1;
   );
   grain_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
-    input_trigger_amt = clamp01(input_trigger_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
+    edge_melt_amt = clamp01(edge_melt_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
     ui_wheel_used = 1;
     ui_value_changed = 1;
     hidden_state_dirty = 1;
@@ -10777,10 +11301,10 @@ grain_input_alt_use ? (
   abs(nv - slider18) > 0.0000001 ? (slider18 = nv; gfx_slider_mask |= MASK_S18;);
 );
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-grain_input_alt_use ? sprintf(#ui_buf, "In%.2f", input_trigger_amt) : (input_trigger_amt > 0.04 ? sprintf(#ui_buf, "%.2f/In%.1f", slider18, input_trigger_amt) : sprintf(#ui_buf, "%.2f", slider18));
+grain_input_alt_use ? sprintf(#ui_buf, "M%.2f", edge_melt_amt) : (edge_melt_amt > 0.04 ? sprintf(#ui_buf, "%.2f/M%.1f", slider18, edge_melt_amt) : sprintf(#ui_buf, "%.2f", slider18));
 gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-grain_input_alt_use ? sprintf(#ui_buf, "Input Env") : (input_trigger_amt > 0.04 ? sprintf(#ui_buf, "Grain/Input") : sprintf(#ui_buf, "Grain")); draw_center_buf(cell_x, label_y, cell_w);
+grain_input_alt_use ? sprintf(#ui_buf, "Edge Melt") : (edge_melt_amt > 0.04 ? sprintf(#ui_buf, "Grain/Melt") : sprintf(#ui_buf, "Grain")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Borrow
 grid_idx = 3;
@@ -11088,7 +11612,7 @@ proc_inner_w = max(150, proc_w - 24);
 gfx_setfont(1, "Arial", 11, 0);
 gfx_r = 0.62; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
 gfx_x = proc_inner_x + 8; gfx_y = proc_y + 45;
-gfx_drawstr("Pre/Post spectrum  |  drag bands  |  Ctrl+drag solo  |  wheel Q  |  Shift+wheel slope");
+gfx_drawstr("Pre/Post spectrum | drag bands | Ctrl+drag solo | wheel Q | band character below");
 (posteq_solo_target > 0 || posteq_solo_mix > 0.001) ? (
   gfx_r = 1.00; gfx_g = 0.78; gfx_b = 0.20; gfx_a = 0.95;
   gfx_x = proc_inner_x + proc_inner_w - 100; gfx_y = proc_y + 45;
@@ -11098,9 +11622,11 @@ gfx_drawstr("Pre/Post spectrum  |  drag bands  |  Ctrl+drag solo  |  wheel Q  | 
 proc_graph_x = proc_inner_x + 8;
 proc_graph_y = proc_y + 66;
 proc_graph_w = max(100, proc_inner_w - 16);
-proc_graph_h = max(260, min(430, proc_h - 172));
-proc_cards_y = proc_graph_y + proc_graph_h + 12;
-proc_cards_h = max(58, proc_y + proc_h - proc_cards_y - 16);
+proc_graph_h = max(230, min(380, proc_h - 250));
+proc_cards_y = proc_graph_y + proc_graph_h + 10;
+proc_cards_h = 58;
+proc_char_y = proc_cards_y + proc_cards_h + 8;
+proc_char_h = max(70, proc_y + proc_h - proc_char_y - 12);
 
 ui_inner_panel(proc_graph_x, proc_graph_y, proc_graph_w, proc_graph_h);
 pt_in(proc_graph_x, proc_graph_y, proc_graph_w, proc_graph_h) ? ui_hover_id = 1501;
@@ -11175,6 +11701,14 @@ mouse_rpressed && hot_b3_ctl ? (slider37 = 6500; slider34 = 0; slider42 = 1.15; 
     );
     ui_wheel_used = 1;
   );
+);
+
+mouse_pressed ? (
+  hot_hpf_ctl ? posteq_char_selected = 0;
+  hot_b1_ctl ? posteq_char_selected = 1;
+  hot_b2_ctl ? posteq_char_selected = 2;
+  hot_b3_ctl ? posteq_char_selected = 3;
+  hot_lpf_ctl ? posteq_char_selected = 4;
 );
 
 mouse_pressed && ui_active < 0 ? (
@@ -11423,14 +11957,89 @@ while (ci < 5) (
   : ci == 2 ? sprintf(#ui_buf, "Q %.2f", slider41)
   : ci == 3 ? sprintf(#ui_buf, "Q %.2f", slider42)
   : sprintf(#ui_buf, "Q%.2f +%.1fdB", slider46, posteq_cut_res_gain_db(slider46));
-  draw_center_buf(cxv, card_y + 45, card_w);
+  draw_center_buf(cxv, card_y + 43, card_w);
+  sel_topo = posteq_char_mode(ci);
+  sel_drv = posteq_char_drive(ci);
+  sel_topo > 0 && sel_drv > 0.0001 ? (
+    gfx_r = sel_topo == 2 ? 1.00 : 0.92; gfx_g = sel_topo == 2 ? 0.50 : 0.72; gfx_b = sel_topo == 2 ? 0.22 : 0.24; gfx_a = 1;
+    sel_topo == 2 ? sprintf(#ui_buf, "DIO +%.0f", sel_drv) : sprintf(#ui_buf, "TRN +%.0f", sel_drv);
+    draw_center_buf(cxv, card_y + 55, card_w);
+  );
+  ci == posteq_char_selected ? (gfx_r = 1.00; gfx_g = 0.70; gfx_b = 0.18; gfx_a = 0.95; gfx_rect(cxv-1, card_y-1, card_w+2, card_h+2, 0););
   ci += 1;
+);
+
+
+// PostEQ band character editor. This was only sketched before v60; now it is
+// wired: selected band/card gets Clean / Transistor / Diode plus 0..24 dB drive.
+proc_char_h > 58 ? (
+  ui_inner_panel(proc_inner_x, proc_char_y, proc_inner_w, proc_char_h);
+  gfx_setfont(1, "Arial", 10, 0);
+  gfx_r = 0.62; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
+  gfx_x = proc_inner_x + 8; gfx_y = proc_char_y + 7;
+  posteq_char_selected == 0 ? sprintf(#ui_buf, "HPF CHARACTER")
+  : posteq_char_selected == 1 ? sprintf(#ui_buf, "BAND 1 CHARACTER")
+  : posteq_char_selected == 2 ? sprintf(#ui_buf, "BAND 2 CHARACTER")
+  : posteq_char_selected == 3 ? sprintf(#ui_buf, "BAND 3 CHARACTER")
+  : sprintf(#ui_buf, "LPF CHARACTER");
+  gfx_drawstr(#ui_buf);
+
+  char_topo = posteq_char_mode(posteq_char_selected);
+  char_drive = posteq_char_drive(posteq_char_selected);
+
+  btn_y = proc_char_y + 24;
+  btn_w = max(42, floor((proc_inner_w - 24) / 3));
+  btn_x = proc_inner_x + 8;
+  ui_button(560, btn_x, btn_y, btn_w, 22) ? (char_topo = 0;);
+  ui_button(561, btn_x + btn_w + 4, btn_y, btn_w, 22) ? (char_topo = 1;);
+  ui_button(562, btn_x + (btn_w + 4) * 2, btn_y, btn_w, 22) ? (char_topo = 2;);
+  gfx_setfont(1, "Arial", 9, 0);
+  gfx_r = char_topo == 0 ? 1.0 : 0.56; gfx_g = char_topo == 0 ? 0.88 : 0.68; gfx_b = char_topo == 0 ? 0.56 : 0.82; gfx_a = 1; sprintf(#ui_buf, "CLEAN"); draw_center_buf(btn_x, btn_y + 7, btn_w);
+  gfx_r = char_topo == 1 ? 1.0 : 0.56; gfx_g = char_topo == 1 ? 0.78 : 0.68; gfx_b = char_topo == 1 ? 0.24 : 0.82; gfx_a = 1; sprintf(#ui_buf, "TRANS"); draw_center_buf(btn_x + btn_w + 4, btn_y + 7, btn_w);
+  gfx_r = char_topo == 2 ? 1.0 : 0.56; gfx_g = char_topo == 2 ? 0.48 : 0.68; gfx_b = char_topo == 2 ? 0.22 : 0.82; gfx_a = 1; sprintf(#ui_buf, "DIODE"); draw_center_buf(btn_x + (btn_w + 4) * 2, btn_y + 7, btn_w);
+
+  drive_y = btn_y + 34;
+  drive_x = proc_inner_x + 64;
+  drive_w = proc_inner_w - 104;
+  gfx_setfont(1, "Arial", 9, 0);
+  gfx_r = 0.56; gfx_g = 0.66; gfx_b = 0.78; gfx_a = 1; gfx_x = proc_inner_x + 10; gfx_y = drive_y - 2; gfx_drawstr("DRIVE");
+  gfx_r = 0.02; gfx_g = 0.04; gfx_b = 0.06; gfx_a = 1; gfx_rect(drive_x, drive_y, drive_w, 10, 1);
+  gfx_r = 0.18; gfx_g = 0.30; gfx_b = 0.40; gfx_a = 1; gfx_rect(drive_x, drive_y, drive_w, 10, 0);
+  drive_fill = clamp01(char_drive / 24) * drive_w;
+  gfx_r = char_topo == 2 ? 0.95 : 0.85; gfx_g = char_topo == 2 ? 0.36 : 0.56; gfx_b = char_topo == 2 ? 0.16 : 0.15; gfx_a = char_topo > 0 ? 0.95 : 0.25;
+  gfx_rect(drive_x + 1, drive_y + 1, max(0, drive_fill - 2), 8, 1);
+  gfx_r = 0.92; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
+  gfx_x = drive_x + drive_w + 6; gfx_y = drive_y - 2; sprintf(#ui_buf, "+%.1fdB", char_drive); gfx_drawstr(#ui_buf);
+
+  drive_hot = pt_in(drive_x, drive_y - 8, drive_w, 26);
+  mouse_pressed && drive_hot && ui_active < 0 ? ui_active = 563;
+  ui_active == 563 ? (
+    mouse_down ? (
+      char_drive = clamp((mouse_x - drive_x) / max(1, drive_w) * 24, 0, 24);
+    ) : ui_active = -1;
+  );
+  drive_hot && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    char_drive = clamp(char_drive + (ui_wheel > 0 ? 0.5 : -0.5) * max(1, floor(abs(ui_wheel) / 120 + 0.5)), 0, 24);
+    ui_wheel_used = 1;
+  );
+  mouse_rpressed && drive_hot ? char_drive = 0;
+
+  // Commit selected-band character to live per-filter variables first, then
+  // mirror the complete independent state into the hidden host sliders. This
+  // prevents changing one band's Drive from reading/stomping another band's value.
+  posteq_set_char_var(posteq_char_selected, char_topo);
+  posteq_set_drive_var(posteq_char_selected, char_drive);
+  posteq_update_char_active();
+  new_char_pack = posteq_pack_char_state();
+  new_drive_pack = posteq_pack_drive_state();
+  abs(new_char_pack - slider62) > 0.0001 ? (slider62 = new_char_pack; sliderchange(MASK_S62); ui_value_changed = 1;);
+  abs(new_drive_pack - slider63) > 0.0001 ? (slider63 = new_drive_pack; sliderchange(MASK_S63); ui_value_changed = 1;);
 );
 
 
 // GroupSync strict-order popup. This is intentionally lightweight: peers are
 // numeric IDs in the same Auto Track Name group; drag rows to numbered ranks.
-group_popup_open ? (
+group_enabled > 0 && group_popup_open ? (
   pop_w = min(560, max(420, gfx_w - 80));
   pop_h = min(520, max(360, gfx_h - 110));
   pop_x = max(20, gfx_w - pop_w - 24);
@@ -11469,7 +12078,7 @@ group_popup_open ? (
   gfx_x = pop_x + 28; gfx_y = hint_y + 8;
   gfx_drawstr("Drag rows into Step lanes. Same lane = parallel. Drag to Unordered to remove strict rank.");
   gfx_x = pop_x + 28; gfx_y = hint_y + 24;
-  gfx_drawstr("Strict order currently gates Granular Input Env texture triggers.");
+  gfx_drawstr("Strict order is reserved for grouped Granular onset coordination; current voices remain manual/MIDI-triggered.");
 
   // Drop zones.
   unordered_x = pop_x + 16;
@@ -11589,15 +12198,15 @@ rescan_flash > 0 ? (
   gfx_rect(x0, y0, gfx_w - 36, header_h, 0);
 );
 
-ui_hover_id == GROUP_UI_BTN_ID ? (
+group_enabled > 0 && ui_hover_id == GROUP_UI_BTN_ID ? (
   sprintf(#tip_title, "GroupSync");
   sprintf(#tip_body, "Auto group from host track name. Click to edit strict order. This ID %d; leader %d; peers %d.", group_instance_id, group_leader_id, group_peer_count);
 );
-ui_hover_id == GROUP_UI_MODE_STRICT_ID ? (
+group_enabled > 0 && ui_hover_id == GROUP_UI_MODE_STRICT_ID ? (
   sprintf(#tip_title, "Strict order");
-  sprintf(#tip_body, "Enable rank-based gating for Granular Input Env texture triggers.");
+  sprintf(#tip_body, "Enable rank-based ordering metadata for grouped Samplers. Current MIDI voices are not delayed by this switch.");
 );
-ui_hover_id == GROUP_UI_MODE_FREE_ID ? (
+group_enabled > 0 && ui_hover_id == GROUP_UI_MODE_FREE_ID ? (
   sprintf(#tip_title, "Unordered");
   sprintf(#tip_body, "Disable strict gating. Peers still appear in the group list.");
 );
@@ -11751,14 +12360,17 @@ ui_hover_id == 319 ? (
   sprintf(#tip_title, "Expansion");
   sprintf(#tip_body, "%.2f contrast/punch separator: lows recede, crests step forward.", dynamics_expand_amt);
 );
-((ui_hover_id == 307) || (ui_hover_id == 317)) ? (
-  (ui_shift || pitch_alt_active || ui_hover_id == 317) ? (
+((ui_hover_id == 307) || (ui_hover_id == 317) || (ui_hover_id == 335)) ? (
+  (ui_alt || pitch_mix_alt_active || ui_hover_id == 335) ? (
+    sprintf(#tip_title, "Pitch Mix");
+    sprintf(#tip_body, "%.0f%% pitched / %.0f%% latency-aligned unpitched parallel layer. Alt+drag Pitch.", pitch_parallel_mix * 100, (1 - pitch_parallel_mix) * 100);
+  ) : ((ui_shift || pitch_alt_active || ui_hover_id == 317) ? (
     sprintf(#tip_title, "Formant");
     sprintf(#tip_body, "%+.1f semitones resonance shift. Shift+drag Pitch.", formant_shift_semi);
   ) : (
     sprintf(#tip_title, "Pitch");
-    sprintf(#tip_body, "%+.1f semitones. Formant F%+.1f. Shift+drag for Formant.", slider12, formant_shift_semi);
-  );
+    sprintf(#tip_body, "%+.2f semitones (%+.0f cents). Shift+drag Formant; Alt+drag Pitch Mix.", slider12, slider12 * 100);
+  ));
 );
 ui_hover_id == 308 ? (
   sprintf(#tip_title, "Stretch");
@@ -11774,11 +12386,11 @@ ui_hover_id == 309 ? (
 );
 ui_hover_id == 310 ? (
   sprintf(#tip_title, "Grain");
-  sprintf(#tip_body, "%.2f density/body amount. Shift+drag for Granular Input Env / texture injection.", slider18);
+  sprintf(#tip_body, "%.2f density/body amount. Shift+drag for Edge Melt %.2f: Granular grain-border smoothing.", slider18, edge_melt_amt);
 );
 ui_hover_id == 320 ? (
-  sprintf(#tip_title, "Granular Input Env");
-  sprintf(#tip_body, "%.2f texture injection. Dry input is untouched; soft-knee dBFS input envelope triggers/scales only Granular.", input_trigger_amt);
+  sprintf(#tip_title, "Edge Melt");
+  sprintf(#tip_body, "%.2f Granular edge smoothing: safer grain starts, smoother windows, more overlap, less jitter, per-grain HF softening, and post-grain micro de-click.", edge_melt_amt);
 );
 ui_hover_id == 311 ? (
   sprintf(#tip_title, "Spice");
@@ -11794,7 +12406,7 @@ ui_hover_id == 402 ? (
 );
 ui_hover_id == 403 ? (
   sprintf(#tip_title, "Playback mode");
-  (slider17 | 0) == 3 ? sprintf(#tip_body, "Granular: HybridCore grains with cross-sample learned flow, swells, and decorrelation.") : (slider17 | 0) == 2 ? sprintf(#tip_body, "Hybrid: head direct, body grains.") : (slider17 | 0) == 1 ? sprintf(#tip_body, "Tape: slowed rate path.") : sprintf(#tip_body, "Raw: direct playback.");
+  (slider17 | 0) == 3 ? sprintf(#tip_body, "Granular: load-time GrainCorpus with phrase/envelope trajectory, event-scale grains, and Edge Melt smoothing.") : (slider17 | 0) == 2 ? sprintf(#tip_body, "Hybrid: head direct, body grains.") : (slider17 | 0) == 1 ? sprintf(#tip_body, "Tape: slowed rate path.") : sprintf(#tip_body, "Raw: direct playback.");
 );
 ui_hover_id == 404 ? (
   sprintf(#tip_title, "Mono Source");
