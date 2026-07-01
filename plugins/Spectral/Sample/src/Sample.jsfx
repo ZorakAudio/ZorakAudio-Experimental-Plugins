@@ -12,7 +12,9 @@ options:gmem=SampleGroupSync
 // v47 DeCrustCompileFix: restores cubic_mid() before the DeCrust curvature helper uses it.
 // v46 CleanDeCrust: Shift+Clean adds an FFT-512 spectral-kurtosis decrust mode for crunchy/crusty SFX; FFT work runs only while the hidden mode is active.
 // v45 GroupSync Ordering: uses host track_name()/track_name_seq() for default group naming, shares peers via gmem, and adds a strict drag-rank ordering editor.
-// v41 DynExpand: Shift+drag Dynamics controls hidden Expansion, a transient-aware contrast/punch separator that lowers low-level material and can exaggerate attacks without adding a knob.
+// v65 SourceExpand DepthCap: Ctrl+Dynamics sets maximum expander reduction; knee/hysteresis stay automatic.
+// v65 SourceExpand DepthCap: Shift+Dynamics uses an aggressive source-relative ERB downward expander. Load-time energy-median sample profiles drive threshold placement.
+// v41 DynExpand: Shift+drag Dynamics controls hidden Expansion, now source-aware and downward-expansion focused.
 // v40 CleanScrub: Clean is upgraded into a stronger transient-protected multiband de-noise/de-bed path with SNR-aware gating, sustained-noise detection, high-band hiss targeting, and fail-fast obvious high settings.
 // v39 RoomScrub: Room Tame is upgraded into a stronger transient-protected multiband de-room/de-smear path with per-band late/diffuse detection, side wash reduction, and fail-fast obvious high settings.
 // v38 DenormalGuard: adds internal anti-denormal keepalive/zapping, gates silent visual analyzers, decimates the visual spectrum analyzer 4x, and keeps v37 Granular perf gates intact.
@@ -27,6 +29,7 @@ options:gmem=SampleGroupSync
 // v26 SpectrumContrast: Post-EQ spectrum underlay is brighter, adaptive, and easier to read on quiet material.
 // v61 PostEQ Character Fix: per-filter Character/Drive are front-buffered as independent values; Drive no longer pops between selected bands.
 // v60 PostEQ Ladder Character: Post-EQ bands can add Clean/Transistor/Diode driven band character with per-band drive.
+// v62 ColorERBTilt: the old Color macro is replaced by a zero-bypass ERB Tilt EQ. Tilt uses slider6; Alt+Color sets Pivot; Shift+Color toggles auto-infer pivot.
 // v25 BandQCal: Band 1/2/3 Q is calibrated to the actual peaking-biquad response; default Q is tighter and less absurdly wide.
 // v24 PostEQ QFix: HPF/LPF Q now produces visible and audible cutoff resonance, including 6 dB/oct mode.
 // v23 FreeBand PostEQ: three free parametric bands plus HPF/LPF, graph control, Q/slope gestures, and spectrum underlay.
@@ -89,7 +92,7 @@ filename:0,sample.wav
 // #HELP: The Post-Processing panel is a final-output EQ editor with pre/post spectrum overlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope; Ctrl+click/drag temporarily solos the selected band/cut for auditioning.
 // #HELP:
 // #HELP: ## Tone and feel
-// #HELP: Color warms/brightens. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Shift+drag Grain adjusts hidden Edge Melt for Granular-only grain-border smoothing. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection; Shift+drag Dynamics adds hidden Expansion for punch/space contrast. Shift+drag Push adds hidden PopCue for concrete detail; Shift+drag Output adds clean parallel Harmonics.
+// #HELP: Color is now ERB Tilt: positive brightens, negative darkens around a pivot. Alt+Color sets Pivot; Shift+Color toggles auto-infer pivot. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Shift+drag Grain adjusts hidden Edge Melt for Granular-only grain-border smoothing. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection; Shift+drag Dynamics adds hidden source-relative ERB Expansion for low-level bed cleanup; Ctrl+drag Dynamics sets the maximum reduction depth. Shift+drag Push adds hidden PopCue for concrete detail; Shift+drag Output adds clean parallel Harmonics.
 // #HELP:
 // #HELP: ## FluxBridge
 // #HELP: When the fixed FluxBridge CC lane block is present, Sample adds subtle motion-driven tone, focus, width, pan, and body contour while protecting transient-rich hits.
@@ -108,7 +111,7 @@ slider2:3<0.1,500,0.1>--Attack (ms)
 slider3:110<1,5000,1>--Decay (ms)
 slider4:0.82<0,1,0.001>--Sustain level
 slider5:180<5,5000,1>--Release (ms)
-slider6:0<-1,1,0.001>--Color (-warmer / +brighter)
+slider6:0<-18,18,0.1>--Color Tilt (dB)
 slider7:0<-1,1,0.001>--Focus (-softer / +clearer)
 slider8:0.18<0,1,0.001>--Width
 slider9:0.22<0,1,0.001>--Liveliness
@@ -151,7 +154,7 @@ slider46:0.707<0.35,4,0.001>--EQ LPF Q
 slider47:0<-12,12,0.01>--Hidden Formant Shift
 slider48:1<0,1,0.001>--Hidden Tail Grace
 slider49:0<-1,1,0.001>--Hidden Peak Pack
-slider50:0<0,1,0.001>--Hidden Dynamics Expand
+slider50:0<0,1,0.001>--Hidden Source Expand Amount
 slider51:0<0,1,0.001>--Hidden Edge Melt
 slider52:0<0,1,0.001>--Hidden Clean DeCrust
 slider53:0<0,1,0.001>--Hidden Space Amount
@@ -161,10 +164,11 @@ slider56:0<0,1,0.001>--Hidden PopCue
 slider57:0<0,1,1{reserved,reserved}>--Reserved GroupSync Mode (unmapped)
 slider58:0<0,4,1>--Reserved GroupSync Rank (unmapped)
 slider59:0<0,1,0.001>--Reserved GroupSync A (unmapped)
-slider60:0<0,1,0.001>--Reserved GroupSync B (unmapped)
+slider60:1000<-20000,20000,1>--Hidden Color Pivot (Hz; negative=Auto)
 slider61:1<0,1,0.001>--Hidden Pitch Mix
 slider62:0<0,242,1>--Hidden EQ Character Pack
 slider63:0<0,812990017200,1>--Hidden EQ Drive Pack (v61 compact/migrates old)
+slider64:6<0,60,0.1>--Hidden Source Expand Depth (dB)
 @init
 /*
 Runtime sample-pool API used here:
@@ -1574,7 +1578,7 @@ function choose_random_sample(note velnorm) local(
 )
 (
   sample_count <= 0 ? 0 : (
-    bright_t = clamp01(0.5 + slider6 * 0.20 + (velnorm - 0.5) * 0.06);
+    bright_t = clamp01(0.5 + color_tilt_norm * 0.20 + (velnorm - 0.5) * 0.06);
     sharp_t  = clamp01(0.48 + slider7 * 0.22 + (velnorm - 0.5) * 0.10);
     rep_scale = 0.30 + slider9 * 1.45;
     temp = lerp(4.0, 1.4, slider9);
@@ -1631,7 +1635,7 @@ function choose_walk_sample(note velnorm) local(
       lastsm = sample_meta_base + walk_last_sid * SM_STRIDE;
       prevsm = (walk_prev_sid >= 0 && walk_prev_sid < sample_count) ? (sample_meta_base + walk_prev_sid * SM_STRIDE) : lastsm;
 
-      bright_t = clamp01(0.5 + slider6 * 0.18 + (velnorm - 0.5) * 0.05);
+      bright_t = clamp01(0.5 + color_tilt_norm * 0.18 + (velnorm - 0.5) * 0.05);
       target = 0.16 + slider9 * 0.30 + truth_mix * 0.06;
       rep_scale = 0.45 + slider9 * 1.30;
       temp = lerp(7.2, 2.0, slider9);
@@ -2985,10 +2989,388 @@ function analyze_sample_gauss(sm) local(
 );
 
 
+
+function dynx_db_from_amp(a)
+(
+  20 * log(max(a, 0.000000001)) * LOG10_INV;
+);
+
+function estimate_sample_expander_profile(sm) local(
+  ptr nch sr frames win hop a b j stride x sumsq n rms db bin total total_e pwr target acc acc_e hist_bins bi
+  floor_bin body_bin peak_bin floor_db body_db peak_db tail_db range_db rms_db peak_raw len_guard body_bias
+)
+(
+  // v65 SourceExpand DepthCap: load-time profile is energy-aware, not just count-based.
+  // BODY is now the energy median: the approximate level where half the window energy is above/below.
+  // This gives the runtime expander a useful source-relative threshold center instead of a fixed dBFS guess.
+  ptr    = sm[SM_PTR] | 0;
+  nch    = max(1, sm[SM_NCH] | 0);
+  sr     = max(1000, sm[SM_SR]);
+  frames = sm[SM_FRAMES] | 0;
+  hist_bins = DYNX_HIST_BINS;
+
+  bi = 0;
+  while (bi < hist_bins) (
+    onset_raw_base[bi] = 0;       // count histogram
+    onset_smooth_base[bi] = 0;    // energy histogram
+    bi += 1;
+  );
+
+  frames > 96 ? (
+    win = clamp(floor(sr * 0.018), 96, 2048);
+    hop = max(32, floor(win * 0.50));
+    total = 0;
+    total_e = 0;
+    a = 0;
+    while (a < frames - 2) (
+      b = min(frames - 1, a + win);
+      stride = max(1, floor((b - a) / 96));
+      sumsq = 0;
+      n = 0;
+      j = a;
+      while (j < b) (
+        x = mono_frame(ptr, nch, j);
+        sumsq += x * x;
+        n += 1;
+        j += stride;
+      );
+      pwr = sumsq / max(1, n);
+      rms = sqrt(pwr);
+      db = dynx_db_from_amp(rms);
+      db > -108 ? (
+        bin = clamp(floor((db + 108) * (hist_bins - 1) / 108), 0, hist_bins - 1) | 0;
+        onset_raw_base[bin] += 1;
+        onset_smooth_base[bin] += max(pwr, 0.00000000000000000001);
+        total += 1;
+        total_e += max(pwr, 0.00000000000000000001);
+      );
+      a += hop;
+    );
+
+    total > 0 ? (
+      // Floor: lower count percentile. This tracks bed/silence without letting one hot transient dominate.
+      target = total * 0.08;
+      acc = 0; floor_bin = -1; bi = 0;
+      while (bi < hist_bins) (
+        acc += onset_raw_base[bi];
+        (acc >= target && floor_bin < 0) ? floor_bin = bi;
+        bi += 1;
+      );
+      floor_bin < 0 ? floor_bin = 0;
+
+      // Body: energy median. This is the important v64 change.
+      target = total_e * 0.50;
+      acc_e = 0; body_bin = -1; bi = 0;
+      while (bi < hist_bins) (
+        acc_e += onset_smooth_base[bi];
+        (acc_e >= target && body_bin < 0) ? body_bin = bi;
+        bi += 1;
+      );
+      body_bin < 0 ? body_bin = max(0, floor(hist_bins * 0.50));
+
+      // Peak: high energy percentile, not absolute max. Avoids one click defining the whole profile.
+      target = total_e * 0.92;
+      acc_e = 0; peak_bin = -1; bi = 0;
+      while (bi < hist_bins) (
+        acc_e += onset_smooth_base[bi];
+        (acc_e >= target && peak_bin < 0) ? peak_bin = bi;
+        bi += 1;
+      );
+      peak_bin < 0 ? peak_bin = hist_bins - 1;
+
+      floor_db = -108 + floor_bin * 108 / max(1, hist_bins - 1);
+      body_db  = -108 + body_bin  * 108 / max(1, hist_bins - 1);
+      peak_db  = -108 + peak_bin  * 108 / max(1, hist_bins - 1);
+    ) : (
+      rms_db = dynx_db_from_amp(sm[SM_RMS]);
+      peak_raw = max(sm[SM_PEAK], sm[SM_RMS]);
+      peak_db = dynx_db_from_amp(peak_raw);
+      body_db = rms_db;
+      floor_db = rms_db - 30;
+    );
+  ) : (
+    rms_db = dynx_db_from_amp(sm[SM_RMS]);
+    peak_raw = max(sm[SM_PEAK], sm[SM_RMS]);
+    peak_db = dynx_db_from_amp(peak_raw);
+    body_db = rms_db;
+    floor_db = rms_db - 30;
+  );
+
+  len_guard = clamp01((sm[SM_LENMS] - 20) / 300);
+  body_bias = clamp01(sm[SM_FLAGS]) * 1.2 - clamp01(sm[SM_TAILHOT]) * 2.5;
+  body_db = clamp(body_db + body_bias, -104, 0);
+  peak_db = max(peak_db, body_db + 2);
+  floor_db = min(floor_db, body_db - (8 + 14 * len_guard));
+  floor_db = clamp(floor_db - clamp01(sm[SM_TAILHOT]) * 5.0, -108, body_db - 5);
+  range_db = clamp(body_db - floor_db, 6, 78);
+  tail_db = clamp(floor_db + range_db * (0.14 + 0.36 * clamp01(sm[SM_TAILHOT])), floor_db, peak_db);
+
+  sm[SM_EXPFLOOR] = floor_db;
+  sm[SM_EXPBODY]  = clamp(body_db, floor_db + 3, min(0, peak_db));
+  sm[SM_EXPPEAK]  = clamp(peak_db, sm[SM_EXPBODY] + 1, 0);
+  sm[SM_EXPTAIL]  = clamp(tail_db, floor_db, sm[SM_EXPPEAK]);
+  sm[SM_EXPRANGE] = clamp(sm[SM_EXPBODY] - sm[SM_EXPFLOOR], 6, 78);
+);
+
+function dynx_erb_from_hz(f)
+(
+  21.4 * log(0.00437 * max(0, f) + 1) * LOG10_INV;
+);
+
+function dynx_hz_from_erb(e)
+(
+  (exp((e / 21.4) * log(10)) - 1) / 0.00437;
+);
+
+function dynx_svf_bp(x idx) local(v0 v1 v2 g k den ic1 ic2)
+(
+  v0 = x;
+  g = idx[0];
+  k = idx[1];
+  ic1 = idx[2];
+  ic2 = idx[3];
+  den = 1 + g * (g + k);
+  v1 = (g * (v0 - ic2) + ic1) / max(0.000000001, den);
+  v2 = ic2 + g * v1;
+  idx[2] = denorm_zap(2 * v1 - ic1);
+  idx[3] = denorm_zap(2 * v2 - ic2);
+  v1;
+);
+
+function dynx_update_coeffs() local(i base fmin fmax erb_min erb_max e fc g k sumw w)
+(
+  fmin = 80;
+  fmax = min(8000, srate * 0.45);
+  fmax < 400 ? fmax = min(400, srate * 0.45);
+  erb_min = dynx_erb_from_hz(fmin);
+  erb_max = dynx_erb_from_hz(fmax);
+  sumw = 0;
+  i = 0;
+  while (i < DYNX_BANDS) (
+    e = erb_min + (erb_max - erb_min) * i / max(1, DYNX_BANDS - 1);
+    fc = clamp(dynx_hz_from_erb(e), 20, min(srate * 0.45, 20000));
+    g = tan(3.141592653589793 * fc / max(1000, srate));
+    k = 1.0;
+    w = fc < 200 ? 0.50 : (fc < 800 ? 0.80 : (fc < 4000 ? 1.00 : 0.70));
+    base = dynx_bank_base + i * DYNX_STRIDE;
+    base[0] = clamp(g, 0.000001, 1000);
+    base[1] = k;
+    base[5] = w;
+    sumw += w;
+    i += 1;
+  );
+  i = 0;
+  while (i < DYNX_BANDS) (
+    base = dynx_bank_base + i * DYNX_STRIDE;
+    base[5] = base[5] / max(sumw, 0.000001);
+    i += 1;
+  );
+
+  dynx_band_coeff = 1 - exp(-1 / max(1, 0.030 * srate));
+  dynx_open_coeff = 1 - exp(-1 / max(1, 0.008 * srate));
+  dynx_close_fast_coeff = 1 - exp(-1 / max(1, 0.060 * srate));
+  dynx_close_slow_coeff = 1 - exp(-1 / max(1, 0.250 * srate));
+  dynx_live_ref_coeff = 1 - exp(-1 / max(1, 0.220 * srate));
+  dynx_live_rel_coeff = 1 - exp(-1 / max(1, 1.400 * srate));
+  dynx_detector_slow_coeff = 1 - exp(-1 / max(1, 0.200 * srate));
+  dynx_hpf_coeff = 1 - exp(-6.283185307179586 * 70 / max(1, srate));
+  dynx_lpf_coeff = 1 - exp(-6.283185307179586 * min(15000, srate * 0.45) / max(1, srate));
+);
+
+function update_active_expander_profile() local(i v sid sm env gain_db stage w floor_lin body_lin peak_lin wt fdb bdb pdb tdb)
+(
+  floor_lin = 0;
+  body_lin = 0;
+  peak_lin = 0;
+  wt = 0;
+  i = 0;
+  while (i < MAX_VOICES) (
+    v = voice_base + i * VC_STRIDE;
+    v[VC_ACTIVE] > 0 ? (
+      sid = v[VC_SAMPLE] | 0;
+      (sid >= 0 && sid < sample_count) ? (
+        sm = sample_meta_base + sid * SM_STRIDE;
+        env = clamp01(v[VC_ENV]);
+        w = max(0.015, env * max(0.10, abs(v[VC_BASE])));
+        gain_db = dynx_db_from_amp(max(abs(v[VC_BASE]), 0.000000001));
+        stage = v[VC_STAGE] | 0;
+        fdb = sm[SM_EXPFLOOR] + gain_db;
+        bdb = sm[SM_EXPBODY] + gain_db;
+        pdb = sm[SM_EXPPEAK] + gain_db;
+        tdb = sm[SM_EXPTAIL] + gain_db;
+        stage == ENV_RELEASE ? (
+          bdb = max(tdb, fdb + 5);
+          fdb = min(fdb, bdb - 6);
+          pdb = max(pdb, bdb + 2);
+        );
+        floor_lin += db2amp(fdb) * db2amp(fdb) * w;
+        body_lin += db2amp(bdb) * db2amp(bdb) * w;
+        peak_lin += db2amp(pdb) * db2amp(pdb) * w;
+        wt += w;
+      );
+    );
+    i += 1;
+  );
+
+  wt > 0 ? (
+    dynx_profile_floor_db = clamp(10 * log(max(floor_lin / wt, 0.00000000000000000001)) * LOG10_INV, -108, 12);
+    dynx_profile_body_db = clamp(10 * log(max(body_lin / wt, 0.00000000000000000001)) * LOG10_INV, -108, 12);
+    dynx_profile_peak_db = clamp(10 * log(max(peak_lin / wt, 0.00000000000000000001)) * LOG10_INV, -108, 12);
+    dynx_profile_body_db = max(dynx_profile_body_db, dynx_profile_floor_db + 4);
+    dynx_profile_peak_db = max(dynx_profile_peak_db, dynx_profile_body_db + 2);
+    dynx_profile_range_db = clamp(dynx_profile_body_db - dynx_profile_floor_db, 6, 78);
+  ) : (
+    dynx_profile_floor_db = bank_exp_floor_db;
+    dynx_profile_body_db = bank_exp_body_db;
+    dynx_profile_peak_db = bank_exp_peak_db;
+    dynx_profile_range_db = bank_exp_range_db;
+  );
+);
+
+function reset_dynamics_expand_buffers() local(i base)
+(
+  dynx_gain = 1;
+  dynx_lim_gain = 1;
+  dynx_detector_slow = 0;
+  dynx_live_ref_db = bank_exp_body_db;
+  dynx_det_db_m = -96;
+  dynx_gr_db_m = 0;
+  dynx_expanding = 0;
+  dynx_hpf_lp = 0;
+  dynx_lpf_y = 0;
+  i = 0;
+  while (i < DYNX_BANDS) (
+    base = dynx_bank_base + i * DYNX_STRIDE;
+    base[2] = 0;
+    base[3] = 0;
+    base[4] = 0;
+    i += 1;
+  );
+);
+
+function apply_dynamics_expand() local(
+  inL inR depth x x_det base i bp p env sum det_lin det_db threshold_db live_conf profile_thr live_thr
+  d xk s ratio_base ratio_eff target_gr target_gain_db target_gain post lim_tgt protect knee_db hys_db depth_cap_db depth_cap_norm close_c body_anchor thr_span thr_offset hi_room
+)
+(
+  // v65 SourceExpand DepthCap: ERB detector -> single broadband gain.
+  // Threshold is anchored around the active source energy median and becomes intentionally aggressive at high amounts.
+  inL = outL;
+  inR = outR;
+  depth = clamp01(dynamics_expand_amt);
+
+  denorm_near_silence(inL, inR) ? (
+    reset_dynamics_expand_buffers();
+    depth = 0;
+  );
+
+  depth > 0.0001 ? (
+    update_active_expander_profile();
+
+    x = 0.5 * (inL + inR);
+    x_det = x;
+    dynx_hpf_lp = denorm_zap(dynx_hpf_lp + (x_det - dynx_hpf_lp) * dynx_hpf_coeff);
+    x_det -= dynx_hpf_lp;
+    dynx_lpf_y = denorm_zap(dynx_lpf_y + (x_det - dynx_lpf_y) * dynx_lpf_coeff);
+    x_det = dynx_lpf_y;
+
+    sum = 0;
+    i = 0;
+    while (i < DYNX_BANDS) (
+      base = dynx_bank_base + i * DYNX_STRIDE;
+      bp = dynx_svf_bp(x_det, base);
+      p = bp * bp;
+      env = base[4];
+      env = denorm_zap(env + (p - env) * dynx_band_coeff);
+      base[4] = env;
+      sum += base[5] * env;
+      i += 1;
+    );
+
+    det_lin = sqrt(max(sum, 0.000000000001));
+    det_db = dynx_db_from_amp(det_lin);
+    dynx_det_db_m = denorm_zap(dynx_det_db_m + (det_db - dynx_det_db_m) * 0.035);
+    dynx_detector_slow = denorm_zap(dynx_detector_slow + (det_lin - dynx_detector_slow) * dynx_detector_slow_coeff);
+
+    // The source profile BODY is an energy median. The threshold orbits that median:
+    // low amounts sit below it, high amounts climb slightly above it for obvious cleanup.
+    body_anchor = dynx_profile_body_db;
+    hi_room = clamp(dynx_profile_peak_db - body_anchor, 2, 24);
+    thr_offset = lerp(-17.0, min(6.0, hi_room * 0.55), depth ^ 0.72);
+    profile_thr = body_anchor + thr_offset;
+    profile_thr = clamp(profile_thr, dynx_profile_floor_db + 3.0, dynx_profile_peak_db - 0.5);
+
+    // Live correction is intentionally mild. Fully adaptive thresholds follow beds and stop cleaning.
+    live_conf = clamp01((det_db - dynx_profile_floor_db - 4) / max(6, dynx_profile_range_db * 0.30));
+    live_conf > 0.12 ? (
+      dynx_live_ref_db = denorm_zap(dynx_live_ref_db + (det_db - dynx_live_ref_db) * dynx_live_ref_coeff * live_conf);
+    ) : (
+      dynx_live_ref_db = denorm_zap(dynx_live_ref_db + (body_anchor - dynx_live_ref_db) * dynx_live_rel_coeff);
+    );
+    live_thr = dynx_live_ref_db - (5.0 + 10.0 * ((1 - depth) ^ 0.8));
+    threshold_db = clamp(lerp(profile_thr, live_thr, 0.10 * live_conf * (1 - depth * 0.35)), dynx_profile_floor_db + 2, dynx_profile_peak_db - 0.5);
+    dynx_threshold_db = threshold_db;
+
+    // Ctrl+Dynamics sets the maximum gain reduction. Expansion Amount still
+    // decides threshold aggression/ratio; Depth only caps how far it may pull.
+    depth_cap_db = clamp(dynamics_expand_depth_db, 0, 60);
+    depth_cap_norm = clamp01(depth_cap_db / 60);
+    knee_db = lerp(12.0, 2.0, depth ^ 1.20) * lerp(1.15, 0.75, depth_cap_norm);
+    knee_db = clamp(knee_db, 1.5, 14.0);
+    hys_db = clamp(knee_db * 0.30, 1.0, 4.0);
+
+    dynx_expanding <= 0 ? (
+      det_db < threshold_db ? dynx_expanding = 1;
+    ) : (
+      det_db > (threshold_db + hys_db) ? dynx_expanding = 0;
+    );
+
+    target_gr = 0;
+    dynx_expanding ? (
+      d = threshold_db - det_db;
+      d < 0 ? d = 0;
+      ratio_base = 1.25 + 5.25 * (depth ^ 0.86);
+      d < knee_db ? (
+        xk = clamp01(d / max(0.000001, knee_db));
+        s = xk * xk * (3 - 2 * xk);
+        ratio_eff = 1 + (ratio_base - 1) * s;
+      ) : (
+        ratio_eff = ratio_base;
+      );
+      target_gr = d * (ratio_eff - 1);
+      target_gr > depth_cap_db ? target_gr = depth_cap_db;
+    );
+
+    // Keep attacks from being shaved, but do not neuter high expansion amounts.
+    protect = clamp01(transient_guard_s * (0.22 + 0.12 * trans_mode_mix) * (1 - 0.55 * depth));
+    target_gr *= 1 - protect;
+
+    target_gain_db = -target_gr;
+    dynx_gr_db_m = denorm_zap(dynx_gr_db_m + (target_gr - dynx_gr_db_m) * 0.075);
+    close_c = (det_lin < dynx_detector_slow * lerp(0.98, 0.86, depth)) ? dynx_close_fast_coeff : dynx_close_slow_coeff;
+    target_gain = db2amp(target_gain_db);
+    dynx_gain = denorm_zap(dynx_gain + (target_gain - dynx_gain) * (target_gain > dynx_gain ? dynx_open_coeff : close_c));
+    dynx_gain = clamp(dynx_gain, db2amp(-78), 1.08);
+
+    outL = inL * dynx_gain;
+    outR = inR * dynx_gain;
+
+    post = max(abs(outL), abs(outR));
+    lim_tgt = post > 1.02 ? 1.02 / post : 1;
+    dynx_lim_gain = denorm_zap(dynx_lim_gain + (lim_tgt - dynx_lim_gain) * (lim_tgt < dynx_lim_gain ? dyn_lim_att_coeff : dyn_lim_rel_coeff));
+    outL *= dynx_lim_gain;
+    outR *= dynx_lim_gain;
+  ) : (
+    reset_dynamics_expand_buffers();
+  );
+);
+
+
 function analyze_sample(sm)
 (
   onset_mode_active ? analyze_sample_gauss(sm) : analyze_sample_classic(sm);
   estimate_sample_tail_grace(sm);
+  estimate_sample_expander_profile(sm);
   // v37 PerfGate: skip Granular-only corpus markers and obsolete learned-flow
   // extraction during normal bank analysis. Corpus markers are computed lazily
   // inside build_grain_corpus(), only when Granular mode needs them.
@@ -3639,6 +4021,227 @@ function reset_focus_peak_buffers() local(i base)
     fpk_bq_base[base + 7] = 0;
     fpk_bq_base[base + 8] = 0;
     i += 1;
+  );
+);
+
+
+function reset_color_tilt_buffers() local(i)
+(
+  i = 0;
+  while (i < COLOR_TILT_XOVERS) (
+    color_tilt_lp_l_base[i] = 0;
+    color_tilt_lp_r_base[i] = 0;
+    i += 1;
+  );
+  i = 0;
+  while (i < COLOR_TILT_BANDS) (
+    color_tilt_pre_base[i] = 0;
+    color_tilt_post_base[i] = 0;
+    color_tilt_env_f_base[i] = 0;
+    color_tilt_env_s_base[i] = 0;
+    i += 1;
+  );
+  color_tilt_global_gain = 1;
+  color_tilt_runtime_active = 0;
+);
+
+function color_tilt_erb_from_hz(f)
+(
+  21.4 * log(0.00437 * max(0, f) + 1) * LOG10_INV;
+);
+
+function color_tilt_hz_from_erb(e)
+(
+  (exp((e / 21.4) * log(10)) - 1) / 0.00437;
+);
+
+function color_tilt_a_weight_amp(f) local(f2 num den1 den2 den3 ra)
+(
+  f = max(1, f);
+  f2 = f * f;
+  num = (12200 * 12200) * (f2 * f2);
+  den1 = f2 + (20.6 * 20.6);
+  den2 = sqrt((f2 + (107.7 * 107.7)) * (f2 + (737.9 * 737.9)));
+  den3 = f2 + (12200 * 12200);
+  ra = num / max(0.000000000001, den1 * den2 * den3);
+  ra * 1.2589254117941673;
+);
+
+function color_tilt_auto_pivot_hz() local(br sh t)
+(
+  // Bank brightness is the sampler's spectral-centroid-like summary. Use it as
+  // the auto hinge so a dark bank tilts around body, while a bright bank tilts
+  // around upper presence/air.
+  sample_count <= 0 ? 1000 : (
+    br = clamp01(bank_brightness);
+    sh = clamp01(bank_sharpness);
+    t = clamp01(br * 0.88 + sh * 0.12);
+    t = t ^ 1.08;
+    exp(lerp(log(280), log(6500), t));
+  );
+);
+
+function color_tilt_effective_pivot_hz()
+(
+  color_pivot_hz < 0 ? color_tilt_auto_pivot_hz() : clamp(abs(color_pivot_hz), 20, min(20000, srate * 0.49));
+);
+
+function color_pivot_norm_to_hz(n)
+(
+  exp(lerp(log(20), log(20000), clamp01(n)));
+);
+
+function color_pivot_hz_to_norm(f)
+(
+  clamp01((log(clamp(f, 20, 20000)) - log(20)) / max(0.000001, log(20000) - log(20)));
+);
+
+function color_tilt_update_coeffs() local(i erb_c fc aw erb_b f a nyq work_srate)
+(
+  work_srate = max(1000, srate);
+  nyq = work_srate * 0.5;
+  color_tilt_fmax = min(20000, nyq * 0.98);
+  color_tilt_fmax < 40 ? color_tilt_fmax = 40;
+
+  color_tilt_erb_min = color_tilt_erb_from_hz(20);
+  color_tilt_erb_max = color_tilt_erb_from_hz(color_tilt_fmax);
+  color_tilt_erb_range = max(0.000001, color_tilt_erb_max - color_tilt_erb_min);
+
+  i = 0;
+  while (i < COLOR_TILT_BANDS) (
+    erb_c = color_tilt_erb_min + (i + 0.5) * color_tilt_erb_range / COLOR_TILT_BANDS;
+    fc = clamp(color_tilt_hz_from_erb(erb_c), 20, color_tilt_fmax);
+    color_tilt_erb_base[i] = erb_c;
+    color_tilt_fc_base[i] = fc;
+    aw = color_tilt_a_weight_amp(fc);
+    color_tilt_weight_base[i] = aw * aw;
+    i += 1;
+  );
+
+  i = 0;
+  while (i < COLOR_TILT_XOVERS) (
+    erb_b = color_tilt_erb_min + (i + 1) * color_tilt_erb_range / COLOR_TILT_BANDS;
+    f = clamp(color_tilt_hz_from_erb(erb_b), 10, nyq * 0.98);
+    a = exp(-6.283185307179586 * f / work_srate);
+    color_tilt_coeff_base[i] = clamp(a, 0.000001, 0.999999);
+    i += 1;
+  );
+
+  color_tilt_energy_coeff = 1 - exp(-1 / max(1, floor(0.300 * work_srate)));
+  color_tilt_rough_fast_coeff = 1 - exp(-1 / max(1, floor(0.008 * work_srate)));
+  color_tilt_rough_slow_coeff = 1 - exp(-1 / max(1, floor(0.080 * work_srate)));
+  color_tilt_gain_coeff = 1 - exp(-1 / max(1, floor(0.120 * work_srate)));
+);
+
+function color_tilt_recalc_gains() local(i pivot erb_pivot slope gdB)
+(
+  pivot = color_tilt_effective_pivot_hz();
+  erb_pivot = color_tilt_erb_from_hz(pivot);
+  slope = (2 * color_tilt_db) / max(0.000001, color_tilt_erb_range);
+  i = 0;
+  while (i < COLOR_TILT_BANDS) (
+    gdB = slope * (color_tilt_erb_base[i] - erb_pivot);
+    gdB = clamp(gdB, -24, 24);
+    color_tilt_gain_base[i] = db2amp(gdB);
+    i += 1;
+  );
+);
+
+function apply_color_erb_tilt() local(
+  inL inR outTL outTR i a lpL lpR prevL prevR bandL bandR yL yR idx
+  amp mod sat pre post g Lpre Lpost target level
+)
+(
+  inL = outL;
+  inR = outR;
+
+  abs(color_tilt_db) <= 0.0001 ? (
+    color_tilt_runtime_active > 0 ? reset_color_tilt_buffers();
+  ) : (
+    color_tilt_runtime_active = 1;
+    denorm_near_silence(inL, inR) ? reset_color_tilt_buffers();
+
+    outTL = 0;
+    outTR = 0;
+    prevL = 0;
+    prevR = 0;
+
+    i = 0;
+    while (i < COLOR_TILT_XOVERS) (
+      a = color_tilt_coeff_base[i];
+      lpL = denorm_zap((1 - a) * inL + a * color_tilt_lp_l_base[i]);
+      lpR = denorm_zap((1 - a) * inR + a * color_tilt_lp_r_base[i]);
+      color_tilt_lp_l_base[i] = lpL;
+      color_tilt_lp_r_base[i] = lpR;
+
+      bandL = i == 0 ? lpL : (lpL - prevL);
+      bandR = i == 0 ? lpR : (lpR - prevR);
+      prevL = lpL;
+      prevR = lpR;
+
+      pre = 0.5 * (bandL * bandL + bandR * bandR);
+      color_tilt_pre_base[i] = denorm_zap(color_tilt_pre_base[i] + (pre - color_tilt_pre_base[i]) * color_tilt_energy_coeff);
+
+      g = color_tilt_gain_base[i];
+      yL = bandL * g;
+      yR = bandR * g;
+
+      color_tilt_fc_base[i] > COLOR_TILT_ROUGH_START ? (
+        amp = 0.5 * (abs(yL) + abs(yR));
+        color_tilt_env_f_base[i] = denorm_zap(color_tilt_env_f_base[i] + (amp - color_tilt_env_f_base[i]) * color_tilt_rough_fast_coeff);
+        color_tilt_env_s_base[i] = denorm_zap(color_tilt_env_s_base[i] + (amp - color_tilt_env_s_base[i]) * color_tilt_rough_slow_coeff);
+        mod = max(0, (color_tilt_env_f_base[i] - color_tilt_env_s_base[i]) / max(color_tilt_env_s_base[i], 0.000001));
+        // Fixed Roughness Guard = 50%. It activates only when upper-band rough AM is detected.
+        sat = 0.50 * mod * 6;
+        yL = yL / (1 + sat * abs(yL));
+        yR = yR / (1 + sat * abs(yR));
+      );
+
+      post = 0.5 * (yL * yL + yR * yR);
+      color_tilt_post_base[i] = denorm_zap(color_tilt_post_base[i] + (post - color_tilt_post_base[i]) * color_tilt_energy_coeff);
+      outTL += yL;
+      outTR += yR;
+      i += 1;
+    );
+
+    idx = COLOR_TILT_BANDS - 1;
+    bandL = inL - prevL;
+    bandR = inR - prevR;
+    pre = 0.5 * (bandL * bandL + bandR * bandR);
+    color_tilt_pre_base[idx] = denorm_zap(color_tilt_pre_base[idx] + (pre - color_tilt_pre_base[idx]) * color_tilt_energy_coeff);
+
+    g = color_tilt_gain_base[idx];
+    yL = bandL * g;
+    yR = bandR * g;
+    color_tilt_fc_base[idx] > COLOR_TILT_ROUGH_START ? (
+      amp = 0.5 * (abs(yL) + abs(yR));
+      color_tilt_env_f_base[idx] = denorm_zap(color_tilt_env_f_base[idx] + (amp - color_tilt_env_f_base[idx]) * color_tilt_rough_fast_coeff);
+      color_tilt_env_s_base[idx] = denorm_zap(color_tilt_env_s_base[idx] + (amp - color_tilt_env_s_base[idx]) * color_tilt_rough_slow_coeff);
+      mod = max(0, (color_tilt_env_f_base[idx] - color_tilt_env_s_base[idx]) / max(color_tilt_env_s_base[idx], 0.000001));
+      sat = 0.50 * mod * 6;
+      yL = yL / (1 + sat * abs(yL));
+      yR = yR / (1 + sat * abs(yR));
+    );
+    post = 0.5 * (yL * yL + yR * yR);
+    color_tilt_post_base[idx] = denorm_zap(color_tilt_post_base[idx] + (post - color_tilt_post_base[idx]) * color_tilt_energy_coeff);
+    outTL += yL;
+    outTR += yR;
+
+    // Fixed loudness compensation = 100%, using A-weighted ERB-band energy.
+    Lpre = 0;
+    Lpost = 0;
+    i = 0;
+    while (i < COLOR_TILT_BANDS) (
+      Lpre += color_tilt_weight_base[i] * color_tilt_pre_base[i];
+      Lpost += color_tilt_weight_base[i] * color_tilt_post_base[i];
+      i += 1;
+    );
+    target = sqrt((Lpre + 0.0000000001) / (Lpost + 0.0000000001));
+    target = clamp(target, 0.25, 4);
+    color_tilt_global_gain = denorm_zap(color_tilt_global_gain + (target - color_tilt_global_gain) * color_tilt_gain_coeff);
+    level = clamp(color_tilt_global_gain, 0.25, 4);
+    outL = denorm_zap(outTL * level);
+    outR = denorm_zap(outTR * level);
   );
 );
 
@@ -5635,94 +6238,6 @@ function apply_focus_peak_pack() local(
   );
 );
 
-function reset_dynamics_expand_buffers()
-(
-  dynx_fast = 0;
-  dynx_slow = 0;
-  dynx_gain = 1;
-  dynx_lim_gain = 1;
-);
-
-function apply_dynamics_expand() local(
-  inL inR depth sane extreme det ratio low crest down_db up_db target_db target_gain
-  coeff wetmix wetL wetR post lim_tgt protect gate_floor side mid side_boost body_keep
-)
-(
-  // v41 DynExpand: hidden Shift+Dynamics processor. It is the useful opposite
-  // of density compression: low-level bed gets pushed down, attacks and clear
-  // crests can step forward. It is intentionally broad-band and transient-aware
-  // so it behaves like a fast sound-design contrast macro, not a gate plugin.
-  inL = outL;
-  inR = outR;
-  depth = clamp01(dynamics_expand_amt);
-
-  denorm_near_silence(inL, inR) ? (
-    reset_dynamics_expand_buffers();
-    depth = 0;
-  );
-
-  depth > 0.0001 ? (
-    sane = depth ^ 1.38;
-    extreme = depth ^ 3.70;
-
-    det = max(abs(inL), abs(inR));
-    dynx_fast = denorm_zap(dynx_fast + (det - dynx_fast) * (det > dynx_fast ? dynx_fast_att_coeff : dynx_fast_rel_coeff));
-    dynx_slow = denorm_zap(dynx_slow + (det - dynx_slow) * (det > dynx_slow ? dynx_slow_att_coeff : dynx_slow_rel_coeff));
-
-    ratio = dynx_fast / max(dynx_slow, 0.00000001);
-
-    // Downward expansion: remove low-level/sustained bed, but do not chop heads.
-    low = clamp01(((0.94 - 0.10 * extreme) - ratio) / (0.70 - 0.18 * extreme));
-    gate_floor = clamp01((dynx_slow - 0.000030) / 0.0060);
-    low *= gate_floor;
-    protect = clamp01(transient_guard_s * (0.72 + 0.18 * trans_mode_mix));
-    low *= 1 - protect;
-
-    // Upward expansion: accent actual crests. Extreme values make it obvious.
-    crest = clamp01((ratio - (1.10 - 0.16 * extreme)) / (0.88 - 0.24 * extreme));
-    crest = crest ^ lerp(1.55, 0.82, extreme);
-
-    down_db = -(sane * (1.8 + 8.0 * low) + extreme * (7.5 + 26.0 * low)) * low;
-    up_db   =  (sane * (1.2 + 5.4 * crest) + extreme * (3.5 + 14.0 * crest)) * crest;
-
-    target_db = clamp(down_db + up_db, -36, 16);
-    target_gain = db2amp(target_db);
-    coeff = target_gain > dynx_gain ? dynx_gain_up_coeff : dynx_gain_down_coeff;
-    dynx_gain = denorm_zap(dynx_gain + (target_gain - dynx_gain) * coeff);
-
-    wetL = inL * dynx_gain;
-    wetR = inR * dynx_gain;
-
-    // Expansion can also separate width subtly: crests get a little wider, beds
-    // get a little narrower. This keeps it sound-design useful without a panel.
-    mid = 0.5 * (wetL + wetR);
-    side = 0.5 * (wetL - wetR);
-    side_boost = 1 + crest * (0.05 + 0.16 * sane + 0.12 * extreme) - low * (0.06 + 0.20 * sane);
-    side_boost = clamp(side_boost, 0.62, 1.32);
-    wetL = mid + side * side_boost;
-    wetR = mid - side * side_boost;
-
-    wetmix = clamp01(0.20 + 0.58 * sqrt(depth) + 0.18 * extreme);
-    outL = lerp(inL, wetL, wetmix);
-    outR = lerp(inR, wetR, wetmix);
-
-    // Fail-safe limiter only catches expansion overs. It should be transparent
-    // unless the hidden knob is pushed hard.
-    post = max(abs(outL), abs(outR));
-    lim_tgt = post > 1.02 ? 1.02 / post : 1;
-    dynx_lim_gain = denorm_zap(dynx_lim_gain + (lim_tgt - dynx_lim_gain) * (lim_tgt < dynx_lim_gain ? dyn_lim_att_coeff : dyn_lim_rel_coeff));
-    outL *= dynx_lim_gain;
-    outR *= dynx_lim_gain;
-  ) : (
-    dynx_fast = denorm_zap(dynx_fast + (0 - dynx_fast) * dynx_fast_rel_coeff);
-    dynx_slow = denorm_zap(dynx_slow + (0 - dynx_slow) * dynx_slow_rel_coeff);
-    dynx_gain = denorm_zap(dynx_gain + (1 - dynx_gain) * dynx_gain_down_coeff);
-    dynx_lim_gain = denorm_zap(dynx_lim_gain + (1 - dynx_lim_gain) * dyn_lim_rel_coeff);
-  );
-);
-
-
-
 function reset_input_trigger_buffers()
 (
   input_trig_fast = 0;
@@ -6035,7 +6550,7 @@ function denorm_flush_scalar_states() local(i)
   tone_lp_l = denorm_zap(tone_lp_l); tone_lp_r = denorm_zap(tone_lp_r);
   focus_lp_l = denorm_zap(focus_lp_l); focus_lp_r = denorm_zap(focus_lp_r);
   dyn_env = denorm_zap(dyn_env);
-  dynx_fast = denorm_zap(dynx_fast); dynx_slow = denorm_zap(dynx_slow); dynx_gain = denorm_zap(dynx_gain); dynx_lim_gain = denorm_zap(dynx_lim_gain);
+  dynx_gain = denorm_zap(dynx_gain); dynx_detector_slow = denorm_zap(dynx_detector_slow); dynx_lim_gain = denorm_zap(dynx_lim_gain); dynx_hpf_lp = denorm_zap(dynx_hpf_lp); dynx_lpf_y = denorm_zap(dynx_lpf_y);
   input_trig_fast = denorm_zap(input_trig_fast); input_trig_slow = denorm_zap(input_trig_slow); input_trig_floor = denorm_zap(input_trig_floor); input_trig_env = denorm_zap(input_trig_env);
   edge_melt_post_lp_l = denorm_zap(edge_melt_post_lp_l); edge_melt_post_lp_r = denorm_zap(edge_melt_post_lp_r);
   edge_melt_post_smooth_l = denorm_zap(edge_melt_post_smooth_l); edge_melt_post_smooth_r = denorm_zap(edge_melt_post_smooth_r);
@@ -6125,6 +6640,7 @@ function denorm_flush_silent_tail_state()
   reset_push_pop_buffers();
   reset_formant_buffers();
   reset_focus_peak_buffers();
+  reset_color_tilt_buffers();
   reset_dynamics_expand_buffers();
   reset_input_trigger_buffers();
   reset_processing_buffers();
@@ -6158,6 +6674,11 @@ function reset_bank_state() local(i)
   bank_sharpness_spread = 0;
   bank_sharpness_reliability = 0;
   bank_focus_extreme = 0;
+  bank_exp_floor_db = -86;
+  bank_exp_body_db = -48;
+  bank_exp_peak_db = -18;
+  bank_exp_tail_db = -72;
+  bank_exp_range_db = 30;
   corpus_count = 0;
   corpus_best_idx = -1;
   corpus_best_sid = -1;
@@ -6185,6 +6706,8 @@ function reset_bank_state() local(i)
   reset_push_pop_buffers();
   reset_formant_buffers();
   reset_focus_peak_buffers();
+  reset_color_tilt_buffers();
+  reset_dynamics_expand_buffers();
   reset_input_trigger_buffers();
   reset_processing_buffers();
   init_flow_model();
@@ -6227,7 +6750,7 @@ function load_one_pool_sample(sample_index) local(
 );
 
 function refresh_bank_stats() local(
-  i sm spread_step spread_root pitch_sum bright_sum bright2_sum sharp_sum sharp2_sum bright_mean bright_var sharp_mean sharp_var
+  i sm spread_step spread_root pitch_sum bright_sum bright2_sum sharp_sum sharp2_sum bright_mean bright_var sharp_mean sharp_var exp_floor_sum exp_body_sum exp_peak_sum exp_tail_sum
 )
 (
   bank_pitchiness = 0;
@@ -6243,6 +6766,10 @@ function refresh_bank_stats() local(
   sample_count > 0 ? (
     spread_step = sample_count > 1 ? (ROOT_HIGH - ROOT_LOW) / (sample_count - 1) : 0;
     pitch_sum = 0;
+    exp_floor_sum = 0;
+    exp_body_sum = 0;
+    exp_peak_sum = 0;
+    exp_tail_sum = 0;
     bright_sum = 0;
     bright2_sum = 0;
     sharp_sum = 0;
@@ -6254,6 +6781,10 @@ function refresh_bank_stats() local(
       sm[SM_ROOT] = sm[SM_PITCHCONF] > 0.40 ? clamp(sm[SM_PITCHNOTE], 0, 127) : spread_root;
       update_sample_cluster(sm);
       pitch_sum += sm[SM_PITCHCONF];
+      exp_floor_sum += sm[SM_EXPFLOOR];
+      exp_body_sum += sm[SM_EXPBODY];
+      exp_peak_sum += sm[SM_EXPPEAK];
+      exp_tail_sum += sm[SM_EXPTAIL];
       bright_sum += sm[SM_BRIGHT];
       bright2_sum += sm[SM_BRIGHT] * sm[SM_BRIGHT];
       sharp_sum += sm[SM_SHARP];
@@ -6261,6 +6792,11 @@ function refresh_bank_stats() local(
       i += 1;
     );
     bank_pitchiness = clamp01(pitch_sum / sample_count);
+    bank_exp_floor_db = exp_floor_sum / sample_count;
+    bank_exp_body_db = max(bank_exp_floor_db + 8, exp_body_sum / sample_count);
+    bank_exp_peak_db = max(bank_exp_body_db + 3, exp_peak_sum / sample_count);
+    bank_exp_tail_db = exp_tail_sum / sample_count;
+    bank_exp_range_db = clamp(bank_exp_body_db - bank_exp_floor_db, 8, 58);
     bright_mean = bright_sum / sample_count;
     bright_var = max(0, bright2_sum / sample_count - bright_mean * bright_mean);
     bank_brightness = clamp01(bright_mean);
@@ -6297,6 +6833,8 @@ function refresh_bank_stats() local(
     corpus_count = 0;
     corpus_dirty = 0;
   );
+  (abs(color_tilt_db) > 0.0001 && color_pivot_hz < 0) ? color_tilt_recalc_gains();
+
   bank_loaded = sample_count > 0;
 );
 
@@ -6381,7 +6919,19 @@ function configure_memory_layout(selected_count) local(cap) (
   fpk_band_r_base = fpk_band_l_base + FPK_BANDS;
   fpk_bq_base = fpk_band_r_base + FPK_BANDS + 32;
 
-  dc_inl_base = fpk_bq_base + FPK_BANDS * FPK_BQ_STRIDE + 256;
+  color_tilt_lp_l_base = fpk_bq_base + FPK_BANDS * FPK_BQ_STRIDE + 256;
+  color_tilt_lp_r_base = color_tilt_lp_l_base + COLOR_TILT_XOVERS;
+  color_tilt_pre_base = color_tilt_lp_r_base + COLOR_TILT_XOVERS;
+  color_tilt_post_base = color_tilt_pre_base + COLOR_TILT_BANDS;
+  color_tilt_env_f_base = color_tilt_post_base + COLOR_TILT_BANDS;
+  color_tilt_env_s_base = color_tilt_env_f_base + COLOR_TILT_BANDS;
+  color_tilt_gain_base = color_tilt_env_s_base + COLOR_TILT_BANDS;
+  color_tilt_weight_base = color_tilt_gain_base + COLOR_TILT_BANDS;
+  color_tilt_fc_base = color_tilt_weight_base + COLOR_TILT_BANDS;
+  color_tilt_erb_base = color_tilt_fc_base + COLOR_TILT_BANDS;
+  color_tilt_coeff_base = color_tilt_erb_base + COLOR_TILT_BANDS;
+
+  dc_inl_base = color_tilt_coeff_base + COLOR_TILT_XOVERS + 256;
   dc_inr_base = dc_inl_base + DECRUST_RING;
   dc_outl_base = dc_inr_base + DECRUST_RING;
   dc_outr_base = dc_outl_base + DECRUST_RING;
@@ -6434,7 +6984,9 @@ function configure_memory_layout(selected_count) local(cap) (
   pop_mid_coeff_base = pop_fast_coeff_base + POP_BANDS;
   pop_slow_coeff_base = pop_mid_coeff_base + POP_BANDS;
 
-  AUDIO_BASE  = pop_slow_coeff_base + POP_BANDS + 256;
+  dynx_bank_base = pop_slow_coeff_base + POP_BANDS + 32;
+
+  AUDIO_BASE  = dynx_bank_base + DYNX_BANDS * DYNX_STRIDE + 256;
   MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
 );
 
@@ -6460,6 +7012,9 @@ function load_bank() local(
     reset_bank_state();
     posteq_update_coeffs();
     fpk_update_coeffs();
+    color_tilt_update_coeffs();
+    color_tilt_recalc_gains();
+    dynx_update_coeffs();
     harm_update_coeffs();
 
     bank_selected_count = selected;
@@ -7276,7 +7831,9 @@ function flush_hidden_state_sliders()
   slider54 = clamp01(space_room_char);
   slider55 = clamp01(output_harmonics_amt);
   slider56 = clamp01(push_pop_amt);
+  slider60 = abs(color_pivot_hz) < 1 ? 1000 : clamp(color_pivot_hz, -20000, 20000);
   slider61 = clamp01(pitch_parallel_mix);
+  slider64 = clamp(dynamics_expand_depth_db, 0, 60);
 
   // Use individual sliderchange calls instead of a giant summed mask. Powers
   // above 2^53 are exact, but sums can lose precision in double-based EEL2.
@@ -7290,7 +7847,9 @@ function flush_hidden_state_sliders()
   sliderchange(MASK_S54);
   sliderchange(MASK_S55);
   sliderchange(MASK_S56);
+  sliderchange(MASK_S60);
   sliderchange(MASK_S61);
+  sliderchange(MASK_S64);
   hidden_state_dirty = 0;
 );
 
@@ -7991,7 +8550,12 @@ SM_GCCOUNT   = 24;
 SM_GCATTACK  = 25;
 SM_GCHEAD    = 26;
 SM_GCTAIL    = 27;
-SM_FLOWBASE  = 28;
+SM_EXPFLOOR  = 28;
+SM_EXPBODY   = 29;
+SM_EXPPEAK   = 30;
+SM_EXPTAIL   = 31;
+SM_EXPRANGE  = 32;
+SM_FLOWBASE  = 33;
 FLOW_BINS    = 8;
 FLOW_FEATS   = 3;
 FLOW_IN      = 5;
@@ -8197,8 +8761,12 @@ MASK_S60 = 576460752303423488;
 MASK_S61 = 1152921504606846976;
 MASK_S62 = 2305843009213693952;
 MASK_S63 = 4611686018427387904;
+MASK_S64 = 9223372036854775808;
 
 CLEAN_BANDS = 5;
+DYNX_BANDS = 8;
+DYNX_STRIDE = 8;
+DYNX_HIST_BINS = 80;
 DECRUST_FFT = 512;
 DECRUST_HOP = 128;
 DECRUST_LATENCY = 514;
@@ -8215,6 +8783,9 @@ POSTEQ_CHAR_BQ_COUNT = 5;
 POSTEQ_CHAR_BQ_STRIDE = 9;
 FPK_BANDS = 12;
 FPK_BQ_STRIDE = 9;
+COLOR_TILT_BANDS = 16;
+COLOR_TILT_XOVERS = 15;
+COLOR_TILT_ROUGH_START = 2000;
 HARM_BANDS = 8;
 HARM_XOVERS = 7;
 POP_BANDS = 5;
@@ -8269,6 +8840,7 @@ M2E_CHAN       = 0;
 
 configure_memory_layout(SAMPLE_POOL_MIN);
 harm_update_coeffs();
+dynx_update_coeffs();
 
 SAMPLE_MODE_RESIDENT = 0;
 SAMPLE_MODE_BUDGETED = 1;
@@ -8435,17 +9007,33 @@ dyn_env = 0;
 dyn_comp_gain = 1;
 dyn_lim_gain = 1;
 dynamics_expand_amt = 0;
+dynamics_expand_depth_db = 6;
+dynamics_expand_active_target = 0;
+dynamics_expand_active_prev = 0;
 edge_melt_amt = 0;
-dynx_fast = 0;
-dynx_slow = 0;
 dynx_gain = 1;
 dynx_lim_gain = 1;
-dynx_fast_att_coeff = 0.08;
-dynx_fast_rel_coeff = 0.006;
-dynx_slow_att_coeff = 0.002;
-dynx_slow_rel_coeff = 0.0004;
-dynx_gain_up_coeff = 0.035;
-dynx_gain_down_coeff = 0.010;
+dynx_detector_slow = 0;
+dynx_live_ref_db = -48;
+dynx_det_db_m = -96;
+dynx_gr_db_m = 0;
+dynx_expanding = 0;
+dynx_hpf_lp = 0;
+dynx_lpf_y = 0;
+dynx_profile_floor_db = -86;
+dynx_profile_body_db = -48;
+dynx_profile_peak_db = -18;
+dynx_profile_range_db = 30;
+dynx_threshold_db = -60;
+dynx_band_coeff = 0.02;
+dynx_open_coeff = 0.08;
+dynx_close_fast_coeff = 0.006;
+dynx_close_slow_coeff = 0.001;
+dynx_live_ref_coeff = 0.002;
+dynx_live_rel_coeff = 0.0004;
+dynx_detector_slow_coeff = 0.0004;
+dynx_hpf_coeff = 0.01;
+dynx_lpf_coeff = 0.8;
 release_handoff_samps = 256;
 attack_coef = 1;
 decay_coef = 1;
@@ -8536,6 +9124,20 @@ push_side_rel_coeff = 0.001;
 
 formant_shift_semi = 0;
 focus_peak_amt = 0;
+color_tilt_db = 0;
+color_tilt_norm = 0;
+color_pivot_hz = 1000;
+color_tilt_active_prev = 0;
+color_tilt_runtime_active = 0;
+color_tilt_global_gain = 1;
+color_tilt_fmax = 20000;
+color_tilt_erb_min = 0;
+color_tilt_erb_max = 0;
+color_tilt_erb_range = 1;
+color_tilt_energy_coeff = 0.001;
+color_tilt_rough_fast_coeff = 0.01;
+color_tilt_rough_slow_coeff = 0.001;
+color_tilt_gain_coeff = 0.002;
 denorm_flip = 1;
 denorm_guard = 0;
 posteq_pre_silent = 0;
@@ -8629,6 +9231,8 @@ ui_last_click_t = -10;
 ui_dblclick_time = 0.32;
 pitch_alt_active = 0;
 pitch_mix_alt_active = 0;
+color_pivot_alt_active = 0;
+color_auto_alt_active = 0;
 focus_peak_alt_active = 0;
 dyn_expand_alt_active = 0;
 grain_input_alt_active = 0;
@@ -8675,7 +9279,7 @@ transport_play_state_prev = -1;
 
 
 
-group_enabled = 0; // v59: GroupSync ordering retired/inert. Reserved sliders remain unmapped.
+group_enabled = 0; // v59: GroupSync ordering retired/inert. Reserved sliders 57-59 remain unmapped; slider60 now stores Color Pivot.
 group_instance_id = 0;
 group_name_hash = 0;
 group_track_seq = -999999;
@@ -8712,6 +9316,7 @@ file_var(0, formant_shift_semi);
 file_var(0, auto_release_amt);
 file_var(0, posteq_q_schema);
 file_var(0, focus_peak_amt);
+file_var(0, color_pivot_hz);
 file_var(0, dynamics_expand_amt);
 file_var(0, edge_melt_amt);
 file_var(0, clean_decrust_amt);
@@ -8719,6 +9324,7 @@ file_var(0, space_room_amt);
 file_var(0, space_room_char);
 file_var(0, output_harmonics_amt);
 file_var(0, push_pop_amt);
+file_var(0, dynamics_expand_depth_db);
 
 @slider
 attack_samps = max(1, floor(slider2 * srate * 0.001));
@@ -8729,6 +9335,11 @@ hold_samps = max(0, floor(slider20 * srate * 0.001));
 mono_source = (slider21 | 0) ? 1 : 0;
 dynamics_amt = clamp01(slider22);
 dynamics_expand_amt = clamp01(slider50);
+dynamics_expand_depth_db = clamp(slider64, 0, 60);
+dynamics_expand_active_target = (dynamics_expand_amt > 0.0001 && dynamics_expand_depth_db > 0.001) ? 1 : 0;
+(dynamics_expand_active_target <= 0 && dynamics_expand_active_prev > 0) ? reset_dynamics_expand_buffers();
+(dynamics_expand_active_target > 0 && dynamics_expand_active_prev <= 0) ? dynx_update_coeffs();
+dynamics_expand_active_prev = dynamics_expand_active_target;
 edge_melt_amt = clamp01(slider51);
 (edge_melt_amt <= 0.0001 && edge_melt_active_prev > 0) ? reset_edge_melt_buffers();
 edge_melt_active_prev = edge_melt_amt > 0.0001 ? 1 : 0;
@@ -8756,6 +9367,23 @@ space_room_char = clamp01(slider54);
 space_room_active_prev = space_room_amt > 0.0001 ? 1 : 0;
 push_amt = clamp01(slider27 / 100);
 push_pop_amt = clamp01(slider56);
+color_tilt_db = clamp(slider6, -18, 18);
+color_tilt_norm = clamp(color_tilt_db / 18, -1, 1);
+color_pivot_hz = slider60;
+abs(color_pivot_hz) < 1 ? color_pivot_hz = 1000;
+color_pivot_hz >= 0 ? (
+  color_pivot_hz = clamp(color_pivot_hz, 20, 20000);
+) : (
+  color_pivot_hz = -clamp(abs(color_pivot_hz), 20, 20000);
+);
+abs(color_tilt_db) > 0.0001 ? (
+  color_tilt_update_coeffs();
+  color_tilt_recalc_gains();
+  color_tilt_active_prev = 1;
+) : (
+  color_tilt_active_prev > 0 ? reset_color_tilt_buffers();
+  color_tilt_active_prev = 0;
+);
 pitch_parallel_mix = clamp01(slider61);
 (push_pop_amt <= 0.0001 && push_pop_active_prev > 0) ? reset_push_pop_buffers();
 (push_pop_amt > 0.0001 && push_pop_active_prev <= 0) ? pop_update_coeffs();
@@ -8931,12 +9559,7 @@ dyn_gain_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.120 * srate)));
 dyn_lim_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.0015 * srate)));
 dyn_lim_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.070 * srate)));
 dyn_ceiling = 0.985 - 0.01 * dynamics_amt;
-dynx_fast_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.0025 * srate)));
-dynx_fast_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.060 * srate)));
-dynx_slow_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.110 * srate)));
-dynx_slow_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.620 * srate)));
-dynx_gain_up_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.0040 * srate)));
-dynx_gain_down_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.038 * srate)));
+// SourceExpand coefficients are built by dynx_update_coeffs() only when the hidden Expansion path is active.
 
 clean_lp_c1 = clamp(1 - exp(-6.283185307179586 * 180 / max(srate, 1)), 0.0001, 0.60);
 clean_lp_c2 = clamp(1 - exp(-6.283185307179586 * 720 / max(srate, 1)), 0.0002, 0.72);
@@ -9017,6 +9640,7 @@ harm_env_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.005 * srate)));
 harm_env_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.090 * srate)));
 output_harmonics_amt > 0.0001 ? harm_update_coeffs();
 push_pop_amt > 0.0001 ? pop_update_coeffs();
+(dynamics_expand_amt > 0.0001 && dynamics_expand_depth_db > 0.001) ? dynx_update_coeffs();
 fpk_lp_c1 = clamp(1 - exp(-6.283185307179586 * min(320, srate * 0.49) / max(srate, 1)), 0.0001, 0.74);
 fpk_lp_c2 = clamp(1 - exp(-6.283185307179586 * min(980, srate * 0.49) / max(srate, 1)), 0.0002, 0.82);
 fpk_lp_c3 = clamp(1 - exp(-6.283185307179586 * min(2900, srate * 0.49) / max(srate, 1)), 0.0004, 0.90);
@@ -10399,20 +11023,12 @@ space_room_amt > 0.0001 ? (
 );
 abs(formant_shift_semi) > 0.0001 ? apply_formant_shift();
 
-tone_lp_l = denorm_zap(tone_lp_l + (outL - tone_lp_l) * tone_lp_coeff);
-tone_lp_r = denorm_zap(tone_lp_r + (outR - tone_lp_r) * tone_lp_coeff);
+abs(color_tilt_db) > 0.0001 ? apply_color_erb_tilt() : (color_tilt_runtime_active > 0 ? reset_color_tilt_buffers());
+
 focus_lp_l = denorm_zap(focus_lp_l + (outL - focus_lp_l) * focus_lp_coeff);
 focus_lp_r = denorm_zap(focus_lp_r + (outR - focus_lp_r) * focus_lp_coeff);
-
-tone_hp_l = outL - tone_lp_l;
-tone_hp_r = outR - tone_lp_r;
 focus_hp_l = outL - focus_lp_l;
 focus_hp_r = outR - focus_lp_r;
-
-bank_bright_dev = bank_brightness - 0.50;
-color_corrective = ((slider6 < 0 && bank_bright_dev > 0) || (slider6 > 0 && bank_bright_dev < 0)) ? 1 : 0.35;
-color_drive = 1 + bank_color_extreme * (0.30 + 0.42 * color_corrective + 0.18 * abs(slider6));
-tone_amt = clamp(slider6 * color_drive + m2e_tone_bias, -1, 1);
 
 // Average Attack Focus now calibrates the Focus macro. Corrective moves get
 // stronger; exaggerating an already sharp/dull bank is deliberately restrained.
@@ -10429,11 +11045,6 @@ focus_drive = focus_corrective ? (
 focus_drive = clamp(focus_drive, 0.58, 1.86);
 focus_amt = clamp(slider7 * focus_drive + m2e_focus_bias * (1 - 0.10 * bank_focus_extreme * focus_exaggerating), -1, 1);
 width_amt = clamp(slider8 + m2e_width_bias, 0, 1);
-
-tone_hi_w = 0.17 * (1 + bank_color_extreme * (0.18 + 0.28 * abs(tone_amt)));
-tone_lo_w = 0.035 * (1 + bank_color_extreme * (0.20 + 0.34 * abs(tone_amt)));
-outL += tone_amt * (tone_hp_l * tone_hi_w - tone_lp_l * tone_lo_w);
-outR += tone_amt * (tone_hp_r * tone_hi_w - tone_lp_r * tone_lo_w);
 
 focus_base_mix = 0.05 + transient * (0.11 + 0.08 * m2e_impact_s * m2e_depth);
 focus_corrective_boost = 1 + bank_focus_extreme * focus_corrective * (0.18 + 0.24 * abs(focus_amt));
@@ -10534,6 +11145,9 @@ weight_amt > 0.0001 ? (
   outR = lerp(outR, heavySatR, weight_sat * (0.42 + 0.58 * weight_duck));
 );
 
+// Hidden Shift+Dynamics SourceExpand runs before normal density/guard so low-level beds are removed before compression can lift them.
+(dynamics_expand_amt > 0.0001 && dynamics_expand_depth_db > 0.001) ? apply_dynamics_expand();
+
 dynamics_amt > 0.0001 ? (
   dynL = outL * dyn_drive;
   dynR = outR * dyn_drive;
@@ -10568,16 +11182,6 @@ dynamics_amt > 0.0001 ? (
   dyn_lim_gain = denorm_zap(dyn_lim_gain + (1 - dyn_lim_gain) * dyn_lim_rel_coeff);
 );
 
-// Hidden Shift+Dynamics expansion runs after the normal density/guard stage so
-// it can restore contrast when desired. It is fully bypassed at zero.
-dynamics_expand_amt > 0.0001 ? (
-  apply_dynamics_expand();
-) : (
-  dynx_fast = denorm_zap(dynx_fast + (0 - dynx_fast) * dynx_fast_rel_coeff);
-  dynx_slow = denorm_zap(dynx_slow + (0 - dynx_slow) * dynx_slow_rel_coeff);
-  dynx_gain = denorm_zap(dynx_gain + (1 - dynx_gain) * dynx_gain_down_coeff);
-  dynx_lim_gain = denorm_zap(dynx_lim_gain + (1 - dynx_lim_gain) * dyn_lim_rel_coeff);
-);
 
 pop_src_l = outL;
 pop_src_r = outR;
@@ -11317,16 +11921,82 @@ sprintf(#ui_buf, "%.2f", slider19); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc 
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Spice"); draw_center_buf(cell_x, label_y, cell_w);
 
-// Color
+// Color is now ERB Tilt EQ. Normal drag = Tilt dB. Alt+drag = Pivot. Shift+click = Auto Pivot toggle.
 grid_idx = 4;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
-nv = ui_knob(301, kc, ky, kb_r, slider6, -1, 1, 0, 0.020); abs(nv - slider6) > 0.0000001 ? (slider6 = nv; gfx_slider_mask |= MASK_S6;);
+color_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
+(mouse_pressed && color_hot) ? (
+  color_pivot_alt_active = ui_alt ? 1 : 0;
+  color_auto_alt_active = (ui_shift && !ui_alt) ? 1 : 0;
+  color_auto_alt_active ? (
+    color_pivot_hz = color_pivot_hz < 0 ? abs(color_pivot_hz) : -max(1000, abs(color_pivot_hz));
+    color_pivot_hz == 0 ? color_pivot_hz = -1000;
+    ui_active = 336;
+    ui_value_changed = 1;
+    hidden_state_dirty = 1;
+    abs(color_tilt_db) > 0.0001 ? color_tilt_recalc_gains();
+  );
+);
+(mouse_rpressed && color_hot && ui_shift && !ui_alt) ? (
+  color_pivot_hz = 1000;
+  ui_active = -1;
+  color_auto_alt_active = 0;
+  ui_value_changed = 1;
+  hidden_state_dirty = 1;
+  abs(color_tilt_db) > 0.0001 ? color_tilt_recalc_gains();
+);
+(!mouse_down && ui_active == 336) ? (
+  ui_active = -1;
+  color_auto_alt_active = 0;
+);
+(!mouse_down && ui_active != 337 && ui_active != 336) ? (
+  color_pivot_alt_active = 0;
+  color_auto_alt_active = 0;
+);
+color_pivot_alt_use = color_pivot_alt_active || (ui_alt && (color_hot || ui_active == 337));
+color_auto_alt_use = (!color_pivot_alt_use) && (color_auto_alt_active || (ui_shift && !ui_alt && (color_hot || ui_active == 336)));
+color_pivot_alt_use ? (
+  color_pivot_norm = color_pivot_hz_to_norm(abs(color_pivot_hz));
+  nv = ui_knob(337, kc, ky, kb_r, color_pivot_norm, 0, 1, color_pivot_hz_to_norm(1000), 0.018);
+  abs(nv - color_pivot_norm) > 0.0000001 ? (
+    color_pivot_hz = color_pivot_norm_to_hz(nv);
+    ui_value_changed = 1;
+    hidden_state_dirty = 1;
+    abs(color_tilt_db) > 0.0001 ? color_tilt_recalc_gains();
+  );
+  color_hot && ui_alt && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    color_pivot_norm = clamp01(color_pivot_norm + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
+    color_pivot_hz = color_pivot_norm_to_hz(color_pivot_norm);
+    ui_wheel_used = 1;
+    ui_value_changed = 1;
+    hidden_state_dirty = 1;
+    abs(color_tilt_db) > 0.0001 ? color_tilt_recalc_gains();
+  );
+) : color_auto_alt_use ? (
+  color_hot ? ui_hover_id = 336;
+) : (
+  nv = ui_knob(301, kc, ky, kb_r, slider6, -18, 18, 0, 0.006);
+  abs(nv - slider6) > 0.0000001 ? (
+    slider6 = clamp(nv, -18, 18);
+    color_tilt_db = slider6;
+    color_tilt_norm = clamp(color_tilt_db / 18, -1, 1);
+    gfx_slider_mask |= MASK_S6;
+    abs(color_tilt_db) > 0.0001 ? color_tilt_recalc_gains();
+  );
+);
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.2f", slider6); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
+color_pivot_alt_use ? (
+  color_pivot_hz < 0 ? sprintf(#ui_buf, "Pv Auto") : sprintf(#ui_buf, "Pv %.0f", abs(color_pivot_hz));
+) : color_auto_alt_use ? (
+  color_pivot_hz < 0 ? sprintf(#ui_buf, "Auto On") : sprintf(#ui_buf, "Auto Off");
+) : (
+  color_pivot_hz < 0 ? sprintf(#ui_buf, "T%+.1f/A", slider6) : sprintf(#ui_buf, "T%+.1f", slider6);
+);
+gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-sprintf(#ui_buf, "Color"); draw_center_buf(cell_x, label_y, cell_w);
+color_pivot_alt_use ? sprintf(#ui_buf, "Pivot") : (color_auto_alt_use ? sprintf(#ui_buf, "Auto Pivot") : sprintf(#ui_buf, "Tilt")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Focus / hidden Peak Pack
 grid_idx = 5;
@@ -11523,23 +12193,36 @@ gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a 
 push_pop_alt_use ? sprintf(#ui_buf, "Pop") : (push_pop_amt > 0.04 ? sprintf(#ui_buf, "Push/Pop") : sprintf(#ui_buf, "Push")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Dynamics / hidden Expansion
-// Shift+drag or Shift+wheel this knob to adjust expansion/contrast without adding a visible control.
+// Shift+drag = source-relative Expansion amount. Ctrl+drag = maximum reduction depth.
 grid_idx = 13;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
 dyn_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
-(mouse_pressed && dyn_hot) ? dyn_expand_alt_active = ui_shift ? 1 : 0;
+(mouse_pressed && dyn_hot) ? (
+  dyn_expand_depth_alt_active = (ui_ctrl && !ui_shift) ? 1 : 0;
+  dyn_expand_alt_active = (ui_shift && !ui_ctrl) ? 1 : 0;
+);
 (!mouse_down && ui_active != 319) ? dyn_expand_alt_active = 0;
-dyn_expand_alt_use = dyn_expand_alt_active || (ui_shift && (dyn_hot || ui_active == 319));
-dyn_expand_alt_use ? (
+(!mouse_down && ui_active != 338) ? dyn_expand_depth_alt_active = 0;
+dyn_expand_depth_alt_use = dyn_expand_depth_alt_active || (ui_ctrl && !ui_shift && (dyn_hot || ui_active == 338));
+dyn_expand_alt_use = (!dyn_expand_depth_alt_use) && (dyn_expand_alt_active || (ui_shift && !ui_ctrl && (dyn_hot || ui_active == 319)));
+
+dyn_expand_depth_alt_use ? (
+  nv = ui_knob(338, kc, ky, kb_r, dynamics_expand_depth_db, 0, 60, 6, 0.0083);
+  abs(nv - dynamics_expand_depth_db) > 0.0000001 ? (
+    dynamics_expand_depth_db = clamp(nv, 0, 60);
+    ui_value_changed = 1;
+    hidden_state_dirty = 1;
+  );
+) : dyn_expand_alt_use ? (
   nv = ui_knob(319, kc, ky, kb_r, dynamics_expand_amt, 0, 1, 0, 0.018);
   abs(nv - dynamics_expand_amt) > 0.0000001 ? (
     dynamics_expand_amt = clamp01(nv);
     ui_value_changed = 1;
     hidden_state_dirty = 1;
   );
-  dyn_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+  dyn_hot && ui_shift && !ui_ctrl && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     dynamics_expand_amt = clamp01(dynamics_expand_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
     ui_wheel_used = 1;
     ui_value_changed = 1;
@@ -11549,10 +12232,10 @@ dyn_expand_alt_use ? (
   nv = ui_knob(312, kc, ky, kb_r, slider22, 0, 1, 0, 0.018); abs(nv - slider22) > 0.0000001 ? (slider22 = nv; gfx_slider_mask |= MASK_S22;);
 );
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-dyn_expand_alt_use ? sprintf(#ui_buf, "Ex%.2f", dynamics_expand_amt) : (dynamics_expand_amt > 0.04 ? sprintf(#ui_buf, "%.2f/Ex%.1f", slider22, dynamics_expand_amt) : sprintf(#ui_buf, "%.2f", slider22));
+dyn_expand_depth_alt_use ? sprintf(#ui_buf, "D%.1fdB", dynamics_expand_depth_db) : (dyn_expand_alt_use ? sprintf(#ui_buf, "Ex%.2f", dynamics_expand_amt) : (dynamics_expand_amt > 0.04 ? sprintf(#ui_buf, "%.2f/Ex%.1f/D%.0f", slider22, dynamics_expand_amt, dynamics_expand_depth_db) : sprintf(#ui_buf, "%.2f", slider22)));
 gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-dyn_expand_alt_use ? sprintf(#ui_buf, "Expand") : (dynamics_expand_amt > 0.04 ? sprintf(#ui_buf, "Dyn/Expand") : sprintf(#ui_buf, "Dynamics")); draw_center_buf(cell_x, label_y, cell_w);
+dyn_expand_depth_alt_use ? sprintf(#ui_buf, "Exp Depth") : (dyn_expand_alt_use ? sprintf(#ui_buf, "Expand") : (dynamics_expand_amt > 0.04 ? sprintf(#ui_buf, "Dyn/Expand") : sprintf(#ui_buf, "Dynamics"))); draw_center_buf(cell_x, label_y, cell_w);
 
 // Output / hidden Harmonics
 // Normal drag = output trim. Shift+drag = clean parallel harmonic enrichment.
@@ -12293,8 +12976,16 @@ ui_hover_id == 204 ? (
   sprintf(#tip_body, "%.0f ms | slope %+.0f%% | Grace %.2f. Shift+drag changes AutoRelease; Shift+Wheel slope.", slider5, slider30, auto_release_amt);
 );
 ui_hover_id == 301 ? (
-  sprintf(#tip_title, "Color");
-  sprintf(#tip_body, "%.2f warm/bright tilt.", slider6);
+  sprintf(#tip_title, "ERB Tilt");
+  sprintf(#tip_body, "%+.1f dB perceptual tilt. Alt+drag Pivot %.0f Hz; Shift+click Auto Pivot.", slider6, color_tilt_effective_pivot_hz());
+);
+ui_hover_id == 337 ? (
+  sprintf(#tip_title, "Tilt Pivot");
+  color_pivot_hz < 0 ? sprintf(#tip_body, "Auto %.0f Hz from bank brightness. Alt+drag sets manual 20 Hz-20 kHz.", color_tilt_effective_pivot_hz()) : sprintf(#tip_body, "%.0f Hz manual pivot. Negative stored value means Auto-Infer.", abs(color_pivot_hz));
+);
+ui_hover_id == 336 ? (
+  sprintf(#tip_title, "Auto Pivot");
+  sprintf(#tip_body, "%s. Shift+click toggles; Shift+right-click resets manual 1000 Hz.", color_pivot_hz < 0 ? "On" : "Off");
 );
 ui_hover_id == 302 ? (
   sprintf(#tip_title, "Focus");
@@ -12354,11 +13045,15 @@ ui_hover_id == 334 ? (
 );
 ui_hover_id == 312 ? (
   sprintf(#tip_title, "Dynamics");
-  sprintf(#tip_body, "%.2f density and guard. Shift+drag for Expansion.", slider22);
+  sprintf(#tip_body, "%.2f density and guard. Shift+drag Expansion amount; Ctrl+drag max reduction depth %.1f dB.", slider22, dynamics_expand_depth_db);
 );
 ui_hover_id == 319 ? (
-  sprintf(#tip_title, "Expansion");
-  sprintf(#tip_body, "%.2f contrast/punch separator: lows recede, crests step forward.", dynamics_expand_amt);
+  sprintf(#tip_title, "Expansion Amount");
+  sprintf(#tip_body, "%.2f source-relative ERB expander amount. Ctrl+drag sets max reduction depth %.1f dB.", dynamics_expand_amt, dynamics_expand_depth_db);
+);
+ui_hover_id == 338 ? (
+  sprintf(#tip_title, "Expansion Depth");
+  sprintf(#tip_body, "%.1f dB maximum gain reduction. The algorithm still controls actual reduction; this only caps it.", dynamics_expand_depth_db);
 );
 ((ui_hover_id == 307) || (ui_hover_id == 317) || (ui_hover_id == 335)) ? (
   (ui_alt || pitch_mix_alt_active || ui_hover_id == 335) ? (
