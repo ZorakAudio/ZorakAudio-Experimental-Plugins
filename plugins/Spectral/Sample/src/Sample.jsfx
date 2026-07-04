@@ -1,8 +1,9 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v58-edgemelt)
+desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v66-auto-smooth-ar)
 tags:instrument sampler ui
 options:gmem=SampleGroupSync
 // #GFX_RESIZE: responsive
 
+// v66 AutoSmoothAR: Envelope button enables a 25 ms causal transition budget; Attack/Release act as ratios for same-note crossfades and note-off smoothing without MIDI lookahead/PDC.
 // v57 SpaceVerb SoftRollback: reverts v55 loud SpaceVerb feed/gain tuning back toward the subtler v54 voice-send behavior while preserving v56 host-backed hidden states.
 // v56 HiddenStateSliders: hidden Shift/Alt macro states are mirrored to host-owned sliders so 48/96 kHz rebuilds and renders preserve them.
 // v53 PopCue: Shift+Push adds a CPU-gated concrete-detail cue extractor; it lifts short perceptual object cues without making Push bipolar.
@@ -61,6 +62,7 @@ filename:0,sample.wav
 // #HELP: v39 RoomScrub makes Room Tame a stronger general de-room control: it detects late/diffuse band energy, trims low-mid/presence room wash, narrows roomy side smear, and protects attacks.
 // #HELP: v51 SpaceVerb adds Shift+drag Room as hidden Space amount and Alt+drag Room as hidden Space character: scrub bad room with Room, then add intentional sound-design space.
 // #HELP: v57 SpaceVerb SoftRollback returns SpaceVerb to the subtler v54-style voice-send balance; Shift+Room/Alt+Room state still persists through render/sample-rate rebuilds via v56 hidden sliders.
+// #HELP: v66 Auto Smooth A/R adds an Envelope button that uses a fixed 25 ms causal transition budget. When enabled, Attack and Release become the ratio of that transition for smoother same-note crossfades and note-offs without MIDI lookahead/PDC.
 // #HELP: v53 PopCue adds Shift+drag Push as a concrete-detail cue extractor: it lifts short object cues in parallel without becoming inverse Push, and it is bypassed at 0.
 // #HELP: v52 Harmonics adds Shift+drag Output as a clean 8-band psychoacoustic harmonic enrichment macro: it generates a parallel, band-limited harmonic layer instead of driving the dry signal into saturation, and it is bypassed at 0.
 // #HELP: v38 DenormalGuard protects internal recursive filters/analyzers from near-zero denormal stalls, gates silent spectrum analysis, and preserves v37 Granular gating.
@@ -80,7 +82,7 @@ filename:0,sample.wav
 // #HELP: Random picks from the full bank with anti-repeat weighting. Sequence steps through loaded files. Walk bridges from the previous sample using brightness, focus, transient richness, length, pitch confidence, body span, and tail span.
 // #HELP:
 // #HELP: ## Envelope
-// #HELP: Attack, Hold, Decay, Sustain, and Release shape each trigger. Shift+Wheel on Attack, Decay, or Release changes slope from -100% to +100%; 0% is linear. Release is also protected by sample-dependent AutoRelease when a source would otherwise chop; Shift+drag Release changes hidden Tail Grace.
+// #HELP: Attack, Hold, Decay, Sustain, and Release shape each trigger. Shift+Wheel on Attack, Decay, or Release changes slope from -100% to +100%; 0% is linear. Release is also protected by sample-dependent AutoRelease when a source would otherwise chop; Shift+drag Release changes hidden Tail Grace. The Auto Smooth A/R button converts Attack/Release into a 25 ms transition ratio for smoother back-to-back retriggers.
 // #HELP:
 // #HELP: ## Playback engines
 // #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack. Granular uses a load-time analyzed grain corpus: long files become many searchable micro-events, multi-source banks become one shared grain field, and playback uses anchor/texture/spice streams, phrase + envelope trajectories, corpus continuity, source-adaptive overlap, restrained swells, release blooms, and grain-level decorrelation.
@@ -161,7 +163,7 @@ slider53:0<0,1,0.001>--Hidden Space Amount
 slider54:0.5<0,1,0.001>--Hidden Space Character
 slider55:0<0,1,0.001>--Hidden Harmonics
 slider56:0<0,1,0.001>--Hidden PopCue
-slider57:0<0,1,1{reserved,reserved}>--Reserved GroupSync Mode (unmapped)
+slider57:0<0,1,1{manual,auto}>--Auto Smooth A/R
 slider58:0<0,4,1>--Reserved GroupSync Rank (unmapped)
 slider59:0<0,1,0.001>--Reserved GroupSync A (unmapped)
 slider60:1000<-20000,20000,1>--Hidden Color Pivot (Hz; negative=Auto)
@@ -7326,6 +7328,7 @@ function start_voice(note vel chan) local(
   j jmax pre startpos softskip gain_jit_db
   bodystart bodyend tailstart donor_tail min_body_span remain voice_hold_samps
   gesture_len gesture_depth
+  voice_attack_samps voice_release_samps voice_attack_coef voice_release_coef
 )
 (
   sample_count <= 0 ? 0 : (
@@ -7358,6 +7361,11 @@ function start_voice(note vel chan) local(
     playmode == 0 ? voice_stretch = 1 : voice_stretch = stretch_ratio;
     voice_stretch = max(1, voice_stretch);
     voice_stretch_norm = clamp01((voice_stretch - 1) / 3);
+
+    voice_attack_samps = auto_smooth_ar ? max(1, floor(auto_smooth_next_attack_samps)) : attack_samps;
+    voice_release_samps = auto_smooth_ar ? max(1, floor(auto_smooth_next_release_samps)) : release_samps;
+    voice_attack_coef = voice_attack_samps <= 1 ? 1 : (1 - exp(-6.90775527898214 / max(1, voice_attack_samps)));
+    voice_release_coef = voice_release_samps <= 1 ? 0 : exp(-6.90775527898214 / max(1, voice_release_samps));
 
     srcsr = sm[SM_SR];
     norm  = sm[SM_NORM];
@@ -7446,32 +7454,32 @@ function start_voice(note vel chan) local(
     v[VC_POS]    = startpos;
     v[VC_RATE]   = base_rate;
     v[VC_BASE]   = gain * (gran_voice ? 1.55 : 1);
-    env0 = (attack_samps <= 1 || (translock && attack_samps <= floor(0.010 * srate))) ? 1 : 0;
+    env0 = (voice_attack_samps <= 1 || (translock && voice_attack_samps <= floor(0.010 * srate))) ? 1 : 0;
     (playmode >= 2 && ggrain_amt > 0.0001 && seam_bridge_env > 0.0005) ? (
       // Attack begins from the current Release level, matching the Phase Plant-style
       // release-point -> equivalent-attack-point retrigger behavior. This overrides
       // the usual fast Punch/Gaussian env=1 shortcut, except for a true 1-sample attack.
-      env0 = attack_samps <= 1 ? 1 : min(0.985, seam_bridge_env);
+      env0 = voice_attack_samps <= 1 ? 1 : min(0.985, seam_bridge_env);
     );
     v[VC_ENV]    = env0;
-    v[VC_ASTEP]  = attack_coef;
+    v[VC_ASTEP]  = voice_attack_coef;
     v[VC_DSTEP]  = decay_coef;
-    v[VC_RSTEP]  = release_coef;
+    v[VC_RSTEP]  = voice_release_coef;
     v[VC_HLEFT]  = voice_hold_samps;
     v[VC_STAGE]  = env0 >= 1 ? (voice_hold_samps > 0 ? ENV_HOLD : ENV_DECAY) : ENV_ATTACK;
     v[VC_AGE]    = note_counter;
     v[VC_EPHASE] = 0;
     v[VC_ESTART] = env0;
-    v[VC_ALEN]   = attack_samps;
+    v[VC_ALEN]   = voice_attack_samps;
     v[VC_DLEN]   = decay_samps;
-    v[VC_RLEN]   = release_samps;
+    v[VC_RLEN]   = voice_release_samps;
     v[VC_ACURVE] = attack_slope_pct;
     v[VC_DCURVE] = decay_slope_pct;
     v[VC_RCURVE] = release_slope_pct;
     (playmode >= 2 && ggrain_amt > 0.0001 && seam_bridge_env > 0.0005 && env0 < 1 && !env_slope_is_classic(attack_slope_pct, ENV_RISE)) ? (
       // For non-classic slopes, continue from the equivalent Attack curve point
       // instead of spending a full Attack time above the inherited Release level.
-      v[VC_EPHASE] = env_slope_inv(env0, env_segment_slope(attack_slope_pct, ENV_RISE)) * max(1, attack_samps);
+      v[VC_EPHASE] = env_slope_inv(env0, env_segment_slope(attack_slope_pct, ENV_RISE)) * max(1, voice_attack_samps);
     );
 
     v[VC_GMODE]    = (playmode >= 2) ? 1 : 0;
@@ -7542,7 +7550,7 @@ function start_voice(note vel chan) local(
   );
 );
 
-function release_voice_internal(v) local(donor donor_sm donor_tail body_start body_end release_src sid sm auto_len rel_len rel_coef stage_now attack_interrupt)
+function release_voice_internal(v) local(donor donor_sm donor_tail body_start body_end release_src sid sm auto_len rel_len rel_coef stage_now attack_interrupt base_rel_len)
 (
   (v[VC_ACTIVE] > 0 && v[VC_STAGE] != ENV_RELEASE) ? (
     stage_now = v[VC_STAGE] | 0;
@@ -7554,7 +7562,8 @@ function release_voice_internal(v) local(donor donor_sm donor_tail body_start bo
     // Minimal Attack interrupt: if Note Off arrives while the envelope is still
     // rising, go straight to the user Release time. All normal release grain /
     // tail behavior remains unchanged.
-    rel_len = attack_interrupt ? release_samps : max(release_samps, auto_len);
+    base_rel_len = auto_smooth_ar ? max(1, floor(auto_smooth_next_release_samps)) : release_samps;
+    rel_len = attack_interrupt ? base_rel_len : (auto_smooth_ar ? base_rel_len : max(release_samps, auto_len));
     rel_coef = exp(-6.90775527898214 / max(1, rel_len));
 
     rel_len <= 1 ? (
@@ -7637,6 +7646,59 @@ function release_voice(note chan) local(target held guard idx)
       held = target;
     );
     guard += 1;
+  );
+);
+
+
+function auto_smooth_calc_lengths(budget_samps) local(total_norm a_norm r_norm a_share a_len r_len)
+(
+  budget_samps = max(2, floor(budget_samps));
+  // In Auto Smooth mode the visible Attack/Release sliders become a ratio,
+  // so use their normalized slider positions rather than raw milliseconds.
+  a_norm = max(0.0001, curve_norm(slider2, 0.1, 500, CURVE_TIME));
+  r_norm = max(0.0001, curve_norm(slider5, 5, 5000, CURVE_TIME));
+  total_norm = max(0.0001, a_norm + r_norm);
+  a_share = clamp(a_norm / total_norm, 0.02, 0.98);
+  a_len = max(1, floor(budget_samps * a_share));
+  r_len = max(1, budget_samps - a_len);
+  (a_len + r_len) > budget_samps ? r_len = max(1, budget_samps - a_len);
+  auto_smooth_attack_share = a_len / max(1, budget_samps);
+  auto_smooth_release_share = r_len / max(1, budget_samps);
+  auto_smooth_next_attack_samps = a_len;
+  auto_smooth_next_release_samps = r_len;
+);
+
+function auto_smooth_prepare_note_on(now_samps) local(ioi budget)
+(
+  auto_smooth_ar ? (
+    (auto_smooth_last_on_samps > -999999999) ? (
+      ioi = clamp(now_samps - auto_smooth_last_on_samps, 1, max(1, floor(8 * srate)));
+      auto_smooth_ioi_samps <= 0 ? auto_smooth_ioi_samps = ioi : auto_smooth_ioi_samps = auto_smooth_ioi_samps * 0.72 + ioi * 0.28;
+    );
+    auto_smooth_last_on_samps = now_samps;
+
+    budget = auto_smooth_budget_samps;
+    auto_smooth_ioi_samps > 0 ? (
+      budget = min(budget, max(2, floor(auto_smooth_ioi_samps * 0.50)));
+    );
+    auto_smooth_calc_lengths(budget);
+  ) : (
+    auto_smooth_next_attack_samps = attack_samps;
+    auto_smooth_next_release_samps = release_samps;
+  );
+);
+
+function auto_smooth_release_same_note_for_new(note chan) local(i v)
+(
+  auto_smooth_ar ? (
+    i = 0;
+    while (i < MAX_VOICES) (
+      v = voice_base + i * VC_STRIDE;
+      (v[VC_ACTIVE] > 0 && v[VC_AUDIOTRIG] <= 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan && v[VC_STAGE] != ENV_RELEASE) ? (
+        release_voice_internal(v);
+      );
+      i += 1;
+    );
   );
 );
 
@@ -7724,6 +7786,7 @@ function start_audio_trigger_voice(env_amt) local(note vel v)
     note = last_note >= 0 ? last_note : 60;
     vel = clamp(floor(1 + 126 * (clamp01(env_amt) ^ 0.58)), 1, 127);
     last_start_voice_idx = -1;
+    auto_smooth_prepare_note_on(m2e_clock_samps);
     start_voice(note, vel, 0);
     (last_start_voice_idx >= 0 && last_start_voice_idx < MAX_VOICES) ? (
       v = voice_base + last_start_voice_idx * VC_STRIDE;
@@ -8941,6 +9004,14 @@ decay_samps = 2048;
 sustain_level = 0.8;
 release_samps = 2048;
 hold_samps = 0;
+auto_smooth_ar = 0;
+auto_smooth_budget_samps = 1200;
+auto_smooth_ioi_samps = 0;
+auto_smooth_last_on_samps = -1000000000;
+auto_smooth_next_attack_samps = 64;
+auto_smooth_next_release_samps = 2048;
+auto_smooth_attack_share = 0.5;
+auto_smooth_release_share = 0.5;
 mono_source = 0;
 dynamics_amt = 0;
 clean_amt = 0;
@@ -9279,7 +9350,7 @@ transport_play_state_prev = -1;
 
 
 
-group_enabled = 0; // v59: GroupSync ordering retired/inert. Reserved sliders 57-59 remain unmapped; slider60 now stores Color Pivot.
+group_enabled = 0; // v59: GroupSync ordering retired/inert. slider57 now stores Auto Smooth A/R; sliders 58-59 remain reserved; slider60 stores Color Pivot.
 group_instance_id = 0;
 group_name_hash = 0;
 group_track_seq = -999999;
@@ -9332,6 +9403,9 @@ decay_samps = max(1, floor(slider3 * srate * 0.001));
 sustain_level = clamp01(slider4);
 release_samps = max(1, floor(slider5 * srate * 0.001));
 hold_samps = max(0, floor(slider20 * srate * 0.001));
+auto_smooth_ar = (slider57 | 0) ? 1 : 0;
+auto_smooth_budget_samps = max(1, floor(0.025 * srate));
+auto_smooth_calc_lengths(auto_smooth_budget_samps);
 mono_source = (slider21 | 0) ? 1 : 0;
 dynamics_amt = clamp01(slider22);
 dynamics_expand_amt = clamp01(slider50);
@@ -9764,6 +9838,8 @@ while (midirecv(offset, msg1, msg23)) (
     (status == 144 && vel > 0) ? (
       bank_loaded ? (
         note_gate_on(note, chan);
+        auto_smooth_prepare_note_on(m2e_clock_samps + offset);
+        auto_smooth_release_same_note_for_new(note, chan);
         start_voice(note, vel, chan);
         group_report_onset(vel / 127);
       ) : midisend(offset, msg1, msg23);
@@ -11640,6 +11716,20 @@ gfx_r = 0.10; gfx_g = 0.58; gfx_b = 1.0; gfx_a = 0.90; gfx_circle(mid_x + 10, mi
 gfx_r = 0.26; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.35; gfx_line(mid_x + 18, mid_y + 39, mid_x + mid_w - 18, mid_y + 39);
 pt_in(mid_x, mid_y, mid_w, 34) ? ui_hover_id = 1300;
 
+auto_ar_btn_w = 112;
+auto_ar_btn_h = 24;
+auto_ar_btn_x = mid_x + mid_w - auto_ar_btn_w - 16;
+auto_ar_btn_y = mid_y + 10;
+ui_button(206, auto_ar_btn_x, auto_ar_btn_y, auto_ar_btn_w, auto_ar_btn_h) ? (
+  slider57 = 1 - (slider57 | 0);
+  sliderchange(MASK_S57);
+  ui_value_changed = 1;
+);
+gfx_setfont(1, "Arial", 11, 0);
+(slider57 | 0) ? sprintf(#ui_buf, "AUTO A/R") : sprintf(#ui_buf, "MANUAL A/R");
+draw_center_buf(auto_ar_btn_x, auto_ar_btn_y + 7, auto_ar_btn_w);
+pt_in(auto_ar_btn_x, auto_ar_btn_y, auto_ar_btn_w, auto_ar_btn_h) ? ui_hover_id = 1302;
+
 graph_x = mid_x + 16; graph_y = mid_y + 48; graph_w = mid_w - 32; graph_h = 190;
 ui_inner_panel(graph_x, graph_y, graph_w, graph_h);
 grid_i = 1;
@@ -11692,7 +11782,7 @@ gfx_line(graph_x + 14, for_y, graph_x + graph_w - 14, for_y);
 
 gfx_setfont(1, "Arial", 14, 0);
 gfx_r = 0.74; gfx_g = 0.80; gfx_b = 0.88; gfx_a = 1;
-sprintf(#ui_buf, "A %.1f ms   H %.0f ms   D %.0f ms   S %.0f%%   R %.0f ms", slider2, slider20, slider3, slider4 * 100, slider5);
+(slider57 | 0) ? sprintf(#ui_buf, "AUTO 25ms A/R %.0f%%/%.0f%%   H %.0f ms   D %.0f ms   S %.0f%%", auto_smooth_attack_share * 100, auto_smooth_release_share * 100, slider20, slider3, slider4 * 100) : sprintf(#ui_buf, "A %.1f ms   H %.0f ms   D %.0f ms   S %.0f%%   R %.0f ms", slider2, slider20, slider3, slider4 * 100, slider5);
 gfx_x = graph_x; gfx_y = graph_y + graph_h + 8;
 gfx_drawstr(#ui_buf);
 pt_in(graph_x, graph_y, graph_w, graph_h) ? ui_hover_id = 1301;
@@ -11708,7 +11798,7 @@ track_x = mid_x + 20;
 nv = ui_vslider(201, track_x, adsr_y, track_w, adsr_h, slider2, 0.1, 500, CURVE_TIME, 3, 0.020); abs(nv - slider2) > 0.0000001 ? (slider2 = nv; gfx_slider_mask |= MASK_S2;);
 nv = ui_shift_wheel_slope(201, slider28, 100); abs(nv - slider28) > 0.0000001 ? (slider28 = nv; gfx_slider_mask |= MASK_S28;);
 gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("A");
-sprintf(#ui_buf, "%.1f", slider2); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+(slider57 | 0) ? sprintf(#ui_buf, "%.0f%%", auto_smooth_attack_share * 100) : sprintf(#ui_buf, "%.1f", slider2); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
 track_x += track_w + track_gap;
 nv = ui_vslider(205, track_x, adsr_y, track_w, adsr_h, slider20, 0, 2000, CURVE_LINEAR, 20, 0.015); abs(nv - slider20) > 0.0000001 ? (slider20 = nv; gfx_slider_mask |= MASK_S20;);
@@ -11730,7 +11820,7 @@ track_x += track_w + track_gap;
 nv = ui_vslider(204, track_x, adsr_y, track_w, adsr_h, slider5, 5, 5000, CURVE_TIME, 180, 0.020); abs(nv - slider5) > 0.0000001 ? (slider5 = nv; gfx_slider_mask |= MASK_S5;);
 nv = ui_shift_wheel_slope(204, slider30, -100); abs(nv - slider30) > 0.0000001 ? (slider30 = nv; gfx_slider_mask |= MASK_S30;);
 gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("R");
-(ui_shift && (ui_hover_id == 204 || ui_active == 204)) ? sprintf(#ui_buf, "G%.2f", auto_release_amt) : sprintf(#ui_buf, "%.0f", slider5); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+(slider57 | 0) ? sprintf(#ui_buf, "%.0f%%", auto_smooth_release_share * 100) : ((ui_shift && (ui_hover_id == 204 || ui_active == 204)) ? sprintf(#ui_buf, "G%.2f", auto_release_amt) : sprintf(#ui_buf, "%.0f", slider5)); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
 
 // Right panel: playback controls
 gfx_setfont(1, "Arial", 16, 0);
@@ -12951,13 +13041,17 @@ ui_hover_id == 1301 ? (
   sprintf(#tip_title, "Envelope graph");
   sprintf(#tip_body, "Shows AHDSR timing and slope.");
 );
+ui_hover_id == 1302 ? (
+  sprintf(#tip_title, "Auto Smooth A/R");
+  sprintf(#tip_body, "Uses a fixed 25 ms causal transition budget. Attack/Release become the crossfade ratio for same-note retriggers and note-offs; no MIDI lookahead/PDC.");
+);
 ui_hover_id == 1400 ? (
   sprintf(#tip_title, "Playback");
   sprintf(#tip_body, "Mode, transient, selection, mono, onset.");
 );
 ui_hover_id == 201 ? (
   sprintf(#tip_title, "Attack");
-  sprintf(#tip_body, "%.1f ms | slope %+.0f%%", slider2, slider28);
+  (slider57 | 0) ? sprintf(#tip_body, "Auto Smooth A/R: %.0f%% of the 25 ms transition budget (%.1f ms now). Shift+Wheel slope.", auto_smooth_attack_share * 100, auto_smooth_next_attack_samps * 1000 / max(srate, 1)) : sprintf(#tip_body, "%.1f ms | slope %+.0f%%", slider2, slider28);
 );
 ui_hover_id == 202 ? (
   sprintf(#tip_title, "Decay");
@@ -12973,7 +13067,7 @@ ui_hover_id == 203 ? (
 );
 ui_hover_id == 204 ? (
   sprintf(#tip_title, "Release");
-  sprintf(#tip_body, "%.0f ms | slope %+.0f%% | Grace %.2f. Shift+drag changes AutoRelease; Shift+Wheel slope.", slider5, slider30, auto_release_amt);
+  (slider57 | 0) ? sprintf(#tip_body, "Auto Smooth A/R: %.0f%% of the 25 ms transition budget (%.1f ms now). Shift+Wheel slope.", auto_smooth_release_share * 100, auto_smooth_next_release_samps * 1000 / max(srate, 1)) : sprintf(#tip_body, "%.0f ms | slope %+.0f%% | Grace %.2f. Shift+drag changes AutoRelease; Shift+Wheel slope.", slider5, slider30, auto_release_amt);
 );
 ui_hover_id == 301 ? (
   sprintf(#tip_title, "ERB Tilt");
