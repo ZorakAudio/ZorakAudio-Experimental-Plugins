@@ -4,6 +4,9 @@
 #define NOMINMAX 1
 #endif
 
+#include "DspJsfxSamplePoolStorage.h"
+
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -69,6 +72,7 @@ struct DspJsfxSamplePoolEntry
 struct DspJsfxSamplePoolGeneration
 {
     std::uint64_t sourceGeneration = 0;
+    std::uint64_t publicationRequestId = 0; // internal monotonic order, not user source ID
     std::vector<DspJsfxSamplePoolEntry> entries;
     std::vector<float> audio; // packed float32, interleaved per entry
     std::vector<DspJsfxSamplePreviewBin> previews;
@@ -99,7 +103,16 @@ public:
     DspJsfxSamplePool(const DspJsfxSamplePool&) = delete;
     DspJsfxSamplePool& operator=(const DspJsfxSamplePool&) = delete;
 
+    // The wrapper creates one stack-only transaction per audio callback.
+    // Metadata, interpolation taps and stereo reads reuse its immutable pins.
+    using Storage = SamplePoolStorage<DspJsfxSamplePoolGeneration>;
+    using ReadBatch = Storage::ReadBatch;
+
     void setMode(int mode) noexcept;
+    // Opt-in: publication announces readiness, but playback stays on the old bank
+    // until the audio client reaches a voice-free boundary and adopts it.
+    void setDeferred(bool deferred) noexcept;
+    int adoptPending() noexcept; // 1 adopted, 0 none, -1 retry (never waits)
     void setBudgetMB(double mb) noexcept;
     void setTargetSampleRate(double sampleRate) noexcept;
     void setCompletionCallback(CompletionCallback callback);
@@ -155,7 +168,10 @@ private:
     void ensureWorker();
     void workerMain();
     void publishGeneration(std::shared_ptr<DspJsfxSamplePoolGeneration> gen, std::uint64_t requestId);
-    const DspJsfxSamplePoolGeneration* active() const noexcept { return activeRaw_.load(std::memory_order_acquire); }
+    void reclaimRetired(); // worker only; never destroys audio storage on a reader
+    using ReaderScope = Storage::ReaderScope;
+    double readFrom(const DspJsfxSamplePoolGeneration* gen, const DspJsfxSamplePoolEntry* entry, int channel, double frame) const noexcept;
+    double interpFrom(const DspJsfxSamplePoolGeneration* gen, const DspJsfxSamplePoolEntry* entry, int channel, double phase) const noexcept;
     const DspJsfxSamplePoolEntry* entryFor(const DspJsfxSamplePoolGeneration* gen, std::uint64_t sampleId) const noexcept;
 
     std::atomic<int> mode_ { kSamplePoolModeResident };
@@ -164,9 +180,7 @@ private:
     std::atomic<int> state_ { kSamplePoolEmpty };
     std::atomic<int> selected_ { 0 };
     std::atomic<int> failed_ { 0 };
-    std::atomic<const DspJsfxSamplePoolGeneration*> activeRaw_ { nullptr };
     std::atomic<std::uint64_t> publishedGeneration_ { 0 };
-    std::atomic<std::uint64_t> decodedBytes_ { 0 };
     std::atomic<std::uint64_t> nextRequestId_ { 1 };
     std::atomic<std::uint64_t> lastCommittedSourceGeneration_ { 0 };
     std::atomic<std::uint64_t> lastCommittedBudgetBytes_ { 0 };
@@ -177,8 +191,7 @@ private:
     mutable std::mutex callbackMutex_;
     CompletionCallback completionCallback_;
 
-    mutable std::mutex generationMutex_;
-    std::vector<std::shared_ptr<const DspJsfxSamplePoolGeneration>> generations_; // retains immutable generations for lock-free readers
+    Storage storage_;
 
     std::mutex workerMutex_;
     std::condition_variable workerCv_;

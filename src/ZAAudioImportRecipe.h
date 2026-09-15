@@ -376,7 +376,7 @@ static inline juce::ValueTree rulesToValueTree (const ImportRules& r)
     t.setProperty ("preferNovelSamples", r.preferNovelSamples, nullptr);
     t.setProperty ("minSpectralFlux", r.minSpectralFlux, nullptr);
     t.setProperty ("randomize", r.randomize, nullptr);
-    t.setProperty ("randomSeed", (int64_t) r.randomSeed, nullptr);
+    t.setProperty ("randomSeed", (juce::int64) r.randomSeed, nullptr);
     t.setProperty ("gapMs", r.gapMs, nullptr);
     t.setProperty ("crossfadeMs", r.crossfadeMs, nullptr);
     t.setProperty ("normalizeClipsRms", r.normalizeClipsRms, nullptr);
@@ -456,7 +456,7 @@ static inline ImportRules rulesFromValueTree (const juce::ValueTree& t)
     r.preferNovelSamples = (bool) t.getProperty ("preferNovelSamples", r.preferNovelSamples);
     r.minSpectralFlux = (double) t.getProperty ("minSpectralFlux", r.minSpectralFlux);
     r.randomize = (bool) t.getProperty ("randomize", r.randomize);
-    r.randomSeed = (uint32_t) (int64_t) t.getProperty ("randomSeed", (int64_t) r.randomSeed);
+    r.randomSeed = (uint32_t) (juce::int64) t.getProperty ("randomSeed", (juce::int64) r.randomSeed);
     r.gapMs = (double) t.getProperty ("gapMs", r.gapMs);
     r.crossfadeMs = (double) t.getProperty ("crossfadeMs", r.crossfadeMs);
     r.normalizeClipsRms = (bool) t.getProperty ("normalizeClipsRms", r.normalizeClipsRms);
@@ -514,7 +514,7 @@ static inline juce::ValueTree recipeToValueTree (const ImportRecipe& recipe)
     juce::ValueTree t ("ZA_IMPORT_RECIPE");
     t.setProperty ("version", recipe.version, nullptr);
     t.setProperty ("action", (int) recipe.action, nullptr);
-    t.setProperty ("seed", (int64_t) recipe.seed, nullptr);
+    t.setProperty ("seed", (juce::int64) recipe.seed, nullptr);
     t.setProperty ("displayName", recipe.displayName, nullptr);
     t.addChild (rulesToValueTree (recipe.rules), -1, nullptr);
 
@@ -523,9 +523,9 @@ static inline juce::ValueTree recipeToValueTree (const ImportRecipe& recipe)
     {
         juce::ValueTree in ("INPUT");
         in.setProperty ("path", fp.path, nullptr);
-        in.setProperty ("sizeBytes", fp.sizeBytes, nullptr);
-        in.setProperty ("modifiedUtcMs", fp.modifiedUtcMs, nullptr);
-        in.setProperty ("quickHash", (int64_t) fp.quickHash, nullptr);
+        in.setProperty ("sizeBytes", (juce::int64) fp.sizeBytes, nullptr);
+        in.setProperty ("modifiedUtcMs", (juce::int64) fp.modifiedUtcMs, nullptr);
+        in.setProperty ("quickHash", (juce::int64) fp.quickHash, nullptr);
         inputs.addChild (in, -1, nullptr);
     }
     t.addChild (inputs, -1, nullptr);
@@ -540,7 +540,7 @@ static inline ImportRecipe recipeFromValueTree (const juce::ValueTree& t)
 
     recipe.version = (int) t.getProperty ("version", recipe.version);
     recipe.action = (ImportAction) (int) t.getProperty ("action", (int) recipe.action);
-    recipe.seed = (uint32_t) (int64_t) t.getProperty ("seed", (int64_t) recipe.seed);
+    recipe.seed = (uint32_t) (juce::int64) t.getProperty ("seed", (juce::int64) recipe.seed);
     recipe.displayName = t.getProperty ("displayName", recipe.displayName).toString();
     recipe.rules = rulesFromValueTree (t.getChildWithName ("RULES"));
 
@@ -551,9 +551,9 @@ static inline ImportRecipe recipeFromValueTree (const juce::ValueTree& t)
             auto in = inputs.getChild (i);
             SourceFingerprint fp;
             fp.path = in.getProperty ("path", {}).toString();
-            fp.sizeBytes = (int64_t) in.getProperty ("sizeBytes", (int64_t) 0);
-            fp.modifiedUtcMs = (int64_t) in.getProperty ("modifiedUtcMs", (int64_t) 0);
-            fp.quickHash = (uint64_t) (int64_t) in.getProperty ("quickHash", (int64_t) 0);
+            fp.sizeBytes = (juce::int64) in.getProperty ("sizeBytes", (juce::int64) 0);
+            fp.modifiedUtcMs = (juce::int64) in.getProperty ("modifiedUtcMs", (juce::int64) 0);
+            fp.quickHash = (uint64_t) (juce::int64) in.getProperty ("quickHash", (juce::int64) 0);
             recipe.inputs.push_back (std::move (fp));
         }
     }

@@ -1,18 +1,17 @@
-desc:Load-and-Go Psycho MultiSampler (FluxBridge + tape + hybrid + granular v66-auto-smooth-ar)
+desc:Load-and-Go Psycho MultiSampler (tape + hybrid + granular v68-dsp-audit)
 tags:instrument sampler ui
-options:gmem=SampleGroupSync
 // #GFX_RESIZE: responsive
 
+// v68 DSPAudit: sample-accurate MIDI, independent EQ drives, stable pool adoption, cached onset anchors, stereo analysis, and constant 520-sample reported latency.
+// v67 InterfaceRetirement: removes obsolete shared-instance ordering and motion-CC modulation; preserves parameter IDs and the Auto Smooth timing clock.
 // v66 AutoSmoothAR: Envelope button enables a 25 ms causal transition budget; Attack/Release act as ratios for same-note crossfades and note-off smoothing without MIDI lookahead/PDC.
 // v57 SpaceVerb SoftRollback: reverts v55 loud SpaceVerb feed/gain tuning back toward the subtler v54 voice-send behavior while preserving v56 host-backed hidden states.
 // v56 HiddenStateSliders: hidden Shift/Alt macro states are mirrored to host-owned sliders so 48/96 kHz rebuilds and renders preserve them.
 // v53 PopCue: Shift+Push adds a CPU-gated concrete-detail cue extractor; it lifts short perceptual object cues without making Push bipolar.
 // v52 Harmonics: Shift+Output adds an 8-band ERB/gammatone-ish parallel harmonic enrichment layer; it is fully bypassed unless the hidden amount is above 0.
 // v51 SpaceVerb: Shift+Room adds designed space amount; Alt+Room sets space character. RoomScrub remains normal Room, and the additive SpaceVerb is zero-PDC/non-FFT/denormal-safe.
-// v48 CompileFixStrings: removes illegal string parameter from GroupSync hash helper; keeps JSFX functions top-down-safe.
 // v47 DeCrustCompileFix: restores cubic_mid() before the DeCrust curvature helper uses it.
 // v46 CleanDeCrust: Shift+Clean adds an FFT-512 spectral-kurtosis decrust mode for crunchy/crusty SFX; FFT work runs only while the hidden mode is active.
-// v45 GroupSync Ordering: uses host track_name()/track_name_seq() for default group naming, shares peers via gmem, and adds a strict drag-rank ordering editor.
 // v65 SourceExpand DepthCap: Ctrl+Dynamics sets maximum expander reduction; knee/hysteresis stay automatic.
 // v65 SourceExpand DepthCap: Shift+Dynamics uses an aggressive source-relative ERB downward expander. Load-time energy-median sample profiles drive threshold placement.
 // v41 DynExpand: Shift+drag Dynamics controls hidden Expansion, now source-aware and downward-expansion focused.
@@ -54,7 +53,6 @@ filename:0,sample.wav
 // #HELP: v28 SpectrumPrePost shows both pre-EQ and post-EQ spectra with a cleaner high-resolution analyzer.
 // #HELP: v27 SpectrumDetail makes the Post-Processing spectrum sharper with a higher-resolution resonant analyzer and thinner trace display.
 // #HELP: v26 SpectrumContrast makes the Post-Processing spectrum underlay brighter and easier to read on quiet material.
-// #HELP: v45 GroupSync ordering has been retired in v59; its runtime path is inert/reserved so old projects are not forced into grouped triggering.
 // #HELP: v29 GrainCorpus builds a load-time grain/event corpus so Granular can transform both single long sources and multi-source banks without doing descriptor analysis at playback time.
 // #HELP: v33 EnvTrajectory teaches Granular to follow learned corpus energy motion so phrases have rises, falls, crests, and decay instead of flat wet grain beds.
 // #HELP: v46 CleanDeCrust adds Shift+drag Clean as an FFT-512 spectral-kurtosis decrust mode for crunchy/crusty SFX. It is intentionally fail-fast at high values and the FFT path is inactive unless the hidden mode is nonzero.
@@ -87,8 +85,12 @@ filename:0,sample.wav
 // #HELP: ## Playback engines
 // #HELP: Raw plays the source directly. Tape uses the slower/heavier rate path. Hybrid keeps the head direct, sustains from body grains, can borrow matched tails, and can hand off Release level/body phase into the next Attack. Granular uses a load-time analyzed grain corpus: long files become many searchable micro-events, multi-source banks become one shared grain field, and playback uses anchor/texture/spice streams, phrase + envelope trajectories, corpus continuity, source-adaptive overlap, restrained swells, release blooms, and grain-level decorrelation.
 // #HELP:
+// #HELP: Sample reports a constant latency of 520 engine samples (10.83 ms at 48 kHz, 1x); dry input and the final DeCrust stage are aligned.
+// #HELP:
 // #HELP: ## Cleanup and depth
-// #HELP: Clean is a transient-protected de-noise/de-bed macro: low values clean hiss/static tails gently, high values aggressively scrub low-SNR sustained noise and become obvious quickly. Shift+drag Clean controls DeCrust, a hidden FFT-512 spectral-kurtosis crust repair mode for crunchy SFX; it is bypassed completely at 0. Room Tame is a transient-protected de-room/de-smear macro: low values restrain late room wash, high values make the correction obvious quickly. Shift+drag Room adds intentional designed Space; Alt+drag Room changes Space character from tight early room to wide dark bloom. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement. Shift+drag Push adds PopCue, a parallel concrete-detail cue extractor that restores object/tactile detail without broadly brightening.
+// #HELP: Clean is a transient-protected de-noise/de-bed macro: low values clean hiss/static tails gently, high values aggressively scrub low-SNR sustained noise and become obvious quickly. Shift+drag Clean controls DeCrust, a hidden FFT-512 spectral-kurtosis crust repair mode for crunchy SFX; its processing is bypassed at 0 while the fixed 520-sample delay remains. Room Tame is a transient-protected de-room/de-smear macro: low values restrain late room wash, high values make the correction obvious quickly. Shift+drag Room adds intentional designed Space; Alt+drag Room changes Space character from tight early room to wide dark bloom. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement. Shift+drag Push adds PopCue, a parallel concrete-detail cue extractor that restores object/tactile detail without broadly brightening.
+// #HELP:
+// #HELP: Legacy EQ import: Shift+right-click Drive imports the retained v60 preset value; Alt+right-click imports v61-v67. The two old formats overlap, so select the version that saved your preset. Values already rounded by an older host cannot be recovered exactly.
 // #HELP:
 // #HELP: ## Post-Processing
 // #HELP: The Post-Processing panel is a final-output EQ editor with pre/post spectrum overlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope; Ctrl+click/drag temporarily solos the selected band/cut for auditioning.
@@ -96,8 +98,6 @@ filename:0,sample.wav
 // #HELP: ## Tone and feel
 // #HELP: Color is now ERB Tilt: positive brightens, negative darkens around a pivot. Alt+Color sets Pivot; Shift+Color toggles auto-infer pivot. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Shift+drag Grain adjusts hidden Edge Melt for Granular-only grain-border smoothing. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection; Shift+drag Dynamics adds hidden source-relative ERB Expansion for low-level bed cleanup; Ctrl+drag Dynamics sets the maximum reduction depth. Shift+drag Push adds hidden PopCue for concrete detail; Shift+drag Output adds clean parallel Harmonics.
 // #HELP:
-// #HELP: ## FluxBridge
-// #HELP: When the fixed FluxBridge CC lane block is present, Sample adds subtle motion-driven tone, focus, width, pan, and body contour while protecting transient-rich hits.
 // #HELP:
 // #HELP: ## Best uses
 // #HELP: Fast one-shot banks, found-sound instruments, texture instruments, sketching, and exploratory sound design.
@@ -138,6 +138,7 @@ slider27:0<0,100,0.1>--Push (%)
 slider28:100<-100,100,1>--Attack slope (%)
 slider29:-100<-100,100,1>--Decay slope (%)
 slider30:-100<-100,100,1>--Release slope (%)
+slider31:-1<-3,117648,1>--Hidden EQ Drives HPF/B1/B2 (-2=import v60; -3=import v61+)
 slider32:0<-18,18,0.1>--EQ Band 1 Gain (dB)
 slider33:0<-18,18,0.1>--EQ Band 2 Gain (dB)
 slider34:0<-18,18,0.1>--EQ Band 3 Gain (dB)
@@ -164,12 +165,12 @@ slider54:0.5<0,1,0.001>--Hidden Space Character
 slider55:0<0,1,0.001>--Hidden Harmonics
 slider56:0<0,1,0.001>--Hidden PopCue
 slider57:0<0,1,1{manual,auto}>--Auto Smooth A/R
-slider58:0<0,4,1>--Reserved GroupSync Rank (unmapped)
-slider59:0<0,1,0.001>--Reserved GroupSync A (unmapped)
+slider58:0<0,2400,1>--Hidden EQ Drives B3/LPF
+slider59:0<0,1,0.001>--Reserved 59 (unmapped)
 slider60:1000<-20000,20000,1>--Hidden Color Pivot (Hz; negative=Auto)
 slider61:1<0,1,0.001>--Hidden Pitch Mix
 slider62:0<0,242,1>--Hidden EQ Character Pack
-slider63:0<0,812990017200,1>--Hidden EQ Drive Pack (v61 compact/migrates old)
+slider63:0<0,812990017200,1>--Legacy EQ Drive Import (retained)
 slider64:6<0,60,0.1>--Hidden Source Expand Depth (dB)
 @init
 /*
@@ -207,7 +208,7 @@ function denorm_zap(x)
 function denorm_guard_tick()
 (
   denorm_flip = -denorm_flip;
-  denorm_flip * DENORM_GUARD;
+  denorm_flip * DENORM_GUARD_LEVEL;
 );
 
 function denorm_near_silence(l r)
@@ -397,148 +398,13 @@ function cents_ratio(cents)
   exp(cents * 0.000577622650466621);
 );
 
-function cc_to_u01(cc)
-(
-  clamp01(cc / 127);
-);
-
-function cc_to_s11(cc)
-(
-  clamp((cc / 63.5) - 1, -1, 1);
-);
-
-function cc_to_ratio(cc)
-(
-  cc <= 63 ? (cc / 63) : (1 + ((cc - 64) / 63) * 3);
-);
-
-function m2e_apply_cc(base ccnum ccval) local(off)
-(
-  off = ccnum - base;
-
-  off == 0  ? m2e_env_raw = cc_to_u01(ccval);
-  off == 5  ? m2e_rigid_abs_raw = cc_to_u01(ccval);
-  off == 6  ? m2e_rigid_rel_raw = cc_to_u01(ccval);
-  off == 17 ? m2e_impact_raw = cc_to_u01(ccval);
-  off == 18 ? m2e_pan_raw = cc_to_u01(ccval);
-  off == 19 ? m2e_entropy_raw = cc_to_u01(ccval);
-  off == 20 ? m2e_axis_v_raw = cc_to_s11(ccval);
-  off == 21 ? m2e_axis_acc_raw = cc_to_s11(ccval);
-  off == 24 ? m2e_lat_v_raw = cc_to_s11(ccval);
-  off == 28 ? m2e_lat_amp_raw = cc_to_u01(ccval);
-  off == 29 ? m2e_micro_raw = cc_to_u01(ccval);
-  off == 31 ? m2e_meso_raw = cc_to_u01(ccval);
-  off == 32 ? m2e_macro_raw = cc_to_u01(ccval);
-  off == 33 ? m2e_excite_raw = cc_to_u01(ccval);
-  off == 34 ? m2e_activity_raw = cc_to_ratio(ccval);
-
-  m2e_rigid_raw = 0.5 * (m2e_rigid_abs_raw + m2e_rigid_rel_raw);
-);
-
-function m2e_decode_snapshot(base) local(i cc)
-(
-  i = 0;
-  while (i < M2E_LANE_COUNT) (
-    (m2e_clock_samps - m2e_cc_age_base[base + i]) <= (m2e_detect_window_samps * 4) ? (
-      cc = clamp(m2e_cc_val_base[base + i], 0, 127);
-      m2e_apply_cc(base, base + i, cc);
-    );
-    i += 1;
-  );
-);
-
-function m2e_detect_base(now_samps) local(base k age count g0 g1 g2 g3 best best_count)
-(
-  best = -1;
-  best_count = 0;
-
-  base = M2E_BASE_MIN;
-  while (base <= M2E_BASE_MAX) (
-    count = 0;
-    g0 = 0; g1 = 0; g2 = 0; g3 = 0;
-
-    k = 0;
-    while (k < M2E_LANE_COUNT) (
-      age = now_samps - m2e_cc_age_base[base + k];
-      age <= m2e_detect_window_samps ? (
-        count += 1;
-        k <= 4 ? g0 = 1;
-        (k >= 15 && k <= 19) ? g1 = 1;
-        (k >= 20 && k <= 28) ? g2 = 1;
-        k >= 29 ? g3 = 1;
-      );
-      k += 1;
-    );
-
-    (g0 && g1 && g2 && g3 && (count > best_count)) ? (
-      best_count = count;
-      best = base;
-    );
-
-    base += 1;
-  );
-
-  m2e_detect_count = best_count;
-  best_count >= M2E_DETECT_MIN ? best : -1;
-);
-
-function m2e_reset() local(i)
-(
-  i = 0;
-  while (i < 128) (
-    m2e_cc_age_base[i] = -1000000000;
-    m2e_cc_val_base[i] = 0;
-    i += 1;
-  );
-
-  m2e_base = M2E_BASE_FIXED;
-  m2e_detect_count = 0;
-  m2e_active = 0;
-  m2e_last_msg_samps = -1000000000;
-  m2e_last_any_cc_samps = -1000000000;
-  m2e_target = 0;
-  m2e_mix = 0;
-
-  m2e_env_raw = 0.5;
-  m2e_rigid_abs_raw = 0;
-  m2e_rigid_rel_raw = 0;
-  m2e_rigid_raw = 0;
-  m2e_impact_raw = 0;
-  m2e_pan_raw = 0.5;
-  m2e_entropy_raw = 0;
-  m2e_axis_v_raw = 0;
-  m2e_axis_acc_raw = 0;
-  m2e_lat_v_raw = 0;
-  m2e_lat_amp_raw = 0;
-  m2e_micro_raw = 0;
-  m2e_meso_raw = 0;
-  m2e_macro_raw = 0;
-  m2e_excite_raw = 0;
-  m2e_activity_raw = 1;
-
-  m2e_env_s = m2e_env_raw;
-  m2e_rigid_s = m2e_rigid_raw;
-  m2e_impact_s = m2e_impact_raw;
-  m2e_pan_s = m2e_pan_raw;
-  m2e_entropy_s = m2e_entropy_raw;
-  m2e_axis_v_s = m2e_axis_v_raw;
-  m2e_axis_acc_s = m2e_axis_acc_raw;
-  m2e_lat_v_s = m2e_lat_v_raw;
-  m2e_lat_amp_s = m2e_lat_amp_raw;
-  m2e_micro_s = m2e_micro_raw;
-  m2e_meso_s = m2e_meso_raw;
-  m2e_macro_s = m2e_macro_raw;
-  m2e_excite_s = m2e_excite_raw;
-  m2e_activity_s = m2e_activity_raw;
-);
-
 function mono_frame(ptr nch frame) local(l r)
 (
   // SM_PTR stores a runtime sample-pool ID, not a mem[] pointer.
   nch >= 2 ? (
     l = sample_read(bank_pool, ptr, 0, frame);
     r = sample_read(bank_pool, ptr, 1, frame);
-    0.5 * (l + r);
+    mono_source ? 0.5 * (l + r) : (analysis_channel_base[ptr] > 0 ? r : l);
   ) : (
     sample_read(bank_pool, ptr, 0, frame);
   );
@@ -788,7 +654,7 @@ function corpus_region_bounds(sid region) local(sm frames sr gatt ghead gtail al
   );
 );
 
-function corpus_measure_at(sm pos win) local(ptr nch sr frames a b i step x ax prev lp hf sumsq sumabs sumdiff sumhf rough n lpcoef rms edge bright sharp sal)
+function corpus_measure_at(sm pos win) local(ptr nch sr frames a b i step x ax prev lp hf sumsq sumabs sumdiff sumhf rough n lpcoef rms edge bright sharp sal j local_span)
 (
   ptr = sm[SM_PTR] | 0;
   nch = max(1, sm[SM_NCH] | 0);
@@ -801,7 +667,9 @@ function corpus_measure_at(sm pos win) local(ptr nch sr frames a b i step x ax p
   b = clamp(a + win, a + 1, max(a + 1, frames - 1));
   step = max(1, floor((b - a) / 256));
 
-  lpcoef = clamp(1 - exp(-6.283185307179586 * min(1800, sr * 0.45) / max(sr, 1)), 0.001, 0.92);
+  // A centered local lowpass has a fixed physical aperture (~0.28 ms).
+  // Stride chooses observation centers; it does not change the filter sample rate.
+  local_span = max(1, floor(sr / 7200));
   lp = 0;
   prev = mono_frame(ptr, nch, a);
   sumsq = 0;
@@ -815,7 +683,13 @@ function corpus_measure_at(sm pos win) local(ptr nch sr frames a b i step x ax p
   while (i < b) (
     x = mono_frame(ptr, nch, i);
     ax = abs(x);
-    lp += (x - lp) * lpcoef;
+    lp = 0; j = -local_span;
+    while (j <= local_span) (
+      lp += mono_frame(ptr, nch, clamp(i + j, 0, frames - 1));
+      j += 1;
+    );
+    lp /= 2 * local_span + 1;
+    prev = mono_frame(ptr, nch, max(0, i - 1));
     hf = x - lp;
     sumsq += x * x;
     sumabs += ax;
@@ -2343,6 +2217,38 @@ function count_active_voices() local(i v cnt)
   cnt;
 );
 
+function prepare_pitch_filter(decim) local(i half x cutoff w sum)
+(
+  half = min(512, max(8, 8 * decim));
+  pitch_filter_half = half;
+  cutoff = 0.45 / decim;
+  sum = 0;
+  i = -half;
+  while (i <= half) (
+    x = 6.283185307179586 * cutoff * i;
+    w = (i == 0 ? 2 * cutoff : sin(x) / (3.141592653589793 * i));
+    w *= 0.5 + 0.5 * cos(3.141592653589793 * i / half);
+    analysis_filter_base[i + half] = w;
+    sum += w;
+    i += 1;
+  );
+  i = 0;
+  while (i <= 2 * half) (
+    analysis_filter_base[i] /= max(sum, 0.000001);
+    i += 1;
+  );
+);
+
+function pitch_filtered_frame(ptr nch frame) local(i x)
+(
+  i = -pitch_filter_half; x = 0;
+  while (i <= pitch_filter_half) (
+    x += mono_frame(ptr, nch, frame + i) * analysis_filter_base[i + pitch_filter_half];
+    i += 1;
+  );
+  x;
+);
+
 function estimate_pitch(sm) local(
   ptr nch sr frames attack head tail
   decim effsr win minlag maxlag cand start maxstart
@@ -2371,6 +2277,7 @@ function estimate_pitch(sm) local(
     // Decimate to keep bank scan cheap while still covering musical pitch.
     decim = max(1, floor(sr / 12000));
     effsr = sr / decim;
+    prepare_pitch_filter(decim);
     win = clamp(floor(effsr * 0.055), 320, min(896, ONSET_SCRATCH_MAX));
     win = min(win, max(64, floor((frames - 2) / decim)));
     minlag = max(3, floor(effsr / 2600));
@@ -2386,11 +2293,11 @@ function estimate_pitch(sm) local(
         maxstart = max(0, frames - 2 - win * decim);
         start = clamp(floor(start), 0, maxstart);
 
-        lp = mono_frame(ptr, nch, start);
+        lp = pitch_filtered_frame(ptr, nch, start);
         sumsq = 0;
         i = 0;
         while (i < win) (
-          x = mono_frame(ptr, nch, start + i * decim);
+          x = pitch_filtered_frame(ptr, nch, start + i * decim);
           lp += (x - lp) * 0.038;
           hp = x - lp;
           onset_raw_base[i] = hp;
@@ -3139,6 +3046,21 @@ function dynx_svf_bp(x idx) local(v0 v1 v2 g k den ic1 ic2)
   v1;
 );
 
+function dynx_svf_bp_r(x idx) local(v0 v1 v2 g k den ic1 ic2)
+(
+  v0 = x;
+  g = idx[0];
+  k = idx[1];
+  ic1 = idx[6];
+  ic2 = idx[7];
+  den = 1 + g * (g + k);
+  v1 = (g * (v0 - ic2) + ic1) / max(0.000000001, den);
+  v2 = ic2 + g * v1;
+  idx[6] = denorm_zap(2 * v1 - ic1);
+  idx[7] = denorm_zap(2 * v2 - ic2);
+  v1;
+);
+
 function dynx_update_coeffs() local(i base fmin fmax erb_min erb_max e fc g k sumw w)
 (
   fmin = 80;
@@ -3240,18 +3162,19 @@ function reset_dynamics_expand_buffers() local(i base)
   dynx_expanding = 0;
   dynx_hpf_lp = 0;
   dynx_lpf_y = 0;
+  dynx_hpf_lp_r = 0; dynx_lpf_y_r = 0;
   i = 0;
   while (i < DYNX_BANDS) (
     base = dynx_bank_base + i * DYNX_STRIDE;
     base[2] = 0;
     base[3] = 0;
-    base[4] = 0;
+    base[4] = 0; base[6] = 0; base[7] = 0;
     i += 1;
   );
 );
 
 function apply_dynamics_expand() local(
-  inL inR depth x x_det base i bp p env sum det_lin det_db threshold_db live_conf profile_thr live_thr
+  inL inR depth x x_det x_det_r base i bp bpr p env sum det_lin det_db threshold_db live_conf profile_thr live_thr
   d xk s ratio_base ratio_eff target_gr target_gain_db target_gain post lim_tgt protect knee_db hys_db depth_cap_db depth_cap_norm close_c body_anchor thr_span thr_offset hi_room
 )
 (
@@ -3261,27 +3184,27 @@ function apply_dynamics_expand() local(
   inR = outR;
   depth = clamp01(dynamics_expand_amt);
 
-  denorm_near_silence(inL, inR) ? (
-    reset_dynamics_expand_buffers();
-    depth = 0;
-  );
 
   depth > 0.0001 ? (
     update_active_expander_profile();
 
-    x = 0.5 * (inL + inR);
+    x = inL;
     x_det = x;
     dynx_hpf_lp = denorm_zap(dynx_hpf_lp + (x_det - dynx_hpf_lp) * dynx_hpf_coeff);
     x_det -= dynx_hpf_lp;
     dynx_lpf_y = denorm_zap(dynx_lpf_y + (x_det - dynx_lpf_y) * dynx_lpf_coeff);
     x_det = dynx_lpf_y;
+    dynx_hpf_lp_r = denorm_zap(dynx_hpf_lp_r + (inR - dynx_hpf_lp_r) * dynx_hpf_coeff);
+    dynx_lpf_y_r = denorm_zap(dynx_lpf_y_r + (inR - dynx_hpf_lp_r - dynx_lpf_y_r) * dynx_lpf_coeff);
+    x_det_r = dynx_lpf_y_r;
 
     sum = 0;
     i = 0;
     while (i < DYNX_BANDS) (
       base = dynx_bank_base + i * DYNX_STRIDE;
       bp = dynx_svf_bp(x_det, base);
-      p = bp * bp;
+      bpr = dynx_svf_bp_r(x_det_r, base);
+      p = 0.5 * (bp * bp + bpr * bpr);
       env = base[4];
       env = denorm_zap(env + (p - env) * dynx_band_coeff);
       base[4] = env;
@@ -3368,9 +3291,17 @@ function apply_dynamics_expand() local(
 );
 
 
-function analyze_sample(sm)
+function analyze_sample(sm) local(j anchor classic_anchor gauss_anchor)
 (
   onset_mode_active ? analyze_sample_gauss(sm) : analyze_sample_classic(sm);
+  anchor = sm[SM_ATTACK];
+  memcpy(analysis_copy_base, sm, SM_STRIDE);
+  onset_mode_active ? analyze_sample_classic(sm) : analyze_sample_gauss(sm);
+  classic_anchor = onset_mode_active ? sm[SM_ATTACK] : anchor;
+  gauss_anchor = onset_mode_active ? anchor : sm[SM_ATTACK];
+  memcpy(sm, analysis_copy_base, SM_STRIDE);
+  sm[SM_CLASSIC_ATTACK] = classic_anchor;
+  sm[SM_GAUSS_ATTACK] = gauss_anchor;
   estimate_sample_tail_grace(sm);
   estimate_sample_expander_profile(sm);
   // v37 PerfGate: skip Granular-only corpus markers and obsolete learned-flow
@@ -3404,6 +3335,8 @@ function reset_note_gates() local(i)
   i = 0;
   while (i < NOTE_GATE_CELLS) (
     note_gate_base[i] = 0;
+    note_on_seq_base[i] = 0;
+    note_off_seq_base[i] = 0;
     i += 1;
   );
 );
@@ -3411,19 +3344,15 @@ function reset_note_gates() local(i)
 function note_gate_on(note chan) local(idx)
 (
   idx = note_gate_idx(note, chan);
-  note_gate_base[idx] = min(32, note_gate_base[idx] + 1);
+  note_gate_base[idx] += 1;
+  note_on_seq_base[idx] += 1;
 );
 
 function note_gate_off(note chan) local(idx)
 (
   idx = note_gate_idx(note, chan);
-  note_gate_base[idx] = max(0, note_gate_base[idx] - 1);
-);
-
-function note_gate_forget_voice(v) local(idx)
-(
-  (v[VC_ACTIVE] > 0 && v[VC_AUDIOTRIG] <= 0 && v[VC_STAGE] != ENV_RELEASE) ? (
-    idx = note_gate_idx(v[VC_NOTE], v[VC_CHAN]);
+  note_off_seq_base[idx] < note_on_seq_base[idx] ? (
+    note_off_seq_base[idx] += 1;
     note_gate_base[idx] = max(0, note_gate_base[idx] - 1);
   );
 );
@@ -3494,6 +3423,10 @@ function decrust_clear_state()
   memset(dc_m4_base, 0, DECRUST_BINS);
   memset(dc_gain_base, 0, DECRUST_BINS);
 
+  memset(dc_padl_base, 0, 8); memset(dc_padr_base, 0, 8);
+  memset(input_delay_l_base, 0, DECRUST_RING); memset(input_delay_r_base, 0, DECRUST_RING);
+  dc_enable_mix = 0; dc_warm_left = DECRUST_LATENCY + DECRUST_FFT;
+  dc_padpos = 0; input_delay_pos = 0;
   dc_fft_ready = 0;
   dc_ringpos = 0;
   dc_hop_ctr = 0;
@@ -3698,7 +3631,7 @@ function apply_clean_decrust() local(
   // hidden Shift+Clean mode and the only place the FFT runs. Amount 0.5 roughly
   // matches the standalone DeCrust settings shown by the user; above that goes
   // intentionally fail-fast and more extreme.
-  clean_decrust_amt > 0.0001 ? (
+  (
     dc_fft_ready <= 0 ? decrust_update_params();
 
     dc_inl_base[dc_ringpos] = outL;
@@ -3712,7 +3645,7 @@ function apply_clean_decrust() local(
     dc_hop_ctr += 1;
     dc_hop_ctr >= DECRUST_HOP ? (
       dc_hop_ctr = 0;
-      decrust_process_frame();
+      (clean_decrust_amt > 0.0001 || dc_enable_mix > 0) ? decrust_process_frame();
     );
 
     dryidx = (dc_ringpos - DECRUST_LATENCY) & DECRUST_RINGMASK;
@@ -3744,9 +3677,15 @@ function apply_clean_decrust() local(
     wetL = mid_wet + side_wet;
     wetR = mid_wet - side_wet;
 
+    dc_padl_base[dc_padpos] = wetL; dc_padr_base[dc_padpos] = wetR;
+    wetL = dc_padl_base[(dc_padpos - 6) & 7]; wetR = dc_padr_base[(dc_padpos - 6) & 7];
+    dc_padpos = (dc_padpos + 1) & 7;
+    dc_warm_left = max(0, dc_warm_left - 1);
+    dc_target_mix = clean_decrust_amt > 0.0001 && dc_warm_left <= 0 ? 1 : 0;
+    dc_enable_mix += clamp(dc_target_mix - dc_enable_mix, -1 / DECRUST_FFT, 1 / DECRUST_FFT);
     deltaL = wetL - dryL;
     deltaR = wetR - dryR;
-    wetmix = dc_stage;
+    wetmix = dc_stage * dc_enable_mix;
     outL = decrust_zap(dryL + wetmix * deltaL);
     outR = decrust_zap(dryR + wetmix * deltaR);
 
@@ -3776,7 +3715,6 @@ function reset_clean_buffers() local(i)
     i += 1;
   );
 
-  decrust_clear_state();
 );
 
 function reset_room_buffers()
@@ -4161,7 +4099,6 @@ function apply_color_erb_tilt() local(
     color_tilt_runtime_active > 0 ? reset_color_tilt_buffers();
   ) : (
     color_tilt_runtime_active = 1;
-    denorm_near_silence(inL, inR) ? reset_color_tilt_buffers();
 
     outTL = 0;
     outTR = 0;
@@ -4264,9 +4201,13 @@ function reset_processing_buffers() local(i total)
   while (i < POSTEQ_SPEC_BINS) (
     posteq_spec_lp_base[i] = 0;
     posteq_spec_z2_base[i] = 0;
+    posteq_pre_rz1_base[i] = 0;
+    posteq_pre_rz2_base[i] = 0;
     posteq_spec_env_base[i] = 0;
     posteq_post_z1_base[i] = 0;
     posteq_post_z2_base[i] = 0;
+    posteq_post_rz1_base[i] = 0;
+    posteq_post_rz2_base[i] = 0;
     posteq_post_env_base[i] = 0;
     i += 1;
   );
@@ -4549,15 +4490,15 @@ function posteq_pack_char_state() local(p)
 
 function posteq_pack_drive_state() local(p)
 (
-  // New compact 0.5 dB pack: base 49, values 0..48 = 0..24 dB.
-  // The slider range remains wide enough to migrate v60's old base-241 pack.
-  p = 0;
-  p = pack_set_base(p, 0, 49, floor(posteq_hpf_drive * 2 + 0.5));
-  p = pack_set_base(p, 1, 49, floor(posteq_b1_drive * 2 + 0.5));
-  p = pack_set_base(p, 2, 49, floor(posteq_b2_drive * 2 + 0.5));
-  p = pack_set_base(p, 3, 49, floor(posteq_b3_drive * 2 + 0.5));
-  p = pack_set_base(p, 4, 49, floor(posteq_lpf_drive * 2 + 0.5));
+  p = floor(posteq_hpf_drive * 2 + 0.5);
+  p += 49 * floor(posteq_b1_drive * 2 + 0.5);
+  p += 2401 * floor(posteq_b2_drive * 2 + 0.5);
   p;
+);
+
+function posteq_pack_drive_upper()
+(
+  floor(posteq_b3_drive * 2 + 0.5) + 49 * floor(posteq_lpf_drive * 2 + 0.5);
 );
 
 function posteq_update_char_active()
@@ -4682,6 +4623,8 @@ function posteq_zero_pre_spectrum() local(i)
   while (i < POSTEQ_SPEC_BINS) (
     posteq_spec_lp_base[i] = 0;
     posteq_spec_z2_base[i] = 0;
+    posteq_pre_rz1_base[i] = 0;
+    posteq_pre_rz2_base[i] = 0;
     posteq_spec_env_base[i] = 0;
     i += 1;
   );
@@ -4693,6 +4636,8 @@ function posteq_zero_post_spectrum() local(i)
   while (i < POSTEQ_SPEC_BINS) (
     posteq_post_z1_base[i] = 0;
     posteq_post_z2_base[i] = 0;
+    posteq_post_rz1_base[i] = 0;
+    posteq_post_rz2_base[i] = 0;
     posteq_post_env_base[i] = 0;
     i += 1;
   );
@@ -4724,73 +4669,49 @@ function posteq_zero_filter_states() local(i base)
   );
 );
 
-function posteq_analyze_spectrum(l r) local(src i base y z1 z2 det env)
+function posteq_analyze_spectrum(l r) local(i base y yr z1 z2 det env)
 (
-  // Pre-PostEQ analyzer. Silence is gated so the 96 visual-only resonant
-  // bandpass states cannot decay into denormals across parallel instances.
-  src = 0.5 * (l + r);
-  abs(src) < DENORM_AUDIO_FLOOR ? (
-    posteq_pre_silent += 1;
-    posteq_pre_silent >= DENORM_ANALYZER_HOLD ? (
-      posteq_zero_pre_spectrum();
-      posteq_pre_silent = DENORM_ANALYZER_HOLD;
-    );
-  ) : (
-    posteq_pre_silent = 0;
+  max(abs(l), abs(r)) < DENORM_AUDIO_FLOOR ? posteq_pre_silent += 1 : posteq_pre_silent = 0;
+  posteq_pre_silent == DENORM_ANALYZER_HOLD ? posteq_zero_pre_spectrum();
+  posteq_pre_silent < DENORM_ANALYZER_HOLD ? (
     i = 0;
     while (i < POSTEQ_SPEC_BINS) (
       base = i * POSTEQ_SPEC_COEFFS;
-
-      z1 = posteq_spec_lp_base[i];
-      z2 = posteq_spec_z2_base[i];
-      y = posteq_spec_coeff_base[base + 0] * src + z1;
-      z1 = posteq_spec_coeff_base[base + 1] * src - posteq_spec_coeff_base[base + 3] * y + z2;
-      z2 = posteq_spec_coeff_base[base + 2] * src - posteq_spec_coeff_base[base + 4] * y;
-
-      posteq_spec_lp_base[i] = denorm_zap(z1);
-      posteq_spec_z2_base[i] = denorm_zap(z2);
-
-      det = abs(y);
+      y = posteq_spec_coeff_base[base] * l + posteq_spec_lp_base[i];
+      posteq_spec_lp_base[i] = denorm_zap(posteq_spec_coeff_base[base + 1] * l - posteq_spec_coeff_base[base + 3] * y + posteq_spec_z2_base[i]);
+      posteq_spec_z2_base[i] = denorm_zap(posteq_spec_coeff_base[base + 2] * l - posteq_spec_coeff_base[base + 4] * y);
+      yr = posteq_spec_coeff_base[base] * r + posteq_pre_rz1_base[i];
+      posteq_pre_rz1_base[i] = denorm_zap(posteq_spec_coeff_base[base + 1] * r - posteq_spec_coeff_base[base + 3] * yr + posteq_pre_rz2_base[i]);
+      posteq_pre_rz2_base[i] = denorm_zap(posteq_spec_coeff_base[base + 2] * r - posteq_spec_coeff_base[base + 4] * yr);
+      det = sqrt(0.5 * (y * y + yr * yr));
       env = posteq_spec_env_base[i];
-      env += (det - env) * (det > env ? posteq_spec_att_coeff : posteq_spec_rel_coeff);
-      posteq_spec_env_base[i] = denorm_zap(env);
+      posteq_spec_env_base[i] = denorm_zap(env + (det - env) * (det > env ? posteq_spec_att_coeff : posteq_spec_rel_coeff));
       i += 1;
     );
-  );
+  ) : posteq_pre_silent = DENORM_ANALYZER_HOLD + 1;
 );
 
-function posteq_analyze_post_spectrum(l r) local(src i base y z1 z2 det env)
+
+function posteq_analyze_post_spectrum(l r) local(i base y yr z1 z2 det env)
 (
-  // Post-PostEQ analyzer. Same silence gate as the pre analyzer.
-  src = 0.5 * (l + r);
-  abs(src) < DENORM_AUDIO_FLOOR ? (
-    posteq_post_silent += 1;
-    posteq_post_silent >= DENORM_ANALYZER_HOLD ? (
-      posteq_zero_post_spectrum();
-      posteq_post_silent = DENORM_ANALYZER_HOLD;
-    );
-  ) : (
-    posteq_post_silent = 0;
+  max(abs(l), abs(r)) < DENORM_AUDIO_FLOOR ? posteq_post_silent += 1 : posteq_post_silent = 0;
+  posteq_post_silent == DENORM_ANALYZER_HOLD ? posteq_zero_post_spectrum();
+  posteq_post_silent < DENORM_ANALYZER_HOLD ? (
     i = 0;
     while (i < POSTEQ_SPEC_BINS) (
       base = i * POSTEQ_SPEC_COEFFS;
-
-      z1 = posteq_post_z1_base[i];
-      z2 = posteq_post_z2_base[i];
-      y = posteq_spec_coeff_base[base + 0] * src + z1;
-      z1 = posteq_spec_coeff_base[base + 1] * src - posteq_spec_coeff_base[base + 3] * y + z2;
-      z2 = posteq_spec_coeff_base[base + 2] * src - posteq_spec_coeff_base[base + 4] * y;
-
-      posteq_post_z1_base[i] = denorm_zap(z1);
-      posteq_post_z2_base[i] = denorm_zap(z2);
-
-      det = abs(y);
+      y = posteq_spec_coeff_base[base] * l + posteq_post_z1_base[i];
+      posteq_post_z1_base[i] = denorm_zap(posteq_spec_coeff_base[base + 1] * l - posteq_spec_coeff_base[base + 3] * y + posteq_post_z2_base[i]);
+      posteq_post_z2_base[i] = denorm_zap(posteq_spec_coeff_base[base + 2] * l - posteq_spec_coeff_base[base + 4] * y);
+      yr = posteq_spec_coeff_base[base] * r + posteq_post_rz1_base[i];
+      posteq_post_rz1_base[i] = denorm_zap(posteq_spec_coeff_base[base + 1] * r - posteq_spec_coeff_base[base + 3] * yr + posteq_post_rz2_base[i]);
+      posteq_post_rz2_base[i] = denorm_zap(posteq_spec_coeff_base[base + 2] * r - posteq_spec_coeff_base[base + 4] * yr);
+      det = sqrt(0.5 * (y * y + yr * yr));
       env = posteq_post_env_base[i];
-      env += (det - env) * (det > env ? posteq_spec_att_coeff : posteq_spec_rel_coeff);
-      posteq_post_env_base[i] = denorm_zap(env);
+      posteq_post_env_base[i] = denorm_zap(env + (det - env) * (det > env ? posteq_spec_att_coeff : posteq_spec_rel_coeff));
       i += 1;
     );
-  );
+  ) : posteq_post_silent = DENORM_ANALYZER_HOLD + 1;
 );
 
 
@@ -6154,10 +6075,6 @@ function apply_focus_peak_pack() local(
   depth = abs(clamp(focus_peak_amt, -1, 1));
   sign = focus_peak_amt >= 0 ? 1 : -1;
 
-  denorm_near_silence(inL, inR) ? (
-    reset_focus_peak_buffers();
-    depth = 0;
-  );
 
   protect = sign > 0 ? transient_guard_s * (0.30 + 0.10 * trans_mode_mix) : transient_guard_s * 0.02;
   depth *= 1 - clamp01(protect);
@@ -6301,246 +6218,6 @@ function apply_edge_melt_post() local(m mm blur declick post_mix hiL hiR smoothL
     outR = lpR + lerp(hiR, smoothR, post_mix);
   ) : (
     edge_melt_runtime_active > 0 ? reset_edge_melt_buffers();
-  );
-);
-
-function group_hash_current_name() local(i n c h)
-(
-  // Cheap deterministic hash for track-name grouping. Kept numeric for gmem.
-  // JSFX/EEL2 does not allow #string parameters in normal function arg lists,
-  // so this hashes the global #group_name string directly.
-  h = 5381;
-  n = strlen(#group_name);
-  i = 0;
-  while (i < n) (
-    c = str_getchar(#group_name, i);
-    h = (h * 33 + c + 17) % 2147483647;
-    i += 1;
-  );
-  h <= 0 ? h = 1;
-  h;
-);
-
-function group_peer_base(idx)
-(
-  GROUP_PEER_BASE + idx * GROUP_PEER_STRIDE;
-);
-
-function group_init_memory() local(i b)
-(
-  (gmem[GROUP_MAGIC_SLOT] != GROUP_MAGIC_VALUE) ? (
-    i = 0;
-    while (i < GROUP_PEER_BASE + GROUP_MAX_PEERS * GROUP_PEER_STRIDE + 8) (
-      gmem[i] = 0;
-      i += 1;
-    );
-    gmem[GROUP_MAGIC_SLOT] = GROUP_MAGIC_VALUE;
-    gmem[GROUP_COUNTER_SLOT] = 0;
-    gmem[GROUP_CLOCK_SLOT] = 1;
-    gmem[GROUP_EVENT_SLOT] = 1;
-  );
-
-  group_instance_id <= 0 ? (
-    gmem[GROUP_COUNTER_SLOT] = max(gmem[GROUP_COUNTER_SLOT], 0) + 1;
-    group_instance_id = gmem[GROUP_COUNTER_SLOT] | 0;
-    group_instance_id <= 0 ? group_instance_id = floor(100000 + rand(1) * 900000);
-  );
-);
-
-function group_poll_track_name(force) local(seq ok)
-(
-  seq = track_name_seq();
-  (force || seq != group_track_seq || group_name_hash <= 0) ? (
-    group_track_seq = seq;
-    ok = track_name(#group_name);
-    (ok <= 0 || strlen(#group_name) <= 0) ? sprintf(#group_name, "Sample");
-    group_name_hash = group_hash_current_name();
-    group_my_slot = -1;
-  );
-);
-
-function group_find_slot_by_id(id) local(i b found)
-(
-  found = -1;
-  i = 0;
-  while (i < GROUP_MAX_PEERS && found < 0) (
-    b = group_peer_base(i);
-    (gmem[b + GROUP_F_ID] == id) ? found = i;
-    i += 1;
-  );
-  found;
-);
-
-function group_find_free_slot() local(i b found oldest_idx oldest_clk clk)
-(
-  found = -1;
-  oldest_idx = 0;
-  oldest_clk = 1000000000000;
-  clk = gmem[GROUP_CLOCK_SLOT];
-  i = 0;
-  while (i < GROUP_MAX_PEERS && found < 0) (
-    b = group_peer_base(i);
-    (gmem[b + GROUP_F_ID] <= 0 || (clk - gmem[b + GROUP_F_HEART]) > GROUP_STALE_TICKS) ? (
-      found = i;
-    ) : (
-      gmem[b + GROUP_F_HEART] < oldest_clk ? (
-        oldest_clk = gmem[b + GROUP_F_HEART];
-        oldest_idx = i;
-      );
-    );
-    i += 1;
-  );
-  found < 0 ? oldest_idx : found;
-);
-
-function group_ensure_slot() local(idx b)
-(
-  group_init_memory();
-  group_poll_track_name(0);
-  idx = group_find_slot_by_id(group_instance_id);
-  idx < 0 ? idx = group_find_free_slot();
-  group_my_slot = idx;
-  b = group_peer_base(idx);
-  gmem[b + GROUP_F_ID] = group_instance_id;
-  gmem[b + GROUP_F_HASH] = group_name_hash;
-  // Do not overwrite rank/mode command here; those are the shared order table.
-  idx;
-);
-
-function group_write_heartbeat(active strength) local(idx b clk)
-(
-  group_enabled > 0 ? (
-    idx = group_ensure_slot();
-    b = group_peer_base(idx);
-    clk = gmem[GROUP_CLOCK_SLOT] + 1;
-    gmem[GROUP_CLOCK_SLOT] = clk;
-    gmem[b + GROUP_F_ID] = group_instance_id;
-    gmem[b + GROUP_F_HASH] = group_name_hash;
-    gmem[b + GROUP_F_HEART] = clk;
-    gmem[b + GROUP_F_ACTIVE] = active ? 1 : 0;
-    gmem[b + GROUP_F_STRENGTH] = clamp01(strength);
-    gmem[b + GROUP_F_TRACKSEQ] = group_track_seq;
-  );
-);
-
-function group_refresh_state() local(i b clk id hash heart rank mode active peers leader strict)
-(
-  group_init_memory();
-  group_poll_track_name(0);
-  clk = gmem[GROUP_CLOCK_SLOT];
-  peers = 0;
-  leader = 0;
-  strict = 0;
-  group_my_rank = 0;
-  group_my_mode = 0;
-
-  i = 0;
-  while (i < GROUP_MAX_PEERS) (
-    b = group_peer_base(i);
-    id = gmem[b + GROUP_F_ID] | 0;
-    hash = gmem[b + GROUP_F_HASH] | 0;
-    heart = gmem[b + GROUP_F_HEART];
-    (id > 0 && hash == group_name_hash && (clk - heart) <= GROUP_STALE_TICKS) ? (
-      peers += 1;
-      (leader <= 0 || id < leader) ? leader = id;
-      mode = gmem[b + GROUP_F_MODE] | 0;
-      mode > 0 ? strict = 1;
-      id == group_instance_id ? (
-        group_my_rank = max(0, gmem[b + GROUP_F_RANK] | 0);
-        group_my_mode = mode;
-      );
-    );
-    i += 1;
-  );
-
-  group_peer_count = peers;
-  group_leader_id = leader;
-  group_is_leader = (leader == group_instance_id && leader > 0) ? 1 : 0;
-  group_strict_active = strict;
-);
-
-function group_set_mode_for_group(mode) local(i b clk id hash heart)
-(
-  group_ensure_slot();
-  clk = gmem[GROUP_CLOCK_SLOT];
-  i = 0;
-  while (i < GROUP_MAX_PEERS) (
-    b = group_peer_base(i);
-    id = gmem[b + GROUP_F_ID] | 0;
-    hash = gmem[b + GROUP_F_HASH] | 0;
-    heart = gmem[b + GROUP_F_HEART];
-    (id > 0 && hash == group_name_hash && (clk - heart) <= GROUP_STALE_TICKS) ? (
-      gmem[b + GROUP_F_MODE] = mode ? 1 : 0;
-    );
-    i += 1;
-  );
-  group_refresh_state();
-);
-
-function group_set_rank_for_id(id rank) local(i b clk hash heart)
-(
-  group_ensure_slot();
-  clk = gmem[GROUP_CLOCK_SLOT];
-  i = 0;
-  while (i < GROUP_MAX_PEERS) (
-    b = group_peer_base(i);
-    (gmem[b + GROUP_F_ID] == id && gmem[b + GROUP_F_HASH] == group_name_hash && (clk - gmem[b + GROUP_F_HEART]) <= GROUP_STALE_TICKS) ? (
-      gmem[b + GROUP_F_RANK] = clamp(rank | 0, 0, GROUP_MAX_RANK);
-      rank > 0 ? gmem[b + GROUP_F_MODE] = 1;
-    );
-    i += 1;
-  );
-  group_refresh_state();
-);
-
-function group_report_onset(strength) local(idx b ev)
-(
-  group_enabled > 0 ? (
-    idx = group_ensure_slot();
-    b = group_peer_base(idx);
-    ev = gmem[GROUP_EVENT_SLOT] + 1;
-    gmem[GROUP_EVENT_SLOT] = ev;
-    gmem[b + GROUP_F_ONSET] = ev;
-    gmem[b + GROUP_F_STRENGTH] = clamp01(strength);
-    gmem[b + GROUP_F_ACTIVE] = 1;
-    group_last_onset_event = ev;
-  );
-);
-
-function group_can_input_fire(env_amt) local(
-  clk ev i b id hash heart rank lower_exists lower_fired lower_onset myrank timeout_samps
-)
-(
-  group_enabled <= 0 ? 1 : (
-    group_refresh_state();
-    (group_strict_active <= 0 || group_my_rank <= 1) ? (
-      1;
-    ) : (
-      myrank = group_my_rank;
-      ev = gmem[GROUP_EVENT_SLOT];
-      input_trig_wait <= 0 ? input_trig_wait_event = ev;
-      lower_exists = 0;
-      lower_fired = 0;
-      clk = gmem[GROUP_CLOCK_SLOT];
-      i = 0;
-      while (i < GROUP_MAX_PEERS) (
-        b = group_peer_base(i);
-        id = gmem[b + GROUP_F_ID] | 0;
-        hash = gmem[b + GROUP_F_HASH] | 0;
-        heart = gmem[b + GROUP_F_HEART];
-        (id > 0 && id != group_instance_id && hash == group_name_hash && (clk - heart) <= GROUP_STALE_TICKS) ? (
-          rank = gmem[b + GROUP_F_RANK] | 0;
-          (rank > 0 && rank < myrank) ? (
-            lower_exists = 1;
-            lower_onset = gmem[b + GROUP_F_ONSET];
-            (lower_onset > input_trig_wait_event || (ev - lower_onset) <= GROUP_RECENT_EVENT_WINDOW) ? lower_fired = 1;
-          );
-        );
-        i += 1;
-      );
-      timeout_samps = max(64, floor(srate * GROUP_WAIT_TIMEOUT_SEC));
-      (!lower_exists || lower_fired || input_trig_wait >= timeout_samps) ? 1 : 0;
-    );
   );
 );
 
@@ -6701,6 +6378,7 @@ function reset_bank_state() local(i)
   reset_note_gates();
   reset_weight_buffers();
   reset_clean_buffers();
+  decrust_clear_state();
   reset_room_buffers();
   reset_space_verb_buffers();
   reset_output_harmonics_buffers();
@@ -6727,7 +6405,7 @@ function reset_bank_state() local(i)
 );
 
 function load_one_pool_sample(sample_index) local(
-  sid nch sr frames sm
+  sid nch sr frames sm j el er xl xr
 )
 (
   sid = sample_get(bank_pool, sample_index);
@@ -6745,6 +6423,15 @@ function load_one_pool_sample(sample_index) local(
       sm[SM_LASTUSED] = -1000000;
       sm[SM_PEAK]     = sample_peak(bank_pool, sid);
       sm[SM_RMS]      = sample_rms(bank_pool, sid);
+      el = 0; er = 0; j = 0;
+      // One whole-file decision avoids sign changes from a per-frame max channel.
+      while (j < frames) (
+        xl = sample_read(bank_pool, sid, 0, j);
+        xr = nch > 1 ? sample_read(bank_pool, sid, 1, j) : xl;
+        el += xl * xl; er += xr * xr;
+        j += 1;
+      );
+      analysis_channel_base[sid] = er > el ? 1 : 0;
       analyze_sample(sm);
       sample_count += 1;
     );
@@ -6889,12 +6576,15 @@ function configure_memory_layout(selected_count) local(cap) (
   onset_raw_base = sig_scratch_base + SIG_PEEK_WORDS + 64;
   onset_smooth_base = onset_raw_base + ONSET_SCRATCH_MAX;
 
-  m2e_cc_age_base = onset_smooth_base + ONSET_SCRATCH_MAX + 32;
-  m2e_cc_val_base = m2e_cc_age_base + 128;
+  note_gate_base = onset_smooth_base + ONSET_SCRATCH_MAX + 96;
 
-  note_gate_base = m2e_cc_val_base + 128 + 64;
-
-  weight_ap1_l_base = note_gate_base + NOTE_GATE_CELLS + 64;
+  note_on_seq_base = note_gate_base + NOTE_GATE_CELLS;
+  note_off_seq_base = note_on_seq_base + NOTE_GATE_CELLS;
+  midi_queue_base = note_off_seq_base + NOTE_GATE_CELLS;
+  analysis_copy_base = midi_queue_base + MIDI_QUEUE_CAP * 3;
+  analysis_channel_base = analysis_copy_base + SM_STRIDE;
+  analysis_filter_base = analysis_channel_base + sample_pool_capacity + 1;
+  weight_ap1_l_base = analysis_filter_base + 1025 + 64;
   weight_ap1_r_base = weight_ap1_l_base + AP_BUF_LEN;
   weight_ap2_l_base = weight_ap1_r_base + AP_BUF_LEN;
   weight_ap2_r_base = weight_ap2_l_base + AP_BUF_LEN;
@@ -6913,7 +6603,11 @@ function configure_memory_layout(selected_count) local(cap) (
   posteq_post_z2_base = posteq_post_z1_base + POSTEQ_SPEC_BINS;
   posteq_post_env_base = posteq_post_z2_base + POSTEQ_SPEC_BINS;
   posteq_spec_coeff_base = posteq_post_env_base + POSTEQ_SPEC_BINS;
-  posteq_bq_base = posteq_spec_coeff_base + POSTEQ_SPEC_BINS * POSTEQ_SPEC_COEFFS + 32;
+  posteq_pre_rz1_base = posteq_spec_coeff_base + POSTEQ_SPEC_BINS * POSTEQ_SPEC_COEFFS;
+  posteq_pre_rz2_base = posteq_pre_rz1_base + POSTEQ_SPEC_BINS;
+  posteq_post_rz1_base = posteq_pre_rz2_base + POSTEQ_SPEC_BINS;
+  posteq_post_rz2_base = posteq_post_rz1_base + POSTEQ_SPEC_BINS;
+  posteq_bq_base = posteq_post_rz2_base + POSTEQ_SPEC_BINS + 32;
   posteq_char_bq_base = posteq_bq_base + POSTEQ_BQ_COUNT * POSTEQ_BQ_STRIDE + 32;
   fpk_env_base = posteq_char_bq_base + POSTEQ_CHAR_BQ_COUNT * POSTEQ_CHAR_BQ_STRIDE + 32;
   fpk_gain_base = fpk_env_base + FPK_BANDS;
@@ -6950,7 +6644,11 @@ function configure_memory_layout(selected_count) local(cap) (
   dc_m4_base = dc_m3_base + DECRUST_BINS;
   dc_gain_base = dc_m4_base + DECRUST_BINS;
 
-  space_l_base = dc_gain_base + DECRUST_BINS + 256;
+  dc_padl_base = dc_gain_base + DECRUST_BINS;
+  dc_padr_base = dc_padl_base + 8;
+  input_delay_l_base = dc_padr_base + 8;
+  input_delay_r_base = input_delay_l_base + DECRUST_RING;
+  space_l_base = input_delay_r_base + DECRUST_RING + 256;
   space_r_base = space_l_base + SPACE_BUF_LEN;
 
   harm_lpa_l_base = space_r_base + SPACE_BUF_LEN + 256;
@@ -6996,7 +6694,7 @@ function load_bank() local(
   selected loaded count i before_count
 )
 (
-  sample_pool_set_mode(bank_pool, SAMPLE_MODE_RESIDENT);
+  sample_pool_set_mode(bank_pool, bank_budget_mb > 0 ? SAMPLE_MODE_BUDGETED : SAMPLE_MODE_RESIDENT);
   sample_pool_set_budget_mb(bank_pool, bank_budget_mb);
   sample_pool_commit(bank_pool);
 
@@ -7005,11 +6703,15 @@ function load_bank() local(
   pool_state = sample_pool_state(bank_pool);
   pool_ram_mb = sample_pool_ram_mb(bank_pool);
 
-  ((pool_state == SAMPLE_POOL_SCANNING || pool_state == SAMPLE_POOL_LOADING) && loaded <= 0 && sample_count > 0) ? (
+  (pool_state != SAMPLE_POOL_SCANNING && pool_state != SAMPLE_POOL_LOADING) ? (
+    sample_pool_adopt(bank_pool) < 0 ? pool_state = SAMPLE_POOL_LOADING;
+  );
+  (pool_state == SAMPLE_POOL_SCANNING || pool_state == SAMPLE_POOL_LOADING) ? (
     // Keep the previous generation playable while the worker builds the next one.
     bank_selected_count = selected;
     rescan_pending = 1;
   ) : (
+    loaded = max(0, sample_pool_loaded(bank_pool) | 0);
     configure_memory_layout(max(selected, loaded));
     reset_bank_state();
     posteq_update_coeffs();
@@ -7018,6 +6720,7 @@ function load_bank() local(
     color_tilt_recalc_gains();
     dynx_update_coeffs();
     harm_update_coeffs();
+    pop_update_coeffs();
 
     bank_selected_count = selected;
     bank_scan_count = loaded;
@@ -7045,7 +6748,7 @@ function load_bank() local(
 
 function compute_slot_signature() local(sig)
 (
-  sample_pool_set_mode(bank_pool, SAMPLE_MODE_RESIDENT);
+  sample_pool_set_mode(bank_pool, bank_budget_mb > 0 ? SAMPLE_MODE_BUDGETED : SAMPLE_MODE_RESIDENT);
   sample_pool_set_budget_mb(bank_pool, bank_budget_mb);
   sample_pool_commit(bank_pool);
 
@@ -7324,7 +7027,7 @@ function start_voice(note vel chan) local(
   srcsr norm gain env0 lively playmode gran_voice ggrain_amt voice_stretch voice_stretch_norm
   driftcents raw_rate base_rate attack_rate pitch_protect pitch_abs head_hold_src head_hold_out
   transrich transprot translock hold_ms trans_hold_src trans_hold_out attack_preroll
-  attack_norm pre_avail pre_keep align_guard align_jit
+  attack_anchor attack_norm pre_avail pre_keep align_guard align_jit
   j jmax pre startpos softskip gain_jit_db
   bodystart bodyend tailstart donor_tail min_body_span remain voice_hold_samps
   gesture_len gesture_depth
@@ -7341,7 +7044,6 @@ function start_voice(note vel chan) local(
     voice_idx = alloc_voice();
     last_start_voice_idx = voice_idx;
     v = voice_base + voice_idx * VC_STRIDE;
-    note_gate_forget_voice(v);
 
     j = 0;
     while (j < VC_STRIDE) (
@@ -7367,6 +7069,7 @@ function start_voice(note vel chan) local(
     voice_attack_coef = voice_attack_samps <= 1 ? 1 : (1 - exp(-6.90775527898214 / max(1, voice_attack_samps)));
     voice_release_coef = voice_release_samps <= 1 ? 0 : exp(-6.90775527898214 / max(1, voice_release_samps));
 
+    attack_anchor = onset_mode_active ? sm[SM_GAUSS_ATTACK] : sm[SM_CLASSIC_ATTACK];
     srcsr = sm[SM_SR];
     norm  = sm[SM_NORM];
     gain  = (0.10 + 0.90 * (velnorm ^ 1.35)) * lerp(norm, 1, truth_mix);
@@ -7385,29 +7088,29 @@ function start_voice(note vel chan) local(
 
     onset_mode_active ? (
       attack_norm = curve_norm(slider2, 0.1, 500, CURVE_TIME);
-      pre_avail = max(0, sm[SM_ATTACK]);
+      pre_avail = max(0, attack_anchor);
       pre_keep = floor(pre_avail * attack_norm);
 
       translock ? (
         align_guard = min(pre_avail, max(0, floor(srcsr * (0.00020 + 0.00035 * transprot))));
         align_jit = floor(lively * (1 - transprot) * max(1, min(6, 1 + pre_avail * 0.035)));
-        startpos = floor(sm[SM_ATTACK] - pre_keep - align_guard + (rand(1) - 0.5) * align_jit);
+        startpos = floor(attack_anchor - pre_keep - align_guard + (rand(1) - 0.5) * align_jit);
       ) : (
         pre  = min(pre_avail, floor(2 + attack_norm * min(64, 8 + pre_avail * 0.18)));
         jmax = floor((0.35 + lively * 2.05) * max(2, min(18, 2 + pre_avail * 0.08)));
         softskip = max(0, -slider7) * min(16, 2 + pre_avail * 0.06);
-        startpos = floor(sm[SM_ATTACK] - max(pre_keep, pre) + (rand(1) - 0.5) * jmax + softskip);
+        startpos = floor(attack_anchor - max(pre_keep, pre) + (rand(1) - 0.5) * jmax + softskip);
       );
     ) : (
       translock ? (
-        attack_preroll = min(sm[SM_ATTACK], max(0, floor(srcsr * (0.00035 + 0.00045 * transprot))));
-        jmax = floor(lively * (1 - transprot) * min(4, 1 + sm[SM_ATTACK] * 0.02));
-        startpos = floor(sm[SM_ATTACK] - attack_preroll + (rand(1) - 0.5) * jmax);
+        attack_preroll = min(attack_anchor, max(0, floor(srcsr * (0.00035 + 0.00045 * transprot))));
+        jmax = floor(lively * (1 - transprot) * min(4, 1 + attack_anchor * 0.02));
+        startpos = floor(attack_anchor - attack_preroll + (rand(1) - 0.5) * jmax);
       ) : (
-        pre  = min(sm[SM_ATTACK], 8 + lively * 8);
-        jmax = floor((0.25 + lively * 1.75) * min(16, 2 + sm[SM_ATTACK] * 0.08));
-        softskip = max(0, -slider7) * min(16, 2 + sm[SM_ATTACK] * 0.06);
-        startpos = floor(sm[SM_ATTACK] - pre + (rand(1) - 0.5) * jmax + softskip);
+        pre  = min(attack_anchor, 8 + lively * 8);
+        jmax = floor((0.25 + lively * 1.75) * min(16, 2 + attack_anchor * 0.08));
+        softskip = max(0, -slider7) * min(16, 2 + attack_anchor * 0.06);
+        startpos = floor(attack_anchor - pre + (rand(1) - 0.5) * jmax + softskip);
       );
     );
 
@@ -7450,6 +7153,7 @@ function start_voice(note vel chan) local(
     v[VC_ACTIVE] = 1;
     v[VC_NOTE]   = note;
     v[VC_CHAN]   = chan;
+    v[VC_KEYTOKEN] = note_on_seq_base[note_gate_idx(note, chan)];
     v[VC_SAMPLE] = sid;
     v[VC_POS]    = startpos;
     v[VC_RATE]   = base_rate;
@@ -7479,10 +7183,11 @@ function start_voice(note vel chan) local(
     (playmode >= 2 && ggrain_amt > 0.0001 && seam_bridge_env > 0.0005 && env0 < 1 && !env_slope_is_classic(attack_slope_pct, ENV_RISE)) ? (
       // For non-classic slopes, continue from the equivalent Attack curve point
       // instead of spending a full Attack time above the inherited Release level.
+      v[VC_ESTART] = 0; // inherited level is represented by phase, not added twice
       v[VC_EPHASE] = env_slope_inv(env0, env_segment_slope(attack_slope_pct, ENV_RISE)) * max(1, voice_attack_samps);
     );
 
-    v[VC_GMODE]    = (playmode >= 2) ? 1 : 0;
+    v[VC_GMODE]    = (playmode >= 2 && ggrain_amt > 0.0001) ? 1 : 0;
     v[VC_OHOP]     = hybrid_hop_samps;
     v[VC_GSIZE]    = gran_voice ? max(hybrid_hop_samps + 1, floor(hybrid_grain_samps * lerp(1.0, 2.20, granular_event_stretch))) : hybrid_grain_samps;
     // Hybrid waits until transient protection clears because the direct head is audible.
@@ -7629,26 +7334,16 @@ function release_oldest_held_note_voice(note chan) local(i v best_idx best_age)
   ) : 0;
 );
 
-function release_voice(note chan) local(target held guard idx)
+function release_voice(note chan) local(i v token)
 (
-  // Reconcile active held voices to the MIDI gate count for this note/channel.
-  // This fixes stuck one-voice states: an extra Note Off with no matching Note On
-  // drives the target to zero and releases every held orphan instead of only one.
-  idx = note_gate_idx(note, chan);
-  target = clamp(note_gate_base[idx], 0, MAX_VOICES);
-  held = count_held_note_voices(note, chan);
-  guard = 0;
-
-  while (held > target && guard < MAX_VOICES) (
-    release_oldest_held_note_voice(note, chan) ? (
-      held -= 1;
-    ) : (
-      held = target;
-    );
-    guard += 1;
+  token = note_off_seq_base[note_gate_idx(note, chan)];
+  i = 0;
+  while (i < MAX_VOICES) (
+    v = voice_base + i * VC_STRIDE;
+    (v[VC_ACTIVE] > 0 && v[VC_AUDIOTRIG] <= 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan && v[VC_KEYTOKEN] == token) ? release_voice_internal(v);
+    i += 1;
   );
 );
-
 
 function auto_smooth_calc_lengths(budget_samps) local(total_norm a_norm r_norm a_share a_len r_len)
 (
@@ -7708,30 +7403,47 @@ function release_all_voices_transport(hard) local(i v)
   while (i < MAX_VOICES) (
     v = voice_base + i * VC_STRIDE;
     v[VC_ACTIVE] > 0 ? (
-      hard ? (
-        v[VC_ENV] = 0;
-        v[VC_STAGE] = ENV_OFF;
-        v[VC_ACTIVE] = 0;
-      ) : (
-        release_voice_internal(v);
-      );
+      hard ? (v[VC_ENV] = 0; v[VC_STAGE] = ENV_OFF; v[VC_ACTIVE] = 0;) : release_voice_internal(v);
     );
     i += 1;
   );
-
   reset_note_gates();
-
   hard ? (
-    reset_weight_buffers();
-    reset_clean_buffers();
-    reset_room_buffers();
-    reset_push_buffers();
-    reset_formant_buffers();
-    reset_focus_peak_buffers();
-    reset_input_trigger_buffers();
+    denorm_flush_silent_tail_state();
+    reset_edge_melt_buffers();
+    decrust_clear_state();
+    transient_guard_s = 0;
+    dyn_env = 0; dyn_comp_gain = 1; dyn_lim_gain = 1;
+    mix_fast = 0; mix_slow = 0;
+    seam_bridge_env = 0; seam_bridge_idx = -1; seam_bridge_phase = -1;
+    midi_queue_count = 0; midi_queue_read = 0;
   );
 );
 
+function release_channel_voices(chan hard) local(i v idx)
+(
+  i = 0;
+  while (i < MAX_VOICES) (
+    v = voice_base + i * VC_STRIDE;
+    (v[VC_ACTIVE] > 0 && v[VC_CHAN] == chan && v[VC_AUDIOTRIG] <= 0) ? (
+      hard ? (v[VC_ACTIVE] = 0; v[VC_ENV] = 0; v[VC_STAGE] = ENV_OFF;) : release_voice_internal(v);
+    );
+    i += 1;
+  );
+  i = 0;
+  while (i < 128) (
+    idx = chan * 128 + i;
+    note_gate_base[idx] = 0;
+    note_on_seq_base[idx] = 0;
+    note_off_seq_base[idx] = 0;
+    i += 1;
+  );
+  // Shared effects cannot separate channels. Flush only when no voices remain.
+  hard && !voices_busy() ? (
+    denorm_flush_silent_tail_state();
+    decrust_clear_state();
+  );
+);
 
 function count_audio_trigger_voices() local(i v cnt)
 (
@@ -7777,106 +7489,6 @@ function release_audio_trigger_voices(hard) local(i v)
     i += 1;
   );
 );
-
-function start_audio_trigger_voice(env_amt) local(note vel v)
-(
-  // One input gate should own one texture voice. Do not retrigger while the
-  // detector is still held; that produced double-hits on single input events.
-  (bank_loaded && sample_count > 0 && playback_mode == 3 && count_audio_trigger_voices() <= 0) ? (
-    note = last_note >= 0 ? last_note : 60;
-    vel = clamp(floor(1 + 126 * (clamp01(env_amt) ^ 0.58)), 1, 127);
-    last_start_voice_idx = -1;
-    auto_smooth_prepare_note_on(m2e_clock_samps);
-    start_voice(note, vel, 0);
-    (last_start_voice_idx >= 0 && last_start_voice_idx < MAX_VOICES) ? (
-      v = voice_base + last_start_voice_idx * VC_STRIDE;
-      v[VC_AUDIOTRIG] = 1;
-      v[VC_AUDIOENV] = clamp01(env_amt);
-      v[VC_AUTOVEL] = clamp01(env_amt);
-      v[VC_MODE] = 3;
-      v[VC_GMODE] = 1;
-      v[VC_CANSPAWN] = 1;
-      v[VC_GMIX] = max(v[VC_GMIX], max(0.18, granular_amt));
-    );
-  );
-);
-
-function process_granular_input_trigger(inL inR) local(
-  det det_db floor_db knee_lo knee_hi knee_t env_norm on_env off_env noise_ok silence_target cooldown_samps
-)
-(
-  det = max(abs(inL), abs(inR));
-  det = det < 0.000000000000000001 ? 0 : det;
-
-  input_trig_fast += (det - input_trig_fast) * (det > input_trig_fast ? input_trig_fast_att : input_trig_fast_rel);
-  input_trig_slow += (det - input_trig_slow) * (det > input_trig_slow ? input_trig_slow_att : input_trig_slow_rel);
-  input_trig_floor += (det - input_trig_floor) * (det > input_trig_floor ? input_trig_floor_up : input_trig_floor_down);
-
-  input_trig_fast = denorm_zap(input_trig_fast);
-  input_trig_slow = denorm_zap(input_trig_slow);
-  input_trig_floor = denorm_zap(input_trig_floor);
-
-  // v44 TextureInjection GateFix:
-  // Use a dBFS soft knee aimed upward toward 0 dBFS. Quiet material produces
-  // little/no texture, louder material scales proportionally, and one input
-  // event cannot retrigger until it has actually released.
-  det_db = 20 * log(max(input_trig_fast, 0.000000001)) * LOG10_INV;
-  floor_db = 20 * log(max(input_trig_floor, 0.000000001)) * LOG10_INV;
-
-  knee_lo = lerp(-42, -36, edge_melt_amt);
-  knee_hi = lerp(-4, -2, edge_melt_amt);
-  knee_t = clamp01((det_db - knee_lo) / max(0.001, knee_hi - knee_lo));
-  // Smoothstep knee, then extra curvature so low-level input does not behave
-  // like a hair-trigger. This legacy input-trigger function is no longer called by v58.
-  env_norm = knee_t * knee_t * (3 - 2 * knee_t);
-  env_norm = env_norm ^ lerp(2.30, 1.58, edge_melt_amt);
-  input_trig_norm = env_norm;
-  input_trig_env += (env_norm - input_trig_env) * (env_norm > input_trig_env ? input_trig_env_att : input_trig_env_rel);
-  input_trig_env = denorm_zap(input_trig_env);
-
-  input_trig_cooldown > 0 ? input_trig_cooldown -= 1;
-  silence_target = max(8, floor(srate * lerp(0.055, 0.150, edge_melt_amt)));
-  cooldown_samps = max(8, floor(srate * lerp(0.080, 0.160, edge_melt_amt)));
-  on_env = lerp(0.18, 0.115, edge_melt_amt);
-  off_env = on_env * lerp(0.38, 0.25, edge_melt_amt);
-  noise_ok = det_db > (floor_db + lerp(9.5, 6.5, edge_melt_amt));
-
-  input_trig_gate <= 0 ? (
-    (input_trig_env >= on_env && noise_ok && input_trig_cooldown <= 0 && count_audio_trigger_voices() <= 0) ? (
-      group_can_input_fire(input_trig_env) ? (
-        input_trig_gate = 1;
-        input_trig_silence = 0;
-        start_audio_trigger_voice(input_trig_env);
-        group_report_onset(input_trig_env);
-        input_trig_cooldown = cooldown_samps;
-        input_trig_wait = 0;
-      ) : (
-        input_trig_wait += 1;
-      );
-    ) : (
-      input_trig_wait = 0;
-    );
-  ) : (
-    update_audio_trigger_voice_envs(input_trig_env);
-
-    // Once held, follow the actual dBFS envelope. Do not let the adaptive
-    // noise-floor tracker eat a sustained real input and prematurely release it.
-    (input_trig_env <= off_env || det_db < -78) ? (
-      input_trig_silence += 1;
-    ) : (
-      input_trig_silence = 0;
-    );
-
-    input_trig_silence >= silence_target ? (
-      release_audio_trigger_voices(0);
-      input_trig_gate = 0;
-      input_trig_cooldown = cooldown_samps;
-      input_trig_silence = 0;
-      input_trig_wait = 0;
-    );
-  );
-);
-
 
 function flush_hidden_state_sliders()
 (
@@ -8573,6 +8185,7 @@ SAMPLE_POOL_MIN = 64;
 SAMPLE_POOL_HARD_MAX = 16384;
 MAX_SAMPLES = SAMPLE_POOL_HARD_MAX;
 MAX_VOICES  = 16;
+MIDI_QUEUE_CAP = 4096;
 NOTE_GATE_CELLS = 2048;
 RECENT_LEN  = 8;
 ROOT_LOW    = 36;
@@ -8623,7 +8236,9 @@ FLOW_BINS    = 8;
 FLOW_FEATS   = 3;
 FLOW_IN      = 5;
 FLOW_WEIGHTS = 2 * FLOW_FEATS * FLOW_IN;
-SM_STRIDE    = SM_FLOWBASE + 2 * FLOW_BINS * FLOW_FEATS;
+SM_CLASSIC_ATTACK = SM_FLOWBASE + 2 * FLOW_BINS * FLOW_FEATS;
+SM_GAUSS_ATTACK = SM_CLASSIC_ATTACK + 1;
+SM_STRIDE = SM_GAUSS_ATTACK + 1;
 
 VC_ACTIVE    = 0;
 VC_NOTE      = 1;
@@ -8691,7 +8306,8 @@ VC_AUTOVEL   = 62;
 VC_PDRYPOS   = 63;
 VC_PDRYRATE  = 64;
 VC_PRATIO    = 65;
-VC_GBASE     = 66;
+VC_KEYTOKEN = 66;
+VC_GBASE = 67;
 
 VG_ACTIVE    = 0;
 VG_AGE       = 1;
@@ -8832,7 +8448,9 @@ DYNX_STRIDE = 8;
 DYNX_HIST_BINS = 80;
 DECRUST_FFT = 512;
 DECRUST_HOP = 128;
-DECRUST_LATENCY = 514;
+DECRUST_LATENCY = 520; // 512 FFT + 2 curvature + 6 pad; exact at 1/2/4/8x
+pdc_delay = DECRUST_LATENCY;
+pdc_bot_ch = 0; pdc_top_ch = 2;
 DECRUST_RING = 2048;
 DECRUST_RINGMASK = 2047;
 DECRUST_BINS = 257;
@@ -8854,51 +8472,14 @@ HARM_XOVERS = 7;
 POP_BANDS = 5;
 POP_XOVERS = 4;
 PUSH_EPS = 0.00000000000000000001;
-DENORM_GUARD = 0.00000000000000000001;
+DENORM_GUARD_LEVEL = 0.00000000000000000001;
 DENORM_CUT   = 0.000000000000000001;
-POSTEQ_SPEC_STRIDE = 4;
+POSTEQ_SPEC_STRIDE = 1;
 DENORM_AUDIO_FLOOR = 0.000000000001;
-DENORM_ANALYZER_HOLD = 64;
+DENORM_ANALYZER_HOLD = max(1024, floor(srate * 0.25));
 DENORM_SILENCE_RESET_SAMPS = 1024;
 DENORM_FLUSH_INTERVAL = 128;
 LOG10_INV = 1 / log(10);
-
-
-GROUP_MAGIC_VALUE = 246813579;
-GROUP_MAGIC_SLOT = 0;
-GROUP_COUNTER_SLOT = 1;
-GROUP_CLOCK_SLOT = 2;
-GROUP_EVENT_SLOT = 3;
-GROUP_PEER_BASE = 64;
-GROUP_MAX_PEERS = 32;
-GROUP_PEER_STRIDE = 12;
-GROUP_F_ID = 0;
-GROUP_F_HASH = 1;
-GROUP_F_HEART = 2;
-GROUP_F_ACTIVE = 3;
-GROUP_F_ONSET = 4;
-GROUP_F_STRENGTH = 5;
-GROUP_F_RANK = 6;
-GROUP_F_MODE = 7;
-GROUP_F_TRACKSEQ = 8;
-GROUP_STALE_TICKS = 96;
-GROUP_RECENT_EVENT_WINDOW = 6;
-GROUP_MAX_RANK = 6;
-GROUP_WAIT_TIMEOUT_SEC = 0.650;
-GROUP_UI_BTN_ID = 7000;
-GROUP_UI_MODE_STRICT_ID = 7001;
-GROUP_UI_MODE_FREE_ID = 7002;
-GROUP_UI_ROW_BASE = 7100;
-GROUP_UI_RANK_DROP_BASE = 7200;
-GROUP_UI_UNORDERED_DROP_ID = 7299;
-
-M2E_LANE_COUNT = 35;
-M2E_BASE_FIXED = 20;
-M2E_BASE_MIN   = M2E_BASE_FIXED;
-M2E_BASE_MAX   = M2E_BASE_FIXED;
-M2E_DETECT_MIN = 10;
-M2E_CHAN       = 0;
-
 
 
 configure_memory_layout(SAMPLE_POOL_MIN);
@@ -8916,8 +8497,9 @@ SAMPLE_POOL_PARTIAL = 4;
 SAMPLE_POOL_FAILED = 5;
 
 bank_pool = sample_pool_from_slot(0, "main");
+sample_pool_set_deferred(bank_pool, 1);
 bank_budget_mb = max(0, slider24);
-sample_pool_set_mode(bank_pool, SAMPLE_MODE_RESIDENT);
+sample_pool_set_mode(bank_pool, bank_budget_mb > 0 ? SAMPLE_MODE_BUDGETED : SAMPLE_MODE_RESIDENT);
 sample_pool_set_budget_mb(bank_pool, bank_budget_mb);
 sample_pool_commit(bank_pool);
 pool_state = sample_pool_state(bank_pool);
@@ -9338,11 +8920,7 @@ tone_lp_coeff = 0.04;
 focus_lp_coeff = 0.08;
 env_att_coeff = 0.12;
 env_rel_coeff = 0.01;
-m2e_smooth_coeff = 0.002;
-m2e_mode_coeff = 0.001;
-m2e_detect_window_samps = 24000;
-m2e_timeout_samps = 96000;
-m2e_clock_samps = 0;
+event_clock_samps = 0;
 transient_guard_s = 0;
 transport_running_prev = 0;
 transport_playpos_prev = -1;
@@ -9350,36 +8928,7 @@ transport_play_state_prev = -1;
 
 
 
-group_enabled = 0; // v59: GroupSync ordering retired/inert. slider57 now stores Auto Smooth A/R; sliders 58-59 remain reserved; slider60 stores Color Pivot.
-group_instance_id = 0;
-group_name_hash = 0;
-group_track_seq = -999999;
-group_poll_counter = 0;
-group_poll_interval_samps = 24000;
-group_my_slot = -1;
-group_peer_count = 0;
-group_leader_id = 0;
-group_is_leader = 0;
-group_my_rank = 0;
-group_my_mode = 0;
-group_strict_active = 0;
-group_popup_open = 0;
-group_drag_id = -1;
-group_drag_slot = -1;
-group_last_onset_event = 0;
-group_peer_draw_count = 0;
-input_trig_wait = 0;
-input_trig_wait_event = 0;
-sprintf(#group_name, "Sample");
-group_enabled > 0 ? (
-  group_init_memory();
-  group_poll_track_name(1);
-  group_write_heartbeat(0, 0);
-  group_refresh_state();
-);
-
 reset_bank_state();
-m2e_reset();
 
 @serialize
 file_var(0, slope_schema);
@@ -9426,13 +8975,9 @@ edge_melt_post_fast_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.0035 * sr
 edge_melt_post_slow_coeff = 1 - exp(-6.90775527898214 / max(1, floor((0.048 + 0.032 * edge_melt_amt) * srate)));
 clean_amt = clamp01(slider25);
 clean_decrust_amt = clamp01(slider52);
-(clean_decrust_amt <= 0.0001 && clean_decrust_active_prev > 0) ? (
-  decrust_clear_state();
-);
-(clean_decrust_amt > 0.0001 && clean_decrust_active_prev <= 0) ? (
-  decrust_update_params();
-  decrust_clear_state();
-);
+// Keep all amount-derived coefficients current, without clearing delay history.
+(clean_decrust_amt > 0.0001 && clean_decrust_active_prev <= 0 && dc_enable_mix <= 0) ? dc_warm_left = DECRUST_LATENCY + DECRUST_FFT;
+decrust_update_params();
 clean_decrust_active_prev = clean_decrust_amt > 0.0001 ? 1 : 0;
 room_amt = clamp01(slider26);
 space_room_amt = clamp01(slider53);
@@ -9533,24 +9078,26 @@ posteq_b2_char = clamp(pack_get_base(posteq_char_pack, 2, 3) | 0, 0, 2);
 posteq_b3_char = clamp(pack_get_base(posteq_char_pack, 3, 3) | 0, 0, 2);
 posteq_lpf_char = clamp(pack_get_base(posteq_char_pack, 4, 3) | 0, 0, 2);
 
-// v61: compact per-filter drive pack. Values <= 49^5-1 use the new
-// independent 0.5 dB/base-49 layout. Larger values are migrated once from
-// v60's old 0.1 dB/base-241 layout.
-posteq_drive_pack > 282475248 ? (
-  posteq_hpf_drive = clamp(floor(pack_get_base(posteq_drive_pack, 0, 241) * 0.1 * 2 + 0.5) * 0.5, 0, 24);
-  posteq_b1_drive  = clamp(floor(pack_get_base(posteq_drive_pack, 1, 241) * 0.1 * 2 + 0.5) * 0.5, 0, 24);
-  posteq_b2_drive  = clamp(floor(pack_get_base(posteq_drive_pack, 2, 241) * 0.1 * 2 + 0.5) * 0.5, 0, 24);
-  posteq_b3_drive  = clamp(floor(pack_get_base(posteq_drive_pack, 3, 241) * 0.1 * 2 + 0.5) * 0.5, 0, 24);
-  posteq_lpf_drive = clamp(floor(pack_get_base(posteq_drive_pack, 4, 241) * 0.1 * 2 + 0.5) * 0.5, 0, 24);
-  slider63 = posteq_pack_drive_state();
-  sliderchange(MASK_S63);
-) : (
-  posteq_hpf_drive = clamp(pack_get_base(posteq_drive_pack, 0, 49) * 0.5, 0, 24);
-  posteq_b1_drive  = clamp(pack_get_base(posteq_drive_pack, 1, 49) * 0.5, 0, 24);
-  posteq_b2_drive  = clamp(pack_get_base(posteq_drive_pack, 2, 49) * 0.5, 0, 24);
-  posteq_b3_drive  = clamp(pack_get_base(posteq_drive_pack, 3, 49) * 0.5, 0, 24);
-  posteq_lpf_drive = clamp(pack_get_base(posteq_drive_pack, 4, 49) * 0.5, 0, 24);
+// The original pack formats overlap, and float rounding already lost some
+// information. Preserve slider63 permanently; never guess v60 from a small value.
+// Unmarked v61-v67 presets use base 49. Shift-right-click Drive imports v60.
+slider31 < 0 ? (
+  posteq_import_base = (slider31 == -2 || (slider31 == -1 && posteq_drive_pack > 282475248)) ? 241 : 49;
+  posteq_import_scale = posteq_import_base == 241 ? 0.1 : 0.5;
+  posteq_hpf_drive = min(24, floor(pack_get_base(posteq_drive_pack, 0, posteq_import_base) * posteq_import_scale * 2 + 0.5) * 0.5);
+  posteq_b1_drive = min(24, floor(pack_get_base(posteq_drive_pack, 1, posteq_import_base) * posteq_import_scale * 2 + 0.5) * 0.5);
+  posteq_b2_drive = min(24, floor(pack_get_base(posteq_drive_pack, 2, posteq_import_base) * posteq_import_scale * 2 + 0.5) * 0.5);
+  posteq_b3_drive = min(24, floor(pack_get_base(posteq_drive_pack, 3, posteq_import_base) * posteq_import_scale * 2 + 0.5) * 0.5);
+  posteq_lpf_drive = min(24, floor(pack_get_base(posteq_drive_pack, 4, posteq_import_base) * posteq_import_scale * 2 + 0.5) * 0.5);
+  slider31 = posteq_pack_drive_state();
+  slider58 = posteq_pack_drive_upper();
+  sliderchange(MASK_S31 + MASK_S58);
 );
+posteq_hpf_drive = pack_get_base(slider31, 0, 49) * 0.5;
+posteq_b1_drive = pack_get_base(slider31, 1, 49) * 0.5;
+posteq_b2_drive = pack_get_base(slider31, 2, 49) * 0.5;
+posteq_b3_drive = pack_get_base(slider58, 0, 49) * 0.5;
+posteq_lpf_drive = pack_get_base(slider58, 1, 49) * 0.5;
 posteq_update_char_active();
 selection_mode = clamp(slider13 | 0, 0, 2);
 sequence_mode = selection_mode == 1 ? 1 : 0;
@@ -9608,10 +9155,6 @@ tone_lp_coeff = clamp(1900 / max(srate, 1), 0.005, 0.18);
 focus_lp_coeff = clamp(4400 / max(srate, 1), 0.01, 0.40);
 env_att_coeff = clamp(1200 / max(srate, 1), 0.02, 0.5);
 env_rel_coeff = clamp(60 / max(srate, 1), 0.001, 0.12);
-m2e_smooth_coeff = clamp(42 / max(srate, 1), 0.0006, 0.02);
-m2e_mode_coeff = clamp(24 / max(srate, 1), 0.0004, 0.02);
-m2e_detect_window_samps = max(1024, floor(0.75 * srate));
-m2e_timeout_samps = max(2048, floor(1.7 * srate));
 input_trig_fast_att = 1 - exp(-6.90775527898214 / max(1, floor(0.0035 * srate)));
 input_trig_fast_rel = 1 - exp(-6.90775527898214 / max(1, floor(0.055 * srate)));
 input_trig_slow_att = 1 - exp(-6.90775527898214 / max(1, floor(0.060 * srate)));
@@ -9725,13 +9268,7 @@ fpk_gain_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.014 * srate)));
 fpk_level_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.040 * srate)));
 fpk_update_coeffs();
 
-(onset_mode_target != onset_mode_active) ? (
-  onset_mode_active = onset_mode_target;
-  sample_count > 0 ? (
-    release_all_voices_transport(1);
-    reanalyze_bank();
-  );
-);
+onset_mode_active = onset_mode_target;
 
 ((slider1 | 0) > 0) ? (
   force_rescan_flag = 1;
@@ -9740,17 +9277,7 @@ fpk_update_coeffs();
 );
 
 @block
-m2e_clock_samps += samplesblock;
-
-group_enabled > 0 ? (
-  group_poll_counter += samplesblock;
-  (group_poll_counter >= group_poll_interval_samps || group_poll_counter < 0) ? (
-    group_poll_counter = 0;
-    group_poll_track_name(0);
-    group_write_heartbeat(count_active_voices() > 0 || input_trig_gate > 0, max(input_trig_env, mix_fast));
-    group_refresh_state();
-  );
-);
+midi_queue_count = 0; midi_queue_read = 0; block_sample_index = 0; midi_queue_overflow = 0;
 
 // Transport panic/seek reconciliation. REAPER does not guarantee MIDI note-offs
 // when playback is paused, stopped, or the edit cursor jumps while a note is
@@ -9766,16 +9293,17 @@ transport_play_state_prev < 0 ? (
   transport_playpos_prev = play_position;
 );
 
-transport_running && transport_playpos_prev >= 0 ? (
-  transport_expected_pos = transport_playpos_prev + samplesblock / max(srate, 1);
+!host_transport_bound && transport_running && transport_playpos_prev >= 0 ? (
+  transport_expected_pos = transport_playpos_prev + transport_prev_block_samps / max(srate, 1);
   transport_seek_tol = max(0.050, 3 * samplesblock / max(srate, 1));
   abs(play_position - transport_expected_pos) > transport_seek_tol ? transport_discontinuity = 1;
 );
 
-((transport_paused || transport_stopped) && transport_running_prev) ? (
+((!host_transport_bound || host_transport_valid) && (transport_paused || transport_stopped) && transport_running_prev) ? (
   transport_discontinuity = 1;
 );
 
+transport_discontinuity = max(transport_discontinuity, host_transport_discontinuity);
 transport_discontinuity ? (
   release_all_voices_transport(1);
   seam_bridge_env = 0;
@@ -9793,6 +9321,7 @@ transport_running ? (
 );
 
 transport_play_state_prev = play_state;
+transport_prev_block_samps = samplesblock;
 
 force_rescan_flag ? (
   poll_slot(1);
@@ -9806,84 +9335,67 @@ while (poll_counter >= poll_interval_samps) (
   poll_slot(0);
 );
 
+// Only adopt/rebuild a bank before queuing this block's notes.
+rescan_pending && !voices_busy() ? (
+  load_bank();
+  (pool_state != SAMPLE_POOL_SCANNING && pool_state != SAMPLE_POOL_LOADING) ? (
+    slot_signature_loaded = compute_slot_signature();
+    rescan_pending = 0; rescan_force = 0;
+  );
+);
+
 while (midirecv(offset, msg1, msg23)) (
   status = msg1 & 240;
-  chan   = msg1 & 15;
-  note   = msg23 & 127;
-  vel    = (msg23 / 256) & 127;
-
-  status == 176 ? (
-    (chan == M2E_CHAN) ? (
-      ccnum = note;
-      ccval = vel;
-
-      (ccnum >= M2E_BASE_FIXED && ccnum < (M2E_BASE_FIXED + M2E_LANE_COUNT)) ? (
-        m2e_cc_age_base[ccnum] = m2e_clock_samps;
-        m2e_cc_val_base[ccnum] = ccval;
-        m2e_last_any_cc_samps = m2e_clock_samps;
-
-        m2e_base = M2E_BASE_FIXED;
-        m2e_last_msg_samps = m2e_clock_samps;
-        m2e_apply_cc(m2e_base, ccnum, ccval);
-      );
-    );
-
-    bank_loaded && (note == 120 || note == 123) ? (
-      reset_note_gates();
-      release_all_voices_transport(note == 120);
-    );
-
-    midisend(offset, msg1, msg23);
-  ) : (
-    (status == 144 && vel > 0) ? (
-      bank_loaded ? (
-        note_gate_on(note, chan);
-        auto_smooth_prepare_note_on(m2e_clock_samps + offset);
-        auto_smooth_release_same_note_for_new(note, chan);
-        start_voice(note, vel, chan);
-        group_report_onset(vel / 127);
-      ) : midisend(offset, msg1, msg23);
-    ) : (
-      (status == 128 || (status == 144 && vel == 0)) ? (
-        bank_loaded ? (
-          note_gate_off(note, chan);
-          release_voice(note, chan);
-        ) : midisend(offset, msg1, msg23);
+  note = msg23 & 127;
+  bank_loaded && (status == 144 || status == 128 || (status == 176 && (note == 120 || note == 123))) ? (
+    !midi_queue_overflow ? (
+      midi_queue_count < MIDI_QUEUE_CAP ? (
+        // Stable insertion also handles hosts that deliver unsorted offsets.
+        qoff = clamp(floor(offset), 0, max(0, samplesblock - 1));
+        qi = midi_queue_count;
+        while (qi > 0 && midi_queue_base[(qi - 1) * 3] > qoff) (
+          memcpy(midi_queue_base + qi * 3, midi_queue_base + (qi - 1) * 3, 3);
+          qi -= 1;
+        );
+        qb = midi_queue_base + qi * 3;
+        qb[0] = qoff; qb[1] = msg1; qb[2] = msg23;
+        midi_queue_count += 1;
       ) : (
-        midisend(offset, msg1, msg23);
+        release_all_voices_transport(1);
+        midi_queue_overflow = 1;
+        midi_queue_overflow_count += 1;
       );
     );
-  );
-);
-
-cand_base = m2e_detect_base(m2e_clock_samps);
-cand_base >= 0 ? (
-  m2e_base = M2E_BASE_FIXED;
-  m2e_decode_snapshot(m2e_base);
-  m2e_active = 1;
-);
-
-(m2e_active && ((m2e_clock_samps - m2e_last_msg_samps) > m2e_timeout_samps)) ? (
-  m2e_active = 0;
-);
-
-m2e_target = m2e_active ? 1 : 0;
-
-rescan_pending ? (
-  (!voices_busy() || rescan_force) ? (
-    load_bank();
-    slot_signature_loaded = pending_signature;
-    rescan_pending = 0;
-    rescan_force = 0;
-  );
+    status == 176 ? midisend(offset, msg1, msg23);
+  ) : midisend(offset, msg1, msg23);
 );
 
 @sample
+while (midi_queue_read < midi_queue_count && midi_queue_base[midi_queue_read * 3] <= block_sample_index) (
+  qb = midi_queue_base + midi_queue_read * 3;
+  msg1 = qb[1]; msg23 = qb[2];
+  status = msg1 & 240; chan = msg1 & 15;
+  note = msg23 & 127; vel = (msg23 / 256) & 127;
+  status == 176 ? release_channel_voices(chan, note == 120) : (
+    (status == 144 && vel > 0) ? (
+      note_gate_on(note, chan);
+      auto_smooth_prepare_note_on(event_clock_samps);
+      auto_smooth_release_same_note_for_new(note, chan);
+      start_voice(note, vel, chan);
+    ) : (
+      note_gate_off(note, chan);
+      release_voice(note, chan);
+    );
+  );
+  midi_queue_read += 1;
+);
+block_sample_index += 1;
+event_clock_samps += 1;
 dry_in_l = spl0;
 dry_in_r = spl1;
 // v58 EdgeMelt removed the old input-trigger / texture-injection path.
-// Dry input still passes through at output, but it no longer creates voices or
-// gates GroupSync. Shift+Grain is now a Granular-only grain-edge smoothing macro.
+// Dry input passes through at output; it no longer creates voices.
+// Shift+Grain is a Granular-only grain-edge smoothing macro.
 input_trigger_was_armed ? (
   (input_trig_gate > 0 || count_audio_trigger_voices() > 0) ? release_audio_trigger_voices(0);
   input_trigger_was_armed = 0;
@@ -9972,81 +9484,45 @@ while (i < MAX_VOICES) (
     direct_alive = 0;
     activeg = 0;
 
-    // Hybrid: direct playback carries the head and core identity.
-    // Granular: the same path remains as a silent timing/source-exhaustion clock.
-    pos = v[VC_POS];
-    held_body_only = (v[VC_GMODE] > 0 && (stage != ENV_RELEASE || hybrid_body_release));
+    // Advance pitched and unpitched source clocks independently, even while
+    // Pitch Mix is fully wet. Each branch owns its own EOF and boundary fade.
+    pos = v[VC_POS]; ppos = v[VC_PDRYPOS];
+    held_body_only = v[VC_GMODE] > 0 && (stage != ENV_RELEASE || hybrid_body_release);
     body_cutoff = max(body_start + 1, tailstart);
-    held_body_only && pos >= body_cutoff ? (
-      pos = body_cutoff;
-      v[VC_POS] = pos;
-    ) : (
-      ip = pos | 0;
-      ip < (frames - 1) ? (
-        got_raw = sample_frame2(ptr, nch, pos);
-        rawL = readL;
-        rawR = readR;
-        direct_alive = got_raw;
+    body_blend_len = min(max(2, body_cutoff - body_start), max(2, sm[SM_SR] * 0.020));
+    body_blend = held_body_only ? clamp01((pos - (body_cutoff - body_blend_len)) / body_blend_len) : 0;
+    body_blend = body_blend * body_blend * (3 - 2 * body_blend);
+    dry_body_blend = held_body_only ? clamp01((ppos - (body_cutoff - body_blend_len)) / body_blend_len) : 0;
+    dry_body_blend = dry_body_blend * dry_body_blend * (3 - 2 * dry_body_blend);
+    endfade_src = max(2, floor(sm[SM_ENDFADE] * auto_release_amt * sm[SM_SR] * 0.001));
+    endfade_src = min(endfade_src, max(2, floor(frames * 0.42)));
 
-        // v19: source-end guard. If a file ends hot, fade the final source
-        // window before EOF instead of letting playback vanish on the last frame.
-        endfade_src = max(2, floor(sm[SM_ENDFADE] * auto_release_amt * sm[SM_SR] * 0.001));
-        endfade_src = min(endfade_src, max(2, floor(frames * 0.42)));
-        rem_src = max(0, frames - 1 - pos);
-        source_end_fade = clamp01(rem_src / max(1, endfade_src));
-        source_end_fade = source_end_fade * source_end_fade * (3 - 2 * source_end_fade);
-        rawL *= source_end_fade;
-        rawR *= source_end_fade;
-        source_end_fade <= 0.0003 ? direct_alive = 0;
-
-        pitch_parallel_active ? (
-          ppos = v[VC_PDRYPOS];
-          (ppos >= 0 && ppos < (frames - 1)) ? (
-            prem_src = max(0, frames - 1 - ppos);
-            pdry_end_fade = clamp01(prem_src / max(1, endfade_src));
-            pdry_end_fade = pdry_end_fade * pdry_end_fade * (3 - 2 * pdry_end_fade);
-            sample_frame2(ptr, nch, ppos);
-            pitchDryRawL = readL * pdry_end_fade;
-            pitchDryRawR = readR * pdry_end_fade;
-            pdry_end_fade > 0.0003 ? got_pitch_dry_raw = 1;
-          );
-        );
-
-        play_rate = v[VC_RATE];
-        voice_stretch = max(1, v[VC_STRETCH]);
-        (tleft > 0 && v[VC_TPROT] > 0) ? (
-          holdn = clamp01(tleft / max(1, v[VC_THOLD]));
-          // Smoothstep crossfade from protected transient rate to stretched / pitched body rate.
-          holdn = holdn * holdn * (3 - 2 * holdn);
-          play_rate = lerp(play_rate, v[VC_ATKRATE], holdn * v[VC_TPROT]);
-          pitch_parallel_active ? (
-            dry_attack_rate = v[VC_RAWRATE] / max(0.000001, v[VC_PRATIO]);
-            dry_play_rate = lerp(v[VC_PDRYRATE], dry_attack_rate, holdn * v[VC_TPROT]);
-          );
-        ) : (
-          pitch_parallel_active ? dry_play_rate = v[VC_PDRYRATE];
-        );
-
-        pitch_parallel_active ? (
-          ppos += dry_play_rate;
-          held_body_only && ppos >= body_cutoff ? ppos = body_cutoff;
-          v[VC_PDRYPOS] = ppos;
-        );
-
-        pos += play_rate;
-        held_body_only && pos >= body_cutoff ? (
-          pos = body_cutoff;
-          direct_alive = 0;
-        );
-        v[VC_POS] = pos;
-        pos >= (frames - 1) ? direct_alive = 0;
-      );
+    (pos >= 0 && pos < frames - 1) ? (
+      got_raw = sample_frame2(ptr, nch, pos);
+      source_end_fade = clamp01((frames - 1 - pos) / endfade_src);
+      source_end_fade = source_end_fade * source_end_fade * (3 - 2 * source_end_fade);
+      rawL = readL * source_end_fade; rawR = readR * source_end_fade;
+      direct_alive = got_raw && source_end_fade > 0.0003;
     );
-
+    pitch_parallel_active && ppos >= 0 && ppos < frames - 1 ? (
+      got_pitch_dry_raw = sample_frame2(ptr, nch, ppos);
+      pdry_end_fade = clamp01((frames - 1 - ppos) / endfade_src);
+      pdry_end_fade = pdry_end_fade * pdry_end_fade * (3 - 2 * pdry_end_fade);
+      pitchDryRawL = readL * pdry_end_fade; pitchDryRawR = readR * pdry_end_fade;
+      pdry_end_fade <= 0.0003 ? got_pitch_dry_raw = 0;
+    );
+    play_rate = v[VC_RATE]; dry_play_rate = v[VC_PDRYRATE];
+    (tleft > 0 && v[VC_TPROT] > 0) ? (
+      holdn = clamp01(tleft / max(1, v[VC_THOLD]));
+      holdn = holdn * holdn * (3 - 2 * holdn);
+      play_rate = lerp(play_rate, v[VC_ATKRATE], holdn * v[VC_TPROT]);
+      dry_play_rate = lerp(dry_play_rate, v[VC_RAWRATE] / max(0.000001, v[VC_PRATIO]), holdn * v[VC_TPROT]);
+    );
+    v[VC_POS] = min(frames, pos + play_rate);
+    v[VC_PDRYPOS] = min(frames, ppos + dry_play_rate);
     granular_voice ? (
-      got_raw = 0;
-      rawL = 0;
-      rawR = 0;
+      got_raw = 0; got_pitch_dry_raw = 0;
+      rawL = 0; rawR = 0;
     );
 
     tleft > 0 ? (
@@ -10062,7 +9538,7 @@ while (i < MAX_VOICES) (
         v[VC_NEXTSRC] < tailstart ? v[VC_NEXTSRC] = tailstart;
       );
 
-      gran_hold_guard = (!granular_voice && (stage == ENV_ATTACK || stage == ENV_HOLD) && direct_alive) ? 1 : 0;
+      gran_hold_guard = (!granular_voice && (stage == ENV_ATTACK || stage == ENV_HOLD) && direct_alive && pos < body_cutoff - body_blend_len) ? 1 : 0;
       (tleft <= 0 && !gran_hold_guard) ? (
         hop = max(1, floor(v[VC_OHOP]));
         gsize = max(hop + 1, floor(v[VC_GSIZE]));
@@ -10624,20 +10100,16 @@ while (i < MAX_VOICES) (
             age < gsize ? (
               srcp = gb[VG_SRC] + age * gb[VG_RATE];
 
-              (srcp >= 0 && srcp < (gframes - 1)) ? (
-                sample_frame2(gptr, gnch, srcp);
-                gl = readL;
-                gr = readR;
-                pitch_parallel_active ? (
-                  dry_srcp = gb[VG_SRC] + age * gb[VG_DRYRATE];
-                  (dry_srcp >= 0 && dry_srcp < (gframes - 1)) ? (
-                    sample_frame2(gptr, gnch, dry_srcp);
-                    gdry_l = readL;
-                    gdry_r = readR;
-                  ) : (
-                    gdry_l = 0;
-                    gdry_r = 0;
-                  );
+              dry_srcp = gb[VG_SRC] + age * gb[VG_DRYRATE];
+              gwet_valid = srcp >= 0 && srcp < gframes - 1;
+              gdry_valid = pitch_parallel_active && dry_srcp >= 0 && dry_srcp < gframes - 1;
+              (gwet_valid || gdry_valid) ? (
+                gl = 0; gr = 0; gdry_l = 0; gdry_r = 0;
+                gwet_valid ? (
+                  sample_frame2(gptr, gnch, srcp); gl = readL; gr = readR;
+                );
+                gdry_valid ? (
+                  sample_frame2(gptr, gnch, dry_srcp); gdry_l = readL; gdry_r = readR;
                 );
 
                 granular_voice && edge_melt_amt > 0.0001 ? (
@@ -10727,7 +10199,14 @@ while (i < MAX_VOICES) (
                   black = 0.42 - 0.5 * cos(6.283185307179586 * wn) + 0.08 * cos(12.566370614359172 * wn);
                   wbase = lerp(wbase, black, (edge_melt_amt ^ 1.35) * 0.62);
                 );
-                w = wbase * gsource_end_fade * entry_fade;
+                gdry_rem = gb[VG_DRYRATE] < 0 ? max(0, dry_srcp) : max(0, gframes - 1 - dry_srcp);
+                gdry_fade = clamp01(gdry_rem / max(1, gendfade_src));
+                gdry_fade = gdry_fade * gdry_fade * (3 - 2 * gdry_fade);
+                // EOF attenuation is audio gain, not overlap weight: normalizing
+                // it away would undo the fade and couple the two Pitch Mix paths.
+                gl *= gsource_end_fade; gr *= gsource_end_fade;
+                gdry_l *= gdry_fade; gdry_r *= gdry_fade;
+                w = wbase * entry_fade;
                 gw = w * gb[VG_GAIN];
                 sumL += gl * gw;
                 sumR += gr * gw;
@@ -10746,7 +10225,7 @@ while (i < MAX_VOICES) (
               glife += 1;
               gb[VG_AGE] = age;
               gb[VG_LIFE] = glife;
-              ((age >= gsize) || (srcp < 0) || (srcp >= (gframes - 1))) ? (
+              ((age >= gsize) || (!gwet_valid && !gdry_valid)) ? (
                 gb[VG_ACTIVE] = 0;
               ) : (
                 activeg += 1;
@@ -10878,7 +10357,8 @@ while (i < MAX_VOICES) (
     v[VC_ENV] = env;
 
     got_sig = 0;
-    mix = 0;
+    l = 0; r = 0;
+    mix = 0; base_mix = 0;
     got_raw && got_grain ? (
       tail_phase = clamp01((v[VC_POS] - tailstart) / max(1, frames - tailstart));
       prebody_mix = (stage == ENV_ATTACK || stage == ENV_HOLD) ? 0 : 1;
@@ -10887,6 +10367,8 @@ while (i < MAX_VOICES) (
         rel_release_mix = hybrid_body_release ? clamp01(0.32 + 0.46 * v[VC_GMIX] + 0.12 * slider9) : clamp01(0.10 + 0.22 * rel_handoff_mix + 0.68 * v[VC_TAILMIX]);
         mix = max(mix, rel_release_mix);
       );
+      base_mix = mix;
+      mix = max(mix, body_blend);
       l = lerp(rawL, grainL, mix);
       r = lerp(rawR, grainR, mix);
       got_sig = 1;
@@ -10900,11 +10382,13 @@ while (i < MAX_VOICES) (
       got_sig = 1;
     );
 
-    pitch_parallel_active && got_sig ? (
+    pitch_parallel_active ? (
       got_pitch_dry = 0;
       got_pitch_dry_raw && got_pitch_dry_grain ? (
-        pdryL = lerp(pitchDryRawL, pitchDryGrainL, mix);
-        pdryR = lerp(pitchDryRawR, pitchDryGrainR, mix);
+        dry_mix = max(base_mix, dry_body_blend);
+        dry_mix = clamp01(dry_mix);
+        pdryL = lerp(pitchDryRawL, pitchDryGrainL, dry_mix);
+        pdryR = lerp(pitchDryRawR, pitchDryGrainR, dry_mix);
         got_pitch_dry = 1;
       ) : got_pitch_dry_raw ? (
         pdryL = pitchDryRawL;
@@ -10915,10 +10399,10 @@ while (i < MAX_VOICES) (
         pdryR = pitchDryGrainR;
         got_pitch_dry = 1;
       );
-      got_pitch_dry ? (
-        l = lerp(pdryL, l, pitch_parallel_mix);
-        r = lerp(pdryR, r, pitch_parallel_mix);
-      );
+      !got_pitch_dry ? (pdryL = 0; pdryR = 0;);
+      l = lerp(pdryL, l, pitch_parallel_mix);
+      r = lerp(pdryR, r, pitch_parallel_mix);
+      got_sig = got_sig || got_pitch_dry;
     );
 
     g = v[VC_BASE] * env;
@@ -10929,7 +10413,7 @@ while (i < MAX_VOICES) (
       // voices; keep the branch neutral if an old in-flight voice is present.
       g *= aud_env;
     );
-    keepalive = direct_alive || got_grain || activeg > 0 || (v[VC_GMODE] > 0 && stage != ENV_OFF && (stage != ENV_RELEASE || v[VC_CANSPAWN] > 0));
+    keepalive = direct_alive || got_pitch_dry_raw || got_grain || activeg > 0 || (v[VC_GMODE] > 0 && stage != ENV_OFF && (stage != ENV_RELEASE || v[VC_CANSPAWN] > 0));
 
     (g > 0 && got_sig) ? (
       voice_out_l = l * g;
@@ -11005,7 +10489,7 @@ while (i < MAX_VOICES) (
 outL += denorm_guard;
 outR -= denorm_guard;
 
-midm = abs(0.5 * (outL + outR));
+midm = sqrt(0.5 * (outL * outL + outR * outR));
 mix_fast = denorm_zap(mix_fast + (midm - mix_fast) * (midm > mix_fast ? env_att_coeff : env_rel_coeff));
 mix_slow = denorm_zap(mix_slow + (midm - mix_slow) * env_rel_coeff);
 mix_fast = denorm_zap(mix_fast);
@@ -11015,81 +10499,11 @@ transient_guard = clamp01(max(punch_bus, transient * (0.72 + 0.28 * punch_bus)))
 transient_guard_s = denorm_zap(transient_guard_s + (transient_guard - transient_guard_s) * (transient_guard > transient_guard_s ? 0.12 : 0.02));
 transient_guard_s = denorm_zap(transient_guard_s);
 
-m2e_mix = denorm_zap(m2e_mix + (m2e_target - m2e_mix) * m2e_mode_coeff);
-m2e_env_s += (m2e_env_raw - m2e_env_s) * m2e_smooth_coeff;
-m2e_rigid_s = denorm_zap(m2e_rigid_s + (m2e_rigid_raw - m2e_rigid_s) * m2e_smooth_coeff);
-m2e_impact_s = denorm_zap(m2e_impact_s + (m2e_impact_raw - m2e_impact_s) * m2e_smooth_coeff);
-m2e_pan_s += (m2e_pan_raw - m2e_pan_s) * m2e_smooth_coeff;
-m2e_entropy_s = denorm_zap(m2e_entropy_s + (m2e_entropy_raw - m2e_entropy_s) * m2e_smooth_coeff);
-m2e_axis_v_s = denorm_zap(m2e_axis_v_s + (m2e_axis_v_raw - m2e_axis_v_s) * m2e_smooth_coeff);
-m2e_axis_acc_s = denorm_zap(m2e_axis_acc_s + (m2e_axis_acc_raw - m2e_axis_acc_s) * m2e_smooth_coeff);
-m2e_lat_v_s = denorm_zap(m2e_lat_v_s + (m2e_lat_v_raw - m2e_lat_v_s) * m2e_smooth_coeff);
-m2e_lat_amp_s = denorm_zap(m2e_lat_amp_s + (m2e_lat_amp_raw - m2e_lat_amp_s) * m2e_smooth_coeff);
-m2e_micro_s = denorm_zap(m2e_micro_s + (m2e_micro_raw - m2e_micro_s) * m2e_smooth_coeff);
-m2e_meso_s = denorm_zap(m2e_meso_s + (m2e_meso_raw - m2e_meso_s) * m2e_smooth_coeff);
-m2e_macro_s = denorm_zap(m2e_macro_s + (m2e_macro_raw - m2e_macro_s) * m2e_smooth_coeff);
-m2e_excite_s = denorm_zap(m2e_excite_s + (m2e_excite_raw - m2e_excite_s) * m2e_smooth_coeff);
-m2e_activity_s += (m2e_activity_raw - m2e_activity_s) * m2e_smooth_coeff;
-
-m2e_depth = m2e_mix * (0.22 + 0.78 * max(0.18, slider9));
-m2e_depth *= (1 - 0.35 * m2e_rigid_s);
-(playback_mode >= 2) ? m2e_depth *= (0.94 - 0.12 * granular_amt * (0.55 + 0.45 * tail_borrow));
-m2e_depth = clamp01(m2e_depth);
-m2e_activity_hi = clamp01((m2e_activity_s - 1) / 3);
-
-m2e_tone_bias =
-  ((m2e_excite_s - 0.5) * 0.18
-  + (m2e_micro_s - 0.5) * 0.10
-  + (m2e_meso_s - 0.5) * 0.05
-  - (m2e_macro_s - 0.5) * 0.12
-  + (m2e_env_s - 0.5) * 0.06) * m2e_depth;
-
-m2e_focus_bias =
-  (m2e_impact_s * 0.22
-  + abs(m2e_axis_acc_s) * 0.10
-  + abs(m2e_axis_v_s) * 0.04
-  + m2e_excite_s * 0.06
-  - m2e_macro_s * 0.06) * m2e_depth;
-
-m2e_width_bias =
-  (m2e_lat_amp_s * 0.24
-  + m2e_activity_hi * 0.12
-  + m2e_excite_s * 0.10
-  - m2e_rigid_s * 0.08
-  - m2e_entropy_s * 0.04) * m2e_depth;
-
-m2e_pan_bias =
-  (((m2e_pan_s - 0.5) * 2) * 0.20
-  + m2e_lat_v_s * 0.08
-  + m2e_axis_v_s * 0.04) * m2e_depth;
-
-m2e_body_bias =
-  ((m2e_env_s - 0.5) * 0.10
-  + m2e_impact_s * 0.08
-  + m2e_excite_s * 0.06
-  - m2e_macro_s * 0.04) * m2e_depth;
-
-m2e_sat_mix =
-  (m2e_impact_s * 0.26
-  + m2e_excite_s * 0.18
-  + abs(m2e_axis_acc_s) * 0.08
-  + m2e_meso_s * 0.06) * m2e_depth;
-m2e_sat_mix = min(clamp01(m2e_sat_mix), 0.22);
-
 trans_mode_mix = 0.6;
 transient_mode == 1 ? trans_mode_mix = 1
 : transient_mode == 2 ? trans_mode_mix = 0;
-m2e_transient_damp = clamp(1 - transient_guard_s * (0.52 + 0.28 * trans_mode_mix), 0.12, 1);
-m2e_tone_bias *= 0.48 + 0.52 * m2e_transient_damp;
-m2e_focus_bias *= 0.18 + 0.82 * m2e_transient_damp * m2e_transient_damp;
-m2e_width_bias *= 0.62 + 0.38 * m2e_transient_damp;
-m2e_pan_bias *= 0.30 + 0.70 * m2e_transient_damp;
-m2e_body_bias *= 0.56 + 0.44 * m2e_transient_damp;
-m2e_sat_mix *= 0.16 + 0.84 * m2e_transient_damp * m2e_transient_damp;
-
 (playback_mode == 3 && edge_melt_amt > 0.0001) ? apply_edge_melt_post() : (edge_melt_runtime_active > 0 ? reset_edge_melt_buffers());
 clean_amt > 0.0001 ? apply_cleaner();
-clean_decrust_amt > 0.0001 ? apply_clean_decrust();
 room_amt > 0.0001 ? apply_room_tame();
 space_room_amt > 0.0001 ? (
   space_room_runtime_active = 1;
@@ -11119,10 +10533,10 @@ focus_drive = focus_corrective ? (
   ) : 1
 );
 focus_drive = clamp(focus_drive, 0.58, 1.86);
-focus_amt = clamp(slider7 * focus_drive + m2e_focus_bias * (1 - 0.10 * bank_focus_extreme * focus_exaggerating), -1, 1);
-width_amt = clamp(slider8 + m2e_width_bias, 0, 1);
+focus_amt = clamp(slider7 * focus_drive, -1, 1);
+width_amt = clamp(slider8, 0, 1);
 
-focus_base_mix = 0.05 + transient * (0.11 + 0.08 * m2e_impact_s * m2e_depth);
+focus_base_mix = 0.05 + transient * 0.11;
 focus_corrective_boost = 1 + bank_focus_extreme * focus_corrective * (0.18 + 0.24 * abs(focus_amt));
 focus_exaggerate_guard = focus_exaggerating ? (
   1 - bank_focus_extreme * (0.10 + 0.24 * abs(focus_amt) + 0.14 * max(0, bank_focus_dev) + 0.06 * max(0, -bank_focus_dev))
@@ -11136,15 +10550,8 @@ abs(focus_peak_amt) > 0.0001 ? apply_focus_peak_pack();
 mid = 0.5 * (outL + outR);
 side = 0.5 * (outL - outR);
 side *= 1 + width_amt * 0.22;
-side += mid * m2e_pan_bias * 0.45;
-mid *= 1 + m2e_body_bias;
 outL = mid + side;
 outR = mid - side;
-
-satL = outL - (outL * outL * outL) * 0.1666666667;
-satR = outR - (outR * outR * outR) * 0.1666666667;
-outL = lerp(outL, satL, m2e_sat_mix);
-outR = lerp(outR, satR, m2e_sat_mix);
 
 weight_amt > 0.0001 ? (
   wmid = 0.5 * (outL + outR);
@@ -11273,10 +10680,8 @@ output_harmonics_amt > 0.0001 ? (
   output_harm_runtime_active > 0 ? reset_output_harmonics_buffers();
 );
 
-// v38: PostEQ spectrum is visual-only. Running two 96-band analyzers every
-// audio sample across several instances can look like a stall even when audio
-// CPU meters stay modest, so analyze every 4th sample with compensated envelope
-// coefficients. Audio EQ processing is unchanged.
+// Analyzer filters and coefficients now run at the same sample rate;
+// stereo power preserves side-only material and zero crossings advance state.
 posteq_spec_tick += 1;
 posteq_spec_do = posteq_spec_tick >= posteq_spec_stride ? 1 : 0;
 posteq_spec_do ? (
@@ -11304,8 +10709,15 @@ outL = denorm_zap(outL);
 outR = denorm_zap(outR);
 // Dry input is restored exactly and bypasses sampler processing, Output trim,
 // PostEQ, Clean/Room/Push, etc. EdgeMelt is internal to generated Granular only.
-spl0 = dry_in_l + outL * out_trim;
-spl1 = dry_in_r + outR * out_trim;
+// Final-stage DeCrust gives every instrument path, including Space sends, the
+// same latency. Bypass keeps the delay; external input receives the same delay.
+apply_clean_decrust();
+input_delay_l_base[input_delay_pos] = dry_in_l;
+input_delay_r_base[input_delay_pos] = dry_in_r;
+input_delay_read = (input_delay_pos - DECRUST_LATENCY) & DECRUST_RINGMASK;
+spl0 = input_delay_l_base[input_delay_read] + outL * out_trim;
+spl1 = input_delay_r_base[input_delay_read] + outR * out_trim;
+input_delay_pos = (input_delay_pos + 1) & DECRUST_RINGMASK;
 
 @gfx 1380 760
 gfx_getchar();
@@ -11328,152 +10740,8 @@ gfx_slider_mask = 0;
 sprintf(#tip_title, "");
 sprintf(#tip_body, "");
 
-// UI-side safety net: when REAPER stops/pause-freezes processing, @gfx can
-// still run. Clear orphaned transport voices here too, but only after a prior
-// running transport state, so live MIDI use while stopped is not affected.
-gfx_transport_running = (play_state & 1) ? 1 : 0;
-gfx_transport_paused = (play_state & 2) ? 1 : 0;
-gfx_transport_stopped = play_state == 0;
-((gfx_transport_paused || gfx_transport_stopped) && transport_running_prev) ? (
-  // Inline hard panic for @gfx. Some JSFX builds do not resolve audio helper
-  // functions from @gfx during compile, so keep this side-effect-only clear local.
-  panic_i = 0;
-  while (panic_i < MAX_VOICES) (
-    panic_v = voice_base + panic_i * VC_STRIDE;
-    panic_v[VC_ENV] = 0;
-    panic_v[VC_STAGE] = ENV_OFF;
-    panic_v[VC_ACTIVE] = 0;
-    panic_i += 1;
-  );
-
-  panic_i = 0;
-  while (panic_i < NOTE_GATE_CELLS) (
-    note_gate_base[panic_i] = 0;
-    panic_i += 1;
-  );
-
-  weight_ap1_pos = 0;
-  weight_ap2_pos = 0;
-  weight_er_pos = 0;
-  weight_in_lp_l = 0;
-  weight_in_lp_r = 0;
-  weight_wet_lp_l = 0;
-  weight_wet_lp_r = 0;
-  panic_i = 0;
-  while (panic_i < AP_BUF_LEN) (
-    weight_ap1_l_base[panic_i] = 0;
-    weight_ap1_r_base[panic_i] = 0;
-    weight_ap2_l_base[panic_i] = 0;
-    weight_ap2_r_base[panic_i] = 0;
-    panic_i += 1;
-  );
-  panic_i = 0;
-  while (panic_i < ER_BUF_LEN) (
-    weight_er_l_base[panic_i] = 0;
-    weight_er_r_base[panic_i] = 0;
-    panic_i += 1;
-  );
-
-  clean_lp1_l = 0;
-  clean_lp2_l = 0;
-  clean_lp3_l = 0;
-  clean_lp4_l = 0;
-  clean_lp1_r = 0;
-  clean_lp2_r = 0;
-  clean_lp3_r = 0;
-  clean_lp4_r = 0;
-  clean_head_bus = 0;
-  clean_tail_bus = 0;
-  panic_i = 0;
-  while (panic_i < CLEAN_BANDS) (
-    clean_env_base[panic_i] = 0;
-    clean_floor_base[panic_i] = 0;
-    clean_slow_base[panic_i] = 0;
-    clean_gain_base[panic_i] = 1;
-    panic_i += 1;
-  );
-
-  room_lp1_l = 0;
-  room_lp2_l = 0;
-  room_lp3_l = 0;
-  room_lp4_l = 0;
-  room_lp1_r = 0;
-  room_lp2_r = 0;
-  room_lp3_r = 0;
-  room_lp4_r = 0;
-  room_fast_env = 0;
-  room_slow_env = 0;
-  room_g0 = 1;
-  room_g1 = 1;
-  room_g2 = 1;
-  room_g3 = 1;
-  room_g4 = 1;
-  room_head_bus = 0;
-  room_tail_bus = 0;
-
-  push_m_lp15 = 0;
-  push_m_lp32 = 0;
-  push_m_lp55 = 0;
-  push_s_lp15 = 0;
-  push_s_lp32 = 0;
-  push_s_lp55 = 0;
-  push_bodyE = 0;
-  push_formE = 0;
-  push_edgeE = 0;
-  push_airE = 0;
-  push_srcE = 0;
-  push_m_hiE = 0;
-  push_s_hiE = 0;
-  push_click_fastE = 0;
-  push_click_slowE = 0;
-  push_common_dB = 0;
-  push_side_dB = 0;
-  push_hot_dB = -150;
-  push_click_dB = 0;
-  push_side_rel_dB = -150;
-
-  proc_hpf1_l = 0; proc_hpf2_l = 0;
-  proc_hpf1_r = 0; proc_hpf2_r = 0;
-  proc_lpf1_l = 0; proc_lpf2_l = 0;
-  proc_lpf1_r = 0; proc_lpf2_r = 0;
-  posteq_solo_target = 0;
-  posteq_solo_mode_latched = 0;
-  posteq_solo_mix = 0;
-  posteq_solo_zero();
-  panic_i = 0;
-  while (panic_i < POSTEQ_SPEC_BINS) (
-    posteq_spec_lp_base[panic_i] = 0;
-    posteq_spec_z2_base[panic_i] = 0;
-    posteq_spec_env_base[panic_i] = 0;
-    posteq_post_z1_base[panic_i] = 0;
-    posteq_post_z2_base[panic_i] = 0;
-    posteq_post_env_base[panic_i] = 0;
-    panic_i += 1;
-  );
-  panic_i = 0;
-  while (panic_i < POSTEQ_BQ_COUNT) (
-    posteq_bq_base[panic_i * POSTEQ_BQ_STRIDE + 5] = 0;
-    posteq_bq_base[panic_i * POSTEQ_BQ_STRIDE + 6] = 0;
-    posteq_bq_base[panic_i * POSTEQ_BQ_STRIDE + 7] = 0;
-    posteq_bq_base[panic_i * POSTEQ_BQ_STRIDE + 8] = 0;
-    panic_i += 1;
-  );
-
-  transient_guard_s = 0;
-  dyn_env = 0;
-  dyn_comp_gain = 1;
-  dyn_lim_gain = 1;
-  mix_fast = 0;
-  mix_slow = 0;
-
-  seam_bridge_env = 0;
-  seam_bridge_idx = -1;
-  seam_bridge_phase = -1;
-  seam_bridge_same_note = 0;
-  transport_running_prev = 0;
-  transport_playpos_prev = -1;
-  transport_play_state_prev = play_state;
-);
+// Transport cleanup belongs to @block. The native UI renders a snapshot;
+// it must never mutate voice or effect memory from the UI thread.
 
 // Flagship dark-metal visual pass
 bg_i = 0;
@@ -11535,47 +10803,7 @@ bank_partial ? (
 );
 gfx_drawstr(#ui_buf);
 
-m2e_lamp_x = gfx_w - 456;
-m2e_lamp_y = y0 + 27;
-m2e_recent = (m2e_clock_samps - m2e_last_any_cc_samps) <= m2e_detect_window_samps ? 1 : 0;
-m2e_on = m2e_mix > 0.02 ? 1 : 0;
-ui_led(m2e_lamp_x, m2e_lamp_y + 11, m2e_on, m2e_on ? 0.48 : (m2e_recent ? 0.82 : 0.18), m2e_on ? 0.62 : (m2e_recent ? 0.52 : 0.20), m2e_on ? 1.00 : (m2e_recent ? 0.24 : 0.24));
-gfx_setfont(1, "Arial", 14, 0);
-gfx_r = 0.84; gfx_g = 0.90; gfx_b = 0.98; gfx_a = 1;
-gfx_x = m2e_lamp_x + 22; gfx_y = m2e_lamp_y + 1;
-m2e_on ? sprintf(#ui_buf, "FluxBridge live") : (m2e_recent ? sprintf(#ui_buf, "FluxBridge detect") : sprintf(#ui_buf, "FluxBridge idle"));
-gfx_drawstr(#ui_buf);
-gfx_r = 0.62; gfx_g = 0.70; gfx_b = 0.82; gfx_a = 1;
-gfx_x = m2e_lamp_x + 22; gfx_y = m2e_lamp_y + 25;
-sprintf(#ui_buf, "Auto-detect");
-gfx_drawstr(#ui_buf);
-
-pt_in(m2e_lamp_x - 8, m2e_lamp_y - 2, 170, 48) ? ui_hover_id = 1003;
 pt_in(lamp_x - 8, lamp_y - 2, 180, 48) ? ui_hover_id = 1002;
-
-group_enabled > 0 ? (
-  group_poll_track_name(0);
-  group_write_heartbeat(count_active_voices() > 0 || input_trig_gate > 0, max(input_trig_env, mix_fast));
-  group_refresh_state();
-  grp_btn_x = x0 + 420;
-  grp_btn_y = y0 + 18;
-  grp_btn_w = max(260, min(380, gfx_w - grp_btn_x - 500));
-  grp_btn_w > 0 ? (
-    ui_button(GROUP_UI_BTN_ID, grp_btn_x, grp_btn_y, grp_btn_w, 34) ? group_popup_open = 1 - group_popup_open;
-    gfx_setfont(1, "Arial", 11, 0);
-    gfx_r = 0.58; gfx_g = 0.68; gfx_b = 0.80; gfx_a = 1;
-    gfx_x = grp_btn_x + 12; gfx_y = grp_btn_y + 6;
-    gfx_drawstr("GROUP");
-    gfx_r = 0.90; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
-    gfx_x = grp_btn_x + 58; gfx_y = grp_btn_y + 6;
-    strlen(#group_name) > 0 ? gfx_drawstr(#group_name) : (sprintf(#ui_buf, "Sample"); gfx_drawstr(#ui_buf););
-    gfx_r = group_strict_active ? 0.98 : 0.60; gfx_g = group_strict_active ? 0.76 : 0.72; gfx_b = group_strict_active ? 0.24 : 0.82; gfx_a = 1;
-    gfx_x = grp_btn_x + 12; gfx_y = grp_btn_y + 21;
-    group_strict_active ? sprintf(#ui_buf, "ORDER Strict | ID %d | Lead %d | Peers %d", group_instance_id, group_leader_id, group_peer_count) : sprintf(#ui_buf, "ORDER Unordered | ID %d | Lead %d | Peers %d", group_instance_id, group_leader_id, group_peer_count);
-    gfx_drawstr(#ui_buf);
-    pt_in(grp_btn_x, grp_btn_y, grp_btn_w, 34) ? ui_hover_id = GROUP_UI_BTN_ID;
-  );
-);
 
 // Panels - responsive layout
 panel_gap = 10;
@@ -12795,7 +12023,7 @@ proc_char_h > 58 ? (
     char_drive = clamp(char_drive + (ui_wheel > 0 ? 0.5 : -0.5) * max(1, floor(abs(ui_wheel) / 120 + 0.5)), 0, 24);
     ui_wheel_used = 1;
   );
-  mouse_rpressed && drive_hot ? char_drive = 0;
+  mouse_rpressed && drive_hot && !ui_shift && !ui_alt ? char_drive = 0;
 
   // Commit selected-band character to live per-filter variables first, then
   // mirror the complete independent state into the hidden host sliders. This
@@ -12806,162 +12034,17 @@ proc_char_h > 58 ? (
   new_char_pack = posteq_pack_char_state();
   new_drive_pack = posteq_pack_drive_state();
   abs(new_char_pack - slider62) > 0.0001 ? (slider62 = new_char_pack; sliderchange(MASK_S62); ui_value_changed = 1;);
-  abs(new_drive_pack - slider63) > 0.0001 ? (slider63 = new_drive_pack; sliderchange(MASK_S63); ui_value_changed = 1;);
-);
-
-
-// GroupSync strict-order popup. This is intentionally lightweight: peers are
-// numeric IDs in the same Auto Track Name group; drag rows to numbered ranks.
-group_enabled > 0 && group_popup_open ? (
-  pop_w = min(560, max(420, gfx_w - 80));
-  pop_h = min(520, max(360, gfx_h - 110));
-  pop_x = max(20, gfx_w - pop_w - 24);
-  pop_y = 96;
-
-  gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.58;
-  gfx_rect(pop_x + 5, pop_y + 8, pop_w, pop_h, 1);
-  ui_panel(pop_x, pop_y, pop_w, pop_h);
-
-  gfx_setfont(1, "Arial", 17, 0);
-  gfx_r = 0.92; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
-  gfx_x = pop_x + 18; gfx_y = pop_y + 14;
-  gfx_drawstr("GROUP ORDER");
-  gfx_setfont(1, "Arial", 12, 0);
-  gfx_r = 0.64; gfx_g = 0.74; gfx_b = 0.85; gfx_a = 1;
-  gfx_x = pop_x + 18; gfx_y = pop_y + 38;
-  gfx_drawstr(#group_name);
-  gfx_x = pop_x + 18; gfx_y = pop_y + 52;
-  sprintf(#ui_buf, "this ID %d | leader %d", group_instance_id, group_leader_id);
-  gfx_drawstr(#ui_buf);
-
-  mode_y = pop_y + 62;
-  mode_w = floor((pop_w - 48) / 2);
-  ui_button(GROUP_UI_MODE_STRICT_ID, pop_x + 16, mode_y, mode_w, 26) ? group_set_mode_for_group(1);
-  ui_button(GROUP_UI_MODE_FREE_ID, pop_x + 24 + mode_w, mode_y, mode_w, 26) ? group_set_mode_for_group(0);
-  gfx_setfont(1, "Arial", 11, 0);
-  gfx_r = group_strict_active ? 1.0 : 0.58; gfx_g = group_strict_active ? 0.78 : 0.70; gfx_b = group_strict_active ? 0.24 : 0.82; gfx_a = 1;
-  sprintf(#ui_buf, "STRICT"); draw_center_buf(pop_x + 16, mode_y + 8, mode_w);
-  gfx_r = group_strict_active ? 0.58 : 1.0; gfx_g = group_strict_active ? 0.70 : 0.78; gfx_b = group_strict_active ? 0.82 : 0.24; gfx_a = 1;
-  sprintf(#ui_buf, "UNORDERED"); draw_center_buf(pop_x + 24 + mode_w, mode_y + 8, mode_w);
-
-  hint_y = mode_y + 36;
-  ui_inner_panel(pop_x + 16, hint_y, pop_w - 32, 42);
-  gfx_setfont(1, "Arial", 11, 0);
-  gfx_r = 0.70; gfx_g = 0.80; gfx_b = 0.90; gfx_a = 1;
-  gfx_x = pop_x + 28; gfx_y = hint_y + 8;
-  gfx_drawstr("Drag rows into Step lanes. Same lane = parallel. Drag to Unordered to remove strict rank.");
-  gfx_x = pop_x + 28; gfx_y = hint_y + 24;
-  gfx_drawstr("Strict order is reserved for grouped Granular onset coordination; current voices remain manual/MIDI-triggered.");
-
-  // Drop zones.
-  unordered_x = pop_x + 16;
-  unordered_y = hint_y + 58;
-  unordered_w = pop_w - 32;
-  unordered_h = 70;
-  ui_inner_panel(unordered_x, unordered_y, unordered_w, unordered_h);
-  gfx_setfont(1, "Arial", 12, 0);
-  gfx_r = 0.60; gfx_g = 0.70; gfx_b = 0.82; gfx_a = 1;
-  gfx_x = unordered_x + 10; gfx_y = unordered_y + 8;
-  gfx_drawstr("UNORDERED");
-  pt_in(unordered_x, unordered_y, unordered_w, unordered_h) ? ui_hover_id = GROUP_UI_UNORDERED_DROP_ID;
-
-  lanes_x = pop_x + 16;
-  lanes_y = unordered_y + unordered_h + 14;
-  lane_gap = 8;
-  lane_h = 56;
-  lane_w = unordered_w;
-  rank_i = 1;
-  while (rank_i <= 4) (
-    ly = lanes_y + (rank_i - 1) * (lane_h + lane_gap);
-    ui_inner_panel(lanes_x, ly, lane_w, lane_h);
-    gfx_setfont(1, "Arial", 11, 0);
-    gfx_r = 0.96; gfx_g = 0.74; gfx_b = 0.22; gfx_a = 1;
-    gfx_x = lanes_x + 10; gfx_y = ly + 8;
-    sprintf(#ui_buf, "STEP %d", rank_i); gfx_drawstr(#ui_buf);
-    pt_in(lanes_x, ly, lane_w, lane_h) ? ui_hover_id = GROUP_UI_RANK_DROP_BASE + rank_i;
-    rank_i += 1;
-  );
-
-  // Draw peer rows into either unordered strip or strict rank lanes.
-  clk = gmem[GROUP_CLOCK_SLOT];
-  unordered_count = 0;
-  lane_count1 = 0; lane_count2 = 0; lane_count3 = 0; lane_count4 = 0;
-  peer_i = 0;
-  while (peer_i < GROUP_MAX_PEERS) (
-    pb = group_peer_base(peer_i);
-    pid = gmem[pb + GROUP_F_ID] | 0;
-    phash = gmem[pb + GROUP_F_HASH] | 0;
-    pheart = gmem[pb + GROUP_F_HEART];
-    (pid > 0 && phash == group_name_hash && (clk - pheart) <= GROUP_STALE_TICKS) ? (
-      prank = clamp(gmem[pb + GROUP_F_RANK] | 0, 0, 4);
-      pact = gmem[pb + GROUP_F_ACTIVE] > 0 ? 1 : 0;
-      pstr = gmem[pb + GROUP_F_STRENGTH];
-      prank <= 0 ? (
-        row_x = unordered_x + 12 + unordered_count * 126;
-        row_y = unordered_y + 30;
-        row_w = min(118, unordered_w - 24);
-        unordered_count += 1;
-      ) : (
-        ly = lanes_y + (prank - 1) * (lane_h + lane_gap);
-        prank == 1 ? (idx_in_lane = lane_count1; lane_count1 += 1;)
-        : prank == 2 ? (idx_in_lane = lane_count2; lane_count2 += 1;)
-        : prank == 3 ? (idx_in_lane = lane_count3; lane_count3 += 1;)
-        : (idx_in_lane = lane_count4; lane_count4 += 1;);
-        row_x = lanes_x + 74 + idx_in_lane * 126;
-        row_y = ly + 26;
-        row_w = min(118, lane_w - 88);
-      );
-      row_h = 22;
-      row_w > 36 ? (
-        is_drag = group_drag_id == pid ? 1 : 0;
-        gfx_r = pid == group_leader_id ? 0.45 : (is_drag ? 0.18 : 0.10);
-        gfx_g = pid == group_leader_id ? 0.35 : (is_drag ? 0.42 : 0.18);
-        gfx_b = pid == group_leader_id ? 0.10 : (is_drag ? 0.64 : 0.25);
-        gfx_a = 0.95;
-        gfx_rect(row_x, row_y, row_w, row_h, 1);
-        gfx_r = pid == group_leader_id ? 0.95 : 0.28; gfx_g = pid == group_leader_id ? 0.70 : 0.58; gfx_b = pid == group_leader_id ? 0.22 : 0.90; gfx_a = 1;
-        gfx_rect(row_x, row_y, row_w, row_h, 0);
-        gfx_setfont(1, "Arial", 10, 0);
-        gfx_x = row_x + 5; gfx_y = row_y + 5;
-        gfx_r = 0.86; gfx_g = 0.92; gfx_b = 1.0; gfx_a = 1;
-        sprintf(#ui_buf, "≡ %d", pid); gfx_drawstr(#ui_buf);
-        pact ? (
-          gfx_r = 0.30; gfx_g = 1.0; gfx_b = 0.55; gfx_a = 1;
-          gfx_circle(row_x + row_w - 12, row_y + 11, 3, 1);
-        );
-        (mouse_pressed && pt_in(row_x, row_y, row_w, row_h) && ui_active < 0) ? (
-          group_drag_id = pid;
-          group_drag_slot = peer_i;
-          ui_active = GROUP_UI_ROW_BASE + peer_i;
-        );
-        mouse_rpressed && pt_in(row_x, row_y, row_w, row_h) ? group_set_rank_for_id(pid, 0);
-        pt_in(row_x, row_y, row_w, row_h) ? ui_hover_id = GROUP_UI_ROW_BASE + peer_i;
-      );
-    );
-    peer_i += 1;
-  );
-
-  // Commit drag release to a drop zone.
-  group_drag_id > 0 ? (
-    !mouse_down ? (
-      drop_rank = -1;
-      pt_in(unordered_x, unordered_y, unordered_w, unordered_h) ? drop_rank = 0;
-      rank_i = 1;
-      while (rank_i <= 4) (
-        ly = lanes_y + (rank_i - 1) * (lane_h + lane_gap);
-        pt_in(lanes_x, ly, lane_w, lane_h) ? drop_rank = rank_i;
-        rank_i += 1;
-      );
-      drop_rank >= 0 ? group_set_rank_for_id(group_drag_id, drop_rank);
-      ui_active >= GROUP_UI_ROW_BASE && ui_active < GROUP_UI_ROW_BASE + GROUP_MAX_PEERS ? ui_active = -1;
-      group_drag_id = -1;
-      group_drag_slot = -1;
-    ) : (
-      gfx_r = 1.0; gfx_g = 0.78; gfx_b = 0.25; gfx_a = 0.95;
-      gfx_circle(mouse_x, mouse_y, 5, 1);
-    );
+  abs(new_drive_pack - slider31) > 0.0001 ? (slider31 = new_drive_pack; sliderchange(MASK_S31); ui_value_changed = 1;);
+  new_drive_upper = posteq_pack_drive_upper();
+  abs(new_drive_upper - slider58) > 0.0001 ? (slider58 = new_drive_upper; sliderchange(MASK_S58); ui_value_changed = 1;);
+  // Explicit import choices; normal right-click still resets the selected drive.
+  mouse_rpressed && drive_hot && (ui_shift || ui_alt) ? (
+    slider31 = ui_shift ? -2 : -3;
+    sliderchange(MASK_S31);
+    ui_value_changed = 1;
   );
 );
+
 
 rescan_flash > 0 ? rescan_flash = max(0, rescan_flash - 0.035);
 rescan_flash > 0 ? (
@@ -12971,30 +12054,6 @@ rescan_flash > 0 ? (
   gfx_rect(x0, y0, gfx_w - 36, header_h, 0);
 );
 
-group_enabled > 0 && ui_hover_id == GROUP_UI_BTN_ID ? (
-  sprintf(#tip_title, "GroupSync");
-  sprintf(#tip_body, "Auto group from host track name. Click to edit strict order. This ID %d; leader %d; peers %d.", group_instance_id, group_leader_id, group_peer_count);
-);
-group_enabled > 0 && ui_hover_id == GROUP_UI_MODE_STRICT_ID ? (
-  sprintf(#tip_title, "Strict order");
-  sprintf(#tip_body, "Enable rank-based ordering metadata for grouped Samplers. Current MIDI voices are not delayed by this switch.");
-);
-group_enabled > 0 && ui_hover_id == GROUP_UI_MODE_FREE_ID ? (
-  sprintf(#tip_title, "Unordered");
-  sprintf(#tip_body, "Disable strict gating. Peers still appear in the group list.");
-);
-ui_hover_id == GROUP_UI_UNORDERED_DROP_ID ? (
-  sprintf(#tip_title, "Unordered lane");
-  sprintf(#tip_body, "Drop a Sampler here to remove it from strict ordering.");
-);
-(ui_hover_id >= GROUP_UI_RANK_DROP_BASE && ui_hover_id < GROUP_UI_RANK_DROP_BASE + 8) ? (
-  sprintf(#tip_title, "Strict rank");
-  sprintf(#tip_body, "Drop here for Step %d. Multiple peers in one step run in parallel.", ui_hover_id - GROUP_UI_RANK_DROP_BASE);
-);
-(ui_hover_id >= GROUP_UI_ROW_BASE && ui_hover_id < GROUP_UI_ROW_BASE + GROUP_MAX_PEERS) ? (
-  sprintf(#tip_title, "Sampler peer");
-  sprintf(#tip_body, "Drag to a Step lane, or right-click to make unordered. Lowest ID is leader.");
-);
 ui_hover_id == 1001 ? (
   sprintf(#tip_title, "Sample");
   sprintf(#tip_body, "Slot 0 auto-loads the bank.");
@@ -13002,10 +12061,6 @@ ui_hover_id == 1001 ? (
 ui_hover_id == 1002 ? (
   sprintf(#tip_title, "Bank status");
   sprintf(#tip_body, "Green ready. Amber partial.");
-);
-ui_hover_id == 1003 ? (
-  sprintf(#tip_title, "FluxBridge");
-  sprintf(#tip_body, "Uses fixed CC lanes for motion.");
 );
 ui_hover_id == 1100 ? (
   sprintf(#tip_title, "Bank");

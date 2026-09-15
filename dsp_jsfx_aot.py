@@ -589,7 +589,6 @@ class Parser:
             return True
         return False
 
-        # --- JSFX AOT parser: newline-leading infix continuation support ---
     def _is_line_continuation_op(self, tok: Tok, min_prec: int) -> bool:
         """True when a newline followed by tok must continue the current expr.
 
@@ -599,10 +598,11 @@ class Parser:
                 || something
                 || something_else
 
-        Newlines still separate statements in general; we only join across a
-        newline when the next token is an infix/ternary continuation operator
-        that cannot safely start a standalone expression.  '+', '-', and '!'
-        are intentionally excluded here because they are valid unary prefixes.
+        After an operand, newline-leading '+' and '-' continue the expression,
+        just as they do on the same line in WDL/EEL2. A semicolon terminates it;
+        a following sign is then parsed as a unary prefix by parse_prefix().
+        Preserve this parser's newline-separated statements when the next token
+        is not an infix/ternary operator. '!' is unary-only, so it cannot join.
         """
         if tok.kind != "op":
             return False
@@ -610,7 +610,7 @@ class Parser:
             return _TERNARY_PREC >= min_prec
         if tok.text == ":":
             return False
-        if tok.text in ("+", "-", "!"):
+        if tok.text == "!":
             return False
         prec = _PRECEDENCE.get(tok.text)
         return prec is not None and prec >= min_prec
@@ -1379,7 +1379,7 @@ HOST_TRACK_FUNCTIONS: Set[str] = {
 }
 
 SAMPLE_POOL_SETUP_FUNCTIONS: Set[str] = {
-    "sample_pool_from_slot", "sample_pool_set_mode", "sample_pool_set_budget_mb", "sample_pool_commit",
+    "sample_pool_adopt", "sample_pool_from_slot", "sample_pool_set_mode", "sample_pool_set_deferred", "sample_pool_set_budget_mb", "sample_pool_commit",
 }
 SAMPLE_POOL_QUERY_FUNCTIONS: Set[str] = {
     "sample_pool_state", "sample_pool_selected", "sample_pool_loaded", "sample_pool_failed",
@@ -4889,14 +4889,14 @@ class LLVMModuleEmitter:
                     fdecl = get_decl("jsfx_sample_pool_from_slot", 2)
                     return builder.call(fdecl, [st, self.emit_expr(builder, st, n.args[0]), self.emit_expr(builder, st, n.args[1])])
 
-                if fn in ("sample_pool_set_mode", "sample_pool_set_budget_mb"):
+                if fn in ("sample_pool_set_mode", "sample_pool_set_deferred", "sample_pool_set_budget_mb"):
                     if len(n.args) != 2:
                         raise ValueError(f"{fn} expects 2 args")
                     rt_name = "jsfx_" + fn
                     fdecl = get_decl(rt_name, 2)
                     return builder.call(fdecl, [st, self.emit_expr(builder, st, n.args[0]), self.emit_expr(builder, st, n.args[1])])
 
-                if fn in ("sample_pool_commit", "sample_pool_state", "sample_pool_selected", "sample_pool_loaded", "sample_pool_failed", "sample_pool_ram_mb", "sample_pool_generation"):
+                if fn in ("sample_pool_adopt", "sample_pool_commit", "sample_pool_state", "sample_pool_selected", "sample_pool_loaded", "sample_pool_failed", "sample_pool_ram_mb", "sample_pool_generation"):
                     if len(n.args) != 1:
                         raise ValueError(f"{fn} expects 1 arg")
                     rt_name = "jsfx_" + fn
@@ -6159,6 +6159,8 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("double jsfx_msg_peer_caps(DSPJSFX_State* st, double peerId);")
     lines.append("double jsfx_msg_peer_alive(DSPJSFX_State* st, double peerId);")
     lines.append("double jsfx_sample_pool_from_slot(DSPJSFX_State* st, double slot, double nameHandle);")
+    lines.append("double jsfx_sample_pool_set_deferred(DSPJSFX_State* st, double pool, double deferred);")
+    lines.append("double jsfx_sample_pool_adopt(DSPJSFX_State* st, double pool);")
     lines.append("double jsfx_sample_pool_set_mode(DSPJSFX_State* st, double pool, double mode);")
     lines.append("double jsfx_sample_pool_set_budget_mb(DSPJSFX_State* st, double pool, double mb);")
     lines.append("double jsfx_sample_pool_commit(DSPJSFX_State* st, double pool);")
@@ -6222,7 +6224,9 @@ def _aot_opt_and_emit(mod_ir: ir.Module,
         Path(out_ll_unopt).write_text(pre_opt_ir, encoding="utf-8")
 
     if opt_level > 0:
-        pto = llvm.PipelineTuningOptions(speed_level=int(opt_level), size_level=0)
+        # Use the default (no size optimization). Newer llvmlite versions no
+        # longer accept size_level, while speed_level remains supported.
+        pto = llvm.PipelineTuningOptions(speed_level=int(opt_level))
         pb = llvm.create_pass_builder(tm, pto)
         pm = pb.getModulePassManager()
         pm.run(llvm_mod, pb)

@@ -125,6 +125,8 @@ inline void registerBuiltins()
         // read mirrored summary vars or preview-specific access once a UI bridge
         // is added. These stubs keep @init/@gfx compileable.
         NSEEL_addfunc_varparm_ex ("sample_pool_from_slot", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_set_deferred", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_adopt", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_pool_set_mode", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_pool_set_budget_mb", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_pool_commit", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);

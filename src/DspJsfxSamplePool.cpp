@@ -1,4 +1,5 @@
 #include "DspJsfxSamplePool.h"
+#include <chrono>
 #include "DspJsfxAudioFilePreflight.h"
 
 #include <algorithm>
@@ -132,14 +133,14 @@ static void buildPreviewForEntry(DspJsfxSamplePoolGeneration& gen, DspJsfxSample
 
         for (std::uint64_t f = start; f < end; ++f)
         {
-            float mono = 0.0f;
             for (int ch = 0; ch < static_cast<int>(entry.channels); ++ch)
-                mono += gen.audio[static_cast<std::size_t>(entry.offsetItems + f * entry.channels + static_cast<std::uint64_t>(ch))];
-            mono /= static_cast<float>(std::max<int>(1, entry.channels));
-            mn = std::min(mn, mono);
-            mx = std::max(mx, mono);
-            sumSq += static_cast<double>(mono) * static_cast<double>(mono);
-            ++count;
+            {
+                const auto x = gen.audio[static_cast<std::size_t>(entry.offsetItems + f * entry.channels + static_cast<std::uint64_t>(ch))];
+                mn = std::min(mn, x);
+                mx = std::max(mx, x);
+                sumSq += static_cast<double>(x) * static_cast<double>(x);
+                ++count;
+            }
         }
 
         auto& pb = gen.previews[static_cast<std::size_t>(entry.previewOffset + static_cast<std::uint32_t>(b))];
@@ -162,7 +163,6 @@ DspJsfxSamplePool::~DspJsfxSamplePool()
     workerCv_.notify_all();
     if (worker_.joinable())
         worker_.join();
-    activeRaw_.store(nullptr, std::memory_order_release);
 }
 
 void DspJsfxSamplePool::setMode(int mode) noexcept
@@ -225,6 +225,7 @@ bool DspJsfxSamplePool::commitFromPaths(const std::vector<juce::String>& paths, 
     req.budgetBytes = currentBudget;
     req.targetSampleRate = currentTargetRate;
     req.requestId = nextRequestId_.fetch_add(1, std::memory_order_acq_rel);
+    storage_.requestStarted(req.requestId);
 
     selected_.store(static_cast<int>(req.paths.size()), std::memory_order_release);
     failed_.store(0, std::memory_order_release);
@@ -270,6 +271,7 @@ bool DspJsfxSamplePool::commitFromMemory(std::shared_ptr<const DspJsfxSamplePool
     req.budgetBytes = currentBudget;
     req.targetSampleRate = currentTargetRate;
     req.requestId = nextRequestId_.fetch_add(1, std::memory_order_acq_rel);
+    storage_.requestStarted(req.requestId);
 
     const int selected = req.memorySources != nullptr ? static_cast<int>(req.memorySources->size()) : 0;
     selected_.store(selected, std::memory_order_release);
@@ -291,16 +293,32 @@ bool DspJsfxSamplePool::commitFromMemory(std::shared_ptr<const DspJsfxSamplePool
     return true;
 }
 
+void DspJsfxSamplePool::setDeferred(bool deferred) noexcept
+{
+    storage_.setDeferred(deferred);
+}
+
+int DspJsfxSamplePool::adoptPending() noexcept
+{
+    return storage_.adoptPending();
+}
+
+void DspJsfxSamplePool::reclaimRetired()
+{
+    storage_.reclaimRetired();
+}
+
 int DspJsfxSamplePool::loaded() const noexcept
 {
-    if (const auto* gen = active())
+    ReaderScope reading(storage_);
+    if (const auto* gen = reading.generation)
         return static_cast<int>(gen->entries.size());
     return 0;
 }
 
 double DspJsfxSamplePool::ramMB() const noexcept
 {
-    return static_cast<double>(decodedBytes_.load(std::memory_order_acquire)) / (1024.0 * 1024.0);
+    return static_cast<double>(storage_.decodedBytes()) / (1024.0 * 1024.0);
 }
 
 std::uint64_t DspJsfxSamplePool::generation() const noexcept
@@ -320,7 +338,8 @@ const DspJsfxSamplePoolEntry* DspJsfxSamplePool::entryFor(const DspJsfxSamplePoo
 
 std::uint64_t DspJsfxSamplePool::sampleIdAt(int index) const noexcept
 {
-    const auto* gen = active();
+    ReaderScope reading(storage_);
+    const auto* gen = reading.generation;
     if (gen == nullptr || index < 0 || index >= static_cast<int>(gen->entries.size()))
         return 0;
     return gen->entries[static_cast<std::size_t>(index)].id;
@@ -328,43 +347,49 @@ std::uint64_t DspJsfxSamplePool::sampleIdAt(int index) const noexcept
 
 int DspJsfxSamplePool::length(std::uint64_t sampleId) const noexcept
 {
-    if (auto* e = entryFor(active(), sampleId))
+    ReaderScope reading(storage_);
+    if (auto* e = entryFor(reading.generation, sampleId))
         return static_cast<int>(e->frames);
     return 0;
 }
 
 int DspJsfxSamplePool::channels(std::uint64_t sampleId) const noexcept
 {
-    if (auto* e = entryFor(active(), sampleId))
+    ReaderScope reading(storage_);
+    if (auto* e = entryFor(reading.generation, sampleId))
         return static_cast<int>(e->channels);
     return 0;
 }
 
 int DspJsfxSamplePool::sampleRate(std::uint64_t sampleId) const noexcept
 {
-    if (auto* e = entryFor(active(), sampleId))
+    ReaderScope reading(storage_);
+    if (auto* e = entryFor(reading.generation, sampleId))
         return static_cast<int>(e->sampleRate);
     return 0;
 }
 
 double DspJsfxSamplePool::peak(std::uint64_t sampleId) const noexcept
 {
-    if (auto* e = entryFor(active(), sampleId))
+    ReaderScope reading(storage_);
+    if (auto* e = entryFor(reading.generation, sampleId))
         return static_cast<double>(e->peak);
     return 0.0;
 }
 
 double DspJsfxSamplePool::rms(std::uint64_t sampleId) const noexcept
 {
-    if (auto* e = entryFor(active(), sampleId))
+    ReaderScope reading(storage_);
+    if (auto* e = entryFor(reading.generation, sampleId))
         return static_cast<double>(e->rms);
     return 0.0;
 }
 
 bool DspJsfxSamplePool::name(std::uint64_t sampleId, std::string& out) const
 {
+    ReaderScope reading(storage_);
     out.clear();
-    const auto* gen = active();
+    const auto* gen = reading.generation;
     if (gen == nullptr || ! validSampleId(sampleId))
         return false;
     const auto idx = static_cast<std::size_t>(sampleId - 1);
@@ -376,13 +401,20 @@ bool DspJsfxSamplePool::name(std::uint64_t sampleId, std::string& out) const
 
 double DspJsfxSamplePool::read(std::uint64_t sampleId, int channel, double frame) const noexcept
 {
-    const auto* gen = active();
-    const auto* e = entryFor(gen, sampleId);
+    ReaderScope reading(storage_);
+    const auto* gen = reading.generation;
+    return readFrom(gen, entryFor(gen, sampleId), channel, frame);
+}
+
+double DspJsfxSamplePool::readFrom(const DspJsfxSamplePoolGeneration* gen, const DspJsfxSamplePoolEntry* e, int channel, double frame) const noexcept
+{
     if (gen == nullptr || e == nullptr || e->frames == 0 || e->channels == 0)
         return 0.0;
 
     if (! std::isfinite(frame))
         frame = 0.0;
+    if (frame < -0.5 || frame > static_cast<double>(e->frames))
+        return 0.0;
     auto f = static_cast<std::int64_t>(std::llround(frame));
     if (f < 0 || f >= static_cast<std::int64_t>(e->frames))
         return 0.0;
@@ -400,18 +432,26 @@ double DspJsfxSamplePool::read(std::uint64_t sampleId, int channel, double frame
 
 double DspJsfxSamplePool::readInterp(std::uint64_t sampleId, int channel, double phase) const noexcept
 {
-    if (! std::isfinite(phase))
-        phase = 0.0;
+    ReaderScope reading(storage_);
+    const auto* gen = reading.generation;
+    return interpFrom(gen, entryFor(gen, sampleId), channel, phase);
+}
+
+double DspJsfxSamplePool::interpFrom(const DspJsfxSamplePoolGeneration* gen, const DspJsfxSamplePoolEntry* e, int channel, double phase) const noexcept
+{
+    if (!std::isfinite(phase))
+        return 0.0;
     const auto base = std::floor(phase);
     const double frac = phase - base;
-    const double x0 = read(sampleId, channel, base);
-    const double x1 = read(sampleId, channel, base + 1.0);
+    const double x0 = readFrom(gen, e, channel, base);
+    const double x1 = readFrom(gen, e, channel, base + 1.0);
     return x0 + (x1 - x0) * frac;
 }
 
 bool DspJsfxSamplePool::read2(std::uint64_t sampleId, double phase, double* outL, double* outR, bool interp) const noexcept
 {
-    const auto* gen = active();
+    ReaderScope reading(storage_);
+    const auto* gen = reading.generation;
     const auto* e = entryFor(gen, sampleId);
     if (gen == nullptr || e == nullptr || e->frames == 0 || e->channels == 0)
     {
@@ -431,9 +471,9 @@ bool DspJsfxSamplePool::read2(std::uint64_t sampleId, double phase, double* outL
         return false;
     }
 
-    const double l = interp ? readInterp(sampleId, 0, phase) : read(sampleId, 0, phase);
+    const double l = interp ? interpFrom(gen, e, 0, phase) : readFrom(gen, e, 0, phase);
     const double r = e->channels >= 2
-        ? (interp ? readInterp(sampleId, 1, phase) : read(sampleId, 1, phase))
+        ? (interp ? interpFrom(gen, e, 1, phase) : readFrom(gen, e, 1, phase))
         : l;
     if (outL) *outL = l;
     if (outR) *outR = r;
@@ -442,14 +482,16 @@ bool DspJsfxSamplePool::read2(std::uint64_t sampleId, double phase, double* outL
 
 int DspJsfxSamplePool::previewBins(std::uint64_t sampleId) const noexcept
 {
-    if (auto* e = entryFor(active(), sampleId))
+    ReaderScope reading(storage_);
+    if (auto* e = entryFor(reading.generation, sampleId))
         return static_cast<int>(e->previewCount);
     return 0;
 }
 
 bool DspJsfxSamplePool::previewRead(std::uint64_t sampleId, int bin, double* minValue, double* maxValue, double* rmsValue) const noexcept
 {
-    const auto* gen = active();
+    ReaderScope reading(storage_);
+    const auto* gen = reading.generation;
     const auto* e = entryFor(gen, sampleId);
     if (gen == nullptr || e == nullptr || bin < 0 || bin >= static_cast<int>(e->previewCount))
         return false;
@@ -475,18 +517,28 @@ void DspJsfxSamplePool::workerMain()
     for (;;)
     {
         Request req;
+        bool haveRequest = false;
         {
             std::unique_lock<std::mutex> lock(workerMutex_);
-            workerCv_.wait(lock, [this] { return workerExit_ || requestPending_; });
+            workerCv_.wait_for(lock, std::chrono::milliseconds(25), [this] { return workerExit_ || requestPending_; });
             if (workerExit_)
                 return;
-            req = std::move(pendingRequest_);
-            requestPending_ = false;
+            if (requestPending_)
+            {
+                req = std::move(pendingRequest_);
+                requestPending_ = false;
+                haveRequest = true;
+            }
         }
-
-        state_.store(kSamplePoolLoading, std::memory_order_release);
-        auto gen = buildGeneration(req);
-        publishGeneration(std::move(gen), req.requestId);
+        if (haveRequest)
+        {
+            state_.store(kSamplePoolLoading, std::memory_order_release);
+            auto gen = buildGeneration(req);
+            publishGeneration(std::move(gen), req.requestId);
+        }
+        if (!storage_.deferred())
+            adoptPending();
+        reclaimRetired();
     }
 }
 
@@ -750,8 +802,11 @@ std::shared_ptr<DspJsfxSamplePoolGeneration> DspJsfxSamplePool::buildGeneration(
     return gen;
 }
 
-void DspJsfxSamplePool::publishGeneration(std::shared_ptr<DspJsfxSamplePoolGeneration> gen, std::uint64_t)
+void DspJsfxSamplePool::publishGeneration(std::shared_ptr<DspJsfxSamplePoolGeneration> gen, std::uint64_t requestId)
 {
+    // A newer request supersedes this result even if its decode has not begun.
+    if (requestId + 1 != nextRequestId_.load(std::memory_order_acquire))
+        return;
     if (! gen)
     {
         state_.store(kSamplePoolFailed, std::memory_order_release);
@@ -765,20 +820,10 @@ void DspJsfxSamplePool::publishGeneration(std::shared_ptr<DspJsfxSamplePoolGener
         return;
     }
 
-    const auto* raw = gen.get();
-    {
-        std::lock_guard<std::mutex> lock(generationMutex_);
-        // Audio/GFX reads are intentionally lock-free against activeRaw_. That means
-        // an old generation must not be freed while a thread could still be inside a
-        // read helper. Retain immutable generations for the plugin lifetime; sample
-        // bank reloads are user-scale events, not per-block allocations.
-        generations_.push_back(gen);
-    }
-
-    activeRaw_.store(raw, std::memory_order_release);
+    if (!storage_.publish(gen, requestId))
+        return;
     selected_.store(gen->selectedCount, std::memory_order_release);
     failed_.store(gen->failedCount, std::memory_order_release);
-    decodedBytes_.store(gen->decodedBytes, std::memory_order_release);
     publishedGeneration_.store(gen->sourceGeneration, std::memory_order_release);
 
     int finalState = kSamplePoolReady;

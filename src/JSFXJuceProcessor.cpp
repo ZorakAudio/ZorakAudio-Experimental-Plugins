@@ -53,6 +53,7 @@
 #include "ZAAudioImportRecipe.h"
 #include "DspJsfxRuntime.h"
 #include "DspJsfxSamplePool.h"
+#include "DspJsfxHostTransport.h"
 #include "DspJsfxAudioFilePreflight.h"
 
 // Back-compat: older generated headers may not export bus inference macros.
@@ -3197,6 +3198,12 @@ public:
             requestUiWakeAsync();
     }
 
+    void setGfxAnalysisVisible(bool visible)
+    {
+        if (gfxAnalysisVisible.exchange(visible, std::memory_order_acq_rel) != visible)
+            requestExternalWakeEvent(true);
+    }
+
     void parameterChanged (const juce::String& parameterID, float) override
     {
         pendingParameterWakeEvent.store (true, std::memory_order_release);
@@ -3316,6 +3323,7 @@ public:
         }
 
         jsfx_slider (&st);
+        syncJsfxLatency();
 
        #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
         if (correctnessRuntime != nullptr)
@@ -3435,6 +3443,7 @@ public:
     void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) override
     {
         juce::ScopedNoDenormals _;
+        ScopedSamplePoolReads poolReads(*this);
 
         const int numSamples = buffer.getNumSamples();
         applyOversamplingFactorChangeIfNeeded (numSamples);
@@ -3531,6 +3540,8 @@ public:
             prepareOversampledAudioPointers (numCh, numSamples, processSamples, oversamplingFactor);
 #endif
 
+        syncJsfxHostTransport(numSamples);
+        syncJsfxGfxActivity();
         const bool fileLoadsPromoted = promotePendingFileLoads();
 
         const bool slidersChanged = pushParamsToStateSliders();
@@ -3555,6 +3566,7 @@ public:
            #endif
         }
 
+        syncJsfxLatency();
         const bool gfxWritesApplied = applyQueuedGfxStateWrites();
 
         st.currentBlockSize = processSamples;
@@ -3661,6 +3673,7 @@ public:
             correctnessRuntime->compareMidiOutput (st, blockIndex, "post-block");
             correctnessRuntime->compareMemoryPages (st, blockIndex, processSamples > 0 ? (processSamples - 1) : -1, "post-block");
             correctnessRuntime->noteBlockCompared();
+            syncJsfxLatency(); // @block can complete a deferred latency transition
 
 #if ! ((DSPJSFX_NUM_INPUTS == 0) && (DSPJSFX_NUM_OUTPUTS == 0))
             if (oversamplingFactor > 1)
@@ -3692,7 +3705,8 @@ public:
 
         const bool keepAwakeBefore = getSmartIdleKeepAwakeFlag();
         const bool externalWakeEvent = pendingExternalWakeEvent.exchange (false, std::memory_order_acq_rel);
-        const bool preProcessWakeEvent = fileLoadsPromoted
+        const bool preProcessWakeEvent = hostTransportDiscontinuity
+                                      || fileLoadsPromoted
                                       || externalWakeEvent
                                       || parameterWakeEvent
                                       || explicitWakeEvent
@@ -3731,6 +3745,7 @@ public:
         }
 
         jsfx_process_block (&st, numCh > 0 ? inPtrs.data() : nullptr, numCh > 0 ? outPtrs.data() : nullptr, numCh, processSamples);
+        syncJsfxLatency();
 
 #if ! ((DSPJSFX_NUM_INPUTS == 0) && (DSPJSFX_NUM_OUTPUTS == 0))
         if (oversamplingFactor > 1)
@@ -5206,16 +5221,37 @@ public:
         return 1.0;
     }
 
+    struct ScopedSamplePoolReads
+    {
+        explicit ScopedSamplePoolReads(JSFXJuceProcessor& p) noexcept : owner(p), previous(current)
+        { current = this; }
+        ~ScopedSamplePoolReads() { current = previous; }
+        ScopedSamplePoolReads(const ScopedSamplePoolReads&) = delete;
+        ScopedSamplePoolReads& operator=(const ScopedSamplePoolReads&) = delete;
+        JSFXJuceProcessor& owner;
+        ScopedSamplePoolReads* previous;
+        za::jsfx::DspJsfxSamplePool::ReadBatch generations;
+        std::array<za::jsfx::DspJsfxSamplePool*, 64> handles {};
+        inline static thread_local ScopedSamplePoolReads* current = nullptr;
+    };
+
     za::jsfx::DspJsfxSamplePool* getSamplePoolForHandle (double handle) noexcept
     {
-        const int hid = (int) std::llround (handle);
-        if (hid <= 0)
+        if (!std::isfinite(handle) || handle < 0.5 || handle > 2147483647.0)
             return nullptr;
-        const int idx = hid - 1;
-        std::lock_guard<std::mutex> lock (samplePoolMutex);
-        if (idx < 0 || idx >= (int) samplePools.size() || samplePools[(size_t) idx] == nullptr)
+        const int idx = static_cast<int>(std::llround(handle)) - 1;
+        auto* batch = ScopedSamplePoolReads::current;
+        const bool cacheable = batch != nullptr && &batch->owner == this
+                           && idx >= 0 && idx < static_cast<int>(batch->handles.size());
+        if (cacheable && batch->handles[static_cast<size_t>(idx)] != nullptr)
+            return batch->handles[static_cast<size_t>(idx)];
+        std::lock_guard<std::mutex> lock(samplePoolMutex);
+        if (idx < 0 || idx >= static_cast<int>(samplePools.size()) || samplePools[static_cast<size_t>(idx)] == nullptr)
             return nullptr;
-        return samplePools[(size_t) idx]->pool.get();
+        auto* pool = samplePools[static_cast<size_t>(idx)]->pool.get();
+        if (cacheable)
+            batch->handles[static_cast<size_t>(idx)] = pool;
+        return pool;
     }
 
     double rt_sample_pool_from_slot (DSPJSFX_State* state, double slotValue, double nameHandle) noexcept
@@ -5241,6 +5277,23 @@ public:
         samplePools.push_back (std::move (h));
         samplePoolByKey[key] = idx;
         return (double) (idx + 1);
+    }
+
+    double rt_sample_pool_set_deferred (double poolHandle, double deferred) noexcept
+    {
+        if (auto* pool = getSamplePoolForHandle (poolHandle))
+        {
+            pool->setDeferred (deferred != 0.0);
+            return 1.0;
+        }
+        return 0.0;
+    }
+
+    double rt_sample_pool_adopt (double poolHandle) noexcept
+    {
+        if (auto* pool = getSamplePoolForHandle (poolHandle))
+            return static_cast<double> (pool->adoptPending());
+        return 0.0;
     }
 
     double rt_sample_pool_set_mode (double poolHandle, double modeValue) noexcept
@@ -7071,7 +7124,7 @@ private:
         out.id = tree.getProperty ("id").toString();
         out.name = tree.getProperty ("name").toString();
         out.category = tree.getProperty ("category").toString();
-        out.addedUtcMs = (int64_t) tree.getProperty ("addedUtcMs", (juce::int64) 0);
+        out.addedUtcMs = (juce::int64) tree.getProperty ("addedUtcMs", (juce::int64) 0);
         out.selection = getSelectionFromValueTree (tree);
 
         if (out.selection.paths.empty())
@@ -8824,6 +8877,7 @@ private:
         }
 
         jsfx_slider (&st);
+        syncJsfxLatency();
 
        #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
         if (correctnessRuntime != nullptr)
@@ -9019,6 +9073,8 @@ private:
         bindMidiRuntimeBuffers();
         midiInputNoteTracker.clear();
         midiOutputNoteTracker.clear();
+        hostTransportTracker.reset();
+        hostTransportDiscontinuity = false;
         resetMidiTransportStatusForCleanup();
     }
 
@@ -9026,6 +9082,97 @@ private:
     {
         midiTransportHaveLastPlaying = false;
         midiTransportLastPlaying = false;
+    }
+
+    // All externally injected DSP variables must also reach the WDL oracle.
+    void writeExternalJsfxVar(int index, double value)
+    {
+        if (index < 0)
+            return;
+        st.vars[index] = value;
+       #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+        if (correctnessRuntime != nullptr)
+            correctnessRuntime->applyExternalVarWrite(index, value);
+       #endif
+    }
+
+    void syncJsfxGfxActivity()
+    {
+        static const int boundIdx = findGeneratedStateVarIndexIgnoreCase("host_gfx_bound");
+        static const int activeIdx = findGeneratedStateVarIndexIgnoreCase("host_gfx_active");
+        writeExternalJsfxVar(boundIdx, 1.0);
+        writeExternalJsfxVar(activeIdx, !isNonRealtime() && gfxAnalysisVisible.load(std::memory_order_acquire) ? 1.0 : 0.0);
+    }
+
+    void syncJsfxHostTransport(int hostSamples)
+    {
+        static const int stateIdx = findGeneratedStateVarIndexIgnoreCase("play_state");
+        static const int posIdx = findGeneratedStateVarIndexIgnoreCase("play_position");
+        static const int beatIdx = findGeneratedStateVarIndexIgnoreCase("beat_position");
+        static const int tempoIdx = findGeneratedStateVarIndexIgnoreCase("tempo");
+        static const int boundIdx = findGeneratedStateVarIndexIgnoreCase("host_transport_bound");
+        static const int validIdx = findGeneratedStateVarIndexIgnoreCase("host_transport_valid");
+        static const int jumpIdx = findGeneratedStateVarIndexIgnoreCase("host_transport_discontinuity");
+        za::jsfx::HostTransportObservation observation;
+        bool haveBeats = false, haveBpm = false;
+        double beats = 0.0, bpm = 120.0;
+        if (auto* head = getPlayHead())
+        {
+           #if JUCE_MAJOR_VERSION >= 7
+            if (const auto position = head->getPosition())
+            {
+                observation.valid = true;
+                observation.playing = position->getIsPlaying();
+                observation.recording = position->getIsRecording();
+                if (const auto value = position->getTimeInSamples())
+                { observation.samples = *value; observation.hasSamples = true; }
+                if (const auto value = position->getTimeInSeconds())
+                { observation.seconds = *value; observation.hasSeconds = std::isfinite(*value); }
+                if (const auto value = position->getPpqPosition())
+                { beats = *value; haveBeats = std::isfinite(beats); }
+                if (const auto value = position->getBpm())
+                { bpm = *value; haveBpm = std::isfinite(bpm) && bpm > 0.0; }
+            }
+           #else
+            juce::AudioPlayHead::CurrentPositionInfo position;
+            if (head->getCurrentPosition(position))
+            {
+                observation.valid = true;
+                observation.playing = position.isPlaying;
+                observation.recording = position.isRecording;
+                observation.samples = position.timeInSamples;
+                observation.hasSamples = true;
+                observation.seconds = position.timeInSeconds;
+                observation.hasSeconds = std::isfinite(observation.seconds);
+                beats = position.ppqPosition; haveBeats = std::isfinite(beats);
+                bpm = position.bpm; haveBpm = std::isfinite(bpm) && bpm > 0.0;
+            }
+           #endif
+        }
+        const double rate = juce::jmax(1.0, getSampleRate());
+        hostTransportDiscontinuity = hostTransportTracker.update(observation, hostSamples, rate);
+        writeExternalJsfxVar(boundIdx, 1.0);
+        writeExternalJsfxVar(validIdx, observation.valid ? 1.0 : 0.0);
+        writeExternalJsfxVar(jumpIdx, hostTransportDiscontinuity ? 1.0 : 0.0);
+        if (!observation.valid)
+            return; // retain last known state, not a synthetic Stop
+        writeExternalJsfxVar(stateIdx, observation.playing ? (observation.recording ? 5.0 : 1.0) : 0.0);
+        if (observation.hasSamples)
+            writeExternalJsfxVar(posIdx, static_cast<double>(observation.samples) / rate);
+        else if (observation.hasSeconds)
+            writeExternalJsfxVar(posIdx, observation.seconds);
+        if (haveBeats) writeExternalJsfxVar(beatIdx, beats);
+        if (haveBpm) writeExternalJsfxVar(tempoIdx, bpm);
+    }
+
+    void syncJsfxLatency()
+    {
+        static const int idx = findGeneratedStateVarIndexIgnoreCase ("pdc_delay");
+        const double raw = idx >= 0 ? st.vars[idx] : 0.0;
+        const double bounded = std::isfinite(raw) ? juce::jlimit(0.0, 16777216.0, raw) : 0.0;
+        const int samples = static_cast<int>(std::ceil(bounded / getActiveOversamplingFactor()));
+        if (getLatencySamples() != samples)
+            setLatencySamples(samples);
     }
 
     bool queryMidiTransportPlayingForCleanup (bool& isPlaying)
@@ -9580,6 +9727,9 @@ private:
     JsfxMidiRuntime midiRuntime;
     RuntimeMidiNoteTracker midiInputNoteTracker;
     RuntimeMidiNoteTracker midiOutputNoteTracker;
+    za::jsfx::HostTransportTracker hostTransportTracker;
+    bool hostTransportDiscontinuity = false;
+    std::atomic<bool> gfxAnalysisVisible { false };
     bool midiTransportHaveLastPlaying = false;
     bool midiTransportLastPlaying = false;
     std::vector<DSPJSFX_MidiEvent> midiInStorage;
@@ -13695,6 +13845,7 @@ public:
 
     ~GfxView() override
     {
+        processor.setGfxAnalysisVisible(false);
         stopWorker();
         cancelPendingUpdate();
         menuBridge.cancelAll();
@@ -13704,6 +13855,15 @@ public:
             processor.unregisterGfxSnapshotClient();
 
         processor.endAllGfxGestures();
+    }
+
+    void visibilityChanged() override { updateAnalysisVisibility(); }
+    void parentHierarchyChanged() override { updateAnalysisVisibility(); }
+
+    void updateAnalysisVisibility()
+    {
+        processor.setGfxAnalysisVisible(hasGfxFlag && gfxCompiledOkFlag && isShowing()
+                                       && getWidth() > 0 && getHeight() > 0);
     }
 
     bool hasGfx() const noexcept { return hasGfxFlag; }
@@ -13780,6 +13940,7 @@ public:
     {
         menuOverlay.setBounds (getLocalBounds());
         updateRenderTargetSize();
+        updateAnalysisVisibility();
 
         notifyWorker();
         repaint();
@@ -14397,6 +14558,7 @@ private:
 
     void handleAsyncUpdate() override
     {
+        updateAnalysisVisibility();
         bool repaintNeeded = repaintPending.exchange (false, std::memory_order_acq_rel);
 
         if (menuBridge.takePendingCancel())
@@ -15311,6 +15473,20 @@ extern "C" double jsfx_sample_pool_from_slot (DSPJSFX_State* state, double slot,
 {
     if (auto* owner = ownerFromState (state))
         return owner->rt_sample_pool_from_slot (state, slot, nameHandle);
+    return 0.0;
+}
+
+extern "C" double jsfx_sample_pool_set_deferred (DSPJSFX_State* state, double pool, double deferred)
+{
+    if (auto* owner = ownerFromState (state))
+        return owner->rt_sample_pool_set_deferred (pool, deferred);
+    return 0.0;
+}
+
+extern "C" double jsfx_sample_pool_adopt (DSPJSFX_State* state, double pool)
+{
+    if (auto* owner = ownerFromState (state))
+        return owner->rt_sample_pool_adopt (pool);
     return 0.0;
 }
 
