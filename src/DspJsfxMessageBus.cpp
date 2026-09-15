@@ -7,6 +7,7 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <sstream>
 
 namespace za::jsfx
@@ -15,7 +16,7 @@ namespace za::jsfx
 namespace
 {
 static constexpr std::uint32_t kIpcMagic = 0x5a4a4d42u; // ZJMB
-static constexpr std::uint32_t kIpcVersion = 3u;
+static constexpr std::uint32_t kIpcVersion = 4u;
 static constexpr std::uint32_t kIpcMaxInstances = 256u;
 static constexpr std::uint32_t kIpcMaxChannelsPerInstance = 24u;
 static constexpr std::uint32_t kIpcRingSize = 4096u;
@@ -104,7 +105,10 @@ static void unlock(IpcHeader* h) noexcept
 struct IpcLockGuard
 {
     explicit IpcLockGuard(IpcHeader* headerIn) : h(headerIn), locked(tryLock(headerIn)) {}
-    ~IpcLockGuard() { if (locked) unlock(h); }
+    ~IpcLockGuard() { release(); }
+    void release() noexcept { if (locked) { unlock(h); locked = false; } }
+    IpcLockGuard(const IpcLockGuard&) = delete;
+    IpcLockGuard& operator=(const IpcLockGuard&) = delete;
     IpcHeader* h = nullptr;
     bool locked = false;
 };
@@ -261,23 +265,29 @@ DspJsfxMessageBus::DomainState* DspJsfxMessageBus::domainFor(std::uint64_t domai
     {
         domain->openAttempted = true;
         bool created = false;
-        const std::string objectName = std::string("msg_") + hex64(domainHash);
+        const std::string objectName = std::string("msg_v4_") + hex64(domainHash);
         if (domain->shm.openOrCreate(objectName, sizeof(IpcHeader), &created))
         {
             domain->header = static_cast<IpcHeader*> (domain->shm.data());
 
-            const bool needsInit = created
-                || domain->header->magic.load(std::memory_order_acquire) != kIpcMagic
-                || domain->header->version.load(std::memory_order_acquire) != kIpcVersion
-                || domain->header->domainHash.load(std::memory_order_acquire) != domainHash;
-
-            if (needsInit)
+            if (created)
             {
-                std::memset(domain->header, 0, sizeof(IpcHeader));
+                new (domain->header) IpcHeader {};
                 domain->header->domainHash.store(domainHash, std::memory_order_release);
                 domain->header->version.store(kIpcVersion, std::memory_order_release);
                 domain->header->magic.store(kIpcMagic, std::memory_order_release);
             }
+            // Existing incompatible/partial layouts are rejected, never erased.
+            if (domain->shm.size() < sizeof(IpcHeader)
+                || domain->header->magic.load(std::memory_order_acquire) != kIpcMagic
+                || domain->header->version.load(std::memory_order_acquire) != kIpcVersion
+                || domain->header->domainHash.load(std::memory_order_acquire) != domainHash)
+            {
+                domain->header = nullptr;
+                domain->shm.close();
+            }
+            else
+                domain->shm.finishInitialization();
         }
     }
 
@@ -600,9 +610,11 @@ void DspJsfxMessageBus::flushOutbox(std::uint64_t instanceId,
         if (! msg.direct)
             msg.targetId = 0;
 
-        const auto seq = h->globalSeq.fetch_add(1u, std::memory_order_acq_rel) + 1u;
+        const auto seq = h->globalSeq.load(std::memory_order_relaxed) + 1u;
         auto& slot = h->messages[seq % kIpcRingSize];
         writeMessageSlot(slot, seq, msg);
+        // globalSeq is a committed watermark, not a reservation counter.
+        h->globalSeq.store(seq, std::memory_order_release);
     }
 }
 
@@ -618,9 +630,13 @@ void DspJsfxMessageBus::collectInbox(std::uint64_t instanceId,
         return;
 
     auto* h = domain->header;
+    IpcLockGuard readGuard(h);
+    if (! readGuard.locked)
+        return; // Retain cursor and retry; never skip a contended publication.
     const auto newestSeq = h->globalSeq.load(std::memory_order_acquire);
     if (newestSeq <= lastReadSeq)
     {
+        readGuard.release();
         InstanceRecord self;
         bool found = false;
         {
@@ -663,6 +679,7 @@ void DspJsfxMessageBus::collectInbox(std::uint64_t instanceId,
     }
 
     lastReadSeq = newestSeq;
+    readGuard.release(); // upsertIpcInstance obtains the IPC lock independently.
 
     InstanceRecord self;
     bool found = false;
@@ -691,6 +708,9 @@ bool DspJsfxMessageBus::hasPendingFor(std::uint64_t instanceId,
         return false;
 
     auto* h = domain->header;
+    IpcLockGuard readGuard(h);
+    if (! readGuard.locked)
+        return true; // Conservative wakeup, not a racy payload inspection.
     const auto newestSeq = h->globalSeq.load(std::memory_order_acquire);
     if (newestSeq <= lastReadSeq)
         return false;

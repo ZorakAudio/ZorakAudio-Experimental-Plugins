@@ -193,6 +193,7 @@ private:
 
     Storage storage_;
 
+    std::mutex commitMutex_; // Serializes request IDs, queue replacement, and dedup metadata.
     std::mutex workerMutex_;
     std::condition_variable workerCv_;
     bool workerExit_ = false;

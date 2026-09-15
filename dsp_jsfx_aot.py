@@ -3347,6 +3347,9 @@ class LLVMModuleEmitter:
         # 30: void* runtimeOpaque
         # 31: double midi_bus
         # 32: double ext_midi_bus
+        # 33: void* hostOwner (instance-bound callbacks; never a global map)
+        # 34: int64_t memUsed (audio-owned heap high-water mark)
+        # 35: int32_t memoryFault (latched until state reset)
         self.var_cap = max(1, (max(sym.vars.values()) + 1) if sym.vars else 1)
         self.midi_event_ty = ir.LiteralStructType([self.i32, self.i32, self.i32, self.i32])
 
@@ -3384,6 +3387,9 @@ class LLVMModuleEmitter:
             self.i8.as_pointer(),
             self.double,
             self.double,
+            self.i8.as_pointer(),
+            self.i64,
+            self.i32,
         ])
         self.state_ptr = self.state_ty.as_pointer()
 
@@ -4059,51 +4065,72 @@ class LLVMModuleEmitter:
 
         return fn
 
+    def _memory_failure_return(self, builder, st):
+        # Every generated entry/user function exits before an invalid access.
+        # The host silences a faulted block; failed growth cannot fall through.
+        fault = builder.gep(st, [self._const_i32(0), self._const_i32(35)])
+        builder.store(self._const_i32(1), fault)
+        ret_ty = builder.function.function_type.return_type
+        if isinstance(ret_ty, ir.VoidType):
+            builder.ret_void()
+        else:
+            builder.ret(ir.Constant(ret_ty, 0))
+
+    def _checked_nonnegative_index(self, builder, st, value):
+        # Clamp negative indices as before, but never feed NaN/Inf/2^63 to fptosi.
+        valid = builder.fcmp_ordered("<", value, self._const_f64(9223372036854775808.0))
+        with builder.if_then(builder.not_(valid)):
+            self._memory_failure_return(builder, st)
+        nonnegative = builder.select(builder.fcmp_ordered(">", value, self._const_f64(0.0)),
+                                     value, self._const_f64(0.0))
+        return builder.fptosi(nonnegative, self.i64)
+
+    def _mem_address(self, builder, st, base_expr, idx_expr):
+        base_v = self.emit_expr(builder, st, base_expr)
+        idx_v = self.emit_expr(builder, st, idx_expr)
+        summed = builder.fadd(builder.fadd(base_v, idx_v), self._const_f64(1.0e-5))
+        return self._checked_nonnegative_index(builder, st, summed)
+
+    def _ensure_mem_end(self, builder, st, end):
+        with builder.if_then(builder.icmp_signed(">", end, self._get_memN(builder, st))):
+            builder.call(self.fn_ensure, [st, end])
+            failed = builder.or_(
+                builder.icmp_signed(">", end, self._get_memN(builder, st)),
+                builder.icmp_unsigned("==", self._get_mem_ptr(builder, st),
+                                      ir.Constant(self.double.as_pointer(), None)))
+            with builder.if_then(failed):
+                self._memory_failure_return(builder, st)
+
     def _mem_elem_ptr(self, builder, st_ptr, base_expr, idx_expr):
-        """
-        EEL2 bracket indexing semantics:
+        addr = self._mem_address(builder, st_ptr, base_expr, idx_expr)
+        self._ensure_mem_end(builder, st_ptr, builder.add(addr, self._const_i64(1)))
+        return builder.gep(self._get_mem_ptr(builder, st_ptr), [addr], inbounds=False)
 
-            addr = trunc((base + idx) + 0.00001)
+    def _call_with_outputs(self, builder, st, args, callee, outputs, api_name,
+                           allow_null=False):
+        # Evaluate each lvalue address exactly once, left-to-right. Do not retain
+        # a heap pointer while evaluating later operands (which may realloc).
+        values = []
+        for index, node in enumerate(args):
+            if index not in outputs:
+                values.append((False, self.emit_expr(builder, st, node)))
+            elif isinstance(node, Var) and node.name not in ("mem", "gmem"):
+                values.append((False, self._get_slot_ptr(builder, st, node.name)))
+            elif isinstance(node, Index) and not self._is_gmem_index(node):
+                addr = self._mem_address(builder, st, node.base, node.index)
+                self._ensure_mem_end(builder, st, builder.add(addr, self._const_i64(1)))
+                values.append((True, addr))
+            elif allow_null:
+                self.emit_expr(builder, st, node)
+                values.append((False, ir.Constant(self.double.as_pointer(), None)))
+            else:
+                raise ValueError(f"{api_name} output arguments must be assignable variables or mem[] slots")
+        argv = [st]
+        for is_heap, value in values:
+            argv.append(builder.gep(self._get_mem_ptr(builder, st), [value], inbounds=False)
+                        if is_heap else value)
+        return builder.call(callee, argv)
 
-        NOT trunc(base) + trunc(idx)
-        """
-
-        # Evaluate base and index as f64
-        base_v = self.emit_expr(builder, st_ptr, base_expr)  # f64
-        idx_v  = self.emit_expr(builder, st_ptr, idx_expr)   # f64
-
-        # EEL2 legacy rounding: add 1e-5 before trunc
-        summed = builder.fadd(base_v, idx_v)
-        summed = builder.fadd(summed, self._const_f64(1.0e-5))
-        
-
-        # Memory indexing: truncate ONCE to i64 (do NOT wrap to 32-bit here)
-        addr_i64 = builder.fptosi(summed, self.i64)
-
-
-        # Clamp negative to 0 (JSFX behavior for negative mem indexes is effectively 0-safe)
-        zero_i64 = ir.Constant(self.i64, 0)
-        isneg = builder.icmp_signed("<", addr_i64, zero_i64)
-        addr_i64 = builder.select(isneg, zero_i64, addr_i64)
-
-        # If addr >= memN, grow/ensure memory so mem[addr] is valid (JSFX semantics)
-        memN = self._get_memN(builder, st_ptr)  # i64
-        need_grow = builder.icmp_signed(">=", addr_i64, memN)
-        with builder.if_then(need_grow):
-            one_i64 = ir.Constant(self.i64, 1)
-            needN = builder.add(addr_i64, one_i64)
-            # Your runtime helper should resize/ensure at least needN doubles
-            builder.call(self.fn_ensure, [st_ptr, needN])
-
-
-        # Base pointer to mem (double*)
-        mem_base = self._get_mem_ptr(builder, st_ptr)
-
-        # Return &mem[addr]
-        return builder.gep(mem_base, [addr_i64], inbounds=False)
-
-
-    
     def _to_i32(self, builder, x):
         # JSFX-style: truncate toward 0 to *some* integer, then wrap to 32-bit
         xi64 = builder.fptosi(x, self.i64)        # safe for your magnitudes
@@ -4680,14 +4707,7 @@ class LLVMModuleEmitter:
             if fn == "msg_recv":
                 if len(n.args) != 7:
                     raise ValueError("msg_recv expects 7 args")
-                chan = self.emit_expr(builder, st, n.args[0])
-                out_src = self._get_out_lvalue_ptr(builder, st, n.args[1], "msg_recv")
-                out_tag = self._get_out_lvalue_ptr(builder, st, n.args[2], "msg_recv")
-                out_a = self._get_out_lvalue_ptr(builder, st, n.args[3], "msg_recv")
-                out_b = self._get_out_lvalue_ptr(builder, st, n.args[4], "msg_recv")
-                out_c = self._get_out_lvalue_ptr(builder, st, n.args[5], "msg_recv")
-                out_d = self._get_out_lvalue_ptr(builder, st, n.args[6], "msg_recv")
-                ret = builder.call(self.fn_msg_recv, [st, chan, out_src, out_tag, out_a, out_b, out_c, out_d])
+                ret = self._call_with_outputs(builder, st, n.args, self.fn_msg_recv, {1, 2, 3, 4, 5, 6}, "msg_recv")
                 return self._to_f64(builder, ret)
 
             if fn == "msg_send_buf":
@@ -4707,12 +4727,7 @@ class LLVMModuleEmitter:
             if fn == "msg_recv_buf":
                 if len(n.args) != 5:
                     raise ValueError("msg_recv_buf expects 5 args")
-                chan = self.emit_expr(builder, st, n.args[0])
-                out_src = self._get_out_lvalue_ptr(builder, st, n.args[1], "msg_recv_buf")
-                out_tag = self._get_out_lvalue_ptr(builder, st, n.args[2], "msg_recv_buf")
-                dst = self.emit_expr(builder, st, n.args[3])
-                maxlen = self.emit_expr(builder, st, n.args[4])
-                ret = builder.call(self.fn_msg_recv_buf, [st, chan, out_src, out_tag, dst, maxlen])
+                ret = self._call_with_outputs(builder, st, n.args, self.fn_msg_recv_buf, {1, 2}, "msg_recv_buf")
                 return self._to_f64(builder, ret)
 
             if fn == "msg_length":
@@ -4777,36 +4792,23 @@ class LLVMModuleEmitter:
                 return builder.call(self.fn_msg_peer_alive, [st, a0])
 
             if fn == "midirecv":
-                if len(n.args) == 4:
-                    out_offset = self._get_midirecv_lvalue_ptr(builder, st, n.args[0])
-                    out_msg1 = self._get_midirecv_lvalue_ptr(builder, st, n.args[1])
-                    out_msg2 = self._get_midirecv_lvalue_ptr(builder, st, n.args[2])
-                    out_msg3 = self._get_midirecv_lvalue_ptr(builder, st, n.args[3])
-                    ret = builder.call(self.fn_midirecv, [st, out_offset, out_msg1, out_msg2, out_msg3])
-                    return self._to_f64(builder, ret)
-                if len(n.args) == 3:
-                    out_offset = self._get_midirecv_lvalue_ptr(builder, st, n.args[0])
-                    out_msg1 = self._get_midirecv_lvalue_ptr(builder, st, n.args[1])
-                    out_msg23 = self._get_midirecv_lvalue_ptr(builder, st, n.args[2])
-                    ret = builder.call(self.fn_midirecv_msg23, [st, out_offset, out_msg1, out_msg23])
-                    return self._to_f64(builder, ret)
-                raise ValueError("midirecv expects 3 or 4 args")
+                if len(n.args) not in (3, 4):
+                    raise ValueError("midirecv expects 3 or 4 args")
+                callee = self.fn_midirecv if len(n.args) == 4 else self.fn_midirecv_msg23
+                ret = self._call_with_outputs(builder, st, n.args, callee,
+                                              set(range(len(n.args))), "midirecv")
+                return self._to_f64(builder, ret)
 
             if fn == "midirecv_buf":
                 if len(n.args) != 3:
                     raise ValueError("midirecv_buf expects 3 args")
-                out_offset = self._get_midirecv_lvalue_ptr(builder, st, n.args[0])
-                buf = self.emit_expr(builder, st, n.args[1])
-                maxlen = self.emit_expr(builder, st, n.args[2])
-                ret = builder.call(self.fn_midirecv_buf, [st, out_offset, buf, maxlen])
+                ret = self._call_with_outputs(builder, st, n.args, self.fn_midirecv_buf, {0}, "midirecv_buf")
                 return self._to_f64(builder, ret)
 
             if fn == "midirecv_str":
                 if len(n.args) != 2:
                     raise ValueError("midirecv_str expects 2 args")
-                out_offset = self._get_midirecv_lvalue_ptr(builder, st, n.args[0])
-                out_str = self._get_midirecv_lvalue_ptr(builder, st, n.args[1])
-                ret = builder.call(self.fn_midirecv_str, [st, out_offset, out_str])
+                ret = self._call_with_outputs(builder, st, n.args, self.fn_midirecv_str, {0, 1}, "midirecv_str")
                 return self._to_f64(builder, ret)
 
             if fn == "midisend":
@@ -4932,12 +4934,7 @@ class LLVMModuleEmitter:
                         fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double, self.double.as_pointer(), self.double.as_pointer()])
                         fdecl = ir.Function(self.module, fnty, name=rt_name)
                         self._buildins[rt_name] = fdecl
-                    pool = self.emit_expr(builder, st, n.args[0])
-                    sid = self.emit_expr(builder, st, n.args[1])
-                    phase = self.emit_expr(builder, st, n.args[2])
-                    out_l = self._get_out_lvalue_ptr(builder, st, n.args[3], fn)
-                    out_r = self._get_out_lvalue_ptr(builder, st, n.args[4], fn)
-                    return builder.call(fdecl, [st, pool, sid, phase, out_l, out_r])
+                    return self._call_with_outputs(builder, st, n.args, fdecl, {3, 4}, fn)
 
                 if fn == "sample_name":
                     if len(n.args) != 3:
@@ -4959,13 +4956,7 @@ class LLVMModuleEmitter:
                         fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double, self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer()])
                         fdecl = ir.Function(self.module, fnty, name=rt_name)
                         self._buildins[rt_name] = fdecl
-                    return builder.call(fdecl, [st,
-                                                self.emit_expr(builder, st, n.args[0]),
-                                                self.emit_expr(builder, st, n.args[1]),
-                                                self.emit_expr(builder, st, n.args[2]),
-                                                self._get_out_lvalue_ptr(builder, st, n.args[3], fn),
-                                                self._get_out_lvalue_ptr(builder, st, n.args[4], fn),
-                                                self._get_out_lvalue_ptr(builder, st, n.args[5], fn)])
+                    return self._call_with_outputs(builder, st, n.args, fdecl, {3, 4, 5}, fn)
 
                 if fn in ("sample_export_mem", "sample_export_mem2"):
                     if len(n.args) != 5:
@@ -5150,29 +5141,6 @@ class LLVMModuleEmitter:
                 if len(n.args) != 3:
                     raise ValueError("file_riff expects 3 args")
 
-                h = self.emit_expr(builder, st, n.args[0])
-
-                out1 = None
-                if isinstance(n.args[1], Var) and n.args[1].name != "mem":
-                    out1 = self._get_slot_ptr(builder, st, n.args[1].name)
-                elif isinstance(n.args[1], Index):
-                    out1 = self._mem_elem_ptr(builder, st, n.args[1].base, n.args[1].index)
-                else:
-                    _ = self.emit_expr(builder, st, n.args[1])
-
-                out2 = None
-                if isinstance(n.args[2], Var) and n.args[2].name != "mem":
-                    out2 = self._get_slot_ptr(builder, st, n.args[2].name)
-                elif isinstance(n.args[2], Index):
-                    out2 = self._mem_elem_ptr(builder, st, n.args[2].base, n.args[2].index)
-                else:
-                    _ = self.emit_expr(builder, st, n.args[2])
-
-                if out1 is None:
-                    out1 = ir.Constant(self.double.as_pointer(), None)
-                if out2 is None:
-                    out2 = ir.Constant(self.double.as_pointer(), None)
-
                 rt_name = "jsfx_file_riff"
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
@@ -5180,7 +5148,7 @@ class LLVMModuleEmitter:
                     fdecl = ir.Function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
 
-                return builder.call(fdecl, [st, h, out1, out2])
+                return self._call_with_outputs(builder, st, n.args, fdecl, {1, 2}, fn, allow_null=True)
 
 
             # ------------------------------------------------------------
@@ -5448,23 +5416,22 @@ class LLVMModuleEmitter:
 
                 # JSFX-style address rounding: trunc(x + 1e-5)
                 dest_sum = builder.fadd(dest_v, self._const_f64(1.0e-5))
-                dest_i64 = builder.fptosi(dest_sum, self.i64)
+                dest_i64 = self._checked_nonnegative_index(builder, st, dest_sum)
 
                 zero_i64 = self._const_i64(0)
                 isneg = builder.icmp_signed("<", dest_i64, zero_i64)
                 dest_i64 = builder.select(isneg, zero_i64, dest_i64)
 
                 # length = max(0, trunc(length))
-                len_i64 = builder.fptosi(len_v, self.i64)
+                len_i64 = self._checked_nonnegative_index(builder, st, len_v)
                 isnegL = builder.icmp_signed("<", len_i64, zero_i64)
                 len_i64 = builder.select(isnegL, zero_i64, len_i64)
 
                 # Ensure memory for dest + len
                 end_i64 = builder.add(dest_i64, len_i64)
-                memN = self._get_memN(builder, st)
-                need_grow = builder.icmp_signed(">", end_i64, memN)
-                with builder.if_then(need_grow):
-                    builder.call(self.fn_ensure, [st, end_i64])
+                with builder.if_then(builder.icmp_signed("<", end_i64, dest_i64)):
+                    self._memory_failure_return(builder, st)
+                self._ensure_mem_end(builder, st, end_i64)
 
                 # for (i=0; i<len; ++i) mem[dest+i] = value
                 fnc = builder.function
@@ -5988,6 +5955,7 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    int32_t msg3;")
     lines.append("} DSPJSFX_MidiEvent;")
     lines.append("")
+    lines.append("#define DSPJSFX_RUNTIME_STATE_ABI 2")
     lines.append("typedef struct DSPJSFX_State {")
     lines.append("    double spl[64];")
     lines.append("    double sliders[64];")
@@ -6012,9 +5980,9 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    int32_t midiOutCountLastBlock;")
     lines.append("    int32_t midiInPeak;")
     lines.append("    int32_t midiOutPeak;")
-    lines.append("    int64_t pendingSliderChangeMask;")
-    lines.append("    int64_t pendingSliderAutomateMask;")
-    lines.append("    int64_t pendingSliderAutomateEndMask;")
+    lines.append("    uint64_t pendingSliderChangeMask;")
+    lines.append("    uint64_t pendingSliderAutomateMask;")
+    lines.append("    uint64_t pendingSliderAutomateEndMask;")
     lines.append("    uint32_t randMT[624];")
     lines.append("    uint32_t randIndex;")
     lines.append("    int64_t sliderVisibleMask;")
@@ -6022,6 +5990,9 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    void* runtimeOpaque;")
     lines.append("    double midi_bus;")
     lines.append("    double ext_midi_bus;")
+    lines.append("    void* hostOwner;")
+    lines.append("    int64_t memUsed;")
+    lines.append("    int32_t memoryFault;")
     lines.append("} DSPJSFX_State;")
     lines.append("")
 

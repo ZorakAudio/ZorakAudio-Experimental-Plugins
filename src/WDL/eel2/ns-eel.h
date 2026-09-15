@@ -120,6 +120,11 @@ typedef void *NSEEL_CODEHANDLE;
 NSEEL_VMCTX NSEEL_VM_alloc(); // return a handle
 void NSEEL_VM_free(NSEEL_VMCTX ctx); // free when done with a VM and ALL of its code have been freed, as well
 
+// Clone src (NULL = global table) into an empty destination. Host serializes
+// registration while cloning. Free only after that VM has finished eval/atexit.
+int NSEEL_clonefunctiontable(eel_function_table *destination, const eel_function_table *source);
+void NSEEL_freefunctiontable(eel_function_table *table);
+
 void NSEEL_VM_SetFunctionTable(NSEEL_VMCTX, eel_function_table *tab); // use NULL to use default (global) table
 
 // validateFunc can return error message if not permitted

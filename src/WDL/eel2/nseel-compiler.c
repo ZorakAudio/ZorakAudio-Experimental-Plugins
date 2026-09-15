@@ -661,6 +661,30 @@ static functionType fn_or0  = { "or0",     nseel_asm_or0,    1|NSEEL_NPARAMS_FLA
 
 static eel_function_table default_user_funcs;
 
+int NSEEL_clonefunctiontable(eel_function_table *destination, const eel_function_table *source)
+{
+  size_t capacity;
+  if (!destination || destination->list || destination->list_size) return 0;
+  if (!source) source = &default_user_funcs;
+  if (source->list_size <= 0) return 1;
+  /* Match the 128-entry spare-capacity invariant used by addfunctionex2. */
+  capacity = ((size_t)source->list_size + 127u) & ~(size_t)127u;
+  destination->list = (functionType *)calloc(capacity, sizeof(functionType));
+  if (!destination->list) return 0;
+  memcpy(destination->list, source->list, (size_t)source->list_size * sizeof(functionType));
+  destination->list_size = source->list_size;
+  return 1;
+}
+
+void NSEEL_freefunctiontable(eel_function_table *table)
+{
+  if (!table) return;
+  free(table->list);
+  table->list = NULL;
+  table->list_size = 0;
+}
+
+
 static int functable_lowerbound(functionType *list, int list_sz, const char *name, int *ismatch)
 {
   int a = 0, c = list_sz;

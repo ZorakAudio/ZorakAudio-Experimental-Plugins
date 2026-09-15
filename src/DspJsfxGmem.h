@@ -13,7 +13,7 @@ namespace za::jsfx
 {
 
 static constexpr std::uint32_t kDspJsfxGmemMagic = 0x474D454Du; // 'GMEM'
-static constexpr std::uint32_t kDspJsfxGmemAbiVersion = 1u;
+static constexpr std::uint32_t kDspJsfxGmemAbiVersion = 2u;
 static constexpr std::uint64_t kDspJsfxDefaultGmemCells = 1024ull * 1024ull;
 static constexpr std::uint32_t kDspJsfxGmemPageCells = 1024u;
 
@@ -41,7 +41,7 @@ class DspJsfxGmemAttachment
 {
 public:
     DspJsfxGmemAttachment() = default;
-    ~DspJsfxGmemAttachment() = default;
+    ~DspJsfxGmemAttachment() { detach(); }
 
     bool attach(std::uint64_t domainHash, std::uint64_t namespaceHash, std::uint64_t requestedCells, std::uint64_t writerId);
     void detach() noexcept;

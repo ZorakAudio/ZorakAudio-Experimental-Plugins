@@ -20,6 +20,9 @@ public:
     DspJsfxSharedMemorySegment& operator=(DspJsfxSharedMemorySegment&& other) noexcept;
 
     bool openOrCreate(const std::string& objectName, std::size_t requestedBytes, bool* created = nullptr);
+    // openOrCreate holds a cross-process setup lock until the caller has
+    // initialized/validated its complete layout. No payload access before then.
+    void finishInitialization() noexcept;
     void close() noexcept;
 
     void* data() noexcept { return base_; }
@@ -31,9 +34,11 @@ private:
     void* base_ = nullptr;
     std::size_t sizeBytes_ = 0;
     std::string objectName_;
+    bool initializationLocked_ = false;
 
    #if JUCE_WINDOWS || defined(_WIN32)
     void* handle_ = nullptr;
+    void* initializationMutex_ = nullptr;
    #else
     int fd_ = -1;
    #endif

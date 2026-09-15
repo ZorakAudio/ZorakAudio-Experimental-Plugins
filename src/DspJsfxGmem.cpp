@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -32,21 +33,26 @@ static double bitsToDouble(std::uint64_t bits) noexcept
 
 static std::uint64_t requiredPageCount(std::uint64_t cellCount) noexcept
 {
-    return (cellCount + static_cast<std::uint64_t> (kDspJsfxGmemPageCells) - 1ull) / static_cast<std::uint64_t> (kDspJsfxGmemPageCells);
+    return cellCount / kDspJsfxGmemPageCells + (cellCount % kDspJsfxGmemPageCells != 0 ? 1u : 0u);
 }
 
 static std::size_t requiredBytes(std::uint64_t cellCount) noexcept
 {
     const std::uint64_t pageCount = requiredPageCount(cellCount);
-    return sizeof(DspJsfxGmemHeader)
-        + static_cast<std::size_t> (pageCount) * sizeof(DspJsfxGmemPageHeader)
-        + static_cast<std::size_t> (cellCount) * sizeof(std::atomic<std::uint64_t>);
+    const auto max = std::numeric_limits<std::size_t>::max();
+    if (pageCount > std::numeric_limits<std::uint32_t>::max()
+        || pageCount > (max - sizeof(DspJsfxGmemHeader)) / sizeof(DspJsfxGmemPageHeader))
+        return 0;
+    const auto prefix = sizeof(DspJsfxGmemHeader) + (std::size_t) pageCount * sizeof(DspJsfxGmemPageHeader);
+    if (cellCount > (max - prefix) / sizeof(std::atomic<std::uint64_t>))
+        return 0;
+    return prefix + (std::size_t) cellCount * sizeof(std::atomic<std::uint64_t>);
 }
 
 static std::string objectStem(std::uint64_t domainHash, std::uint64_t namespaceHash)
 {
     char buf[96] = {};
-    std::snprintf(buf, sizeof(buf), "gmem_%016llx_%016llx",
+    std::snprintf(buf, sizeof(buf), "gmem_v2_%016llx_%016llx",
                   static_cast<unsigned long long> (domainHash),
                   static_cast<unsigned long long> (namespaceHash));
     return std::string(buf);
@@ -89,14 +95,23 @@ bool DspJsfxGmemAttachment::attach(std::uint64_t domainHash, std::uint64_t names
         return false;
 
     auto* base = static_cast<std::uint8_t*> (segment_.data());
-    if (base == nullptr)
+    if (base == nullptr || segment_.size() < sizeof(DspJsfxGmemHeader))
+    {
+        detach();
         return false;
+    }
 
     header_ = reinterpret_cast<DspJsfxGmemHeader*> (base);
-    if (created || header_->magic != kDspJsfxGmemMagic)
+    if (created)
     {
-        std::memset(base, 0, requiredBytes(cellCount));
-        header_->magic = kDspJsfxGmemMagic;
+        new (header_) DspJsfxGmemHeader {};
+        auto* pages = reinterpret_cast<DspJsfxGmemPageHeader*>(base + sizeof(DspJsfxGmemHeader));
+        for (std::uint64_t i = 0; i < requiredPageCount(cellCount); ++i)
+            new (pages + i) DspJsfxGmemPageHeader {};
+        auto* cells = reinterpret_cast<std::atomic<std::uint64_t>*>(
+            base + sizeof(DspJsfxGmemHeader) + requiredPageCount(cellCount) * sizeof(DspJsfxGmemPageHeader));
+        for (std::uint64_t i = 0; i < cellCount; ++i)
+            new (cells + i) std::atomic<std::uint64_t>(0);
         header_->abiVersion = kDspJsfxGmemAbiVersion;
         header_->domainHash = domainHash;
         header_->namespaceHash = namespaceHash;
@@ -105,6 +120,7 @@ bool DspJsfxGmemAttachment::attach(std::uint64_t domainHash, std::uint64_t names
         header_->pageCount = static_cast<std::uint32_t> (requiredPageCount(cellCount));
         header_->globalSeq.store(0, std::memory_order_release);
         header_->refCount.store(0, std::memory_order_release);
+        header_->magic = kDspJsfxGmemMagic; // Published by finishInitialization().
     }
 
     if (! validateLayout())
@@ -117,6 +133,7 @@ bool DspJsfxGmemAttachment::attach(std::uint64_t domainHash, std::uint64_t names
     cells_ = reinterpret_cast<std::atomic<std::uint64_t>*> (
         base + sizeof(DspJsfxGmemHeader) + sizeof(DspJsfxGmemPageHeader) * header_->pageCount);
 
+    segment_.finishInitialization();
     header_->refCount.fetch_add(1u, std::memory_order_acq_rel);
     header_->globalSeq.fetch_add(1u, std::memory_order_acq_rel);
     if (header_->pageCount > 0)
@@ -126,7 +143,7 @@ bool DspJsfxGmemAttachment::attach(std::uint64_t domainHash, std::uint64_t names
 
 void DspJsfxGmemAttachment::detach() noexcept
 {
-    if (header_ != nullptr)
+    if (header_ != nullptr && cells_ != nullptr)
         header_->refCount.fetch_sub(1u, std::memory_order_acq_rel);
     header_ = nullptr;
     pages_ = nullptr;
@@ -145,6 +162,10 @@ bool DspJsfxGmemAttachment::validateLayout() const noexcept
     if (header_->pageCellCount != kDspJsfxGmemPageCells)
         return false;
     if (header_->cellCount == 0 || header_->pageCount == 0)
+        return false;
+    const auto bytes = requiredBytes(header_->cellCount);
+    if (bytes == 0 || bytes > segment_.size()
+        || requiredPageCount(header_->cellCount) != header_->pageCount)
         return false;
     if (header_->domainHash != domainHash_ || header_->namespaceHash != namespaceHash_)
         return false;

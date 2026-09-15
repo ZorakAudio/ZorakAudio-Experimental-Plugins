@@ -48,6 +48,32 @@ static std::uint64_t hashedStringHandle(DSPJSFX_State* st, double handle) noexce
     return jsfx_string_hash(st, handle);
 }
 
+// Preserve heap output lvalues across realloc, without comparing/subtracting
+// unrelated C++ pointers. Scalar/state/stack outputs remain ordinary pointers.
+struct RelocatableOutput
+{
+    double* original = nullptr;
+    int64_t heapIndex = -1;
+    RelocatableOutput(const DSPJSFX_State& st, double* ptr) noexcept : original(ptr)
+    {
+        if (st.mem == nullptr || ptr == nullptr || st.memN <= 0)
+            return;
+        const auto base = reinterpret_cast<std::uintptr_t>(st.mem);
+        const auto address = reinterpret_cast<std::uintptr_t>(ptr);
+        if (address >= base)
+        {
+            const auto bytes = address - base;
+            if (bytes % sizeof(double) == 0 && bytes / sizeof(double) < (std::uint64_t) st.memN)
+                heapIndex = (int64_t) (bytes / sizeof(double));
+        }
+    }
+    double* resolve(DSPJSFX_State& st) const noexcept
+    {
+        return heapIndex >= 0 ? (st.mem != nullptr && heapIndex < st.memN ? st.mem + heapIndex : nullptr)
+                              : original;
+    }
+};
+
 static double* memPtrForReceive(DSPJSFX_State* st, double dstBase, int count) noexcept
 {
     if (st == nullptr || count <= 0)
@@ -321,6 +347,7 @@ extern "C" int jsfx_msg_recv_buf(DSPJSFX_State* st, double chanHandle, double* s
         const int capacity = std::max(0, toInt(maxLen));
         if (capacity <= 0)
             return 0;
+        const RelocatableOutput sourceOut(*st, src), tagOut(*st, tag);
         double* dst = memPtrForReceive(st, dstBase, capacity);
         if (dst == nullptr)
         {
@@ -333,7 +360,7 @@ extern "C" int jsfx_msg_recv_buf(DSPJSFX_State* st, double chanHandle, double* s
                 return 0;
             dst = st->mem + base;
         }
-        return rt->recvBuffer(hashedStringHandle(st, chanHandle), src, tag, dst, capacity, *st);
+        return rt->recvBuffer(hashedStringHandle(st, chanHandle), sourceOut.resolve(*st), tagOut.resolve(*st), dst, capacity, *st);
     }
     return 0;
 }

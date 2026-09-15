@@ -1,8 +1,9 @@
-desc:Load-and-Go Psycho MultiSampler (tape + hybrid + granular v68-dsp-audit)
+desc:Load-and-Go Psycho MultiSampler (tape + hybrid + granular v70.1-midi-hub)
 tags:instrument sampler ui
 // #GFX_RESIZE: responsive
 
-// v68 DSPAudit: sample-accurate MIDI, independent EQ drives, stable pool adoption, cached onset anchors, stereo analysis, and constant 520-sample reported latency.
+// v69 CoherentAudit: visible-only spectrum, block-pinned immutable banks, host/shadow timing, and zero-latency DeCrust bypass with faded live latency changes.
+// v68 DSPAudit: sample-accurate MIDI, independent EQ drives, stable pool adoption, cached onset anchors, and stereo-safe analysis.
 // v67 InterfaceRetirement: removes obsolete shared-instance ordering and motion-CC modulation; preserves parameter IDs and the Auto Smooth timing clock.
 // v66 AutoSmoothAR: Envelope button enables a 25 ms causal transition budget; Attack/Release act as ratios for same-note crossfades and note-off smoothing without MIDI lookahead/PDC.
 // v57 SpaceVerb SoftRollback: reverts v55 loud SpaceVerb feed/gain tuning back toward the subtler v54 voice-send behavior while preserving v56 host-backed hidden states.
@@ -88,7 +89,7 @@ filename:0,sample.wav
 // #HELP: Sample reports a constant latency of 520 engine samples (10.83 ms at 48 kHz, 1x); dry input and the final DeCrust stage are aligned.
 // #HELP:
 // #HELP: ## Cleanup and depth
-// #HELP: Clean is a transient-protected de-noise/de-bed macro: low values clean hiss/static tails gently, high values aggressively scrub low-SNR sustained noise and become obvious quickly. Shift+drag Clean controls DeCrust, a hidden FFT-512 spectral-kurtosis crust repair mode for crunchy SFX; its processing is bypassed at 0 while the fixed 520-sample delay remains. Room Tame is a transient-protected de-room/de-smear macro: low values restrain late room wash, high values make the correction obvious quickly. Shift+drag Room adds intentional designed Space; Alt+drag Room changes Space character from tight early room to wide dark bloom. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement. Shift+drag Push adds PopCue, a parallel concrete-detail cue extractor that restores object/tactile detail without broadly brightening.
+// #HELP: Clean is a transient-protected de-noise/de-bed macro: low values clean hiss/static tails gently, high values aggressively scrub low-SNR sustained noise and become obvious quickly. Shift+drag Clean controls DeCrust, a hidden FFT-512 spectral-kurtosis crust repair mode for crunchy SFX; at 0 it is fully bypassed with zero added latency. Enabling it selects 520-engine-sample latency; live toggles briefly fade while the host updates PDC. Room Tame is a transient-protected de-room/de-smear macro: low values restrain late room wash, high values make the correction obvious quickly. Shift+drag Room adds intentional designed Space; Alt+drag Room changes Space character from tight early room to wide dark bloom. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement. Shift+drag Push adds PopCue, a parallel concrete-detail cue extractor that restores object/tactile detail without broadly brightening.
 // #HELP:
 // #HELP: Legacy EQ import: Shift+right-click Drive imports the retained v60 preset value; Alt+right-click imports v61-v67. The two old formats overlap, so select the version that saved your preset. Values already rounded by an older host cannot be recovered exactly.
 // #HELP:
@@ -421,6 +422,222 @@ function sample_frame2(ptr nch phase) local(ok l r)
   readR = r;
   ok;
 );
+
+// v70 Sample MIDI Hub: all protocol and event execution runs inside Sample.
+function hub_random(n) local(hi lo next)
+(
+  hub_rng_on ? (
+    // Schrage's Park-Miller step: EEL/compiler % converts operands to i32.
+    // A direct seed*16807 remainder overflows and collapses into short cycles.
+    hi = floor(hub_rng / 127773);
+    lo = hub_rng - hi * 127773;
+    next = 16807 * lo - 2836 * hi;
+    next <= 0 ? next += 2147483647;
+    hub_rng = next;
+    n * hub_rng / 2147483647;
+  ) : rand(n);
+);
+
+function hub_wrap_phase(phase lo hi xf) local(period excess)
+(
+  phase >= hi ? (
+    period = max(1, hi - lo - xf);
+    excess = phase - hi;
+    // Preserve sub-sample phase; EEL % is an integer remainder.
+    phase = lo + xf + excess - floor(excess / period) * period;
+  );
+  phase;
+);
+
+function hub_smooth(u) local(t)
+(
+  t = clamp01(u); t * t * (3 - 2 * t);
+);
+
+function hub_log(action id target result reason source duration boundary fill chan) local(p)
+(
+  hub_log_base > 0 ? (
+    p = hub_log_base + hub_log_head * 12;
+    p[0] = hub_log_serial + 1; p[1] = event_clock_samps / max(1, srate);
+    p[2] = action; p[3] = id; p[4] = target; p[5] = result;
+    p[6] = reason; p[7] = source; p[8] = duration;
+    p[9] = boundary; p[10] = fill; p[11] = chan;
+    hub_log_head = (hub_log_head + 1) % 100;
+    hub_log_count = min(100, hub_log_count + 1);
+    hub_log_serial += 1;
+    result == 1 ? (hub_log_accepted += 1; hub_accept_count += 1;);
+    result < 0 ? (hub_log_rejected += 1; hub_reject_count += 1;);
+  );
+);
+
+function hub_find_voice(id) local(i v found)
+(
+  found = -1; i = 0;
+  id > 0 ? (while(i < MAX_VOICES && found < 0) (
+    v = voice_base + i * VC_STRIDE;
+    v[VC_ACTIVE] > 0 && v[VC_HUB_ID] == id ? found = i;
+    i += 1;
+  ););
+  found;
+);
+
+function hub_find_mod(id) local(i p found)
+(
+  found = -1; i = 0;
+  id > 0 && hub_mod_count > 0 ? (while(i < HUB_MOD_CAP && found < 0) (
+    p = hub_mod_base + i * HM_STRIDE;
+    p[HM_ACTIVE] > 0 && p[HM_ID] == id ? found = i;
+    i += 1;
+  ););
+  found;
+);
+
+function hub_remove_mod(index reason) local(p v curr prev node guard)
+(
+  index >= 0 && index < HUB_MOD_CAP ? (
+    p = hub_mod_base + index * HM_STRIDE;
+    p[HM_ACTIVE] > 0 ? (
+      v = voice_base + p[HM_VOICE] * VC_STRIDE;
+      curr = v[VC_HUB_MODHEAD]; prev = 0; guard = 0;
+      while(curr > 0 && guard < HUB_MOD_CAP) (
+        node = hub_mod_base + (curr - 1) * HM_STRIDE;
+        curr == index + 1 ? (
+          prev > 0 ? hub_mod_base[(prev - 1) * HM_STRIDE + HM_NEXT] = node[HM_NEXT]
+          : v[VC_HUB_MODHEAD] = node[HM_NEXT];
+          curr = 0;
+        ) : (prev = curr; curr = node[HM_NEXT];);
+        guard += 1;
+      );
+      v[VC_HUB_REPLACE] == index + 1 ? v[VC_HUB_REPLACE] = 0;
+      hub_log(p[HM_ACTION], p[HM_ID], p[HM_TARGET], 0, reason, v[VC_SAMPLE],
+        p[HM_LEN] / max(1, srate), 0, 0, p[HM_CHAN]);
+      p[HM_ACTIVE] = 0; p[HM_NEXT] = 0;
+      hub_mod_count = max(0, hub_mod_count - 1);
+    );
+  );
+);
+
+function hub_cancel_voice(index reason) local(v guard)
+(
+  v = voice_base + index * VC_STRIDE;
+  guard = 0;
+  while(v[VC_HUB_MODHEAD] > 0 && guard < HUB_MOD_CAP) (
+    hub_remove_mod(v[VC_HUB_MODHEAD] - 1, reason); guard += 1;
+  );
+  v[VC_HUB_ID] > 0 ? (
+    hub_log(v[VC_HUB_ACTION], v[VC_HUB_ID], 0, 0, reason, v[VC_SAMPLE],
+      (v[VC_HUB_END] - v[VC_HUB_START]) / max(1, srate), v[VC_HUB_BOUNDARY], v[VC_HUB_FILL], v[VC_CHAN]);
+    v[VC_HUB_ID] = 0;
+    hub_voice_count = max(0, hub_voice_count - 1);
+  );
+  v[VC_HUB_MODHEAD] = 0; v[VC_HUB_REPLACE] = 0;
+);
+
+function hub_reset(reason) local(i v)
+(
+  (hub_voice_count > 0 || hub_mod_count > 0) ? (
+    i = 0;
+    while(i < MAX_VOICES) (hub_cancel_voice(i, reason); i += 1;);
+  );
+  hub_packet_base > 0 ? memset(hub_packet_base, 0, 16 * HP_STRIDE);
+  hub_mod_base > 0 ? memset(hub_mod_base, 0, HUB_MOD_CAP * HM_STRIDE);
+  hub_voice_count = 0; hub_mod_count = 0; hub_rng_on = 0; hub_starting = 0; hub_pending_mask = 0;
+  hub_epoch += 1;
+);
+
+function hub_request_finish(v len reason) local(now)
+(
+  now = event_clock_samps;
+  v[VC_ACTIVE] > 0 && v[VC_HUB_ID] > 0 ? (
+    // Same-offset Continue can cancel this request before a single audio sample.
+    (v[VC_HUB_FINISH] <= 0 || now + len < v[VC_HUB_FSTART] + v[VC_HUB_FLEN]) ? (
+      v[VC_HUB_FGAIN] = v[VC_HUB_FINISH] > 0 ? clamp01(v[VC_HUB_TERMINAL]) : 1;
+      v[VC_HUB_FFROM] = v[VC_HUB_EFFECTIVE];
+      v[VC_HUB_FBRIDGE] = max(1, min(floor(0.003 * srate), floor(len * 0.20)));
+      v[VC_HUB_HANDOFF] = 0;
+      v[VC_HUB_FINISH] = reason;
+      v[VC_HUB_FSTART] = now;
+      v[VC_HUB_FLEN] = max(1, floor(len));
+      v[VC_HUB_FLEVEL] = max(0, v[VC_HUB_BASEENV]);
+      v[VC_STAGE] = ENV_RELEASE;
+      v[VC_EPHASE] = 0; v[VC_ESTART] = v[VC_ENV];
+      v[VC_RLEN] = max(1, len); v[VC_RCURVE] = 0;
+      v[VC_RSTEP] = exp(-6.90775527898214 / max(1, len));
+    );
+  );
+);
+
+function hub_stop_mod(index) local(p)
+(
+  p = hub_mod_base + index * HM_STRIDE;
+  p[HM_ACTIVE] > 0 && p[HM_STOP] <= 0 ? (
+    p[HM_STOP] = 1; p[HM_STOPSTART] = event_clock_samps;
+    p[HM_STOPVAL] = p[HM_LAST];
+    p[HM_STOPLEN] = max(1, min(floor(0.003 * srate), p[HM_LEN]));
+  );
+);
+
+function hub_channel_end(chan hard) local(i p v)
+(
+  i = 0;
+  while(i < HUB_MOD_CAP) (
+    p = hub_mod_base + i * HM_STRIDE;
+    p[HM_ACTIVE] > 0 && p[HM_CHAN] == chan ? (
+      hard ? hub_remove_mod(i, 13) : hub_stop_mod(i);
+    );
+    i += 1;
+  );
+  i = 0;
+  while(i < MAX_VOICES) (
+    v = voice_base + i * VC_STRIDE;
+    v[VC_HUB_ID] > 0 && v[VC_CHAN] == chan ? (
+      (hard || v[VC_ACTIVE] <= 0) ? hub_cancel_voice(i, 13) : hub_request_finish(v, v[VC_HUB_RELEASE], 13);
+    );
+    i += 1;
+  );
+  memset(hub_packet_base + chan * HP_STRIDE, 0, HP_STRIDE);
+  hub_pending_mask &= 65535 - (1 << chan);
+);
+
+function hub_analyze_loop(sm) local(lo hi span xf candidate bestlo bestcost cost n k a b al ar bl br power diff sr minspan)
+(
+  // Bounded waveform matching: 8 candidates x 24 stereo tap pairs per file.
+  // Run with bank analysis, never search the whole bank from a MIDI command.
+  sm[SM_HUB_LOOPLO] = 0; sm[SM_HUB_LOOPHI] = 0; sm[SM_HUB_LOOPXF] = 0;
+  sm[SM_HUB_LOOPQUALITY] = 0;
+  sr = max(1, sm[SM_SR]);
+  lo = max(sm[SM_HEADEND], sm[SM_ATTACK] + sr * 0.020);
+  hi = min(sm[SM_TAILSTART], sm[SM_FRAMES] - 3);
+  span = hi - lo; minspan = max(64, sr * 0.040);
+  span >= minspan && sm[SM_RMS] > 0.000001 ? (
+    xf = max(8, min(span * 0.18, sr * 0.018));
+    bestcost = 1000000; bestlo = lo;
+    k = 0;
+    while(k < 8) (
+      candidate = lo + k / 7 * min(span * 0.28, sr * 0.060);
+      cost = 0; power = 0; n = 0;
+      while(n < 24) (
+        a = hi - xf + n / 23 * xf;
+        b = candidate + n / 23 * xf;
+        sample_frame2(sm[SM_PTR], sm[SM_NCH], a); al = readL; ar = readR;
+        sample_frame2(sm[SM_PTR], sm[SM_NCH], b); bl = readL; br = readR;
+        diff = (al - bl) * (al - bl) + (ar - br) * (ar - br);
+        cost += diff; power += al * al + ar * ar + bl * bl + br * br;
+        n += 1;
+      );
+      power > 96 * sm[SM_RMS] * sm[SM_RMS] * 0.0025 ? (
+        cost /= max(0.000000000001, power);
+        cost < bestcost ? (bestcost = cost; bestlo = candidate;);
+      );
+      k += 1;
+    );
+    bestcost < 0.75 ? (
+      sm[SM_HUB_LOOPLO] = bestlo; sm[SM_HUB_LOOPHI] = hi; sm[SM_HUB_LOOPXF] = xf;
+      sm[SM_HUB_LOOPQUALITY] = 1 - min(1, bestcost);
+    );
+  );
+);
+
 
 function pt_in(x y w h)
 (
@@ -992,7 +1209,7 @@ function build_sample_corpus_region(sid region lo hi cnt) local(sm sr span j pha
     while (j < cnt && corpus_count < corpus_capacity) (
       phase = (j + 0.5) / max(1, cnt);
       cell = span / max(1, cnt);
-      jitter = (rand(1) - 0.5) * cell * 0.46;
+      jitter = (hub_random(1) - 0.5) * cell * 0.46;
       pos = lo + phase * span + jitter;
       region == GC_REGION_BODY ? pos = wrap_in_range(pos, lo, hi) : pos = clamp(pos, lo, max(lo, hi - 1));
       seed_slow = clamp01((0.70 - sm[SM_BRIGHT]) / 0.56) * clamp01((0.44 - sm[SM_EDGE]) / 0.40);
@@ -1322,7 +1539,7 @@ function corpus_pick_grain(vix v want_region fallback_sid fallback_pos fallback_
       count > 0 ? (
         k = 0;
         while (k < 5) (
-          idx = start + floor(rand(count));
+          idx = start + floor(hub_random(count));
           corpus_consider_candidate(vix, v, idx, want_region, gsize, lively, truth, spice, stage, fallback_sid);
           k += 1;
         );
@@ -1351,7 +1568,7 @@ function corpus_pick_grain(vix v want_region fallback_sid fallback_pos fallback_
           );
           k = 0;
           while (k < 4) (
-            idx = pstart + floor(rand(pcount));
+            idx = pstart + floor(hub_random(pcount));
             corpus_consider_candidate(vix, v, idx, want_region, gsize, lively, truth, spice, stage, fallback_sid);
             k += 1;
           );
@@ -1362,7 +1579,7 @@ function corpus_pick_grain(vix v want_region fallback_sid fallback_pos fallback_
     tries = floor((22 + floor(20 * lively) + floor(10 * spice)) * lerp(1.0, 0.58, granular_event_stretch));
     tries = max(10, tries);
     while (tries > 0) (
-      idx = floor(rand(corpus_count));
+      idx = floor(hub_random(corpus_count));
       corpus_consider_candidate(vix, v, idx, want_region, gsize, lively, truth, spice, stage, fallback_sid);
       tries -= 1;
     );
@@ -1473,9 +1690,9 @@ function choose_random_sample(note velnorm) local(
     );
 
     totalw <= 0 ? (
-      floor(rand(max(sample_count, 1)));
+      floor(hub_random(max(sample_count, 1)));
     ) : (
-      pick = rand(totalw);
+      pick = hub_random(totalw);
       accum = 0;
       sid = sample_count - 1;
       i = 0;
@@ -1552,7 +1769,7 @@ function choose_walk_sample(note velnorm) local(
       totalw <= 0 ? (
         choose_random_sample(note, velnorm);
       ) : (
-        pick = rand(totalw);
+        pick = hub_random(totalw);
         accum = 0;
         sid = walk_last_sid;
         i = 0;
@@ -1658,7 +1875,7 @@ function choose_region_donor(src_sid region_mode wideness vix) local(
     );
 
     totalw <= 0 ? src_sid : (
-      pick = rand(totalw);
+      pick = hub_random(totalw);
       accum = 0;
       sid = src_sid;
       i = 0;
@@ -1732,7 +1949,7 @@ function choose_region_pos(vix sid region_mode phase01 jitter_norm) local(
   try = 0;
   while (try < GRAIN_CAND_TRIES) (
     scale = min(span * lerp(0.16, 0.52, clamp01(jitter_norm)), limit);
-    jitter = (rand(1) - 0.5) * scale * 2;
+    jitter = (hub_random(1) - 0.5) * scale * 2;
     pos = center + jitter;
     region_mode ? (
       pos = clamp(pos, lo, max(lo, hi - 1));
@@ -1766,10 +1983,10 @@ function source_phase_jitter_samples(sid region_mode lively truth spice) local(s
       hz = 440 * exp((note - 69) * 0.0577622650466621);
       period = sr / max(20, hz);
       amt = clamp01(lively) * lerp(0.22, 0.82, 1 - truth) * lerp(0.82, 1.10, spice);
-      off = (rand(1) - 0.5) * period * amt;
+      off = (hub_random(1) - 0.5) * period * amt;
     ) : (
       maxms = lerp(0.00025, 0.00280, clamp01(lively)) * lerp(1.00, 0.66, truth) * lerp(0.84, 1.16, spice);
-      off = (rand(1) - 0.5) * 2 * sr * maxms;
+      off = (hub_random(1) - 0.5) * 2 * sr * maxms;
     );
 
     region_mode ? off *= 0.82 : off *= 0.70;
@@ -1824,7 +2041,7 @@ function grain_follow_phase(v region_mode) local(lo hi span ph step f)
     span = max(1, hi - lo);
     ph = clamp01((v[VC_LGPOS] - lo) / max(1, span - 1));
     step = clamp(abs(v[VC_SRCHOP]) / max(1, span), 0.006, 0.24);
-    f = ph + step * (0.78 + 0.20 * rand(1));
+    f = ph + step * (0.78 + 0.20 * hub_random(1));
     // No wrap. Reaching the end of a body phrase should cause cross-sample
     // continuation, not restart the same take.
     clamp01(f);
@@ -2147,7 +2364,7 @@ function learned_flow_pick(vix v region_mode fallback_sid fallback_pos fallback_
     // At a phrase boundary, the next event may start early in another sample.
     // That is a cross-sample continuation, not same-sample wraparound.
     end_pressure > 0 ? (
-      target_phase = phase_lerp_region(target_phase, 0.06 + 0.32 * rand(1), clamp01(end_pressure * 0.90), region_mode);
+      target_phase = phase_lerp_region(target_phase, 0.06 + 0.32 * hub_random(1), clamp01(end_pressure * 0.90), region_mode);
     );
 
     fallback_score = learned_flow_score(vix, prev_sid, prev_pos, region_mode, fallback_sid, fallback_pos, fallback_lo, fallback_hi, target_phase, gsize, lively, truth, spice, same_run, force_cross);
@@ -2167,7 +2384,7 @@ function learned_flow_pick(vix v region_mode fallback_sid fallback_pos fallback_
     while (tries < 7) (
       donor = choose_region_donor(prev_sid, region_mode, clamp01(0.12 + 0.20 * lively + 0.34 * spice + 0.10 * tries + 0.30 * end_pressure), vix);
       donor != prev_sid ? (
-        cand_phase = phase_lerp_region(target_phase, rand(1), 0.035 + 0.10 * spice + 0.15 * end_pressure, region_mode);
+        cand_phase = phase_lerp_region(target_phase, hub_random(1), 0.035 + 0.10 * spice + 0.15 * end_pressure, region_mode);
         learned_flow_consider(vix, prev_sid, prev_pos, region_mode, donor, cand_phase, gsize, lively, truth, spice, same_run, force_cross);
       );
       tries += 1;
@@ -2178,7 +2395,7 @@ function learned_flow_pick(vix v region_mode fallback_sid fallback_pos fallback_
     (force_cross && learned_sid == prev_sid && sample_count > 1) ? (
       donor2 = choose_region_donor(sid_anchor, region_mode, 1, vix);
       donor2 != prev_sid ? (
-        learned_flow_consider(vix, prev_sid, prev_pos, region_mode, donor2, 0.06 + 0.36 * rand(1), gsize, lively, truth, spice, same_run, 0);
+        learned_flow_consider(vix, prev_sid, prev_pos, region_mode, donor2, 0.06 + 0.36 * hub_random(1), gsize, lively, truth, spice, same_run, 0);
       );
     );
 
@@ -3302,6 +3519,7 @@ function analyze_sample(sm) local(j anchor classic_anchor gauss_anchor)
   memcpy(sm, analysis_copy_base, SM_STRIDE);
   sm[SM_CLASSIC_ATTACK] = classic_anchor;
   sm[SM_GAUSS_ATTACK] = gauss_anchor;
+  hub_analyze_loop(sm);
   estimate_sample_tail_grace(sm);
   estimate_sample_expander_profile(sm);
   // v37 PerfGate: skip Granular-only corpus markers and obsolete learned-flow
@@ -3433,6 +3651,24 @@ function decrust_clear_state()
   dc_last_detect = 0;
   dc_tdl0 = 0; dc_tdl1 = 0; dc_tdl2 = 0; dc_tdl3 = 0; dc_tdl4 = 0;
   dc_tdr0 = 0; dc_tdr1 = 0; dc_tdr2 = 0; dc_tdr3 = 0; dc_tdr4 = 0;
+);
+
+// Switch delay topology only at a block boundary and at zero transition gain.
+// A live toggle fades the entire aligned output (including external input).
+// No delay, curvature, FFT or ring traffic occurs in settled bypass.
+function decrust_sync_latency() local(requested)
+(
+  requested = clean_decrust_amt > 0.0001 ? 1 : 0;
+  requested != dc_latency_active ? (
+    (event_clock_samps <= 0 || dc_switch_gain <= 0) ? (
+      dc_latency_active = requested;
+      pdc_delay = dc_latency_active ? DECRUST_LATENCY : 0;
+      decrust_clear_state();
+      dc_output_warm_left = (event_clock_samps > 0 && dc_latency_active) ? DECRUST_LATENCY : 0;
+      dc_switch_target = 1;
+    ) : dc_switch_target = 0;
+  ) : dc_switch_target = 1;
+  za_keep_awake = (dc_switch_gain < 1 || dc_switch_target < 1 || dc_output_warm_left > 0);
 );
 
 function decrust_build_windows() local(i j idx w sum overlaps)
@@ -3631,7 +3867,7 @@ function apply_clean_decrust() local(
   // hidden Shift+Clean mode and the only place the FFT runs. Amount 0.5 roughly
   // matches the standalone DeCrust settings shown by the user; above that goes
   // intentionally fail-fast and more extreme.
-  (
+  dc_latency_active ? (
     dc_fft_ready <= 0 ? decrust_update_params();
 
     dc_inl_base[dc_ringpos] = outL;
@@ -4576,7 +4812,25 @@ function posteq_spec_bq_set_band(bin freq q) local(base w0 sn cs alpha a0 b0 b1 
   posteq_spec_coeff_base[base + 4] = a2 / a0;
 );
 
-function posteq_update_coeffs() local(i norm cf specq cutq)
+function posteq_update_analyzer_coeffs() local(i norm cf specq)
+(
+  (posteq_analyzer_coeff_srate != srate || posteq_analyzer_coeff_base != posteq_spec_coeff_base) ? (
+  i = 0;
+  while (i < POSTEQ_SPEC_BINS) (
+    norm = i / max(1, POSTEQ_SPEC_BINS - 1);
+    cf = exp(log(32) + norm * (log(19000) - log(32)));
+    // Wider lows, tighter highs. Enough resolution to show useful pockets,
+    // not so much that the tiny panel becomes a nervous FFT waterfall.
+    specq = lerp(2.20, 6.25, norm ^ 0.72);
+    posteq_spec_bq_set_band(i, cf, specq);
+    i += 1;
+  );
+    posteq_analyzer_coeff_srate = srate;
+    posteq_analyzer_coeff_base = posteq_spec_coeff_base;
+  );
+);
+
+function posteq_update_coeffs() local(cutq)
 (
   cutq = posteq_cut_filter_q(proc_hpf_q);
   posteq_bq_set_highpass(0, proc_hpf_hz, cutq);
@@ -4599,16 +4853,9 @@ function posteq_update_coeffs() local(i norm cf specq cutq)
   posteq_bq_set_peak(11, proc_hpf_hz, posteq_cut_res_peak_q(proc_hpf_q), posteq_hpf_res_db);
   posteq_bq_set_peak(12, proc_lpf_hz, posteq_cut_res_peak_q(proc_lpf_q), posteq_lpf_res_db);
 
-  i = 0;
-  while (i < POSTEQ_SPEC_BINS) (
-    norm = i / max(1, POSTEQ_SPEC_BINS - 1);
-    cf = exp(log(32) + norm * (log(19000) - log(32)));
-    // Wider lows, tighter highs. Enough resolution to show useful pockets,
-    // not so much that the tiny panel becomes a nervous FFT waterfall.
-    specq = lerp(2.20, 6.25, norm ^ 0.72);
-    posteq_spec_bq_set_band(i, cf, specq);
-    i += 1;
-  );
+  // Analyzer coefficients do not depend on EQ settings. Do not rebuild them
+  // for hidden visualizations or ordinary parameter automation.
+  posteq_analyzer_active ? posteq_update_analyzer_coeffs();
 
   posteq_char_bq_set_band(0, max(70, proc_hpf_hz * 1.25), clamp(proc_hpf_q, 0.45, 4));
   posteq_char_bq_set_band(1, proc_eq_band1_hz, proc_eq_band1_q);
@@ -6686,7 +6933,16 @@ function configure_memory_layout(selected_count) local(cap) (
 
   dynx_bank_base = pop_slow_coeff_base + POP_BANDS + 32;
 
-  AUDIO_BASE  = dynx_bank_base + DYNX_BANDS * DYNX_STRIDE + 256;
+  hub_packet_base = dynx_bank_base + DYNX_BANDS * DYNX_STRIDE + 64;
+  hub_mod_base = hub_packet_base + 16 * HP_STRIDE;
+  hub_log_base = hub_mod_base + HUB_MOD_CAP * HM_STRIDE;
+  memset(hub_packet_base, 0, 16 * HP_STRIDE + HUB_MOD_CAP * HM_STRIDE + 1200);
+  hub_log_head = 0; hub_log_count = 0; hub_log_serial = 0;
+  hub_log_accepted = 0; hub_log_rejected = 0;
+  hub_accept_count = 0; hub_reject_count = 0;
+  hub_voice_count = 0; hub_mod_count = 0; hub_pending_mask = 0;
+  hub_rng_on = 0; hub_starting = 0;
+  AUDIO_BASE = hub_log_base + 1200 + 256;
   MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
 );
 
@@ -6830,7 +7086,7 @@ function choose_tail_donor(src_sid wideness) local(
     );
 
     totalw <= 0 ? src_sid : (
-      pick = rand(totalw);
+      pick = hub_random(totalw);
       accum = 0;
       sid = src_sid;
       i = 0;
@@ -6919,7 +7175,7 @@ function prepare_release_attack_bridge(note chan) local(
     i = 0;
     while (i < MAX_VOICES) (
       v = voice_base + i * VC_STRIDE;
-      (v[VC_ACTIVE] > 0 && v[VC_STAGE] == ENV_RELEASE && v[VC_GMODE] > 0 && v[VC_GMIX] > 0.0001 && v[VC_CHAN] == chan) ? (
+      (v[VC_ACTIVE] > 0 && v[VC_HUB_ID] <= 0 && v[VC_STAGE] == ENV_RELEASE && v[VC_GMODE] > 0 && v[VC_GMIX] > 0.0001 && v[VC_CHAN] == chan) ? (
         env = clamp01(v[VC_ENV]);
         env > 0.0005 ? (
           (v[VC_NOTE] == note) ? (
@@ -6969,7 +7225,7 @@ function apply_release_attack_bridge(skip_idx) local(i v use)
     while (i < MAX_VOICES) (
       v = voice_base + i * VC_STRIDE;
       use = 0;
-      (i != skip_idx && v[VC_ACTIVE] > 0 && v[VC_STAGE] == ENV_RELEASE && v[VC_GMODE] > 0 && v[VC_GMIX] > 0.0001 && v[VC_CHAN] == seam_bridge_chan) ? (
+      (i != skip_idx && v[VC_ACTIVE] > 0 && v[VC_HUB_ID] <= 0 && v[VC_STAGE] == ENV_RELEASE && v[VC_GMODE] > 0 && v[VC_GMIX] > 0.0001 && v[VC_CHAN] == seam_bridge_chan) ? (
         seam_bridge_same_note ? (
           v[VC_NOTE] == seam_bridge_note ? use = 1;
         ) : (
@@ -7007,7 +7263,7 @@ function fade_same_note_releases_for_retrigger(note chan skip_idx) local(i v)
   i = 0;
   while (i < MAX_VOICES) (
     v = voice_base + i * VC_STRIDE;
-    (i != skip_idx && v[VC_ACTIVE] > 0 && v[VC_AUDIOTRIG] <= 0 && v[VC_STAGE] == ENV_RELEASE && v[VC_NOTE] == note && v[VC_CHAN] == chan) ? (
+    (i != skip_idx && v[VC_ACTIVE] > 0 && v[VC_HUB_ID] <= 0 && v[VC_AUDIOTRIG] <= 0 && v[VC_STAGE] == ENV_RELEASE && v[VC_NOTE] == note && v[VC_CHAN] == chan) ? (
       v[VC_RSTEP] = min(v[VC_RSTEP], seam_bridge_release_coef);
       v[VC_RHLEFT] = min(v[VC_RHLEFT], seam_bridge_samps);
       v[VC_CANSPAWN] = 0;
@@ -7023,7 +7279,7 @@ function fade_same_note_releases_for_retrigger(note chan skip_idx) local(i v)
 );
 
 function start_voice(note vel chan) local(
-  velnorm sid sm donor donor_sm voice_idx v
+  velnorm sid sm donor donor_sm voice_idx v source_rng_on
   srcsr norm gain env0 lively playmode gran_voice ggrain_amt voice_stretch voice_stretch_norm
   driftcents raw_rate base_rate attack_rate pitch_protect pitch_abs head_hold_src head_hold_out
   transrich transprot translock hold_ms trans_hold_src trans_hold_out attack_preroll
@@ -7036,13 +7292,19 @@ function start_voice(note vel chan) local(
 (
   sample_count <= 0 ? 0 : (
     velnorm = vel / 127;
+    source_rng_on = hub_rng_on;
+    hub_rng_on = 0;
     sid = choose_sample(note, velnorm);
+    hub_rng_on = source_rng_on;
     sm = sample_meta_base + sid * SM_STRIDE;
 
-    prepare_release_attack_bridge(note, chan);
+    hub_starting ? (
+      seam_bridge_env = 0; seam_bridge_idx = -1; seam_bridge_phase = -1;
+    ) : prepare_release_attack_bridge(note, chan);
 
     voice_idx = alloc_voice();
     last_start_voice_idx = voice_idx;
+    hub_cancel_voice(voice_idx, 16);
     v = voice_base + voice_idx * VC_STRIDE;
 
     j = 0;
@@ -7073,7 +7335,7 @@ function start_voice(note vel chan) local(
     srcsr = sm[SM_SR];
     norm  = sm[SM_NORM];
     gain  = (0.10 + 0.90 * (velnorm ^ 1.35)) * lerp(norm, 1, truth_mix);
-    gain_jit_db = (rand(1) - 0.5) * lively * 0.8;
+    gain_jit_db = (hub_random(1) - 0.5) * lively * 0.8;
     gain *= db2amp(gain_jit_db);
     gain  = min(gain, 2.0);
 
@@ -7084,7 +7346,7 @@ function start_voice(note vel chan) local(
     : transprot = clamp01((transrich - 0.38) / 0.44);
     translock = transprot >= 0.22 ? 1 : 0;
 
-    driftcents = (rand(1) - 0.5) * (0.25 + lively * lively * 10.0);
+    driftcents = (hub_random(1) - 0.5) * (0.25 + lively * lively * 10.0);
 
     onset_mode_active ? (
       attack_norm = curve_norm(slider2, 0.1, 500, CURVE_TIME);
@@ -7094,23 +7356,23 @@ function start_voice(note vel chan) local(
       translock ? (
         align_guard = min(pre_avail, max(0, floor(srcsr * (0.00020 + 0.00035 * transprot))));
         align_jit = floor(lively * (1 - transprot) * max(1, min(6, 1 + pre_avail * 0.035)));
-        startpos = floor(attack_anchor - pre_keep - align_guard + (rand(1) - 0.5) * align_jit);
+        startpos = floor(attack_anchor - pre_keep - align_guard + (hub_random(1) - 0.5) * align_jit);
       ) : (
         pre  = min(pre_avail, floor(2 + attack_norm * min(64, 8 + pre_avail * 0.18)));
         jmax = floor((0.35 + lively * 2.05) * max(2, min(18, 2 + pre_avail * 0.08)));
         softskip = max(0, -slider7) * min(16, 2 + pre_avail * 0.06);
-        startpos = floor(attack_anchor - max(pre_keep, pre) + (rand(1) - 0.5) * jmax + softskip);
+        startpos = floor(attack_anchor - max(pre_keep, pre) + (hub_random(1) - 0.5) * jmax + softskip);
       );
     ) : (
       translock ? (
         attack_preroll = min(attack_anchor, max(0, floor(srcsr * (0.00035 + 0.00045 * transprot))));
         jmax = floor(lively * (1 - transprot) * min(4, 1 + attack_anchor * 0.02));
-        startpos = floor(attack_anchor - attack_preroll + (rand(1) - 0.5) * jmax);
+        startpos = floor(attack_anchor - attack_preroll + (hub_random(1) - 0.5) * jmax);
       ) : (
         pre  = min(attack_anchor, 8 + lively * 8);
         jmax = floor((0.25 + lively * 1.75) * min(16, 2 + attack_anchor * 0.08));
         softskip = max(0, -slider7) * min(16, 2 + attack_anchor * 0.06);
-        startpos = floor(attack_anchor - pre + (rand(1) - 0.5) * jmax + softskip);
+        startpos = floor(attack_anchor - pre + (hub_random(1) - 0.5) * jmax + softskip);
       );
     );
 
@@ -7228,13 +7490,13 @@ function start_voice(note vel chan) local(
     v[VC_PDRYPOS]   = startpos;
     v[VC_PDRYRATE]  = base_rate / max(0.000001, v[VC_PRATIO]);
 
-    gesture_len = floor(srate * lerp(0.22, 1.20, rand(1)) * lerp(0.82, 1.22, stretch_norm) * (gran_voice ? lerp(1.0, 2.75, granular_event_stretch) : 1));
+    gesture_len = floor(srate * lerp(0.22, 1.20, hub_random(1)) * lerp(0.82, 1.22, stretch_norm) * (gran_voice ? lerp(1.0, 2.75, granular_event_stretch) : 1));
     gesture_len = max(64, gesture_len);
     gesture_depth = lively * (0.38 + 0.62 * ggrain_amt) * (gran_voice ? 1.0 : 0.32);
-    v[VC_GPHASE]  = rand(1);
+    v[VC_GPHASE]  = hub_random(1);
     v[VC_GLEN]    = gesture_len;
     v[VC_GDEPTH]  = gesture_depth;
-    v[VC_GACCENT] = rand(1);
+    v[VC_GACCENT] = hub_random(1);
     v[VC_LGSID]   = -1;
     v[VC_LGPOS]   = 0;
     v[VC_LGLO]    = 0;
@@ -7243,8 +7505,10 @@ function start_voice(note vel chan) local(
     v[VC_LGRUN]   = 0;
     v[VC_LGCIDX]  = -1;
 
-    apply_release_attack_bridge(voice_idx);
-    fade_same_note_releases_for_retrigger(note, chan, voice_idx);
+    !hub_starting ? (
+      apply_release_attack_bridge(voice_idx);
+      fade_same_note_releases_for_retrigger(note, chan, voice_idx);
+    );
 
     sm[SM_LASTUSED] = note_counter;
     push_recent(sid);
@@ -7340,7 +7604,7 @@ function release_voice(note chan) local(i v token)
   i = 0;
   while (i < MAX_VOICES) (
     v = voice_base + i * VC_STRIDE;
-    (v[VC_ACTIVE] > 0 && v[VC_AUDIOTRIG] <= 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan && v[VC_KEYTOKEN] == token) ? release_voice_internal(v);
+    (v[VC_ACTIVE] > 0 && v[VC_AUDIOTRIG] <= 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan && v[VC_KEYTOKEN] == token && v[VC_HUB_ID] <= 0) ? release_voice_internal(v);
     i += 1;
   );
 );
@@ -7389,7 +7653,7 @@ function auto_smooth_release_same_note_for_new(note chan) local(i v)
     i = 0;
     while (i < MAX_VOICES) (
       v = voice_base + i * VC_STRIDE;
-      (v[VC_ACTIVE] > 0 && v[VC_AUDIOTRIG] <= 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan && v[VC_STAGE] != ENV_RELEASE) ? (
+      (v[VC_ACTIVE] > 0 && v[VC_HUB_ID] <= 0 && v[VC_AUDIOTRIG] <= 0 && v[VC_NOTE] == note && v[VC_CHAN] == chan && v[VC_STAGE] != ENV_RELEASE) ? (
         release_voice_internal(v);
       );
       i += 1;
@@ -7399,6 +7663,7 @@ function auto_smooth_release_same_note_for_new(note chan) local(i v)
 
 function release_all_voices_transport(hard) local(i v)
 (
+  hub_reset(15);
   i = 0;
   while (i < MAX_VOICES) (
     v = voice_base + i * VC_STRIDE;
@@ -8178,9 +8443,631 @@ function draw_tooltip_box() local(tw1 th1 tw2 th2 tw th pad bx by bw bh)
   );
 );
 
+function hub_plan_voice(v p duration continuing) local(sm attacklen relen need loopok deadline scale bodybudget wasloop oldgmode oldgmix oldtail oldmode oldcan horizon wetneed dryneed protect wastransition intended wantloop)
+(
+  wasloop = v[VC_HUB_LOOP]; oldgmode = v[VC_GMODE]; oldgmix = v[VC_GMIX];
+  oldtail = v[VC_TAILMIX]; oldmode = v[VC_MODE]; oldcan = v[VC_CANSPAWN];
+  wastransition = v[VC_HUB_TLEN] > 0;
+  intended = wastransition && v[VC_HUB_TTO] > 0 ? v[VC_HUB_DESTLOOP] : wasloop;
+  sm = sample_meta_base + v[VC_SAMPLE] * SM_STRIDE;
+  deadline = event_clock_samps + duration;
+  v[VC_HUB_START] = event_clock_samps; v[VC_HUB_END] = deadline;
+  v[VC_HUB_BOUNDARY] = p[8]; v[VC_HUB_FILL] = p[9];
+  v[VC_HUB_AUTH] = p[10]; v[VC_HUB_AMOUNT] = p[11] / 127;
+  v[VC_HUB_SHAPE] = p[12]; v[VC_HUB_FINISH] = 0; v[VC_HUB_TERMINAL] = 1;
+  attacklen = p[17] == 127 ? attack_samps : duration * p[17] / 100;
+  relen = p[18] == 127 ? release_samps : duration * p[18] / 100;
+  // Free retains the analyzed source-tail allowance when using the instrument
+  // release. Tail instead commits to its requested post-end release window.
+  // Explicit event release fractions remain authoritative in either policy.
+  p[8] == 0 && p[18] == 127 && duration > attacklen ? (
+    relen = max(relen, floor(sm[SM_AUTOREL] * auto_release_amt * srate * 0.001));
+  );
+  attacklen = max(1, min(attacklen, duration)); relen = max(1, relen);
+  p[8] == 1 && attacklen + relen > duration ? (
+    scale = duration / max(1, attacklen + relen); attacklen *= scale; relen *= scale;
+  );
+  v[VC_HUB_ATTACK] = max(1, floor(attacklen));
+  v[VC_HUB_RELEASE] = max(1, floor(relen));
+  p[8] == 1 ? v[VC_HUB_RELEASE] = max(1, min(v[VC_HUB_RELEASE], duration - v[VC_HUB_ATTACK]));
+  bodybudget = max(0, duration - v[VC_HUB_ATTACK] - (p[8] == 1 ? v[VC_HUB_RELEASE] : 0));
+  v[VC_HUB_RAMPFROM] = continuing ? v[VC_HUB_EFFECTIVE] : 0;
+  continuing ? (
+    v[VC_ENV] = v[VC_HUB_BASEENV];
+    v[VC_STAGE] = ENV_SUSTAIN;
+    v[VC_HUB_HANDOFF] = max(1, min(floor(0.005 * srate), floor(duration * 0.25)));
+  ) : (
+    v[VC_HUB_HANDOFF] = 0;
+    // A finite attack prevents long AHDSR phases from swallowing short Fit events.
+    p[8] == 1 || p[17] != 127 ? (
+      v[VC_ALEN] = v[VC_HUB_ATTACK]; v[VC_ACURVE] = 0;
+      v[VC_ASTEP] = 1 - exp(-6.90775527898214 / v[VC_ALEN]);
+      v[VC_HLEFT] = min(v[VC_HLEFT], floor(bodybudget * 0.25));
+      v[VC_DLEN] = max(1, min(v[VC_DLEN], bodybudget - v[VC_HLEFT]));
+      v[VC_DCURVE] = 0; v[VC_DSTEP] = 1 - exp(-6.90775527898214 / v[VC_DLEN]);
+    );
+  );
+  horizon = duration + (p[8] == 1 ? 0 : v[VC_HUB_RELEASE]);
+  protect = min(horizon, max(0, v[VC_TLEFT]));
+  wetneed = horizon * abs(v[VC_RATE]) + protect * max(0, abs(v[VC_ATKRATE]) - abs(v[VC_RATE]));
+  dryneed = horizon * abs(v[VC_PDRYRATE]) + protect * max(0, abs(v[VC_RAWRATE] / max(0.000001, v[VC_PRATIO])) - abs(v[VC_PDRYRATE]));
+  need = wetneed > max(0, sm[SM_FRAMES] - v[VC_POS]) || dryneed > max(0, sm[SM_FRAMES] - v[VC_PDRYPOS]);
+  loopok = sm[SM_HUB_LOOPHI] > sm[SM_HUB_LOOPLO] + 2 * sm[SM_HUB_LOOPXF];
+  (p[9] == 2 || (p[9] == 1 && (need || continuing))) ? (
+    loopok ? (
+      v[VC_HUB_LOOP] = 1;
+      v[VC_HUB_LOOPLO] = sm[SM_HUB_LOOPLO]; v[VC_HUB_LOOPHI] = sm[SM_HUB_LOOPHI];
+      v[VC_HUB_LOOPXF] = sm[SM_HUB_LOOPXF];
+      // Explicit source filling uses the small same-source renderer. Pitch/tape
+      // rates remain those chosen by Sample. No donor texture is introduced.
+      v[VC_GMODE] = 0; v[VC_GMIX] = 0; v[VC_TAILMIX] = 0; v[VC_CANSPAWN] = 0;
+      !continuing ? (
+        v[VC_MODE] == 3 ? (v[VC_MODE] = 0; v[VC_BASE] /= 1.55;);
+        memset(v + VC_GBASE, 0, NUM_GRAINS * VG_STRIDE);
+      );
+    ) : (
+      v[VC_HUB_LOOP] = 0;
+      hub_log(v[VC_HUB_ACTION], v[VC_HUB_ID], 0, 2, 10, v[VC_SAMPLE], duration / max(1, srate), p[8], p[9], v[VC_CHAN]);
+    );
+  ) : v[VC_HUB_LOOP] = 0;
+  wantloop = v[VC_HUB_LOOP];
+  continuing && wastransition ? (
+    // Preserve both running cursors and the last rendered mix. A repeated
+    // request keeps the fade; a changed request reverses it from that mix.
+    v[VC_HUB_LOOP] = wasloop;
+    v[VC_GMODE] = oldgmode; v[VC_GMIX] = oldgmix; v[VC_TAILMIX] = oldtail;
+    v[VC_MODE] = oldmode; v[VC_CANSPAWN] = oldcan;
+    wantloop != intended ? (
+      v[VC_HUB_TFROM] = v[VC_HUB_TWEIGHT];
+      v[VC_HUB_TTO] = wantloop == v[VC_HUB_DESTLOOP] ? 1 : 0;
+      v[VC_HUB_TLEN] = max(2, min(floor(0.008 * srate), floor(duration * 0.25)));
+      v[VC_HUB_TLEFT] = v[VC_HUB_TLEN];
+    );
+  ) : continuing && wantloop != wasloop ? (
+    // Keep rendering the old source while a second pair of cursors crossfades
+    // into the requested direct renderer. Existing grains finish under the fade.
+    v[VC_HUB_DESTLOOP] = wantloop; v[VC_HUB_LOOP] = wasloop;
+    v[VC_GMODE] = oldgmode; v[VC_GMIX] = oldgmix; v[VC_TAILMIX] = oldtail;
+    v[VC_MODE] = oldmode; v[VC_CANSPAWN] = oldcan;
+    v[VC_HUB_NEWPOS] = v[VC_POS]; v[VC_HUB_NEWDRY] = v[VC_PDRYPOS];
+    v[VC_HUB_TFROM] = 0; v[VC_HUB_TTO] = 1; v[VC_HUB_TWEIGHT] = 0;
+    v[VC_HUB_TLEN] = max(2, min(floor(0.008 * srate), floor(duration * 0.25)));
+    v[VC_HUB_TLEFT] = v[VC_HUB_TLEN];
+  );
+);
+
+function hub_execute(p chan) local(action id target vi mi freev freem v m duration valid reason j oldindex oldid)
+(
+  action = p[1]; id = p[2] * 128 + p[3]; target = p[4] * 128 + p[5];
+  duration = floor((p[14] * 16384 + p[15] * 128 + p[16]) * srate * (p[13] == 1 ? 0.000015625 : 0.001) + 0.5);
+  valid = p[0] == 1 && action >= 0 && action <= 7 && id > 0 && p[8] <= 2 && p[9] <= 2 && p[10] <= 2 && p[13] <= 1;
+  valid = valid && (p[17] <= 100 || p[17] == 127) && (p[18] <= 100 || p[18] == 127);
+  action != 7 ? valid = valid && p[7] > 0 && duration > 0;
+  valid ? (
+    reason = 0; vi = hub_find_voice(id); mi = hub_find_mod(id);
+    action == 7 ? (
+      vi >= 0 ? (
+        v = voice_base + vi * VC_STRIDE;
+        v[VC_CHAN] == chan ? (
+          v[VC_HUB_BOUNDARY] == 1 && event_clock_samps >= v[VC_HUB_END] - 1 ? (
+            // Deadline is processed after all same-offset commands.
+            0;
+          ) : hub_request_finish(v, event_clock_samps < v[VC_HUB_END] - 1 ? min(v[VC_HUB_RELEASE], max(1, floor(0.003 * srate))) : v[VC_HUB_RELEASE], 13);
+        ) : reason = 6;
+      ) : mi >= 0 ? (
+        m = hub_mod_base + mi * HM_STRIDE;
+        m[HM_CHAN] == chan ? hub_stop_mod(mi) : reason = 6;
+      );
+      // Late End is intentionally idempotent; it cannot resolve by note pitch.
+      reason == 0 ? hub_log(action, id, target, 1, 13, vi >= 0 ? v[VC_SAMPLE] : -1, 0, p[8], p[9], chan);
+    ) : (
+      (vi >= 0 || mi >= 0) ? reason = 5;
+      reason == 0 && !bank_loaded ? reason = 9;
+      oldindex = target > 0 ? hub_find_voice(target) : -1;
+      reason == 0 && ((action >= 1 && action <= 4) || action == 6 || (action == 5 && target > 0)) && oldindex < 0 ? reason = 6;
+      reason == 0 && oldindex >= 0 && voice_base[oldindex * VC_STRIDE + VC_CHAN] != chan ? reason = 6;
+      reason == 0 && action == 0 && target != 0 ? reason = 4;
+      reason == 0 && (action == 0 || action == 5) ? (
+        freev = -1; j = 0;
+        while(j < MAX_VOICES && freev < 0) (
+          voice_base[j * VC_STRIDE + VC_ACTIVE] <= 0 ? freev = j;
+          j += 1;
+        );
+        freev < 0 ? reason = 7 : (
+          hub_rng_on = 1; hub_rng = 1 + ((id * 131 + p[19] * 65537 + p[6] * 17) % 2147483646);
+          hub_starting = 1;
+          start_voice(p[6], p[7], chan);
+          hub_starting = 0;
+          vi = last_start_voice_idx; v = voice_base + vi * VC_STRIDE;
+          hub_serial += 1; hub_voice_count += 1;
+          v[VC_HUB_ID] = id; v[VC_HUB_SERIAL] = hub_serial;
+          v[VC_HUB_ACTION] = action; v[VC_HUB_RNG] = hub_rng;
+          v[VC_HUB_EFFECTIVE] = v[VC_ENV]; v[VC_HUB_REPLVAL] = v[VC_ENV]; v[VC_HUB_BASEENV] = v[VC_ENV];
+          v[VC_KEYTOKEN] = -hub_serial;
+          hub_rng_on = 0;
+          hub_plan_voice(v, p, duration, 0);
+          action == 5 && oldindex >= 0 ? hub_request_finish(voice_base + oldindex * VC_STRIDE, max(1, floor(0.005 * srate)), 16);
+          hub_log(action, id, target, 1, 0, v[VC_SAMPLE], duration / max(1, srate), p[8], p[9], chan);
+        );
+      ) : reason == 0 && action == 6 ? (
+        v = voice_base + oldindex * VC_STRIDE;
+        oldid = v[VC_HUB_ID];
+        v[VC_HUB_ID] = id; v[VC_HUB_ACTION] = action;
+        // Source and serial are retained: already attached modifiers still ride it.
+        v[VC_CHAN] = chan; v[VC_NOTE] = p[6];
+        hub_plan_voice(v, p, duration, 1);
+        hub_log(action, id, target, 1, 0, v[VC_SAMPLE], duration / max(1, srate), p[8], p[9], chan);
+      ) : reason == 0 && action >= 1 && action <= 4 ? (
+        freem = -1; j = 0;
+        while(j < HUB_MOD_CAP && freem < 0) (
+          hub_mod_base[j * HM_STRIDE + HM_ACTIVE] <= 0 ? freem = j;
+          j += 1;
+        );
+        freem < 0 ? reason = 8 : (
+          v = voice_base + oldindex * VC_STRIDE;
+          action != 4 && p[10] == 2 && v[VC_HUB_REPLACE] > 0 ? hub_remove_mod(v[VC_HUB_REPLACE] - 1, 16);
+          m = hub_mod_base + freem * HM_STRIDE; memset(m, 0, HM_STRIDE);
+          m[HM_ACTIVE] = 1; m[HM_ID] = id; m[HM_TARGET] = target;
+          m[HM_VOICE] = oldindex; m[HM_SERIAL] = v[VC_HUB_SERIAL];
+          m[HM_NEXT] = v[VC_HUB_MODHEAD]; v[VC_HUB_MODHEAD] = freem + 1;
+          m[HM_ACTION] = action; m[HM_AUTH] = action == 4 ? 0 : p[10]; m[HM_AMOUNT] = p[11] / 127;
+          m[HM_SHAPE] = p[12]; m[HM_START] = event_clock_samps; m[HM_LEN] = duration;
+          m[HM_ATTACK] = p[17]; m[HM_RELEASE] = p[18];
+          m[HM_CHAN] = chan; m[HM_FROM] = v[VC_HUB_REPLVAL];
+          m[HM_OFFSET] = v[VC_HUB_REPLVAL] - v[VC_HUB_BASEENV];
+          action != 4 && p[10] == 2 ? v[VC_HUB_REPLACE] = freem + 1;
+          action == 4 ? (
+            m[HM_LEN] = min(duration, max(1, floor(0.020 * srate)));
+            hub_request_finish(v, m[HM_LEN], 14);
+          );
+          hub_mod_count += 1;
+          hub_log(action, id, target, 1, 0, v[VC_SAMPLE], duration / max(1, srate), p[8], p[9], chan);
+        );
+      );
+    );
+    reason > 0 ? hub_log(action, id, target, -1, reason, -1, duration / max(1, srate), p[8], p[9], chan);
+  ) : hub_log(action, id, target, -1, p[0] != 1 ? 3 : 4, -1, 0, p[8], p[9], chan);
+);
+
+function hub_cc(chan cc value) local(h consumed count now)
+(
+  consumed = 0; h = hub_packet_base + chan * HP_STRIDE; now = event_clock_samps;
+  h[HP_ACTIVE] > 0 && h[HP_TIME] != now ? (
+    hub_log(-1, 0, 0, -1, 17, -1, 0, 0, 0, chan); h[HP_ACTIVE] = 0;
+  );
+  cc == 118 && value == 83 ? (
+    hub_pending_mask |= 1 << chan;
+    h[HP_ACTIVE] = 1; h[HP_COUNT] = 0; h[HP_SUM] = 0; h[HP_TIME] = now;
+    consumed = 1;
+  ) : cc == 119 && h[HP_ACTIVE] > 0 ? (
+    count = h[HP_COUNT];
+    count < 21 ? (
+      h[HP_DATA + count] = value;
+      count < 20 ? h[HP_SUM] = (h[HP_SUM] + (count + 1) * value) % 128;
+    );
+    h[HP_COUNT] = min(22, count + 1); consumed = 1;
+  ) : cc == 118 && value == 84 && h[HP_ACTIVE] > 0 ? (
+    h[HP_COUNT] == 21 ? (
+      h[HP_DATA + 20] == h[HP_SUM] ? hub_execute(h + HP_DATA, chan)
+      : hub_log(-1, 0, 0, -1, 2, -1, 0, 0, 0, chan);
+    ) : hub_log(-1, 0, 0, -1, 1, -1, 0, 0, 0, chan);
+    h[HP_ACTIVE] = 0; hub_pending_mask &= 65535 - (1 << chan); consumed = 1;
+  ) : h[HP_ACTIVE] > 0 && cc == 118 ? (
+    h[HP_ACTIVE] = 0; hub_log(-1, 0, 0, -1, 1, -1, 0, 0, 0, chan);
+  );
+  consumed;
+);
+
+function hub_expire_packets() local(ch h)
+(
+  ch = 0;
+  while(ch < 16) (
+    h = hub_packet_base + ch * HP_STRIDE;
+    h[HP_ACTIVE] > 0 ? (
+      h[HP_ACTIVE] = 0;
+      hub_log(-1, 0, 0, -1, 1, -1, 0, 0, 0, ch);
+    );
+    ch += 1;
+  );
+  hub_pending_mask = 0;
+);
+
+function hub_pre_voice(v) local(now remain rel)
+(
+  v[VC_HUB_ID] > 0 ? (
+    now = event_clock_samps - 1;
+    v[VC_HUB_FINISH] <= 0 ? (
+      remain = v[VC_HUB_END] - now;
+      rel = v[VC_HUB_RELEASE];
+      v[VC_HUB_BOUNDARY] == 1 ? (
+        remain <= rel ? (
+          // Scheduler clock for commands is the current sample, before increment.
+          event_clock_samps -= 1;
+          hub_request_finish(v, max(1, remain), 11);
+          event_clock_samps += 1;
+        );
+      ) : remain <= 0 ? (
+        event_clock_samps -= 1; hub_request_finish(v, rel, 11); event_clock_samps += 1;
+      );
+    );
+    // This seed is local to this semantic voice, never the global EEL generator.
+    hub_rng_on = 1; hub_rng = max(1, v[VC_HUB_RNG]);
+  );
+);
+
+function hub_read_loop(v sm phase) local(lo hi xf u b al ar)
+(
+  lo = v[VC_HUB_LOOPLO]; hi = v[VC_HUB_LOOPHI]; xf = v[VC_HUB_LOOPXF];
+  phase = hub_wrap_phase(phase, lo, hi, xf);
+  sample_frame2(sm[SM_PTR], sm[SM_NCH], phase);
+  phase >= hi - xf ? (
+    al = readL; ar = readR;
+    u = hub_smooth((phase - (hi - xf)) / max(1, xf));
+    b = lo + phase - (hi - xf);
+    sample_frame2(sm[SM_PTR], sm[SM_NCH], b);
+    // Complementary amplitude weights preserve coherent source level.
+    readL = lerp(al, readL, u); readR = lerp(ar, readR, u);
+  );
+  phase;
+);
+
+function hub_read_natural(sm phase) local(fade len ok)
+(
+  readL = 0; readR = 0; ok = 0;
+  phase >= 0 && phase < sm[SM_FRAMES] - 1 ? (
+    ok = sample_frame2(sm[SM_PTR], sm[SM_NCH], phase);
+    len = max(2, floor(sm[SM_ENDFADE] * auto_release_amt * sm[SM_SR] * 0.001));
+    len = min(len, max(2, floor(sm[SM_FRAMES] * 0.42)));
+    fade = hub_smooth((sm[SM_FRAMES] - 1 - phase) / len);
+    readL *= fade; readR *= fade;
+    fade <= 0.0003 ? ok = 0;
+  );
+  ok;
+);
+
+function hub_transition_mix(v sm left right) local(pos ppos nl nr dl dr valid wetok dryok weight scale)
+(
+  pos = v[VC_HUB_NEWPOS]; ppos = v[VC_HUB_NEWDRY];
+  v[VC_HUB_DESTLOOP] > 0 ? (
+    pos = hub_read_loop(v, sm, pos); wetok = 1;
+  ) : wetok = hub_read_natural(sm, pos);
+  nl = readL; nr = readR; dryok = 0;
+  pitch_parallel_active ? (
+    v[VC_HUB_DESTLOOP] > 0 ? (ppos = hub_read_loop(v, sm, ppos); dryok = 1;)
+    : dryok = hub_read_natural(sm, ppos);
+    nl = lerp(readL, nl, pitch_parallel_mix); nr = lerp(readR, nr, pitch_parallel_mix);
+  ) : v[VC_HUB_DESTLOOP] > 0 && ppos >= v[VC_HUB_LOOPHI] ? (
+    ppos = hub_wrap_phase(ppos, v[VC_HUB_LOOPLO], v[VC_HUB_LOOPHI], v[VC_HUB_LOOPXF]);
+  );
+  weight = lerp(v[VC_HUB_TFROM], v[VC_HUB_TTO], hub_smooth((v[VC_HUB_TLEN] - v[VC_HUB_TLEFT]) / max(1, v[VC_HUB_TLEN])));
+  v[VC_HUB_TWEIGHT] = weight;
+  // The old Granular source has its own 1.55 calibration in VC_BASE. Compensate
+  // only the new direct side until ownership and that calibration transfer.
+  scale = v[VC_MODE] == 3 ? 1 / 1.55 : 1;
+  hub_mix_l = lerp(left, nl * scale, weight); hub_mix_r = lerp(right, nr * scale, weight);
+  v[VC_HUB_NEWPOS] = pos + play_rate; v[VC_HUB_NEWDRY] = ppos + dry_play_rate;
+  v[VC_HUB_TLEFT] = max(0, v[VC_HUB_TLEFT] - 1);
+  wetok || dryok;
+);
+
+function hub_transition_commit(v)
+(
+  v[VC_HUB_TLEN] > 0 && v[VC_HUB_TLEFT] <= 0 ? (
+    v[VC_HUB_TTO] > 0 ? (
+      v[VC_POS] = v[VC_HUB_NEWPOS]; v[VC_PDRYPOS] = v[VC_HUB_NEWDRY];
+      v[VC_HUB_LOOP] = v[VC_HUB_DESTLOOP];
+      v[VC_GMODE] = 0; v[VC_GMIX] = 0; v[VC_TAILMIX] = 0; v[VC_CANSPAWN] = 0;
+      v[VC_MODE] == 3 ? (v[VC_MODE] = 0; v[VC_BASE] /= 1.55;);
+      memset(v + VC_GBASE, 0, NUM_GRAINS * VG_STRIDE);
+    );
+    v[VC_HUB_TLEN] = 0;
+  );
+);
+
+function hub_mod_weight(u shape action af rf len) local(peak x a r scale)
+(
+  peak = action == 2 ? lerp(0.40, 0.88, shape / 127) : lerp(0.18, 0.82, shape / 127);
+  a = af == 127 ? peak : af / 100;
+  r = rf == 127 ? 1 - peak : rf / 100;
+  a = max(1 / max(1, len), a); r = max(1 / max(1, len), r);
+  a + r > 1 ? (scale = 1 / (a + r); a *= scale; r *= scale;);
+  x = u < a ? u / a : u > 1 - r ? (1 - u) / r : 1;
+  x = sin(clamp01(x) * 1.570796326794897); x * x;
+);
+
+function hub_envelope(v base) local(now age dur value db curr next m u w goal offset repl index decay natural_base terminal)
+(
+  now = event_clock_samps - 1;
+  age = max(0, now - v[VC_HUB_START]); dur = max(1, v[VC_HUB_END] - v[VC_HUB_START]);
+  value = base;
+  v[VC_HUB_AUTH] == 2 ? (
+    value = v[VC_HUB_AMOUNT] * (hub_smooth(age / max(1, v[VC_HUB_ATTACK])) ^ lerp(0.65, 1.60, v[VC_HUB_SHAPE] / 127));
+    );
+  db = v[VC_HUB_AUTH] == 1 ? 6 * v[VC_HUB_AMOUNT] * hub_mod_weight(clamp01(age / dur), v[VC_HUB_SHAPE], 2, 127, 127, dur) : 0;
+  terminal = 1;
+  v[VC_HUB_FINISH] > 0 ? (
+    terminal = v[VC_HUB_FGAIN] * (1 - hub_smooth((now - v[VC_HUB_FSTART]) / max(1, v[VC_HUB_FLEN])));
+    value = v[VC_HUB_FLEVEL];
+  );
+  v[VC_HUB_TERMINAL] = terminal;
+  v[VC_HUB_BASEENV] = value;
+  natural_base = value;
+  curr = v[VC_HUB_MODHEAD];
+  while(curr > 0) (
+    index = curr - 1; m = hub_mod_base + index * HM_STRIDE; next = m[HM_NEXT];
+    u = (now - m[HM_START]) / max(1, m[HM_LEN]);
+    (m[HM_SERIAL] != v[VC_HUB_SERIAL] || (m[HM_STOP] <= 0 && u >= 1) || (m[HM_STOP] > 0 && now >= m[HM_STOPSTART] + m[HM_STOPLEN])) ? (
+      hub_remove_mod(index, m[HM_STOP] > 0 ? 13 : 11);
+    ) : (
+      w = hub_mod_weight(clamp01(u), m[HM_SHAPE], m[HM_ACTION], m[HM_ATTACK], m[HM_RELEASE], m[HM_LEN]);
+      m[HM_AUTH] == 2 ? (
+        goal = m[HM_ACTION] == 3 ? m[HM_FROM] * db2amp(-24 * m[HM_AMOUNT]) : m[HM_AMOUNT];
+        offset = m[HM_OFFSET] * (1 - hub_smooth((now - m[HM_START]) / max(1, min(0.003 * srate, m[HM_LEN] * 0.15))));
+        repl = (goal - natural_base) * w + offset;
+        m[HM_STOP] > 0 ? repl = m[HM_STOPVAL] * (1 - hub_smooth((now - m[HM_STOPSTART]) / max(1, m[HM_STOPLEN])));
+        value = natural_base + repl; m[HM_LAST] = repl;
+      ) : (
+        repl = (m[HM_ACTION] == 4 ? 0 : m[HM_ACTION] == 3 ? -24 : 6) * m[HM_AMOUNT] * w;
+        m[HM_STOP] > 0 ? repl = m[HM_STOPVAL] * (1 - hub_smooth((now - m[HM_STOPSTART]) / max(1, m[HM_STOPLEN])));
+        db += repl; m[HM_LAST] = repl;
+      );
+    );
+    curr = next;
+  );
+  v[VC_HUB_REPLVAL] = value;
+  value *= db2amp(clamp(db, -36, 12));
+  v[VC_HUB_FINISH] > 0 ? (
+    u = (now - v[VC_HUB_FSTART]) / max(1, v[VC_HUB_FLEN]);
+    // The finite terminal gate encloses all modifiers, including replacements.
+    // Accents can ride a release but cannot reopen its completed endpoint.
+    value *= terminal;
+    now - v[VC_HUB_FSTART] < v[VC_HUB_FBRIDGE] ? value = lerp(v[VC_HUB_FFROM], value, hub_smooth((now - v[VC_HUB_FSTART]) / max(1, v[VC_HUB_FBRIDGE])));
+    u >= 1 ? (value = 0; v[VC_ACTIVE] = 0; v[VC_STAGE] = ENV_OFF;)
+    : (
+      // The base AHDSR may already be silent. It cannot retire a running Hub
+      // terminal gate (including a replacement/ride over that base envelope).
+      v[VC_ACTIVE] = 1; v[VC_STAGE] = ENV_RELEASE;
+    );
+  );
+  // Continuation transfers the FINAL envelope. Blending before retained
+  // modifiers would count their gain twice at the ownership boundary.
+  v[VC_ACTIVE] > 0 && v[VC_HUB_HANDOFF] > 0 && age < v[VC_HUB_HANDOFF] ? value = lerp(v[VC_HUB_RAMPFROM], value, hub_smooth(age / v[VC_HUB_HANDOFF]));
+  v[VC_HUB_EFFECTIVE] = max(0, value);
+  max(0, value);
+);
+
+// Sample Hub v1.0: engine-owned execution log, read-only GFX presentation.
+// Integrate all functions below into @init AFTER ui_button/draw_center_buf.
+// GFX integration calls are documented in Hub_Log_GFX_v1.0.md.
+// Ring ABI: 100 rows x 12 doubles. See the companion integration document.
+// No DSP buffers, counters, parameters, or source ownership are mutated here.
+
+function hub_log_action_name(value)
+(
+  value == 0 ? sprintf(#hub_log_action, "Play") :
+  value == 1 ? sprintf(#hub_log_action, "Accent") :
+  value == 2 ? sprintf(#hub_log_action, "Swell") :
+  value == 3 ? sprintf(#hub_log_action, "Damp") :
+  value == 4 ? sprintf(#hub_log_action, "Choke") :
+  value == 5 ? sprintf(#hub_log_action, "Retrigger") :
+  value == 6 ? sprintf(#hub_log_action, "Continue") :
+  value == 7 ? sprintf(#hub_log_action, "End") :
+  sprintf(#hub_log_action, "Frame");
+);
+
+function hub_log_reason_name(value)
+(
+  value == 0 ? sprintf(#hub_log_reason, "OK") :
+  value == 1 ? sprintf(#hub_log_reason, "Malformed frame") :
+  value == 2 ? sprintf(#hub_log_reason, "Checksum mismatch") :
+  value == 3 ? sprintf(#hub_log_reason, "Unsupported protocol version") :
+  value == 4 ? sprintf(#hub_log_reason, "Invalid field") :
+  value == 5 ? sprintf(#hub_log_reason, "Event ID already live") :
+  value == 6 ? sprintf(#hub_log_reason, "Target is not live") :
+  value == 7 ? sprintf(#hub_log_reason, "Audio voice limit") :
+  value == 8 ? sprintf(#hub_log_reason, "Modifier limit") :
+  value == 9 ? sprintf(#hub_log_reason, "No playable bank") :
+  value == 10 ? sprintf(#hub_log_reason, "No usable body: natural playback") :
+  value == 11 ? sprintf(#hub_log_reason, "Planned deadline") :
+  value == 12 ? sprintf(#hub_log_reason, "Source reached its end") :
+  value == 13 ? sprintf(#hub_log_reason, "Authored End") :
+  value == 14 ? sprintf(#hub_log_reason, "Target choked") :
+  value == 15 ? sprintf(#hub_log_reason, "Transport reset") :
+  value == 16 ? sprintf(#hub_log_reason, "Ownership transferred") :
+  value == 17 ? sprintf(#hub_log_reason, "Frame spans sample offsets") :
+  value == 18 ? sprintf(#hub_log_reason, "Bank changed") :
+  sprintf(#hub_log_reason, "Reason %d", value);
+);
+
+function hub_log_result_name(value)
+(
+  value == 1 ? sprintf(#hub_log_result, "ACCEPTED") :
+  value == 0 ? sprintf(#hub_log_result, "ENDED") :
+  value == 2 ? sprintf(#hub_log_result, "FALLBACK") :
+  sprintf(#hub_log_result, "REJECTED");
+);
+
+function hub_log_boundary_name(value)
+(
+  value == 1 ? sprintf(#hub_log_boundary, "Fit") :
+  value == 2 ? sprintf(#hub_log_boundary, "Tail") :
+  sprintf(#hub_log_boundary, "Free");
+);
+
+function hub_log_fill_name(value)
+(
+  value == 1 ? sprintf(#hub_log_fill, "Auto") :
+  value == 2 ? sprintf(#hub_log_fill, "Loop") :
+  sprintf(#hub_log_fill, "Natural");
+);
+
+// Use an explicit text-width bound without reducing the 14px minimum font.
+// The unshortened reason remains available as a tooltip on every row.
+function hub_log_text(x y width) local(tw th n)
+(
+  gfx_measurestr(#hub_log_text, tw, th);
+  n = strlen(#hub_log_text);
+  sprintf(#hub_log_clip, "");
+  while (tw > width && n > 1) (
+    n -= 1;
+    strncpy(#hub_log_clip, #hub_log_text, n);
+    strcat(#hub_log_clip, "...");
+    gfx_measurestr(#hub_log_clip, tw, th);
+  );
+  gfx_x = x; gfx_y = y;
+  n < strlen(#hub_log_text) ? gfx_drawstr(#hub_log_clip) : gfx_drawstr(#hub_log_text);
+);
+
+function hub_log_header() local(x y w h)
+(
+  w = 100; h = 30;
+  x = max(450, gfx_w - 352); y = 24;
+  ui_tab_button(1700, x, y, w, h, hub_ui_open) ? (
+    hub_ui_open = !hub_ui_open;
+    // A previous drag must not remain captured beneath the diagnostic panel.
+    ui_active = -1;
+  );
+  gfx_setfont(1, "Arial", 14, 0);
+  gfx_r = 0.88; gfx_g = 0.95; gfx_b = 1; gfx_a = 1;
+  sprintf(#ui_buf, "MIDI LOG"); draw_center_buf(x, y + 7, w);
+  ui_hover_id == 1700 ? (
+    sprintf(#tip_title, "Sample execution log");
+    sprintf(#tip_body, "Open the last 100 MIDI Hub results from this Sample instance.");
+  );
+);
+
+function hub_log_draw() local(
+  x y w h top rowh rows count maxscroll scroll step
+  i slot p yy seq result narrow infoheight bottom labelw
+)
+(
+  x = 10; y = 104; w = max(1, gfx_w - 20); h = max(1, gfx_h - 116);
+  ui_panel(x, y, w, h);
+  gfx_setfont(1, "Arial", 19, 0);
+  gfx_r = 0.91; gfx_g = 0.97; gfx_b = 1; gfx_a = 1;
+  sprintf(#hub_log_text, "MIDI Hub / Sample execution");
+  hub_log_text(x + 18, y + 16, max(1, w - 230));
+
+  ui_button(1701, x + w - 104, y + 12, 86, 30) ? (
+    hub_ui_open = 0; ui_active = -1;
+  );
+  gfx_setfont(1, "Arial", 14, 0);
+  gfx_r = 0.9; gfx_g = 0.95; gfx_b = 1; gfx_a = 1;
+  sprintf(#ui_buf, "CLOSE"); draw_center_buf(x + w - 104, y + 20, 86);
+  ui_button(1702, x + w - 198, y + 12, 86, 30) ? hub_ui_anchor = 0;
+  gfx_r = 0.9; gfx_g = 0.95; gfx_b = 1; gfx_a = 1;
+  sprintf(#ui_buf, "LATEST"); draw_center_buf(x + w - 198, y + 20, 86);
+
+  count = clamp(hub_log_count | 0, 0, 100);
+  narrow = w < 940;
+  rowh = narrow ? 79 : 61;
+  infoheight = narrow ? 59 : 39;
+  top = y + 54 + infoheight;
+  bottom = y + h - 36;
+  rows = max(0, floor((bottom - top) / rowh));
+  maxscroll = max(0, count - rows);
+  // Zero anchor follows newest. A nonzero serial anchors the history even
+  // while new DSP records arrive. Only explicit UI input changes the anchor.
+  scroll = hub_ui_anchor > 0 ? clamp(hub_log_serial - hub_ui_anchor, 0, maxscroll) : 0;
+
+  pt_in(x + 10, top, w - 20, max(0, bottom - top)) && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    step = max(1, floor(abs(ui_wheel) / 120 + 0.5));
+    scroll = clamp(scroll + (ui_wheel > 0 ? -step : step) * 3, 0, maxscroll);
+    hub_ui_anchor = scroll > 0 ? hub_log_serial - scroll : 0;
+    ui_wheel_used = 1;
+  );
+  mouse_rpressed && pt_in(x + 10, top, w - 20, max(0, bottom - top)) ? (
+    hub_ui_anchor = 0; scroll = 0;
+  );
+
+  gfx_setfont(1, "Arial", 14, 0);
+  gfx_r = 0.68; gfx_g = 0.80; gfx_b = 0.90; gfx_a = 1;
+  sprintf(#hub_log_text, "Executed here: %d accepted | %d rejected | %d retained of 100", hub_log_accepted, hub_log_rejected, count);
+  hub_log_text(x + 18, y + 54, w - 36);
+  sprintf(#hub_log_text, "Newest first. Time is engine time since reset. The Lua Hub logs authoring separately.");
+  hub_log_text(x + 18, y + 74, w - 36);
+  narrow ? (
+    sprintf(#hub_log_text, "Wheel: history. Right-click or LATEST: follow new events.");
+    hub_log_text(x + 18, y + 94, w - 36);
+  );
+
+  count == 0 ? (
+    gfx_setfont(1, "Arial", 16, 0);
+    gfx_r = 0.79; gfx_g = 0.88; gfx_b = 0.96; gfx_a = 1;
+    sprintf(#hub_log_text, "No Hub command has executed in this Sample instance.");
+    hub_log_text(x + 18, top + 20, w - 36);
+    gfx_setfont(1, "Arial", 14, 0);
+    sprintf(#hub_log_text, "Play an item authored by Sample MIDI Hub. Regular MIDI notes are not added to this log.");
+    hub_log_text(x + 18, top + 46, w - 36);
+  );
+
+  i = 0;
+  while (i < rows && i + scroll < count) (
+    slot = (hub_log_head - 1 - scroll - i + 200) % 100;
+    p = hub_log_base + slot * 12;
+    yy = top + i * rowh;
+    seq = p[0]; result = p[5];
+    gfx_r = i % 2 ? 0.035 : 0.045;
+    gfx_g = i % 2 ? 0.049 : 0.062;
+    gfx_b = i % 2 ? 0.066 : 0.081; gfx_a = 1;
+    gfx_rect(x + 10, yy, w - 20, rowh - 3, 1);
+    hub_log_action_name(p[2]); hub_log_result_name(result);
+    hub_log_reason_name(p[6]);
+    hub_log_boundary_name(p[9]); hub_log_fill_name(p[10]);
+
+    gfx_setfont(1, "Arial", 15, 0);
+    gfx_r = result < 0 ? 1 : (result == 2 ? 1 : 0.68);
+    gfx_g = result < 0 ? 0.55 : (result == 2 ? 0.82 : 0.96);
+    gfx_b = result < 0 ? 0.47 : (result == 2 ? 0.42 : 0.84); gfx_a = 1;
+    labelw = narrow ? min(120, w * 0.22) : 140;
+    sprintf(#hub_log_text, "%s", #hub_log_result);
+    hub_log_text(x + w - labelw - 18, yy + 6, labelw);
+    gfx_r = 0.90; gfx_g = 0.94; gfx_b = 0.99; gfx_a = 1;
+    sprintf(#hub_log_text, "#%d  %.3fs   %s   ID %d / target %d", seq, p[1], #hub_log_action, p[3], p[4]);
+    hub_log_text(x + 18, yy + 6, max(1, w - labelw - 55));
+
+    gfx_setfont(1, "Arial", 14, 0);
+    gfx_r = 0.72; gfx_g = 0.82; gfx_b = 0.92; gfx_a = 1;
+    p[7] >= 0 ? sprintf(#hub_log_source, "Source %d", p[7] + 1) : sprintf(#hub_log_source, "Source --");
+    narrow ? (
+      sprintf(#hub_log_text, "%s | planned %.3fs | %s / %s | Ch %d", #hub_log_source, p[8], #hub_log_boundary, #hub_log_fill, p[11] + 1);
+      hub_log_text(x + 18, yy + 28, w - 36);
+      sprintf(#hub_log_text, "%s", #hub_log_reason);
+      hub_log_text(x + 18, yy + 49, w - 36);
+    ) : (
+      sprintf(#hub_log_text, "%s | planned %.3fs | %s / %s | Ch %d | %s", #hub_log_source, p[8], #hub_log_boundary, #hub_log_fill, p[11] + 1, #hub_log_reason);
+      hub_log_text(x + 18, yy + 29, w - 36);
+    );
+
+    pt_in(x + 10, yy, w - 20, rowh - 3) ? (
+      // One bounded shared hover ID; existing sample-map hover IDs are >=5000.
+      ui_hover_id = 1703;
+      sprintf(#tip_title, "%s / ID %d / target %d / %s", #hub_log_action, p[3], p[4], #hub_log_result);
+      sprintf(#tip_body, "%s | %s | planned %.3fs | channel %d", #hub_log_reason, #hub_log_source, p[8], p[11] + 1);
+    );
+    i += 1;
+  );
+
+  gfx_setfont(1, "Arial", 14, 0);
+  gfx_r = 0.67; gfx_g = 0.78; gfx_b = 0.88; gfx_a = 1;
+  count > 0 ? sprintf(#hub_log_text, "Showing %d-%d of %d | %s", min(count, scroll + 1), min(count, scroll + rows), count, hub_ui_anchor > 0 ? "History" : "Following latest")
+  : sprintf(#hub_log_text, "0 records | Following latest");
+  hub_log_text(x + 18, y + h - 26, w - 36);
+
+  ui_hover_id == 1701 ? (
+    sprintf(#tip_title, "Close MIDI log");
+    sprintf(#tip_body, "Return to Sample controls. Logging continues while this panel is closed.");
+  );
+  ui_hover_id == 1702 ? (
+    sprintf(#tip_title, "Follow latest");
+    sprintf(#tip_body, "Return to the newest engine record. The audio-owned log is never cleared from GFX.");
+  );
+);
+
 // Sample metadata is capacity-driven. The old fixed 64-sample bank cap
 // made large multi-select banks appear loaded while only a small prefix was in
 // memory. Grow the pool to the selected-file count for normal banks.
+hub_ui_open = 0; hub_ui_anchor = 0;
 SAMPLE_POOL_MIN = 64;
 SAMPLE_POOL_HARD_MAX = 16384;
 MAX_SAMPLES = SAMPLE_POOL_HARD_MAX;
@@ -8238,7 +9125,11 @@ FLOW_IN      = 5;
 FLOW_WEIGHTS = 2 * FLOW_FEATS * FLOW_IN;
 SM_CLASSIC_ATTACK = SM_FLOWBASE + 2 * FLOW_BINS * FLOW_FEATS;
 SM_GAUSS_ATTACK = SM_CLASSIC_ATTACK + 1;
-SM_STRIDE = SM_GAUSS_ATTACK + 1;
+SM_HUB_LOOPLO = SM_GAUSS_ATTACK + 1;
+SM_HUB_LOOPHI = SM_HUB_LOOPLO + 1;
+SM_HUB_LOOPXF = SM_HUB_LOOPLO + 2;
+SM_HUB_LOOPQUALITY = SM_HUB_LOOPLO + 3;
+SM_STRIDE = SM_HUB_LOOPQUALITY + 1;
 
 VC_ACTIVE    = 0;
 VC_NOTE      = 1;
@@ -8361,7 +9252,73 @@ GC_REGION_BODY = 0;
 GC_REGION_TAIL = 1;
 GC_REGION_ATTACK = 2;
 
-VC_STRIDE    = VC_GBASE + NUM_GRAINS * VG_STRIDE;
+VC_HUB_BASE = VC_GBASE + NUM_GRAINS * VG_STRIDE;
+VC_HUB_ID = VC_HUB_BASE + 0;
+VC_HUB_SERIAL = VC_HUB_BASE + 1;
+VC_HUB_ACTION = VC_HUB_BASE + 2;
+VC_HUB_START = VC_HUB_BASE + 3;
+VC_HUB_END = VC_HUB_BASE + 4;
+VC_HUB_BOUNDARY = VC_HUB_BASE + 5;
+VC_HUB_FILL = VC_HUB_BASE + 6;
+VC_HUB_AUTH = VC_HUB_BASE + 7;
+VC_HUB_AMOUNT = VC_HUB_BASE + 8;
+VC_HUB_SHAPE = VC_HUB_BASE + 9;
+VC_HUB_ATTACK = VC_HUB_BASE + 10;
+VC_HUB_RELEASE = VC_HUB_BASE + 11;
+VC_HUB_FINISH = VC_HUB_BASE + 12;
+VC_HUB_FSTART = VC_HUB_BASE + 13;
+VC_HUB_FLEN = VC_HUB_BASE + 14;
+VC_HUB_FLEVEL = VC_HUB_BASE + 15;
+VC_HUB_EFFECTIVE = VC_HUB_BASE + 16;
+VC_HUB_REPLVAL = VC_HUB_BASE + 17;
+VC_HUB_RAMPFROM = VC_HUB_BASE + 18;
+VC_HUB_HANDOFF = VC_HUB_BASE + 19;
+VC_HUB_LOOP = VC_HUB_BASE + 20;
+VC_HUB_LOOPLO = VC_HUB_BASE + 21;
+VC_HUB_LOOPHI = VC_HUB_BASE + 22;
+VC_HUB_LOOPXF = VC_HUB_BASE + 23;
+VC_HUB_RNG = VC_HUB_BASE + 24;
+VC_HUB_MODHEAD = VC_HUB_BASE + 25;
+VC_HUB_REPLACE = VC_HUB_BASE + 26;
+VC_HUB_BASEENV = VC_HUB_BASE + 27;
+VC_HUB_TERMINAL = VC_HUB_BASE + 28;
+VC_HUB_FGAIN = VC_HUB_BASE + 29;
+VC_HUB_FFROM = VC_HUB_BASE + 30;
+VC_HUB_FBRIDGE = VC_HUB_BASE + 31;
+VC_HUB_DESTLOOP = VC_HUB_BASE + 32;
+VC_HUB_NEWPOS = VC_HUB_BASE + 33;
+VC_HUB_NEWDRY = VC_HUB_BASE + 34;
+VC_HUB_TLEN = VC_HUB_BASE + 35;
+VC_HUB_TLEFT = VC_HUB_BASE + 36;
+VC_HUB_TFROM = VC_HUB_BASE + 37;
+VC_HUB_TTO = VC_HUB_BASE + 38;
+VC_HUB_TWEIGHT = VC_HUB_BASE + 39;
+VC_STRIDE = VC_HUB_BASE + 40;
+HM_ACTIVE = 0;
+HM_ID = 1;
+HM_TARGET = 2;
+HM_VOICE = 3;
+HM_SERIAL = 4;
+HM_NEXT = 5;
+HM_ACTION = 6;
+HM_AUTH = 7;
+HM_AMOUNT = 8;
+HM_SHAPE = 9;
+HM_START = 10;
+HM_LEN = 11;
+HM_CHAN = 12;
+HM_FROM = 13;
+HM_OFFSET = 14;
+HM_STOP = 15;
+HM_STOPSTART = 16;
+HM_STOPVAL = 17;
+HM_STOPLEN = 18;
+HM_LAST = 19;
+HM_ATTACK = 20;
+HM_RELEASE = 21;
+HM_STRIDE = 22; HUB_MOD_CAP = 64;
+HP_ACTIVE = 0; HP_COUNT = 1; HP_SUM = 2; HP_TIME = 3; HP_DATA = 4; HP_STRIDE = 25;
+
 
 ENV_OFF     = 0;
 ENV_ATTACK  = 1;
@@ -8449,7 +9406,10 @@ DYNX_HIST_BINS = 80;
 DECRUST_FFT = 512;
 DECRUST_HOP = 128;
 DECRUST_LATENCY = 520; // 512 FFT + 2 curvature + 6 pad; exact at 1/2/4/8x
-pdc_delay = DECRUST_LATENCY;
+dc_latency_active = slider52 > 0.0001 ? 1 : 0;
+pdc_delay = dc_latency_active ? DECRUST_LATENCY : 0;
+dc_switch_gain = 1; dc_switch_target = 1; dc_output_warm_left = 0;
+dc_switch_step = 1 / max(32, floor(0.003 * srate));
 pdc_bot_ch = 0; pdc_top_ch = 2;
 DECRUST_RING = 2048;
 DECRUST_RINGMASK = 2047;
@@ -8822,6 +9782,9 @@ posteq_spec_rel_coeff = 0.02;
 posteq_spec_stride = POSTEQ_SPEC_STRIDE;
 posteq_spec_tick = 0;
 posteq_spec_do = 0;
+posteq_analyzer_active = 0;
+posteq_analyzer_coeff_srate = -1; posteq_analyzer_coeff_base = -1;
+posteq_gfx_heartbeat = 0; posteq_gfx_seen = 0; posteq_gfx_hold = 0;
 posteq_hpf_res_db = 0;
 posteq_lpf_res_db = 0;
 posteq_solo_target = 0;
@@ -8979,6 +9942,7 @@ clean_decrust_amt = clamp01(slider52);
 (clean_decrust_amt > 0.0001 && clean_decrust_active_prev <= 0 && dc_enable_mix <= 0) ? dc_warm_left = DECRUST_LATENCY + DECRUST_FFT;
 decrust_update_params();
 clean_decrust_active_prev = clean_decrust_amt > 0.0001 ? 1 : 0;
+decrust_sync_latency();
 room_amt = clamp01(slider26);
 space_room_amt = clamp01(slider53);
 space_room_char = clamp01(slider54);
@@ -9277,6 +10241,24 @@ onset_mode_active = onset_mode_target;
 );
 
 @block
+// Native wrapper publishes actual GFX visibility, also off during offline
+// rendering. Stock REAPER JSFX uses a bounded @gfx heartbeat fallback.
+host_gfx_bound ? (
+  posteq_analyzer_requested = host_gfx_active > 0;
+) : (
+  posteq_gfx_heartbeat != posteq_gfx_seen ? (
+    posteq_gfx_seen = posteq_gfx_heartbeat;
+    posteq_gfx_hold = max(1, floor(0.20 * srate));
+  ) : posteq_gfx_hold = max(0, posteq_gfx_hold - samplesblock);
+  posteq_analyzer_requested = posteq_gfx_hold > 0;
+);
+posteq_analyzer_requested != posteq_analyzer_active ? (
+  posteq_zero_pre_spectrum(); posteq_zero_post_spectrum();
+  posteq_pre_silent = 0; posteq_post_silent = 0;
+  posteq_analyzer_active = posteq_analyzer_requested;
+);
+posteq_analyzer_active ? posteq_update_analyzer_coeffs();
+decrust_sync_latency();
 midi_queue_count = 0; midi_queue_read = 0; block_sample_index = 0; midi_queue_overflow = 0;
 
 // Transport panic/seek reconciliation. REAPER does not guarantee MIDI note-offs
@@ -9345,29 +10327,23 @@ rescan_pending && !voices_busy() ? (
 );
 
 while (midirecv(offset, msg1, msg23)) (
-  status = msg1 & 240;
-  note = msg23 & 127;
-  bank_loaded && (status == 144 || status == 128 || (status == 176 && (note == 120 || note == 123))) ? (
-    !midi_queue_overflow ? (
-      midi_queue_count < MIDI_QUEUE_CAP ? (
-        // Stable insertion also handles hosts that deliver unsorted offsets.
-        qoff = clamp(floor(offset), 0, max(0, samplesblock - 1));
-        qi = midi_queue_count;
-        while (qi > 0 && midi_queue_base[(qi - 1) * 3] > qoff) (
-          memcpy(midi_queue_base + qi * 3, midi_queue_base + (qi - 1) * 3, 3);
-          qi -= 1;
-        );
-        qb = midi_queue_base + qi * 3;
-        qb[0] = qoff; qb[1] = msg1; qb[2] = msg23;
-        midi_queue_count += 1;
-      ) : (
-        release_all_voices_transport(1);
-        midi_queue_overflow = 1;
-        midi_queue_overflow_count += 1;
+  !midi_queue_overflow ? (
+    midi_queue_count < MIDI_QUEUE_CAP ? (
+      qoff = clamp(floor(offset), 0, max(0, samplesblock - 1));
+      qi = midi_queue_count;
+      while (qi > 0 && midi_queue_base[(qi - 1) * 3] > qoff) (
+        memcpy(midi_queue_base + qi * 3, midi_queue_base + (qi - 1) * 3, 3);
+        qi -= 1;
       );
+      qb = midi_queue_base + qi * 3;
+      qb[0] = qoff; qb[1] = msg1; qb[2] = msg23;
+      midi_queue_count += 1;
+    ) : (
+      release_all_voices_transport(1);
+      midi_queue_overflow = 1;
+      midi_queue_overflow_count += 1;
     );
-    status == 176 ? midisend(offset, msg1, msg23);
-  ) : midisend(offset, msg1, msg23);
+  );
 );
 
 @sample
@@ -9376,7 +10352,17 @@ while (midi_queue_read < midi_queue_count && midi_queue_base[midi_queue_read * 3
   msg1 = qb[1]; msg23 = qb[2];
   status = msg1 & 240; chan = msg1 & 15;
   note = msg23 & 127; vel = (msg23 / 256) & 127;
-  status == 176 ? release_channel_voices(chan, note == 120) : (
+  status == 176 ? (
+    (note == 118 || note == 119) ? (
+      !hub_cc(chan, note, vel) ? midisend(qb[0], msg1, msg23);
+    ) : (
+      (note == 120 || note == 123) ? (
+        release_channel_voices(chan, note == 120);
+        hub_channel_end(chan, note == 120);
+      );
+      midisend(qb[0], msg1, msg23);
+    );
+  ) : bank_loaded && (status == 144 || status == 128) ? (
     (status == 144 && vel > 0) ? (
       note_gate_on(note, chan);
       auto_smooth_prepare_note_on(event_clock_samps);
@@ -9386,9 +10372,10 @@ while (midi_queue_read < midi_queue_count && midi_queue_base[midi_queue_read * 3
       note_gate_off(note, chan);
       release_voice(note, chan);
     );
-  );
+  ) : midisend(qb[0], msg1, msg23);
   midi_queue_read += 1;
 );
+hub_pending_mask > 0 ? hub_expire_packets();
 block_sample_index += 1;
 event_clock_samps += 1;
 dry_in_l = spl0;
@@ -9427,6 +10414,7 @@ while (i < MAX_VOICES) (
 
   v[VC_ACTIVE] > 0 ? (
     active_voice_seen = 1;
+    hub_pre_voice(v);
     sid = v[VC_SAMPLE] | 0;
     sm  = sample_meta_base + sid * SM_STRIDE;
     frames = sm[SM_FRAMES] | 0;
@@ -9449,8 +10437,8 @@ while (i < MAX_VOICES) (
       gphase = v[VC_GPHASE] + 1 / max(1, v[VC_GLEN]);
       gphase >= 1 ? (
         gphase -= floor(gphase);
-        v[VC_GLEN] = max(64, floor(srate * lerp(0.24, 1.35, rand(1)) * lerp(0.82, 1.18, stretch_norm) * (granular_voice ? lerp(1.0, 2.75, granular_event_stretch) : 1)));
-        v[VC_GACCENT] = rand(1);
+        v[VC_GLEN] = max(64, floor(srate * lerp(0.24, 1.35, hub_random(1)) * lerp(0.82, 1.18, stretch_norm) * (granular_voice ? lerp(1.0, 2.75, granular_event_stretch) : 1)));
+        v[VC_GACCENT] = hub_random(1);
       );
       v[VC_GPHASE] = gphase;
       gesture_arc = sin(gphase * 3.141592653589793);
@@ -9497,14 +10485,23 @@ while (i < MAX_VOICES) (
     endfade_src = max(2, floor(sm[SM_ENDFADE] * auto_release_amt * sm[SM_SR] * 0.001));
     endfade_src = min(endfade_src, max(2, floor(frames * 0.42)));
 
-    (pos >= 0 && pos < frames - 1) ? (
+    v[VC_HUB_LOOP] > 0 ? (
+      pos = hub_read_loop(v, sm, pos); rawL = readL; rawR = readR;
+      got_raw = 1; direct_alive = 1;
+      // Advance/normalize the dry cursor even while fully wet.
+      ppos = hub_wrap_phase(ppos, v[VC_HUB_LOOPLO], v[VC_HUB_LOOPHI], v[VC_HUB_LOOPXF]);
+      pitch_parallel_active ? (
+        ppos = hub_read_loop(v, sm, ppos);
+        pitchDryRawL = readL; pitchDryRawR = readR; got_pitch_dry_raw = 1;
+      );
+    ) : (pos >= 0 && pos < frames - 1) ? (
       got_raw = sample_frame2(ptr, nch, pos);
       source_end_fade = clamp01((frames - 1 - pos) / endfade_src);
       source_end_fade = source_end_fade * source_end_fade * (3 - 2 * source_end_fade);
       rawL = readL * source_end_fade; rawR = readR * source_end_fade;
       direct_alive = got_raw && source_end_fade > 0.0003;
     );
-    pitch_parallel_active && ppos >= 0 && ppos < frames - 1 ? (
+    v[VC_HUB_LOOP] <= 0 && pitch_parallel_active && ppos >= 0 && ppos < frames - 1 ? (
       got_pitch_dry_raw = sample_frame2(ptr, nch, ppos);
       pdry_end_fade = clamp01((frames - 1 - ppos) / endfade_src);
       pdry_end_fade = pdry_end_fade * pdry_end_fade * (3 - 2 * pdry_end_fade);
@@ -9518,8 +10515,8 @@ while (i < MAX_VOICES) (
       play_rate = lerp(play_rate, v[VC_ATKRATE], holdn * v[VC_TPROT]);
       dry_play_rate = lerp(dry_play_rate, v[VC_RAWRATE] / max(0.000001, v[VC_PRATIO]), holdn * v[VC_TPROT]);
     );
-    v[VC_POS] = min(frames, pos + play_rate);
-    v[VC_PDRYPOS] = min(frames, ppos + dry_play_rate);
+    v[VC_POS] = v[VC_HUB_LOOP] > 0 ? pos + play_rate : min(frames, pos + play_rate);
+    v[VC_PDRYPOS] = v[VC_HUB_LOOP] > 0 ? ppos + dry_play_rate : min(frames, ppos + dry_play_rate);
     granular_voice ? (
       got_raw = 0; got_pitch_dry_raw = 0;
       rawL = 0; rawR = 0;
@@ -9631,9 +10628,9 @@ while (i < MAX_VOICES) (
                 );
               );
 
-              use_alt = (alt_pen + 0.12 < self_pen) || (rand(1) < donor_blend * (0.42 + 0.14 * clamp01(self_pen * 0.30) + 0.12 * source_exhausted));
+              use_alt = (alt_pen + 0.12 < self_pen) || (hub_random(1) < donor_blend * (0.42 + 0.14 * clamp01(self_pen * 0.30) + 0.12 * source_exhausted));
               granular_voice ? (
-                use_alt = use_alt && (source_exhausted || self_pen > 2.90 || rand(1) < donor_blend * (0.16 + 0.14 * slider9));
+                use_alt = use_alt && (source_exhausted || self_pen > 2.90 || hub_random(1) < donor_blend * (0.16 + 0.14 * slider9));
               );
             ) : (
               use_alt = 0;
@@ -9649,7 +10646,7 @@ while (i < MAX_VOICES) (
               ghist_lo = alt_lo;
               ghist_hi = alt_hi;
               v[VC_DONOR] = alt_sid;
-              v[VC_DONORPOS] = min(max(alt_lo, alt_pos + hop * abs(grate) * (0.78 + 0.44 * rand(1))), max(alt_lo, alt_hi - 1));
+              v[VC_DONORPOS] = min(max(alt_lo, alt_pos + hop * abs(grate) * (0.78 + 0.44 * hub_random(1))), max(alt_lo, alt_hi - 1));
             ) : (
               gsid = sid;
               gsm = sm;
@@ -9660,7 +10657,7 @@ while (i < MAX_VOICES) (
               ghist_lo = self_lo;
               ghist_hi = self_hi;
               v[VC_DONOR] = sid;
-              v[VC_DONORPOS] = min(max(self_lo, self_pos + hop * abs(grate) * (0.72 + 0.36 * rand(1))), max(self_lo, self_hi - 1));
+              v[VC_DONORPOS] = min(max(self_lo, self_pos + hop * abs(grate) * (0.72 + 0.36 * hub_random(1))), max(self_lo, self_hi - 1));
             );
           ) : (
             grow_lo = body_start;
@@ -9673,7 +10670,7 @@ while (i < MAX_VOICES) (
               // second hit after a short one-shot has already finished.
               grow_cursor = clamp(v[VC_NEXTSRC], grow_lo, max(grow_lo, grow_hi - 1));
               grow_phase01 = clamp01((grow_cursor - grow_lo) / max(1, grow_span - 1));
-              advance = v[VC_SRCHOP] * (0.72 + 0.22 * rand(1));
+              advance = v[VC_SRCHOP] * (0.72 + 0.22 * hub_random(1));
               nextsrc = grow_cursor + advance;
               wrapped = nextsrc >= grow_hi;
               wrapped ? (
@@ -9684,7 +10681,7 @@ while (i < MAX_VOICES) (
               source_exhausted = 0;
 
               release_jitter = min(max(2, floor(v[VC_GSIZE] * 0.08)), max(2, floor(grow_span * 0.10)));
-              self_pos = clamp(grow_cursor + (rand(1) - 0.5) * release_jitter, grow_lo, max(grow_lo, grow_hi - 1));
+              self_pos = clamp(grow_cursor + (hub_random(1) - 0.5) * release_jitter, grow_lo, max(grow_lo, grow_hi - 1));
               self_pen = 0;
             ) : (
               grow_cursor = wrap_in_range(v[VC_NEXTSRC], grow_lo, grow_hi);
@@ -9703,7 +10700,7 @@ while (i < MAX_VOICES) (
                   grow_phase_pick = phase_lerp_region(grow_phase_pick, cont_phase, cont_strength * 0.55, 0);
                 );
               );
-              advance = v[VC_SRCHOP] * (0.80 + 0.65 * rand(1));
+              advance = v[VC_SRCHOP] * (0.80 + 0.65 * hub_random(1));
               nextsrc = grow_cursor + advance;
               wrapped = nextsrc >= grow_hi;
               granular_voice && wrapped ? (
@@ -9718,7 +10715,7 @@ while (i < MAX_VOICES) (
                 granular_voice ? (
                   nextsrc = max(grow_lo, grow_hi - 1);
                 ) : (
-                  nextsrc = wrap_in_range(nextsrc + (rand(1) - 0.5) * grow_span * 0.30, grow_lo, grow_hi);
+                  nextsrc = wrap_in_range(nextsrc + (hub_random(1) - 0.5) * grow_span * 0.30, grow_lo, grow_hi);
                 );
               );
               v[VC_NEXTSRC] = nextsrc;
@@ -9736,7 +10733,7 @@ while (i < MAX_VOICES) (
                 wrapped
                 || (self_pen > (3.15 + 0.65 * (1 - v[VC_TAILMIX])))
                 || (grow_span < max(64, floor(v[VC_GSIZE] * 0.55)))
-                || (source_exhausted && self_pen > 2.10 && rand(1) < (0.06 + 0.28 * v[VC_TAILMIX]))
+                || (source_exhausted && self_pen > 2.10 && hub_random(1) < (0.06 + 0.28 * v[VC_TAILMIX]))
               );
             );
             alt_sid = sid;
@@ -9772,13 +10769,13 @@ while (i < MAX_VOICES) (
               );
             );
 
-            use_alt = (!hybrid_body_release) && (alt_sid != sid) && (source_exhausted || (alt_pen + 0.18 < self_pen) || (wrapped && rand(1) < 0.65));
+            use_alt = (!hybrid_body_release) && (alt_sid != sid) && (source_exhausted || (alt_pen + 0.18 < self_pen) || (wrapped && hub_random(1) < 0.65));
             granular_voice ? (
               use_alt = (!hybrid_body_release) && (alt_sid != sid) && (
-                (wrapped && rand(1) < (0.72 + 0.20 * slider9))
+                (wrapped && hub_random(1) < (0.72 + 0.20 * slider9))
                 || ((self_pen > 2.85) && (alt_pen + 0.58 < self_pen))
-                || (source_exhausted && alt_pen + 0.24 < self_pen && rand(1) < (0.10 + 0.40 * v[VC_TAILMIX]))
-                || (rand(1) < v[VC_TAILMIX] * slider9 * 0.055 && alt_pen + 0.28 < self_pen)
+                || (source_exhausted && alt_pen + 0.24 < self_pen && hub_random(1) < (0.10 + 0.40 * v[VC_TAILMIX]))
+                || (hub_random(1) < v[VC_TAILMIX] * slider9 * 0.055 && alt_pen + 0.28 < self_pen)
               );
             );
             use_alt ? (
@@ -9811,7 +10808,7 @@ while (i < MAX_VOICES) (
               follow_sid = v[VC_LGSID] | 0;
               follow_can_reuse = (follow_sid >= 0 && follow_sid < sample_count && (v[VC_LGRUN] < follow_limit || gsid == follow_sid)) ? 1 : 0;
 
-              follow_can_reuse && rand(1) < follow_strength ? (
+              follow_can_reuse && hub_random(1) < follow_strength ? (
                 follow_lo = grain_region_lo(follow_sid, cur_region_mode);
                 follow_hi = grain_region_hi(follow_sid, cur_region_mode);
                 follow_span = max(1, follow_hi - follow_lo);
@@ -9852,7 +10849,7 @@ while (i < MAX_VOICES) (
             // fill overlap, spice grains are rare accents controlled by Lively/Spice.
             role_cycle = (v[VC_LGRUN] + spawn_guard) % 5;
             corpus_pick_role = (role_cycle == 1 || role_cycle == 3) ? 1 : 0;
-            (slider9 > 0.58 && v[VC_TAILMIX] > 0.18 && rand(1) < (0.010 + 0.060 * slider9 * v[VC_TAILMIX] * (0.35 + 0.65 * gesture_arc))) ? corpus_pick_role = 2;
+            (slider9 > 0.58 && v[VC_TAILMIX] > 0.18 && hub_random(1) < (0.010 + 0.060 * slider9 * v[VC_TAILMIX] * (0.35 + 0.65 * gesture_arc))) ? corpus_pick_role = 2;
             corpus_pick_grain(i, v, corpus_want_region, gsid, gsrc, ghist_lo, ghist_hi, gsize, slider9, truth_mix, v[VC_TAILMIX], stage);
             corpus_best_idx >= 0 && corpus_best_sid >= 0 && corpus_best_sid < sample_count ? (
               prev_pick_sid = gsid;
@@ -9942,10 +10939,10 @@ while (i < MAX_VOICES) (
               gsrc = wrap_in_range(gsrc + src_phase_jit, ghist_lo, ghist_hi);
             );
 
-            pitch_jit_cents = (rand(1) - 0.5) * 2 * slider9 * (0.85 + 3.20 * (1 - truth_mix)) * lerp(1.00, 0.45, clamp01(gsm[SM_PITCHCONF] * bank_pitchiness)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.64 * granular_event_stretch) * (1 - 0.76 * edge_melt_active);
+            pitch_jit_cents = (hub_random(1) - 0.5) * 2 * slider9 * (0.85 + 3.20 * (1 - truth_mix)) * lerp(1.00, 0.45, clamp01(gsm[SM_PITCHCONF] * bank_pitchiness)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.64 * granular_event_stretch) * (1 - 0.76 * edge_melt_active);
             grate *= cents_ratio(pitch_jit_cents);
 
-            len_jit = 1 + (rand(1) - 0.5) * slider9 * (0.08 + 0.10 * (1 - truth_mix) + 0.04 * gesture_arc) * (1 - 0.66 * gran_slow_glue) * (1 - 0.62 * max(gran_mscont, gran_xcont)) * (1 - 0.58 * granular_event_stretch) * (1 - 0.64 * edge_melt_active);
+            len_jit = 1 + (hub_random(1) - 0.5) * slider9 * (0.08 + 0.10 * (1 - truth_mix) + 0.04 * gesture_arc) * (1 - 0.66 * gran_slow_glue) * (1 - 0.62 * max(gran_mscont, gran_xcont)) * (1 - 0.58 * granular_event_stretch) * (1 - 0.64 * edge_melt_active);
             spawn_gsize = clamp(
               floor(gsize * len_jit * (1 + gran_slow_glue * (0.70 + 0.62 * (1 - slider9)) + gran_mscont * 0.42 + gran_xcont * 1.10 + gran_stretch_glue * (1.10 + 1.10 * gran_mscont + 2.30 * gran_xcont))),
               max(hop + 1, floor(gsize * 0.72)),
@@ -9973,7 +10970,7 @@ while (i < MAX_VOICES) (
               spawn_gsize = clamp(floor(spawn_gsize * melt_len_mul), max(hop + 1, floor(gsize * 0.62)), max(hop + 1, floor(srate * melt_max_ms)));
             );
 
-            reverse_grain = gran_tail_region && slider9 > 0.55 && v[VC_TAILMIX] > 0.25 && rand(1) < (0.006 + 0.030 * slider9 * v[VC_TAILMIX] * gesture_arc) * (1 - 0.85 * edge_melt_active);
+            reverse_grain = gran_tail_region && slider9 > 0.55 && v[VC_TAILMIX] > 0.25 && hub_random(1) < (0.006 + 0.030 * slider9 * v[VC_TAILMIX] * gesture_arc) * (1 - 0.85 * edge_melt_active);
             reverse_grain ? (
               rev_span = min(max(1, ghist_hi - ghist_lo - 2), (spawn_gsize - 1) * abs(grate));
               gsrc = clamp(gsrc + rev_span, ghist_lo + rev_span, max(ghist_lo + rev_span, ghist_hi - 1));
@@ -9997,9 +10994,9 @@ while (i < MAX_VOICES) (
             genv_macro = clamp((0.58 + 1.30 * v[VC_GENV]) / 1.02, 0.55, 1.72);
             ggain *= lerp(1, genv_macro, genv_amt * 0.74);
 
-            amp_jit_db = (rand(1) - 0.5) * 2 * slider9 * (0.22 + 0.78 * (1 - truth_mix)) * (1 - 0.58 * gran_slow_glue) * (1 - 0.55 * granular_event_stretch) * (1 - 0.54 * edge_melt_active);
+            amp_jit_db = (hub_random(1) - 0.5) * 2 * slider9 * (0.22 + 0.78 * (1 - truth_mix)) * (1 - 0.58 * gran_slow_glue) * (1 - 0.55 * granular_event_stretch) * (1 - 0.54 * edge_melt_active);
             ggain *= db2amp(amp_jit_db);
-            gpan = (rand(1) - 0.5) * slider8 * slider9 * (0.10 + 0.30 * gesture_arc) * (1 - 0.65 * gran_slow_glue) * (1 - 0.50 * granular_event_stretch) * (1 - 0.45 * edge_melt_active);
+            gpan = (hub_random(1) - 0.5) * slider8 * slider9 * (0.10 + 0.30 * gesture_arc) * (1 - 0.65 * gran_slow_glue) * (1 - 0.50 * granular_event_stretch) * (1 - 0.45 * edge_melt_active);
             // Adaptive per-grain downward expansion: useful for noisy/bright grains,
             // harmful for slow bassy grains. So it is disabled by slow glue.
             gxpand = clamp01((gran_cedge - 0.24) / 0.44) * clamp01((gran_cbright - 0.34) / 0.50);
@@ -10007,7 +11004,7 @@ while (i < MAX_VOICES) (
             gxpand *= slider9 * (0.10 + 0.38 * v[VC_TAILMIX] + 0.18 * gesture_arc) * (1 - 0.88 * gran_slow_glue) * (1 - 0.86 * edge_melt_active);
             gxpand = clamp01(gxpand);
 
-            prefill_age = floor(spawn_gsize * (slider9 * (0.015 + 0.075 * gesture_arc) + gran_slow_glue * 0.110 + gran_mscont * 0.060 + gran_stretch_glue * 0.075 + edge_melt_active * (0.045 + 0.085 * max(gran_slow_glue, max(gran_mscont, gran_xcont)))) * rand(1));
+            prefill_age = floor(spawn_gsize * (slider9 * (0.015 + 0.075 * gesture_arc) + gran_slow_glue * 0.110 + gran_mscont * 0.060 + gran_stretch_glue * 0.075 + edge_melt_active * (0.045 + 0.085 * max(gran_slow_glue, max(gran_mscont, gran_xcont)))) * hub_random(1));
             schedule_prefill > 0 ? prefill_age = max(prefill_age, min(max(0, spawn_gsize - 2), floor(schedule_prefill)));
             prefill_src = gsrc - prefill_age * grate;
             gran_tail_region ? (
@@ -10062,7 +11059,7 @@ while (i < MAX_VOICES) (
               melt_overlap_w = clamp01(0.32 + 0.68 * max(gran_slow_glue, max(gran_mscont, gran_xcont)));
               spawn_hop_base = floor(spawn_hop_base * lerp(1.0, 0.52, edge_melt_overlap * melt_overlap_w));
             );
-            hop_jit = floor(spawn_hop_base * slider9 * (0.05 + 0.11 * (1 - truth_mix)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.65 * max(gran_mscont, gran_xcont)) * (1 - 0.58 * granular_event_stretch) * (1 - 0.82 * edge_melt_active) * ((rand(1) - 0.5) * 2));
+            hop_jit = floor(spawn_hop_base * slider9 * (0.05 + 0.11 * (1 - truth_mix)) * (1 - 0.72 * gran_slow_glue) * (1 - 0.65 * max(gran_mscont, gran_xcont)) * (1 - 0.58 * granular_event_stretch) * (1 - 0.82 * edge_melt_active) * ((hub_random(1) - 0.5) * 2));
             gran_min_hop = floor(srate * lerp(lerp(0.0046, 0.0026, gran_hop_scale), lerp(0.0100, 0.0064, gran_hop_scale), granular_event_stretch));
             gran_min_hop = max(floor(srate * 0.0040), floor(lerp(gran_min_hop, srate * 0.0046, edge_melt_overlap)));
             gran_max_hop_ratio = lerp(lerp(0.285, 0.118, gran_hop_scale), lerp(0.360, 0.220, gran_hop_scale), granular_event_stretch);
@@ -10355,6 +11352,10 @@ while (i < MAX_VOICES) (
 
     v[VC_STAGE] = stage;
     v[VC_ENV] = env;
+    v[VC_HUB_ID] > 0 ? (
+      env = hub_envelope(v, env);
+      stage = v[VC_STAGE];
+    );
 
     got_sig = 0;
     l = 0; r = 0;
@@ -10405,6 +11406,12 @@ while (i < MAX_VOICES) (
       got_sig = got_sig || got_pitch_dry;
     );
 
+    v[VC_HUB_TLEFT] > 0 ? (
+      hub_new_alive = hub_transition_mix(v, sm, l, r);
+      l = hub_mix_l; r = hub_mix_r;
+      got_sig = got_sig || hub_new_alive;
+      direct_alive = direct_alive || hub_new_alive;
+    );
     g = v[VC_BASE] * env;
     v[VC_AUDIOTRIG] > 0 ? (
       aud_env = clamp01(v[VC_AUDIOENV]);
@@ -10480,6 +11487,12 @@ while (i < MAX_VOICES) (
       room_tail_bus = max(room_tail_bus, clean_tail_score * clamp01(env * 1.20));
     ) : (
       (!keepalive || stage == ENV_OFF) ? v[VC_ACTIVE] = 0;
+    );
+    v[VC_HUB_ID] > 0 ? (
+      hub_transition_commit(v);
+      v[VC_HUB_RNG] = hub_rng; hub_rng_on = 0;
+      !keepalive ? v[VC_ACTIVE] = 0;
+      v[VC_ACTIVE] <= 0 ? hub_cancel_voice(i, !keepalive ? 12 : v[VC_HUB_FINISH] > 0 ? v[VC_HUB_FINISH] : 12);
     );
   );
 
@@ -10680,16 +11693,11 @@ output_harmonics_amt > 0.0001 ? (
   output_harm_runtime_active > 0 ? reset_output_harmonics_buffers();
 );
 
-// Analyzer filters and coefficients now run at the same sample rate;
-// stereo power preserves side-only material and zero crossings advance state.
-posteq_spec_tick += 1;
-posteq_spec_do = posteq_spec_tick >= posteq_spec_stride ? 1 : 0;
-posteq_spec_do ? (
-  posteq_spec_tick = 0;
-  posteq_analyze_spectrum(outL, outR);
-);
+// Visualization only. Closed/hidden/offline: no analyzer recurrence, envelope
+// update or memory traffic. Audible EQ always runs independently of the UI.
+posteq_analyzer_active ? posteq_analyze_spectrum(outL, outR);
 apply_processing_strip();
-posteq_spec_do ? posteq_analyze_post_spectrum(outL, outR);
+posteq_analyzer_active ? posteq_analyze_post_spectrum(outL, outR);
 
 denorm_flush_counter += 1;
 denorm_flush_counter >= DENORM_FLUSH_INTERVAL ? (
@@ -10709,17 +11717,29 @@ outL = denorm_zap(outL);
 outR = denorm_zap(outR);
 // Dry input is restored exactly and bypasses sampler processing, Output trim,
 // PostEQ, Clean/Room/Push, etc. EdgeMelt is internal to generated Granular only.
-// Final-stage DeCrust gives every instrument path, including Space sends, the
-// same latency. Bypass keeps the delay; external input receives the same delay.
-apply_clean_decrust();
-input_delay_l_base[input_delay_pos] = dry_in_l;
-input_delay_r_base[input_delay_pos] = dry_in_r;
-input_delay_read = (input_delay_pos - DECRUST_LATENCY) & DECRUST_RINGMASK;
-spl0 = input_delay_l_base[input_delay_read] + outL * out_trim;
-spl1 = input_delay_r_base[input_delay_read] + outR * out_trim;
-input_delay_pos = (input_delay_pos + 1) & DECRUST_RINGMASK;
+// Deliberately enabled DeCrust owns 520 samples of delay; settled bypass owns
+// none. All generated effects and the external input share the selected delay.
+dc_latency_active ? (
+  apply_clean_decrust();
+  input_delay_l_base[input_delay_pos] = dry_in_l;
+  input_delay_r_base[input_delay_pos] = dry_in_r;
+  input_delay_read = (input_delay_pos - DECRUST_LATENCY) & DECRUST_RINGMASK;
+  spl0 = input_delay_l_base[input_delay_read] + outL * out_trim;
+  spl1 = input_delay_r_base[input_delay_read] + outR * out_trim;
+  input_delay_pos = (input_delay_pos + 1) & DECRUST_RINGMASK;
+) : (
+  spl0 = dry_in_l + outL * out_trim;
+  spl1 = dry_in_r + outR * out_trim;
+);
+(dc_switch_gain < 1 || dc_switch_target < 1 || dc_output_warm_left > 0) ? (
+  dc_output_warm_left > 0 ? (
+    dc_output_warm_left -= 1;
+  ) : dc_switch_gain += clamp(dc_switch_target - dc_switch_gain, -dc_switch_step, dc_switch_step);
+  spl0 *= dc_switch_gain; spl1 *= dc_switch_gain;
+);
 
 @gfx 1380 760
+posteq_gfx_heartbeat = (posteq_gfx_heartbeat + 1) % 1000000;
 gfx_getchar();
 mouse_down = mouse_cap & 1;
 mouse_rdown = mouse_cap & 2;
@@ -10804,6 +11824,8 @@ bank_partial ? (
 gfx_drawstr(#ui_buf);
 
 pt_in(lamp_x - 8, lamp_y - 2, 180, 48) ? ui_hover_id = 1002;
+hub_log_header();
+!hub_ui_open ? (
 
 // Panels - responsive layout
 panel_gap = 10;
@@ -12046,6 +13068,7 @@ proc_char_h > 58 ? (
 );
 
 
+) : hub_log_draw();
 rescan_flash > 0 ? rescan_flash = max(0, rescan_flash - 0.035);
 rescan_flash > 0 ? (
   gfx_r = 0.35; gfx_g = 0.74; gfx_b = 0.98; gfx_a = rescan_flash * 0.65;

@@ -203,6 +203,7 @@ void DspJsfxSamplePool::setCompletionCallback(CompletionCallback callback)
 
 bool DspJsfxSamplePool::commitFromPaths(const std::vector<juce::String>& paths, std::uint64_t sourceGeneration)
 {
+    std::lock_guard<std::mutex> commitLock(commitMutex_);
     const int currentMode = mode_.load(std::memory_order_acquire);
     const auto currentBudget = budgetBytes_.load(std::memory_order_acquire);
     const double currentTargetRate = targetSampleRate_.load(std::memory_order_acquire);
@@ -249,6 +250,7 @@ bool DspJsfxSamplePool::commitFromPaths(const std::vector<juce::String>& paths, 
 bool DspJsfxSamplePool::commitFromMemory(std::shared_ptr<const DspJsfxSamplePoolMemorySourceList> sources,
                                          std::uint64_t sourceGeneration)
 {
+    std::lock_guard<std::mutex> commitLock(commitMutex_);
     const int currentMode = mode_.load(std::memory_order_acquire);
     const auto currentBudget = budgetBytes_.load(std::memory_order_acquire);
     const double currentTargetRate = targetSampleRate_.load(std::memory_order_acquire);

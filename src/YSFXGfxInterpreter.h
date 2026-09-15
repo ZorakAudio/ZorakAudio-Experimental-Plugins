@@ -432,6 +432,124 @@ static std::string preprocessJsfxForPortableEel(const std::string& in)
 }
 
 
+// Convert only after bounding; these helpers never use llround on an unbounded value.
+static inline int boundedGfxInt(double value) noexcept
+{
+  constexpr double limit = 16777216.0; // Safe coordinate arithmetic, exactly representable as float.
+  if (!std::isfinite(value)) return 0;
+  return (int)std::max(-limit, std::min(limit, value));
+}
+
+static inline int gfxArcSegments(double radius, double span) noexcept
+{
+  if (!std::isfinite(radius) || !std::isfinite(span) || radius <= 0.0 || span <= 0.0)
+    return 0;
+  const double estimate = std::ceil(span * std::max(8.0, radius * 0.35));
+  return (int)std::max(8.0, std::min(512.0, estimate)); // Clamp BEFORE conversion, including overflow to +Inf.
+}
+
+template <typename NumberAt, typename StringAt>
+static std::string formatGfxPrintf(const char* fmt, int argc, NumberAt numberAt, StringAt stringAt)
+{
+  constexpr size_t maxOutput = 65536;
+  constexpr int maxField = 512;
+  std::string out;
+  int argIndex = 0;
+  const auto next = [&]() { return argIndex < argc ? numberAt(argIndex++) : 0.0; };
+  const auto field = [](double v) { return std::isfinite(v) ? (int)std::min(512.0, std::abs(v)) : 0; };
+  if (fmt == nullptr) return out;
+  for (size_t i = 0; fmt[i] != '\0' && out.size() < maxOutput; ++i)
+  {
+    if (fmt[i] != '%') { out.push_back(fmt[i]); continue; }
+    if (fmt[i + 1] == '%') { out.push_back('%'); ++i; continue; }
+    const size_t start = i;
+    size_t j = i + 1;
+    std::string flags;
+    while (fmt[j] && std::strchr("-+0 #", fmt[j])) flags.push_back(fmt[j++]);
+    int width = 0;
+    if (fmt[j] == '*')
+    {
+      const double v = next();
+      width = field(v);
+      if (v < 0.0) flags.push_back('-');
+      ++j;
+    }
+    else
+      while (std::isdigit((unsigned char)fmt[j]))
+        width = std::min(maxField, width * 10 + (fmt[j++] - '0'));
+    int precision = -1;
+    if (fmt[j] == '.')
+    {
+      ++j;
+      precision = 0;
+      if (fmt[j] == '*')
+      {
+        const double v = next();
+        precision = v < 0.0 ? -1 : field(v);
+        ++j;
+      }
+      else
+        while (std::isdigit((unsigned char)fmt[j]))
+          precision = std::min(maxField, precision * 10 + (fmt[j++] - '0'));
+    }
+    // Normalize native lengths away. All integers below have their exact
+    // int/unsigned-int ABI; strings are always narrow UTF-8, never wchar_t*.
+    while (fmt[j] && std::strchr("hlLjzt", fmt[j])) ++j;
+    if (fmt[j] == 'I')
+    {
+      ++j;
+      while (std::isdigit((unsigned char)fmt[j])) ++j;
+    }
+    const char spec = fmt[j];
+    if (!spec) { out.append(fmt + start); break; }
+    i = j;
+    if (!std::strchr("diuoxXcsfFeEgGaA", spec))
+    {
+      // In particular, %n and %p never reach snprintf.
+      out.append(fmt + start, j - start + 1);
+      (void)next();
+      continue;
+    }
+    const double value = next();
+    std::string nativeFmt = "%";
+    const char* validFlags = spec == 's' || spec == 'c' ? "-" :
+                            spec == 'd' || spec == 'i' ? "-+ 0" :
+                            spec == 'u' ? "-0" : std::strchr("oxX", spec) ? "-#0" : "-+ #0";
+    for (const char flag : flags)
+      if (std::strchr(validFlags, flag) && nativeFmt.find(flag) == std::string::npos)
+        nativeFmt.push_back(flag);
+    if (width > 0) nativeFmt += std::to_string(width);
+    if (precision >= 0 && spec != 'c') nativeFmt += "." + std::to_string(precision);
+    nativeFmt.push_back(spec);
+    char buf[512] {};
+    if (spec == 's')
+    {
+      const char* text = stringAt(value);
+      WDL_snprintf(buf, sizeof(buf), nativeFmt.c_str(), text ? text : "");
+    }
+    else if (spec == 'd' || spec == 'i')
+    {
+      const double v = std::isfinite(value) ? std::round(value) : 0.0;
+      const int n = (int)std::max((double)std::numeric_limits<int>::min(),
+                                 std::min((double)std::numeric_limits<int>::max(), v));
+      WDL_snprintf(buf, sizeof(buf), nativeFmt.c_str(), n);
+    }
+    else if (std::strchr("uoxXc", spec))
+    {
+      double v = std::isfinite(value) ? std::fmod(std::round(value), 4294967296.0) : 0.0;
+      if (v < 0.0) v += 4294967296.0;
+      const unsigned int n = (unsigned int)v;
+      if (spec == 'c') WDL_snprintf(buf, sizeof(buf), nativeFmt.c_str(), (int)(n & 255u));
+      else WDL_snprintf(buf, sizeof(buf), nativeFmt.c_str(), n);
+    }
+    else
+      WDL_snprintf(buf, sizeof(buf), nativeFmt.c_str(), value);
+    out.append(buf, std::min(std::strlen(buf), maxOutput - out.size()));
+  }
+  if (out.size() > maxOutput) out.resize(maxOutput);
+  return out;
+}
+
 // -------------------------
 // Draw command list (JUCE playback)
 // -------------------------
@@ -579,7 +697,24 @@ public:
     currentFont = juce::Font(juce::Font::getDefaultSansSerifFontName(), 12.0f, juce::Font::plain);
   }
 
+  ~GfxVm() override
+  {
+    setMenuPort(nullptr);
+    runAtExitCode(); // Drain before commands/fonts/keys/string callback state die.
+    if (m_vm != nullptr) NSEEL_VM_SetFunctionTable(m_vm, nullptr);
+    NSEEL_freefunctiontable(&privateFunctionTable);
+  }
+
+  bool usePrivateFunctionTable()
+  {
+    const std::lock_guard<std::mutex> lock(g_eelGlobalMutex);
+    if (!NSEEL_clonefunctiontable(&privateFunctionTable, nullptr)) return false;
+    NSEEL_VM_SetFunctionTable(m_vm, &privateFunctionTable);
+    return true;
+  }
+
   virtual bool freembufIsNoop() const noexcept { return false; }
+  virtual bool allowsNegativeSliderMasks() const noexcept { return false; }
 
   void refreshShowMenuNbConstants()
   {
@@ -1047,14 +1182,15 @@ public:
       }
     }
 
-    // If not a direct slider var, treat as an integer bitmask.
-    if (argValue <= 0.0)
-      return 0;
-
-    const int64_t m = (int64_t)std::llround(argValue);
-    if (m <= 0)
-      return 0;
-    return (uint64_t)m;
+    // GFX retains negative-value undo requests; the DSP shadow uses full masks.
+    if (!std::isfinite(argValue)) return 0;
+    const double rounded = std::round(argValue);
+    if (rounded >= 0.0 && rounded < 18446744073709551616.0)
+      return (uint64_t)rounded;
+    if (self && self->allowsNegativeSliderMasks()
+        && rounded < 0.0 && rounded >= -9223372036854775808.0)
+      return (uint64_t)(int64_t)rounded;
+    return 0;
   }
 
   static EEL_F NSEEL_CGEN_CALL eel_gfx_set(void* opaque, INT_PTR np, EEL_F** parms)
@@ -1299,15 +1435,15 @@ public:
     cmd.colour = self->getCurrentColour();
     cmd.font = self->currentFont;
     cmd.text = text;
-    cmd.x = (float) std::floor(self->gfx_x ? *self->gfx_x : 0.0);
-    cmd.y = (float) std::floor(self->gfx_y ? *self->gfx_y : 0.0);
+    cmd.x = (float) boundedGfxInt(std::floor(self->gfx_x ? *self->gfx_x : 0.0));
+    cmd.y = (float) boundedGfxInt(std::floor(self->gfx_y ? *self->gfx_y : 0.0));
 
     if (np >= 4)
     {
-      const int flags = (int) std::llround(*parms[1]);
+      const int flags = boundedGfxInt(std::round(*parms[1]));
       cmd.useTextBounds = true;
-      cmd.w = std::max(0.0f, (float) std::floor(*parms[2] - cmd.x));
-      cmd.h = std::max(cmd.font.getHeight(), (float) std::floor(*parms[3] - cmd.y));
+      cmd.w = (float) std::max(0, boundedGfxInt(std::floor(*parms[2] - cmd.x)));
+      cmd.h = (float) std::max(boundedGfxInt(cmd.font.getHeight()), boundedGfxInt(std::floor(*parms[3] - cmd.y)));
       cmd.textJustification = textJustificationFromFlags(flags);
     }
 
@@ -1333,116 +1469,16 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_printf(void* opaque, INT_PTR np, EEL_F** pa
 {
   auto* self = (GfxVm*)opaque;
   if (!self || np < 1) return 0.0;
-
-  juce::String textToDraw;
+  juce::String text;
   {
     EEL_STRING_MUTEXLOCK_SCOPE;
-
     const char* fmt = EEL_STRING_GET_FOR_INDEX(*parms[0], nullptr);
-    if (fmt == nullptr)
-      fmt = "";
-
-    std::string out;
-    out.reserve(std::strlen(fmt) + 32);
-
-    int argIndex = 1;
-
-    for (size_t i = 0; fmt[i] != '\0'; ++i)
-    {
-      if (fmt[i] != '%')
-      {
-        out.push_back(fmt[i]);
-        continue;
-      }
-
-      if (fmt[i + 1] == '%')
-      {
-        out.push_back('%');
-        ++i;
-        continue;
-      }
-
-      const size_t specStart = i;
-      size_t j = i + 1;
-
-      while (fmt[j] != '\0' && std::strchr("-+0 #", fmt[j]) != nullptr)
-        ++j;
-
-      while (fmt[j] != '\0' && std::isdigit((unsigned char)fmt[j]))
-        ++j;
-
-      if (fmt[j] == '.')
-      {
-        ++j;
-        while (fmt[j] != '\0' && std::isdigit((unsigned char)fmt[j]))
-          ++j;
-      }
-
-      if (fmt[j] == 'h' || fmt[j] == 'l' || fmt[j] == 'L')
-      {
-        const char first = fmt[j];
-        ++j;
-        if ((first == 'h' || first == 'l') && fmt[j] == first)
-          ++j;
-      }
-
-      const char spec = fmt[j];
-
-      if (spec == '\0')
-      {
-        out.append(fmt + specStart);
-        break;
-      }
-
-      ++j;
-
-      const std::string oneFmt(fmt + specStart, fmt + j);
-
-      char buf[512];
-      buf[0] = '\0';
-
-      const double v = (argIndex < (int)np) ? (double)*parms[argIndex] : 0.0;
-
-      if (spec == 's')
-      {
-        const char* s = EEL_STRING_GET_FOR_INDEX(v, nullptr);
-        if (s == nullptr)
-          s = "";
-        ::snprintf(buf, sizeof(buf), oneFmt.c_str(), s);
-        ++argIndex;
-      }
-      else if (spec == 'd' || spec == 'i')
-      {
-        const int iv = (int)std::llround(v);
-        ::snprintf(buf, sizeof(buf), oneFmt.c_str(), iv);
-        ++argIndex;
-      }
-      else if (spec == 'u' || spec == 'x' || spec == 'X' || spec == 'o')
-      {
-        const unsigned int uv = (unsigned int)std::llround(v);
-        ::snprintf(buf, sizeof(buf), oneFmt.c_str(), uv);
-        ++argIndex;
-      }
-      else if (spec == 'c')
-      {
-        const int cv = (int)std::llround(v);
-        ::snprintf(buf, sizeof(buf), oneFmt.c_str(), cv);
-        ++argIndex;
-      }
-      else
-      {
-        ::snprintf(buf, sizeof(buf), oneFmt.c_str(), v);
-        ++argIndex;
-      }
-
-      out.append(buf);
-      i = j - 1;
-    }
-
-    textToDraw = juce::String::fromUTF8(out.c_str(), (int)out.size());
+    const auto out = formatGfxPrintf(fmt, (int)np - 1,
+      [&](int i) { return (double)*parms[i + 1]; },
+      [&](double value) { return EEL_STRING_GET_FOR_INDEX(value, nullptr); });
+    text = juce::String::fromUTF8(out.c_str(), (int)out.size());
   }
-
-  return emitTextCommand(self, textToDraw, 1, parms);
+  return emitTextCommand(self, text, 1, parms);
 }
 
 static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F** parms)
@@ -1594,6 +1630,10 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
 
     if (!std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(r) ||
         !std::isfinite(a1) || !std::isfinite(a2) || r <= 0.0)
+      return 0.0;
+    const double floatMax = (double)std::numeric_limits<float>::max();
+    if (std::abs(cx) > floatMax || std::abs(cy) > floatMax || r > floatMax
+        || std::abs(a1) > floatMax || std::abs(a2) > floatMax)
       return 0.0;
 
     DrawCmd cmd;
@@ -2015,6 +2055,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   // Current JSFX mem[] size (in doubles) synced into the EEL VM RAM.
   int memSize = 0;
 
+  eel_function_table privateFunctionTable {};
   AsyncMenuPort* asyncMenuPort = nullptr;
 
   // Drawing state
@@ -2297,13 +2338,14 @@ static inline void paintCommands(juce::Graphics& g, const std::vector<DrawCmd>& 
         if (cmd.useTextBounds)
         {
           g.drawText(cmd.text,
-                     juce::Rectangle<int>((int) cmd.x, (int) cmd.y, (int) cmd.w, (int) cmd.h),
+                     juce::Rectangle<int>(boundedGfxInt(cmd.x), boundedGfxInt(cmd.y),
+                                          boundedGfxInt(cmd.w), boundedGfxInt(cmd.h)),
                      cmd.textJustification,
                      false);
         }
         else
         {
-          g.drawText(cmd.text, (int) cmd.x, (int) cmd.y, 10000, (int) cmd.font.getHeight() + 4,
+          g.drawText(cmd.text, boundedGfxInt(cmd.x), boundedGfxInt(cmd.y), 10000, boundedGfxInt(cmd.font.getHeight()) + 4,
                      juce::Justification::topLeft, false);
         }
         break;
@@ -2325,22 +2367,25 @@ static inline void paintCommands(juce::Graphics& g, const std::vector<DrawCmd>& 
       }
       case DrawCmd::Type::Arc:
       {
-        const float span = std::abs(cmd.angle2 - cmd.angle1);
-        if (cmd.radius > 0.0f && span > 0.0f)
+        const double delta = (double)cmd.angle2 - (double)cmd.angle1;
+        const int segments = gfxArcSegments((double)cmd.radius, std::abs(delta));
+        if (segments > 0 && std::isfinite(cmd.x) && std::isfinite(cmd.y)
+            && std::isfinite(cmd.angle1) && std::isfinite(cmd.angle2))
         {
-          const int segments = juce::jlimit(8, 512,
-                                            (int)std::ceil(span * std::max(8.0f, cmd.radius * 0.35f)));
           juce::Path p;
+          bool valid = true;
           for (int i = 0; i <= segments; ++i)
           {
-            const float t = (float)i / (float)segments;
-            const float a = cmd.angle1 + (cmd.angle2 - cmd.angle1) * t;
-            const float px = cmd.x + std::cos(a) * cmd.radius;
-            const float py = cmd.y + std::sin(a) * cmd.radius;
-            if (i == 0) p.startNewSubPath(px, py);
-            else        p.lineTo(px, py);
+            const double a = (double)cmd.angle1 + delta * ((double)i / segments);
+            const double px = (double)cmd.x + std::cos(a) * (double)cmd.radius;
+            const double py = (double)cmd.y + std::sin(a) * (double)cmd.radius;
+            if (!std::isfinite(px) || !std::isfinite(py)
+                || std::abs(px) > 16777216.0 || std::abs(py) > 16777216.0)
+            { valid = false; break; }
+            if (i == 0) p.startNewSubPath((float)px, (float)py);
+            else p.lineTo((float)px, (float)py);
           }
-          g.strokePath(p, juce::PathStrokeType(1.0f));
+          if (valid) g.strokePath(p, juce::PathStrokeType(1.0f));
         }
         break;
       }

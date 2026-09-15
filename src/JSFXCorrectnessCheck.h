@@ -121,23 +121,27 @@ public:
     explicit ShadowVm (JSFXJuceProcessor* ownerIn)
         : owner (ownerIn)
     {
-        static std::once_flag s_once;
-        std::call_once (s_once, []()
+        jsfx_gfx_compat::registerBuiltins();
+        if (! usePrivateFunctionTable())
         {
-            NSEEL_addfunc_varparm_ex ("dsp_spl",   1, 0, NSEEL_PProc_THIS, &ShadowVm::eel_dsp_spl,   nullptr);
-            NSEEL_addfunc_varparm_ex ("midirecv",  4, 1, NSEEL_PProc_THIS, &ShadowVm::eel_midirecv,  nullptr);
-            NSEEL_addfunc_varparm_ex ("midisend",  4, 1, NSEEL_PProc_THIS, &ShadowVm::eel_midisend,  nullptr);
-            NSEEL_addfunc_varparm_ex ("file_open",   1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_open,   nullptr);
-            NSEEL_addfunc_varparm_ex ("file_close",  1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_close,  nullptr);
-            NSEEL_addfunc_varparm_ex ("file_rewind", 1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_rewind, nullptr);
-            NSEEL_addfunc_varparm_ex ("file_seek",   2, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_seek,   nullptr);
-            NSEEL_addfunc_varparm_ex ("file_avail",  1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_avail,  nullptr);
-            NSEEL_addfunc_varparm_ex ("file_text",   1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_text,   nullptr);
-            NSEEL_addfunc_varparm_ex ("file_riff",   3, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_riff,   nullptr);
-            NSEEL_addfunc_varparm_ex ("file_var",    2, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_var,    nullptr);
-            NSEEL_addfunc_varparm_ex ("file_mem",    3, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_mem,    nullptr);
-            NSEEL_addfunc_varparm_ex ("memset",      3, 1, NSEEL_PProc_THIS, &ShadowVm::eel_memset,      nullptr);
-        });
+            lastError = "Failed to allocate shadow function table";
+            return;
+        }
+        {
+            NSEEL_addfunc_varparm_ex ("dsp_spl",   1, 0, NSEEL_PProc_THIS, &ShadowVm::eel_dsp_spl,   &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("midirecv",  4, 1, NSEEL_PProc_THIS, &ShadowVm::eel_midirecv,  &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("midisend",  4, 1, NSEEL_PProc_THIS, &ShadowVm::eel_midisend,  &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("file_open",   1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_open,   &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("file_close",  1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_close,  &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("file_rewind", 1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_rewind, &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("file_seek",   2, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_seek,   &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("file_avail",  1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_avail,  &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("file_text",   1, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_text,   &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("file_riff",   3, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_riff,   &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("file_var",    2, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_var,    &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("file_mem",    3, 1, NSEEL_PProc_THIS, &ShadowVm::eel_file_mem,    &privateFunctionTable);
+            NSEEL_addfunc_varparm_ex ("memset",      3, 1, NSEEL_PProc_THIS, &ShadowVm::eel_memset,      &privateFunctionTable);
+        }
 
         bindSliderPtrs();
         bindUserVars (DSPJSFX_VARS, (int) DSPJSFX_VARS_COUNT);
@@ -151,7 +155,7 @@ public:
         bridgeState.srate = 44100.0;
         bridgeState.currentSampleRate = 44100.0;
 
-        gFileOwner[&bridgeState] = owner;
+        bridgeState.hostOwner = owner;
 
         sections = jsfx_gfx::extractJsfxSections (kJsfxSourceText);
         compileSections();
@@ -159,10 +163,9 @@ public:
 
     ~ShadowVm() override
     {
-        gFileOwner.erase (&bridgeState);
-        gMemOwner.erase (&bridgeState);
-        gMemSize.erase (&bridgeState);
-        gMemUsed.erase (&bridgeState);
+        setMenuPort(nullptr);
+        runAtExitCode(); // Shadow callbacks still have valid queues and bridge state.
+        bridgeState.hostOwner = nullptr;
 
         if (bridgeState.mem != nullptr)
         {
@@ -174,6 +177,7 @@ public:
 
     bool isReady() const noexcept { return ready; }
     bool freembufIsNoop() const noexcept override { return true; }
+    bool allowsNegativeSliderMasks() const noexcept override { return true; }
     const juce::String& getLastError() const noexcept { return lastError; }
 
     void ensureRamSize (int64_t needed)
@@ -731,6 +735,7 @@ public:
 
     void resetAndPrime (const DSPJSFX_State& aotState)
     {
+        readySnapshot.store (false, std::memory_order_release);
         clear();
         shadow = std::make_unique<ShadowVm> (owner);
 
@@ -747,11 +752,13 @@ public:
         shadow->runInit();
         shadow->syncAliasVarsFromCurrentSliders();
         shadow->runSlider();
+        readySnapshot.store (true, std::memory_order_release);
     }
 
     bool isReady() const noexcept
     {
-        return shadow != nullptr && shadow->isReady();
+        // UI/status readers never dereference the audio-owned, replaceable VM.
+        return readySnapshot.load (std::memory_order_acquire);
     }
 
     ShadowVm* getShadow() noexcept { return shadow.get(); }
@@ -919,9 +926,9 @@ public:
     {
         if (! isReady() || (isFrozen() && mismatchLatched.load (std::memory_order_acquire)))
             return;
-        const uint64_t compiledChange = aotState.pendingSliderChangeMask > 0 ? (uint64_t) aotState.pendingSliderChangeMask : 0u;
-        const uint64_t compiledAuto = aotState.pendingSliderAutomateMask > 0 ? (uint64_t) aotState.pendingSliderAutomateMask : 0u;
-        const uint64_t compiledAutoEnd = aotState.pendingSliderAutomateEndMask > 0 ? (uint64_t) aotState.pendingSliderAutomateEndMask : 0u;
+        const uint64_t compiledChange = (uint64_t) aotState.pendingSliderChangeMask;
+        const uint64_t compiledAuto = (uint64_t) aotState.pendingSliderAutomateMask;
+        const uint64_t compiledAutoEnd = (uint64_t) aotState.pendingSliderAutomateEndMask;
 
         if (compiledChange != shadowMasks.change)
         {
@@ -1572,7 +1579,8 @@ private:
     }
 
     JSFXJuceProcessor* owner = nullptr;
-    std::unique_ptr<ShadowVm> shadow;
+    std::unique_ptr<ShadowVm> shadow; // Audio/lifecycle thread only.
+    std::atomic<bool> readySnapshot { false };
 
     std::atomic<int> monitorMode { (int) MonitorAudioMode::Compiled };
     std::atomic<bool> freezeOnFirstMismatch { true };
