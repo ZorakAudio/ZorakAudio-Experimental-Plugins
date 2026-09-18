@@ -1,4 +1,4 @@
-desc:Load-and-Go Psycho MultiSampler (tape + hybrid + granular v70.1-midi-hub)
+desc:Load-and-Go Psycho MultiSampler (tape + hybrid + granular v71-integrated-engines)
 tags:instrument sampler ui
 // #GFX_RESIZE: responsive
 
@@ -8,7 +8,6 @@ tags:instrument sampler ui
 // v66 AutoSmoothAR: Envelope button enables a 25 ms causal transition budget; Attack/Release act as ratios for same-note crossfades and note-off smoothing without MIDI lookahead/PDC.
 // v57 SpaceVerb SoftRollback: reverts v55 loud SpaceVerb feed/gain tuning back toward the subtler v54 voice-send behavior while preserving v56 host-backed hidden states.
 // v56 HiddenStateSliders: hidden Shift/Alt macro states are mirrored to host-owned sliders so 48/96 kHz rebuilds and renders preserve them.
-// v53 PopCue: Shift+Push adds a CPU-gated concrete-detail cue extractor; it lifts short perceptual object cues without making Push bipolar.
 // v52 Harmonics: Shift+Output adds an 8-band ERB/gammatone-ish parallel harmonic enrichment layer; it is fully bypassed unless the hidden amount is above 0.
 // v51 SpaceVerb: Shift+Room adds designed space amount; Alt+Room sets space character. RoomScrub remains normal Room, and the additive SpaceVerb is zero-PDC/non-FFT/denormal-safe.
 // v47 DeCrustCompileFix: restores cubic_mid() before the DeCrust curvature helper uses it.
@@ -62,7 +61,6 @@ filename:0,sample.wav
 // #HELP: v51 SpaceVerb adds Shift+drag Room as hidden Space amount and Alt+drag Room as hidden Space character: scrub bad room with Room, then add intentional sound-design space.
 // #HELP: v57 SpaceVerb SoftRollback returns SpaceVerb to the subtler v54-style voice-send balance; Shift+Room/Alt+Room state still persists through render/sample-rate rebuilds via v56 hidden sliders.
 // #HELP: v66 Auto Smooth A/R adds an Envelope button that uses a fixed 25 ms causal transition budget. When enabled, Attack and Release become the ratio of that transition for smoother same-note crossfades and note-offs without MIDI lookahead/PDC.
-// #HELP: v53 PopCue adds Shift+drag Push as a concrete-detail cue extractor: it lifts short object cues in parallel without becoming inverse Push, and it is bypassed at 0.
 // #HELP: v52 Harmonics adds Shift+drag Output as a clean 8-band psychoacoustic harmonic enrichment macro: it generates a parallel, band-limited harmonic layer instead of driving the dry signal into saturation, and it is bypassed at 0.
 // #HELP: v38 DenormalGuard protects internal recursive filters/analyzers from near-zero denormal stalls, gates silent spectrum analysis, and preserves v37 Granular gating.
 // #HELP: v58 EdgeMelt replaces the old Shift+Grain input-trigger mode with a Granular-only grain-edge smoothing macro: safer starts, smoother windows, more overlap, less jitter, and post-grain micro-edge cleanup.
@@ -75,7 +73,7 @@ filename:0,sample.wav
 // #HELP: v23 FreeBand PostEQ adds a spectrum-underlaid final EQ: HPF, LPF, and three draggable parametric bands with Q and cutoff slope control.
 // #HELP:
 // #HELP: ## Quick start
-// #HELP: 1. Insert Sample. 2. On slot 0, choose Open Multiple... and select files. 3. Play MIDI notes. 4. Choose Random, Sequence, or Walk. 5. Shape with Envelope, Playback, Post-Processing, Clean, Room Tame, Push, and Output.
+// #HELP: 1. Insert Sample. 2. On slot 0, choose Open Multiple... and select files. 3. Play MIDI notes. 4. Choose Random, Sequence, or Walk. 5. Shape with Envelope, Playback, Post-Processing, Clean, Room Tame, Anti-Salience, and Output.
 // #HELP:
 // #HELP: ## Selection modes
 // #HELP: Random picks from the full bank with anti-repeat weighting. Sequence steps through loaded files. Walk bridges from the previous sample using brightness, focus, transient richness, length, pitch confidence, body span, and tail span.
@@ -89,7 +87,7 @@ filename:0,sample.wav
 // #HELP: Sample reports a constant latency of 520 engine samples (10.83 ms at 48 kHz, 1x); dry input and the final DeCrust stage are aligned.
 // #HELP:
 // #HELP: ## Cleanup and depth
-// #HELP: Clean is a transient-protected de-noise/de-bed macro: low values clean hiss/static tails gently, high values aggressively scrub low-SNR sustained noise and become obvious quickly. Shift+drag Clean controls DeCrust, a hidden FFT-512 spectral-kurtosis crust repair mode for crunchy SFX; at 0 it is fully bypassed with zero added latency. Enabling it selects 520-engine-sample latency; live toggles briefly fade while the host updates PDC. Room Tame is a transient-protected de-room/de-smear macro: low values restrain late room wash, high values make the correction obvious quickly. Shift+drag Room adds intentional designed Space; Alt+drag Room changes Space character from tight early room to wide dark bloom. Push is a salience budget: higher values push the instrument farther back, with 100% as extreme background placement. Shift+drag Push adds PopCue, a parallel concrete-detail cue extractor that restores object/tactile detail without broadly brightening.
+// #HELP: Clean is a transient-protected de-noise/de-bed macro: low values clean hiss/static tails gently, high values aggressively scrub low-SNR sustained noise and become obvious quickly. Shift+drag Clean controls DeCrust, a hidden FFT-512 spectral-kurtosis crust repair mode for crunchy SFX; at 0 it is fully bypassed with zero added latency. Enabling it selects 520-engine-sample latency; live toggles briefly fade while the host updates PDC. Room Tame is a transient-protected de-room/de-smear macro: low values restrain late room wash, high values make the correction obvious quickly. Shift+drag Room adds intentional designed Space; Alt+drag Room changes Space character from tight early room to wide dark bloom. Anti-Salience sets overall Mix. Ctrl+click selects Legacy or one of 20 Anti-Salience MX source/style combinations; right-click sets Mix to 0 and Ctrl+right-click selects Legacy. Shift/Alt expose no other mode.
 // #HELP:
 // #HELP: Legacy EQ import: Shift+right-click Drive imports the retained v60 preset value; Alt+right-click imports v61-v67. The two old formats overlap, so select the version that saved your preset. Values already rounded by an older host cannot be recovered exactly.
 // #HELP:
@@ -97,7 +95,7 @@ filename:0,sample.wav
 // #HELP: The Post-Processing panel is a final-output EQ editor with pre/post spectrum overlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope; Ctrl+click/drag temporarily solos the selected band/cut for auditioning.
 // #HELP:
 // #HELP: ## Tone and feel
-// #HELP: Color is now ERB Tilt: positive brightens, negative darkens around a pivot. Alt+Color sets Pivot; Shift+Color toggles auto-infer pivot. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Shift+drag Grain adjusts hidden Edge Melt for Granular-only grain-border smoothing. Width spreads safely. Liveliness adds variation. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection; Shift+drag Dynamics adds hidden source-relative ERB Expansion for low-level bed cleanup; Ctrl+drag Dynamics sets the maximum reduction depth. Shift+drag Push adds hidden PopCue for concrete detail; Shift+drag Output adds clean parallel Harmonics.
+// #HELP: Color is now ERB Tilt: positive brightens, negative darkens around a pivot. Alt+Color sets Pivot; Shift+Color toggles auto-infer pivot. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Shift+drag Grain adjusts hidden Edge Melt for Granular-only grain-border smoothing. Width spreads safely. Liveliness adds variation; Shift+drag/wheel sets Thrill, a separate 0-15% Accent Engine injection defaulting to 0. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection; Shift+drag/wheel Dynamics sets Universal Contour aggression for joint tail, resonance and eligible breath cleanup, with full bypass at 0. Shift+drag Output adds clean parallel Harmonics.
 // #HELP:
 // #HELP:
 // #HELP: ## Best uses
@@ -135,7 +133,7 @@ slider23:0<0,1,1{classic,gaussian}>--Onset align mode
 slider24:0<0,65536,256>--Bank RAM Budget (MB, 0=unlimited)
 slider25:0<0,1,0.001>--Clean
 slider26:0<0,1,0.001>--Room Tame
-slider27:0<0,100,0.1>--Push (%)
+slider27:0<0,100,0.1>--Anti-Salience Mix (%)
 slider28:100<-100,100,1>--Attack slope (%)
 slider29:-100<-100,100,1>--Decay slope (%)
 slider30:-100<-100,100,1>--Release slope (%)
@@ -158,7 +156,7 @@ slider46:0.707<0.35,4,0.001>--EQ LPF Q
 slider47:0<-12,12,0.01>--Hidden Formant Shift
 slider48:1<0,1,0.001>--Hidden Tail Grace
 slider49:0<-1,1,0.001>--Hidden Peak Pack
-slider50:0<0,1,0.001>--Hidden Source Expand Amount
+slider50:0<0,1,0.001>--Universal Contour Aggression
 slider51:0<0,1,0.001>--Hidden Edge Melt
 slider52:0<0,1,0.001>--Hidden Clean DeCrust
 slider53:0<0,1,0.001>--Hidden Space Amount
@@ -167,13 +165,3195 @@ slider55:0<0,1,0.001>--Hidden Harmonics
 slider56:0<0,1,0.001>--Hidden PopCue
 slider57:0<0,1,1{manual,auto}>--Auto Smooth A/R
 slider58:0<0,2400,1>--Hidden EQ Drives B3/LPF
-slider59:0<0,1,0.001>--Reserved 59 (unmapped)
+slider59:0<0,4820,1>--Anti-Salience Profile + Thrill
 slider60:1000<-20000,20000,1>--Hidden Color Pivot (Hz; negative=Auto)
 slider61:1<0,1,0.001>--Hidden Pitch Mix
 slider62:0<0,242,1>--Hidden EQ Character Pack
 slider63:0<0,812990017200,1>--Legacy EQ Drive Import (retained)
 slider64:6<0,60,0.1>--Hidden Source Expand Depth (dB)
 @init
+// Sample v71 embedded Anti-Salience MX; source: Anti-Salience MX v1.1.0 supplied 2026-09-16.
+// 20 profiles: 1 + source_profile*4 + preset. Index 0 Legacy is owned by Sample.
+// Source-only integration: no external reference detector, standalone UI diagnostics, or trim.
+// All helpers belong to @init. See AntiSalience_Integration_v71.md for lifecycle and compatibility.
+function sa_clampv(sa_x,sa_lo,sa_hi) (
+    sa_x<sa_lo ? sa_lo : (sa_x>sa_hi ? sa_hi : sa_x);
+  );
+
+function sa_clamp01(sa_x) (
+    sa_clampv(sa_x,0,1);
+  );
+
+function sa_db2amp(sa_x) (
+    pow(10,sa_x/20);
+  );
+
+function sa_denorm(sa_x) (
+    abs(sa_x)<0.000000000000000001 ? 0 : sa_x;
+  );
+
+function sa_ring_read(sa_base,sa_delay) local(sa_rp,sa_i0,sa_i1,sa_fr,sa_a,sa_b) (
+    sa_rp=sa_sc_wpos-sa_delay;
+    sa_rp<0 ? sa_rp+=sa_sc_buf_len;
+    sa_rp<0 ? sa_rp+=sa_sc_buf_len;
+    sa_i0=floor(sa_rp);
+    sa_fr=sa_rp-sa_i0;
+    sa_i1=sa_i0+1;
+    sa_i1>=sa_sc_buf_len ? sa_i1=0;
+    sa_a=sa_mem[sa_base+sa_i0];
+    sa_b=sa_mem[sa_base+sa_i1];
+    sa_a+(sa_b-sa_a)*sa_fr;
+  );
+
+function sa_ap_process(sa_x,sa_base,sa_delay,sa_g) local(sa_d,sa_y,sa_w) (
+    sa_d=sa_ring_read(sa_base,sa_delay);
+    sa_y=sa_d-sa_g*sa_x;
+    sa_w=sa_x+sa_g*sa_y;
+    sa_mem[sa_base+sa_sc_wpos]=sa_w;
+    sa_y;
+  );
+function sa_recalc() local(sa_i,sa_fc) (
+    sa_sr=max(8000,srate);
+
+    // Eight broad perceptual regions for the post-core anchor tax.
+    sa_mem[sa_XOVER_F+0]=120;
+    sa_mem[sa_XOVER_F+1]=250;
+    sa_mem[sa_XOVER_F+2]=500;
+    sa_mem[sa_XOVER_F+3]=1000;
+    sa_mem[sa_XOVER_F+4]=2000;
+    sa_mem[sa_XOVER_F+5]=4000;
+    sa_mem[sa_XOVER_F+6]=7500;
+
+    sa_i=0;
+    loop(sa_NX,
+      sa_fc=min(sa_mem[sa_XOVER_F+sa_i],sa_sr*0.45);
+      sa_mem[sa_XOVER_G+sa_i]=1-exp(-2*$pi*sa_fc/sa_sr);
+      sa_i+=1;
+    );
+
+    // Original Salience Push split coefficients.
+    sa_g15=1-exp(-2*$pi*min(1500,sa_sr*0.45)/sa_sr);
+    sa_g32=1-exp(-2*$pi*min(3200,sa_sr*0.45)/sa_sr);
+    sa_g55=1-exp(-2*$pi*min(5500,sa_sr*0.45)/sa_sr);
+
+    // Analysis followers.
+    sa_aLev=1-exp(-1/(0.100*sa_sr));
+    sa_aSrc=1-exp(-1/(0.150*sa_sr));
+    sa_aFast=1-exp(-1/(0.020*sa_sr));
+    sa_aSlow=1-exp(-1/(0.500*sa_sr));
+    sa_band_fast_a=1-exp(-1/(0.018*sa_sr));
+    sa_band_slow_a=1-exp(-1/(0.340*sa_sr));
+    sa_band_long_a=1-exp(-1/(4.000*sa_sr));
+    sa_control_a=1-exp(-1/(0.050*sa_sr));
+    sa_level_down_a=1-exp(-1/(0.080*sa_sr));
+    sa_level_up_a=1-exp(-1/(1.300*sa_sr));
+    sa_limiter_rel_a=1-exp(-1/(0.140*sa_sr));
+
+    // Optional scatter network. No PDC: the clean core remains zero-latency.
+    sa_sc_buf_len=max(128,floor(0.035*sa_sr)+16);
+    sa_SC_L1=sa_SC_BUF_BASE;
+    sa_SC_R1=sa_SC_L1+sa_sc_buf_len;
+    sa_SC_L2=sa_SC_R1+sa_sc_buf_len;
+    sa_SC_R2=sa_SC_L2+sa_sc_buf_len;
+    sa_SC_L3=sa_SC_R2+sa_sc_buf_len;
+    sa_SC_R3=sa_SC_L3+sa_sc_buf_len;
+    sa_SC_L4=sa_SC_R3+sa_sc_buf_len;
+    sa_SC_R4=sa_SC_L4+sa_sc_buf_len;
+  );
+function sa_set_profile() (
+    // Original Neutral policy.
+    sa_pf_formW=0.95;
+    sa_pf_edgeW=1.00;
+    sa_pf_airW=1.00;
+    sa_pf_tameBias=1.00;
+    sa_pf_sideBias=1.00;
+    sa_pf_selfOff=0.0;
+    sa_pf_transOff=0.0;
+    sa_pf_sideOff=0.0;
+    sa_pf_commonCap=1.00;
+    sa_pf_sideCap=1.00;
+    sa_pf_broad=1.00;
+    sa_base_atk=0.22;
+    sa_base_rel=6.0;
+    sa_base_satk=0.35;
+    sa_base_srel=8.0;
+
+    // Neutral post-core salience priors.
+    sa_mem[sa_PROFILE_W+0]=0.20;
+    sa_mem[sa_PROFILE_W+1]=0.30;
+    sa_mem[sa_PROFILE_W+2]=0.48;
+    sa_mem[sa_PROFILE_W+3]=0.72;
+    sa_mem[sa_PROFILE_W+4]=1.00;
+    sa_mem[sa_PROFILE_W+5]=1.18;
+    sa_mem[sa_PROFILE_W+6]=1.16;
+    sa_mem[sa_PROFILE_W+7]=1.02;
+
+    sa_profile_i==1 ? ( // Vocals
+      sa_pf_formW=0.70;
+      sa_pf_edgeW=0.88;
+      sa_pf_airW=0.90;
+      sa_pf_tameBias=0.80;
+      sa_pf_sideBias=0.50;
+      sa_pf_selfOff=2.5;
+      sa_pf_transOff=1.2;
+      sa_pf_sideOff=1.5;
+      sa_pf_commonCap=0.78;
+      sa_pf_sideCap=0.50;
+      sa_pf_broad=0.75;
+      sa_base_atk=0.28;
+      sa_base_rel=7.5;
+      sa_base_satk=0.45;
+      sa_base_srel=9.5;
+      sa_mem[sa_PROFILE_W+0]=0.10;
+      sa_mem[sa_PROFILE_W+1]=0.18;
+      sa_mem[sa_PROFILE_W+2]=0.32;
+      sa_mem[sa_PROFILE_W+3]=0.62;
+      sa_mem[sa_PROFILE_W+4]=1.12;
+      sa_mem[sa_PROFILE_W+5]=1.34;
+      sa_mem[sa_PROFILE_W+6]=1.10;
+      sa_mem[sa_PROFILE_W+7]=0.72;
+    );
+
+    sa_profile_i==2 ? ( // SFX
+      sa_pf_formW=0.95;
+      sa_pf_edgeW=1.10;
+      sa_pf_airW=1.05;
+      sa_pf_tameBias=1.25;
+      sa_pf_sideBias=1.10;
+      sa_pf_selfOff=-1.0;
+      sa_pf_transOff=-0.8;
+      sa_pf_sideOff=-0.5;
+      sa_pf_commonCap=1.20;
+      sa_pf_sideCap=1.10;
+      sa_pf_broad=1.00;
+      sa_base_atk=0.15;
+      sa_base_rel=4.5;
+      sa_base_satk=0.22;
+      sa_base_srel=6.0;
+      sa_mem[sa_PROFILE_W+0]=0.18;
+      sa_mem[sa_PROFILE_W+1]=0.28;
+      sa_mem[sa_PROFILE_W+2]=0.46;
+      sa_mem[sa_PROFILE_W+3]=0.70;
+      sa_mem[sa_PROFILE_W+4]=0.98;
+      sa_mem[sa_PROFILE_W+5]=1.20;
+      sa_mem[sa_PROFILE_W+6]=1.32;
+      sa_mem[sa_PROFILE_W+7]=1.26;
+    );
+
+    sa_profile_i==3 ? ( // Foley
+      sa_pf_formW=0.82;
+      sa_pf_edgeW=0.95;
+      sa_pf_airW=0.92;
+      sa_pf_tameBias=1.00;
+      sa_pf_sideBias=0.70;
+      sa_pf_selfOff=0.5;
+      sa_pf_transOff=0.4;
+      sa_pf_sideOff=0.8;
+      sa_pf_commonCap=0.92;
+      sa_pf_sideCap=0.70;
+      sa_pf_broad=0.85;
+      sa_base_atk=0.20;
+      sa_base_rel=6.2;
+      sa_base_satk=0.30;
+      sa_base_srel=7.5;
+      sa_mem[sa_PROFILE_W+0]=0.18;
+      sa_mem[sa_PROFILE_W+1]=0.28;
+      sa_mem[sa_PROFILE_W+2]=0.44;
+      sa_mem[sa_PROFILE_W+3]=0.68;
+      sa_mem[sa_PROFILE_W+4]=0.94;
+      sa_mem[sa_PROFILE_W+5]=1.10;
+      sa_mem[sa_PROFILE_W+6]=1.00;
+      sa_mem[sa_PROFILE_W+7]=0.82;
+    );
+
+    sa_profile_i==4 ? ( // BG
+      sa_pf_formW=1.00;
+      sa_pf_edgeW=1.00;
+      sa_pf_airW=1.12;
+      sa_pf_tameBias=0.75;
+      sa_pf_sideBias=1.35;
+      sa_pf_selfOff=-1.5;
+      sa_pf_transOff=0.8;
+      sa_pf_sideOff=-2.0;
+      sa_pf_commonCap=1.10;
+      sa_pf_sideCap=1.35;
+      sa_pf_broad=1.10;
+      sa_base_atk=0.34;
+      sa_base_rel=8.5;
+      sa_base_satk=0.45;
+      sa_base_srel=10.0;
+      sa_mem[sa_PROFILE_W+0]=0.14;
+      sa_mem[sa_PROFILE_W+1]=0.22;
+      sa_mem[sa_PROFILE_W+2]=0.34;
+      sa_mem[sa_PROFILE_W+3]=0.54;
+      sa_mem[sa_PROFILE_W+4]=0.84;
+      sa_mem[sa_PROFILE_W+5]=1.10;
+      sa_mem[sa_PROFILE_W+6]=1.30;
+      sa_mem[sa_PROFILE_W+7]=1.36;
+    );
+
+    // Low-body protection is invariant across profiles.
+    sa_mem[sa_BODY_PROTECT+0]=0.04;
+    sa_mem[sa_BODY_PROTECT+1]=0.08;
+    sa_mem[sa_BODY_PROTECT+2]=0.15;
+    sa_mem[sa_BODY_PROTECT+3]=0.28;
+    sa_mem[sa_BODY_PROTECT+4]=0.50;
+    sa_mem[sa_BODY_PROTECT+5]=0.72;
+    sa_mem[sa_BODY_PROTECT+6]=0.90;
+    sa_mem[sa_BODY_PROTECT+7]=1.00;
+  );
+function sa_clear_scatter() (
+  memset(sa_SC_BUF_BASE,0,8*sa_sc_buf_len);
+  sa_sc_wpos=0;sa_sc_lpL=0;sa_sc_lpR=0;sa_sc_init=0;
+  sa_target_energy=0;sa_scatter_energy=0;sa_scatter_governor=1;sa_scatter_dirty=0;
+);
+function sa_clear_filters() (
+  sa_M_lp15=0;sa_M_lp32=0;sa_M_lp55=0;sa_S_lp15=0;sa_S_lp32=0;sa_S_lp55=0;
+  memset(sa_LP_M,0,16);memset(sa_LP_S,0,16);
+  sa_clear_scatter();
+);
+function sa_reset() (
+  sa_clear_filters();
+  sa_A_bodyE=0;sa_A_formE=0;sa_A_edgeE=0;sa_A_airE=0;sa_A_srcE=0;sa_M_hiE=0;sa_S_hiE=0;
+  sa_A_click_fastE=0;sa_A_click_slowE=0;sa_common_dB=0;sa_side_dB=0;
+  memset(sa_ENV_FAST,0,16);memset(sa_ENV_SLOW,0,16);memset(sa_ENV_LONG,0,16);
+  memset(sa_ENV_PREV,0,16);memset(sa_M_ENV,0,16);memset(sa_S_ENV,0,16);
+  memset(sa_ANCHOR_MEM,0,16);memset(sa_PE2_DEBT,0,16);memset(sa_CAND_PREV,0,16);
+  memset(sa_CUT_CUR,0,16);memset(sa_CUT_RAW,0,16);memset(sa_SIDE_CUR,0,16);memset(sa_SIDE_RAW,0,16);
+  memset(sa_ENV_DELTA,0,16);
+  sa_input_energy=0;sa_core_energy=0;sa_level_gain=1;sa_limiter_gain=1;sa_source_age=0;
+  sa_mix_cur=0;sa_running=0;sa_silent_samples=0;sa_idle_samples=0;sa_sleeping=0;
+  sa_out_l=0;sa_out_r=0;sa_wet_l=0;sa_wet_r=0;
+);
+function sa_seed_controls() (
+  sa_erasure_s=sa_erasure_t;sa_tame_s=sa_tame_t;sa_identity_s=sa_identity_t;sa_half_s=sa_half_t;
+  sa_scatter_mix_s=sa_scatter_mix_t;sa_scatter_spread_s=sa_scatter_spread_t;sa_scatter_tail_s=sa_scatter_tail_t;
+  sa_novelty_s=sa_novelty_t;sa_flash_s=sa_flash_t;sa_adaptive_s=1;sa_pe2_s=1;sa_modulation_s=1;sa_level_s=1;
+);
+function sa_decay_idle(sa_n) local(sa_i,sa_a,sa_b,sa_c,sa_d) (
+  // Followers see zero during sleep; apply their releases once on wake.
+  sa_a=pow(1-sa_aLev,sa_n);
+  sa_A_bodyE*=sa_a;sa_A_formE*=sa_a;sa_A_edgeE*=sa_a;sa_A_airE*=sa_a;sa_M_hiE*=sa_a;sa_S_hiE*=sa_a;
+  sa_A_srcE*=pow(1-sa_aSrc,sa_n);sa_A_click_fastE*=pow(1-sa_aFast,sa_n);sa_A_click_slowE*=pow(1-sa_aSlow,sa_n);
+  sa_input_energy*=pow(1-sa_aSlow,sa_n);sa_core_energy*=pow(1-sa_aSlow,sa_n);
+  sa_common_dB*=pow(sa_c_cr,sa_n);sa_side_dB*=pow(sa_c_sr,sa_n);
+  sa_source_age=max(0,sa_source_age-8*sa_n);
+  sa_limiter_gain=1+(sa_limiter_gain-1)*pow(1-sa_limiter_rel_a,sa_n);
+  sa_a=pow(1-sa_band_fast_a,sa_n);sa_b=pow(1-sa_band_slow_a,sa_n);sa_c=pow(1-sa_band_long_a,sa_n);
+  sa_i=0;
+  loop(sa_NB,
+    sa_mem[sa_ENV_FAST+sa_i]*=sa_a;sa_mem[sa_ENV_PREV+sa_i]=sa_mem[sa_ENV_FAST+sa_i];
+    sa_mem[sa_ENV_SLOW+sa_i]*=sa_b;sa_mem[sa_ENV_LONG+sa_i]*=sa_c;sa_mem[sa_M_ENV+sa_i]*=sa_b;sa_mem[sa_S_ENV+sa_i]*=sa_b;
+    sa_mem[sa_ENV_DELTA+sa_i]=0;sa_mem[sa_CAND_PREV+sa_i]=0;
+    sa_i+=1;
+  );
+  sa_a=pow(1-sa_anchor_rel_a,sa_n);sa_b=pow(1-sa_pe2_rel_a,sa_n);sa_c=pow(1-sa_cut_rel_a,sa_n);sa_d=pow(1-sa_side_rel_a,sa_n);
+  sa_i=0;
+  loop(sa_NB,
+    sa_mem[sa_ANCHOR_MEM+sa_i]*=sa_a;sa_mem[sa_PE2_DEBT+sa_i]*=sa_b;sa_mem[sa_CUT_CUR+sa_i]*=sa_c;sa_mem[sa_SIDE_CUR+sa_i]*=sa_d;
+    sa_i+=1;
+  );
+);
+function sa_block_params() local(sa_atkC,sa_relC,sa_atkS,sa_relS) (
+  // Original core attack/release topology.
+  sa_atkC=max(0.10,sa_base_atk-0.08*sa_tame_t);
+  sa_relC=sa_base_rel+1.5*sa_erasure_t;
+  sa_atkS=sa_base_satk;
+  sa_relS=sa_base_srel+1.5*sa_erasure_t;
+  sa_c_ca=exp(-1/(sa_atkC*sa_sr));
+  sa_c_cr=exp(-1/(sa_relC*sa_sr));
+  sa_c_sa=exp(-1/(sa_atkS*sa_sr));
+  sa_c_sr=exp(-1/(sa_relS*sa_sr));
+
+  // Adaptive anchor memory and cut smoothing.
+  sa_anchor_attack_sec=max(0.055,sa_half_t*(0.24+0.32*sa_novelty_t));
+  sa_anchor_release_sec=2.6+6.8*sa_identity_t+2.2*sa_half_t;
+  sa_anchor_att_a=1-exp(-1/(sa_anchor_attack_sec*sa_sr));
+  sa_anchor_rel_a=1-exp(-1/(sa_anchor_release_sec*sa_sr));
+  sa_pe2_att_a=1-exp(-1/(max(0.20,sa_half_t*0.65)*sa_sr));
+  sa_pe2_rel_a=1-exp(-1/((7.0+15.0*sa_identity_t+4.0*sa_half_t)*sa_sr));
+  sa_cut_attack_sec=0.080+0.34*sa_half_t+0.24*sa_novelty_t+0.20*sa_flash_t;
+  sa_cut_release_sec=3.0+7.0*sa_identity_t+2.2*sa_half_t;
+  sa_cut_att_a=1-exp(-1/(sa_cut_attack_sec*sa_sr));
+  sa_cut_rel_a=1-exp(-1/(sa_cut_release_sec*sa_sr));
+  sa_side_att_a=1-exp(-1/((0.16+0.30*sa_novelty_t+0.20*sa_flash_t)*sa_sr));
+  sa_side_rel_a=1-exp(-1/((4.0+5.0*sa_identity_t)*sa_sr));
+
+  // Scatter topology. Delay lines are fixed per block and only audible through Scatter Mix.
+  sa_spread_curve=sa_scatter_spread_t*sa_scatter_spread_t;
+  sa_sc_d1L=(0.80+2.40*sa_spread_curve)*0.001*sa_sr;
+  sa_sc_d1R=(1.05+2.85*sa_spread_curve)*0.001*sa_sr;
+  sa_sc_d2L=(1.55+4.45*sa_spread_curve)*0.001*sa_sr;
+  sa_sc_d2R=(1.90+5.10*sa_spread_curve)*0.001*sa_sr;
+  sa_sc_d3L=(2.65+7.45*sa_spread_curve)*0.001*sa_sr;
+  sa_sc_d3R=(3.15+8.35*sa_spread_curve)*0.001*sa_sr;
+  sa_sc_d4L=(4.15+11.20*sa_spread_curve)*0.001*sa_sr;
+  sa_sc_d4R=(4.85+12.60*sa_spread_curve)*0.001*sa_sr;
+  sa_sc_fb=0.035+0.665*pow(sa_scatter_tail_t,1.25);
+  sa_sc_g1=sa_sc_fb*0.64;
+  sa_sc_g2=sa_sc_fb*0.76;
+  sa_sc_g3=sa_sc_fb*0.88;
+  sa_sc_g4=sa_sc_fb;
+  sa_sc_theta=(0.06+0.34*sa_scatter_spread_t)*$pi;
+  sa_sc_rot_c=cos(sa_sc_theta);
+  sa_sc_rot_s=sin(sa_sc_theta);
+  sa_sc_damp_fc=9500-4200*sa_scatter_tail_t;
+  sa_sc_damp_a=1-exp(-2*$pi*min(sa_sc_damp_fc,sa_sr*0.42)/sa_sr);
+  sa_sc_param_a=1-exp(-1/((0.090+0.260*sa_novelty_t)*sa_sr));
+
+
+);
+function sa_config(sa_profile_index,sa_mix) local(sa_p,sa_preset,sa_was_target) (
+  sa_was_target=sa_mix_target;
+  sa_p=sa_clampv(floor(sa_profile_index+0.5),1,20);
+  sa_mix_target=sa_clamp01(sa_mix);
+  sa_was_target>0 && sa_mix_target==0 && !sa_running ? sa_reset();
+  sa_config_profile!=sa_p ? (
+    sa_config_profile=sa_p;
+    sa_profile_i=floor((sa_p-1)/4);
+    sa_preset=sa_p-1-sa_profile_i*4;
+    // Exact Anti-Salience MX v1.1.0 UI preset values (source profile is orthogonal).
+    sa_preset==0 ? (
+      sa_erasure_t=0.36;sa_tame_t=0.34;sa_identity_t=0.88;sa_half_t=1.100;
+      sa_scatter_mix_t=0;sa_scatter_spread_t=0.35;sa_scatter_tail_t=0.10;sa_novelty_t=0.92;sa_flash_t=0.96;
+    ) : sa_preset==1 ? (
+      sa_erasure_t=0.68;sa_tame_t=0.48;sa_identity_t=0.72;sa_half_t=0.520;
+      sa_scatter_mix_t=0;sa_scatter_spread_t=0.48;sa_scatter_tail_t=0.24;sa_novelty_t=0.84;sa_flash_t=0.92;
+    ) : sa_preset==2 ? (
+      sa_erasure_t=0.72;sa_tame_t=0.58;sa_identity_t=0.62;sa_half_t=0.420;
+      sa_scatter_mix_t=0.32;sa_scatter_spread_t=0.62;sa_scatter_tail_t=0.38;sa_novelty_t=0.84;sa_flash_t=0.92;
+    ) : (
+      sa_erasure_t=0.95;sa_tame_t=0.78;sa_identity_t=0.34;sa_half_t=0.160;
+      sa_scatter_mix_t=0.72;sa_scatter_spread_t=0.86;sa_scatter_tail_t=0.74;sa_novelty_t=0.72;sa_flash_t=0.88;
+    );
+    sa_adaptive_t=1;sa_pe2_t=1;sa_modulation_t=1;sa_level_t=1;
+    sa_set_profile();
+    sa_block_params();
+    !sa_running ? sa_seed_controls();
+  );
+);
+function sa_init(sa_base) (
+  sa_mem=0;sa_eps=0.00000000000000000001;sa_ilog10=1/log(10);sa_NB=8;sa_NX=7;
+  sa_XOVER_F=sa_base+0;
+  sa_XOVER_G=sa_base+16;
+  sa_LP_M=sa_base+32;
+  sa_LP_S=sa_base+48;
+  sa_BAND_M=sa_base+64;
+  sa_BAND_S=sa_base+80;
+  sa_ENV_FAST=sa_base+96;
+  sa_ENV_SLOW=sa_base+112;
+  sa_ENV_LONG=sa_base+128;
+  sa_ENV_PREV=sa_base+144;
+  sa_M_ENV=sa_base+160;
+  sa_S_ENV=sa_base+176;
+  sa_ANCHOR_MEM=sa_base+192;
+  sa_PE2_DEBT=sa_base+208;
+  sa_CAND_PREV=sa_base+224;
+  sa_CUT_CUR=sa_base+240;
+  sa_CUT_RAW=sa_base+256;
+  sa_SIDE_CUR=sa_base+272;
+  sa_SIDE_RAW=sa_base+288;
+  sa_PROFILE_W=sa_base+304;
+  sa_BODY_PROTECT=sa_base+320;
+  sa_ENV_DELTA=sa_base+368;
+  sa_SC_BUF_BASE=sa_base+384;
+  sa_recalc();
+  sa_fade_samples=max(1,floor(0.012*sa_sr));sa_fade_step=1/sa_fade_samples;
+  sa_core_drain=max(sa_fade_samples+1,floor(0.120*sa_sr));sa_scatter_drain=max(sa_core_drain,floor(2.0*sa_sr));
+  sa_config_profile=-1;sa_mix_target=0;sa_running=0;
+  sa_config(2,0);
+  sa_reset();
+  sa_process_count=0;sa_scatter_count=0;
+  sa_end=sa_SC_BUF_BASE+8*sa_sc_buf_len;
+  sa_end;
+);
+function sa_step(sa_inL,sa_inR) (
+  sa_process_count+=1;
+  sa_erasure_s+=sa_control_a*(sa_erasure_t-sa_erasure_s);
+  sa_tame_s+=sa_control_a*(sa_tame_t-sa_tame_s);
+  sa_identity_s+=sa_control_a*(sa_identity_t-sa_identity_s);
+  sa_half_s+=sa_control_a*(sa_half_t-sa_half_s);
+  sa_scatter_mix_s+=sa_control_a*(sa_scatter_mix_t-sa_scatter_mix_s);
+  sa_scatter_spread_s+=sa_control_a*(sa_scatter_spread_t-sa_scatter_spread_s);
+  sa_scatter_tail_s+=sa_control_a*(sa_scatter_tail_t-sa_scatter_tail_s);
+  sa_novelty_s+=sa_control_a*(sa_novelty_t-sa_novelty_s);
+  sa_flash_s+=sa_control_a*(sa_flash_t-sa_flash_s);
+  sa_adaptive_s+=sa_control_a*(sa_adaptive_t-sa_adaptive_s);
+  sa_pe2_s+=sa_control_a*(sa_pe2_t-sa_pe2_s);
+  sa_modulation_s+=sa_control_a*(sa_modulation_t-sa_modulation_s);
+  sa_level_s+=sa_control_a*(sa_level_t-sa_level_s);
+
+  // ---------------------------------------------------------------------------
+  // LAYER 1: ORIGINAL SALIENCE PUSH CORE
+  // Slow/capped, attenuation-only, broad perceptual bands. No generated signal.
+  // ---------------------------------------------------------------------------
+  sa_M=0.5*(sa_inL+sa_inR);
+  sa_S=0.5*(sa_inL-sa_inR);
+
+  sa_M_lp15+=sa_g15*(sa_M-sa_M_lp15);
+  sa_M_lp32+=sa_g32*(sa_M-sa_M_lp32);
+  sa_M_lp55+=sa_g55*(sa_M-sa_M_lp55);
+  sa_S_lp15+=sa_g15*(sa_S-sa_S_lp15);
+  sa_S_lp32+=sa_g32*(sa_S-sa_S_lp32);
+  sa_S_lp55+=sa_g55*(sa_S-sa_S_lp55);
+
+  sa_M_body=sa_M_lp15;
+  sa_M_form=sa_M_lp32-sa_M_lp15;
+  sa_M_edge=sa_M_lp55-sa_M_lp32;
+  sa_M_air=sa_M-sa_M_lp55;
+  sa_S_body=sa_S_lp15;
+  sa_S_form=sa_S_lp32-sa_S_lp15;
+  sa_S_edge=sa_S_lp55-sa_S_lp32;
+  sa_S_air=sa_S-sa_S_lp55;
+
+
+  sa_body_inst=sa_M_body*sa_M_body+sa_S_body*sa_S_body;
+  sa_form_inst=sa_M_form*sa_M_form+sa_S_form*sa_S_form;
+  sa_edge_inst=sa_M_edge*sa_M_edge+sa_S_edge*sa_S_edge;
+  sa_air_inst=sa_M_air*sa_M_air+sa_S_air*sa_S_air;
+  sa_src_inst=0.5*(sa_inL*sa_inL+sa_inR*sa_inR);
+  sa_M_hi=sa_M_edge+sa_M_air;
+  sa_S_hi=sa_S_edge+sa_S_air;
+  sa_click_inst=sa_edge_inst+0.60*sa_air_inst;
+
+  sa_A_bodyE+=sa_aLev*(sa_body_inst-sa_A_bodyE);
+  sa_A_formE+=sa_aLev*(sa_form_inst-sa_A_formE);
+  sa_A_edgeE+=sa_aLev*(sa_edge_inst-sa_A_edgeE);
+  sa_A_airE+=sa_aLev*(sa_air_inst-sa_A_airE);
+  sa_A_srcE+=sa_aSrc*(sa_src_inst-sa_A_srcE);
+  sa_M_hiE+=sa_aLev*(sa_M_hi*sa_M_hi-sa_M_hiE);
+  sa_S_hiE+=sa_aLev*(sa_S_hi*sa_S_hi-sa_S_hiE);
+  sa_A_click_fastE+=sa_aFast*(sa_click_inst-sa_A_click_fastE);
+  sa_A_click_slowE+=sa_aSlow*(sa_click_inst-sa_A_click_slowE);
+
+  sa_A_hot_dB=10*log((0.35*sa_A_formE+1.00*sa_A_edgeE+1.10*sa_A_airE+sa_eps)/(sa_A_bodyE+0.55*sa_A_formE+sa_eps))*sa_ilog10;
+  sa_A_src_dB=10*log(sa_A_srcE+sa_eps)*sa_ilog10;
+  sa_delta_click_dB=10*log((sa_A_click_fastE+sa_eps)/(sa_A_click_slowE+sa_eps))*sa_ilog10;
+  sa_side_hi_rel_dB=10*log((sa_S_hiE+sa_eps)/(sa_M_hiE+sa_eps))*sa_ilog10;
+
+  sa_src_w=sa_clamp01((sa_A_src_dB+70)/18);
+  sa_source_age=sa_src_w>0.08 ? min(sa_sr*6,sa_source_age+1) : max(0,sa_source_age-8);
+  sa_baseline_ready=sa_clamp01(sa_source_age/(sa_sr*1.25));
+
+  sa_self_allow=-6-5*sa_erasure_s+4*sa_identity_s+sa_pf_selfOff;
+  sa_trans_allow=sa_clampv(5.5-2.5*sa_erasure_s+2.0*sa_identity_s+sa_pf_transOff,1,10);
+  sa_side_allow=sa_clampv(2.5-1.5*sa_erasure_s+3.0*sa_identity_s+sa_pf_sideOff,-2,8);
+
+  sa_max_common=sa_clampv((2.5+8.5*sa_erasure_s)*sa_pf_commonCap,0,14);
+  sa_max_side=sa_clampv((1.5+5.0*sa_erasure_s)*sa_pf_sideCap*(1-0.35*sa_identity_s),0,10);
+  sa_trans_w=(0.10+1.20*sa_tame_s)*sa_pf_tameBias;
+  sa_side_w=(0.55+0.70*sa_erasure_s)*(1-0.50*sa_identity_s)*sa_pf_sideBias;
+  sa_formW=sa_clampv((0.55-0.25*sa_identity_s)*sa_pf_formW,0.12,0.85);
+  sa_edgeW=sa_clampv((0.95-0.10*sa_identity_s)*sa_pf_edgeW,0.65,1.15);
+  sa_airW=sa_clampv((1.10-0.35*sa_identity_s)*sa_pf_airW,0.45,1.30);
+  sa_broadW=sa_clampv((0.05+0.08*sa_erasure_s)*(1-0.35*sa_identity_s)*sa_pf_broad,0,0.20);
+
+  sa_ex_self=max(0,sa_A_hot_dB-sa_self_allow);
+  sa_ex_trans=max(0,sa_delta_click_dB-sa_trans_allow);
+  sa_ex_side=max(0,sa_side_hi_rel_dB-sa_side_allow);
+
+  sa_core_gate=sa_clamp01(sa_erasure_s*25);
+  sa_level_want=sa_src_w*sa_ex_self;
+  sa_common_want=min(sa_level_want+sa_src_w*(sa_trans_w*sa_ex_trans),sa_max_common)*sa_core_gate;
+  sa_side_want=min(sa_src_w*(sa_side_w*sa_ex_side),sa_max_side)*sa_core_gate;
+
+  sa_cC=sa_common_want>sa_common_dB ? sa_c_ca : sa_c_cr;
+  sa_common_dB=sa_common_want+sa_cC*(sa_common_dB-sa_common_want);
+  sa_cS=sa_side_want>sa_side_dB ? sa_c_sa : sa_c_sr;
+  sa_side_dB=sa_side_want+sa_cS*(sa_side_dB-sa_side_want);
+
+  sa_common_apply=sa_common_dB*sa_core_gate;
+  sa_side_apply=sa_side_dB*sa_core_gate;
+  sa_g_form=sa_db2amp(-(sa_common_apply*sa_formW));
+  sa_g_edge=sa_db2amp(-(sa_common_apply*sa_edgeW));
+  sa_g_air=sa_db2amp(-(sa_common_apply*sa_airW));
+  sa_g_side=sa_db2amp(-sa_side_apply);
+  sa_g_broad=sa_db2amp(-(sa_common_apply*sa_broadW));
+
+  sa_M_form*=sa_g_form;
+  sa_S_form*=sa_g_form;
+  sa_M_edge*=sa_g_edge;
+  sa_S_edge*=sa_g_edge*sa_g_side;
+  sa_M_air*=sa_g_air;
+  sa_S_air*=sa_g_air*sa_g_side;
+  sa_coreM=(sa_M_body+sa_M_form+sa_M_edge+sa_M_air)*sa_g_broad;
+  sa_coreS=(sa_S_body+sa_S_form+sa_S_edge+sa_S_air)*sa_g_broad;
+  sa_core1L=sa_coreM+sa_coreS;
+  sa_core1R=sa_coreM-sa_coreS;
+
+  // ---------------------------------------------------------------------------
+  // LAYER 2: ADAPTIVE SURVIVING-ANCHOR TAX
+  // Eight-band attenuation-only analysis performed after the original core.
+  // ---------------------------------------------------------------------------
+  sa_coreM=0.5*(sa_core1L+sa_core1R);
+  sa_coreS=0.5*(sa_core1L-sa_core1R);
+  sa_prevLP_M=0;
+  sa_prevLP_S=0;
+  sa_total_fast=0;
+  sa_total_slow=0;
+  sa_total_long=0;
+  sa_sum_delta=0;
+  sa_sum_abs_delta=0;
+
+  sa_i=0;
+  loop(sa_NX,
+    sa_lpM=sa_mem[sa_LP_M+sa_i]+sa_mem[sa_XOVER_G+sa_i]*(sa_coreM-sa_mem[sa_LP_M+sa_i]);
+    sa_lpS=sa_mem[sa_LP_S+sa_i]+sa_mem[sa_XOVER_G+sa_i]*(sa_coreS-sa_mem[sa_LP_S+sa_i]);
+    sa_mem[sa_LP_M+sa_i]=sa_lpM;
+    sa_mem[sa_LP_S+sa_i]=sa_lpS;
+    sa_bM=sa_lpM-sa_prevLP_M;
+    sa_bS=sa_lpS-sa_prevLP_S;
+    sa_mem[sa_BAND_M+sa_i]=sa_bM;
+    sa_mem[sa_BAND_S+sa_i]=sa_bS;
+    sa_prevLP_M=sa_lpM;
+    sa_prevLP_S=sa_lpS;
+    sa_i+=1;
+  );
+  sa_mem[sa_BAND_M+sa_NB-1]=sa_coreM-sa_prevLP_M;
+  sa_mem[sa_BAND_S+sa_NB-1]=sa_coreS-sa_prevLP_S;
+
+  sa_i=0;
+  loop(sa_NB,
+    sa_bM=sa_mem[sa_BAND_M+sa_i];
+    sa_bS=sa_mem[sa_BAND_S+sa_i];
+    sa_inst=sa_bM*sa_bM+sa_bS*sa_bS;
+    sa_ef=sa_mem[sa_ENV_FAST+sa_i]+sa_band_fast_a*(sa_inst-sa_mem[sa_ENV_FAST+sa_i]);
+    sa_es=sa_mem[sa_ENV_SLOW+sa_i]+sa_band_slow_a*(sa_inst-sa_mem[sa_ENV_SLOW+sa_i]);
+    sa_el=sa_mem[sa_ENV_LONG+sa_i]+sa_band_long_a*(sa_inst-sa_mem[sa_ENV_LONG+sa_i]);
+    sa_delta=sa_ef-sa_mem[sa_ENV_PREV+sa_i];
+    sa_mem[sa_ENV_FAST+sa_i]=sa_ef;
+    sa_mem[sa_ENV_SLOW+sa_i]=sa_es;
+    sa_mem[sa_ENV_LONG+sa_i]=sa_el;
+    sa_mem[sa_ENV_PREV+sa_i]=sa_ef;
+    sa_mem[sa_ENV_DELTA+sa_i]=sa_delta;
+    sa_mem[sa_M_ENV+sa_i]+=sa_band_slow_a*(sa_bM*sa_bM-sa_mem[sa_M_ENV+sa_i]);
+    sa_mem[sa_S_ENV+sa_i]+=sa_band_slow_a*(sa_bS*sa_bS-sa_mem[sa_S_ENV+sa_i]);
+    sa_total_fast+=sa_ef;
+    sa_total_slow+=sa_es;
+    sa_total_long+=sa_el;
+    sa_sum_delta+=sa_delta;
+    sa_sum_abs_delta+=abs(sa_delta);
+    sa_i+=1;
+  );
+
+  sa_global_ratio_db=10*log((sa_total_fast+sa_eps)/(sa_total_slow+sa_eps))*sa_ilog10;
+  sa_onset_metric=sa_clamp01((sa_global_ratio_db-0.7)/7.0)*sa_src_w;
+  sa_common_mod=sa_sum_abs_delta>sa_eps ? sa_clamp01(abs(sa_sum_delta)/(sa_sum_abs_delta+sa_eps))*sa_src_w : 0;
+
+  sa_raw_target_sum=0;
+
+  sa_i=0;
+  loop(sa_NB,
+    sa_es=sa_mem[sa_ENV_SLOW+sa_i];
+    sa_ef=sa_mem[sa_ENV_FAST+sa_i];
+    sa_el=sa_mem[sa_ENV_LONG+sa_i];
+    sa_prevE=sa_i>0 ? sa_mem[sa_ENV_SLOW+sa_i-1] : sa_mem[sa_ENV_SLOW+sa_i+1];
+    sa_nextE=sa_i<sa_NB-1 ? sa_mem[sa_ENV_SLOW+sa_i+1] : sa_mem[sa_ENV_SLOW+sa_i-1];
+    sa_neigh=sa_i>0&&sa_i<sa_NB-1 ? sqrt(max(sa_eps,sa_prevE*sa_nextE)) : 0.5*(sa_prevE+sa_nextE);
+    sa_local_db=10*log((sa_es+sa_eps)/(sa_neigh+sa_eps))*sa_ilog10;
+    sa_local_score=sa_clamp01((sa_local_db-1.0)/8.5);
+    sa_share=sa_es/(sa_total_slow+sa_eps);
+    sa_share_score=sa_clamp01((sa_share*sa_NB-0.82)/2.35);
+    sa_rel_ratio=(sa_es/(sa_el+sa_eps))/(sa_total_slow/(sa_total_long+sa_eps)+sa_eps);
+    sa_rel_db=10*log(max(sa_eps,sa_rel_ratio))*sa_ilog10;
+    sa_rel_score=sa_clamp01((sa_rel_db-0.7)/7.5)*sa_baseline_ready;
+    sa_spec_score=sa_clamp01(0.46*sa_local_score+0.34*sa_share_score+0.20*sa_rel_score);
+
+    sa_trans_db=10*log((sa_ef+sa_eps)/(sa_es+sa_eps))*sa_ilog10;
+    sa_trans_threshold=4.8-3.0*sa_tame_s;
+    sa_trans_score=sa_clamp01((sa_trans_db-sa_trans_threshold)/7.0)*sa_tame_s;
+
+    sa_delta=sa_mem[sa_ENV_DELTA+sa_i];
+    sa_contribution=sa_sum_abs_delta>sa_eps ? sa_clamp01(abs(sa_delta)/(sa_sum_abs_delta+sa_eps)*sa_NB) : 0;
+    sa_mod_score=sa_common_mod*sa_contribution*sa_modulation_s;
+
+    sa_mE=sa_mem[sa_M_ENV+sa_i];
+    sa_sE=sa_mem[sa_S_ENV+sa_i];
+    sa_band_side_db=10*log((sa_sE+sa_eps)/(sa_mE+sa_eps))*sa_ilog10;
+    sa_side_score=sa_clamp01((sa_band_side_db-(1.0+2.5*sa_identity_s))/9.0);
+
+    sa_peak_score=max(sa_spec_score,max(sa_trans_score,sa_mod_score));
+    sa_blend_score=0.56*sa_peak_score+0.26*sa_spec_score+0.11*sa_trans_score+0.07*sa_mod_score;
+    sa_prof=sa_mem[sa_PROFILE_W+sa_i];
+    sa_cand=sa_clamp01(sa_blend_score*(0.62+0.55*sa_prof))*sa_src_w;
+
+    sa_anchor=sa_mem[sa_ANCHOR_MEM+sa_i];
+    sa_aa=sa_cand>sa_anchor ? sa_anchor_att_a : sa_anchor_rel_a;
+    sa_anchor+=sa_aa*(sa_cand-sa_anchor);
+    sa_mem[sa_ANCHOR_MEM+sa_i]=sa_anchor;
+
+    sa_prevcand=sa_mem[sa_CAND_PREV+sa_i];
+    sa_reentry=sa_cand>0.58&&sa_prevcand<=0.58;
+    sa_pe_target=sa_pe2_s>0.5 ? sa_clamp01(max(0,sa_cand-0.50)*1.65+(sa_reentry?0.24:0)) : 0;
+    sa_debt=sa_mem[sa_PE2_DEBT+sa_i];
+    sa_pa=sa_pe_target>sa_debt ? sa_pe2_att_a : sa_pe2_rel_a;
+    sa_debt+=sa_pa*(sa_pe_target-sa_debt);
+    sa_mem[sa_PE2_DEBT+sa_i]=sa_debt;
+    sa_mem[sa_CAND_PREV+sa_i]=sa_cand;
+
+    sa_protect=sa_mem[sa_BODY_PROTECT+sa_i];
+    sa_identity_depth=0.20+0.80*(1-sa_identity_s);
+    sa_maxcut=(0.45+8.80*sa_protect*sa_prof)*sa_erasure_s*sa_identity_depth;
+    sa_drive=sa_clamp01(0.18*sa_cand+0.62*sa_anchor+0.34*sa_debt*sa_pe2_s);
+    sa_rawcut=sa_maxcut*sa_drive*sa_adaptive_s*sa_core_gate;
+    sa_mem[sa_CUT_RAW+sa_i]=sa_rawcut;
+
+    sa_max_side_band=(0.25+4.50*sa_protect*sa_prof)*sa_erasure_s*(0.25+0.75*(1-sa_identity_s));
+    sa_rawside=sa_max_side_band*sa_side_score*sa_adaptive_s*sa_core_gate;
+    sa_mem[sa_SIDE_RAW+sa_i]=sa_rawside;
+
+    sa_raw_target_sum+=sa_rawcut;
+    sa_i+=1;
+  );
+
+  sa_target_mean=sa_raw_target_sum/sa_NB;
+  sa_core2L=0;
+  sa_core2R=0;
+  sa_targetL=0;
+  sa_targetR=0;
+
+  sa_i=0;
+  loop(sa_NB,
+    sa_rawcut=sa_mem[sa_CUT_RAW+sa_i];
+    sa_leftcut=sa_i>0 ? sa_mem[sa_CUT_RAW+sa_i-1] : sa_rawcut;
+    sa_rightcut=sa_i<sa_NB-1 ? sa_mem[sa_CUT_RAW+sa_i+1] : sa_rawcut;
+    sa_neighcut=0.25*sa_leftcut+0.50*sa_rawcut+0.25*sa_rightcut;
+    sa_smooth_amt=0.72*sa_novelty_s;
+    sa_targetcut=sa_rawcut+(sa_neighcut-sa_rawcut)*sa_smooth_amt;
+
+    // Flash Guard limits abrupt simultaneous broadband taxation without removing selectivity.
+    sa_flash_cap=sa_target_mean*(1.65-0.55*sa_flash_s)+1.0+2.0*(1-sa_flash_s);
+    sa_targetcut=min(sa_targetcut,sa_flash_cap);
+    sa_cut=sa_mem[sa_CUT_CUR+sa_i];
+    sa_ca=sa_targetcut>sa_cut ? sa_cut_att_a : sa_cut_rel_a;
+    sa_cut+=sa_ca*(sa_targetcut-sa_cut);
+    sa_mem[sa_CUT_CUR+sa_i]=sa_cut;
+
+    sa_rawside=sa_mem[sa_SIDE_RAW+sa_i];
+    sa_leftside=sa_i>0 ? sa_mem[sa_SIDE_RAW+sa_i-1] : sa_rawside;
+    sa_rightside=sa_i<sa_NB-1 ? sa_mem[sa_SIDE_RAW+sa_i+1] : sa_rawside;
+    sa_targetside=sa_rawside+(0.25*sa_leftside+0.50*sa_rawside+0.25*sa_rightside-sa_rawside)*(0.54*sa_novelty_s);
+    sa_sidecut=sa_mem[sa_SIDE_CUR+sa_i];
+    sa_sa=sa_targetside>sa_sidecut ? sa_side_att_a : sa_side_rel_a;
+    sa_sidecut+=sa_sa*(sa_targetside-sa_sidecut);
+    sa_mem[sa_SIDE_CUR+sa_i]=sa_sidecut;
+
+    sa_effective_cut=sa_cut*sa_core_gate;
+    sa_effective_side=sa_sidecut*sa_core_gate;
+    sa_gain=sa_db2amp(-sa_effective_cut);
+    sa_sidegain=sa_db2amp(-sa_effective_side);
+    sa_bM=sa_mem[sa_BAND_M+sa_i]*sa_gain;
+    sa_bS=sa_mem[sa_BAND_S+sa_i]*sa_gain*sa_sidegain;
+    sa_bandL=sa_bM+sa_bS;
+    sa_bandR=sa_bM-sa_bS;
+    sa_core2L+=sa_bandL;
+    sa_core2R+=sa_bandR;
+
+    sa_cand=sa_mem[sa_CAND_PREV+sa_i];
+    sa_anchor=sa_mem[sa_ANCHOR_MEM+sa_i];
+    sa_debt=sa_mem[sa_PE2_DEBT+sa_i];
+    sa_prof=sa_mem[sa_PROFILE_W+sa_i];
+    sa_protect=sa_mem[sa_BODY_PROTECT+sa_i];
+    sa_focus=sa_clamp01((0.06+0.54*sa_cand+0.50*sa_anchor+0.24*sa_debt*sa_pe2_s)*(0.42+0.58*sa_prof)*(0.22+0.78*sa_protect));
+    sa_targetL+=sa_bandL*sa_focus;
+    sa_targetR+=sa_bandR*sa_focus;
+
+    sa_i+=1;
+  );
+
+  // Core-only slow level restoration. The scatter branch is never used by this detector.
+  sa_input_inst=0.5*(sa_inL*sa_inL+sa_inR*sa_inR);
+  sa_core_inst=0.5*(sa_core2L*sa_core2L+sa_core2R*sa_core2R);
+  sa_input_energy+=sa_aSlow*(sa_input_inst-sa_input_energy);
+  sa_core_energy+=sa_aSlow*(sa_core_inst-sa_core_energy);
+  sa_level_target=sa_level_s>0.5&&sa_input_energy>sa_eps ? sqrt((sa_input_energy+sa_eps)/(sa_core_energy+sa_eps)) : 1;
+  sa_level_target=sa_clampv(sa_level_target,0.62,1.55);
+  sa_level_target=1+(sa_level_target-1)*sa_core_gate;
+  sa_la=sa_level_target<sa_level_gain ? sa_level_down_a : sa_level_up_a;
+  sa_level_gain+=sa_la*(sa_level_target-sa_level_gain);
+  sa_level_apply=1+(sa_level_gain-1)*sa_level_s*sa_core_gate;
+  sa_core2L*=sa_level_apply;
+  sa_core2R*=sa_level_apply;
+  sa_targetL*=sa_level_apply;
+  sa_targetR*=sa_level_apply;
+
+  // ---------------------------------------------------------------------------
+  // LAYER 3: OPTIONAL SELECTIVE SCATTER
+  // Only the currently targeted residue is replaced. Untargeted core remains clean.
+  // Scatter Mix = 0% is an exact clean-core output morph point.
+  // ---------------------------------------------------------------------------
+  sa_scatter_mix_t==0 && sa_scatter_mix_s<0.000001 ? sa_scatter_mix_s=0;
+  sa_scatter_mix_s>0 || sa_scatter_mix_t>0 ? (
+    sa_scatter_count+=1;
+    sa_scatter_dirty=1;
+  sa_sc_init<0.5 ? (
+    sa_sc_d1L_cur=sa_sc_d1L;sa_sc_d1R_cur=sa_sc_d1R;sa_sc_d2L_cur=sa_sc_d2L;sa_sc_d2R_cur=sa_sc_d2R;
+    sa_sc_d3L_cur=sa_sc_d3L;sa_sc_d3R_cur=sa_sc_d3R;sa_sc_d4L_cur=sa_sc_d4L;sa_sc_d4R_cur=sa_sc_d4R;
+    sa_sc_g1_cur=sa_sc_g1;sa_sc_g2_cur=sa_sc_g2;sa_sc_g3_cur=sa_sc_g3;sa_sc_g4_cur=sa_sc_g4;
+    sa_sc_rot_c_cur=sa_sc_rot_c;sa_sc_rot_s_cur=sa_sc_rot_s;sa_sc_damp_a_cur=sa_sc_damp_a;sa_sc_init=1;
+  );
+  sa_sc_d1L_cur+=sa_sc_param_a*(sa_sc_d1L-sa_sc_d1L_cur);sa_sc_d1R_cur+=sa_sc_param_a*(sa_sc_d1R-sa_sc_d1R_cur);
+  sa_sc_d2L_cur+=sa_sc_param_a*(sa_sc_d2L-sa_sc_d2L_cur);sa_sc_d2R_cur+=sa_sc_param_a*(sa_sc_d2R-sa_sc_d2R_cur);
+  sa_sc_d3L_cur+=sa_sc_param_a*(sa_sc_d3L-sa_sc_d3L_cur);sa_sc_d3R_cur+=sa_sc_param_a*(sa_sc_d3R-sa_sc_d3R_cur);
+  sa_sc_d4L_cur+=sa_sc_param_a*(sa_sc_d4L-sa_sc_d4L_cur);sa_sc_d4R_cur+=sa_sc_param_a*(sa_sc_d4R-sa_sc_d4R_cur);
+  sa_sc_g1_cur+=sa_sc_param_a*(sa_sc_g1-sa_sc_g1_cur);sa_sc_g2_cur+=sa_sc_param_a*(sa_sc_g2-sa_sc_g2_cur);
+  sa_sc_g3_cur+=sa_sc_param_a*(sa_sc_g3-sa_sc_g3_cur);sa_sc_g4_cur+=sa_sc_param_a*(sa_sc_g4-sa_sc_g4_cur);
+  sa_sc_rot_c_cur+=sa_sc_param_a*(sa_sc_rot_c-sa_sc_rot_c_cur);sa_sc_rot_s_cur+=sa_sc_param_a*(sa_sc_rot_s-sa_sc_rot_s_cur);
+  sa_sc_rot_norm=sqrt(max(sa_eps,sa_sc_rot_c_cur*sa_sc_rot_c_cur+sa_sc_rot_s_cur*sa_sc_rot_s_cur));
+  sa_sc_rot_c_eff=sa_sc_rot_c_cur/sa_sc_rot_norm;sa_sc_rot_s_eff=sa_sc_rot_s_cur/sa_sc_rot_norm;
+  sa_sc_damp_a_cur+=sa_sc_param_a*(sa_sc_damp_a-sa_sc_damp_a_cur);
+
+  sa_feed_gate=sa_clamp01(sa_scatter_mix_s*50);
+  sa_scatter_flash_duck=1-sa_flash_s*sa_onset_metric*0.72;
+  sa_scatter_send_gain=(0.94-0.20*sa_novelty_s)*sa_scatter_flash_duck*sa_feed_gate;
+  sa_scInL=sa_targetL*sa_scatter_send_gain;
+  sa_scInR=sa_targetR*sa_scatter_send_gain;
+
+  sa_sc_lpL+=sa_sc_damp_a_cur*(sa_scInL-sa_sc_lpL);
+  sa_sc_lpR+=sa_sc_damp_a_cur*(sa_scInR-sa_sc_lpR);
+  sa_rotL=sa_sc_rot_c_eff*sa_sc_lpL+sa_sc_rot_s_eff*sa_sc_lpR;
+  sa_rotR=-sa_sc_rot_s_eff*sa_sc_lpL+sa_sc_rot_c_eff*sa_sc_lpR;
+
+  sa_ap1L=sa_ap_process(sa_rotL,sa_SC_L1,sa_sc_d1L_cur,sa_sc_g1_cur);
+  sa_ap1R=sa_ap_process(sa_rotR,sa_SC_R1,sa_sc_d1R_cur,sa_sc_g1_cur);
+  sa_rot2L=sa_sc_rot_c_eff*sa_ap1L-sa_sc_rot_s_eff*sa_ap1R;
+  sa_rot2R=sa_sc_rot_s_eff*sa_ap1L+sa_sc_rot_c_eff*sa_ap1R;
+  sa_ap2L=sa_ap_process(sa_rot2L,sa_SC_L2,sa_sc_d2L_cur,sa_sc_g2_cur);
+  sa_ap2R=sa_ap_process(sa_rot2R,sa_SC_R2,sa_sc_d2R_cur,sa_sc_g2_cur);
+  sa_rot3L=sa_sc_rot_c_eff*sa_ap2L+sa_sc_rot_s_eff*sa_ap2R;
+  sa_rot3R=-sa_sc_rot_s_eff*sa_ap2L+sa_sc_rot_c_eff*sa_ap2R;
+  sa_ap3L=sa_ap_process(sa_rot3L,sa_SC_L3,sa_sc_d3L_cur,sa_sc_g3_cur);
+  sa_ap3R=sa_ap_process(sa_rot3R,sa_SC_R3,sa_sc_d3R_cur,sa_sc_g3_cur);
+  sa_rot4L=sa_sc_rot_c_eff*sa_ap3L-sa_sc_rot_s_eff*sa_ap3R;
+  sa_rot4R=sa_sc_rot_s_eff*sa_ap3L+sa_sc_rot_c_eff*sa_ap3R;
+  sa_diffL=sa_ap_process(sa_rot4L,sa_SC_L4,sa_sc_d4L_cur,sa_sc_g4_cur);
+  sa_diffR=sa_ap_process(sa_rot4R,sa_SC_R4,sa_sc_d4R_cur,sa_sc_g4_cur);
+
+  sa_diffM=0.5*(sa_diffL+sa_diffR);
+  sa_diffS=0.5*(sa_diffL-sa_diffR)*(1+0.82*sa_scatter_spread_s);
+  sa_diffL=sa_diffM+sa_diffS;
+  sa_diffR=sa_diffM-sa_diffS;
+
+  // Novelty-linked Scatter Governor: the optional return cannot quietly become
+  // the new dominant object. It compares raw diffuser energy only with the
+  // targeted core portion; Level Lock is not part of this loop.
+  sa_target_inst=0.5*(sa_targetL*sa_targetL+sa_targetR*sa_targetR);
+  sa_scatter_inst_raw=0.5*(sa_diffL*sa_diffL+sa_diffR*sa_diffR);
+  sa_target_energy+=sa_aSlow*(sa_target_inst-sa_target_energy);
+  sa_scatter_energy+=sa_aSlow*(sa_scatter_inst_raw-sa_scatter_energy);
+  sa_scatter_allow=sa_target_energy*(0.32+0.62*(1-sa_novelty_s))+sa_eps;
+  sa_scatter_govern_target=sa_scatter_energy>sa_scatter_allow ? sqrt(sa_scatter_allow/(sa_scatter_energy+sa_eps)) : 1;
+  sa_scatter_govern_target=sa_clampv(sa_scatter_govern_target,0.18,1);
+  sa_sg_a=sa_scatter_govern_target<sa_scatter_governor ? sa_level_down_a : sa_level_up_a;
+  sa_scatter_governor+=sa_sg_a*(sa_scatter_govern_target-sa_scatter_governor);
+  sa_diffL*=sa_scatter_governor;
+  sa_diffR*=sa_scatter_governor;
+
+    sa_sc_wpos+=1;
+    sa_sc_wpos>=sa_sc_buf_len ? sa_sc_wpos=0;
+  ) : (
+    sa_scatter_dirty ? sa_clear_scatter();
+    sa_diffL=0;sa_diffR=0;
+  );
+  sa_untargetedL=sa_core2L-sa_targetL;
+  sa_untargetedR=sa_core2R-sa_targetR;
+  sa_scatteredL=sa_untargetedL+sa_diffL;
+  sa_scatteredR=sa_untargetedR+sa_diffR;
+
+  // Linear replacement morph: exact clean core at 0%, governed selective
+  // scatter replacement at 100%. The core itself is never delayed.
+  sa_processedL=sa_core2L+(sa_scatteredL-sa_core2L)*sa_scatter_mix_s;
+  sa_processedR=sa_core2R+(sa_scatteredR-sa_core2R)*sa_scatter_mix_s;
+
+  // Containment is restricted to the processed branch. Dry mix is exact at zero.
+  sa_peak=max(abs(sa_processedL),abs(sa_processedR));
+  sa_desired_limit=sa_peak>0.98 ? 0.98/max(sa_peak,sa_eps) : 1;
+  sa_desired_limit<sa_limiter_gain ? sa_limiter_gain=sa_desired_limit : sa_limiter_gain+=sa_limiter_rel_a*(1-sa_limiter_gain);
+  sa_wet_l=sa_denorm(sa_processedL*sa_limiter_gain);
+  sa_wet_r=sa_denorm(sa_processedR*sa_limiter_gain);
+  sa_wet_l!=sa_wet_l ? sa_wet_l=0;
+  sa_wet_r!=sa_wet_r ? sa_wet_r=0;
+
+);
+function sa_process(sa_in_l,sa_in_r) local(sa_has_input,sa_drain_limit,sa_drain_gain) (
+  sa_out_l=sa_in_l;sa_out_r=sa_in_r;
+  sa_mix_target>0 || sa_mix_cur>0 || sa_running ? (
+    sa_has_input=max(abs(sa_in_l),abs(sa_in_r))>0.000000000001;
+    sa_mix_target==0 && sa_mix_cur<=sa_fade_step ? (
+      sa_reset();
+      sa_out_l=sa_in_l;sa_out_r=sa_in_r;
+    ) : (
+      !sa_running && !sa_has_input ? (
+        // Enabled but silent: no filters, detectors, scatter, or coefficient work.
+        sa_sleeping ? sa_idle_samples+=1;
+      ) : (
+        !sa_running ? (
+          sa_idle_samples>0 ? sa_decay_idle(sa_idle_samples);
+          sa_idle_samples=0;sa_sleeping=0;sa_running=1;sa_silent_samples=0;
+          sa_mix_cur=0;sa_seed_controls();
+        );
+        sa_mix_cur< sa_mix_target ? sa_mix_cur=min(sa_mix_target,sa_mix_cur+sa_fade_step) : sa_mix_cur=max(sa_mix_target,sa_mix_cur-sa_fade_step);
+        sa_has_input ? sa_silent_samples=0 : sa_silent_samples+=1;
+        sa_drain_limit=sa_scatter_mix_s>0.000001 || sa_scatter_mix_t>0 ? sa_scatter_drain : sa_core_drain;
+        sa_step(sa_in_l,sa_in_r);
+        sa_drain_gain=sa_clamp01((sa_drain_limit-sa_silent_samples)/sa_fade_samples);
+        sa_out_l=sa_in_l+(sa_wet_l-sa_in_l)*sa_mix_cur*sa_drain_gain;
+        sa_out_r=sa_in_r+(sa_wet_r-sa_in_r)*sa_mix_cur*sa_drain_gain;
+        sa_silent_samples>=sa_drain_limit ? (
+          sa_clear_filters();sa_running=0;sa_sleeping=1;sa_idle_samples=0;sa_mix_cur=0;
+          sa_out_l=sa_in_l;sa_out_r=sa_in_r;
+        );
+      );
+    );
+  );
+);
+
+// Thrill for Sample v71: supplied Somatic Accent Enhancer MX v3.3.0.
+// All original source-analysis, lattice, governors and generator equations retained.
+// st_config(0..1) controls 0..15% additive injection. Dry path remains unity.
+// No rand(), sliders, sample-pool APIs, GFX, or generated-to-source feedback.
+// Place every helper in @init. Call st_block() once per audio block while running.
+// st_init(base) reserves 2*(ceil(0.047*srate)+16) cells and returns first free cell.
+// Disabled and drained silence execute no filters, lattice or synthesis.
+
+
+function st_clamp01(st_x) (
+  min(max(st_x, 0), 1);
+);
+
+function st_clamp(st_x, st_lo, st_hi) (
+  min(max(st_x, st_lo), st_hi);
+);
+
+function st_softsat(st_x) (
+  st_x / (1 + abs(st_x));
+);
+
+function st_lerp(st_a, st_b, st_t) (
+  st_a + (st_b-st_a)*st_t;
+);
+
+
+
+function st_opportunity_score(st_e, st_ref)
+  local(st_p)
+(
+  st_p = st_clamp01(st_e / (st_ref*0.70 + 0.000400));
+  st_p * (1 - 0.55*st_p);
+);
+
+// Prefer source-connected spectral structure with actual LOCAL room around it.
+// A candidate must exist in the source, but adjacent occupancy is penalized so tiny injected energy
+// lands where it creates disproportionate contrast rather than merely making the loudest HF peak louder.
+function st_local_contrast_score(st_e, st_leftE, st_rightE, st_ref)
+  local(st_p, st_n, st_connected, st_selfRoom, st_neighborRoom, st_localRelief)
+(
+  st_p = st_clamp01(st_e / (st_ref*0.55 + 0.000400));
+  st_n = st_clamp01((0.50*st_leftE + 0.50*st_rightE) / (st_ref*0.55 + 0.000400));
+  st_connected = st_clamp01(st_p*3.10);
+  st_selfRoom = st_clamp01(1 - 0.76*st_p);
+  st_neighborRoom = st_clamp01(1 - 0.66*st_n);
+  st_localRelief = st_clamp01(0.50 + 0.82*(st_p-st_n));
+  st_connected * (0.18 + 0.42*st_selfRoom + 0.24*st_neighborRoom + 0.16*st_localRelief);
+);
+
+// Finite causal Temporal Embodiment reservoir.
+// Input first becomes Edge; slower scales receive bounded consequence from the preceding scale.
+// This is intentionally not four independent envelope followers receiving the same source value.
+function st_te_step(st_x)
+  instance(st_edge,st_bloom,st_carry,st_trace)
+  local(st_bloomTarget, st_carryTarget, st_traceTarget)
+(
+  st_x = st_clamp01(st_x);
+
+  st_edge += (st_x-st_edge) * (st_x > st_edge ? st_teEdgeAtk : st_teEdgeRel);
+  st_edge = st_clamp01(st_edge);
+
+  st_bloomTarget = st_clamp01(0.64*st_edge + 0.18*st_x);
+  st_bloom += (st_bloomTarget-st_bloom) * (st_bloomTarget > st_bloom ? st_teBloomAtk : st_teBloomRel);
+  st_bloom = st_clamp01(st_bloom);
+
+  st_carryTarget = st_clamp01(0.58*st_bloom + 0.12*st_x);
+  st_carry += (st_carryTarget-st_carry) * (st_carryTarget > st_carry ? st_teCarryAtk : st_teCarryRel);
+  st_carry = st_clamp01(st_carry);
+
+  st_traceTarget = st_clamp01(0.66*st_carry + 0.12*st_bloom);
+  st_trace += (st_traceTarget-st_trace) * (st_traceTarget > st_trace ? st_teTraceAtk : st_teTraceRel);
+  st_trace = st_clamp01(st_trace);
+);
+
+function st_set_bp(st_freq, st_q)
+  instance(st_b0,st_b1,st_b2,st_a1,st_a2)
+  local(st_w, st_c, st_sn, st_alpha, st_norm)
+(
+  st_freq = st_clamp(st_freq, 20, srate*0.45);
+  st_q = max(st_q, 0.1);
+  st_w = st_two_pi*st_freq/srate;
+  st_c = cos(st_w);
+  st_sn = sin(st_w);
+  st_alpha = st_sn/(2*st_q);
+  st_norm = 1/(1 + st_alpha);
+  st_b0 = st_alpha*st_norm;
+  st_b1 = 0;
+  st_b2 = -st_alpha*st_norm;
+  st_a1 = -2*st_c*st_norm;
+  st_a2 = (1 - st_alpha)*st_norm;
+);
+
+function st_set_hp(st_freq, st_q)
+  instance(st_b0,st_b1,st_b2,st_a1,st_a2)
+  local(st_w, st_c, st_sn, st_alpha, st_norm)
+(
+  st_freq = st_clamp(st_freq, 20, srate*0.45);
+  st_q = max(st_q, 0.1);
+  st_w = st_two_pi*st_freq/srate;
+  st_c = cos(st_w);
+  st_sn = sin(st_w);
+  st_alpha = st_sn/(2*st_q);
+  st_norm = 1/(1 + st_alpha);
+  st_b0 = ((1 + st_c)*0.5)*st_norm;
+  st_b1 = -(1 + st_c)*st_norm;
+  st_b2 = ((1 + st_c)*0.5)*st_norm;
+  st_a1 = -2*st_c*st_norm;
+  st_a2 = (1 - st_alpha)*st_norm;
+);
+
+function st_run_bq(st_x)
+  instance(st_b0,st_b1,st_b2,st_a1,st_a2,st_x1,st_x2,st_y1,st_y2)
+  local(st_y)
+(
+  st_y = st_b0*st_x + st_b1*st_x1 + st_b2*st_x2 - st_a1*st_y1 - st_a2*st_y2;
+  st_x2 = st_x1;
+  st_x1 = st_x;
+  st_y2 = st_y1;
+  st_y1 = st_y;
+  st_y;
+);
+
+
+function st_coefficients()
+(
+
+
+  // Fixed source-interpretation probes. These do not move with the renderers.
+  st_anBodyA.st_set_bp(230, 0.82);
+  st_anBodyB.st_set_bp(320, 0.82);
+  st_anBodyC.st_set_bp(427, 0.78);
+
+  st_anDetailA.st_set_bp(707, 0.78);
+  st_anDetailB.st_set_bp(890, 0.82);
+  st_anDetailC.st_set_bp(1109, 0.82);
+  st_anDetailD.st_set_bp(1370, 0.76);
+
+  st_anAttackA.st_set_bp(3033, 0.78);
+  st_anAttackB.st_set_bp(3669, 0.76);
+
+  st_anShineA.st_set_bp(4430, 0.76);
+  st_anShineB.st_set_bp(5340, 0.76);
+  st_anShineC.st_set_bp(7725, 0.72);
+  st_anShineD.st_set_bp(9277, 0.68);
+  st_anShineMid.st_set_bp(6426, 0.74);
+  st_anAir.st_set_bp(11133, 0.68);
+
+  st_fastAtk = 1 - exp(-1/(0.002*srate));
+  st_fastRel = 1 - exp(-1/(0.025*srate));
+  st_slowAtk = 1 - exp(-1/(0.075*srate));
+  st_slowRel = 1 - exp(-1/(0.230*srate));
+  st_hiAtk = 1 - exp(-1/(0.004*srate));
+  st_hiRel = 1 - exp(-1/(0.090*srate));
+
+  st_zoneAtk = 1 - exp(-1/(0.018*srate));
+  st_zoneRel = 1 - exp(-1/(0.145*srate));
+  st_sideAtk = 1 - exp(-1/(0.020*srate));
+  st_sideRel = 1 - exp(-1/(0.180*srate));
+
+  st_rootDCcoef = 1 - exp(-1/(0.070*srate));
+  st_voiceFastAtk = 1 - exp(-1/(0.006*srate));
+  st_voiceFastRel = 1 - exp(-1/(0.050*srate));
+  st_voiceSlowAtk = 1 - exp(-1/(0.095*srate));
+  st_voiceSlowRel = 1 - exp(-1/(0.380*srate));
+  st_honkAtk = 1 - exp(-1/(0.012*srate));
+  st_honkRel = 1 - exp(-1/(0.180*srate));
+  st_nasalAtk = 1 - exp(-1/(0.010*srate));
+  st_nasalRel = 1 - exp(-1/(0.160*srate));
+
+  st_exposureCoef = 1 - exp(-1/(8.000*srate));
+  st_authorityCoef = 1 - exp(-1/(0.028*srate));
+  st_microCoef = 1 - exp(-1/(0.032*srate));
+  st_widthCoef = 1 - exp(-1/(0.018*srate));
+  st_expandCoef = 1 - exp(-1/(0.024*srate));
+  st_corrCoef = 1 - exp(-1/(0.035*srate));
+
+  // Temporal Embodiment: Edge -> Bloom -> Carry -> Trace.
+  st_teEdgeAtk = 1 - exp(-1/(0.005*srate));
+  st_teEdgeRel = 1 - exp(-1/(0.080*srate));
+  st_teBloomAtk = 1 - exp(-1/(0.055*srate));
+  st_teBloomRel = 1 - exp(-1/(0.360*srate));
+  st_teCarryAtk = 1 - exp(-1/(0.240*srate));
+  st_teCarryRel = 1 - exp(-1/(2.800*srate));
+  st_teTraceAtk = 1 - exp(-1/(1.100*srate));
+  st_teTraceRel = 1 - exp(-1/(22.000*srate));
+
+  // PE predicts topology; PE2 predicts the magnitude of prediction error itself.
+  st_topoPredCoef = 1 - exp(-1/(0.420*srate));
+  st_pePredCoef = 1 - exp(-1/(1.600*srate));
+
+  // Familiarity spans immediate morphology through long exposure.
+  st_famImmediateCoef = 1 - exp(-1/(0.380*srate));
+  st_famPhraseCoef = 1 - exp(-1/(4.500*srate));
+  st_famSceneCoef = 1 - exp(-1/(20.000*srate));
+  st_famExposureCoef = 1 - exp(-1/(75.000*srate));
+  st_reprMemCoef = 1 - exp(-1/(3.200*srate));
+  st_reprExposureCoef = 1 - exp(-1/(18.000*srate));
+  st_reprExposureRecoveryCoef = 1 - exp(-1/(32.000*srate));
+  st_exposureRecoveryCoef = 1 - exp(-1/(18.000*srate));
+  st_eventSimDecay = exp(-1/(12.000*srate));
+  st_eventPeWindowDecay = exp(-1/(0.160*srate));
+  st_eventPe2Decay = exp(-1/(0.420*srate));
+
+  st_genAtk = 1 - exp(-1/(0.006*srate));
+  st_genRel = 1 - exp(-1/(0.120*srate));
+  st_masterAtk = 1 - exp(-1/(0.002*srate));
+  st_masterRel = 1 - exp(-1/(0.160*srate));
+  st_beatDecay = exp(-1/(4.000*srate));
+  st_pulseDriftSmooth = 1 - exp(-1/(0.750*srate));
+
+  st_d1 = floor(0.0033*srate);
+  st_d2 = floor(0.0068*srate);
+  st_d3 = floor(0.0115*srate);
+  st_d4 = floor(0.0185*srate);
+  st_d5 = floor(0.0310*srate);
+  st_d6 = floor(0.0470*srate);
+
+
+);
+
+function st_tune()
+(
+  st_block_count+=1;
+
+  st_autoAuthority = 1;
+  st_tuneConfidence = st_clamp01((st_slowEnv - 0.0010) * 85);
+  st_tuneMix = st_autoAuthority * st_tuneConfidence;
+
+  st_bodyScoreA = st_opportunity_score(st_eBodyA, st_slowEnv);
+  st_bodyScoreB = st_opportunity_score(st_eBodyB, st_slowEnv);
+  st_bodyScoreC = st_opportunity_score(st_eBodyC, st_slowEnv);
+  st_bodyBest = 0;
+  st_bodyBestScore = st_bodyScoreA;
+  st_bodyScoreB > st_bodyBestScore ? (st_bodyBest = 1; st_bodyBestScore = st_bodyScoreB;);
+  st_bodyScoreC > st_bodyBestScore ? (st_bodyBest = 2; st_bodyBestScore = st_bodyScoreC;);
+  st_bodyCurScore = st_bodySel == 0 ? st_bodyScoreA : st_bodySel == 1 ? st_bodyScoreB : st_bodyScoreC;
+  st_bodyBestScore > st_bodyCurScore*1.12 && st_slowEnv > 0.0015 ? st_bodySel = st_bodyBest;
+  st_bodyCandidate = st_bodySel == 0 ? 230 : st_bodySel == 1 ? 320 : 427;
+  st_bodyTarget = st_lerp(285, st_bodyCandidate, st_tuneMix);
+  st_bodyHz += (st_bodyTarget - st_bodyHz) * 0.10;
+
+  st_detailScoreA = st_opportunity_score(st_eDetailA, st_slowEnv);
+  st_detailScoreB = st_opportunity_score(st_eDetailB, st_slowEnv);
+  st_detailScoreC = st_opportunity_score(st_eDetailC, st_slowEnv);
+  st_detailScoreD = st_opportunity_score(st_eDetailD, st_slowEnv);
+  st_detailBest = 0;
+  st_detailBestScore = st_detailScoreA;
+  st_detailScoreB > st_detailBestScore ? (st_detailBest = 1; st_detailBestScore = st_detailScoreB;);
+  st_detailScoreC > st_detailBestScore ? (st_detailBest = 2; st_detailBestScore = st_detailScoreC;);
+  st_detailScoreD > st_detailBestScore ? (st_detailBest = 3; st_detailBestScore = st_detailScoreD;);
+  st_detailCurScore = st_detailSel == 0 ? st_detailScoreA : st_detailSel == 1 ? st_detailScoreB : st_detailSel == 2 ? st_detailScoreC : st_detailScoreD;
+  st_detailBestScore > st_detailCurScore*1.12 && st_slowEnv > 0.0015 ? st_detailSel = st_detailBest;
+  st_detailCandidate = st_detailSel == 0 ? 707 : st_detailSel == 1 ? 890 : st_detailSel == 2 ? 1109 : 1370;
+  st_detailTarget = st_lerp(835, st_detailCandidate, st_tuneMix);
+  st_phoneFocus += (st_detailTarget - st_phoneFocus) * 0.10;
+
+  // Local-neighborhood contrast seeking: source-connected structure with adjacent spectral room wins.
+  st_shimmerScoreA = st_local_contrast_score(st_eShineA, st_eAttackB, st_eShineB, st_slowEnv);
+  st_shimmerScoreB = st_local_contrast_score(st_eShineB, st_eShineA, st_eShineMid, st_slowEnv);
+  st_shimmerScoreC = st_local_contrast_score(st_eShineC, st_eShineMid, st_eShineD, st_slowEnv);
+  st_shimmerScoreD = st_local_contrast_score(st_eShineD, st_eShineC, st_eAir, st_slowEnv);
+  st_shimmerBest = 0;
+  st_shimmerBestScore = st_shimmerScoreA;
+  st_shimmerScoreB > st_shimmerBestScore ? (st_shimmerBest = 1; st_shimmerBestScore = st_shimmerScoreB;);
+  st_shimmerScoreC > st_shimmerBestScore ? (st_shimmerBest = 2; st_shimmerBestScore = st_shimmerScoreC;);
+  st_shimmerScoreD > st_shimmerBestScore ? (st_shimmerBest = 3; st_shimmerBestScore = st_shimmerScoreD;);
+  st_shimmerCurScore = st_shimmerSel == 0 ? st_shimmerScoreA : st_shimmerSel == 1 ? st_shimmerScoreB : st_shimmerSel == 2 ? st_shimmerScoreC : st_shimmerScoreD;
+  st_shimmerBestScore > st_shimmerCurScore*1.14 && st_slowEnv > 0.0015 ? st_shimmerSel = st_shimmerBest;
+  st_shimmerCandidate = st_shimmerSel == 0 ? 4430 : st_shimmerSel == 1 ? 5340 : st_shimmerSel == 2 ? 7725 : 9277;
+  st_shimmerTarget = st_lerp(5340, st_shimmerCandidate, st_tuneMix);
+  st_shimmerHz += (st_shimmerTarget - st_shimmerHz) * 0.08;
+  st_shimmerContrast = st_shimmerBestScore;
+
+  // Renderer coefficients are updated lazily once per audio block.
+  // AUTO=0 reproduces the proven keeper point. With AUTO active, the event can briefly expand:
+  // the body anchor nudges downward while the shimmer family opens upward, then both return home.
+  st_bodyRenderHz = st_bodyHz * (1 - 0.036*st_autoAuthority*st_spectralExpand);
+  st_shimmerRenderHz = st_shimmerHz * (1 + 0.058*st_autoAuthority*st_spectralExpand);
+  st_bodyQ = st_clamp(0.90 + st_autoAuthority*(0.20*(1-st_sustainEvidence) + 0.10*st_bodyPresence - 0.08), 0.72, 1.22);
+  st_body1L.st_set_bp(st_bodyRenderHz, st_bodyQ);
+  st_body1R.st_set_bp(st_bodyRenderHz, st_bodyQ);
+  st_body2L.st_set_bp(st_clamp(st_bodyRenderHz*1.22, 210, 560), max(st_bodyQ*0.85, 0.35));
+  st_body2R.st_set_bp(st_clamp(st_bodyRenderHz*1.22, 210, 560), max(st_bodyQ*0.85, 0.35));
+
+  st_biteL.st_set_bp(st_clamp(st_phoneFocus*4.00, 2800, 4300), 0.90);
+  st_biteR.st_set_bp(st_clamp(st_phoneFocus*4.00, 2800, 4300), 0.90);
+
+  st_sh1L.st_set_bp(st_shimmerRenderHz, 0.85);
+  st_sh1R.st_set_bp(st_shimmerRenderHz, 0.85);
+  st_sh2L.st_set_bp(st_clamp(st_shimmerRenderHz*1.45, 3500, 14500), 0.75);
+  st_sh2R.st_set_bp(st_clamp(st_shimmerRenderHz*1.45, 3500, 14500), 0.75);
+  st_sh3L.st_set_bp(st_clamp(st_shimmerRenderHz*1.74, 4500, 18000), 0.70);
+  st_sh3R.st_set_bp(st_clamp(st_shimmerRenderHz*1.74, 4500, 18000), 0.70);
+  st_guardL.st_set_hp(7600, 0.707);
+  st_guardR.st_set_hp(7600, 0.707);
+
+  st_resRootHz = st_clamp(st_bodyRenderHz/5.95, 36, 68);
+  st_rootM.st_set_bp(st_resRootHz, 4.20);
+  st_res4M.st_set_bp(st_clamp(st_resRootHz*4.00, 150, 320), 1.05);
+  st_res5M.st_set_bp(st_clamp(st_resRootHz*4.85, 190, 370), 0.92);
+  st_res7M.st_set_bp(st_clamp(st_resRootHz*7.00, 250, 540), 0.86);
+  st_res8M.st_set_bp(st_clamp(st_resRootHz*8.10, 290, 650), 0.82);
+  st_res12M.st_set_bp(st_clamp(st_resRootHz*11.60, 400, 820), 0.72);
+  st_res15M.st_set_bp(st_clamp(st_resRootHz*14.80, 520, 980), 0.68);
+
+  st_formantSpread = st_clamp(0.95 + st_autoAuthority*(0.16*st_sustainEvidence - 0.18*st_detailPresence), 0.72, 1.18);
+  st_vq = st_clamp(1 / max(st_formantSpread, 0.10), 0.55, 2.35);
+  st_vlLowM.st_set_bp(st_clamp(st_phoneFocus*0.34, 230, 390), 0.78*st_vq);
+  st_vlBridgeM.st_set_bp(st_clamp(st_phoneFocus*0.54, 350, 640), 0.84*st_vq);
+  st_vlWarmM.st_set_bp(st_clamp(st_phoneFocus*0.68, 430, 760), 0.90*st_vq);
+  st_vlMeat1M.st_set_bp(st_clamp(st_phoneFocus*0.88, 560, 980), 1.00*st_vq);
+  st_vlMeat2M.st_set_bp(st_clamp(st_phoneFocus, 630, 1450), 1.06*st_vq);
+  st_vlMeat3M.st_set_bp(st_clamp(st_phoneFocus*1.11, 720, 1600), 0.96*st_vq);
+  st_vlPres1M.st_set_bp(st_clamp(st_phoneFocus*1.39, 900, 1900), 0.74*st_vq);
+  st_vlPres2M.st_set_bp(st_clamp(st_phoneFocus*1.56, 1000, 2200), 0.68*st_vq);
+  st_vlBiteM.st_set_bp(st_clamp(st_phoneFocus*2.03, 1350, 2800), 0.60*st_vq);
+
+  st_vlSideMeatM.st_set_bp(st_clamp(st_phoneFocus, 630, 1450), 0.90*st_vq);
+  st_vlSidePresM.st_set_bp(st_clamp(st_phoneFocus*1.39, 900, 1900), 0.66*st_vq);
+
+  st_vlSnapM.st_set_bp(st_clamp(st_phoneFocus*4.35, 2600, 4700), 0.82);
+  st_vlSnap2M.st_set_bp(st_clamp(st_phoneFocus*5.20, 3300, 5900), 0.74);
+  st_vlSheenL.st_set_bp(st_clamp(st_phoneFocus*5.60, 3600, 6500), 0.72);
+  st_vlSheenR.st_set_bp(st_clamp(st_phoneFocus*5.60, 3600, 6500), 0.72);
+  st_vlSheen2L.st_set_bp(st_clamp(st_phoneFocus*6.35, 4300, 7700), 0.68);
+  st_vlSheen2R.st_set_bp(st_clamp(st_phoneFocus*6.35, 4300, 7700), 0.68);
+
+  st_honkM.st_set_bp(st_clamp(st_phoneFocus*0.98, 620, 1450), 0.58);
+  st_nasalM.st_set_bp(st_clamp(st_phoneFocus*1.55, 950, 2200), 0.58);
+  st_nasal2M.st_set_bp(st_clamp(st_phoneFocus*2.03, 1400, 3000), 0.62);
+
+
+);
+
+function st_clear_audio()
+(
+  memset(st_bufL, 0, 2*st_delaySize);
+  st_dpos=0;
+  st_anAir.st_x1=0; st_anAir.st_x2=0; st_anAir.st_y1=0; st_anAir.st_y2=0;
+  st_anAttackA.st_x1=0; st_anAttackA.st_x2=0; st_anAttackA.st_y1=0; st_anAttackA.st_y2=0;
+  st_anAttackB.st_x1=0; st_anAttackB.st_x2=0; st_anAttackB.st_y1=0; st_anAttackB.st_y2=0;
+  st_anBodyA.st_x1=0; st_anBodyA.st_x2=0; st_anBodyA.st_y1=0; st_anBodyA.st_y2=0;
+  st_anBodyB.st_x1=0; st_anBodyB.st_x2=0; st_anBodyB.st_y1=0; st_anBodyB.st_y2=0;
+  st_anBodyC.st_x1=0; st_anBodyC.st_x2=0; st_anBodyC.st_y1=0; st_anBodyC.st_y2=0;
+  st_anDetailA.st_x1=0; st_anDetailA.st_x2=0; st_anDetailA.st_y1=0; st_anDetailA.st_y2=0;
+  st_anDetailB.st_x1=0; st_anDetailB.st_x2=0; st_anDetailB.st_y1=0; st_anDetailB.st_y2=0;
+  st_anDetailC.st_x1=0; st_anDetailC.st_x2=0; st_anDetailC.st_y1=0; st_anDetailC.st_y2=0;
+  st_anDetailD.st_x1=0; st_anDetailD.st_x2=0; st_anDetailD.st_y1=0; st_anDetailD.st_y2=0;
+  st_anShineA.st_x1=0; st_anShineA.st_x2=0; st_anShineA.st_y1=0; st_anShineA.st_y2=0;
+  st_anShineB.st_x1=0; st_anShineB.st_x2=0; st_anShineB.st_y1=0; st_anShineB.st_y2=0;
+  st_anShineC.st_x1=0; st_anShineC.st_x2=0; st_anShineC.st_y1=0; st_anShineC.st_y2=0;
+  st_anShineD.st_x1=0; st_anShineD.st_x2=0; st_anShineD.st_y1=0; st_anShineD.st_y2=0;
+  st_anShineMid.st_x1=0; st_anShineMid.st_x2=0; st_anShineMid.st_y1=0; st_anShineMid.st_y2=0;
+  st_biteL.st_x1=0; st_biteL.st_x2=0; st_biteL.st_y1=0; st_biteL.st_y2=0;
+  st_biteR.st_x1=0; st_biteR.st_x2=0; st_biteR.st_y1=0; st_biteR.st_y2=0;
+  st_body1L.st_x1=0; st_body1L.st_x2=0; st_body1L.st_y1=0; st_body1L.st_y2=0;
+  st_body1R.st_x1=0; st_body1R.st_x2=0; st_body1R.st_y1=0; st_body1R.st_y2=0;
+  st_body2L.st_x1=0; st_body2L.st_x2=0; st_body2L.st_y1=0; st_body2L.st_y2=0;
+  st_body2R.st_x1=0; st_body2R.st_x2=0; st_body2R.st_y1=0; st_body2R.st_y2=0;
+  st_guardL.st_x1=0; st_guardL.st_x2=0; st_guardL.st_y1=0; st_guardL.st_y2=0;
+  st_guardR.st_x1=0; st_guardR.st_x2=0; st_guardR.st_y1=0; st_guardR.st_y2=0;
+  st_honkM.st_x1=0; st_honkM.st_x2=0; st_honkM.st_y1=0; st_honkM.st_y2=0;
+  st_nasal2M.st_x1=0; st_nasal2M.st_x2=0; st_nasal2M.st_y1=0; st_nasal2M.st_y2=0;
+  st_nasalM.st_x1=0; st_nasalM.st_x2=0; st_nasalM.st_y1=0; st_nasalM.st_y2=0;
+  st_res12M.st_x1=0; st_res12M.st_x2=0; st_res12M.st_y1=0; st_res12M.st_y2=0;
+  st_res15M.st_x1=0; st_res15M.st_x2=0; st_res15M.st_y1=0; st_res15M.st_y2=0;
+  st_res4M.st_x1=0; st_res4M.st_x2=0; st_res4M.st_y1=0; st_res4M.st_y2=0;
+  st_res5M.st_x1=0; st_res5M.st_x2=0; st_res5M.st_y1=0; st_res5M.st_y2=0;
+  st_res7M.st_x1=0; st_res7M.st_x2=0; st_res7M.st_y1=0; st_res7M.st_y2=0;
+  st_res8M.st_x1=0; st_res8M.st_x2=0; st_res8M.st_y1=0; st_res8M.st_y2=0;
+  st_rootM.st_x1=0; st_rootM.st_x2=0; st_rootM.st_y1=0; st_rootM.st_y2=0;
+  st_sh1L.st_x1=0; st_sh1L.st_x2=0; st_sh1L.st_y1=0; st_sh1L.st_y2=0;
+  st_sh1R.st_x1=0; st_sh1R.st_x2=0; st_sh1R.st_y1=0; st_sh1R.st_y2=0;
+  st_sh2L.st_x1=0; st_sh2L.st_x2=0; st_sh2L.st_y1=0; st_sh2L.st_y2=0;
+  st_sh2R.st_x1=0; st_sh2R.st_x2=0; st_sh2R.st_y1=0; st_sh2R.st_y2=0;
+  st_sh3L.st_x1=0; st_sh3L.st_x2=0; st_sh3L.st_y1=0; st_sh3L.st_y2=0;
+  st_sh3R.st_x1=0; st_sh3R.st_x2=0; st_sh3R.st_y1=0; st_sh3R.st_y2=0;
+  st_vlBiteM.st_x1=0; st_vlBiteM.st_x2=0; st_vlBiteM.st_y1=0; st_vlBiteM.st_y2=0;
+  st_vlBridgeM.st_x1=0; st_vlBridgeM.st_x2=0; st_vlBridgeM.st_y1=0; st_vlBridgeM.st_y2=0;
+  st_vlLowM.st_x1=0; st_vlLowM.st_x2=0; st_vlLowM.st_y1=0; st_vlLowM.st_y2=0;
+  st_vlMeat1M.st_x1=0; st_vlMeat1M.st_x2=0; st_vlMeat1M.st_y1=0; st_vlMeat1M.st_y2=0;
+  st_vlMeat2M.st_x1=0; st_vlMeat2M.st_x2=0; st_vlMeat2M.st_y1=0; st_vlMeat2M.st_y2=0;
+  st_vlMeat3M.st_x1=0; st_vlMeat3M.st_x2=0; st_vlMeat3M.st_y1=0; st_vlMeat3M.st_y2=0;
+  st_vlPres1M.st_x1=0; st_vlPres1M.st_x2=0; st_vlPres1M.st_y1=0; st_vlPres1M.st_y2=0;
+  st_vlPres2M.st_x1=0; st_vlPres2M.st_x2=0; st_vlPres2M.st_y1=0; st_vlPres2M.st_y2=0;
+  st_vlSheen2L.st_x1=0; st_vlSheen2L.st_x2=0; st_vlSheen2L.st_y1=0; st_vlSheen2L.st_y2=0;
+  st_vlSheen2R.st_x1=0; st_vlSheen2R.st_x2=0; st_vlSheen2R.st_y1=0; st_vlSheen2R.st_y2=0;
+  st_vlSheenL.st_x1=0; st_vlSheenL.st_x2=0; st_vlSheenL.st_y1=0; st_vlSheenL.st_y2=0;
+  st_vlSheenR.st_x1=0; st_vlSheenR.st_x2=0; st_vlSheenR.st_y1=0; st_vlSheenR.st_y2=0;
+  st_vlSideMeatM.st_x1=0; st_vlSideMeatM.st_x2=0; st_vlSideMeatM.st_y1=0; st_vlSideMeatM.st_y2=0;
+  st_vlSidePresM.st_x1=0; st_vlSidePresM.st_x2=0; st_vlSidePresM.st_y1=0; st_vlSidePresM.st_y2=0;
+  st_vlSnap2M.st_x1=0; st_vlSnap2M.st_x2=0; st_vlSnap2M.st_y1=0; st_vlSnap2M.st_y2=0;
+  st_vlSnapM.st_x1=0; st_vlSnapM.st_x2=0; st_vlSnapM.st_y1=0; st_vlSnapM.st_y2=0;
+  st_vlWarmM.st_x1=0; st_vlWarmM.st_x2=0; st_vlWarmM.st_y1=0; st_vlWarmM.st_y2=0;
+  st_fastEnv=0; st_slowEnv=0; st_hiEnv=0; st_rootDC=0;
+  st_sideEnv=0; st_monoEnv=0; st_genEnv=0;
+  st_voiceFastEnv=0; st_voiceSlowEnv=0; st_honkEnv=0; st_nasalEnv=0;
+  st_srcPowL=0; st_srcPowR=0; st_srcCross=0; st_srcCorr=1;
+  st_genPowL=0; st_genPowR=0; st_genCross=0;
+  st_genMidPow=0; st_genSidePow=0; st_genCorr=1; st_monoSurvival=1;
+  st_catGuard=1; st_honkProtect=1; st_nasalProtect=1; st_masterGov=1;
+  st_eBodyA=0; st_eBodyB=0; st_eBodyC=0;
+  st_eDetailA=0; st_eDetailB=0; st_eDetailC=0; st_eDetailD=0;
+  st_eAttackA=0; st_eAttackB=0;
+  st_eShineA=0; st_eShineB=0; st_eShineC=0; st_eShineD=0;
+  st_eShineMid=0; st_eAir=0;
+);
+
+// Sleep does not run the nonlinear lattice. On wake its finite reservoirs decay
+// once, while familiarity/exposure debts use their original exponential times.
+// The independent reservoir decay is an intentional idle-only approximation;
+// active-source causal Edge -> Bloom -> Carry -> Trace is unchanged.
+function st_te_sleep(st_seconds)
+instance(st_edge,st_bloom,st_carry,st_trace)
+(
+  st_edge *= exp(-st_seconds/0.080);
+  st_bloom *= exp(-st_seconds/0.360);
+  st_carry *= exp(-st_seconds/2.800);
+  st_trace *= exp(-st_seconds/22.000);
+);
+
+function st_recover_sleep()
+local(st_gap_seconds,st_gap_frames,st_decay,st_share)
+(
+  st_gap_frames=st_sleep_samples;
+  st_gap_seconds=st_gap_frames/srate;
+  st_teContinuity.st_te_sleep(st_gap_seconds);
+  st_teField.st_te_sleep(st_gap_seconds);
+  st_teImpulse.st_te_sleep(st_gap_seconds);
+  st_teMass.st_te_sleep(st_gap_seconds);
+  st_teSheen.st_te_sleep(st_gap_seconds);
+  st_teTexture.st_te_sleep(st_gap_seconds);
+  st_famImmediate *= exp(-st_gap_seconds/0.380);
+  st_famPhrase *= exp(-st_gap_seconds/4.500);
+  st_famScene *= exp(-st_gap_seconds/20.000);
+  st_famExposure *= exp(-st_gap_seconds/75.000);
+  st_decay=exp(-st_gap_seconds/32.000);
+  st_reprMassExp=0.333333+(st_reprMassExp-0.333333)*st_decay;
+  st_reprContactExp=0.333333+(st_reprContactExp-0.333333)*st_decay;
+  st_reprFluidExp=0.333333+(st_reprFluidExp-0.333333)*st_decay;
+  st_decay=exp(-st_gap_seconds/3.200);
+  st_share=st_reprMode==0;
+  st_reprMassMem=st_share+(st_reprMassMem-st_share)*st_decay;
+  st_share=st_reprMode==1;
+  st_reprContactMem=st_share+(st_reprContactMem-st_share)*st_decay;
+  st_share=st_reprMode==2;
+  st_reprFluidMem=st_share+(st_reprFluidMem-st_share)*st_decay;
+  st_decay=exp(-st_gap_seconds/18.000);
+  st_expBody=0.15+(st_expBody-0.15)*st_decay;
+  st_expResidue=0.07+(st_expResidue-0.07)*st_decay;
+  st_expDetail=0.09+(st_expDetail-0.09)*st_decay;
+  st_expSnap=0.12+(st_expSnap-0.12)*st_decay;
+  st_expShimmer=0.37+(st_expShimmer-0.37)*st_decay;
+  st_expFluid=0.20+(st_expFluid-0.20)*st_decay;
+  st_eventSimilarity *= exp(-max(0,st_gap_frames-max(0,2*srate-(st_sampleClock-st_lastOnsetSample)))/srate/12);
+  st_eventPeWindow *= exp(-st_gap_seconds/0.160);
+  st_eventPe2State *= exp(-st_gap_seconds/0.420);
+  st_beatConf *= exp(-st_gap_seconds/4.000);
+  st_sampleClock += st_gap_frames;
+  st_reprAgeSamples += st_gap_frames;
+  st_sleep_samples=0;
+  st_clear_audio();
+);
+
+function st_reset()
+(
+  st_actAfter=0;
+  st_actBloom=0;
+  st_actFlash=0;
+  st_actWrap=0;
+  st_afterGain=0;
+  st_afterL=0;
+  st_afterMid=0;
+  st_afterR=0;
+  st_afterRaw=0;
+  st_afterRawL=0;
+  st_afterRawR=0;
+  st_afterSide=0;
+  st_afterWidth=0;
+  st_airPresence=0;
+  st_amp=0;
+  st_analysisActivity=0;
+  st_attackHeadroom=0;
+  st_attackPresence=0;
+  st_authorityCoef=0;
+  st_authorityMove=0;
+  st_autoAuthority=0;
+  st_bL=0;
+  st_bR=0;
+  st_bSatL=0;
+  st_bSatR=0;
+  st_beatConf=0;
+  st_beatDecay=0;
+  st_beatHz=0;
+  st_bestMode=0;
+  st_bestScore=0;
+  st_biteInL=0;
+  st_biteInR=0;
+  st_bloomRaw=0;
+  st_bodyAddL=0;
+  st_bodyAddR=0;
+  st_bodyBest=0;
+  st_bodyBestScore=0;
+  st_bodyCandidate=0;
+  st_bodyChoreo=0;
+  st_bodyCurScore=0;
+  st_bodyDrive=0;
+  st_bodyGain=0;
+  st_bodyHeadroom=0;
+  st_bodyHz=0;
+  st_bodyOpp=0;
+  st_bodyOppRaw=0;
+  st_bodyPresence=0;
+  st_bodyQ=0;
+  st_bodyRenderHz=0;
+  st_bodyScoreA=0;
+  st_bodyScoreB=0;
+  st_bodyScoreC=0;
+  st_bodySel=0;
+  st_bodyTarget=0;
+  st_canSwitch=0;
+  st_catGuard=0;
+  st_contactScore=0;
+  st_contactSupport=0;
+  st_continuityRepetition=0;
+  st_corrCoef=0;
+  st_corrGuard=0;
+  st_currentScore=0;
+  st_d1=0;
+  st_d2=0;
+  st_d3=0;
+  st_d4=0;
+  st_d5=0;
+  st_d6=0;
+  st_denseAmt=0;
+  st_denseBodyNL=0;
+  st_denseSh1=0;
+  st_denseSh2=0;
+  st_denseSh3=0;
+  st_detailAddL=0;
+  st_detailAddR=0;
+  st_detailBest=0;
+  st_detailBestScore=0;
+  st_detailCandidate=0;
+  st_detailChoreo=0;
+  st_detailCurScore=0;
+  st_detailHeadroom=0;
+  st_detailOpp=0;
+  st_detailOppRaw=0;
+  st_detailPresence=0;
+  st_detailScoreA=0;
+  st_detailScoreB=0;
+  st_detailScoreC=0;
+  st_detailScoreD=0;
+  st_detailSel=0;
+  st_detailSheenAddL=0;
+  st_detailSheenAddR=0;
+  st_detailSnapAddL=0;
+  st_detailSnapAddR=0;
+  st_detailTarget=0;
+  st_dpos=0;
+  st_driftPhaseA=0;
+  st_driftPhaseB=0;
+  st_driftRange=0;
+  st_driftTarget=0;
+  st_dryL=0;
+  st_dryR=0;
+  st_eAir=0;
+  st_eAttackA=0;
+  st_eAttackB=0;
+  st_eBodyA=0;
+  st_eBodyB=0;
+  st_eBodyC=0;
+  st_eDetailA=0;
+  st_eDetailB=0;
+  st_eDetailC=0;
+  st_eDetailD=0;
+  st_eShineA=0;
+  st_eShineB=0;
+  st_eShineC=0;
+  st_eShineD=0;
+  st_eShineMid=0;
+  st_energyGov=0;
+  st_eventCount=0;
+  st_eventPe2Decay=0;
+  st_eventPe2State=0;
+  st_eventPePred=0;
+  st_eventPeWindow=0;
+  st_eventPeWindowDecay=0;
+  st_eventRepetition=0;
+  st_eventSimDecay=0;
+  st_eventSimilarity=0;
+  st_eventSpend=0;
+  st_expBody=0;
+  st_expBodyTarget=0;
+  st_expDetail=0;
+  st_expDetailTarget=0;
+  st_expFluid=0;
+  st_expFluidTarget=0;
+  st_expResidue=0;
+  st_expResidueTarget=0;
+  st_expShimmer=0;
+  st_expShimmerTarget=0;
+  st_expSnap=0;
+  st_expSnapTarget=0;
+  st_expandCoef=0;
+  st_expandTarget=0;
+  st_exposureCoef=0;
+  st_exposureMove=0;
+  st_exposureRecoveryCoef=0;
+  st_fInL=0;
+  st_fInR=0;
+  st_famExposure=0;
+  st_famExposureCoef=0;
+  st_famImmediate=0;
+  st_famImmediateCoef=0;
+  st_famPhrase=0;
+  st_famPhraseCoef=0;
+  st_famScene=0;
+  st_famSceneCoef=0;
+  st_familiarity=0;
+  st_familiarityInput=0;
+  st_fastAtk=0;
+  st_fastEnv=0;
+  st_fastRel=0;
+  st_fatigueAmt=0;
+  st_fb=0;
+  st_flashRaw=0;
+  st_fluidAmt=0;
+  st_fluidChoreo=0;
+  st_fluidL=0;
+  st_fluidOpp=0;
+  st_fluidOppRaw=0;
+  st_fluidR=0;
+  st_fluidScore=0;
+  st_fluidSupport=0;
+  st_formantCoherence=0;
+  st_formantSpread=0;
+  st_freshnessPressure=0;
+  st_genAtk=0;
+  st_genCorr=0;
+  st_genCross=0;
+  st_genEnv=0;
+  st_genL=0;
+  st_genMidNow=0;
+  st_genMidPow=0;
+  st_genPeak=0;
+  st_genPowL=0;
+  st_genPowR=0;
+  st_genR=0;
+  st_genRel=0;
+  st_genRoot=0;
+  st_genSideNow=0;
+  st_genSidePow=0;
+  st_guard=0;
+  st_guardProbe=0;
+  st_h1L=0;
+  st_h1R=0;
+  st_h2L=0;
+  st_h2R=0;
+  st_h3L=0;
+  st_h3R=0;
+  st_hiAtk=0;
+  st_hiEnv=0;
+  st_hiL=0;
+  st_hiR=0;
+  st_hiRel=0;
+  st_hiRiskProtect=0;
+  st_honkAtk=0;
+  st_honkEnv=0;
+  st_honkGuardAmt=0;
+  st_honkProbe=0;
+  st_honkProtect=0;
+  st_honkRel=0;
+  st_idx1=0;
+  st_idx2=0;
+  st_idx3=0;
+  st_idx4=0;
+  st_idx5=0;
+  st_idx6=0;
+  st_impact=0;
+  st_impactEvidence=0;
+  st_impactGate=0;
+  st_injectedEnv=0;
+  st_injectedPeak=0;
+  st_injectedRatio=0;
+  st_injection=0;
+  st_interpCounter=0;
+  st_interpretActivity=0;
+  st_intervalSec=0;
+  st_lastEventTopoEvent=0;
+  st_lastEventTopoField=0;
+  st_lastEventTopoSurface=0;
+  st_lastEventTopoTrace=0;
+  st_lastOnsetSample=0;
+  st_latBody=0;
+  st_latDetail=0;
+  st_latFluid=0;
+  st_latResidue=0;
+  st_latShimmer=0;
+  st_latSnap=0;
+  st_lowPe2=0;
+  st_massScore=0;
+  st_massSupport=0;
+  st_masterAtk=0;
+  st_masterGov=0;
+  st_masterRel=0;
+  st_masterTarget=0;
+  st_microAuthority=0;
+  st_microCoef=0;
+  st_midLift=0;
+  st_midLock=0;
+  st_midRiskProtect=0;
+  st_missAmt=0;
+  st_mono=0;
+  st_monoAbs=0;
+  st_monoEnv=0;
+  st_monoGuard=0;
+  st_monoSurvival=0;
+  st_nasalAtk=0;
+  st_nasalEnv=0;
+  st_nasalGuardAmt=0;
+  st_nasalProbe=0;
+  st_nasalProtect=0;
+  st_nasalRel=0;
+  st_needReinterpret=0;
+  st_noveltyBody=0;
+  st_noveltyDetail=0;
+  st_noveltyFluid=0;
+  st_noveltyResidue=0;
+  st_noveltyShimmer=0;
+  st_noveltySnap=0;
+  st_onsetNow=0;
+  st_p=0;
+  st_pe1Global=0;
+  st_pe2Effective=0;
+  st_pe2Event=0;
+  st_pe2Field=0;
+  st_pe2Global=0;
+  st_pe2Surface=0;
+  st_pe2Trace=0;
+  st_peEvent=0;
+  st_peField=0;
+  st_pePredCoef=0;
+  st_peSurface=0;
+  st_peTrace=0;
+  st_peakAllowance=0;
+  st_peakGov=0;
+  st_phase=0;
+  st_phoneFocus=0;
+  st_phoneSheenAmt=0;
+  st_phoneSnapAmt=0;
+  st_predPeEvent=0;
+  st_predPeField=0;
+  st_predPeSurface=0;
+  st_predPeTrace=0;
+  st_predTopoEvent=0;
+  st_predTopoField=0;
+  st_predTopoSurface=0;
+  st_predTopoTrace=0;
+  st_prevImpactGate=0;
+  st_prevInterval=0;
+  st_pulse=0;
+  st_pulseAmt=0;
+  st_pulseDriftPct=0;
+  st_pulseDriftRate=0;
+  st_pulseDriftSm=0;
+  st_pulseDriftSmooth=0;
+  st_pulseHz=0;
+  st_pulseHzNow=0;
+  st_pulseMul=0;
+  st_pulseTrust=0;
+  st_quietHold=0;
+  st_quietMul=0;
+  st_quietSense=0;
+  st_reinterpretPending=0;
+  st_repetitionEvidence=0;
+  st_reprAgeSamples=0;
+  st_reprAgeSec=0;
+  st_reprContactExp=0;
+  st_reprContactMem=0;
+  st_reprContactShare=0;
+  st_reprContactTarget=0;
+  st_reprExposureCoef=0;
+  st_reprExposureMove=0;
+  st_reprExposureRecoveryCoef=0;
+  st_reprFluidExp=0;
+  st_reprFluidMem=0;
+  st_reprFluidShare=0;
+  st_reprFluidTarget=0;
+  st_reprMassExp=0;
+  st_reprMassMem=0;
+  st_reprMassShare=0;
+  st_reprMassTarget=0;
+  st_reprMemCoef=0;
+  st_reprMode=0;
+  st_reprStability=0;
+  st_reprStrength=0;
+  st_reqBody=0;
+  st_reqDetail=0;
+  st_reqFluid=0;
+  st_reqResidue=0;
+  st_reqShimmer=0;
+  st_reqSnap=0;
+  st_reqSum=0;
+  st_resBody=0;
+  st_resCarry=0;
+  st_resDyn=0;
+  st_resEdge=0;
+  st_resPulseMul=0;
+  st_resRootHz=0;
+  st_residueAddL=0;
+  st_residueAddR=0;
+  st_residueAmt=0;
+  st_residueChoreo=0;
+  st_residueCore=0;
+  st_residueFlash=0;
+  st_residueGain=0;
+  st_residueOpp=0;
+  st_residueOppRaw=0;
+  st_rootDC=0;
+  st_rootDCcoef=0;
+  st_rootDrive=0;
+  st_rootEven=0;
+  st_rootFold=0;
+  st_rootRaw=0;
+  st_rootUnit=0;
+  st_sampleClock=0;
+  st_sfxFollow=0;
+  st_shGain=0;
+  st_shSatL=0;
+  st_shSatR=0;
+  st_shSel1=0;
+  st_shSel2=0;
+  st_shSel3=0;
+  st_shSide=0;
+  st_shT1=0;
+  st_shT2=0;
+  st_shT3=0;
+  st_shW1=0;
+  st_shW2=0;
+  st_shW3=0;
+  st_sheenWidth=0;
+  st_sheenWidthAuto=0;
+  st_sheenWidthBase=0;
+  st_shimmerBest=0;
+  st_shimmerBestScore=0;
+  st_shimmerCandidate=0;
+  st_shimmerChoreo=0;
+  st_shimmerComplex=0;
+  st_shimmerContrast=0;
+  st_shimmerCurScore=0;
+  st_shimmerDrive=0;
+  st_shimmerHz=0;
+  st_shimmerOpp=0;
+  st_shimmerOppRaw=0;
+  st_shimmerRenderHz=0;
+  st_shimmerScoreA=0;
+  st_shimmerScoreB=0;
+  st_shimmerScoreC=0;
+  st_shimmerScoreD=0;
+  st_shimmerSel=0;
+  st_shimmerTarget=0;
+  st_shineHeadroom=0;
+  st_shineL=0;
+  st_shinePresence=0;
+  st_shineR=0;
+  st_side=0;
+  st_sideAbs=0;
+  st_sideAtk=0;
+  st_sideEnv=0;
+  st_sideEvidence=0;
+  st_sideRel=0;
+  st_silkyAmt=0;
+  st_silkyFluidNL=0;
+  st_silkySh1=0;
+  st_silkySh2=0;
+  st_silkySh3=0;
+  st_slowAtk=0;
+  st_slowEnv=0;
+  st_slowRel=0;
+  st_smearL=0;
+  st_smearR=0;
+  st_smearSide=0;
+  st_snapChoreo=0;
+  st_snapGain=0;
+  st_snapL=0;
+  st_snapOpp=0;
+  st_snapOppRaw=0;
+  st_snapR=0;
+  st_sourceRef=0;
+  st_sparkAmt=0;
+  st_sparkSh1=0;
+  st_sparkSh2=0;
+  st_sparkSh3=0;
+  st_sparkShimmerNL=0;
+  st_spectralExpand=0;
+  st_srcAntiGuard=0;
+  st_srcCorr=0;
+  st_srcCross=0;
+  st_srcPowL=0;
+  st_srcPowR=0;
+  st_stereoAmt=0;
+  st_stereoEruption=0;
+  st_stereoOpportunity=0;
+  st_stereoSafety=0;
+  st_sustainEvidence=0;
+  st_tap1W=0;
+  st_tap2W=0;
+  st_tap3W=0;
+  st_tapL1=0;
+  st_tapL2=0;
+  st_tapL3=0;
+  st_tapL4=0;
+  st_tapL5=0;
+  st_tapL6=0;
+  st_tapR1=0;
+  st_tapR2=0;
+  st_tapR3=0;
+  st_tapR4=0;
+  st_tapR5=0;
+  st_tapR6=0;
+  st_targetRatio=0;
+  st_targetWBody=0;
+  st_targetWDetail=0;
+  st_targetWFluid=0;
+  st_targetWResidue=0;
+  st_targetWShimmer=0;
+  st_targetWSnap=0;
+  st_teBloomAtk=0;
+  st_teBloomAvg=0;
+  st_teBloomRel=0;
+  st_teCarryAtk=0;
+  st_teCarryAvg=0;
+  st_teCarryRel=0;
+  st_teEdgeAtk=0;
+  st_teEdgeAvg=0;
+  st_teEdgeRel=0;
+  st_teTraceAtk=0;
+  st_teTraceAvg=0;
+  st_teTraceRel=0;
+  st_temporalOccupancy=0;
+  st_thisEventPe=0;
+  st_thisEventPe2=0;
+  st_thisEventSimilarity=0;
+  st_thisHz=0;
+  st_thisInterval=0;
+  st_timingErr=0;
+  st_timingMatch=0;
+  st_topoDirectBasis=0;
+  st_topoEvent=0;
+  st_topoField=0;
+  st_topoMassBasis=0;
+  st_topoOccupancy=0;
+  st_topoPredCoef=0;
+  st_topoSurface=0;
+  st_topoSurfaceBasis=0;
+  st_topoTrace=0;
+  st_topoTraceBasis=0;
+  st_tr=0;
+  st_translationFloor=0;
+  st_tuneConfidence=0;
+  st_tuneMix=0;
+  st_v1FlashFollow=0;
+  st_vlAnimated=0;
+  st_vlBite=0;
+  st_vlBridge=0;
+  st_vlLinear=0;
+  st_vlLow=0;
+  st_vlMeat1=0;
+  st_vlMeat2=0;
+  st_vlMeat3=0;
+  st_vlPres1=0;
+  st_vlPres2=0;
+  st_vlSheenCoreL=0;
+  st_vlSheenCoreR=0;
+  st_vlSheenGain=0;
+  st_vlSheenRawL=0;
+  st_vlSheenRawR=0;
+  st_vlSheenSide=0;
+  st_vlSideCore=0;
+  st_vlSideGain=0;
+  st_vlSideRaw=0;
+  st_vlSnapCore=0;
+  st_vlSnapGain=0;
+  st_vlSnapRaw=0;
+  st_vlWarm=0;
+  st_voiceAmp=0;
+  st_voiceAmt=0;
+  st_voiceBias=0;
+  st_voiceCore=0;
+  st_voiceEnvMul=0;
+  st_voiceFastAtk=0;
+  st_voiceFastEnv=0;
+  st_voiceFastRel=0;
+  st_voiceFlashMul=0;
+  st_voiceFloorMul=0;
+  st_voiceGain=0;
+  st_voiceProtect=0;
+  st_voiceQuietSense=0;
+  st_voiceRaw=0;
+  st_voiceSlowAtk=0;
+  st_voiceSlowEnv=0;
+  st_voiceSlowRel=0;
+  st_voiceTr=0;
+  st_voiceUpMul=0;
+  st_vq=0;
+  st_wBody=0;
+  st_wDetail=0;
+  st_wFluid=0;
+  st_wResidue=0;
+  st_wShimmer=0;
+  st_wSnap=0;
+  st_widthCoef=0;
+  st_widthGesture=0;
+  st_widthTarget=0;
+  st_wrapRaw=0;
+  st_xL=0;
+  st_xR=0;
+  st_zoneAtk=0;
+  st_zoneRel=0;
+
+  st_dpos = 0;
+
+  st_phase = 0;
+  st_driftPhaseA = 0.41;
+  st_driftPhaseB = 2.17;
+  st_pulseDriftSm = 0;
+  st_pulseHzNow = 0;
+
+  st_fastEnv = 0;
+  st_slowEnv = 0;
+  st_hiEnv = 0;
+  st_rootDC = 0;
+  st_sideEnv = 0;
+  st_monoEnv = 0;
+  st_genEnv = 0;
+
+  st_eBodyA = 0;
+  st_eBodyB = 0;
+  st_eBodyC = 0;
+  st_eDetailA = 0;
+  st_eDetailB = 0;
+  st_eDetailC = 0;
+  st_eDetailD = 0;
+  st_eAttackA = 0;
+  st_eAttackB = 0;
+  st_eShineA = 0;
+  st_eShineB = 0;
+  st_eShineC = 0;
+  st_eShineD = 0;
+  st_eShineMid = 0;
+  st_eAir = 0;
+
+  st_voiceFastEnv = 0;
+  st_voiceSlowEnv = 0;
+  st_honkEnv = 0;
+  st_nasalEnv = 0;
+
+  st_catGuard = 1;
+  st_masterGov = 1;
+  st_honkProtect = 1;
+  st_nasalProtect = 1;
+
+  // Shimmer-first prior: the old v2.6 signature is the home position, not six equal lanes.
+  st_expBody = 0.150000;
+  st_expResidue = 0.070000;
+  st_expDetail = 0.090000;
+  st_expSnap = 0.120000;
+  st_expShimmer = 0.370000;
+  st_expFluid = 0.200000;
+
+  st_wBody = 0.150000;
+  st_wResidue = 0.070000;
+  st_wDetail = 0.090000;
+  st_wSnap = 0.120000;
+  st_wShimmer = 0.370000;
+  st_wFluid = 0.200000;
+
+  st_shW1 = 1.000000;
+  st_shW2 = 0.720000;
+  st_shW3 = 0.480000;
+  st_widthGesture = 0;
+  st_stereoOpportunity = 0;
+  st_shimmerContrast = 0;
+  st_spectralExpand = 0;
+
+  // v3.3 four-act choreography state.
+  st_actFlash = 0;
+  st_actBloom = 0;
+  st_actWrap = 0;
+  st_actAfter = 0;
+
+  // Correlation / mono-survival state. These are safety observers only.
+  st_srcPowL = 0;
+  st_srcPowR = 0;
+  st_srcCross = 0;
+  st_srcCorr = 1;
+  st_genPowL = 0;
+  st_genPowR = 0;
+  st_genCross = 0;
+  st_genMidPow = 0;
+  st_genSidePow = 0;
+  st_genCorr = 1;
+  st_monoSurvival = 1;
+  st_stereoSafety = 1;
+
+  st_bodyPresence = 0;
+  st_detailPresence = 0;
+  st_attackPresence = 0;
+  st_shinePresence = 0;
+  st_airPresence = 0;
+  st_sideEvidence = 0;
+  st_sustainEvidence = 0;
+  st_impactEvidence = 0;
+  st_quietSense = 1;
+
+  st_bodySel = 1;
+  st_detailSel = 1;
+  st_shimmerSel = 1;
+  st_bodyHz = 285;
+  st_phoneFocus = 835;
+  st_shimmerHz = 5340;
+
+  st_sampleClock = 0;
+  st_lastOnsetSample = -1000000;
+  st_prevInterval = 0;
+  st_beatHz = 0;
+  st_beatConf = 0;
+  st_prevImpactGate = 0;
+
+  // ---- v3.1 anti-habituation lattice state ----
+  // Temporal Embodiment instances use namespace-local edge/bloom/carry/trace cells.
+  st_teEdgeAvg = 0;
+  st_teBloomAvg = 0;
+  st_teCarryAvg = 0;
+  st_teTraceAvg = 0;
+
+  st_topoEvent = 0;
+  st_topoSurface = 0;
+  st_topoField = 0;
+  st_topoTrace = 0;
+
+  st_predTopoEvent = 0;
+  st_predTopoSurface = 0;
+  st_predTopoField = 0;
+  st_predTopoTrace = 0;
+  st_predPeEvent = 0;
+  st_predPeSurface = 0;
+  st_predPeField = 0;
+  st_predPeTrace = 0;
+  st_pe1Global = 0;
+  st_pe2Global = 0;
+
+  st_lastEventTopoEvent = 0;
+  st_lastEventTopoSurface = 0;
+  st_lastEventTopoField = 0;
+  st_lastEventTopoTrace = 0;
+  st_eventSimilarity = 0;
+  st_eventCount = 0;
+  st_eventPePred = 0;
+  st_eventPe2State = 1;
+  st_eventPeWindow = 0;
+  st_pe2Effective = 1;
+
+  st_famImmediate = 0;
+  st_famPhrase = 0;
+  st_famScene = 0;
+  st_famExposure = 0;
+  st_familiarity = 0;
+  st_freshnessPressure = 0;
+
+  // Reused state names now track DENSE / SILKY / SPARK microstructure memory.
+  st_reprMassMem = 1.000000;
+  st_reprContactMem = 0.000000;
+  st_reprFluidMem = 0.000000;
+  st_reprMassExp = 0.333333;
+  st_reprContactExp = 0.333333;
+  st_reprFluidExp = 0.333333;
+  st_reprStability = 1;
+  st_reprMode = 0;
+  st_reprAgeSamples = 0;
+  st_reinterpretPending = 1;
+  st_interpCounter = 0;
+
+  st_latBody = 0;
+  st_latResidue = 0;
+  st_latDetail = 0;
+  st_latSnap = 0;
+  st_latShimmer = 0;
+  st_latFluid = 0;
+
+
+
+  st_teContinuity.st_edge=0; st_teContinuity.st_bloom=0; st_teContinuity.st_carry=0; st_teContinuity.st_trace=0;
+  st_teField.st_edge=0; st_teField.st_bloom=0; st_teField.st_carry=0; st_teField.st_trace=0;
+  st_teImpulse.st_edge=0; st_teImpulse.st_bloom=0; st_teImpulse.st_carry=0; st_teImpulse.st_trace=0;
+  st_teMass.st_edge=0; st_teMass.st_bloom=0; st_teMass.st_carry=0; st_teMass.st_trace=0;
+  st_teSheen.st_edge=0; st_teSheen.st_bloom=0; st_teSheen.st_carry=0; st_teSheen.st_trace=0;
+  st_teTexture.st_edge=0; st_teTexture.st_bloom=0; st_teTexture.st_carry=0; st_teTexture.st_trace=0;
+  st_clear_audio();
+  st_coefficients();
+  st_tune();
+  st_ready=1;
+  st_current_amount=0; st_ramp_left=0; st_running=0;
+  st_sleep_samples=0; st_idle_samples=0; st_quiet_count=0;
+  st_had_source=0; st_forced_idle=0;
+  st_out_l=0; st_out_r=0;
+);
+
+function st_init(st_base_address)
+(
+  st_two_pi=2*$pi;
+  st_delaySize=max(64,ceil(0.047*srate)+16);
+  st_bufL=floor(st_base_address);
+  st_bufR=st_bufL+st_delaySize;
+  st_amount=0; st_current_amount=0; st_running=0; st_ready=0;
+  st_process_count=0; st_block_count=0;
+  st_sleep_samples=0; st_idle_samples=0; st_quiet_count=0;
+  st_had_source=0; st_forced_idle=0; st_ramp_left=0;
+  st_ramp_samples=max(1,ceil(0.012*srate));
+  st_quiet_window=max(64,ceil(0.003*srate));
+  st_out_l=0; st_out_r=0;
+  st_bufR+st_delaySize;
+);
+
+function st_config(st_new_amount)
+local(st_next_amount)
+(
+  st_next_amount=min(1,max(0,st_new_amount));
+  st_next_amount!=st_amount ? (
+    st_next_amount>0 && !st_ready ? st_reset();
+    st_amount=st_next_amount;
+    st_running ? (
+      st_ramp_left=st_ramp_samples;
+      st_running=1;
+    );
+  );
+);
+
+function st_block()
+(
+  st_running ? (
+    st_tune();
+  );
+);
+
+function st_render(st_input_l,st_input_r)
+(
+
+  st_dryL = st_input_l;
+  st_dryR = st_input_r;
+  st_xL = st_dryL;
+  st_xR = st_dryR;
+  st_mono = 0.5*(st_xL + st_xR);
+  st_side = 0.5*(st_xL - st_xR);
+  st_sampleClock += 1;
+
+  // Short-window source correlation. This never changes source evidence; it only constrains
+  // how aggressively the GENERATED accent is allowed to erupt sideways.
+  st_srcPowL += (st_xL*st_xL-st_srcPowL) * st_corrCoef;
+  st_srcPowR += (st_xR*st_xR-st_srcPowR) * st_corrCoef;
+  st_srcCross += (st_xL*st_xR-st_srcCross) * st_corrCoef;
+  st_srcCorr = st_clamp(st_srcCross / sqrt(st_srcPowL*st_srcPowR + 0.000000001), -1, 1);
+
+  st_injection = st_current_amount * 0.15;
+  st_autoAuthority = 1;
+
+  st_amp = max(abs(st_xL), abs(st_xR));
+  st_fastEnv += (st_amp - st_fastEnv) * (st_amp > st_fastEnv ? st_fastAtk : st_fastRel);
+  st_slowEnv += (st_amp - st_slowEnv) * (st_amp > st_slowEnv ? st_slowAtk : st_slowRel);
+  st_tr = st_clamp((st_fastEnv - st_slowEnv) / (st_slowEnv + 0.006), 0, 2.0);
+  st_impactGate = st_clamp01(st_tr*0.75);
+  st_impactEvidence = st_clamp01(st_tr*0.68);
+  st_sustainEvidence = st_clamp01(1 - st_tr*0.56);
+  st_quietSense = st_clamp01((0.050 - st_slowEnv) / 0.045);
+
+  st_monoAbs = abs(st_mono);
+  st_sideAbs = abs(st_side);
+  st_monoEnv += (st_monoAbs - st_monoEnv) * (st_monoAbs > st_monoEnv ? st_sideAtk : st_sideRel);
+  st_sideEnv += (st_sideAbs - st_sideEnv) * (st_sideAbs > st_sideEnv ? st_sideAtk : st_sideRel);
+  st_sideEvidence = st_clamp01(st_sideEnv / (st_monoEnv + st_sideEnv + 0.000300));
+
+  st_p = abs(st_anBodyA.st_run_bq(st_mono));
+  st_eBodyA += (st_p - st_eBodyA) * (st_p > st_eBodyA ? st_zoneAtk : st_zoneRel);
+  st_p = abs(st_anBodyB.st_run_bq(st_mono));
+  st_eBodyB += (st_p - st_eBodyB) * (st_p > st_eBodyB ? st_zoneAtk : st_zoneRel);
+  st_p = abs(st_anBodyC.st_run_bq(st_mono));
+  st_eBodyC += (st_p - st_eBodyC) * (st_p > st_eBodyC ? st_zoneAtk : st_zoneRel);
+
+  st_p = abs(st_anDetailA.st_run_bq(st_mono));
+  st_eDetailA += (st_p - st_eDetailA) * (st_p > st_eDetailA ? st_zoneAtk : st_zoneRel);
+  st_p = abs(st_anDetailB.st_run_bq(st_mono));
+  st_eDetailB += (st_p - st_eDetailB) * (st_p > st_eDetailB ? st_zoneAtk : st_zoneRel);
+  st_p = abs(st_anDetailC.st_run_bq(st_mono));
+  st_eDetailC += (st_p - st_eDetailC) * (st_p > st_eDetailC ? st_zoneAtk : st_zoneRel);
+  st_p = abs(st_anDetailD.st_run_bq(st_mono));
+  st_eDetailD += (st_p - st_eDetailD) * (st_p > st_eDetailD ? st_zoneAtk : st_zoneRel);
+
+  st_p = abs(st_anAttackA.st_run_bq(st_mono));
+  st_eAttackA += (st_p - st_eAttackA) * (st_p > st_eAttackA ? st_zoneAtk : st_zoneRel);
+  st_p = abs(st_anAttackB.st_run_bq(st_mono));
+  st_eAttackB += (st_p - st_eAttackB) * (st_p > st_eAttackB ? st_zoneAtk : st_zoneRel);
+
+  st_p = abs(st_anShineA.st_run_bq(st_mono));
+  st_eShineA += (st_p - st_eShineA) * (st_p > st_eShineA ? st_zoneAtk : st_zoneRel);
+  st_p = abs(st_anShineB.st_run_bq(st_mono));
+  st_eShineB += (st_p - st_eShineB) * (st_p > st_eShineB ? st_zoneAtk : st_zoneRel);
+  st_p = abs(st_anShineC.st_run_bq(st_mono));
+  st_eShineC += (st_p - st_eShineC) * (st_p > st_eShineC ? st_zoneAtk : st_zoneRel);
+  st_p = abs(st_anShineD.st_run_bq(st_mono));
+  st_eShineD += (st_p - st_eShineD) * (st_p > st_eShineD ? st_zoneAtk : st_zoneRel);
+  st_p = abs(st_anShineMid.st_run_bq(st_mono));
+  st_eShineMid += (st_p - st_eShineMid) * (st_p > st_eShineMid ? st_zoneAtk : st_zoneRel);
+  st_p = abs(st_anAir.st_run_bq(st_mono));
+  st_eAir += (st_p - st_eAir) * (st_p > st_eAir ? st_zoneAtk : st_zoneRel);
+
+  st_sourceRef = st_slowEnv + 0.000700;
+  st_bodyPresence = st_clamp01((st_eBodyA + st_eBodyB + st_eBodyC) * 0.70 / st_sourceRef);
+  st_detailPresence = st_clamp01((st_eDetailA + st_eDetailB + st_eDetailC + st_eDetailD) * 0.48 / st_sourceRef);
+  st_attackPresence = st_clamp01((st_eAttackA + st_eAttackB) * 0.78 / st_sourceRef);
+  st_shinePresence = st_clamp01((st_eShineA + st_eShineB + st_eShineMid + st_eShineC + st_eShineD) * 0.44 / st_sourceRef);
+  st_airPresence = st_clamp01(st_eAir * 0.95 / st_sourceRef);
+
+  st_analysisActivity = st_clamp01((st_slowEnv - 0.0012) * 90);
+
+  st_bodyHeadroom = st_clamp01(1 - st_bodyPresence*0.78);
+  st_detailHeadroom = st_clamp01(1 - st_detailPresence*0.82);
+  st_attackHeadroom = st_clamp01(1 - st_attackPresence*0.85);
+  st_shineHeadroom = st_clamp01(1 - st_shinePresence*0.82);
+
+  // ---- Temporal Embodiment lattice: 6 evidence dimensions x 4 causal time scales ----
+  // Analysis remains authoritative. These cells are consequence memory, not new physical evidence.
+  st_teImpulse.st_te_step(st_impactEvidence * st_analysisActivity);
+  st_teMass.st_te_step(st_bodyPresence * st_analysisActivity);
+  st_teTexture.st_te_step(st_detailPresence * st_analysisActivity);
+  st_teSheen.st_te_step(st_shinePresence * (1-0.45*st_airPresence) * st_analysisActivity);
+  st_teField.st_te_step(st_sideEvidence * st_analysisActivity);
+  st_teContinuity.st_te_step(st_sustainEvidence * st_analysisActivity);
+
+  st_teEdgeAvg = (st_teImpulse.st_edge + st_teMass.st_edge + st_teTexture.st_edge + st_teSheen.st_edge + st_teField.st_edge + st_teContinuity.st_edge) / 6;
+  st_teBloomAvg = (st_teImpulse.st_bloom + st_teMass.st_bloom + st_teTexture.st_bloom + st_teSheen.st_bloom + st_teField.st_bloom + st_teContinuity.st_bloom) / 6;
+  st_teCarryAvg = (st_teImpulse.st_carry + st_teMass.st_carry + st_teTexture.st_carry + st_teSheen.st_carry + st_teField.st_carry + st_teContinuity.st_carry) / 6;
+  st_teTraceAvg = (st_teImpulse.st_trace + st_teMass.st_trace + st_teTexture.st_trace + st_teSheen.st_trace + st_teField.st_trace + st_teContinuity.st_trace) / 6;
+
+  // ---- v3.3 four-act choreography ----
+  // These are normalized temporal interpretations downstream of source evidence, not new physics.
+  // FLASH: contact / upper shimmer. BLOOM: body catches underneath. WRAP: field + fluid continuation.
+  // AFTERIMAGE: tiny center-returning trace after the obvious event has already spent its energy.
+  st_flashRaw = st_clamp01(0.64*st_teImpulse.st_edge + 0.24*st_teSheen.st_edge + 0.12*st_teTexture.st_edge);
+  st_bloomRaw = st_clamp01(0.48*st_teMass.st_bloom + 0.30*st_teSheen.st_bloom + 0.22*st_teTexture.st_bloom);
+  st_wrapRaw = st_clamp01(0.34*st_teField.st_carry + 0.30*st_teSheen.st_carry + 0.24*st_teContinuity.st_carry + 0.12*st_teField.st_bloom);
+  st_afterRaw = st_clamp01(0.52*st_teTraceAvg + 0.28*st_teSheen.st_carry + 0.20*st_teTexture.st_trace);
+
+  st_actFlash = st_clamp01(st_flashRaw * (1 - 0.28*st_teCarryAvg));
+  st_actBloom = st_clamp01(st_bloomRaw * (1 - 0.20*st_actFlash));
+  st_actWrap = st_clamp01(st_wrapRaw * (1 - 0.18*st_actFlash));
+  st_actAfter = st_clamp01(st_afterRaw * (1 - 0.34*st_analysisActivity));
+
+  // Source-locked spectral expansion: rapid outward opening, slower return.
+  st_expandTarget = st_clamp01(0.72*st_actFlash + 0.46*st_actBloom + 0.18*st_actWrap);
+  st_spectralExpand += (st_expandTarget-st_spectralExpand) * st_expandCoef;
+
+  // Phase Topology decoder: Event / Structure / Relation / Persistence.
+  // 1.0 means Impulse, Surface, Field and Trace respectively.
+  st_topoOccupancy = st_clamp01(st_analysisActivity + 0.55*st_teBloomAvg + 0.75*st_teCarryAvg + 0.85*st_teTraceAvg);
+  st_topoEvent = st_clamp01((
+      0.62*st_teImpulse.st_edge
+    + 0.22*st_teImpulse.st_bloom
+    + 0.16*(1-st_teContinuity.st_carry)
+  ) * st_topoOccupancy);
+
+  st_topoMassBasis = 0.55*st_teMass.st_bloom + 0.32*st_teMass.st_carry + 0.13*st_teMass.st_trace;
+  st_topoSurfaceBasis = 0.32*st_teTexture.st_bloom + 0.28*st_teTexture.st_carry
+                   + 0.24*st_teSheen.st_bloom + 0.16*st_teSheen.st_carry;
+  st_topoSurface = st_clamp01(st_topoSurfaceBasis / (st_topoMassBasis + st_topoSurfaceBasis + 0.000500));
+
+  st_topoField = st_clamp01(0.44*st_teField.st_bloom + 0.40*st_teField.st_carry + 0.16*st_teField.st_trace);
+
+  st_topoDirectBasis = st_teEdgeAvg + 0.72*st_teBloomAvg;
+  st_topoTraceBasis = 0.54*st_teCarryAvg + st_teTraceAvg;
+  st_topoTrace = st_clamp01(st_topoTraceBasis / (st_topoDirectBasis + st_topoTraceBasis + 0.000500));
+
+  // Source-only PE -> PE2. Generated enhancement is deliberately absent from this observer.
+  st_peEvent = abs(st_topoEvent-st_predTopoEvent);
+  st_peSurface = abs(st_topoSurface-st_predTopoSurface);
+  st_peField = abs(st_topoField-st_predTopoField);
+  st_peTrace = abs(st_topoTrace-st_predTopoTrace);
+
+  st_pe2Event = abs(st_peEvent-st_predPeEvent);
+  st_pe2Surface = abs(st_peSurface-st_predPeSurface);
+  st_pe2Field = abs(st_peField-st_predPeField);
+  st_pe2Trace = abs(st_peTrace-st_predPeTrace);
+
+  st_predTopoEvent += (st_topoEvent-st_predTopoEvent) * st_topoPredCoef;
+  st_predTopoSurface += (st_topoSurface-st_predTopoSurface) * st_topoPredCoef;
+  st_predTopoField += (st_topoField-st_predTopoField) * st_topoPredCoef;
+  st_predTopoTrace += (st_topoTrace-st_predTopoTrace) * st_topoPredCoef;
+
+  st_predPeEvent += (st_peEvent-st_predPeEvent) * st_pePredCoef;
+  st_predPeSurface += (st_peSurface-st_predPeSurface) * st_pePredCoef;
+  st_predPeField += (st_peField-st_predPeField) * st_pePredCoef;
+  st_predPeTrace += (st_peTrace-st_predPeTrace) * st_pePredCoef;
+
+  st_pe1Global = st_clamp01((st_peEvent + st_peSurface + st_peField + st_peTrace) * 0.25);
+  st_pe2Global = st_clamp01((st_pe2Event + st_pe2Surface + st_pe2Field + st_pe2Trace) * 0.25);
+
+  // Temporal lane support changes WHEN a valid renderer deserves authority.
+  // It does not invent evidence: every term is downstream of the source-only lattice above.
+  st_latBody = st_clamp01(0.48*st_teMass.st_bloom + 0.34*st_teMass.st_carry + 0.18*st_teImpulse.st_bloom);
+  st_latResidue = st_clamp01(0.36*st_teMass.st_carry + 0.36*st_teMass.st_trace + 0.28*st_teContinuity.st_trace);
+  st_latDetail = st_clamp01(0.40*st_teTexture.st_edge + 0.34*st_teTexture.st_bloom + 0.26*st_teContinuity.st_bloom);
+  st_latSnap = st_clamp01(0.70*st_teImpulse.st_edge + 0.30*st_teTexture.st_edge);
+  st_latShimmer = st_clamp01(0.44*st_teSheen.st_edge + 0.36*st_teSheen.st_bloom + 0.20*st_teTexture.st_edge);
+  st_latFluid = st_clamp01(0.28*st_teSheen.st_carry + 0.26*st_teField.st_bloom + 0.24*st_teField.st_carry + 0.22*st_teContinuity.st_carry);
+
+  // Event-conditioned PE2 state decays between event boundaries.
+  st_eventPeWindow *= st_eventPeWindowDecay;
+  st_eventPe2State *= st_eventPe2Decay;
+
+  // Periodicity inference. Pulse authority exists only when repeated onsets agree in timing.
+  st_beatConf *= st_beatDecay;
+  st_onsetNow = st_impactGate > 0.58 && st_prevImpactGate <= 0.58 && st_sampleClock-st_lastOnsetSample > 0.055*srate;
+  st_onsetNow ? (
+    st_lastOnsetSample > 0 ? (
+      st_thisInterval = st_sampleClock - st_lastOnsetSample;
+      st_intervalSec = st_thisInterval / srate;
+      st_intervalSec >= 0.120 && st_intervalSec <= 1.500 ? (
+        st_thisHz = 1 / st_intervalSec;
+        st_prevInterval > 0 ? (
+          st_timingErr = abs(st_thisInterval-st_prevInterval) / max(st_prevInterval, 1);
+          st_timingMatch = st_clamp01((0.20-st_timingErr)/0.20);
+          st_beatConf = st_clamp01(st_beatConf*0.68 + st_timingMatch*0.48);
+        ) : (
+          st_beatConf = max(st_beatConf, 0.20);
+        );
+        st_beatHz = st_beatHz > 0 ? st_lerp(st_beatHz, st_thisHz, 0.28) : st_thisHz;
+        st_prevInterval = st_thisInterval;
+      ) : (
+        st_beatConf *= 0.55;
+        st_prevInterval = 0;
+      );
+    );
+    st_beatConf > 0.52 ? st_phase = 0.5*$pi;
+
+    // Event morphology similarity is topology similarity, not raw waveform matching.
+    st_eventCount > 0 ? (
+      st_thisEventSimilarity = st_clamp01(
+        1 - 0.25*(
+            abs(st_topoEvent-st_lastEventTopoEvent)
+          + abs(st_topoSurface-st_lastEventTopoSurface)
+          + abs(st_topoField-st_lastEventTopoField)
+          + abs(st_topoTrace-st_lastEventTopoTrace)
+        )
+      );
+      st_eventSimilarity += (st_thisEventSimilarity-st_eventSimilarity) * 0.42;
+
+      // Event-conditioned PE2 learns the expected morphology error at repeated onset boundaries.
+      // This prevents a perfectly repeated impact from being called "novel" merely because PE spikes on every hit.
+      st_thisEventPe = 1-st_thisEventSimilarity;
+      st_thisEventPe2 = abs(st_thisEventPe-st_eventPePred);
+      st_eventPePred += (st_thisEventPe-st_eventPePred) * 0.52;
+      st_eventPe2State = st_clamp01(st_thisEventPe2);
+      st_eventPeWindow = 1;
+    ) : (
+      st_eventSimilarity = 0.20;
+      st_eventPe2State = 1;
+      st_eventPeWindow = 1;
+    );
+    st_lastEventTopoEvent = st_topoEvent;
+    st_lastEventTopoSurface = st_topoSurface;
+    st_lastEventTopoField = st_topoField;
+    st_lastEventTopoTrace = st_topoTrace;
+    st_eventCount += 1;
+    st_reinterpretPending = 1;
+
+    st_lastOnsetSample = st_sampleClock;
+  );
+  st_prevImpactGate = st_impactGate;
+
+  // Similarity decays when accents stop arriving; a quiet gap acts as perceptual recovery.
+  st_sampleClock-st_lastOnsetSample > 2.000*srate ? st_eventSimilarity *= st_eventSimDecay;
+
+  // ---- PE2 anti-habituation observer ----
+  st_interpretActivity = st_analysisActivity;
+
+  // Representation memory now describes which Shimmer microstructure has been stable.
+  st_reprMassShare = st_reprMode == 0 ? 1 : 0;
+  st_reprContactShare = st_reprMode == 1 ? 1 : 0;
+  st_reprFluidShare = st_reprMode == 2 ? 1 : 0;
+
+  st_reprMassMem += (st_reprMassShare-st_reprMassMem) * st_reprMemCoef;
+  st_reprContactMem += (st_reprContactShare-st_reprContactMem) * st_reprMemCoef;
+  st_reprFluidMem += (st_reprFluidShare-st_reprFluidMem) * st_reprMemCoef;
+  st_reprStability = max(st_reprMassMem, max(st_reprContactMem, st_reprFluidMem));
+
+  st_interpretActivity > 0.02 ? (
+    st_reprExposureMove = st_reprExposureCoef * st_interpretActivity;
+    st_reprMassTarget = st_reprMassShare;
+    st_reprContactTarget = st_reprContactShare;
+    st_reprFluidTarget = st_reprFluidShare;
+  ) : (
+    // Silence/bypass repays microstructure debt instead of preserving stale habituation forever.
+    st_reprExposureMove = st_reprExposureRecoveryCoef;
+    st_reprMassTarget = 0.333333;
+    st_reprContactTarget = 0.333333;
+    st_reprFluidTarget = 0.333333;
+  );
+  st_reprMassExp += (st_reprMassTarget-st_reprMassExp) * st_reprExposureMove;
+  st_reprContactExp += (st_reprContactTarget-st_reprContactExp) * st_reprExposureMove;
+  st_reprFluidExp += (st_reprFluidTarget-st_reprFluidExp) * st_reprExposureMove;
+
+  st_temporalOccupancy = st_clamp01(0.22*st_teBloomAvg + 0.34*st_teCarryAvg + 0.44*st_teTraceAvg);
+
+  // PE2 is the novelty authority. Near event boundaries, use event-conditioned PE2 so a
+  // repeated impact may have large first-order PE without being falsely treated as novel.
+  st_pe2Effective = st_lerp(st_pe2Global, st_eventPe2State, st_eventPeWindow);
+  st_lowPe2 = st_clamp01(1 - 4.20*st_pe2Effective);
+  st_eventRepetition = st_clamp01(st_eventSimilarity * (0.70 + 0.30*st_beatConf));
+  st_continuityRepetition = st_clamp01(
+      st_sustainEvidence
+    * st_lowPe2
+    * (0.42*st_teCarryAvg + 0.58*st_teTraceAvg)
+    * st_analysisActivity
+  );
+  st_repetitionEvidence = max(st_eventRepetition, 0.58*st_continuityRepetition);
+
+  st_familiarityInput = st_repetitionEvidence
+                   * (0.34 + 0.66*st_temporalOccupancy)
+                   * st_reprStability
+                   * st_lowPe2
+                   * st_interpretActivity;
+
+  st_famImmediate += (st_familiarityInput-st_famImmediate) * st_famImmediateCoef;
+  st_famPhrase += (st_familiarityInput-st_famPhrase) * st_famPhraseCoef;
+  st_famScene += (st_familiarityInput-st_famScene) * st_famSceneCoef;
+  st_famExposure += (st_familiarityInput-st_famExposure) * st_famExposureCoef;
+
+  st_familiarity = st_clamp01(
+      0.16*st_famImmediate
+    + 0.34*st_famPhrase
+    + 0.32*st_famScene
+    + 0.18*st_famExposure
+  );
+
+  // Low PE2 means the prediction error itself has become predictable.
+  // This is the anti-habituation gate: no arbitrary variation merely because PE is nonzero.
+  st_freshnessPressure = st_clamp01(st_familiarity * st_lowPe2 * st_autoAuthority);
+
+  // Three source-supported microstructures that all remain inside the Pelvic-Shimmer signature.
+  // DENSE = body-anchored primary shimmer; SILKY = width/carry; SPARK = upper/air transient shimmer.
+  st_massSupport = st_clamp01(
+      0.26*(1-st_topoSurface)
+    + 0.24*st_bodyPresence
+    + 0.24*st_shinePresence
+    + 0.16*(1-st_topoField)
+    + 0.10*st_teMass.st_bloom
+  );
+  st_contactSupport = st_clamp01(
+      0.28*st_topoSurface
+    + 0.26*st_topoField
+    + 0.20*st_sustainEvidence
+    + 0.18*st_shinePresence
+    + 0.08*st_teSheen.st_carry
+  );
+  st_fluidSupport = st_clamp01(
+      0.32*st_topoEvent
+    + 0.24*st_attackPresence
+    + 0.20*st_shineHeadroom
+    + 0.14*(1-st_topoTrace)
+    + 0.10*st_shinePresence
+  );
+
+  // Lazy interpretation: reconsider on event boundaries, topology surprise,
+  // or when a stable representation has accumulated enough familiarity pressure.
+  st_reprAgeSamples += 1;
+  st_interpCounter += 1;
+  st_interpCounter >= 256 ? (
+    st_interpCounter = 0;
+    st_reprAgeSec = st_reprAgeSamples / srate;
+
+    st_massScore = st_massSupport * (1 + st_freshnessPressure*(1-st_reprMassExp)*2.20);
+    st_contactScore = st_contactSupport * (1 + st_freshnessPressure*(1-st_reprContactExp)*2.20);
+    st_fluidScore = st_fluidSupport * (1 + st_freshnessPressure*(1-st_reprFluidExp)*2.20);
+
+    st_reprMode == 0 ? st_massScore *= 1 - st_freshnessPressure*st_reprMassExp*0.30;
+    st_reprMode == 1 ? st_contactScore *= 1 - st_freshnessPressure*st_reprContactExp*0.30;
+    st_reprMode == 2 ? st_fluidScore *= 1 - st_freshnessPressure*st_reprFluidExp*0.30;
+
+    st_currentScore = st_reprMode == 0 ? st_massScore : st_reprMode == 1 ? st_contactScore : st_fluidScore;
+    st_bestMode = 0;
+    st_bestScore = st_massScore;
+    st_contactScore > st_bestScore ? (st_bestMode = 1; st_bestScore = st_contactScore;);
+    st_fluidScore > st_bestScore ? (st_bestMode = 2; st_bestScore = st_fluidScore;);
+
+    st_needReinterpret = st_reinterpretPending
+                   || (st_pe1Global > 0.095 && st_reprAgeSec > 0.120)
+                   || (st_pe2Effective > 0.080 && st_reprAgeSec > 0.180)
+                   || (st_freshnessPressure > 0.28 && st_reprAgeSec > 0.320);
+
+    st_needReinterpret ? (
+      st_canSwitch = st_bestScore > st_currentScore*1.055
+               || st_freshnessPressure > 0.58
+               || st_pe1Global > 0.14;
+      st_canSwitch && st_bestMode != st_reprMode ? (
+        st_reprMode = st_bestMode;
+        st_reprAgeSamples = 0;
+      );
+      st_reinterpretPending = 0;
+    );
+  );
+
+  st_pulseTrust = st_clamp01((st_beatConf - 0.52) / 0.40) * st_autoAuthority;
+  st_pulseHz = st_pulseTrust > 0.02 ? st_clamp(st_beatHz, 0.67, 6.00) : 0;
+  st_pulseAmt = 0.22 * st_pulseTrust;
+  st_pulseDriftPct = 0.018 * st_autoAuthority;
+  st_pulseDriftRate = 0.045 + 0.035*st_autoAuthority;
+
+  st_pulse = 0;
+  st_pulseHz > 0 ? (
+    st_driftRange = min(st_pulseHz * st_pulseDriftPct, 0.18);
+    st_driftPhaseA += st_two_pi*st_pulseDriftRate/srate;
+    st_driftPhaseA >= st_two_pi ? st_driftPhaseA -= st_two_pi;
+    st_driftPhaseB += st_two_pi*(st_pulseDriftRate*0.37 + 0.0017)/srate;
+    st_driftPhaseB >= st_two_pi ? st_driftPhaseB -= st_two_pi;
+    st_driftTarget = st_clamp(0.72*sin(st_driftPhaseA) + 0.28*sin(st_driftPhaseB + 1.13), -1, 1);
+    st_pulseDriftSm += (st_driftTarget - st_pulseDriftSm) * st_pulseDriftSmooth;
+    st_pulseHzNow = st_clamp(st_pulseHz + st_driftRange*st_pulseDriftSm, 0.05, 8.0);
+    st_phase += st_two_pi*st_pulseHzNow/srate;
+    st_phase >= st_two_pi ? st_phase -= st_two_pi;
+    st_pulse = 0.5 + 0.5*sin(st_phase);
+  ) : (
+    st_pulseHzNow = 0;
+  );
+  st_pulseMul = 1 + st_pulseAmt*st_impactGate*st_pulse;
+
+  // Continuous opportunity field, temporally weighted by embodiment.
+  st_bodyOppRaw = (0.22 + 0.78*st_impactEvidence) * (0.30 + 0.70*st_bodyPresence) * (0.40 + 0.60*st_bodyHeadroom)
+             * (0.78 + 0.22*st_latBody);
+  st_residueOppRaw = (0.24 + 0.76*st_quietSense) * (0.32 + 0.68*st_bodyPresence) * (0.40 + 0.60*st_sustainEvidence)
+                * (0.75 + 0.25*st_latResidue);
+  st_detailOppRaw = (0.30 + 0.70*st_detailPresence) * (0.28 + 0.42*st_quietSense + 0.30*st_impactEvidence) * (0.42 + 0.58*st_detailHeadroom)
+               * (0.78 + 0.22*st_latDetail);
+  st_snapOppRaw = st_impactEvidence * (0.20 + 0.80*st_attackPresence) * (0.35 + 0.65*st_attackHeadroom)
+             * (0.82 + 0.18*st_latSnap);
+  st_shimmerOppRaw = (0.34 + 0.66*st_impactEvidence) * (0.36 + 0.64*st_shinePresence) * (0.46 + 0.54*st_shineHeadroom) * (1 - 0.58*st_airPresence)
+                * (0.76 + 0.24*st_latShimmer) * (0.62 + 0.38*st_shimmerContrast);
+  st_fluidOppRaw = (0.34 + 0.66*st_shinePresence) * (0.30 + 0.70*st_sustainEvidence) * (0.62 + 0.38*st_sideEvidence) * (1 - 0.38*st_airPresence)
+              * (0.72 + 0.28*st_latFluid);
+
+  st_bodyOpp = st_lerp(1, st_bodyOppRaw, st_analysisActivity);
+  st_residueOpp = st_lerp(1, st_residueOppRaw, st_analysisActivity);
+  st_detailOpp = st_lerp(1, st_detailOppRaw, st_analysisActivity);
+  st_snapOpp = st_lerp(1, st_snapOppRaw, st_analysisActivity);
+  st_shimmerOpp = st_lerp(1, st_shimmerOppRaw, st_analysisActivity);
+  st_fluidOpp = st_lerp(1, st_fluidOppRaw, st_analysisActivity);
+
+  // Lane-use memory only matters when PE2 confirms perceptual predictability.
+  st_noveltyBody = st_lerp(1, 1 / (1 + st_freshnessPressure*st_expBody*1.60), st_analysisActivity);
+  st_noveltyResidue = st_lerp(1, 1 / (1 + st_freshnessPressure*st_expResidue*1.45), st_analysisActivity);
+  st_noveltyDetail = st_lerp(1, 1 / (1 + st_freshnessPressure*st_expDetail*1.55), st_analysisActivity);
+  st_noveltySnap = st_lerp(1, 1 / (1 + st_freshnessPressure*st_expSnap*1.65), st_analysisActivity);
+  // Shimmer is the identity: anti-habituation reshapes it before it ever heavily suppresses it.
+  st_noveltyShimmer = st_lerp(1, 1 / (1 + st_freshnessPressure*st_expShimmer*0.72), st_analysisActivity);
+  st_noveltyFluid = st_lerp(1, 1 / (1 + st_freshnessPressure*st_expFluid*1.05), st_analysisActivity);
+
+  st_midRiskProtect = st_clamp(st_honkProtect*st_nasalProtect, 0.15, 1);
+  st_hiRiskProtect = st_clamp(st_catGuard, 0.12, 1);
+
+  // Microstructure targets: all three keep Shimmer load-bearing.
+  st_reprStrength = st_freshnessPressure * st_autoAuthority * st_analysisActivity;
+  st_denseAmt = st_reprMode == 0 ? st_reprStrength : 0;
+  st_silkyAmt = st_reprMode == 1 ? st_reprStrength : 0;
+  st_sparkAmt = st_reprMode == 2 ? st_reprStrength : 0;
+
+  st_denseSh1 = 1.000000; st_denseSh2 = 0.720000; st_denseSh3 = 0.480000;
+  st_silkySh1 = 0.750000; st_silkySh2 = 1.000000; st_silkySh3 = 0.620000;
+  st_sparkSh1 = 0.520000; st_sparkSh2 = 0.780000; st_sparkSh3 = 1.000000;
+  st_reprMode == 0 ? (st_shSel1=st_denseSh1; st_shSel2=st_denseSh2; st_shSel3=st_denseSh3;);
+  st_reprMode == 1 ? (st_shSel1=st_silkySh1; st_shSel2=st_silkySh2; st_shSel3=st_silkySh3;);
+  st_reprMode == 2 ? (st_shSel1=st_sparkSh1; st_shSel2=st_sparkSh2; st_shSel3=st_sparkSh3;);
+  // AUTO=0 is hard-anchored to the original Dense 1/.72/.48 signature.
+  st_microAuthority = st_autoAuthority * st_clamp01(0.18*st_analysisActivity + 0.82*st_reprStrength);
+  st_shT1 = st_lerp(st_denseSh1, st_shSel1, st_microAuthority);
+  st_shT2 = st_lerp(st_denseSh2, st_shSel2, st_microAuthority);
+  st_shT3 = st_lerp(st_denseSh3, st_shSel3, st_microAuthority);
+  st_shW1 += (st_shT1-st_shW1) * st_microCoef;
+  st_shW2 += (st_shT2-st_shW2) * st_microCoef;
+  st_shW3 += (st_shT3-st_shW3) * st_microCoef;
+
+  // Shimmer-first finite budget. Fluid is a cooperating continuation of shimmer, not a rival effect.
+  st_reqBody = 1.20 * st_lerp(1, st_bodyOpp, st_autoAuthority) * st_noveltyBody * (1 + 0.22*st_denseAmt);
+  st_reqResidue = 0.58 * st_lerp(1, st_residueOpp, st_autoAuthority) * st_noveltyResidue * (1 + 0.10*st_denseAmt);
+  st_reqDetail = 0.72 * st_lerp(1, st_detailOpp, st_autoAuthority) * st_noveltyDetail * st_lerp(1, st_midRiskProtect, st_autoAuthority) * (1 + 0.14*st_sparkAmt);
+  st_reqSnap = 0.96 * st_lerp(1, st_snapOpp, st_autoAuthority) * st_noveltySnap * st_lerp(1, 0.72+0.28*st_hiRiskProtect, st_autoAuthority) * (1 + 0.22*st_sparkAmt);
+  st_reqShimmer = 2.45 * st_lerp(1, st_shimmerOpp, st_autoAuthority) * st_noveltyShimmer * st_lerp(1, st_hiRiskProtect, st_autoAuthority)
+             * (1 + 0.12*st_denseAmt + 0.18*st_silkyAmt + 0.24*st_sparkAmt);
+  st_shimmerComplex = max(st_shimmerOpp, 0.62*st_fluidOpp + 0.38*st_shimmerOpp);
+  st_reqFluid = 1.48 * st_lerp(1, st_shimmerComplex, st_autoAuthority) * st_noveltyFluid * st_lerp(1, 0.74+0.26*st_hiRiskProtect, st_autoAuthority)
+           * (1 + 0.32*st_silkyAmt);
+
+  st_reqSum = st_reqBody + st_reqResidue + st_reqDetail + st_reqSnap + st_reqShimmer + st_reqFluid + 0.000001;
+  st_targetWBody = st_reqBody / st_reqSum;
+  st_targetWResidue = st_reqResidue / st_reqSum;
+  st_targetWDetail = st_reqDetail / st_reqSum;
+  st_targetWSnap = st_reqSnap / st_reqSum;
+  st_targetWShimmer = st_reqShimmer / st_reqSum;
+  st_targetWFluid = st_reqFluid / st_reqSum;
+
+  st_authorityMove = st_authorityCoef * (0.25 + 0.75*st_analysisActivity);
+  st_wBody += (st_targetWBody-st_wBody) * st_authorityMove;
+  st_wResidue += (st_targetWResidue-st_wResidue) * st_authorityMove;
+  st_wDetail += (st_targetWDetail-st_wDetail) * st_authorityMove;
+  st_wSnap += (st_targetWSnap-st_wSnap) * st_authorityMove;
+  st_wShimmer += (st_targetWShimmer-st_wShimmer) * st_authorityMove;
+  st_wFluid += (st_targetWFluid-st_wFluid) * st_authorityMove;
+
+  st_interpretActivity > 0.02 ? (
+    st_exposureMove = st_exposureCoef * st_interpretActivity;
+    st_expBodyTarget = st_wBody; st_expResidueTarget = st_wResidue; st_expDetailTarget = st_wDetail;
+    st_expSnapTarget = st_wSnap; st_expShimmerTarget = st_wShimmer; st_expFluidTarget = st_wFluid;
+  ) : (
+    st_exposureMove = st_exposureRecoveryCoef;
+    st_expBodyTarget = 0.150000; st_expResidueTarget = 0.070000; st_expDetailTarget = 0.090000;
+    st_expSnapTarget = 0.120000; st_expShimmerTarget = 0.370000; st_expFluidTarget = 0.200000;
+  );
+  st_expBody += (st_expBodyTarget-st_expBody) * st_exposureMove;
+  st_expResidue += (st_expResidueTarget-st_expResidue) * st_exposureMove;
+  st_expDetail += (st_expDetailTarget-st_expDetail) * st_exposureMove;
+  st_expSnap += (st_expSnapTarget-st_expSnap) * st_exposureMove;
+  st_expShimmer += (st_expShimmerTarget-st_expShimmer) * st_exposureMove;
+  st_expFluid += (st_expFluidTarget-st_expFluid) * st_exposureMove;
+
+  // Proven v2.6 internal operating point is the baseline. AUTO moves around it; Injection does not scale it.
+  st_bodyDrive = st_clamp(0.85 + st_autoAuthority*(0.55*(st_wBody-0.15)*3.2 + 0.18*st_bodyOppRaw + 0.10*st_denseAmt), 0.55, 1.35);
+  st_residueAmt = st_clamp(0.60 + st_autoAuthority*(0.42*(st_wResidue-0.07)*4.0 + 0.18*st_quietSense), 0.38, 1.05);
+  st_voiceAmt = st_clamp(0.55 + st_autoAuthority*(0.46*(st_wDetail-0.09)*3.8 + 0.12*st_detailOppRaw), 0.32, 1.05);
+  st_impact = st_clamp(0.70 + st_autoAuthority*(0.52*(st_wSnap-0.12)*3.4 + 0.16*st_impactEvidence + 0.10*st_sparkAmt), 0.45, 1.25);
+  st_shimmerDrive = st_clamp(1.42 + st_autoAuthority*(1.30*(st_wShimmer-0.37)*2.3 + 0.38*st_shimmerContrast + 0.20*st_shineHeadroom + 0.14*st_sparkAmt), 0.95, 2.00);
+  st_fluidAmt = st_clamp(0.70 + st_autoAuthority*(0.78*(st_wFluid-0.20)*2.8 + 0.30*st_fluidOppRaw + 0.18*st_silkyAmt), 0.42, 1.35);
+
+  st_missAmt = st_clamp(0.70 + st_autoAuthority*(0.18*st_bodyHeadroom + 0.10*st_quietSense), 0.55, 1.00);
+  st_resEdge = st_clamp(0.18 + st_autoAuthority*(0.12*st_detailPresence), 0.10, 0.32);
+  st_quietHold = st_clamp(0.40 + st_autoAuthority*(0.24*st_quietSense), 0.32, 0.72);
+  st_residueFlash = 0.08*st_pulseTrust;
+
+  st_voiceBias = st_clamp(0.55 + st_autoAuthority*(0.20*st_detailPresence), 0.45, 0.78);
+  st_midLift = st_clamp(0.65 + st_autoAuthority*(0.20*st_quietSense), 0.55, 0.86);
+  st_formantCoherence = st_clamp(0.85 + st_autoAuthority*(0.11*(1-st_sideEvidence)), 0.80, 0.96);
+  st_sfxFollow = st_clamp(0.70 + st_autoAuthority*(0.20*st_impactEvidence), 0.68, 0.92);
+  st_v1FlashFollow = st_clamp(0.85 - st_autoAuthority*(0.24*(1-st_pulseTrust)), 0.58, 0.90);
+  st_translationFloor = st_clamp(0.55 + st_autoAuthority*(0.25*st_quietSense), 0.45, 0.82);
+  st_phoneSnapAmt = st_clamp(0.35 + st_autoAuthority*(0.52*min(st_wSnap*4.0,1.0) + 0.18*st_sparkAmt), 0.22, 1.05);
+  st_phoneSheenAmt = st_clamp(0.14 + st_autoAuthority*(0.30*min(st_wShimmer*3.0,1.0) + 0.12*st_silkyAmt), 0.10, 0.58);
+
+  // Correlation-governed generated-only stereo eruption.
+  // Negative generated correlation and poor mono survival close the width gate immediately;
+  // uncorrelated-but-mono-safe sheen is still allowed to go extremely wide.
+  st_corrGuard = st_clamp01((st_genCorr + 0.45) / 0.45);
+  st_monoGuard = st_clamp01((st_monoSurvival - 0.18) / 0.62);
+  st_srcAntiGuard = st_clamp01((st_srcCorr + 0.85) / 0.85);
+  st_stereoSafety = min(1, (0.72 + 0.38*st_monoGuard) * st_corrGuard * st_srcAntiGuard);
+
+  st_widthTarget = st_clamp01(0.72*st_actFlash + 0.34*st_actBloom + 0.62*st_actWrap - 0.42*st_actAfter);
+  st_widthGesture += (st_widthTarget-st_widthGesture) * st_widthCoef;
+  st_stereoOpportunity = st_clamp01(0.12 + 0.42*st_sideEvidence + 0.18*st_topoField + 0.40*st_widthGesture);
+  st_stereoEruption = st_clamp01((0.78*st_actFlash + 0.66*st_actWrap) * st_stereoSafety);
+  st_stereoAmt = st_clamp(
+      0.45
+    + st_autoAuthority*(1.10*st_stereoOpportunity + 0.78*st_stereoEruption + 0.30*st_silkyAmt),
+    0.35, 2.00
+  );
+  st_midLock = st_clamp(0.95 - st_autoAuthority*(0.22*st_sideEvidence*min(st_wDetail*4.00, 1.00)), 0.72, 0.96);
+
+  st_fatigueAmt = st_clamp(0.65 + st_autoAuthority*(0.38*st_airPresence + 0.18*max(st_shimmerDrive-1.42,0)), 0.62, 1.35);
+  st_honkGuardAmt = st_clamp(0.65 + st_autoAuthority*(0.32*st_detailPresence), 0.62, 1.18);
+  st_nasalGuardAmt = st_clamp(0.70 + st_autoAuthority*(0.34*st_detailPresence), 0.66, 1.22);
+
+  // Temporal energy concentration: AUTO=0 is exactly neutral; AUTO>0 spends more energy
+  // in the informative window and less between acts rather than simply raising average level.
+  st_bodyChoreo = st_lerp(1, 0.58 + 0.92*st_actBloom + 0.22*st_actFlash, st_autoAuthority);
+  st_residueChoreo = st_lerp(1, 0.38 + 0.42*st_actWrap + 0.88*st_actAfter, st_autoAuthority);
+  st_detailChoreo = st_lerp(1, 0.50 + 0.78*st_actFlash + 0.48*st_actBloom + 0.12*st_actAfter, st_autoAuthority);
+  st_snapChoreo = st_lerp(1, 0.42 + 1.48*st_actFlash, st_autoAuthority);
+  st_shimmerChoreo = st_lerp(1, 0.50 + 1.18*st_actFlash + 0.40*st_actBloom + 0.12*st_actWrap, st_autoAuthority);
+  st_fluidChoreo = st_lerp(1, 0.38 + 0.24*st_actBloom + 1.08*st_actWrap + 0.14*st_actAfter, st_autoAuthority);
+
+  // Distinct nonlinear personalities inside the SAME Shimmer identity.
+  st_denseBodyNL = 1 + st_autoAuthority*0.46*st_denseAmt*st_actBloom;
+  st_sparkShimmerNL = 1 + st_autoAuthority*0.62*st_sparkAmt*st_actFlash;
+  st_silkyFluidNL = 1 + st_autoAuthority*0.48*st_silkyAmt*st_actWrap;
+
+  st_bL = st_body1L.st_run_bq(st_xL) + 0.80*st_body2L.st_run_bq(st_xL);
+  st_bR = st_body1R.st_run_bq(st_xR) + 0.80*st_body2R.st_run_bq(st_xR);
+  st_bSatL = st_softsat(st_bL * (1.60 + 2.80*st_bodyDrive) * st_denseBodyNL);
+  st_bSatR = st_softsat(st_bR * (1.60 + 2.80*st_bodyDrive) * st_denseBodyNL);
+  st_bodyGain = 0.185 * st_bodyDrive * (0.65 + 0.80*st_impact*st_tr) * st_pulseMul * st_bodyChoreo;
+  st_bodyAddL = st_bSatL * st_bodyGain;
+  st_bodyAddR = st_bSatR * st_bodyGain;
+
+  st_quietMul = 1 + st_quietHold*(0.22 + 0.88*st_quietSense);
+  st_rootRaw = st_rootM.st_run_bq(st_mono);
+  st_rootDrive = 1.80 + 3.80*st_missAmt;
+  st_rootUnit = st_softsat(st_rootRaw * st_rootDrive);
+  st_rootEven = st_rootUnit * st_rootUnit;
+  st_rootDC += (st_rootEven - st_rootDC) * st_rootDCcoef;
+  st_rootFold = st_rootEven - st_rootDC;
+  st_genRoot = 0.78*st_rootUnit + 0.22*st_softsat(st_rootFold * (1.05 + 0.45*st_missAmt));
+
+  st_resBody = 0.96*st_res4M.st_run_bq(st_genRoot) + 0.76*st_res5M.st_run_bq(st_genRoot) + 0.52*st_res7M.st_run_bq(st_genRoot) + 0.36*st_res8M.st_run_bq(st_genRoot);
+  st_resCarry = st_resEdge*(0.18*st_res12M.st_run_bq(st_genRoot) + 0.11*st_res15M.st_run_bq(st_genRoot));
+  st_residueCore = st_softsat((st_resBody + st_resCarry) * (0.95 + 1.10*st_residueAmt));
+  st_resDyn = 0.62 + 0.46*st_impact*min(st_tr, 1.15);
+  st_resPulseMul = 1 + st_residueFlash*(st_pulseMul - 1);
+  st_residueGain = 0.066 * st_residueAmt * st_missAmt * st_resDyn * st_quietMul * st_resPulseMul * st_residueChoreo;
+  st_residueAddL = st_residueCore * st_residueGain;
+  st_residueAddR = st_residueAddL;
+
+  // Detail Translation lane (renamed from v2.6 Voice-Life for general SFX use).
+  st_vlLow = st_vlLowM.st_run_bq(st_mono);
+  st_vlBridge = st_vlBridgeM.st_run_bq(st_mono);
+  st_vlWarm = st_vlWarmM.st_run_bq(st_mono);
+  st_vlMeat1 = st_vlMeat1M.st_run_bq(st_mono);
+  st_vlMeat2 = st_vlMeat2M.st_run_bq(st_mono);
+  st_vlMeat3 = st_vlMeat3M.st_run_bq(st_mono);
+  st_vlPres1 = st_vlPres1M.st_run_bq(st_mono);
+  st_vlPres2 = st_vlPres2M.st_run_bq(st_mono);
+  st_vlBite = st_vlBiteM.st_run_bq(st_mono);
+
+  st_vlLinear = 0.18*st_vlLow + 0.30*st_vlBridge + 0.42*st_vlWarm
+           + 0.74*st_vlMeat1 + 1.00*st_vlMeat2 + 0.82*st_vlMeat3
+           + (0.34 + 0.20*st_voiceBias)*st_vlPres1 + (0.24 + 0.18*st_voiceBias)*st_vlPres2
+           + (0.05 + 0.10*st_voiceBias)*st_vlBite;
+
+  st_vlAnimated = 0.12*st_softsat(st_vlLow*2.0) + 0.20*st_softsat(st_vlBridge*2.2) + 0.28*st_softsat(st_vlWarm*2.4)
+             + 0.54*st_softsat(st_vlMeat1*2.7) + 0.72*st_softsat(st_vlMeat2*2.9) + 0.52*st_softsat(st_vlMeat3*2.6)
+             + 0.22*st_softsat(st_vlPres1*(2.0 + 0.9*st_voiceBias)) + 0.16*st_softsat(st_vlPres2*(1.8 + 0.8*st_voiceBias));
+
+  st_voiceRaw = st_formantCoherence*st_vlLinear + (1 - st_formantCoherence)*st_vlAnimated;
+  st_voiceAmp = abs(st_voiceRaw);
+  st_voiceFastEnv += (st_voiceAmp - st_voiceFastEnv) * (st_voiceAmp > st_voiceFastEnv ? st_voiceFastAtk : st_voiceFastRel);
+  st_voiceSlowEnv += (st_voiceAmp - st_voiceSlowEnv) * (st_voiceAmp > st_voiceSlowEnv ? st_voiceSlowAtk : st_voiceSlowRel);
+  st_voiceTr = st_clamp((st_voiceFastEnv - st_voiceSlowEnv) / (st_voiceSlowEnv + 0.003), 0, 2.0);
+
+  st_voiceQuietSense = st_clamp01((0.026 - st_voiceSlowEnv) / 0.026);
+  st_voiceUpMul = 1 + st_midLift*(0.12 + 0.45*st_voiceQuietSense + 0.35*st_quietSense);
+  st_voiceEnvMul = (1 - st_sfxFollow) + st_sfxFollow*(0.62 + 0.72*st_clamp01(st_voiceTr*0.72));
+  st_voiceFlashMul = 1 + st_v1FlashFollow*(st_pulseMul - 1);
+  st_voiceFloorMul = 1 + st_translationFloor*(0.16 + 0.64*st_quietSense);
+
+  st_honkProbe = abs(st_honkM.st_run_bq(st_mono));
+  st_honkEnv += (st_honkProbe - st_honkEnv) * (st_honkProbe > st_honkEnv ? st_honkAtk : st_honkRel);
+  st_honkProtect = 1 / (1 + st_honkGuardAmt * max(st_honkEnv - 0.010, 0) * 52);
+
+  st_nasalProbe = 0.64*abs(st_nasalM.st_run_bq(st_mono)) + 0.36*abs(st_nasal2M.st_run_bq(st_mono));
+  st_nasalEnv += (st_nasalProbe - st_nasalEnv) * (st_nasalProbe > st_nasalEnv ? st_nasalAtk : st_nasalRel);
+  st_nasalProtect = 1 / (1 + st_nasalGuardAmt * max(st_nasalEnv - 0.009, 0) * 56);
+  st_voiceProtect = st_honkProtect * st_nasalProtect;
+
+  st_voiceCore = st_softsat(st_voiceRaw * (1.05 + 2.25*st_voiceAmt + 1.05*st_voiceBias));
+  st_voiceGain = 0.052 * st_voiceAmt * st_voiceUpMul * st_voiceEnvMul * st_voiceFlashMul * st_voiceFloorMul
+            * (0.64 + 0.42*st_impact*min(st_tr, 1.25)) * st_voiceProtect * st_detailChoreo;
+
+  st_vlSideRaw = 0.72*st_vlSideMeatM.st_run_bq(st_side) + 0.28*st_vlSidePresM.st_run_bq(st_side);
+  st_vlSideCore = st_softsat(st_vlSideRaw * (0.9 + 1.7*st_voiceAmt));
+  st_vlSideGain = st_voiceGain * (1 - st_midLock) * 0.45;
+  st_detailAddL = st_voiceCore*st_voiceGain + st_vlSideCore*st_vlSideGain;
+  st_detailAddR = st_voiceCore*st_voiceGain - st_vlSideCore*st_vlSideGain;
+
+  st_vlSnapRaw = 0.70*st_vlSnapM.st_run_bq(st_mono) + 0.30*st_vlSnap2M.st_run_bq(st_mono);
+  st_vlSnapCore = st_softsat(st_vlSnapRaw * (1.65 + 3.10*st_phoneSnapAmt));
+  st_vlSnapGain = 0.023 * st_voiceAmt * st_phoneSnapAmt * (0.18 + 1.42*st_voiceTr) * st_voiceFlashMul * st_voiceProtect
+             * st_lerp(1, 0.62 + 0.92*st_actFlash, st_autoAuthority);
+  st_detailSnapAddL = st_vlSnapCore * st_vlSnapGain;
+  st_detailSnapAddR = st_detailSnapAddL;
+
+  st_vlSheenRawL = st_vlSheenL.st_run_bq(st_xL) + 0.62*st_vlSheen2L.st_run_bq(st_xL);
+  st_vlSheenRawR = st_vlSheenR.st_run_bq(st_xR) + 0.62*st_vlSheen2R.st_run_bq(st_xR);
+  st_vlSheenCoreL = st_softsat(st_vlSheenRawL * (1.35 + 2.25*st_phoneSheenAmt));
+  st_vlSheenCoreR = st_softsat(st_vlSheenRawR * (1.35 + 2.25*st_phoneSheenAmt));
+  st_vlSheenGain = 0.020 * st_voiceAmt * st_phoneSheenAmt * st_catGuard * (0.66 + 0.52*st_impact*min(st_tr, 1.3))
+              * st_lerp(1, 0.58 + 0.72*st_actFlash + 0.42*st_actWrap, st_autoAuthority);
+  st_detailSheenAddL = st_vlSheenCoreL * st_vlSheenGain;
+  st_detailSheenAddR = st_vlSheenCoreR * st_vlSheenGain;
+  st_vlSheenSide = 0.5*(st_detailSheenAddL - st_detailSheenAddR);
+  st_detailSheenAddL += st_stereoAmt*0.18*st_vlSheenSide;
+  st_detailSheenAddR -= st_stereoAmt*0.18*st_vlSheenSide;
+
+  st_biteInL = st_biteL.st_run_bq(st_xL);
+  st_biteInR = st_biteR.st_run_bq(st_xR);
+  st_snapGain = 0.090 * st_impact * (0.35 + 1.35*st_tr) * st_pulseMul * st_snapChoreo;
+  st_snapL = st_softsat(st_biteInL * (2.2 + 3.2*st_impact)) * st_snapGain;
+  st_snapR = st_softsat(st_biteInR * (2.2 + 3.2*st_impact)) * st_snapGain;
+
+  st_h1L = st_sh1L.st_run_bq(st_xL);
+  st_h1R = st_sh1R.st_run_bq(st_xR);
+  st_h2L = st_sh2L.st_run_bq(st_xL);
+  st_h2R = st_sh2R.st_run_bq(st_xR);
+  st_h3L = st_sh3L.st_run_bq(st_xL);
+  st_h3R = st_sh3R.st_run_bq(st_xR);
+  st_hiL = st_shW1*st_h1L + st_shW2*st_h2L + st_shW3*st_h3L;
+  st_hiR = st_shW1*st_h1R + st_shW2*st_h2R + st_shW3*st_h3R;
+
+  st_guardProbe = 0.5*(abs(st_guardL.st_run_bq(st_xL)) + abs(st_guardR.st_run_bq(st_xR)));
+  st_hiEnv += (st_guardProbe - st_hiEnv) * (st_guardProbe > st_hiEnv ? st_hiAtk : st_hiRel);
+  st_guard = 1 / (1 + st_fatigueAmt * max(st_hiEnv - 0.028, 0) * 30);
+  st_catGuard = st_guard;
+
+  st_shSatL = st_softsat(st_hiL * (2.0 + 4.0*st_shimmerDrive) * st_sparkShimmerNL);
+  st_shSatR = st_softsat(st_hiR * (2.0 + 4.0*st_shimmerDrive) * st_sparkShimmerNL);
+  st_shGain = 0.115 * st_shimmerDrive * st_guard * (0.75 + 0.70*st_impact*st_tr) * st_shimmerChoreo;
+  st_shineL = st_shSatL * st_shGain;
+  st_shineR = st_shSatR * st_shGain;
+
+  st_fInL = st_softsat((st_hiL + 0.40*st_snapL) * (1.8 + 3.2*st_fluidAmt) * st_silkyFluidNL) * st_guard;
+  st_fInR = st_softsat((st_hiR + 0.40*st_snapR) * (1.8 + 3.2*st_fluidAmt) * st_silkyFluidNL) * st_guard;
+
+  st_idx1 = st_dpos - st_d1;
+  st_idx1 < 0 ? st_idx1 += st_delaySize;
+  st_idx2 = st_dpos - st_d2;
+  st_idx2 < 0 ? st_idx2 += st_delaySize;
+  st_idx3 = st_dpos - st_d3;
+  st_idx3 < 0 ? st_idx3 += st_delaySize;
+  st_idx4 = st_dpos - st_d4;
+  st_idx4 < 0 ? st_idx4 += st_delaySize;
+  st_idx5 = st_dpos - st_d5;
+  st_idx5 < 0 ? st_idx5 += st_delaySize;
+  st_idx6 = st_dpos - st_d6;
+  st_idx6 < 0 ? st_idx6 += st_delaySize;
+  st_tapL1 = st_bufL[st_idx1];
+  st_tapR1 = st_bufR[st_idx1];
+  st_tapL2 = st_bufL[st_idx2];
+  st_tapR2 = st_bufR[st_idx2];
+  st_tapL3 = st_bufL[st_idx3];
+  st_tapR3 = st_bufR[st_idx3];
+  st_tapL4 = st_bufL[st_idx4];
+  st_tapR4 = st_bufR[st_idx4];
+  st_tapL5 = st_bufL[st_idx5];
+  st_tapR5 = st_bufR[st_idx5];
+  st_tapL6 = st_bufL[st_idx6];
+  st_tapR6 = st_bufR[st_idx6];
+
+  st_fb = min(0.090, 0.045 * st_fluidAmt * (1 + st_autoAuthority*0.42*st_silkyAmt*st_actWrap));
+  st_bufL[st_dpos] = st_fInL + st_fb*st_tapR3;
+  st_bufR[st_dpos] = st_fInR + st_fb*st_tapL3;
+  st_dpos += 1;
+  st_dpos >= st_delaySize ? st_dpos = 0;
+
+  st_tap1W = 0.58 - 0.10*st_silkyAmt + 0.08*st_sparkAmt;
+  st_tap2W = 0.34 + 0.12*st_silkyAmt;
+  st_tap3W = 0.18 + 0.14*st_silkyAmt - 0.05*st_sparkAmt;
+  st_smearL = st_tap1W*st_tapL1 + st_tap2W*st_tapR2 + st_tap3W*st_tapL3;
+  st_smearR = st_tap1W*st_tapR1 + st_tap2W*st_tapL2 + st_tap3W*st_tapR3;
+  st_smearSide = 0.5*(st_smearL - st_smearR);
+  st_fluidL = 0.105 * st_fluidAmt * (st_smearL + st_stereoAmt*st_smearSide) * st_fluidChoreo;
+  st_fluidR = 0.105 * st_fluidAmt * (st_smearR - st_stereoAmt*st_smearSide) * st_fluidChoreo;
+
+  st_shSide = 0.5*(st_shineL - st_shineR);
+  // At AUTO=0 this is exactly the old generated-only 0.40 * Stereo Sheen widening law.
+  st_sheenWidthBase = st_stereoAmt * 0.40;
+  st_sheenWidthAuto = st_clamp(
+      st_stereoAmt
+    * (0.18 + 0.50*st_actFlash + 0.42*st_actWrap + 0.16*st_silkyAmt)
+    * st_stereoSafety,
+    0, 1.65
+  );
+  st_sheenWidth = st_lerp(st_sheenWidthBase, st_sheenWidthAuto, st_autoAuthority);
+  st_shineL += st_sheenWidth*st_shSide;
+  st_shineR -= st_sheenWidth*st_shSide;
+
+  // AFTERIMAGE: longer taps from the SAME shimmer/fluid memory, strongly center-returning.
+  // It cannot feed PE2 or source analysis and is tiny even before the 0-15% output injection.
+  st_afterRawL = 0.48*st_tapL4 + 0.32*st_tapR5 + 0.20*st_tapL6;
+  st_afterRawR = 0.48*st_tapR4 + 0.32*st_tapL5 + 0.20*st_tapR6;
+  st_afterMid = 0.5*(st_afterRawL + st_afterRawR);
+  st_afterSide = 0.5*(st_afterRawL - st_afterRawR);
+  st_afterGain = st_autoAuthority * (0.010 + 0.040*st_actAfter) * st_guard * (0.78 + 0.22*st_silkyAmt);
+  st_afterWidth = 0.08 + 0.16*st_actWrap*(1-st_actAfter);
+  st_afterL = (st_afterMid + st_afterWidth*st_afterSide) * st_afterGain;
+  st_afterR = (st_afterMid - st_afterWidth*st_afterSide) * st_afterGain;
+
+  st_genL = st_bodyAddL + st_residueAddL + st_detailAddL + st_detailSnapAddL + st_detailSheenAddL + st_snapL + st_shineL + st_fluidL + st_afterL;
+  st_genR = st_bodyAddR + st_residueAddR + st_detailAddR + st_detailSnapAddR + st_detailSheenAddR + st_snapR + st_shineR + st_fluidR + st_afterR;
+
+  // Generated-path correlation and mono survival are observed AFTER width/afterimage.
+  // These values govern the NEXT samples' width authority, creating a fast closed-loop safety governor.
+  st_genPowL += (st_genL*st_genL-st_genPowL) * st_corrCoef;
+  st_genPowR += (st_genR*st_genR-st_genPowR) * st_corrCoef;
+  st_genCross += (st_genL*st_genR-st_genCross) * st_corrCoef;
+  st_genMidNow = 0.5*(st_genL+st_genR);
+  st_genSideNow = 0.5*(st_genL-st_genR);
+  st_genMidPow += (st_genMidNow*st_genMidNow-st_genMidPow) * st_corrCoef;
+  st_genSidePow += (st_genSideNow*st_genSideNow-st_genSidePow) * st_corrCoef;
+  st_genCorr = st_clamp(st_genCross / sqrt(st_genPowL*st_genPowR + 0.000000001), -1, 1);
+  st_monoSurvival = st_clamp01(sqrt(st_genMidPow / (st_genMidPow + st_genSidePow + 0.000000001)));
+
+  // Safety is evaluated AFTER the tiny parallel injection. Internal synthesis is allowed to stay hot.
+  st_genPeak = max(abs(st_genL), abs(st_genR));
+  st_genEnv += (st_genPeak-st_genEnv) * (st_genPeak > st_genEnv ? st_genAtk : st_genRel);
+  st_injectedEnv = st_genEnv * st_injection;
+  st_injectedPeak = st_genPeak * st_injection;
+  st_injectedRatio = st_injectedEnv / (st_slowEnv + 0.0030);
+  // Spend more of the SAME tiny budget on FLASH/BLOOM, then tighten again for WRAP/AFTERIMAGE.
+  // This prevents the master governor from flattening the very event contrast v3.3 is trying to create.
+  st_eventSpend = 1 + st_autoAuthority*(0.62*st_actFlash + 0.20*st_actBloom);
+  st_targetRatio = (0.035 + 0.72*st_injection) * st_eventSpend;
+  st_energyGov = 1 / (1 + max(st_injectedRatio-st_targetRatio, 0) * 4.20);
+  st_peakAllowance = (0.035 + 0.78*st_injection + 0.12*st_amp) * (1 + st_autoAuthority*0.48*st_actFlash);
+  st_peakGov = min(1, st_peakAllowance / (st_injectedPeak + 0.000100));
+  st_masterTarget = min(st_energyGov, st_peakGov);
+  st_masterGov += (st_masterTarget-st_masterGov) * (st_masterTarget < st_masterGov ? st_masterAtk : st_masterRel);
+
+
+  st_out_l=st_input_l+st_genL*st_masterGov*st_injection;
+  st_out_r=st_input_r+st_genR*st_masterGov*st_injection;
+);
+
+function st_process(st_input_l,st_input_r)
+local(st_input_peak,st_output_peak,st_ramp_target)
+(
+  st_out_l=st_input_l; st_out_r=st_input_r;
+  st_input_peak=max(abs(st_input_l),abs(st_input_r));
+  st_amount>0 || st_running ? (
+    st_input_peak>0.000000000001 ? (
+      !st_running ? (
+        st_had_source ? st_recover_sleep();
+        st_current_amount=0;
+        st_ramp_left=st_ramp_samples;
+        st_tune();
+      );
+      st_running=1; st_had_source=1;
+      st_idle_samples=0; st_quiet_count=0; st_forced_idle=0;
+    );
+    st_running && st_had_source ? (
+      st_ramp_target=st_forced_idle ? 0 : st_amount;
+      st_ramp_left>0 ? (
+        st_current_amount += (st_ramp_target-st_current_amount)/st_ramp_left;
+        st_ramp_left-=1;
+      ) : st_current_amount=st_ramp_target;
+      st_current_amount>0 ? (
+        st_render(st_input_l,st_input_r);
+        st_process_count+=1;
+        st_input_peak<=0.000000000001 ? (
+          st_idle_samples+=1;
+          st_output_peak=max(abs(st_out_l-st_input_l),abs(st_out_r-st_input_r));
+          st_output_peak<0.0000000001 ? st_quiet_count+=1 : st_quiet_count=0;
+          st_idle_samples>0.060*srate && st_quiet_count>=st_quiet_window ? (
+            st_running=0; st_current_amount=0; st_sleep_samples=0;
+          ) : st_idle_samples>2*srate && !st_forced_idle ? (
+            st_forced_idle=1; st_ramp_left=st_ramp_samples;
+          );
+        );
+      ) : (
+        st_running=0; st_sleep_samples=0;
+      );
+    ) : st_sleep_samples+=1;
+  );
+);
+
+// Sample v71: source-adaptive spectral contour, derived from Vocal Contour MX.
+// @init helper snippet. Host owns routing, enable fades and PDC.
+// No source classifier: flatness, energy share, decay and persistence are evidence.
+function sc_clamp(sc_v,sc_lo,sc_hi) (max(sc_lo,min(sc_hi,sc_v)););
+function sc_sat(sc_v) (max(0,min(1,sc_v)););
+function sc_smooth(sc_v) local(sc_t) (sc_t=sc_sat(sc_v);sc_t*sc_t*(3-2*sc_t););
+function sc_powdb(sc_v) (10*log(max(.000000000000000000000000000001,sc_v))/log(10););
+function sc_amp(sc_v) (exp(sc_v*.1151292546497022842););
+function sc_time(sc_ms) (1-exp(-sc_dt/max(.001,sc_ms*.001)););
+function sc_soft_over(sc_d,sc_k) (
+ sc_k<=.0001?max(0,sc_d):sc_d<=-sc_k*.5?0:sc_d>=sc_k*.5?sc_d:(sc_d+sc_k*.5)^2/(2*sc_k);
+);
+function sc_pos(sc_hz) (31*log(max(20,sc_hz)/20)/sc_log_span;);
+
+// Large state is invalidated with generation tags, never cleared at a note edge.
+// Only the 32-band detector bank is reset. Debug counters remain cumulative.
+function sc_reset() local(sc_i) (
+ sc_epoch+=1;
+ sc_write=0;sc_read=0;sc_hopcount=0;sc_drain=0;sc_running=0;
+ sc_global_prev=-180;sc_global_art=0;sc_global_silence=1;sc_cold=1;
+ sc_aggr_s=sc_aggression;
+ sc_gr_tail=0;sc_gr_noise=0;sc_gr_res=0;sc_gr_total=0;
+ sc_i=0;loop(32,
+   sc_bprev[sc_i]=-180;sc_bfast[sc_i]=-180;sc_bref[sc_i]=-180;
+   sc_bhold[sc_i]=0;sc_btail[sc_i]=0;sc_bnoisegr[sc_i]=0;sc_bart[sc_i]=0;
+   sc_bdecay[sc_i]=0;sc_bdominance[sc_i]=0;
+   sc_btrend[sc_i]=0;sc_bfallage[sc_i]=0;
+   sc_i+=1;
+ );
+ sc_out_l=0;sc_out_r=0;
+);
+function sc_config(sc_amount) (
+ sc_aggression=sc_sat(sc_amount);
+);
+function sc_targets() local(sc_a) (
+ sc_aggr_s+=sc_param_a*(sc_aggression-sc_aggr_s);sc_a=sc_aggr_s;
+ sc_tail_amt=sc_a;
+ sc_noise_amt=sc_smooth((sc_a-.20)/.80);
+ sc_res_amt=sc_smooth((sc_a-.35)/.65);
+ sc_cap=18*sc_a;
+ sc_tail_gap=14-10*sc_a;
+ sc_exp_ratio=1+3*sc_a;sc_knee=6;
+ sc_hold_time=(60-40*sc_a)*.001;
+ sc_close_a=sc_time(180-100*sc_a);sc_open_a=sc_time(8);
+ sc_ref_drop=18*sc_dt/(.65+.65*sc_a);
+ sc_res_threshold=9-4*sc_a;
+ sc_res_persist=(220-100*sc_a)*.001;
+ sc_res_a=sc_time(150-60*sc_a);sc_noise_a=sc_time(130-50*sc_a);
+ sc_decay_authority=sc_smooth((sc_a-.25)/.75);
+);
+function sc_init(sc_base) local(sc_p,sc_i,sc_hz) (
+ sc_sr=sc_clamp(srate,8000,768000);
+ // Match source time resolution until8192 cap: 2048 at44.1/48k,4096 at88.2/96k.
+ sc_n=512;while(sc_n<2048*sc_sr/48000&&sc_n<8192)(sc_n*=2;);
+ sc_k=sc_n/2;sc_hop=sc_n/4;sc_ringn=2*sc_n;sc_dt=sc_hop/sc_sr;
+ sc_inv_n=1/sc_n;sc_power_norm=1/(sc_n*sc_n*.375);
+ sc_log_span=log(max(40,min(20000,sc_sr*.5))/20);
+ // Both complex FFT buffers fit inside one64k page at the largest supported N.
+ sc_p=ceil(max(0,sc_base)/65536)*65536;
+ sc_fft_l=sc_p;sc_p+=2*sc_n;sc_fft_r=sc_p;sc_p+=2*sc_n;
+ sc_window=sc_p;sc_p+=sc_n;
+ sc_in_l=sc_p;sc_p+=sc_n;sc_in_r=sc_p;sc_p+=sc_n;
+ sc_in_tag=sc_p;sc_p+=sc_n;
+ sc_ola_l=sc_p;sc_p+=sc_ringn;sc_ola_r=sc_p;sc_p+=sc_ringn;
+ sc_ola_tag=sc_p;sc_p+=sc_ringn;
+ sc_power=sc_p;sc_p+=sc_k+1;sc_prefix=sc_p;sc_p+=sc_k+2;
+ sc_res_raw=sc_p;sc_p+=sc_k+1;sc_res_state=sc_p;sc_p+=sc_k+1;
+ sc_res_timer=sc_p;sc_p+=sc_k+1;sc_res_tag=sc_p;sc_p+=sc_k+1;
+ sc_binpos=sc_p;sc_p+=sc_k+1;sc_radius=sc_p;sc_p+=sc_k+1;
+ sc_band_start=sc_p;
+ sc_bsum=sc_p;sc_p+=32;sc_bcount=sc_p;sc_p+=32;sc_blog=sc_p;sc_p+=32;
+ sc_bpeak=sc_p;sc_p+=32;sc_bprev=sc_p;sc_p+=32;sc_bfast=sc_p;sc_p+=32;
+ sc_bref=sc_p;sc_p+=32;sc_bhold=sc_p;sc_p+=32;sc_btail=sc_p;sc_p+=32;
+ sc_bnoisegr=sc_p;sc_p+=32;sc_btone=sc_p;sc_p+=32;sc_bnoise=sc_p;sc_p+=32;
+ sc_bart=sc_p;sc_p+=32;sc_bdecay=sc_p;sc_p+=32;sc_bdominance=sc_p;sc_p+=32;
+ sc_btrend=sc_p;sc_p+=32;sc_bfallage=sc_p;sc_p+=32;
+ sc_mem_end=sc_p;
+ // Init-only clears are restricted to generation arrays and a small band bank.
+ memset(sc_in_tag,0,sc_n);memset(sc_ola_tag,0,sc_ringn);
+ memset(sc_res_tag,0,sc_k+1);memset(sc_band_start,0,32*17);
+ sc_i=0;loop(sc_n,sc_window[sc_i]=.5-.5*cos(2*$pi*sc_i/sc_n);sc_i+=1;);
+ sc_i=0;loop(sc_k+1,
+   sc_hz=sc_i*sc_sr/sc_n;
+   sc_binpos[sc_i]=sc_clamp(sc_pos(sc_hz),0,31);
+   sc_radius[sc_i]=max(2,floor(sc_i*.12));sc_i+=1;
+ );
+ sc_param_a=sc_time(25);sc_fast_a=sc_time(8);sc_fast_r=sc_time(45);
+ sc_trend_a=sc_time(100);
+ sc_art_r=exp(-sc_dt/.065);
+ sc_epoch=0;sc_aggression=0;sc_frame_count=0;sc_process_count=0;sc_faults=0;
+ sc_reset();sc_mem_end;
+);
+
+function sc_frame() local(sc_i,sc_j,sc_idx,sc_w,sc_lr,sc_li,sc_rr,sc_ri,
+ sc_p,sc_q,sc_b,sc_b1,sc_frac,sc_wt,sc_total,sc_totaldb,sc_onset_global,
+ sc_level,sc_flat,sc_crest,sc_noise,sc_tone,sc_prev,sc_rise,sc_onset,sc_ref,
+ sc_req,sc_a,sc_art,sc_protect,sc_diff,sc_ps,sc_lo,sc_hi,sc_env,sc_prom,
+ sc_age,sc_raw,sc_rt,sc_rb,sc_rrq,sc_ratio,sc_g,sc_sum,sc_body,sc_tailfade,
+ sc_noise_sum,sc_global_noise,sc_dominance,sc_context,sc_summean,sc_weak,
+ sc_fall,sc_decay,sc_release) (
+ sc_frame_count+=1;sc_targets();
+ // sc_write is the oldest input after the newest sample has been written.
+ sc_i=0;loop(sc_n,
+   sc_idx=(sc_write+sc_i)%sc_n;sc_w=sc_window[sc_i];
+   sc_in_tag[sc_idx]==sc_epoch?(
+     sc_fft_l[2*sc_i]=sc_in_l[sc_idx]*sc_w;
+     sc_fft_r[2*sc_i]=sc_in_r[sc_idx]*sc_w;
+   ):(sc_fft_l[2*sc_i]=0;sc_fft_r[2*sc_i]=0;);
+   sc_fft_l[2*sc_i+1]=0;sc_fft_r[2*sc_i+1]=0;sc_i+=1;
+ );
+ fft(sc_fft_l,sc_n);fft_permute(sc_fft_l,sc_n);
+ fft(sc_fft_r,sc_n);fft_permute(sc_fft_r,sc_n);
+ memset(sc_bsum,0,32*4);
+ sc_prefix[0]=0;sc_total=0;
+ sc_i=0;loop(sc_k+1,
+   sc_lr=sc_fft_l[2*sc_i];sc_li=sc_fft_l[2*sc_i+1];
+   sc_rr=sc_fft_r[2*sc_i];sc_ri=sc_fft_r[2*sc_i+1];
+   sc_p=.5*(sc_lr*sc_lr+sc_li*sc_li+sc_rr*sc_rr+sc_ri*sc_ri);
+   sc_power[sc_i]=sc_p;sc_prefix[sc_i+1]=sc_prefix[sc_i]+sc_p;
+   sc_q=sc_p*sc_power_norm*(sc_i>0&&sc_i<sc_k?2:1);sc_total+=sc_q;
+   sc_ps=sc_binpos[sc_i];sc_b=floor(sc_ps);sc_b1=min(31,sc_b+1);sc_frac=sc_ps-sc_b;
+   sc_wt=1-sc_frac;
+   sc_bsum[sc_b]+=sc_wt*sc_q;sc_bcount[sc_b]+=sc_wt;
+   sc_blog[sc_b]+=sc_wt*log(max(.000000000000000000000000000001,sc_q));
+   sc_bpeak[sc_b]=max(sc_bpeak[sc_b],sc_q);
+   sc_b1!=sc_b&&sc_frac>0?(
+     sc_bsum[sc_b1]+=sc_frac*sc_q;sc_bcount[sc_b1]+=sc_frac;
+     sc_blog[sc_b1]+=sc_frac*log(max(.000000000000000000000000000001,sc_q));
+     sc_bpeak[sc_b1]=max(sc_bpeak[sc_b1],sc_q);
+   );sc_i+=1;
+ );
+ sc_totaldb=sc_powdb(sc_total);
+ sc_onset_global=sc_totaldb>-105&&(sc_global_prev<-105||sc_totaldb-sc_global_prev>5);
+ sc_totaldb<-110?sc_global_silence+=sc_dt:sc_global_silence=0;
+ sc_global_art=max(sc_global_art*sc_art_r,sc_onset_global);sc_global_prev=sc_totaldb;
+ sc_noise_sum=0;
+ // Describe the current source before deciding whether flatness is unwanted.
+ sc_i=0;loop(32,
+   sc_bcount[sc_i]>1.5&&sc_bsum[sc_i]>.000000000000000000000001?(
+     sc_summean=sc_bsum[sc_i]/sc_bcount[sc_i];
+     sc_flat=exp(sc_blog[sc_i]/sc_bcount[sc_i])/sc_summean;
+     sc_crest=sc_bpeak[sc_i]/max(.000000000000000000000001,sc_summean);
+     sc_noise=sc_sat((sc_flat-.08)/.48);
+     sc_tone=max(1-sc_noise,sc_sat((sc_crest-3)/10));
+   ):(sc_noise=0;sc_tone=1;);
+   sc_bnoise[sc_i]=sc_noise;sc_btone[sc_i]=sc_tone;
+   sc_noise_sum+=sc_noise*sc_bsum[sc_i];
+   sc_bdominance[sc_i]=sc_smooth((sc_bsum[sc_i]/max(.000000000000000000000001,sc_total)-.035)/.18);
+   sc_i+=1;
+ );
+ sc_global_noise=sc_noise_sum/max(.000000000000000000000001,sc_total);
+ sc_i=0;loop(32,
+   sc_level=sc_powdb(sc_bsum[sc_i]);sc_prev=sc_bprev[sc_i];sc_rise=sc_level-sc_prev;
+   sc_noise=sc_bnoise[sc_i];sc_tone=sc_btone[sc_i];sc_dominance=sc_bdominance[sc_i];
+   sc_onset=(sc_level>-115&&(sc_rise>4||sc_onset_global));
+   sc_art=max(sc_bart[sc_i]*sc_art_r,sc_sat((sc_rise-1)/8));sc_bart[sc_i]=sc_art;
+   sc_a=sc_level>sc_bfast[sc_i]?sc_fast_a:sc_fast_r;
+   sc_bfast[sc_i]+=sc_a*(sc_level-sc_bfast[sc_i]);
+   sc_onset||sc_cold?(
+     sc_bref[sc_i]=max(-150,sc_level);sc_bhold[sc_i]=sc_hold_time;sc_bfast[sc_i]=sc_level;
+     sc_btrend[sc_i]=0;sc_bfallage[sc_i]=0;
+   ):(
+     sc_bref[sc_i]=max(sc_level,sc_bref[sc_i]-sc_ref_drop);
+     sc_bhold[sc_i]=max(0,sc_bhold[sc_i]-sc_dt);
+   );
+   sc_global_silence>.30?(sc_bref[sc_i]=sc_level;sc_bfast[sc_i]=sc_level;sc_bhold[sc_i]=0;);
+   sc_ref=sc_bref[sc_i];sc_diff=sc_ref-sc_tail_gap-sc_bfast[sc_i];
+   // A sustained signed downward trend distinguishes a ringing decay from
+   // stable tonal body. Positive and negative fluctuations cancel in the
+   //100ms tracker; protection is not relaxed by flatness/prominence alone.
+   sc_fall=sc_clamp((sc_prev-sc_level)/sc_dt,-120,120);
+   sc_onset||sc_cold?sc_fall=0;
+   sc_btrend[sc_i]+=sc_trend_a*(sc_fall-sc_btrend[sc_i]);
+   sc_btrend[sc_i]>3&&sc_level>-140&&!sc_onset?(
+     sc_bfallage[sc_i]=min(.30,sc_bfallage[sc_i]+sc_dt);
+   ):sc_bfallage[sc_i]=max(0,sc_bfallage[sc_i]-2*sc_dt);
+   sc_decay=sc_smooth((sc_bfallage[sc_i]-.06)/.14)*sc_smooth((sc_btrend[sc_i]-3)/12);
+   sc_release=sc_decay_authority*sc_decay;
+   sc_body=(1-.90*sc_tone*(1-sc_release))*(1-.50*sc_dominance*(1-sc_release));
+   sc_protect=sc_body*(1-.97*max(sc_art,sc_global_art));
+   sc_tailfade=sc_smooth((sc_ref-sc_level-1)/5);sc_bdecay[sc_i]=sc_decay;
+   sc_req=sc_soft_over(sc_diff,sc_knee)*(sc_exp_ratio-1)*sc_tail_amt*sc_tailfade*sc_protect;
+   sc_bhold[sc_i]>0||sc_level<-150?sc_req=0;
+   sc_req=sc_clamp(sc_req,0,48);sc_a=sc_req>sc_btail[sc_i]?sc_close_a:sc_open_a;
+   sc_btail[sc_i]+=sc_a*(sc_req-sc_btail[sc_i]);
+   // Noise is only residue evidence when decaying, or weak beside structured
+   // material. A steady noise source does not lose its main texture by default.
+   sc_raw=sc_sat((sc_noise-.35)/.65);
+   sc_weak=1-sc_dominance;
+   sc_context=max(sc_tailfade,(1-sc_global_noise)*sc_weak*.55);
+   sc_req=9*sc_noise_amt*sc_raw*sc_context*sc_protect;
+   sc_totaldb<-110||sc_level<-140?sc_req=0;
+   sc_a=sc_req>sc_bnoisegr[sc_i]?sc_noise_a:sc_open_a;
+   sc_bnoisegr[sc_i]+=sc_a*(sc_req-sc_bnoisegr[sc_i]);
+   sc_bprev[sc_i]=sc_level;sc_i+=1;
+ );
+ sc_cold=0;
+ sc_i=1;loop(sc_k-1,
+   sc_res_tag[sc_i]!=sc_epoch?(
+     sc_res_timer[sc_i]=0;sc_res_state[sc_i]=0;sc_res_tag[sc_i]=sc_epoch;
+   );
+   sc_ps=sc_binpos[sc_i];sc_b=floor(sc_ps);sc_b1=min(31,sc_b+1);sc_frac=sc_ps-sc_b;
+   sc_tone=sc_btone[sc_b]*(1-sc_frac)+sc_btone[sc_b1]*sc_frac;
+   sc_dominance=sc_bdominance[sc_b]*(1-sc_frac)+sc_bdominance[sc_b1]*sc_frac;
+   sc_art=max(sc_global_art,sc_bart[sc_b]*(1-sc_frac)+sc_bart[sc_b1]*sc_frac);
+   sc_decay=sc_bdecay[sc_b]*(1-sc_frac)+sc_bdecay[sc_b1]*sc_frac;
+   sc_release=sc_decay_authority*sc_decay;
+   sc_protect=(1-.90*sc_tone*(1-sc_release))*(1-.65*sc_dominance*(1-sc_release))*(1-.97*sc_art);
+   sc_raw=0;
+   sc_res_amt>0&&sc_totaldb>-110?(
+     sc_lo=max(1,sc_i-sc_radius[sc_i]);sc_hi=min(sc_k-1,sc_i+sc_radius[sc_i]);
+     sc_env=(sc_prefix[sc_hi+1]-sc_prefix[sc_lo])/max(1,sc_hi-sc_lo+1);
+     sc_prom=sc_powdb(sc_power[sc_i])-sc_powdb(sc_env);
+     sc_age=sc_res_timer[sc_i];
+     sc_prom>sc_res_threshold?sc_age=min(sc_res_persist*2,sc_age+sc_dt):sc_age=max(0,sc_age-sc_dt*2);
+     sc_res_timer[sc_i]=sc_age;
+     sc_raw=sc_soft_over(sc_prom-sc_res_threshold,3)*sc_res_amt*
+       sc_smooth(sc_age/sc_res_persist)*sc_protect*(.25+.75*sc_decay);
+   ):sc_res_timer[sc_i]=0;
+   sc_res_raw[sc_i]=sc_clamp(sc_raw,0,48);sc_i+=1;
+ );
+ sc_res_raw[0]=0;sc_res_raw[sc_k]=0;sc_res_state[0]=0;sc_res_state[sc_k]=0;
+ sc_gr_tail=0;sc_gr_noise=0;sc_gr_res=0;sc_gr_total=0;
+ sc_i=0;loop(sc_k+1,
+   sc_ps=sc_binpos[sc_i];sc_b=floor(sc_ps);sc_b1=min(31,sc_b+1);sc_frac=sc_ps-sc_b;
+   sc_rt=sc_btail[sc_b]*(1-sc_frac)+sc_btail[sc_b1]*sc_frac;
+   sc_rb=sc_bnoisegr[sc_b]*(1-sc_frac)+sc_bnoisegr[sc_b1]*sc_frac;
+   sc_i>0&&sc_i<sc_k?sc_raw=(sc_res_raw[sc_i-1]+2*sc_res_raw[sc_i]+sc_res_raw[sc_i+1])*.25:sc_raw=0;
+   sc_a=sc_raw>sc_res_state[sc_i]?sc_res_a:sc_open_a;
+   sc_res_state[sc_i]+=sc_a*(sc_raw-sc_res_state[sc_i]);sc_rrq=sc_res_state[sc_i];
+   // DC and Nyquist stay neutral. Equal stereo gains preserve the image.
+   sc_i==0||sc_i==sc_k?(sc_rt=0;sc_rb=0;sc_rrq=0;);
+   sc_sum=sc_rt+sc_rb+sc_rrq;sc_ratio=sc_sum>.000000001?min(1,sc_cap/sc_sum):1;
+   sc_rt*=sc_ratio;sc_rb*=sc_ratio;sc_rrq*=sc_ratio;sc_sum=sc_rt+sc_rb+sc_rrq;
+   sc_gr_tail=max(sc_gr_tail,sc_rt);sc_gr_noise=max(sc_gr_noise,sc_rb);
+   sc_gr_res=max(sc_gr_res,sc_rrq);sc_gr_total=max(sc_gr_total,sc_sum);
+   sc_g=sc_amp(-sc_sum);
+   sc_fft_l[2*sc_i]*=sc_g;sc_fft_l[2*sc_i+1]*=sc_g;
+   sc_fft_r[2*sc_i]*=sc_g;sc_fft_r[2*sc_i+1]*=sc_g;
+   sc_i>0&&sc_i<sc_k?(
+     sc_j=sc_n-sc_i;
+     sc_fft_l[2*sc_j]*=sc_g;sc_fft_l[2*sc_j+1]*=sc_g;
+     sc_fft_r[2*sc_j]*=sc_g;sc_fft_r[2*sc_j+1]*=sc_g;
+   );sc_i+=1;
+ );
+ fft_ipermute(sc_fft_l,sc_n);ifft(sc_fft_l,sc_n);
+ fft_ipermute(sc_fft_r,sc_n);ifft(sc_fft_r,sc_n);
+ // Four periodic Hann squared windows sum to1.5; FFT roundtrip contributes N.
+ // Input sample n appears at n+N, including startup with zero-padded history.
+ sc_i=0;loop(sc_n,
+   sc_idx=(sc_read+1+sc_i)%sc_ringn;sc_w=sc_window[sc_i]*(2/3)*sc_inv_n;
+   sc_ola_tag[sc_idx]!=sc_epoch?(
+     sc_ola_l[sc_idx]=0;sc_ola_r[sc_idx]=0;sc_ola_tag[sc_idx]=sc_epoch;
+   );
+   sc_ola_l[sc_idx]+=sc_fft_l[2*sc_i]*sc_w;
+   sc_ola_r[sc_idx]+=sc_fft_r[2*sc_i]*sc_w;sc_i+=1;
+ );
+);
+
+function sc_process(sc_l,sc_r) (
+ sc_out_l=sc_l;sc_out_r=sc_r;
+ sc_aggression>0?(
+   // Reject invalid values, not finite audio peaks; there is no output limiter.
+   (!(sc_l==sc_l)||abs(sc_l)>1000000000000)?(sc_l=0;sc_faults+=1;);
+   (!(sc_r==sc_r)||abs(sc_r)>1000000000000)?(sc_r=0;sc_faults+=1;);
+   abs(sc_l)<.000000000000000000000000000001?sc_l=0;
+   abs(sc_r)<.000000000000000000000000000001?sc_r=0;
+   abs(sc_l)>0||abs(sc_r)>0?(
+     sc_running<=0?(sc_reset();sc_running=1;);
+     sc_drain=2*sc_n+sc_hop;
+   );
+   sc_running>0?(
+     sc_process_count+=1;
+     sc_in_l[sc_write]=sc_l;sc_in_r[sc_write]=sc_r;sc_in_tag[sc_write]=sc_epoch;
+     sc_write+=1;sc_write>=sc_n?sc_write=0;
+     sc_hopcount+=1;sc_hopcount>=sc_hop?(sc_hopcount=0;sc_frame(););
+     sc_ola_tag[sc_read]==sc_epoch?(
+       sc_out_l=sc_ola_l[sc_read];sc_out_r=sc_ola_r[sc_read];
+       sc_ola_l[sc_read]=0;sc_ola_r[sc_read]=0;
+     ):(sc_out_l=0;sc_out_r=0;);
+     sc_read+=1;sc_read>=sc_ringn?sc_read=0;
+     sc_drain-=1;
+     sc_drain<=0?(sc_running=0;sc_gr_tail=0;sc_gr_noise=0;sc_gr_res=0;sc_gr_total=0;);
+   ):(sc_out_l=0;sc_out_r=0;);
+ ):(sc_running=0;);
+);
+
 /*
 Runtime sample-pool API used here:
   pool  = sample_pool_from_slot(slot, #name);
@@ -3521,7 +6701,7 @@ function analyze_sample(sm) local(j anchor classic_anchor gauss_anchor)
   sm[SM_GAUSS_ATTACK] = gauss_anchor;
   hub_analyze_loop(sm);
   estimate_sample_tail_grace(sm);
-  estimate_sample_expander_profile(sm);
+  // Retired broadband expander profile is no longer analyzed.
   // v37 PerfGate: skip Granular-only corpus markers and obsolete learned-flow
   // extraction during normal bank analysis. Corpus markers are computed lazily
   // inside build_grain_corpus(), only when Granular mode needs them.
@@ -3656,19 +6836,26 @@ function decrust_clear_state()
 // Switch delay topology only at a block boundary and at zero transition gain.
 // A live toggle fades the entire aligned output (including external input).
 // No delay, curvature, FFT or ring traffic occurs in settled bypass.
-function decrust_sync_latency() local(requested)
+function decrust_sync_latency() local(requested contour_requested)
 (
   requested = clean_decrust_amt > 0.0001 ? 1 : 0;
-  requested != dc_latency_active ? (
+  contour_requested = dynamics_expand_amt > 0.0001 ? 1 : 0;
+  (requested != dc_latency_active || contour_requested != v71_contour_active) ? (
     (event_clock_samps <= 0 || dc_switch_gain <= 0) ? (
       dc_latency_active = requested;
-      pdc_delay = dc_latency_active ? DECRUST_LATENCY : 0;
+      v71_contour_active = contour_requested;
+      sc_config(contour_requested ? dynamics_expand_amt : 0);
+      v71_cached_contour = contour_requested ? dynamics_expand_amt : 0;
+      sc_reset();
+      v71_total_delay = (dc_latency_active ? DECRUST_LATENCY : 0) + (v71_contour_active ? sc_n : 0);
       decrust_clear_state();
-      dc_output_warm_left = (event_clock_samps > 0 && dc_latency_active) ? DECRUST_LATENCY : 0;
+      v71_input_epoch += 1; v71_input_pos = 0; v71_input_left = 0;
+      dc_output_warm_left = event_clock_samps > 0 ? v71_total_delay : 0;
       dc_switch_target = 1;
     ) : dc_switch_target = 0;
   ) : dc_switch_target = 1;
-  za_keep_awake = (dc_switch_gain < 1 || dc_switch_target < 1 || dc_output_warm_left > 0);
+  pdc_delay = v71_total_delay;
+  za_keep_awake = (dc_switch_gain < 1 || dc_switch_target < 1 || dc_output_warm_left > 0 || sc_running || sa_running || st_running || v71_profile_gain != v71_profile_target);
 );
 
 function decrust_build_windows() local(i j idx w sum overlaps)
@@ -6805,6 +9992,115 @@ function reanalyze_bank() local(i sm)
   rescan_flash = 1;
 );
 
+// v71 integration policy: independent state, true mix, lazy engines.
+function v71_decode_controls() local(code)
+(
+  code = max(0, floor(slider59 + 0.5));
+  v71_profile = min(20, code % 32);
+  v71_thrill = min(150, floor(code / 32)) / 150;
+  v71_mix = clamp01(slider27 / 100);
+);
+
+function v71_reset_input_delay()
+(
+  v71_input_epoch += 1;
+  v71_input_pos = 0;
+  v71_input_left = 0;
+);
+
+function v71_init_memory(base) local(nextbase)
+(
+  nextbase = sa_init(base);
+  nextbase = st_init(nextbase + 32);
+  nextbase = sc_init(nextbase + 32);
+  v71_delay_ring = 16384;
+  v71_input_l = nextbase + 32;
+  v71_input_r = v71_input_l + v71_delay_ring;
+  v71_input_tag = v71_input_r + v71_delay_ring;
+  memset(v71_input_tag, 0, v71_delay_ring);
+  v71_input_epoch = 0;
+  v71_reset_input_delay();
+  v71_decode_controls();
+  v71_profile_live = v71_profile;
+  v71_profile_gain = 1; v71_profile_target = 1;
+  v71_profile_step = 1 / max(32, floor(0.005 * srate));
+  v71_legacy_mix = 0; v71_legacy_idle = 0;
+  v71_legacy_count = 0;
+  v71_legacy_step = 1 / max(32, floor(0.012 * srate));
+  v71_cached_profile = -1; v71_cached_mix = -1; v71_cached_thrill = -1;
+  v71_cached_contour = -1;
+  v71_contour_active = slider50 > 0.0001 ? 1 : 0;
+  sc_config(v71_contour_active ? clamp01(slider50) : 0);
+  v71_total_delay = (v71_contour_active ? sc_n : 0) + (dc_latency_active ? DECRUST_LATENCY : 0);
+  v71_ready = 1;
+  v71_input_tag + v71_delay_ring + 32;
+);
+
+function v71_sync_controls()
+(
+  v71_ready ? (
+    v71_decode_controls();
+    v71_profile != v71_profile_live ? (
+      (event_clock_samps <= 0 || v71_profile_gain <= 0 || (!sa_running && v71_legacy_idle <= 0)) ? (
+        sa_reset(); reset_push_buffers();
+        v71_legacy_mix = 0; v71_legacy_idle = 0;
+        v71_profile_live = v71_profile;
+        v71_cached_profile = -1;
+        v71_profile_target = 1;
+      ) : v71_profile_target = 0;
+    ) : v71_profile_target = 1;
+    (v71_cached_profile != v71_profile_live || v71_cached_mix != v71_mix) ? (
+      v71_profile_live > 0 ? sa_config(v71_profile_live, v71_mix) : sa_config(1, 0);
+      v71_cached_profile = v71_profile_live; v71_cached_mix = v71_mix;
+      event_clock_samps <= 0 && v71_profile_live == 0 ? v71_legacy_mix = v71_mix;
+    );
+    v71_cached_thrill != v71_thrill ? (
+      st_config(v71_thrill); v71_cached_thrill = v71_thrill;
+    );
+    // A disable request retains the old delayed path until the output fade is
+    // silent; decrust_sync_latency then commits topology at a block boundary.
+    dynamics_expand_amt > 0.0001 && v71_cached_contour != dynamics_expand_amt ? (
+      sc_config(dynamics_expand_amt); v71_cached_contour = dynamics_expand_amt;
+    );
+  );
+);
+
+function v71_reset_engines()
+(
+  v71_ready ? (
+    sa_reset(); st_reset(); sc_reset();
+    v71_reset_input_delay();
+    v71_legacy_idle = 0;
+  );
+);
+
+function v71_apply_antisalience() local(dryL dryR)
+(
+  dryL = outL; dryR = outR;
+  v71_profile_gain += clamp(v71_profile_target - v71_profile_gain, -v71_profile_step, v71_profile_step);
+  v71_profile_live == 0 ? (
+    v71_legacy_mix += clamp(v71_mix - v71_legacy_mix, -v71_legacy_step, v71_legacy_step);
+    v71_legacy_mix > 0 ? (
+      max(abs(dryL), abs(dryR)) > 0.00000000000000000001 ? v71_legacy_idle = max(1, floor(0.120 * srate));
+      v71_legacy_idle > 0 ? (
+        // Legacy is the original full-strength Push processor. The visible
+        // knob is now a real overall dry/wet mix for every profile.
+        apply_push(); v71_legacy_count += 1;
+        v71_legacy_idle -= 1;
+        outL = lerp(dryL, outL, v71_legacy_mix * v71_profile_gain);
+        outR = lerp(dryR, outR, v71_legacy_mix * v71_profile_gain);
+        v71_legacy_idle <= 0 ? reset_push_buffers();
+      );
+    ) : v71_legacy_idle > 0 ? (reset_push_buffers(); v71_legacy_idle = 0;);
+  ) : (
+    (v71_mix > 0 || sa_running || sa_mix_cur > 0) ? (
+      sa_process(dryL, dryR);
+      outL = lerp(dryL, sa_out_l, v71_profile_gain);
+      outR = lerp(dryR, sa_out_r, v71_profile_gain);
+    );
+  );
+);
+
 function configure_memory_layout(selected_count) local(cap) (
   cap = max(SAMPLE_POOL_MIN, selected_count | 0);
   cap > SAMPLE_POOL_HARD_MAX ? cap = SAMPLE_POOL_HARD_MAX;
@@ -6942,7 +10238,7 @@ function configure_memory_layout(selected_count) local(cap) (
   hub_accept_count = 0; hub_reject_count = 0;
   hub_voice_count = 0; hub_mod_count = 0; hub_pending_mask = 0;
   hub_rng_on = 0; hub_starting = 0;
-  AUDIO_BASE = hub_log_base + 1200 + 256;
+  AUDIO_BASE = v71_init_memory(hub_log_base + 1200 + 256);
   MEM_LIMIT   = max(AUDIO_BASE + 1024, (__memtop() | 0) - 256);
 );
 
@@ -6974,9 +10270,8 @@ function load_bank() local(
     fpk_update_coeffs();
     color_tilt_update_coeffs();
     color_tilt_recalc_gains();
-    dynx_update_coeffs();
+
     harm_update_coeffs();
-    pop_update_coeffs();
 
     bank_selected_count = selected;
     bank_scan_count = loaded;
@@ -7664,6 +10959,7 @@ function auto_smooth_release_same_note_for_new(note chan) local(i v)
 function release_all_voices_transport(hard) local(i v)
 (
   hub_reset(15);
+  hard ? v71_reset_engines();
   i = 0;
   while (i < MAX_VOICES) (
     v = voice_base + i * VC_STRIDE;
@@ -7705,6 +11001,7 @@ function release_channel_voices(chan hard) local(i v idx)
   );
   // Shared effects cannot separate channels. Flush only when no voices remain.
   hard && !voices_busy() ? (
+    v71_reset_engines();
     denorm_flush_silent_tail_state();
     decrust_clear_state();
   );
@@ -7770,10 +11067,8 @@ function flush_hidden_state_sliders()
   slider53 = clamp01(space_room_amt);
   slider54 = clamp01(space_room_char);
   slider55 = clamp01(output_harmonics_amt);
-  slider56 = clamp01(push_pop_amt);
   slider60 = abs(color_pivot_hz) < 1 ? 1000 : clamp(color_pivot_hz, -20000, 20000);
   slider61 = clamp01(pitch_parallel_mix);
-  slider64 = clamp(dynamics_expand_depth_db, 0, 60);
 
   // Use individual sliderchange calls instead of a giant summed mask. Powers
   // above 2^53 are exact, but sums can lose precision in double-based EEL2.
@@ -7786,11 +11081,117 @@ function flush_hidden_state_sliders()
   sliderchange(MASK_S53);
   sliderchange(MASK_S54);
   sliderchange(MASK_S55);
-  sliderchange(MASK_S56);
   sliderchange(MASK_S60);
   sliderchange(MASK_S61);
-  sliderchange(MASK_S64);
   hidden_state_dirty = 0;
+);
+
+// Sample v71 UI helpers. Keep these in @init, before @gfx can call them.
+// Slider59: profile 0..20 + 32 * Thrill steps 0..150 (one step = 0.1%).
+// Read the current slider for each edit so the other packed field survives.
+function ui_v71_decode() local(p steps)
+(
+  p = floor(clamp(slider59, 0, 4820) + 0.5);
+  steps = min(150, floor(p / 32));
+  v71_profile = min(20, p - steps * 32);
+  v71_thrill = steps / 150;
+);
+
+function ui_v71_touch(mask)
+(
+  // Individual masks preserve high slider bits and mark the host parameter
+  // as touched. Never combine the packed slider mask with lower bits.
+  sliderchange(mask);
+  slider_automate(mask, 0);
+  mask == MASK_S59 ? ui_v71_touch59 = 1;
+  mask == MASK_S50 ? ui_v71_touch50 = 1;
+  mask == MASK_S27 ? ui_v71_touch27 = 1;
+  mask == MASK_S9 ? ui_v71_touch9 = 1;
+  ui_value_changed = 1;
+);
+
+function ui_v71_set_profile(profile) local(p steps packed)
+(
+  p = floor(clamp(slider59, 0, 4820) + 0.5);
+  steps = min(150, floor(p / 32));
+  packed = floor(clamp(profile, 0, 20) + 0.5) + 32 * steps;
+  packed != slider59 ? (
+    slider59 = packed;
+    ui_v71_touch(MASK_S59);
+  );
+  ui_v71_decode();
+);
+
+function ui_v71_set_thrill(amount) local(p steps profile packed)
+(
+  p = floor(clamp(slider59, 0, 4820) + 0.5);
+  steps = min(150, floor(p / 32));
+  profile = min(20, p - steps * 32);
+  packed = profile + 32 * floor(clamp01(amount) * 150 + 0.5);
+  packed != slider59 ? (
+    slider59 = packed;
+    ui_v71_touch(MASK_S59);
+  );
+  ui_v71_decode();
+);
+
+function ui_v71_set_contour(amount)
+(
+  dynamics_expand_amt = clamp01(amount);
+  dynamics_expand_amt != slider50 ? (
+    slider50 = dynamics_expand_amt;
+    ui_v71_touch(MASK_S50);
+  );
+);
+
+function ui_v71_profile_name(profile) local(group style)
+(
+  profile = floor(clamp(profile, 0, 20));
+  profile == 0 ? (
+    strcpy(#ui_v71_profile_label, "Legacy");
+  ) : (
+    group = floor((profile - 1) / 4);
+    style = profile - 1 - group * 4;
+    group == 0 ? strcpy(#ui_v71_source_label, "Neutral")
+    : group == 1 ? strcpy(#ui_v71_source_label, "Vocals")
+    : group == 2 ? strcpy(#ui_v71_source_label, "SFX")
+    : group == 3 ? strcpy(#ui_v71_source_label, "Foley")
+    : strcpy(#ui_v71_source_label, "BG");
+    style == 0 ? strcpy(#ui_v71_style_label, "Transparent")
+    : style == 1 ? strcpy(#ui_v71_style_label, "Anti-Lock")
+    : style == 2 ? strcpy(#ui_v71_style_label, "Scattered")
+    : strcpy(#ui_v71_style_label, "Obliterate");
+    sprintf(#ui_v71_profile_label, "%s / %s", #ui_v71_source_label, #ui_v71_style_label);
+  );
+);
+
+function ui_v71_profile_menu() local(i choice)
+(
+  strcpy(#ui_v71_menu, "");
+  i = 0;
+  loop(21,
+    i > 0 ? strcat(#ui_v71_menu, "|");
+    i == v71_profile ? strcat(#ui_v71_menu, "!");
+    ui_v71_profile_name(i);
+    strcat(#ui_v71_menu, #ui_v71_profile_label);
+    i += 1;
+  );
+  gfx_x = mouse_x;
+  gfx_y = mouse_y;
+  choice = gfx_showmenu(#ui_v71_menu);
+  choice > 0 ? ui_v71_set_profile(choice - 1);
+  0;
+);
+
+function ui_v71_finish_touches()
+(
+  !mouse_down ? (
+    ui_v71_touch59 ? (slider_automate(MASK_S59, 1); ui_v71_touch59 = 0;);
+    ui_v71_touch50 ? (slider_automate(MASK_S50, 1); ui_v71_touch50 = 0;);
+    ui_v71_touch27 ? (slider_automate(MASK_S27, 1); ui_v71_touch27 = 0;);
+    ui_v71_touch9 ? (slider_automate(MASK_S9, 1); ui_v71_touch9 = 0;);
+    ui_v71_profile_hold = 0;
+  );
 );
 
 function ui_panel(x y w h) local(i t)
@@ -9444,7 +12845,6 @@ LOG10_INV = 1 / log(10);
 
 configure_memory_layout(SAMPLE_POOL_MIN);
 harm_update_coeffs();
-dynx_update_coeffs();
 
 SAMPLE_MODE_RESIDENT = 0;
 SAMPLE_MODE_BUDGETED = 1;
@@ -9921,11 +13321,7 @@ auto_smooth_calc_lengths(auto_smooth_budget_samps);
 mono_source = (slider21 | 0) ? 1 : 0;
 dynamics_amt = clamp01(slider22);
 dynamics_expand_amt = clamp01(slider50);
-dynamics_expand_depth_db = clamp(slider64, 0, 60);
-dynamics_expand_active_target = (dynamics_expand_amt > 0.0001 && dynamics_expand_depth_db > 0.001) ? 1 : 0;
-(dynamics_expand_active_target <= 0 && dynamics_expand_active_prev > 0) ? reset_dynamics_expand_buffers();
-(dynamics_expand_active_target > 0 && dynamics_expand_active_prev <= 0) ? dynx_update_coeffs();
-dynamics_expand_active_prev = dynamics_expand_active_target;
+// Universal Contour uses slider50 alone; old depth slot64 is inert.
 edge_melt_amt = clamp01(slider51);
 (edge_melt_amt <= 0.0001 && edge_melt_active_prev > 0) ? reset_edge_melt_buffers();
 edge_melt_active_prev = edge_melt_amt > 0.0001 ? 1 : 0;
@@ -9948,8 +13344,8 @@ space_room_amt = clamp01(slider53);
 space_room_char = clamp01(slider54);
 (space_room_amt <= 0.0001 && space_room_active_prev > 0) ? reset_space_verb_buffers();
 space_room_active_prev = space_room_amt > 0.0001 ? 1 : 0;
-push_amt = clamp01(slider27 / 100);
-push_pop_amt = clamp01(slider56);
+push_amt = 1; // Legacy wet processor is fixed; slider27 is the outer mix.
+push_pop_amt = 0; // Retired PopCue: slider56 retained as inert legacy state.
 color_tilt_db = clamp(slider6, -18, 18);
 color_tilt_norm = clamp(color_tilt_db / 18, -1, 1);
 color_pivot_hz = slider60;
@@ -9969,7 +13365,7 @@ abs(color_tilt_db) > 0.0001 ? (
 );
 pitch_parallel_mix = clamp01(slider61);
 (push_pop_amt <= 0.0001 && push_pop_active_prev > 0) ? reset_push_pop_buffers();
-(push_pop_amt > 0.0001 && push_pop_active_prev <= 0) ? pop_update_coeffs();
+
 push_pop_active_prev = push_pop_amt > 0.0001 ? 1 : 0;
 (slope_schema < 0.5) ? (
   slider28 = env_migrate_old_slope(slider28, ENV_RISE);
@@ -10220,8 +13616,7 @@ form_level_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.045 * srate)));
 harm_env_att_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.005 * srate)));
 harm_env_rel_coeff = 1 - exp(-6.90775527898214 / max(1, floor(0.090 * srate)));
 output_harmonics_amt > 0.0001 ? harm_update_coeffs();
-push_pop_amt > 0.0001 ? pop_update_coeffs();
-(dynamics_expand_amt > 0.0001 && dynamics_expand_depth_db > 0.001) ? dynx_update_coeffs();
+
 fpk_lp_c1 = clamp(1 - exp(-6.283185307179586 * min(320, srate * 0.49) / max(srate, 1)), 0.0001, 0.74);
 fpk_lp_c2 = clamp(1 - exp(-6.283185307179586 * min(980, srate * 0.49) / max(srate, 1)), 0.0002, 0.82);
 fpk_lp_c3 = clamp(1 - exp(-6.283185307179586 * min(2900, srate * 0.49) / max(srate, 1)), 0.0004, 0.90);
@@ -10240,7 +13635,11 @@ onset_mode_active = onset_mode_target;
   sliderchange(MASK_S1);
 );
 
+v71_sync_controls();
+
 @block
+v71_sync_controls();
+st_running ? st_block();
 // Native wrapper publishes actual GFX visibility, also off during offline
 // rendering. Stock REAPER JSFX uses a bounded @gfx heartbeat fallback.
 host_gfx_bound ? (
@@ -11642,7 +15041,7 @@ weight_amt > 0.0001 ? (
 );
 
 // Hidden Shift+Dynamics SourceExpand runs before normal density/guard so low-level beds are removed before compression can lift them.
-(dynamics_expand_amt > 0.0001 && dynamics_expand_depth_db > 0.001) ? apply_dynamics_expand();
+// Universal spectral Contour is routed after PostEQ below.
 
 dynamics_amt > 0.0001 ? (
   dynL = outL * dyn_drive;
@@ -11679,14 +15078,10 @@ dynamics_amt > 0.0001 ? (
 );
 
 
-pop_src_l = outL;
-pop_src_r = outR;
-push_amt > 0.0001 ? apply_push();
-push_pop_amt > 0.0001 ? (
-  apply_push_pop();
-) : (
-  push_pop_runtime_active > 0 ? reset_push_pop_buffers();
+(v71_thrill > 0 || st_running) ? (
+  st_process(outL, outR); outL = st_out_l; outR = st_out_r;
 );
+(v71_mix > 0 || v71_legacy_mix > 0 || sa_running || sa_mix_cur > 0 || v71_profile_gain != v71_profile_target) ? v71_apply_antisalience();
 output_harmonics_amt > 0.0001 ? (
   apply_output_harmonics();
 ) : (
@@ -11697,6 +15092,12 @@ output_harmonics_amt > 0.0001 ? (
 // update or memory traffic. Audible EQ always runs independently of the UI.
 posteq_analyzer_active ? posteq_analyze_spectrum(outL, outR);
 apply_processing_strip();
+// Keep legacy transient-control buses aligned with their existing audio paths.
+// Contour runs after those paths; its own detectors follow the actual input.
+v71_contour_active ? (
+  // Strip the existing inaudible denormal guard before the silence detector.
+  sc_process(denorm_zap(outL), denorm_zap(outR)); outL = sc_out_l; outR = sc_out_r;
+);
 posteq_analyzer_active ? posteq_analyze_post_spectrum(outL, outR);
 
 denorm_flush_counter += 1;
@@ -11717,16 +15118,26 @@ outL = denorm_zap(outL);
 outR = denorm_zap(outR);
 // Dry input is restored exactly and bypasses sampler processing, Output trim,
 // PostEQ, Clean/Room/Push, etc. EdgeMelt is internal to generated Granular only.
-// Deliberately enabled DeCrust owns 520 samples of delay; settled bypass owns
-// none. All generated effects and the external input share the selected delay.
-dc_latency_active ? (
-  apply_clean_decrust();
-  input_delay_l_base[input_delay_pos] = dry_in_l;
-  input_delay_r_base[input_delay_pos] = dry_in_r;
-  input_delay_read = (input_delay_pos - DECRUST_LATENCY) & DECRUST_RINGMASK;
-  spl0 = input_delay_l_base[input_delay_read] + outL * out_trim;
-  spl1 = input_delay_r_base[input_delay_read] + outR * out_trim;
-  input_delay_pos = (input_delay_pos + 1) & DECRUST_RINGMASK;
+// Enabled Contour owns sc_n samples; DeCrust adds520. Settled bypass owns none.
+// External input receives only the same delay and retains its exact amplitude.
+dc_latency_active ? apply_clean_decrust();
+v71_total_delay > 0 ? (
+  dry_in_l != 0 || dry_in_r != 0 ? (
+    v71_input_left <= 0 ? (v71_input_epoch += 1; v71_input_pos = 0;);
+    v71_input_left = v71_total_delay + 1;
+  );
+  spl0 = outL * out_trim; spl1 = outR * out_trim;
+  v71_input_left > 0 ? (
+    v71_input_l[v71_input_pos] = dry_in_l;
+    v71_input_r[v71_input_pos] = dry_in_r;
+    v71_input_tag[v71_input_pos] = v71_input_epoch;
+    v71_input_read = (v71_input_pos - v71_total_delay + v71_delay_ring) % v71_delay_ring;
+    v71_input_tag[v71_input_read] == v71_input_epoch ? (
+      spl0 += v71_input_l[v71_input_read]; spl1 += v71_input_r[v71_input_read];
+    );
+    v71_input_pos = (v71_input_pos + 1) % v71_delay_ring;
+    v71_input_left -= 1;
+  );
 ) : (
   spl0 = dry_in_l + outL * out_trim;
   spl1 = dry_in_r + outR * out_trim;
@@ -11737,6 +15148,9 @@ dc_latency_active ? (
   ) : dc_switch_gain += clamp(dc_switch_target - dc_switch_gain, -dc_switch_step, dc_switch_step);
   spl0 *= dc_switch_gain; spl1 *= dc_switch_gain;
 );
+// Publish pending source-derived work after this sample, including a short
+// voice that ends before its FFT output emerges. Native smart idle reads it.
+za_keep_awake = (dc_switch_gain < 1 || dc_switch_target < 1 || dc_output_warm_left > 0 || sc_running || sa_running || st_running || v71_profile_gain != v71_profile_target);
 
 @gfx 1380 760
 posteq_gfx_heartbeat = (posteq_gfx_heartbeat + 1) % 1000000;
@@ -11757,6 +15171,7 @@ ui_wheel_used = 0;
 ui_value_changed = 0;
 ui_hover_id = -1;
 gfx_slider_mask = 0;
+ui_v71_decode();
 sprintf(#tip_title, "");
 sprintf(#tip_body, "");
 
@@ -12380,16 +15795,31 @@ sprintf(#ui_buf, "%.2f", slider8); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc -
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Width"); draw_center_buf(cell_x, label_y, cell_w);
 
-// Liveliness
+// Liveliness / Thrill
+// Shift edits Thrill. The active knob ID holds that choice until release.
 grid_idx = 7;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
-kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
-nv = ui_knob(304, kc, ky, kb_r, slider9, 0, 1, 0.22, 0.018); abs(nv - slider9) > 0.0000001 ? (slider9 = nv; gfx_slider_mask |= MASK_S9;);
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.2f", slider9); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-sprintf(#ui_buf, "Lively"); draw_center_buf(cell_x, label_y, cell_w);
+kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 15, ky + kb_r + 12);
+ui_v71_lively_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
+ui_v71_thrill_use = ui_active == 339 || (ui_active != 304 && ui_shift && ui_v71_lively_hot);
+ui_v71_thrill_use ? (
+  nv = ui_knob(339, kc, ky, kb_r, v71_thrill, 0, 1, 0, 1 / 150);
+  abs(nv - v71_thrill) > 0.0000001 ? ui_v71_set_thrill(nv);
+  ui_v71_lively_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    ui_v71_set_thrill(v71_thrill + (ui_wheel > 0 ? 1 : -1) * max(1, floor(abs(ui_wheel) / 120 + 0.5)) / 150);
+    ui_wheel_used = 1;
+  );
+) : (
+  nv = ui_knob(304, kc, ky, kb_r, slider9, 0, 1, 0.22, 0.018);
+  abs(nv - slider9) > 0.0000001 ? (slider9 = nv; ui_v71_touch(MASK_S9););
+);
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+ui_v71_thrill_use ? sprintf(#ui_buf, "%.1f%%", v71_thrill * 15) : sprintf(#ui_buf, "%.2f", slider9);
+gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
+gfx_setfont(1, "Arial", 14, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+ui_v71_thrill_use ? sprintf(#ui_buf, "Thrill") : (v71_thrill > 0 ? sprintf(#ui_buf, "Lively +") : sprintf(#ui_buf, "Lively"));
+draw_center_buf(cell_x, label_y, cell_w);
 
 // Truth
 grid_idx = 8;
@@ -12498,84 +15928,66 @@ gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; g
 gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 room_space_char_alt_use ? sprintf(#ui_buf, "Space Char") : (room_space_amt_alt_use ? sprintf(#ui_buf, "Space") : (space_room_amt > 0.04 ? sprintf(#ui_buf, "Room/Space") : sprintf(#ui_buf, "Room"))); draw_center_buf(cell_x, label_y, cell_w);
 
-// Push / hidden PopCue
-// Normal drag = salience pushback. Shift+drag = concrete-detail cue lift.
+// Anti-Salience: overall Mix; Ctrl+click selects one of 21 profiles.
+// Shift and Alt have no alternate parameter. Ctrl+right-click resets Legacy.
 grid_idx = 12;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
-kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
-push_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
-(mouse_pressed && push_hot) ? push_pop_alt_active = ui_shift ? 1 : 0;
-(!mouse_down && ui_active != 334) ? push_pop_alt_active = 0;
-push_pop_alt_use = push_pop_alt_active || (ui_shift && (push_hot || ui_active == 334));
-push_pop_alt_use ? (
-  nv = ui_knob(334, kc, ky, kb_r, push_pop_amt, 0, 1, 0, 0.018);
-  abs(nv - push_pop_amt) > 0.0000001 ? (
-    push_pop_amt = clamp01(nv);
-    push_pop_amt > 0.0001 ? pop_update_coeffs();
-    ui_value_changed = 1;
-    hidden_state_dirty = 1;
-  );
-  push_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
-    push_pop_amt = clamp01(push_pop_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
-    push_pop_amt > 0.0001 ? pop_update_coeffs();
-    ui_wheel_used = 1;
-    ui_value_changed = 1;
-    hidden_state_dirty = 1;
-  );
-) : (
-  nv = ui_knob(315, kc, ky, kb_r, slider27, 0, 100, 0, 0.016); abs(nv - slider27) > 0.0000001 ? (slider27 = nv; gfx_slider_mask |= MASK_S27;);
+kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 15, ky + kb_r + 12);
+ui_v71_mix_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
+mouse_pressed && ui_v71_mix_hot && ui_ctrl && ui_active < 0 ? (
+  ui_v71_profile_hold = 1;
+  ui_v71_profile_menu();
 );
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-push_pop_alt_use ? sprintf(#ui_buf, "P%.2f", push_pop_amt) : (push_pop_amt > 0.04 ? sprintf(#ui_buf, "%.0f/P%.1f", slider27, push_pop_amt) : sprintf(#ui_buf, "%.0f%%", slider27));
+mouse_rpressed && ui_v71_mix_hot && ui_ctrl ? ui_v71_set_profile(0);
+ui_v71_block_mix = ui_v71_profile_hold || (ui_ctrl && ui_v71_mix_hot && (ui_active != 315 || mouse_rpressed));
+ui_v71_saved_press = mouse_pressed;
+ui_v71_saved_rpress = mouse_rpressed;
+ui_v71_saved_shift = ui_shift;
+ui_v71_block_mix ? (
+  mouse_pressed = 0;
+  mouse_rpressed = 0;
+  ui_v71_mix_hot ? ui_wheel_used = 1;
+);
+// All non-Ctrl modifiers retain the same Mix control, including wheel input.
+ui_shift = 0;
+nv = ui_knob(315, kc, ky, kb_r, slider27, 0, 100, 0, 0.016);
+abs(nv - slider27) > 0.0000001 ? (slider27 = nv; ui_v71_touch(MASK_S27););
+mouse_pressed = ui_v71_saved_press;
+mouse_rpressed = ui_v71_saved_rpress;
+ui_shift = ui_v71_saved_shift;
+ui_v71_mix_hot && ui_ctrl ? ui_hover_id = 334;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+sprintf(#ui_buf, "%.0f%%", slider27);
 gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-push_pop_alt_use ? sprintf(#ui_buf, "Pop") : (push_pop_amt > 0.04 ? sprintf(#ui_buf, "Push/Pop") : sprintf(#ui_buf, "Push")); draw_center_buf(cell_x, label_y, cell_w);
+gfx_setfont(1, "Arial", 14, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+sprintf(#ui_buf, "Anti-Salience"); draw_center_buf(cell_x, label_y, cell_w);
 
-// Dynamics / hidden Expansion
-// Shift+drag = source-relative Expansion amount. Ctrl+drag = maximum reduction depth.
+// Dynamics / Universal Contour
+// Shift edits one Contour aggression macro. No separate depth modifier.
 grid_idx = 13;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
-kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
+kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 15, ky + kb_r + 12);
 dyn_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
-(mouse_pressed && dyn_hot) ? (
-  dyn_expand_depth_alt_active = (ui_ctrl && !ui_shift) ? 1 : 0;
-  dyn_expand_alt_active = (ui_shift && !ui_ctrl) ? 1 : 0;
-);
-(!mouse_down && ui_active != 319) ? dyn_expand_alt_active = 0;
-(!mouse_down && ui_active != 338) ? dyn_expand_depth_alt_active = 0;
-dyn_expand_depth_alt_use = dyn_expand_depth_alt_active || (ui_ctrl && !ui_shift && (dyn_hot || ui_active == 338));
-dyn_expand_alt_use = (!dyn_expand_depth_alt_use) && (dyn_expand_alt_active || (ui_shift && !ui_ctrl && (dyn_hot || ui_active == 319)));
-
-dyn_expand_depth_alt_use ? (
-  nv = ui_knob(338, kc, ky, kb_r, dynamics_expand_depth_db, 0, 60, 6, 0.0083);
-  abs(nv - dynamics_expand_depth_db) > 0.0000001 ? (
-    dynamics_expand_depth_db = clamp(nv, 0, 60);
-    ui_value_changed = 1;
-    hidden_state_dirty = 1;
-  );
-) : dyn_expand_alt_use ? (
+dyn_expand_alt_use = ui_active == 319 || (ui_active != 312 && ui_shift && dyn_hot);
+dyn_expand_alt_use ? (
   nv = ui_knob(319, kc, ky, kb_r, dynamics_expand_amt, 0, 1, 0, 0.018);
-  abs(nv - dynamics_expand_amt) > 0.0000001 ? (
-    dynamics_expand_amt = clamp01(nv);
-    ui_value_changed = 1;
-    hidden_state_dirty = 1;
-  );
-  dyn_hot && ui_shift && !ui_ctrl && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
-    dynamics_expand_amt = clamp01(dynamics_expand_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
+  abs(nv - dynamics_expand_amt) > 0.0000001 ? ui_v71_set_contour(nv);
+  dyn_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
+    ui_v71_set_contour(dynamics_expand_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
     ui_wheel_used = 1;
-    ui_value_changed = 1;
-    hidden_state_dirty = 1;
   );
 ) : (
-  nv = ui_knob(312, kc, ky, kb_r, slider22, 0, 1, 0, 0.018); abs(nv - slider22) > 0.0000001 ? (slider22 = nv; gfx_slider_mask |= MASK_S22;);
+  nv = ui_knob(312, kc, ky, kb_r, slider22, 0, 1, 0, 0.018);
+  abs(nv - slider22) > 0.0000001 ? (slider22 = nv; gfx_slider_mask |= MASK_S22;);
 );
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-dyn_expand_depth_alt_use ? sprintf(#ui_buf, "D%.1fdB", dynamics_expand_depth_db) : (dyn_expand_alt_use ? sprintf(#ui_buf, "Ex%.2f", dynamics_expand_amt) : (dynamics_expand_amt > 0.04 ? sprintf(#ui_buf, "%.2f/Ex%.1f/D%.0f", slider22, dynamics_expand_amt, dynamics_expand_depth_db) : sprintf(#ui_buf, "%.2f", slider22)));
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+dyn_expand_alt_use ? sprintf(#ui_buf, "%.0f%%", dynamics_expand_amt * 100) : sprintf(#ui_buf, "%.2f", slider22);
 gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-dyn_expand_depth_alt_use ? sprintf(#ui_buf, "Exp Depth") : (dyn_expand_alt_use ? sprintf(#ui_buf, "Expand") : (dynamics_expand_amt > 0.04 ? sprintf(#ui_buf, "Dyn/Expand") : sprintf(#ui_buf, "Dynamics"))); draw_center_buf(cell_x, label_y, cell_w);
+gfx_setfont(1, "Arial", 14, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+dyn_expand_alt_use ? sprintf(#ui_buf, "Contour") : (dynamics_expand_amt > 0 ? sprintf(#ui_buf, "Dynamics +") : sprintf(#ui_buf, "Dynamics"));
+draw_center_buf(cell_x, label_y, cell_w);
 
 // Output / hidden Harmonics
 // Normal drag = output trim. Shift+drag = clean parallel harmonic enrichment.
@@ -13173,7 +16585,11 @@ ui_hover_id == 303 ? (
 );
 ui_hover_id == 304 ? (
   sprintf(#tip_title, "Liveliness");
-  sprintf(#tip_body, "%.2f variation depth.", slider9);
+  sprintf(#tip_body, "%.2f variation depth. Shift+drag/wheel: Thrill %.1f%%. Shift+right-click: Thrill 0.", slider9, v71_thrill * 15);
+);
+ui_hover_id == 339 ? (
+  sprintf(#tip_title, "Thrill");
+  sprintf(#tip_body, "%.1f%% Accent Engine injection (0-15%%). Separate from Lively. At 0 its analysis and processing are bypassed. Shift+right-click resets.", v71_thrill * 15);
 );
 ui_hover_id == 305 ? (
   sprintf(#tip_title, "Truth");
@@ -13207,26 +16623,20 @@ ui_hover_id == 332 ? (
   sprintf(#tip_title, "Space Character");
   sprintf(#tip_body, "%.2f: 0=tight early room, 0.5=chamber, 1=wide dark bloom.", space_room_char);
 );
-ui_hover_id == 315 ? (
-  sprintf(#tip_title, "Push");
-  sprintf(#tip_body, "%.0f%% salience pushback. Shift+drag for Pop %.2f.", slider27, push_pop_amt);
-);
-ui_hover_id == 334 ? (
-  sprintf(#tip_title, "PopCue");
-  sprintf(#tip_body, "%.2f parallel concrete-detail cue lift. CPU-gated at 0; not inverse Push or a brightener.", push_pop_amt);
+ui_hover_id == 315 || ui_hover_id == 334 ? (
+  ui_v71_profile_name(v71_profile);
+  sprintf(#tip_title, "Anti-Salience | %s", #ui_v71_profile_label);
+  sprintf(#tip_body, "%.1f%% overall Mix. Ctrl+click: 21 profiles. Right-click: Mix 0. Ctrl+right-click: Legacy. Shift/Alt add no other mode.", slider27);
 );
 ui_hover_id == 312 ? (
   sprintf(#tip_title, "Dynamics");
-  sprintf(#tip_body, "%.2f density and guard. Shift+drag Expansion amount; Ctrl+drag max reduction depth %.1f dB.", slider22, dynamics_expand_depth_db);
+  sprintf(#tip_body, "%.2f density and guard. Shift+drag/wheel: Universal Contour %.0f%%. Shift+right-click resets Contour.", slider22, dynamics_expand_amt * 100);
 );
 ui_hover_id == 319 ? (
-  sprintf(#tip_title, "Expansion Amount");
-  sprintf(#tip_body, "%.2f source-relative ERB expander amount. Ctrl+drag sets max reduction depth %.1f dB.", dynamics_expand_amt, dynamics_expand_depth_db);
+  sprintf(#tip_title, "Universal Contour");
+  sprintf(#tip_body, "%.0f%% aggression: joint tail, resonance and eligible breath cleanup. 0 bypasses its analysis and processing. Right-click while holding Shift: 0.", dynamics_expand_amt * 100);
 );
-ui_hover_id == 338 ? (
-  sprintf(#tip_title, "Expansion Depth");
-  sprintf(#tip_body, "%.1f dB maximum gain reduction. The algorithm still controls actual reduction; this only caps it.", dynamics_expand_depth_db);
-);
+
 ((ui_hover_id == 307) || (ui_hover_id == 317) || (ui_hover_id == 335)) ? (
   (ui_alt || pitch_mix_alt_active || ui_hover_id == 335) ? (
     sprintf(#tip_title, "Pitch Mix");
@@ -13316,5 +16726,6 @@ draw_tooltip_box();
 
 gfx_slider_mask ? sliderchange(gfx_slider_mask);
 hidden_state_dirty ? flush_hidden_state_sliders();
+ui_v71_finish_touches();
 ui_prev_down = mouse_down;
 ui_prev_rdown = mouse_rdown;

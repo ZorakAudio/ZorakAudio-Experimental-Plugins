@@ -1,0 +1,1661 @@
+desc:Corpus v0.7.0 - contextual hypergraph / trajectory instrument
+tags:instrument sampler granular synthesis ui
+// #GFX_RESIZE: responsive
+// #FILE: Corpus sources {Slot 0: use Open Multiple, as in Sample v71. A single long file is valid.}
+filename:0,sample.wav
+in_pin:none
+out_pin:Left
+out_pin:Right
+options:maxmem=8388608 gfx_hz=30
+// @za:gfx_sync_policy EXPLICIT
+// @za:gfx_sync_mem 49152 8192 DSP_TO_GFX
+// Corpus v0.7.0: combined representation, walk, envelope, mutation, branching,
+// and exploration prototype. Requires Sample v71's EXTENDED sample-pool host.
+// Not stock REAPER JSFX. No compiler/runtime modifications or imports needed.
+// Loader and analysis scaffolding derived from Corpus v0.1.2 / Sample v71.
+// DSP owns corpus, analysis, scheduler, history and voices. GFX reads ONLY the
+// bounded explicit snapshot and writes acknowledged slider24 command packets.
+// Audio stays in the immutable host pool. Never adopt while voices/events exist.
+// Roles are four independent fuzzy eligibilities, NEVER exclusive retrieval bins.
+// Feature labels are acoustic PROXIES, not learned semantic/material recognition.
+// The map is a user-selected two-descriptor projection, not a neural embedding.
+// Existing slider slots are preserved; role filtering is now fuzzy eligibility.
+// New performance controls are appended; this version requires a fresh index.
+// #HELP: Load files in slot 0, wait for INDEX READY, click grains/vertices to hear them.
+// #HELP: MIDI notes launch the same continuous walker in One-shot or Gated mode.
+// #HELP: A/D/R are milliseconds; known windows proportionally fit A+D+R when needed.
+// #HELP: Sustain is gain. Stability is the separate identity-leash parameter.
+// #HELP: Draw a map path to guide selected descriptor axes through an event.
+// #HELP: Click map point = audition, Shift = anchor, Ctrl+drag = focus, Draw = path.
+// #HELP: All panes scroll. Small windows use tabs; no minimum-size blocker.
+// #HELP: Sample Hub CC118/119 v1 packets: Play/Retrigger/Continue/Choke/End supported.
+// #HELP: Unsupported modifier packets are rejected and counted, not misinterpreted.
+// #HELP: REPEAT uses a completed recorded plan; overflow/continued/forced plans are disabled.
+// #HELP: Live controls affect future selections; replay uses recorded decisions.
+// #HELP: Stop before adopting a new bank. APPLY rebuilds and invalidates recorded replay.
+slider1:0.5<0,1,0.001>--Force target
+slider2:0.35<0,1,0.001>--Variation
+slider3:0.8<0,1,0.001>--Coherence
+slider4:0.4<0,1,0.001>--Detail density
+slider5:120<30,1000,1>--Requested grain window (ms; Apply)
+slider6:1<0,4,1{4096,8192,16384,32768,65536}>--Grain index budget (Apply)
+slider7:-12<-36,6,0.1>--Output (dB)
+slider8:0<-24,24,0.1>--Pitch (semitones; generated only)
+slider9:1<0,1,0.001>--Velocity influence
+slider10:0<0,1,1{One-shot,Gated}>--MIDI lifecycle
+slider11:12345<1,16777213,1>--Random seed
+slider12:0<0,1,1{Evolve,Fixed}>--Seed mode
+slider13:0<0,65536,256>--Pool RAM budget (MB; 0=resident)
+slider14:0<0,65536,1>--Source scope (0=all)
+slider15:0<0,65536,1>--Identity anchor (0=none)
+slider16:0<0,28,1>--Feature filter (0=all)
+slider17:0<0,4,1{All,Attack,Body,Detail,Tail}>--Role eligibility filter
+slider18:0<0,3276,1>--Grain browser page
+slider19:0<0,99,1>--Traversal history offset
+slider20:1<0,1,1{Off,On}>--Safety peak catch
+slider21:1<0,2,1{Fast,Balanced,Detailed}>--Analysis quality (Apply)
+// IDs 22 and 23 remain reserved.
+slider24:0<0,16777215,1>--UI action packet (internal; do not automate)
+slider25:800<20,30000,1>--One-shot duration (ms)
+slider26:5<0,2000,1>--Attack (ms)
+slider27:100<0,5000,1>--Decay (ms)
+slider28:0.75<0,1,0.001>--Sustain level
+slider29:180<0,5000,1>--Release (ms)
+slider30:0.55<0,1,0.001>--Walk flow / overlap
+slider31:0.5<0,1,0.001>--Brightness mutation
+slider32:0.5<0,1,0.001>--Mass (LF-weight mutation)
+slider33:0.5<0,1,0.001>--Roughness mutation
+slider34:0.65<0,1,0.001>--Novelty pressure
+slider35:0.8<0,1,0.001>--Identity stability
+slider36:0<0,3,1{Linear,Resonance,Debris,Layered}>--Branch morphology
+slider37:0.25<0,1,0.001>--Branch level
+slider38:0.85<0,1,0.001>--Branch identity inheritance
+slider39:0.75<0,1,0.001>--Drawn path influence
+slider40:1<0,7,1{Energy,Brightness,LF weight,Motion,Onset,Crest,Decay,Width}>--Map X descriptor
+slider41:2<0,7,1{Energy,Brightness,LF weight,Motion,Onset,Crest,Decay,Width}>--Map Y descriptor
+slider42:0.5<0,1,0.001>--Map focus X
+slider43:0.5<0,1,0.001>--Map focus Y
+slider44:0<0,1,0.001>--Map focus influence
+slider45:0<0,255,1>--Map stratum page
+slider46:0.75<0,1,0.001>--Envelope trajectory influence
+slider47:2<0.2,20,0.01>--Gated path cycle (seconds)
+slider48:0.35<0,1,0.001>--Role browser threshold
+slider49:1<0,1,1{Off,On}>--Sample Hub duration packets
+slider50:0<0,255,1>--Locked identity descriptors (bitmask)
+slider51:0.95<0,1,0.001>--Identity lock strength
+slider52:240<30,1000,1>--Generated excerpt ceiling (ms)
+slider53:0.3<0,1,0.001>--Branch stereo spread
+slider54:0<0,1,1{Navigate,Draw}>--Map mouse mode
+slider55:0<0,3,1{Explore,Walk,Controls,Diagnostics}>--Interface page
+
+@init
+
+function cp_clamp(x a b) ( min(b,max(a,x)); );
+function cp_01(x) ( cp_clamp(x,0,1); );
+function cp_db(x) (20*log(max(0.000000000001,x))/log(10););
+function cp_amp(x) (exp(x*log(10)/20););
+function cp_frames(x) (x<0 ? x+4294967296 : x;);
+function cp_rng() local(hi lo nx) (
+  hi=floor(rng_state/127773); lo=rng_state-hi*127773;
+  nx=16807*lo-2836*hi; nx<=0 ? nx+=2147483647;
+  rng_state=nx; nx/2147483647;
+);
+function cp_g(id) (grain_base+id*64;);
+function cp_s(id) (source_base+id*8;);
+function cp_e(id) (event_base+id*64;);
+function cp_w(id) (walker_base+id*64;);
+function cp_v(id) (voice_base+id*32;);
+function cp_source_cells(id) local(s) (s=cp_s(id);s[6];);
+function cp_valid(id) local(g ok) (
+  ok=0; id>=0 && id<grain_count ? (g=cp_g(id);ok=g[9]<0.5 && g[6]>0.00001;);ok;
+);
+function cp_feat(id d) local(g) (g=cp_g(id); d<5 ? g[16+d] : g[51+d-5];);
+function cp_member(id vertex) local(d b g) (
+  g=cp_g(id);vertex==28 ? 1 : (
+    vertex>=15 && vertex<19 ? g[41+vertex-15] : (
+      vertex<15 ? (d=floor(vertex/3);b=vertex-d*3;) : (d=5+floor((vertex-19)/3);b=(vertex-19)%3;);
+      max(0,1-abs(2*cp_feat(id,d)-b));
+    );
+  );
+);
+function cp_dim_vertex(d b) (d<5 ? d*3+b : 19+(d-5)*3+b;);
+function cp_lower(lo hi key) local(mid) (
+  while(lo<hi) (mid=floor((lo+hi)/2);postings[mid]<key ? lo=mid+1 : hi=mid;);lo;
+);
+function cp_range(vertex src) local(lo hi s) (
+  vertex=cp_clamp(floor(vertex),0,28);lo=offsets[vertex];hi=offsets[vertex+1];
+  src>0 ? (src<=source_count ? (
+    s=cp_s(src-1);lo=cp_lower(lo,hi,s[5]);hi=cp_lower(lo,hi,s[5]+s[6]);
+  ) : hi=lo;);
+  range_lo=lo;range_hi=hi;hi-lo;
+);
+function cp_clear_voices() (memset(voice_base,0,2048); voice_list_n=0; active_voices=0;);
+function cp_clear_events() (memset(event_base,0,512);memset(walker_base,0,1536); event_count=0;);
+function cp_busy() (voice_list_n;);
+function cp_hold_count() local(i n e) (
+  i=0;n=0;loop(8,e=cp_e(i);e[0]>0 ? n+=1;i+=1;);n;
+);
+function cp_stop_event(ei when fade) local(i v e w) (
+  e=cp_e(ei);e[0]>0 ? (
+    e[1]==record_event && when<e[10] && !replaying ? record_overflow=max(record_overflow,3);
+    when<e[14] ? (e[14]=when;e[15]=max(0,fade);) : (when==e[14] ? e[15]=min(e[15],max(0,fade)););
+    i=0;loop(24,w=cp_w(i);w[0]>0 && w[1]==ei ? w[0]=0;i+=1;);
+    i=0;loop(voice_list_n,v=cp_v(voice_list[i]);v[26]==ei && v[17]==e[1] ? (
+      v[14]=min(v[14],when+fade);v[15]=max(1,fade);
+    );i+=1;);
+  );
+);
+function cp_stop_all(when fade channel) local(i e) (
+  i=0;loop(8,e=cp_e(i);e[0]>0 && (channel<0 || e[3]==channel) ? cp_stop_event(i,when,fade);i+=1;);
+  i=0;loop(voice_list_n,stop_v=cp_v(voice_list[i]);(channel<0 || stop_v[13]==channel) ? (
+    stop_v[14]=min(stop_v[14],when+fade);stop_v[15]=max(1,fade);
+  );i+=1;);
+);
+// Analytical event envelope: late Note Off never changes samples BEFORE its timestamp.
+function cp_env_pre(e t) local(x) (
+  x=t<e[5] ? 0 : (t<e[6] ? (t-e[5])/max(1,e[6]-e[5]) : (
+    t<e[7] ? 1-(1-e[8])*(t-e[6])/max(1,e[7]-e[6]) : e[8]
+  ));
+  e[37]>e[35] && t>=e[35] && t<e[37] ? x=e[36]+(e[8]-e[36])*cp_01((t-e[35])/(e[37]-e[35]));x;
+);
+function cp_env(e t) local(a n q ei) (
+  // Only Continue needs an old envelope snapshot. The common path is O(1).
+  t<e[33] && e[34]>0 ? (
+    ei=floor((e-event_base)/64);n=e[34]-1;
+    while(n>=0)(q=env_old_base+ei*512+n*64;t>=q[33] || n==0 ? (e=q;n=-1;) : n-=1;);
+  );
+  a=t<e[9] ? cp_env_pre(e,t) : e[11]*max(0,(e[10]-t)/max(1,e[10]-e[9]));
+  t>=e[14] ? a*=max(0,1-(t-e[14])/max(1,e[15]));cp_01(a);
+);
+function cp_env_save(e when) local(n q ei ok) (
+  ok=1;when>e[33] ? (
+    n=e[34];n<8 ? (
+      ei=floor((e-event_base)/64);q=env_old_base+ei*512+n*64;memcpy(q,e,64);e[34]=n+1;e[33]=when;
+    ) : ok=0;
+  );ok;
+);
+function cp_phase(e t) local(d z) (
+  phase_release=0;
+  t<e[6] ? (phase_stage=0;phase_u=0.18*cp_01((t-e[5])/max(1,e[6]-e[5]));) : (
+    t<e[7] ? (phase_stage=1;phase_u=0.18+0.17*cp_01((t-e[6])/max(1,e[7]-e[6]));) : (
+      t<e[9] ? (phase_stage=2;
+        e[12]>0 ? phase_u=cp_01((t-e[5])/max(1,e[10]-e[5])) : (
+          z=(t-e[7])/max(1,srate*slider47);phase_u=0.35+0.225*(1-cos(z*2*$pi));
+        );
+      ) : (phase_stage=3;phase_release=cp_01((t-e[9])/max(1,e[10]-e[9]));phase_u=0.8+0.2*phase_release;);
+    );
+  );
+  e[12]>0 ? phase_u=cp_01((t-e[5])/max(1,e[10]-e[5])); phase_stage;
+);
+function cp_event_find(note chan ext) local(i e found) (
+  i=0;found=-1;while(i<8 && found<0) (
+    e=cp_e(i);e[0]>0 && e[3]==chan && e[14]>clock && (ext>0 ? e[4]==ext : (e[2]==note && e[4]==0)) ? found=i;i+=1;
+  );found;
+);
+function cp_path_eval(u) local(x i n) (
+  path_x=0.5;path_y=0.5;
+  path_count>0 ? (
+    x=cp_01(u)*max(0,path_count-1);i=floor(x);n=min(path_count-1,i+1);x-=i;
+    path_x=path_base[i*2]*(1-x)+path_base[n*2]*x;
+    path_y=path_base[i*2+1]*(1-x)+path_base[n*2+1]*x;
+  );
+);
+function cp_target(w e t) local(d x pressure m lockv f basev px py) (
+  cp_phase(e,t);cp_path_eval(phase_u);
+  f=cp_01(slider1+slider9*(e[13]-0.5));
+  pressure=phase_stage==0 ? 1 : (phase_stage==1 ? 1-cp_01((t-e[6])/max(1,e[7]-e[6])) : 0);
+  d=0;loop(8,
+    basev=w[16+d];x=w[24+d];
+    d==0 ? x=f-0.34*phase_release;
+    d==1 ? x+=0.8*(slider31-0.5)+slider46*(0.16*pressure-0.12*phase_release);
+    d==2 ? x+=0.8*(slider32-0.5);
+    d==3 ? x+=0.8*(slider33-0.5);
+    d==4 ? x=0.25+0.55*f+slider46*(0.25*pressure-0.5*(1-pressure));
+    d==5 ? x+=0.35*(slider33-0.5)+0.10*pressure;
+    d==6 ? x+=slider46*0.45*phase_release;
+    w[4]==1 ? (d==2 ? x+=0.18;d==4 ? x-=0.25;d==6 ? x+=0.10;);
+    w[4]==2 ? (d==3 ? x+=0.22;d==5 ? x+=0.15;d==0 ? x-=0.18;);
+    d==floor(slider40) ? x=x*(1-slider44)+slider42*slider44;
+    d==floor(slider41) ? x=x*(1-slider44)+slider43*slider44;
+    path_count>1 ? (
+      d==path_axis_x ? x=x*(1-slider39)+path_x*slider39;
+      d==path_axis_y ? x=x*(1-slider39)+path_y*slider39;
+    );
+    lockv=(floor(slider50)&pow(2,d))>0;
+    lockv ? x=x*(1-slider51)+basev*slider51;
+    target_base[d]=cp_01(x);d+=1;
+  );
+  // These weights bias eligibility. They never limit retrieval to one role.
+  target_role[0]=phase_stage==0 ? 1 : (phase_stage==1 ? 0.25 : 0.04);
+  target_role[1]=phase_stage==0 ? 0.32 : (phase_stage==3 ? 0.45 : 1);
+  target_role[2]=0.10+0.45*slider4;
+  target_role[3]=phase_stage==3 ? 1 : (phase_stage==0 ? 0.05 : 0.18);
+  w[4]==1 ? (target_role[0]*=0.3;target_role[1]=1;target_role[3]=max(target_role[3],0.45););
+  w[4]==2 ? (target_role[0]*=0.3;target_role[2]=1;target_role[1]=0.55;);
+);
+function cp_hist_penalty(id w) local(g i old o age dist p near) (
+  p=0;g=cp_g(id);
+  slider12<0.5 ? (
+    g[61]>0 ? p=max(0,1-(selection_serial-g[61])/24);
+    i=0;loop(8,
+      old=recent_base[(recent_write-1-i+64)%64];
+      old>=0 && old<grain_count && old!=id ? (
+        dist=abs(cp_feat(id,1)-cp_feat(old,1))+abs(cp_feat(id,2)-cp_feat(old,2))+abs(cp_feat(id,3)-cp_feat(old,3));
+        p=max(p,max(0,1-dist/0.30)*0.25*(1-i/8));
+      );i+=1;
+    );
+  );
+  // Local anti-lock works in Fixed mode too, but is deterministic per event.
+  w[5]==id ? p=max(p,1);
+  p;
+);
+function cp_score(id w bridge) local(d g prev p cost ident seam hist same fit n delta rel) (
+  g=cp_g(id);cost=0;ident=0;d=0;
+  loop(8,
+    delta=abs(cp_feat(id,d)-target_base[d]);
+    cost+=delta*(d==1 || d==2 || d==3 ? 1 : 0.45);
+    // Preserve dimensions not being deliberately steered; baseline leash is explicit.
+    ident+=abs(cp_feat(id,d)-w[16+d])*(d==7 ? 0.30 : (d==0 || d==4 ? 0.02 : 0.12));d+=1;
+  );
+  fit=0;n=0;d=0;loop(4,fit+=g[41+d]*target_role[d];n+=target_role[d];d+=1;);fit/=max(0.001,n);
+  prev=w[5];seam=0;same=0;
+  prev>=0 && prev<grain_count ? (p=cp_g(prev);seam=min(1,abs(cp_db(g[21])-cp_db(p[22]))/36);g[1]==p[1] ? same=1;);
+  hist=cp_hist_penalty(id,w);
+  score_target=cost/5.35;score_identity=ident;score_seam=seam;score_history=hist;score_role=fit;
+  cost=1.65*score_target+slider3*(0.30*ident+0.15*seam+0.04*(1-same))+0.45*(1-fit)+slider34*0.62*hist;
+  bridge>=0 ? cost+=0.08*(1-cp_member(id,bridge));
+  1/(1+max(0,cost));
+);
+// Up to three shared feature posting lists + an explicit all-corpus safety route.
+// No exclusive role lists; 64 bounded candidates, de-duplicated before scoring.
+function cp_pick(w e t) local(d b v weight total src pass n lo hi j id k found sc value sum best bestsc pooln eligible cutoff bridge cursor seedpick)
+(
+  cp_target(w,e,t);pick_id=-1;pick_bridge=-1;pick_relax=0;pick_score=0;pick_checked=0;
+  src=floor(slider14);candidate_n=0;pass=0;total=0;
+  loop(24,bridge_weights[pass]=0;pass+=1;);pass=0;
+  loop(3,
+    total=0;d=0;seedpick=-1;
+    loop(8,b=0;loop(3,
+      v=cp_dim_vertex(d,b);cp_range(v,src)>0 ? (
+        w[5]>=0 ? weight=cp_member(w[5],v) : weight=max(0,1-abs(2*target_base[d]-b));
+        weight*=0.2+max(0,1-abs(2*target_base[d]-b));
+        weight*=0.6+min(2,log(1+grain_count/max(1,vertex_counts[v])));
+        used_bridge[v]>0 ? weight*=0.04;
+        total+=weight;cp_rng()*total<weight ? seedpick=v;
+      );b+=1;);d+=1;
+    );
+    seedpick>=0 ? (
+      used_bridge[seedpick]=1;pooln=cp_range(seedpick,src);lo=range_lo;hi=range_hi;n=min(20,pooln);
+      cursor=cp_rng();j=0;loop(n,
+        id=postings[lo+min(pooln-1,floor((j+cursor)*pooln/max(1,n)))];
+        cp_valid(id) ? (
+          found=0;k=0;while(k<candidate_n && !found)(candidates[k*2]==id ? found=1;k+=1;);
+          !found && candidate_n<64 ? (candidates[candidate_n*2]=id;candidates[candidate_n*2+1]=seedpick;candidate_n+=1;);
+        );j+=1;
+      );
+    );pass+=1;
+  );
+  memset(used_bridge,0,28);
+  // Four wider probes allow recovery from a sparse or locally homogeneous graph.
+  pooln=cp_range(28,src);lo=range_lo;n=min(candidate_n>0 ? 4 : 64,pooln);cursor=cp_rng();j=0;
+  loop(n,
+    id=postings[lo+min(pooln-1,floor((j+cursor)*pooln/max(1,n)))];
+    cp_valid(id) ? (
+      found=0;k=0;while(k<candidate_n && !found)(candidates[k*2]==id ? found=1;k+=1;);
+      !found && candidate_n<64 ? (candidates[candidate_n*2]=id;candidates[candidate_n*2+1]=-1;candidate_n+=1;);
+    );j+=1;
+  );
+  best=-1;bestsc=-1;sum=0;j=0;pooln=0;
+  loop(candidate_n,
+    id=candidates[j*2];bridge=candidates[j*2+1];sc=cp_score(id,w,bridge);
+    sc>bestsc ? (bestsc=sc;best=j;);
+    // Relative temperature, not an unbounded random jump.
+    value=exp((sc-1)/max(0.008,0.015+0.12*slider2));sum+=value;
+    cp_rng()*sum<value ? pooln=j;
+    pick_checked+=1;j+=1;
+  );
+  candidate_n>0 ? (
+    slider2<0.0001 ? pooln=best;
+    pick_id=candidates[pooln*2];pick_bridge=candidates[pooln*2+1];
+    pick_score=cp_score(pick_id,w,pick_bridge);pick_relax=pick_bridge<0;
+  );pick_id;
+);
+
+// ---------------- Incremental source index ----------------
+function cp_reset_recent() local(i) (i=0;loop(64,recent_base[i]=-1;i+=1;);recent_write=0;selection_serial=0;);
+function cp_add_recent(id) local(g) (recent_base[recent_write]=id;recent_write=(recent_write+1)%64;selection_serial+=1;g=cp_g(id);g[61]=selection_serial;);
+function cp_fingerprint_add(x) local(part) (
+  part=floor(abs(x)); part-=floor(part/16777213)*16777213;
+  // Both operands and their sum stay below INT32_MAX before remainder.
+  corpus_key=(corpus_key*127+part)%16777213;
+);
+function cp_begin() local(n cap avail)
+(
+  // Must only be called at a block boundary with no current/pending voices.
+  loaded_count=max(0,floor(sample_pool_loaded(bank_pool)));
+  avail=max(65536,__memtop()-source_base-1024);
+  source_capacity=min(65536,loaded_count);
+  cap=4096*pow(2,floor(cp_clamp(slider6,0,4)));
+  grain_capacity=min(65536,max(cap,source_capacity));
+  grain_capacity=min(grain_capacity,floor((avail-source_capacity*8)/86));
+  source_capacity=min(source_capacity,max(0,grain_capacity));
+  grain_capacity=max(0,grain_capacity);
+  grain_base=source_base+source_capacity*8+64;
+  postings=grain_base+grain_capacity*64+64;
+  source_count=0; meta_cursor=0; grain_count=0; tile_total=0; max_grain_seconds=0;
+  total_seconds=0; ready=0; selected_id=-1; preview_id=-1;
+  window_request=cp_clamp(slider5,30,1000)/1000;
+  budget_request=floor(slider6); quality_request=floor(slider21);
+  burst_limit=quality_request==0 ? 16 : (quality_request==1 ? 64 : 128);
+  corpus_key=700; cp_fingerprint_add(window_request*1000); cp_fingerprint_add(grain_capacity); cp_fingerprint_add(quality_request);
+  memset(hist,0,1024); memset(counts,0,29); memset(vertex_counts,0,29); memset(role_stats,0,16);
+  invalid_sources=0; unindexed_sources=max(0,loaded_count-source_capacity);
+  silent_grains=0; invalid_audio=0; analysis_points=0;
+  build_phase=1; build_cursor=0; index_epoch+=1;
+  last_plan_count=0; log_count=0; log_head=-1; selected_log=-1;
+  cp_reset_recent(); cp_clear_events();record_n=0;record_done=0;record_event=-1;trace_n=0;trace_head=-1;browse_dirty=1;
+);
+function cp_setup_tile() local(s start end span)
+(
+  while(scan_source<source_count && scan_tile>=cp_source_cells(scan_source)) (
+    scan_source+=1; scan_tile=0; scan_previous_tail=0;
+  );
+  scan_source<source_count ? (
+    s=cp_s(scan_source); start=floor(s[2]*scan_tile/s[6]); end=floor(s[2]*(scan_tile+1)/s[6]);
+    a_g=cp_g(grain_count); memset(a_g,0,64); a_g[0]=s[0]; a_g[1]=scan_source;
+    a_g[2]=start; a_g[3]=max(1,end-start); a_g[4]=s[3]; a_g[5]=s[4];
+    a_g[9]=0; a_g[10]=-1;
+    a_bin=0; a_inburst=0; a_burst_ready=0;
+    a_power=0; a_diff=0;a_sidepower=0; a_lowpower=0; a_lowref=0; a_num=0; a_ndiff=0;
+    a_peak=0; a_headpower=0; a_headn=0; a_tailpower=0; a_tailn=0;
+    a_envsum=0; a_envdiff=0; a_rise=0; a_prev_env=scan_previous_tail;
+    a_max_env=0; a_peak_bin=0; a_tile_ready=1;
+  ) : a_tile_ready=0;
+);
+function cp_finish_bin() local(env delta)
+(
+  env=sqrt(a_binpower/max(1,a_burst_count));
+  a_g[24+a_bin]=a_binpeak;
+  a_envsum+=env; delta=env-a_prev_env;
+  a_envdiff+=abs(delta); a_rise=max(a_rise,delta); a_prev_env=env;
+  env>a_max_env ? (a_max_env=env; a_peak_bin=a_bin;);
+  a_bin<4 ? (a_headpower+=a_binpower; a_headn+=a_burst_count;);
+  a_bin>=12 ? (a_tailpower+=a_binpower; a_tailn+=a_burst_count;);
+  a_bin+=1; a_burst_ready=0;
+);
+function cp_finish_tile() local(rms bright body motion edge crest head tail d bin decay width) (
+  rms=sqrt(a_power/max(1,a_num));
+  bright=log(1+20*sqrt(cp_01(a_diff/max(0.000000000001,4*a_power))))/log(21);
+  body=sqrt(cp_01(a_lowpower/max(0.000000000001,a_lowref)));
+  motion=cp_01(a_envdiff/max(0.000000000001,a_envsum)*2.2);
+  edge=cp_01(a_rise/max(0.000000000001,a_max_env));
+  head=sqrt(a_headpower/max(1,a_headn));tail=sqrt(a_tailpower/max(1,a_tailn));
+  crest=cp_01(log(max(1,a_peak/max(0.000000000001,rms)))/log(16));
+  decay=cp_01((head-tail)/max(0.000000000001,head+tail));
+  width=sqrt(cp_01(a_sidepower/max(0.000000000001,a_power)));
+  a_g[6]=rms;a_g[7]=a_peak;a_g[8]=1;a_g[10]=-1;
+  a_g[11]=cp_01((cp_db(rms)+84)/84);a_g[12]=bright;a_g[13]=body;a_g[14]=motion;a_g[15]=edge;
+  a_g[21]=head;a_g[22]=tail;a_g[23]=cp_clamp(0.16/max(0.000001,rms),0.35,2);
+  a_g[40]=a_peak_bin/15;a_g[45]=crest;a_g[46]=decay;a_g[47]=width;
+  // Confidence reports sparse burst coverage, not semantic correctness.
+  a_g[49]=min(1,a_num/max(1,a_g[3]));a_g[60]=0;a_g[61]=0;
+  rms<0.00001 ? (a_g[9]=1;silent_grains+=1;);
+  d=0;loop(8,
+    bin=floor(cp_clamp((d<5 ? a_g[11+d] : a_g[45+d-5])*127,0,127));hist[d*128+bin]+=1;d+=1;
+  );
+  cp_fingerprint_add(rms*100000);cp_fingerprint_add(a_peak*100000);
+  scan_previous_tail=tail;grain_count+=1;scan_tile+=1;a_tile_ready=0;
+);
+function cp_quantiles() local(d j sum lo hi ql qh span center) (
+  d=0;loop(8,
+    sum=0;lo=0;hi=127;ql=0;qh=0;j=0;
+    loop(128,sum+=hist[d*128+j];
+      !ql && sum>=max(1,grain_count*0.05) ? (lo=j;ql=1;);
+      !qh && sum>=max(1,grain_count*0.95) ? (hi=j;qh=1;);j+=1;
+    );
+    lo/=127;hi/=127;center=(lo+hi)*0.5;
+    span=max(d==0 ? 12/84 : 0.20,hi-lo);
+    norm_low[d]=center-span*0.5;norm_span[d]=span;d+=1;
+  );edit_cursor=0;edits_match=edit_key==corpus_key;
+  edits_inactive=edits_match ? 0 : edit_count;
+);
+// Neighbours contribute only across genuine same-source adjacency. File ends
+// are NOT automatically tails: long files can contain many unrelated events.
+function cp_roles(id) local(g p q prev next wt i k raw norm onset fall steady intra a b de ta best n) (
+  g=cp_g(id);prev=0;next=0;wt=0;i=1;
+  loop(2,k=id-i;
+    k>=0 ? (p=cp_g(k);p[1]==g[1] ? (prev+=p[6]/i;wt+=1/i;););i+=1;
+  );prev=wt>0 ? prev/wt : g[21];wt=0;i=1;
+  loop(2,k=id+i;
+    k<grain_count ? (q=cp_g(k);q[1]==g[1] ? (next+=q[6]/i;wt+=1/i;););i+=1;
+  );next=wt>0 ? next/wt : g[22];
+  onset=cp_01((g[6]-prev)/max(0.00001,g[6]+prev));
+  fall=cp_01((g[6]-next)/max(0.00001,g[6]+next));
+  intra=cp_01((g[21]-g[22])/max(0.00001,g[21]+g[22]));
+  steady=1-cp_01(0.55*g[14]+0.25*onset+0.20*fall);
+  // Independent eligibility dimensions: these do not sum to 1.
+  a=cp_01(0.05+0.55*onset+0.36*g[20]*(1-0.55*g[40])+0.12*g[15]);
+  b=cp_01(0.12+0.60*steady+0.16*g[16]-0.30*onset-0.15*g[15]);
+  de=cp_01(0.06+0.55*g[19]+0.35*g[51]+0.10*g[14]);
+  ta=cp_01(0.05+0.38*fall+0.55*intra+0.12*(1-g[16])-0.15*onset);
+  g[41]=a;g[42]=b;g[43]=de;g[44]=ta;g[48]=steady;
+  // Explicit manual ROLE BIAS boosts eligibility, never excludes other roles.
+  g[10]>=0 ? g[41+g[10]]=cp_01(g[41+g[10]]+0.40);
+  best=-1;n=0;i=0;loop(4,
+    g[41+i]>best ? (best=g[41+i];n=i;);
+    g[9]<0.5 ? (
+      role_stats[i]+=g[41+i];role_stats[4+i]+=g[41+i]*g[41+i];
+      g[41+i]>=0.35 ? role_stats[8+i]+=1;
+    );i+=1;
+  );g[8]=n;
+);
+function cp_count_grain(id apply_edits) local(g d raw norm e v) (
+  g=cp_g(id);d=0;loop(8,
+    raw=d<5 ? g[11+d] : g[45+d-5];
+    // Blend absolute and relative evidence. Flat corpora do not become extremes.
+    norm=0.65*cp_01((raw-norm_low[d])/norm_span[d])+0.35*raw;
+    d<5 ? g[16+d]=norm : g[51+d-5]=norm;d+=1;
+  );
+  apply_edits && edits_match ? (
+    while(edit_cursor<edit_count && edits[edit_cursor*3]<id)(edit_cursor+=1;);
+    edit_cursor<edit_count && edits[edit_cursor*3]==id ? (
+      e=edits+edit_cursor*3;g[9]=e[1];g[10]=e[2];
+    );
+  );
+  cp_roles(id);
+  g[9]<0.5 ? (v=0;loop(29,
+    cp_member(id,v)>0.00001 ? (counts[v]+=1;vertex_counts[v]+=1;);v+=1;
+  ););
+);
+function cp_fill_grain(id) local(g v pos) (
+  g=cp_g(id);g[9]<0.5 ? (v=0;loop(29,
+    cp_member(id,v)>0.00001 ? (
+      pos=offsets[v]+fill_cursor[v];postings[pos]=id;fill_cursor[v]+=1;
+    );v+=1;
+  ););
+);
+function cp_build(work) local(s id frames sr nch cells i b w pos l r energy diff g take binlo binhi maxwork total c read_ok)
+(
+  build_phase==1 ? (
+    i=0;
+    while(i<16 && meta_cursor<source_capacity) (
+      id=sample_get(bank_pool,meta_cursor);
+      frames=cp_frames(sample_len(bank_pool,id)); sr=sample_srate(bank_pool,id); nch=sample_channels(bank_pool,id);
+      id>0 && frames>=2 && sr>=1000 ? (
+        s=cp_s(source_count); s[0]=id; s[1]=meta_cursor; s[2]=frames;
+        s[3]=sr; s[4]=nch; s[7]=sample_peak(bank_pool,id);
+        total_seconds+=frames/sr; source_count+=1;
+        cp_fingerprint_add(frames); cp_fingerprint_add(sr); cp_fingerprint_add(s[7]*100000);
+      ) : invalid_sources+=1;
+      meta_cursor+=1; i+=1;
+    );
+    meta_cursor>=source_capacity ? (
+      effective_window=max(window_request,total_seconds/max(1,grain_capacity-source_count));
+      build_phase=2; layout_cursor=0; tile_total=0;
+    );
+  );
+  build_phase==2 ? (
+    i=0;
+    while(i<64 && layout_cursor<source_count) (
+      s=cp_s(layout_cursor);
+      grain_capacity<=source_count ? cells=1 : cells=max(1,ceil(s[2]/s[3]/effective_window));
+      cells=min(cells,max(1,grain_capacity-tile_total-(source_count-layout_cursor-1)));
+      s[5]=tile_total; s[6]=cells; tile_total+=cells;
+      max_grain_seconds=max(max_grain_seconds,ceil(s[2]/cells)/s[3]);
+      layout_cursor+=1; i+=1;
+    );
+    layout_cursor>=source_count ? (
+      build_phase=3; scan_source=0; scan_tile=0; scan_previous_tail=0; a_tile_ready=0;
+    );
+  );
+  build_phase==3 ? (
+    maxwork=max(32,floor(work));
+    while(maxwork>0 && grain_count<tile_total) (
+      !a_tile_ready ? cp_setup_tile();
+      !a_burst_ready ? (
+        binlo=a_g[2]+floor(a_g[3]*a_bin/16);
+        binhi=a_g[2]+floor(a_g[3]*(a_bin+1)/16);
+        a_burst_count=min(burst_limit,max(0,binhi-binlo));
+        a_burst_start=binlo+floor(max(0,binhi-binlo-a_burst_count)*0.5);
+        a_inburst=0; a_binpower=0; a_binpeak=0;
+        a_lp_l=0; a_lp_r=0; a_last_l=0; a_last_r=0;
+        a_lpc=1-exp(-2*$pi*400/max(1000,a_g[4])); a_burst_ready=1;
+      );
+      a_burst_count>0 ? (
+        pos=a_burst_start+a_inburst;
+        read_ok=sample_read2(bank_pool,a_g[0],pos,l,r);
+        !read_ok ? (l=0; r=0; invalid_audio+=1;);
+        (!(l==l) || abs(l)>1000000) ? (l=0; invalid_audio+=1;);
+        (!(r==r) || abs(r)>1000000) ? (r=0; invalid_audio+=1;);
+        energy=(l*l+r*r)*0.5;
+        a_sidepower+=(l-r)*(l-r)*0.25;a_power+=energy; a_binpower+=energy; a_num+=1;
+        a_binpeak=max(a_binpeak,max(abs(l),abs(r))); a_peak=max(a_peak,a_binpeak);
+        a_inburst>0 ? (a_diff+=((l-a_last_l)^2+(r-a_last_r)^2)*0.5; a_ndiff+=1;);
+        a_last_l=l; a_last_r=r;
+        a_lp_l+=a_lpc*(l-a_lp_l); a_lp_r+=a_lpc*(r-a_lp_r);
+        a_inburst>=min(16,a_burst_count*0.25) ? (
+          a_lowpower+=(a_lp_l*a_lp_l+a_lp_r*a_lp_r)*0.5; a_lowref+=energy;
+        );
+        a_inburst+=1; analysis_points+=1; maxwork-=1;
+      ) : maxwork-=1;
+      a_inburst>=a_burst_count ? cp_finish_bin();
+      a_bin>=16 ? cp_finish_tile();
+    );
+    grain_count>=tile_total ? (
+      cp_quantiles(); norm_cursor=0; build_phase=4; apply_saved_edits=1;
+    );
+  );
+  build_phase==4 ? (
+    i=0;
+    while(i<128 && norm_cursor<grain_count) (
+      cp_count_grain(norm_cursor,apply_saved_edits); norm_cursor+=1; i+=1;
+    );
+    norm_cursor>=grain_count ? (
+      b=0; total=0;
+      loop(29,offsets[b]=total; total+=counts[b]; fill_cursor[b]=0; b+=1;);
+      offsets[29]=total; posting_count=total; fill_grain=0; build_phase=5;
+    );
+  );
+  build_phase==5 ? (
+    i=0;
+    while(i<128 && fill_grain<grain_count) (
+      cp_fill_grain(fill_grain); fill_grain+=1; i+=1;
+    );
+    fill_grain>=grain_count ? (
+      build_phase=0; ready=grain_count>0; apply_saved_edits=0;
+      playable_grains=vertex_counts[28];
+      ready && playable_grains>0 && selected_id<0 ? selected_id=postings[offsets[28]];
+      memset(vertex_cursor,0,29);browse_dirty=1;ui_left=0;
+      freembuf(postings+posting_count+64);
+    );
+  );
+);
+function cp_poll() local(gen state adopted signature)
+(
+  sample_pool_set_mode(bank_pool,slider13>0 ? 1 : 0);
+  sample_pool_set_budget_mb(bank_pool,max(0,slider13));
+  sample_pool_commit(bank_pool);
+  pool_state=sample_pool_state(bank_pool); pool_selected=sample_pool_selected(bank_pool);
+  pool_loaded=sample_pool_loaded(bank_pool); pool_failed=sample_pool_failed(bank_pool);
+  pool_ram=sample_pool_ram_mb(bank_pool); gen=sample_pool_generation(bank_pool);
+  signature=gen+pool_loaded*8191+pool_failed*131+pool_state*17+pool_selected*32771;
+  (signature!=loaded_signature || rebuild_request || !have_generation) && pool_state!=1 && pool_state!=2 ? pending_adoption=1;
+  pending_adoption && cp_busy()==0 && cp_hold_count()==0 && pool_state!=1 && pool_state!=2 ? (
+    adopted=sample_pool_adopt(bank_pool);
+    adopted>=0 ? (
+      generation=sample_pool_generation(bank_pool); have_generation=1;
+      loaded_signature=generation+sample_pool_loaded(bank_pool)*8191+sample_pool_failed(bank_pool)*131+sample_pool_state(bank_pool)*17+sample_pool_selected(bank_pool)*32771;
+      pending_adoption=0; rebuild_request=0; cp_begin();
+    );
+  );
+);
+
+// ---------------- Event-owned, bounded linear + child walkers ----------------
+function cp_release(ei when) local(e from) (
+  ei>=0 ? (e=cp_e(ei);e[0]>0 && when<e[9] ? (
+    from=cp_env_pre(e,when);e[9]=when;e[10]=when+max(1,e[19]);e[11]=from;e[18]=0;e[22]=0;
+  ););
+);
+function cp_trace(id prev bridge t dur score relax rolefit phase kind serial srcpos frames gain pan) local(z d g) (
+  trace_head=(trace_head+1)%100;trace_n=min(100,trace_n+1);z=trace_base+trace_head*40;
+  g=cp_g(id);memset(z,0,40);
+  z[0]=id;z[1]=prev;z[2]=bridge;z[3]=t;z[4]=dur;z[5]=score;z[6]=relax;z[7]=rolefit;
+  z[8]=phase;z[9]=kind;z[10]=serial;z[11]=srcpos/max(1,g[4]);z[12]=frames/max(1,g[4]);
+  z[13]=score_target;z[14]=score_identity;z[15]=score_seam;z[16]=score_history;z[17]=g[1]+1;
+  z[18]=gain;z[19]=pan;d=0;loop(8,
+    z[20+d]=cp_feat(id,d);z[28+d]=prev>=0 ? cp_feat(id,d)-cp_feat(prev,d) : 0;d+=1;
+  );z[36]=index_epoch;z[37]=selection_serial;z[38]=0;z[39]=phase_release;
+);
+function cp_voice(id role t gain pitch ei kind srcpos frames pan serial) local(i found v g rate dur e endtime) (
+  found=-1;i=0;while(i<64 && found<0)(voice_base[i*32]<=0 ? found=i;i+=1;);
+  id>=0 && id<grain_count && found>=0 && voice_list_n<64 ? (
+    g=cp_g(id);v=cp_v(found);memset(v,0,32);
+    srcpos=cp_clamp(floor(srcpos),g[2],g[2]+g[3]-1);frames=cp_clamp(floor(frames),1,g[2]+g[3]-srcpos);
+    rate=g[4]/max(8000,srate)*pow(2,pitch/12);dur=max(1,ceil(frames/max(0.000001,rate)));t=floor(t+0.5);
+    endtime=t+dur;ei>=0 ? (e=cp_e(ei);endtime=min(endtime,min(e[10],e[14]+e[15])););
+    endtime>t ? (
+      v[0]=1;v[1]=id;v[2]=t;v[3]=t+dur;v[4]=g[0];v[5]=srcpos;v[6]=srcpos+frames;v[7]=rate;
+      v[8]=gain;v[9]=role==4 ? min(dur*0.1,srate*0.002) : (role==0 ? min(dur*0.08,srate*0.0007) : min(dur*0.25,srate*0.030));
+      v[10]=role==4 ? min(dur*0.15,srate*0.004) : min(dur*0.32,srate*0.045);
+      v[11]=g[5];v[12]=ei>=0 ? e[2] : -1;v[13]=ei>=0 ? e[3] : -2;
+      v[14]=endtime;v[15]=max(1,v[10]);v[16]=role;v[17]=serial;v[20]=pan;
+      v[24]=min(1,1-pan);v[25]=min(1,1+pan);v[26]=ei;v[27]=kind;v[28]=pitch;
+      voice_list[voice_list_n]=found;voice_list_n+=1;
+    ) : found=-1;
+  ) : (found=-1;dropped_voices+=1;);
+  found;
+);
+function cp_record_voice(vi prev bridge sc relax fit phase) local(v p e k g) (
+  v=cp_v(vi);g=cp_g(v[1]);
+  v[17]==record_event && !replaying && !record_done ? (
+    record_n<1024 ? (
+      p=record_base+record_n*20;memset(p,0,20);
+      p[0]=v[1];p[1]=v[16];p[2]=v[2]-record_start;p[3]=v[8];p[4]=v[28];
+      p[5]=v[27];p[6]=v[5];p[7]=v[6]-v[5];p[8]=v[20];p[9]=prev;p[10]=bridge;p[11]=sc;
+      p[12]=relax;p[13]=fit;p[14]=phase;p[15]=v[3]-v[2];
+      p[16]=score_target;p[17]=score_identity;p[18]=score_seam;p[19]=score_history;record_n+=1;
+    ) : record_overflow=1;
+  );
+);
+function cp_child(wi kind parent when) local(w p d e inherited saved) (
+  p=cp_w(parent);w=cp_w(wi);e=cp_e(p[1]);memset(w,0,64);
+  w[0]=1;w[1]=p[1];w[2]=p[2];w[3]=when;w[4]=kind;w[5]=p[5];
+  saved=rng_state;rng_state=max(1,p[6]+kind*104729);rng_state-=floor(rng_state/2147483647)*2147483647;cp_rng();w[6]=rng_state;rng_state=saved;
+  w[8]=e[26]*(kind==1 ? 0.55 : 0.35);w[9]=(kind==1 ? -1 : 1)*slider53;
+  d=0;loop(8,
+    inherited=slider38*p[16+d]+(1-slider38)*0.5;w[16+d]=inherited;w[24+d]=inherited;d+=1;
+  );
+);
+function cp_emit(wi when) local(w e id g prev role dur rate frames srcpos gain vi d delta leash kind first bridge sc relax fit stage morph subpos) (
+  w=cp_w(wi);e=cp_e(w[1]);
+  when>=min(e[10],e[14]) || !e[0] || w[2]!=e[1] ? w[0]=0 : (
+    rng_state=max(1,w[6]);prev=w[5];id=cp_pick(w,e,when);kind=w[4];stage=phase_stage;
+    bridge=pick_bridge;sc=pick_score;relax=pick_relax;fit=score_role;
+    id>=0 ? (
+      g=cp_g(id);rate=g[4]/max(8000,srate)*pow(2,slider8/12);
+      frames=min(g[3],max(1,floor(slider52/1000*srate*rate)));
+      srcpos=g[2];g[3]>frames ? (
+        subpos=stage==0 ? max(0,g[40]*g[3]-g[4]*0.015) : cp_rng()*(g[3]-frames);
+        srcpos+=cp_clamp(floor(subpos),0,g[3]-frames);
+      );
+      dur=max(1,ceil(frames/max(0.000001,rate)));
+      role=stage==0 ? 0 : (stage==3 ? 3 : (kind==2 ? 2 : 1));
+      gain=(kind==0 ? 0.68 : w[8])*g[23]*(0.30+0.70*sqrt(max(0.001,e[13])));
+      vi=cp_voice(id,role,when,gain,slider8,w[1],kind,srcpos,frames,w[9],e[1]);
+      vi>=0 ? (
+        cp_record_voice(vi,prev,bridge,sc,relax,fit,stage);
+        cp_trace(id,prev,bridge,when,dur,sc,relax,fit,stage,kind,e[1],srcpos,frames,gain,w[9]);
+        cp_add_recent(id);selected_id<0 ? selected_id=id;
+        w[5]=id;w[11]=dur;w[12]=stage;w[13]=sc;
+        d=0;loop(8,
+          w[7]==0 && slider15<=0 && kind==0 ? w[16+d]=cp_feat(id,d);
+          leash=0.08+(1-slider35)*0.65;
+          delta=(cp_feat(id,d)-w[24+d])*(0.08+0.22*(1-slider35));
+          w[24+d]=cp_clamp(w[24+d]+delta,max(0,w[16+d]-leash),min(1,w[16+d]+leash));
+          w[32+d]=target_base[d];d+=1;
+        );
+        // Children start only once, inherit the parent's established identity,
+        // and then traverse independently. No recursive fan-out.
+        w[7]==0 && kind==0 && e[26]>0.00001 ? (
+          morph=e[25];
+          morph==1 || morph==3 ? cp_child(wi+1,1,wi,when+max(srate*0.015,dur*0.24));
+          morph==2 || morph==3 ? cp_child(wi+2,2,wi,when+max(srate*0.025,dur*0.38));
+        );
+      );
+      // Minimum 10 ms hop bounds pathological tiny-file scheduling. Ordinary
+      // indexed grains overlap; short-source gaps are reported, not concealed.
+      w[3]=when+max(floor(srate*0.010),floor(dur*(0.90-0.30*slider30)*(kind==2 ? 1+0.6*(1-slider4) : 1)));
+      dur<srate*0.010 ? short_hops+=1;
+    ) : (w[3]=when+max(32,floor(srate*0.040));missing_candidates+=1;);
+    w[7]+=1;w[6]=rng_state;
+  );
+);
+function cp_start(velocity note chan when duration ext attackpct releasepct seedadd) local(i ei e w old a de r total scale mode anchor d g seed) (
+  ei=-1;
+  ready && playable_grains>0 ? (
+    old=cp_event_find(note,chan,ext);old>=0 ? cp_stop_event(old,when,max(8,srate*0.004));
+    i=0;while(i<8 && ei<0)(event_base[i*64]<=0 ? ei=i;i+=1;);
+    ei>=0 ? (
+      e=cp_e(ei);memset(e,0,64);event_serial+=1;
+      e[0]=1;e[1]=event_serial;e[2]=note;e[3]=chan;e[4]=ext;e[5]=when;e[8]=slider28;e[13]=cp_01(velocity);
+      e[14]=1000000000000;e[15]=0;e[18]=1;e[25]=floor(slider36);e[26]=slider37;
+      a=max(0,slider26*srate/1000);de=max(0,slider27*srate/1000);r=max(1,slider29*srate/1000);e[19]=r;
+      mode=duration>0 || slider10<0.5 || note<0;
+      mode ? (
+        total=max(1,floor((duration>0 ? duration : slider25/1000)*srate+0.5));
+        attackpct>=0 && attackpct<=100 ? a=total*attackpct/100;
+        releasepct>=0 && releasepct<=100 ? r=max(1,total*releasepct/100);
+        scale=min(1,total/max(1,a+de+r));a*=scale;de*=scale;r*=scale;
+        e[12]=1;e[9]=when+total-r;e[10]=when+total;e[21]=total;
+      ) : (e[12]=0;e[9]=1000000000000;e[10]=1000000000000;);
+      e[6]=when+floor(a);e[7]=e[6]+floor(de);e[11]=e[8];e[19]=max(1,r);
+      // A zero-length sustain uses the actual envelope value at the release boundary.
+      e[12]>0 ? e[11]=cp_env_pre(e,e[9]);e[31]=e[10];e[32]=1;e[30]=srate;e[33]=when;
+      slider12>=0.5 ? rng_state=max(1,floor(slider11));
+      rng_state+=floor(seedadd)*104729;rng_state=max(1,rng_state-floor(rng_state/2147483647)*2147483647);cp_rng();seed=rng_state;e[17]=seed;
+      w=cp_w(ei*3);memset(w,0,192);w[0]=1;w[1]=ei;w[2]=event_serial;w[3]=when;w[5]=-1;w[6]=seed;w[8]=1;
+      anchor=floor(slider15)-1;cp_valid(anchor) ? w[5]=anchor;
+      d=0;loop(8,w[16+d]=cp_valid(anchor) ? cp_feat(anchor,d) : 0.5;w[24+d]=w[16+d];d+=1;);
+      record_event=event_serial;record_start=when;record_n=0;record_done=0;record_overflow=0;record_epoch=index_epoch;record_ei=ei;replaying=0;
+    ) : dropped_triggers+=1;
+  ) : dropped_triggers+=1;ei;
+);
+function cp_replay_step(ei limitclock) local(e p when vi id) (
+  e=cp_e(ei);
+  while(replay_cursor<record_n && record_base[replay_cursor*20+2]+e[5]<limitclock && steps_this_block<192) (
+    p=record_base+replay_cursor*20;when=e[5]+p[2];id=p[0];
+    cp_valid(id) ? (
+      vi=cp_voice(id,p[1],when,p[3],p[4],ei,p[5],p[6],p[7],p[8],e[1]);
+      vi>=0 ? (
+        score_target=p[16];score_identity=p[17];score_seam=p[18];score_history=p[19];
+        cp_trace(id,p[9],p[10],when,p[15],p[11],p[12],p[13],p[14],p[5],e[1],p[6],p[7],p[3],p[8]);
+      );
+    ) : replay_missing+=1;
+    replay_cursor+=1;steps_this_block+=1;
+  );
+);
+function cp_walk_until(limitclock) local(i w best bt e) (
+  keep_walking=1;
+  while(keep_walking && steps_this_block<192) (
+    best=-1;bt=limitclock;i=0;
+    loop(24,w=cp_w(i);w[0]>0 && w[3]<bt ? (best=i;bt=w[3];);i+=1;);
+    best>=0 ? (cp_emit(best,bt);steps_this_block+=1;) : keep_walking=0;
+  );
+  replaying && replay_ei>=0 ? cp_replay_step(replay_ei,limitclock);
+  // Explicit capacity event, no unbounded catch-up burst on the next block.
+  steps_this_block>=192 ? (
+    i=0;loop(24,w=cp_w(i);w[0]>0 && w[3]<limitclock ? (w[3]=limitclock;scheduler_overflow+=1;);i+=1;);
+  );
+);
+function cp_collect() local(i j e v refs endt w) (
+  i=0;event_count=0;
+  loop(8,e=cp_e(i);e[0]>0 ? (
+    endt=min(e[10],e[14]+e[15]);
+    clock>=endt ? (
+      refs=0;j=0;loop(voice_list_n,v=cp_v(voice_list[j]);v[26]==i && v[17]==e[1] ? refs+=1;j+=1;);
+      refs==0 ? (
+        e[1]==record_event && !replaying ? (
+          memcpy(record_env,e,64);record_env[0]=1;record_done=1;
+          record_env[5]-=record_start;record_env[6]-=record_start;record_env[7]-=record_start;
+          record_env[9]-=record_start;record_env[10]-=record_start;record_env[14]-=record_start;
+        );
+        i==replay_ei ? (replaying=0;replay_ei=-1;);
+        e[0]=0;j=0;loop(3,w=cp_w(i*3+j);w[0]=0;j+=1;);
+      );
+    );e[0]>0 ? event_count+=1;
+  );i+=1;);
+);
+function cp_replay(when) local(i ei e fade) (
+  ready && record_done && record_n>0 && !record_overflow && record_epoch==index_epoch && !replaying && record_env[30]==srate ? (
+    fade=max(8,srate*0.003);cp_stop_all(when,fade,-1);ei=-1;i=0;
+    while(i<8 && ei<0)(event_base[i*64]<=0 ? ei=i;i+=1;);
+    ei>=0 ? (
+      e=cp_e(ei);memcpy(e,record_env,64);event_serial+=1;e[1]=event_serial;e[4]=0;
+      when+=fade;e[5]+=when;e[6]+=when;e[7]+=when;e[9]+=when;e[10]+=when;e[14]+=when;
+      replaying=1;replay_ei=ei;replay_cursor=0;e[23]=1;
+    ) : replay_unavailable+=1;
+  ) : replay_unavailable+=1;
+);
+function cp_preview(id) local(g fade) (
+  ready && id>=0 && id<grain_count ? (
+    g=cp_g(id);fade=max(8,floor(srate*0.003));cp_stop_all(clock,fade,-1);
+    cp_voice(id,4,clock+fade,1,0,-1,0,g[2],g[3],0,-1);selected_id=id;preview_id=id;
+  );
+);
+function cp_preview_vertex(v) local(n pos id steps found) (
+  ready && v>=0 && v<28 ? (
+    n=cp_range(v,floor(slider14));n>0 ? (
+      pos=vertex_cursor[v]%n;steps=0;found=-1;
+      while(steps<min(n,256) && found<0)(
+        id=postings[range_lo+pos];
+        (slider17<=0 || cp_member(id,14+floor(slider17))>=slider48) ? found=id;
+        pos=(pos+1)%n;steps+=1;
+      );vertex_cursor[v]=pos;found>=0 ? cp_preview(found) : empty_auditions+=1;
+    );
+  );
+);
+function cp_preview_transition(traceindex) local(z g prev fade when dur) (
+  traceindex>=0 && traceindex<100 ? (
+    z=trace_base+traceindex*40;prev=z[1];fade=max(8,srate*0.003);cp_stop_all(clock,fade,-1);when=clock+fade;
+    prev>=0 && prev<grain_count ? (
+      g=cp_g(prev);dur=min(g[3]/g[4],0.30);
+      cp_voice(prev,4,when,1,0,-1,0,g[2]+max(0,g[3]-dur*g[4]),dur*g[4],0,-1);when+=dur*srate;
+    );
+    z[0]>=0 && z[0]<grain_count ? (
+      g=cp_g(z[0]);cp_voice(z[0],4,when,1,0,-1,0,z[11]*g[4],z[12]*g[4],0,-1);selected_id=z[0];
+    );
+  );
+);
+
+function cp_preview_excerpt(traceindex) local(z g fade) (
+  ready && traceindex>=0 && traceindex<100 ? (
+    z=trace_base+traceindex*40;
+    z[36]==index_epoch && z[0]>=0 && z[0]<grain_count ? (
+      g=cp_g(z[0]);fade=max(8,srate*0.003);cp_stop_all(clock,fade,-1);
+      cp_voice(z[0],4,clock+fade,1,0,-1,0,z[11]*g[4],z[12]*g[4],0,-1);selected_id=z[0];
+    );
+  );
+);
+
+// ---------------- Sample Hub controller-only v1 duration codec ----------------
+// Transaction = CC118/83, 20 CC119 data bytes, checksum byte, CC118/84.
+// All bytes must share one sample timestamp, matching Sample v71 exactly.
+function cp_packet_execute(p chan when) local(action id target ticks seconds valid ei old e a de r total scale j w oldgain oldend v)
+(
+  action=p[1];id=p[2]*128+p[3];target=p[4]*128+p[5];
+  ticks=p[14]*16384+p[15]*128+p[16];seconds=ticks*(p[13]==1 ? 0.000015625 : 0.001);
+  valid=p[0]==1 && action<=7 && id>0 && p[8]<=2 && p[9]<=2 && p[10]<=2 && p[13]<=1;
+  valid=valid && (p[17]<=100 || p[17]==127) && (p[18]<=100 || p[18]==127);
+  action!=7 ? valid=valid && p[7]>0 && ticks>0;
+  packet_last_action=action;packet_last_id=id;packet_last_seconds=seconds;packet_last_reason=0;
+  valid ? (
+    ei=cp_event_find(-1,chan,id);old=target>0 ? cp_event_find(-1,chan,target) : -1;
+    action==7 ? (
+      // End at the declared boundary is idempotent: same-offset Continue can
+      // transfer ownership before any new grain is emitted.
+      ei>=0 ? (e=cp_e(ei);when<e[31]-1 ? cp_stop_event(ei,when,max(1,min(e[19],srate*0.003))););
+      packet_accepted+=1;
+    ) : (
+      ei>=0 ? (packet_rejected+=1;packet_last_reason=5;) : (
+        (action==0 && target!=0) || ((action==4 || action==6 || (action==5 && target>0)) && old<0) ? (
+          packet_rejected+=1;packet_last_reason=6;
+        ) : (
+          action>=1 && action<=3 ? (packet_unsupported+=1;packet_last_reason=8;) : (
+            action==4 ? (cp_stop_event(old,when,max(1,min(srate*0.020,seconds*srate)));packet_accepted+=1;) : (
+              action==6 ? (
+                e=cp_e(old);
+                // Preserve already-scheduled samples and extend this SAME family.
+                oldgain=cp_env(e,when);oldend=e[10];
+                cp_env_save(e,when) ? (
+                  e[4]=id;e[2]=p[6];e[12]=1;e[31]=when+max(1,floor(seconds*srate+0.5));
+                  r=p[18]==127 ? e[19] : max(1,seconds*srate*p[18]/100);r=min(r,max(1,e[31]-when));e[19]=r;
+                  e[35]=when;e[36]=oldgain;e[37]=when+min(srate*0.005,max(1,(e[31]-when)*0.10));
+                  e[9]=p[8]==1 ? max(when,e[31]-r) : e[31];e[10]=p[8]==1 ? e[31] : e[31]+r;
+                  e[11]=cp_env_pre(e,e[9]);e[32]=p[8];e[18]=1;
+                  j=0;loop(voice_list_n,v=cp_v(voice_list[j]);
+                    v[26]==old && v[17]==e[1] && v[14]==oldend ? v[14]=min(v[3],e[10]);j+=1;
+                  );
+                  j=0;loop(3,w=cp_w(old*3+j);w[2]==e[1] && (j==0 || w[7]>0) ? (w[0]=1;w[3]=when;);j+=1;);
+                  e[1]==record_event ? record_overflow=2; // edited envelope: do not mislabel replay exact
+                  packet_accepted+=1;
+                ) : (packet_rejected+=1;packet_last_reason=9;);
+              ) : (
+                ei=cp_start(p[7]/127,p[6],chan,when,seconds,id,p[17],p[18],p[19]);
+                ei>=0 ? (
+                  e=cp_e(ei);e[31]=when+max(1,floor(seconds*srate+0.5));e[32]=p[8];
+                  p[8]!=1 ? (
+                    total=e[31]-when;
+                    a=p[17]==127 ? slider26*srate/1000 : total*p[17]/100;
+                    de=slider27*srate/1000;r=p[18]==127 ? slider29*srate/1000 : total*p[18]/100;
+                    scale=min(1,total/max(1,a+de));e[6]=when+floor(a*scale);e[7]=e[6]+floor(de*scale);
+                    e[9]=e[31];e[10]=e[9]+max(1,r);e[11]=cp_env_pre(e,e[9]);e[19]=max(1,r);
+                  );
+                  action==5 && old>=0 ? cp_stop_event(old,when,max(1,srate*0.005));
+                  packet_accepted+=1;
+                ) : (packet_rejected+=1;packet_last_reason=7;);
+              );
+            );
+          );
+        );
+      );
+    );
+  ) : (packet_rejected+=1;packet_last_reason=4;);
+);
+function cp_packet_cc(chan cc value when) local(h n) (
+  h=packet_base+chan*32;
+  h[0]>0 && h[3]!=when ? (h[0]=0;packet_rejected+=1;packet_last_reason=3;);
+  cc==118 && value==83 ? (h[0]=1;h[1]=0;h[2]=0;h[3]=when;) : (
+    cc==119 && h[0]>0 ? (
+      n=h[1];n<21 ? (h[8+n]=value;n<20 ? h[2]=(h[2]+(n+1)*value)%128;);h[1]=min(22,n+1);
+    ) : (
+      cc==118 && value==84 && h[0]>0 ? (
+        h[1]==21 && h[28]==h[2] ? cp_packet_execute(h+8,chan,when) : (packet_rejected+=1;packet_last_reason=2;);
+        h[0]=0;
+      ) : (h[0]>0 && cc==118 ? (h[0]=0;packet_rejected+=1;packet_last_reason=1;););
+    );
+  );
+);
+function cp_midi_noteoff(note chan when) local(ei e) (
+  ei=cp_event_find(note,chan,0);ei>=0 ? (
+    e=cp_e(ei);e[12]<=0 ? (e[18]=0;pedal_base[chan]>0 ? e[22]=1 : cp_release(ei,when););
+  );
+);
+function cp_midi_cc(chan cc value when) local(i e) (
+  slider49>=0.5 && (cc==118 || cc==119) ? cp_packet_cc(chan,cc,value,when);
+  cc==64 ? (
+    pedal_base[chan]=value>=64;i=0;
+    value<64 ? loop(8,e=cp_e(i);e[0]>0 && e[3]==chan && e[22]>0 ? cp_release(i,when);i+=1;);
+  );
+  cc==120 ? (cp_stop_all(when,0,chan);pedal_base[chan]=0;);
+  cc==123 ? (i=0;loop(8,e=cp_e(i);e[0]>0 && e[3]==chan ? cp_release(i,when);i+=1;););
+);
+
+// ---------------- Browser, diagnostics, and acknowledged UI commands ----------------
+function cp_edit(id op) local(i j e found g tmp) (
+  ready && id>=0 && id<grain_count ? (
+    cp_stop_all(clock,max(8,srate*0.003),-1);g=cp_g(id);edit_key!=corpus_key ? edit_count=0;
+    found=-1;i=0;while(i<edit_count && found<0)(edits[i*3]==id ? found=i;i+=1;);
+    found<0 && edit_count<512 ? (
+      found=edit_count;edit_count+=1;edits[found*3]=id;edits[found*3+1]=g[9];edits[found*3+2]=-1;
+    );
+    found>=0 ? (
+      e=edits+found*3;
+      op==7 ? (g[9]=1-g[9];e[1]=g[9];) : (e[2]=(e[2]+2)%5-1;g[10]=e[2];);
+      edit_key=corpus_key;edits_match=1;edits_inactive=0;i=found;
+      while(i>0 && edits[(i-1)*3]>edits[i*3])(
+        j=0;loop(3,tmp=edits[(i-1)*3+j];edits[(i-1)*3+j]=edits[i*3+j];edits[i*3+j]=tmp;j+=1;);i-=1;
+      );
+      memset(counts,0,29);memset(vertex_counts,0,29);memset(role_stats,0,16);
+      build_phase=4;norm_cursor=0;apply_saved_edits=0;ready=0;index_epoch+=1;record_done=0;browse_dirty=1;
+    ) : edit_overflow+=1;
+  );
+);
+function cp_action(packet) local(op arg x y) (
+  op=packet%16;arg=floor(packet/16)%65536;
+  op==1 ? cp_preview(arg);
+  op==2 ? cp_preview_vertex(arg);
+  op==3 ? cp_start(0.5,-1,-1,clock,0,0,127,127,0);
+  op==4 ? cp_replay(clock);
+  op==5 ? cp_stop_all(clock,max(8,srate*0.003),-1);
+  op==6 ? (rebuild_request=1;cp_stop_all(clock,max(8,srate*0.003),-1);poll_left=0;);
+  (op==7 || op==8) ? cp_edit(arg,op);
+  op==9 ? selected_id=cp_clamp(arg,0,max(0,grain_count-1));
+  op==10 ? (edit_count=0;edit_key=0;rebuild_request=1;cp_stop_all(clock,max(8,srate*0.003),-1);poll_left=0;);
+  op==11 ? (path_count=0;path_axis_x=floor(slider40);path_axis_y=floor(slider41);path_epoch+=1;);
+  op==12 ? (
+    x=floor(arg/256)/255;y=(arg%256)/255;
+    path_count<32 ? (path_base[path_count*2]=x;path_base[path_count*2+1]=y;path_count+=1;path_epoch+=1;) : path_overflow+=1;
+  );
+  op==13 ? cp_preview_transition(arg%100);
+  op==14 ? (fixed_seed_events=0;rng_state=max(1,floor(slider11));cp_reset_recent(););
+  op==15 ? cp_preview_excerpt(arg%100);
+  ui_left=0;
+);
+function cp_browse_update() local(key i g id v role ok) (
+  key=floor(slider14)+floor(slider16)*65537+floor(slider17)*2000000+floor(slider48*1000)*10000000+index_epoch*10000000000;
+  key!=browse_key || browse_dirty ? (
+    browse_key=key;browse_cursor=0;browse_count=0;browse_done=0;browse_dirty=0;
+  );
+  ready && !browse_done ? (
+    i=0;v=floor(slider16)-1;role=floor(slider17)-1;
+    while(i<512 && browse_cursor<grain_count)(
+      id=browse_cursor;g=cp_g(id);ok=slider14<=0 || g[1]==floor(slider14)-1;
+      v>=0 ? ok=ok && cp_member(id,v)>0.00001;
+      role>=0 ? ok=ok && g[41+role]>=slider48;
+      ok ? (browse_ids[browse_count]=id;browse_count+=1;);
+      browse_cursor+=1;i+=1;
+    );browse_cursor>=grain_count ? browse_done=1;
+  );
+);
+function cp_live(id) local(i v) (
+  live=0;live_progress=0;i=0;loop(voice_list_n,
+    v=cp_v(voice_list[i]);v[1]==id && clock>=v[2] && clock<v[14] ? (live=1;live_progress=max(live_progress,v[18]););i+=1;
+  );
+);
+function cp_ui_publish() local(h i j g s id rec n page lm w e ei count lo total stride pos b) (
+  h=ui_snapshot_base;memset(h,0,128);h[0]=cmd_seen;h[1]=ready;h[2]=source_count;h[3]=grain_count;
+  h[4]=build_phase;h[5]=tile_total;h[6]=pool_selected;h[7]=pool_loaded;h[8]=pool_failed;h[9]=pool_ram;
+  h[10]=voice_list_n;h[11]=event_count;h[12]=dropped_triggers;h[13]=dropped_voices;
+  h[14]=invalid_audio+output_faults;h[15]=peak_meter;h[16]=limited_samples;h[17]=effective_window;
+  h[18]=playable_grains;h[19]=selected_id;h[20]=edit_count;h[21]=edits_inactive;h[22]=pending_adoption;
+  h[23]=pool_state;h[24]=index_epoch;h[25]=clock;h[26]=srate;h[27]=scheduler_overflow;h[28]=missing_candidates;
+  h[29]=short_hops;h[30]=record_n;h[31]=record_done;h[32]=record_overflow;h[33]=replaying;
+  h[34]=record_epoch==index_epoch;h[35]=trace_n;h[36]=trace_head;h[37]=replay_unavailable;
+  h[38]=path_count;h[39]=path_axis_x;h[40]=path_axis_y;h[41]=path_epoch;h[42]=path_overflow;
+  h[43]=packet_accepted;h[44]=packet_rejected;h[45]=packet_unsupported;h[46]=packet_last_action;
+  h[47]=packet_last_id;h[48]=packet_last_seconds;h[49]=packet_last_reason;h[50]=midi_overflow;
+  h[51]=unindexed_sources+invalid_sources;h[52]=analysis_points;h[53]=edit_overflow;
+  h[54]=selection_serial;h[55]=empty_auditions;h[56]=replay_missing;h[57]=generation;
+  i=0;loop(29,ui_snapshot_base[128+i]=vertex_counts[i];ui_snapshot_base[160+i]=0;i+=1;);
+  i=0;loop(4,
+    h[64+i]=role_stats[i];h[68+i]=role_stats[i]*role_stats[i]/max(0.000001,role_stats[4+i]);
+    h[72+i]=role_stats[8+i];i+=1;
+  );
+  memset(ui_selected,0,64);ui_selected[0]=-1;
+  selected_id>=0 && selected_id<grain_count ? (
+    g=cp_g(selected_id);memcpy(ui_selected,g,64);i=0;
+    loop(28,ui_snapshot_base[160+i]=cp_member(selected_id,i);i+=1;);
+    s=cp_s(g[1]);h[76]=s[1]+1;cp_live(selected_id);h[77]=live;h[78]=live_progress;
+  );
+  h[80]=browse_count;h[81]=browse_done;page=cp_clamp(floor(slider18),0,max(0,ceil(browse_count/20)-1));
+  h[82]=page;h[83]=max(1,ceil(browse_count/20));i=0;
+  loop(20,
+    rec=ui_cards+i*64;memset(rec,0,64);rec[0]=-1;
+    page*20+i<browse_count ? (
+      id=browse_ids[page*20+i];g=cp_g(id);memcpy(rec,g,64);rec[54]=id;rec[55]=slider15==id+1;
+      cp_live(id);rec[56]=live;rec[57]=live_progress;
+    );i+=1;
+  );
+  // Map: 256 stratified actual grains spanning the scoped corpus. Stratum page
+  // cycles through members, so the display never pretends to draw all 65k nodes.
+  lo=0;total=grain_count;
+  slider14>0 ? (slider14<=source_count ? (s=cp_s(floor(slider14)-1);lo=s[5];total=s[6];) : total=0;);
+  n=min(256,total);h[84]=n;h[85]=total;stride=max(1,ceil(total/max(1,n)));h[86]=stride;
+  i=0;loop(256,
+    rec=ui_map+i*10;rec[0]=-1;
+    i<n ? (
+      b=floor(i*total/n);count=max(1,floor((i+1)*total/n)-b);
+      id=lo+b+(floor(slider45)%count);rec[0]=id;g=cp_g(id);j=0;
+      loop(8,rec[1+j]=cp_feat(id,j);j+=1;);rec[9]=g[9];
+    );i+=1;
+  );
+  n=min(20,max(0,trace_n-floor(slider19)));h[87]=n;i=0;
+  loop(20,
+    rec=ui_trace+i*40;memset(rec,0,40);rec[0]=-1;
+    i<n ? (
+      pos=(trace_head-floor(slider19)-i+200)%100;lm=trace_base+pos*40;
+      memcpy(rec,lm,40);rec[37]=pos;cp_live(lm[0]);rec[38]=live;
+    );i+=1;
+  );
+  ei=-1;i=0;loop(8,
+    e=cp_e(i);rec=ui_events+i*32;memset(rec,0,32);memcpy(rec,e,32);
+    e[0]>0 ? (e[1]>h[88] ? (ei=i;h[88]=e[1];);rec[28]=cp_env(e,clock);cp_phase(e,clock);rec[29]=phase_stage;rec[30]=phase_u;);
+    i+=1;
+  );
+  h[89]=ei;i=0;loop(3,
+    rec=ui_walkers+i*64;memset(rec,0,64);
+    ei>=0 ? (w=cp_w(ei*3+i);memcpy(rec,w,64););i+=1;
+  );
+  memcpy(ui_path,path_base,64);
+  h[90]=record_event;h[91]=record_start;h[92]=memory_schema;
+);
+
+// ---------------- Fixed memory map (all pointers in cells/doubles) ----------------
+voice_base=0;voice_list=2048;event_base=2176;walker_base=2816;recent_base=4480;
+hist=4608;norm_low=5632;norm_span=5640;counts=5664;offsets=5728;fill_cursor=5792;
+vertex_counts=5856;vertex_cursor=5920;role_stats=5960;candidates=6016;bridge_weights=6160;
+used_bridge=6192;target_base=6240;target_role=6256;packet_base=6400;pedal_base=6912;
+path_base=7100;env_old_base=7168;edits=12288;trace_base=14336;record_env=18432;record_base=19000;
+ui_snapshot_base=49152;ui_selected=49344;ui_cards=49408;ui_map=50688;
+ui_trace=53248;ui_events=54048;ui_walkers=54304;ui_path=54496;
+browse_ids=65536;source_base=131072;
+// GFX-only scratch is deliberately OUTSIDE the explicit DSP snapshot range.
+ui_queue=40000;ui_scroll=40400;
+cp_clear_voices();cp_clear_events();memset(packet_base,0,512);memset(pedal_base,0,16);
+clock=0;output_smooth=cp_amp(slider7);last_playing=0;cmd_seen=slider24;ui_left=0;poll_left=0;
+memset(ui_snapshot_base,0,8192);ui_snapshot_base[19]=-1;
+memory_schema!=700 ? (
+  memory_schema=700;grain_base=source_base;postings=source_base;generation=-1;have_generation=0;
+  ready=0;grain_count=0;source_count=0;build_phase=0;index_epoch=0;selected_id=-1;preview_id=-1;
+  event_serial=0;trace_n=0;trace_head=-1;record_n=0;record_done=0;record_event=-1;
+  pending_adoption=0;rebuild_request=0;rng_state=max(1,floor(slider11));
+  cp_reset_recent();browse_dirty=1;
+);
+// Normal transport init resets timestamp-based performance history, not the index.
+trace_n=0;trace_head=-1;record_done=0;record_n=0;record_event=-1;replaying=0;replay_ei=-1;
+state_schema!=700 ? (state_schema=700;edit_count=0;edit_key=0;path_count=0;path_axis_x=1;path_axis_y=2;);
+bank_pool=sample_pool_from_slot(0,"main");sample_pool_set_deferred(bank_pool,1);
+sample_pool_set_mode(bank_pool,slider13>0 ? 1 : 0);sample_pool_set_budget_mb(bank_pool,max(0,slider13));sample_pool_commit(bank_pool);
+last_seed=slider11;za_keep_awake=1;pdc_delay=0;
+
+// ---------------- GFX-only helpers: snapshot + local UI memory only ----------------
+function ui_color(r g b a) (gfx_r=r;gfx_g=g;gfx_b=b;gfx_a=a;);
+function ui_hit(x y w h) (
+  ui_mouse_in && ui_mx>=x && ui_mx<x+w && ui_my>=y && ui_my<y+h;
+);
+function ui_box(x y w h r g b) (
+  y+ui_oy+h>=0 && y+ui_oy<=ui_vh ? (ui_color(r,g,b,1);gfx_rect(x+ui_ox,y+ui_oy,max(0,w),max(0,h),1););
+);
+function ui_border(x y w h r g b) (
+  y+ui_oy+h>=0 && y+ui_oy<=ui_vh ? (ui_color(r,g,b,1);gfx_rect(x+ui_ox,y+ui_oy,max(0,w),max(0,h),0););
+);
+function ui_text(x y w size text r g b) (
+  y+ui_oy+size+7>=0 && y+ui_oy<=ui_vh ? (
+    gfx_setfont(1,"Arial",max(14,size),0);ui_color(r,g,b,1);gfx_x=x+ui_ox;gfx_y=y+ui_oy;
+    gfx_drawstr(text,0,x+ui_ox+w,y+ui_oy+size+7);
+  );
+);
+function ui_line(x y x2 y2 r g b a) (
+  ui_color(r,g,b,a);gfx_line(x+ui_ox,y+ui_oy,x2+ui_ox,y2+ui_oy,1);
+);
+function ui_circle(x y radius r g b fill) (
+  ui_color(r,g,b,1);gfx_circle(x+ui_ox,y+ui_oy,radius,fill,1);
+);
+function ui_tip(text) (strcpy(#ui_tooltip,text););
+function ui_notify(id value automate) local(mask) (
+  slider(id)=value;mask=pow(2,id-1);sliderchange(mask);automate ? slider_automate(mask,0);
+);
+// ACKed FIFO prevents path knots/actions being overwritten between audio blocks.
+function ui_enqueue(op arg) local(pos prev) (
+  pos=(ui_qwrite+127)%128;
+  op==1 && ui_qn>0 && ui_queue[pos*2]==1 ? ui_queue[pos*2+1]=arg : (
+    ui_qn<128 ? (
+      ui_queue[ui_qwrite*2]=op;ui_queue[ui_qwrite*2+1]=arg;ui_qwrite=(ui_qwrite+1)%128;ui_qn+=1;
+    ) : ui_qoverflow+=1;
+  );
+);
+function ui_flush() local(op arg serial packet) (
+  ui_wait && ui_snapshot_base[0]==ui_sent ? ui_wait=0;
+  !ui_wait && ui_qn>0 ? (
+    op=ui_queue[ui_qread*2];arg=ui_queue[ui_qread*2+1];ui_qread=(ui_qread+1)%128;ui_qn-=1;
+    serial=(floor(slider24/1048576)+1)%16;
+    packet=serial*1048576+cp_clamp(floor(arg),0,65535)*16+op;
+    ui_sent=packet;ui_wait=1;ui_notify(24,packet,0);
+  );
+);
+function ui_button(x y w h label active) local(hot) (
+  hot=ui_hit(x,y,w,h);
+  ui_box(x,y,w,h,active ? 0.12 : (hot ? 0.16 : 0.085),active ? 0.29 : (hot ? 0.21 : 0.115),active ? 0.28 : (hot ? 0.26 : 0.15));
+  ui_border(x,y,w,h,active ? 0.30 : 0.20,active ? 0.72 : 0.27,active ? 0.64 : 0.34);
+  ui_text(x+8,y+7,w-14,15,label,0.9,0.94,0.96);hot && ui_lpress;
+);
+function ui_pane_begin(pid px py pw ph cw ch) local(s maxx maxy hot) (
+  ui_pid=pid;ui_px=px;ui_py=py;ui_pw=max(24,pw);ui_ph=max(24,ph);
+  ui_cw=max(cw,ui_pw-14);ui_ch=ch;ui_vh=ui_ph-12;
+  s=ui_scroll+pid*4;maxx=max(0,ui_cw-ui_pw+14);maxy=max(0,ch-ui_vh);
+  hot=mouse_x>=px && mouse_x<px+ui_pw && mouse_y>=py && mouse_y<py+ui_ph;
+  hot && ui_wheel!=0 && !(mouse_cap&16) ? (
+    (mouse_cap&8) ? s[0]-=ui_wheel/120*48 : s[1]-=ui_wheel/120*48;ui_wheel=0;
+  );
+  hot && ui_lpress && mouse_x>=px+ui_pw-12 ? ui_scroll_drag=pid*2+1;
+  hot && ui_lpress && mouse_y>=py+ui_ph-12 ? ui_scroll_drag=pid*2+2;
+  ui_down && ui_scroll_drag==pid*2+1 ? s[1]=maxy*cp_01((mouse_y-py-12)/max(1,ui_ph-36));
+  ui_down && ui_scroll_drag==pid*2+2 ? s[0]=maxx*cp_01((mouse_x-px-12)/max(1,ui_pw-36));
+  s[0]=cp_clamp(s[0],0,maxx);s[1]=cp_clamp(s[1],0,maxy);
+  ui_ox=-s[0];ui_oy=-s[1];ui_mx=mouse_x-px+s[0];ui_my=mouse_y-py+s[1];
+  ui_mouse_in=hot && mouse_x<px+ui_pw-12 && mouse_y<py+ui_ph-12 && ui_scroll_drag==0;
+  s[2]!=ceil(ui_pw) || s[3]!=ceil(ui_ph) ? (
+    gfx_setimgdim(100+pid,ceil(ui_pw),ceil(ui_ph));s[2]=ceil(ui_pw);s[3]=ceil(ui_ph);
+  );gfx_dest=100+pid;gfx_mode=0;
+  ui_color(0.060,0.078,0.102,1);gfx_rect(0,0,ui_pw,ui_ph,1);
+);
+function ui_pane_end() local(s maxx maxy thumb off) (
+  s=ui_scroll+ui_pid*4;maxx=max(0,ui_cw-ui_pw+14);maxy=max(0,ui_ch-ui_vh);
+  gfx_dest=-1;gfx_mode=0;gfx_a=1;
+  gfx_blit(100+ui_pid,1,0,0,0,ui_pw-12,ui_ph-12,ui_px,ui_py,ui_pw-12,ui_ph-12);
+  ui_color(0.11,0.14,0.18,1);gfx_rect(ui_px+ui_pw-11,ui_py,10,ui_ph,1);gfx_rect(ui_px,ui_py+ui_ph-11,ui_pw,10,1);
+  ui_color(0.31,0.45,0.51,1);
+  thumb=max(18,(ui_ph-14)*min(1,ui_vh/max(1,ui_ch)));off=maxy>0 ? (ui_ph-thumb-14)*s[1]/maxy : 0;
+  gfx_rect(ui_px+ui_pw-9,ui_py+off+2,6,thumb,1);
+  thumb=max(18,(ui_pw-14)*min(1,(ui_pw-14)/max(1,ui_cw)));off=maxx>0 ? (ui_pw-thumb-14)*s[0]/maxx : 0;
+  gfx_rect(ui_px+off+2,ui_py+ui_ph-9,thumb,6,1);
+);
+function ui_control(id x y w label lo hi def fmt) local(value hot n dx nv step) (
+  value=slider(id);hot=ui_hit(x,y,w,70);
+  n=fmt==3 ? log(1+max(0,value-lo))/log(1+hi-lo) : (value-lo)/max(0.00001,hi-lo);
+  ui_box(x,y,w,70,0.078,0.10,0.132);ui_text(x+10,y+5,w-16,14,label,0.64,0.73,0.81);
+  fmt==0 ? sprintf(#ui_val,"%.0f %%",value*100) : (
+    fmt==1 ? sprintf(#ui_val,"%+.1f dB",value) : (
+      fmt==2 ? sprintf(#ui_val,"%+.1f st",value) : (fmt==3 ? sprintf(#ui_val,"%.1f ms",value) : sprintf(#ui_val,"%.2f",value));
+    );
+  );
+  ui_text(x+10,y+25,w-16,21,#ui_val,0.90,0.95,0.96);
+  ui_box(x+10,y+59,w-20,3,0.14,0.20,0.25);ui_box(x+10,y+59,(w-20)*cp_01(n),3,0.31,0.73,0.65);
+  hot && ui_lpress ? (ui_drag=id;ui_drag_x=mouse_x;ui_drag_y=mouse_y;ui_drag_n=n;);
+  ui_down && ui_drag==id ? (
+    dx=(mouse_x-ui_drag_x)-(mouse_y-ui_drag_y);nv=cp_01(ui_drag_n+dx/240*((mouse_cap&8) ? 0.12 : 1));
+    nv=fmt==3 ? lo+exp(nv*log(1+hi-lo))-1 : lo+nv*(hi-lo);
+    ui_notify(id,cp_clamp(nv,lo,hi),1);
+  );
+  hot && ui_rpress ? ui_notify(id,def,1);
+  hot && ui_wheel!=0 && (mouse_cap&16) ? (
+    step=(hi-lo)*((mouse_cap&8) ? 0.001 : 0.01);ui_notify(id,cp_clamp(value+ui_wheel/120*step,lo,hi),1);ui_wheel=0;
+  );
+  hot ? ui_tip("Drag = edit, Shift = fine, right-click = default. Wheel scrolls pane; Alt+wheel edits. Automation / Last Touched enabled.");
+);
+function ui_choice(id x y w label options) local(n i c selected) (
+  selected=floor(slider(id));i=0;n=0;strcpy(#ui_choice_value,"");
+  loop(strlen(options),c=str_getchar(options,i);c==124 ? n+=1 : (n==selected ? sprintf(#ui_choice_value,"%s%c",#ui_choice_value,c););i+=1;);
+  sprintf(#ui_choice_label,"%s: %s",label,#ui_choice_value);
+  ui_button(x,y,w,34,#ui_choice_label,0) ? (
+    gfx_x=mouse_x;gfx_y=mouse_y;n=gfx_showmenu(options);n>0 ? ui_notify(id,n-1,1);
+  );
+);
+function ui_dim(d) (
+  d==0 ? strcpy(#ui_dim,"Energy");d==1 ? strcpy(#ui_dim,"Brightness");d==2 ? strcpy(#ui_dim,"LF weight");
+  d==3 ? strcpy(#ui_dim,"Motion");d==4 ? strcpy(#ui_dim,"Onset");d==5 ? strcpy(#ui_dim,"Crest");
+  d==6 ? strcpy(#ui_dim,"Decay");d==7 ? strcpy(#ui_dim,"Width");
+);
+function ui_role(r) (
+  r==0 ? strcpy(#ui_role,"Attack");r==1 ? strcpy(#ui_role,"Body");r==2 ? strcpy(#ui_role,"Detail");r==3 ? strcpy(#ui_role,"Tail");
+);
+function ui_phase(r) (
+  r==0 ? strcpy(#ui_phase,"Attack");r==1 ? strcpy(#ui_phase,"Decay");r==2 ? strcpy(#ui_phase,"Sustain");r==3 ? strcpy(#ui_phase,"Release");
+);
+function ui_vertex(v) local(d b) (
+  v>=15 && v<19 ? (ui_role(v-15);sprintf(#ui_vertex,"%s eligible",#ui_role);) : (
+    v<15 ? (d=floor(v/3);b=v%3;) : (d=5+floor((v-19)/3);b=(v-19)%3;);
+    ui_dim(d);b==0 ? strcpy(#ui_bin,"low") : (b==1 ? strcpy(#ui_bin,"mid") : strcpy(#ui_bin,"high"));
+    sprintf(#ui_vertex,"%s / %s",#ui_dim,#ui_bin);
+  );
+);
+function ui_record_feat(rec d) (d<5 ? rec[16+d] : rec[51+d-5];);
+function ui_wave(rec x y w h) local(i xx amp peak) (
+  peak=max(0.0000001,rec[7]);i=0;loop(16,
+    xx=x+(i+0.5)*w/16;amp=cp_01(rec[24+i]/peak)*h*0.45;
+    ui_line(xx,y+h*0.5-amp,xx,y+h*0.5+amp,0.33,0.77,0.70,1);i+=1;
+  );
+);
+function ui_grain_menu(id) local(n) (
+  gfx_x=mouse_x;gfx_y=mouse_y;n=gfx_showmenu("Audition exact grain|Use as identity anchor|Toggle exclusion|Cycle role BIAS (Auto/A/B/D/T)|Inspect without playing");
+  n==1 ? ui_enqueue(1,id);n==2 ? (ui_notify(15,id+1,1);ui_enqueue(9,id););
+  n==3 ? ui_enqueue(7,id);n==4 ? ui_enqueue(8,id);n==5 ? ui_enqueue(9,id);
+);
+function ui_grain_action(id) (
+  (mouse_cap&8) ? (ui_notify(15,id+1,1);ui_enqueue(9,id);) : ui_enqueue(1,id);
+);
+function ui_card(rec x y w) local(id hot k yy value) (
+  id=rec[54];rec[0]>=0 ? (
+    hot=ui_hit(x,y,w,140);ui_box(x,y,w,140,0.08,0.11,0.14);
+    id==ui_snapshot_base[19] ? ui_border(x,y,w,140,0.34,0.78,0.71);
+    rec[56]>0 ? ui_border(x+2,y+2,w-4,136,0.95,0.74,0.30);
+    sprintf(#ui_txt,"E%05d / F%d",id+1,rec[1]+1);ui_text(x+8,y+5,w-14,15,#ui_txt,0.91,0.95,0.97);
+    ui_wave(rec,x+8,y+28,w-16,26);k=0;
+    loop(4,yy=y+56+k*16;value=rec[41+k];
+      ui_text(x+8,yy-3,19,14,k==0 ? "A" : (k==1 ? "B" : (k==2 ? "D" : "T")),0.68,0.80,0.84);
+      ui_box(x+28,yy,(w-40)*value,9,k==0 ? 0.77 : 0.25,k==1 ? 0.73 : 0.40,k==3 ? 0.86 : 0.50);k+=1;
+    );
+    rec[9]>0.5 ? ui_text(x+6,y+122,w-12,14,"EXCLUDED",0.98,0.45,0.35) : (
+      rec[55]>0.5 ? ui_text(x+6,y+122,w-12,14,"ANCHOR",0.97,0.80,0.40);
+    );
+    hot && ui_lpress ? ui_grain_action(id);hot && ui_rpress ? ui_grain_menu(id);
+    hot ? (sprintf(#ui_txt,"E%d: A %.2f / B %.2f / D %.2f / T %.2f. Click = source; Shift = anchor; right-click = actions.",id+1,rec[41],rec[42],rec[43],rec[44]);ui_tip(#ui_txt););
+  );
+);
+function ui_graph(x y w h) local(i rec px py x2 y2 near nearD dist prev j old axisx axisy xx yy a b k vertex wt cx cy consumed) (
+  consumed=0;axisx=floor(slider40);axisy=floor(slider41);ui_box(x,y,w,h,0.037,0.054,0.075);ui_border(x,y,w,h,0.18,0.28,0.33);
+  i=1;loop(3,ui_line(x+i*w/4,y,x+i*w/4,y+h,0.11,0.17,0.21,1);ui_line(x,y+i*h/4,x+w,y+i*h/4,0.11,0.17,0.21,1);i+=1;);
+  // Continuous drawn descriptor trajectory is distinct from the measured walk.
+  ui_snapshot_base[38]>1 && ui_snapshot_base[39]==axisx && ui_snapshot_base[40]==axisy ? (
+    i=1;loop(ui_snapshot_base[38]-1,
+      ui_line(x+ui_path[(i-1)*2]*w,y+(1-ui_path[(i-1)*2+1])*h,x+ui_path[i*2]*w,y+(1-ui_path[i*2+1])*h,0.38,0.58,0.97,0.8);i+=1;
+    );
+  );
+  near=-1;nearD=144;i=0;
+  loop(ui_snapshot_base[84],rec=ui_map+i*10;px=x+rec[1+axisx]*w;py=y+(1-rec[1+axisy])*h;
+    rec[9]>0.5 ? ui_circle(px,py,2,0.23,0.27,0.30,0) : ui_circle(px,py,2.5+rec[1]*2,0.35,0.69,0.66,1);
+    ui_mouse_in ? (dist=(ui_mx-px)^2+(ui_my-py)^2;dist<nearD ? (nearD=dist;near=rec[0];););
+    i+=1;
+  );
+  // Render actual traversals (features stored on the trace), including branch identity.
+  i=0;loop(min(16,ui_snapshot_base[87]),rec=ui_trace+i*40;
+    rec[0]>=0 ? (
+      px=x+rec[20+axisx]*w;py=y+(1-rec[20+axisy])*h;
+      prev=-1;j=i+1;while(j<ui_snapshot_base[87] && prev<0)(
+        old=ui_trace+j*40;old[10]==rec[10] && old[9]==rec[9] && old[0]==rec[1] ? prev=j;j+=1;
+      );
+      prev>=0 ? (
+        old=ui_trace+prev*40;x2=x+old[20+axisx]*w;y2=y+(1-old[20+axisy])*h;
+        ui_line(x2,y2,px,py,rec[9]==0 ? 0.97 : 0.62,0.66,rec[9]==0 ? 0.29 : 0.98,0.85);
+        ui_hit((px+x2)*0.5-8,(py+y2)*0.5-8,16,16) && slider54<0.5 ? (
+          sprintf(#ui_txt,"E%d -> E%d | bridge V%d | fit %.2f | reuse %.2f. Click line midpoint to audition the transition.",rec[1]+1,rec[0]+1,rec[2]+1,rec[7],rec[16]);ui_tip(#ui_txt);
+          ui_lpress ? (ui_enqueue(13,rec[37]);consumed=1;);
+        );
+      );
+      ui_circle(px,py,i==0 ? 7 : 4,0.97,0.74,0.35,0);
+      ui_mouse_in ? (dist=(ui_mx-px)^2+(ui_my-py)^2;dist<nearD ? (nearD=dist;near=rec[0];););
+    );i+=1;
+  );
+  ui_snapshot_base[19]>=0 ? (
+    px=x+ui_record_feat(ui_selected,axisx)*w;py=y+(1-ui_record_feat(ui_selected,axisy))*h;
+    ui_circle(px,py,9,0.40,0.96,0.77,0);
+  );
+  slider44>0 ? (
+    px=x+slider42*w;py=y+(1-slider43)*h;
+    ui_line(px-9,py,px+9,py,0.95,0.9,0.70,1);ui_line(px,py-9,px,py+9,0.95,0.9,0.70,1);
+  );
+  ui_hit(x,y,w,h) && !consumed ? (
+    xx=cp_01((ui_mx-x)/w);yy=cp_01(1-(ui_my-y)/h);
+    slider54>0.5 ? (
+      ui_lpress ? (ui_enqueue(11,0);ui_draw_count=0;ui_drawing=1;ui_draw_lastx=-10;ui_draw_lasty=-10;);
+      ui_down && ui_drawing && ui_draw_count<32 && ((xx-ui_draw_lastx)^2+(yy-ui_draw_lasty)^2>0.0016) ? (
+        ui_enqueue(12,floor(xx*255+0.5)*256+floor(yy*255+0.5));ui_draw_lastx=xx;ui_draw_lasty=yy;ui_draw_count+=1;
+      );
+      ui_tip("Draw up to 32 path knots. Blue path = target trajectory; amber = actual primary walk; purple = child walk.");
+    ) : (
+      ui_down && (mouse_cap&4) ? (
+        ui_notify(42,xx,1);ui_notify(43,yy,1);ui_notify(44,1,1);
+        near>=0 && ui_now-ui_last_scrub>0.18 ? (ui_enqueue(1,near);ui_last_scrub=ui_now;);
+      ) : (
+        ui_lpress && near>=0 ? ui_grain_action(near);
+        ui_rpress && near>=0 ? ui_grain_menu(near);
+        ui_lpress && near<0 ? (ui_notify(42,xx,1);ui_notify(43,yy,1);ui_notify(44,1,1););
+      );
+      near>=0 ? (sprintf(#ui_txt,"E%d: click to audition; Shift-click to anchor; Ctrl-drag to explore; right-click for actions.",near+1);ui_tip(#ui_txt););
+    );
+  );
+);
+function ui_members(x y w) local(i col row cw wt n) (
+  ui_text(x,y,w,17,"FEATURE VERTICES / click to hear a real member",0.86,0.94,0.95);
+  cw=(w-18)/3;i=0;loop(28,
+    col=i%3;row=floor(i/3);wt=ui_snapshot_base[160+i];n=ui_snapshot_base[128+i];
+    ui_vertex(i);sprintf(#ui_txt,"%s  %.2f",#ui_vertex,wt);
+    ui_button(x+col*(cw+6),y+30+row*34,cw,30,#ui_txt,slider16==i+1) ? (
+      ui_notify(16,i+1,1);ui_notify(18,0,0);ui_enqueue(2,i);
+    );
+    ui_hit(x+col*(cw+6),y+30+row*34,cw,30) ? (
+      sprintf(#ui_txt,"V%d / %s. %d indexed members; selected edge membership %.3f. Right-click clears the browser filter.",i+1,#ui_vertex,n,wt);ui_tip(#ui_txt);
+      ui_rpress ? (ui_notify(16,0,1);ui_notify(18,0,0););
+    );i+=1;
+  );
+);
+function ui_inspector(x y w) local(h r i value yy cx cy a vx vy bin d wt vertex n) (
+  h=ui_snapshot_base;r=ui_selected;
+  ui_text(x,y,w,21,"HYPEREDGE INSPECTOR",0.90,0.96,0.97);
+  h[19]>=0 ? (
+    sprintf(#ui_txt,"E%05d / source F%d / pool item %d",h[19]+1,r[1]+1,h[76]);ui_text(x,y+34,w,16,#ui_txt,0.75,0.85,0.9);
+    sprintf(#ui_txt,"%.3f - %.3f s / %.1f ms",r[2]/max(1,r[4]),(r[2]+r[3])/max(1,r[4]),r[3]/max(1,r[4])*1000);
+    ui_text(x,y+60,w,15,#ui_txt,0.66,0.78,0.84);ui_wave(r,x,y+90,w,60);
+    ui_button(x,y+162,(w-8)/2,34,"AUDITION",0) ? ui_enqueue(1,h[19]);
+    ui_button(x+(w+8)/2,y+162,(w-8)/2,34,"ANCHOR",slider15==h[19]+1) ? ui_notify(15,h[19]+1,1);
+    ui_button(x,y+204,(w-8)/2,34,r[9]>0.5 ? "INCLUDE" : "EXCLUDE",r[9]>0.5) ? ui_enqueue(7,h[19]);
+    ui_button(x+(w+8)/2,y+204,(w-8)/2,34,"ROLE BIAS",r[10]>=0) ? ui_enqueue(8,h[19]);
+    ui_text(x,y+253,w,16,"Independent stage eligibility",0.80,0.89,0.94);i=0;
+    loop(4,ui_role(i);value=r[41+i];yy=y+284+i*31;
+      sprintf(#ui_txt,"%s  %.2f",#ui_role,value);ui_text(x,yy,110,15,#ui_txt,0.76,0.85,0.90);
+      ui_box(x+120,yy+5,w-122,11,0.15,0.19,0.23);ui_box(x+120,yy+5,(w-122)*value,11,0.31,0.73,0.64);i+=1;
+    );
+    r[10]<0 ? strcpy(#ui_txt,"Bias: Automatic") : (ui_role(r[10]);sprintf(#ui_txt,"Bias: %s +0.40",#ui_role););ui_text(x,y+416,w,14,#ui_txt,0.79,0.73,0.51);
+    // Honest incidence view: one corpus hyperedge connected to its strongest
+    // bin on each continuous feature dimension. Lines use real membership.
+    ui_text(x,y+450,w,16,"Weighted incidence / selected edge",0.83,0.91,0.95);
+    cx=x+w*0.50;cy=y+620;ui_circle(cx,cy,23,0.35,0.86,0.73,0);
+    sprintf(#ui_txt,"E%d",h[19]+1);ui_text(cx-27,cy-9,60,14,#ui_txt,0.93,0.97,0.98);
+    ui_hit(cx-25,cy-25,50,50) && ui_lpress ? ui_enqueue(1,h[19]);
+    i=0;loop(8,
+      a=-$pi/2+i*2*$pi/8;vx=cx+cos(a)*w*0.35;vy=cy+sin(a)*120;
+      value=ui_record_feat(r,i);bin=floor(value*2+0.5);vertex=cp_dim_vertex(i,bin);wt=h[160+vertex];
+      ui_line(cx,cy,vx,vy,0.29,0.68,0.65,0.25+0.7*wt);ui_circle(vx,vy,10,0.38,0.70,0.83,1);
+      sprintf(#ui_txt,"V%d",vertex+1);ui_text(vx-22,vy+13,54,14,#ui_txt,0.77,0.87,0.94);
+      ui_hit(vx-16,vy-16,32,32) ? (
+        ui_vertex(vertex);sprintf(#ui_txt,"%s / membership %.3f. Click to cycle its actual grains.",#ui_vertex,wt);ui_tip(#ui_txt);
+        ui_lpress ? ui_enqueue(2,vertex);
+      );i+=1;
+    );
+    ui_text(x,y+785,w,16,"Identity dimensions / click to lock",0.84,0.91,0.95);i=0;
+    loop(8,ui_dim(i);value=ui_record_feat(r,i);yy=y+817+i*36;
+      sprintf(#ui_txt,"%s %.2f  %s",#ui_dim,value,(floor(slider50)&pow(2,i))>0 ? "LOCK" : "");
+      ui_button(x,yy,w,31,#ui_txt,(floor(slider50)&pow(2,i))>0) ? (
+        n=floor(slider50);(n&pow(2,i))>0 ? n-=pow(2,i) : n+=pow(2,i);ui_notify(50,n,1);
+      );i+=1;
+    );
+    sprintf(#ui_txt,"Analysis coverage %.1f%% / RMS %.1f dB",r[49]*100,cp_db(r[6]));ui_text(x,y+1118,w,14,#ui_txt,0.65,0.74,0.83);
+    ui_text(x,y+1145,w,14,"Coverage is sampling coverage, not classification accuracy.",0.67,0.73,0.79);
+  ) : ui_text(x,y+45,w,16,"Click any grain to inspect and hear it.",0.68,0.80,0.86);
+);
+function ui_explore(w include_inspector) local(x y cols cw i rec bw mx mw mh) (
+  x=14;y=12;bw=w-28;
+  ui_text(x,y,bw,21,"CORPUS SPACE",0.90,0.97,0.97);
+  sprintf(#ui_txt,"Actual grains: %d / %d shown. Projection is a view, not the graph.",ui_snapshot_base[84],ui_snapshot_base[85]);
+  ui_text(x,y+31,bw,14,#ui_txt,0.64,0.77,0.85);
+  ui_choice(40,x,y+61,(bw-12)/2,"X descriptor","Energy|Brightness|LF weight|Motion|Onset|Crest|Decay|Width");
+  ui_choice(41,x+(bw+12)/2,y+61,(bw-12)/2,"Y descriptor","Energy|Brightness|LF weight|Motion|Onset|Crest|Decay|Width");
+  mx=x+24;mw=bw-48;mh=310;
+  ui_graph(mx,y+119,mw,mh);
+  ui_dim(slider40);sprintf(#ui_txt,"X: %s (low -> high)",#ui_dim);ui_text(mx,y+mh+126,mw,14,#ui_txt,0.62,0.77,0.82);
+  ui_dim(slider41);sprintf(#ui_txt,"Y: %s (low bottom / high top)",#ui_dim);ui_text(mx,y+mh+149,mw,14,#ui_txt,0.62,0.77,0.82);
+  ui_button(x,y+mh+178,124,34,slider54>0.5 ? "DRAWING" : "DRAW PATH",slider54>0.5) ? ui_notify(54,1-slider54,1);
+  ui_button(x+134,y+mh+178,120,34,"CLEAR PATH",0) ? ui_enqueue(11,0);
+  ui_button(x+264,y+mh+178,98,34,"MAP PAGE +",0) ? ui_notify(45,(floor(slider45)+1)%max(1,ui_snapshot_base[86]),0);
+  ui_button(x+372,y+mh+178,102,34,"CLEAR PIN",0) ? ui_notify(15,0,1);
+  sprintf(#ui_txt,"Path %d/32 knots on axes %d/%d. Map page %d. Ctrl-drag = audible exploration.",ui_snapshot_base[38],ui_snapshot_base[39],ui_snapshot_base[40],floor(slider45));
+  ui_text(x,y+mh+222,bw,14,#ui_txt,0.69,0.78,0.86);
+  ui_members(x,y+mh+259,bw);
+  y=mh+652;
+  ui_text(x,y,bw,20,"GRAIN BROWSER",0.88,0.96,0.95);
+  ui_button(x,y+36,100,32,"ALL FEATURES",slider16==0) ? (ui_notify(16,0,1);ui_notify(18,0,0););
+  ui_choice(17,x+110,y+36,180,"Eligibility","All|Attack eligible|Body eligible|Detail eligible|Tail eligible");
+  ui_button(x+302,y+36,80,32,"SOURCE -",0) ? ui_notify(14,max(0,floor(slider14)-1),1);
+  ui_button(x+390,y+36,82,32,"SOURCE +",0) ? ui_notify(14,min(ui_snapshot_base[2],floor(slider14)+1),1);
+  sprintf(#ui_txt,"%d matches %s / page %d of %d / source %d (0 = all)",ui_snapshot_base[80],ui_snapshot_base[81]>0.5 ? "" : "[updating]",ui_snapshot_base[82]+1,ui_snapshot_base[83],floor(slider14));
+  ui_text(x,y+79,bw,15,#ui_txt,0.67,0.81,0.87);
+  ui_button(x,y+108,94,32,"PREVIOUS",0) ? ui_notify(18,max(0,ui_snapshot_base[82]-1),0);
+  ui_button(x+104,y+108,82,32,"NEXT",0) ? ui_notify(18,min(ui_snapshot_base[83]-1,ui_snapshot_base[82]+1),0);
+  cols=max(3,min(5,floor(bw/165)));cw=(bw-(cols-1)*8)/cols;i=0;
+  loop(20,rec=ui_cards+i*64;ui_card(rec,x+(i%cols)*(cw+8),y+158+floor(i/cols)*148,cw);i+=1;);
+  include_inspector ? ui_inspector(x,y+158+ceil(20/cols)*148+30,bw);
+);
+function ui_walk_view(w) local(h x y i j rec r prev delta ei e ww col cw length ax rx sy px py mid yy) (
+  h=ui_snapshot_base;x=14;y=12;cw=w-28;
+  ui_text(x,y,cw,22,"EVENT TRAJECTORY / LIVE WALK",0.91,0.97,0.96);
+  ei=h[89];
+  ei>=0 ? (
+    e=ui_events+ei*32;length=e[12]>0 ? e[10]-e[5] : max(h[26],h[25]-e[5]+slider29*h[26]/1000);
+    ax=cp_01((e[6]-e[5])/max(1,length));rx=e[12]>0 ? cp_01((e[9]-e[5])/length) : 0.8;sy=e[8];
+    ui_box(x,y+46,cw,150,0.04,0.059,0.08);
+    ui_line(x,y+176,x+cw*ax,y+62,0.98,0.69,0.32,1);
+    mid=cp_clamp((e[7]-e[5])/max(1,length),ax,rx);
+    ui_line(x+cw*ax,y+62,x+cw*mid,y+176-114*sy,0.74,0.82,0.40,1);
+    ui_line(x+cw*mid,y+176-114*sy,x+cw*rx,y+176-114*sy,0.31,0.82,0.68,1);
+    ui_line(x+cw*rx,y+176-114*sy,x+cw,y+176,0.40,0.66,0.94,1);
+    px=x+cw*cp_01((h[25]-e[5])/max(1,length));ui_line(px,y+50,px,y+190,0.94,0.91,0.80,0.75);
+    ui_phase(e[29]);sprintf(#ui_txt,"Family %d / note %d / channel %d / %s / gain %.3f",e[1],e[2],e[3]+1,#ui_phase,e[28]);
+    ui_text(x,y+211,cw,16,#ui_txt,0.70,0.84,0.91);
+    e[12]<=0 ? ui_text(x,y+239,cw,14,"Gated timeline is schematic; sustain continues until release.",0.78,0.73,0.50);
+  ) : ui_text(x,y+61,cw,17,"No active family. Trigger MIDI or GENERATE.",0.66,0.80,0.86);
+  ui_text(x,y+284,cw,18,"Persistent identity / primary and child walkers",0.82,0.92,0.95);
+  i=0;loop(3,ww=ui_walkers+i*64;
+    sprintf(#ui_txt,"%s: %s / %d steps / E%d / score %.3f",i==0 ? "PRIMARY" : (i==1 ? "RESONANCE" : "DEBRIS"),ww[0]>0 ? "walking" : "idle",ww[7],ww[5]+1,ww[13]);
+    ui_text(x,y+319+i*28,cw,15,#ui_txt,0.72,0.85,0.89);i+=1;
+  );
+  i=0;loop(8,ui_dim(i);ww=ui_walkers;
+    sprintf(#ui_txt,"%s: anchor %.2f / context %.2f / target %.2f",#ui_dim,ww[16+i],ww[24+i],ww[32+i]);
+    ui_text(x,y+418+i*24,cw,15,#ui_txt,0.62,0.78,0.84);i+=1;
+  );
+  ui_text(x,y+641,cw,20,"ACTUAL TRAVERSALS / newest first",0.87,0.95,0.95);
+  ui_button(x,y+677,88,32,"OLDER",0) ? ui_notify(19,min(99,floor(slider19)+10),0);
+  ui_button(x+98,y+677,88,32,"NEWER",0) ? ui_notify(19,max(0,floor(slider19)-10),0);
+  ui_text(x+201,y+681,cw-208,14,"GRAIN = region; EXCERPT = chosen slice; TRANSITION = source join.",0.62,0.75,0.81);
+  i=0;loop(h[87],rec=ui_trace+i*40;yy=y+731+i*128;
+    ui_box(x,yy,cw,119,0.075,0.102,0.13);
+    ui_phase(rec[8]);sprintf(#ui_txt,"E%d -> E%d / family %d / %s / %s",rec[1]+1,rec[0]+1,rec[10],rec[9]==0 ? "primary" : (rec[9]==1 ? "resonance" : "debris"),#ui_phase);
+    ui_text(x+9,yy+8,cw-18,16,#ui_txt,0.83,0.92,0.95);
+    sprintf(#ui_txt,"score %.3f | role %.2f | identity cost %.2f | seam %.2f | reuse %.2f | %s",rec[5],rec[7],rec[14],rec[15],rec[16],rec[6]>0 ? "RELAX" : "SHARED");
+    ui_text(x+9,yy+36,cw-18,14,#ui_txt,0.68,0.81,0.87);
+    rec[2]>=0 ? ui_vertex(rec[2]) : strcpy(#ui_vertex,"Wider corpus probe");
+    sprintf(#ui_txt,"Bridge: %s / source %.3f s / excerpt %.1f ms",#ui_vertex,rec[11],rec[12]*1000);
+    ui_text(x+9,yy+58,cw-18,14,#ui_txt,0.68,0.79,0.85);
+    ui_button(x+8,yy+83,84,29,"GRAIN",0) ? ui_enqueue(1,rec[0]);
+    ui_button(x+202,yy+83,120,29,"TRANSITION",0) ? ui_enqueue(13,rec[37]);
+    ui_button(x+100,yy+83,92,29,"EXCERPT",0) ? ui_enqueue(15,rec[37]);
+    ui_hit(x+334,yy+81,cw-342,32) ? (
+      sprintf(#ui_txt,"Gained/lost: energy %+.2f, brightness %+.2f, LF %+.2f, motion %+.2f, onset %+.2f, crest %+.2f, decay %+.2f, width %+.2f",rec[28],rec[29],rec[30],rec[31],rec[32],rec[33],rec[34],rec[35]);ui_tip(#ui_txt);
+    );ui_text(x+337,yy+89,cw-345,14,"Hover: gained / lost features",0.67,0.77,0.87);i+=1;
+  );
+);
+function ui_controls(w) local(x y cw k col row id) (
+  x=14;y=12;cw=(w-44)/3;
+  ui_text(x,y,w-28,22,"PERFORMANCE / TRAJECTORY",0.90,0.97,0.96);
+  ui_choice(10,x,y+43,cw,"Lifecycle","One-shot|Gated");
+  ui_choice(36,x+cw+8,y+43,cw,"Morphology","Linear|Resonance child|Debris child|Layered children");
+  ui_choice(12,x+2*(cw+8),y+43,cw,"Seed mode","Evolve|Fixed");
+  ui_control(25,x,y+90,cw,"ONE-SHOT DURATION",20,30000,800,3);
+  ui_control(26,x+cw+8,y+90,cw,"ATTACK",0,2000,5,3);
+  ui_control(27,x+2*(cw+8),y+90,cw,"DECAY",0,5000,100,3);
+  ui_control(28,x,y+168,cw,"SUSTAIN LEVEL",0,1,0.75,0);
+  ui_control(29,x+cw+8,y+168,cw,"RELEASE",0,5000,180,3);
+  ui_control(46,x+2*(cw+8),y+168,cw,"TRAJECTORY PRESSURE",0,1,0.75,0);
+  ui_text(x,y+258,w-28,18,"SELECTION / keep identity, change acoustic evidence",0.79,0.90,0.94);
+  ui_control(1,x,y+295,cw,"FORCE TARGET",0,1,0.5,0);
+  ui_control(31,x+cw+8,y+295,cw,"BRIGHTNESS",0,1,0.5,0);
+  ui_control(32,x+2*(cw+8),y+295,cw,"MASS / LF WEIGHT",0,1,0.5,0);
+  ui_control(33,x,y+373,cw,"ROUGHNESS",0,1,0.5,0);
+  ui_control(2,x+cw+8,y+373,cw,"VARIATION",0,1,0.35,0);
+  ui_control(34,x+2*(cw+8),y+373,cw,"NOVELTY",0,1,0.65,0);
+  ui_control(3,x,y+451,cw,"COHERENCE",0,1,0.8,0);
+  ui_control(35,x+cw+8,y+451,cw,"IDENTITY STABILITY",0,1,0.8,0);
+  ui_control(51,x+2*(cw+8),y+451,cw,"LOCK STRENGTH",0,1,0.95,0);
+  ui_control(30,x,y+529,cw,"WALK FLOW",0,1,0.55,0);
+  ui_control(4,x+cw+8,y+529,cw,"DETAIL DENSITY",0,1,0.4,0);
+  ui_control(9,x+2*(cw+8),y+529,cw,"VELOCITY LINK",0,1,1,0);
+  ui_text(x,y+620,w-28,18,"BRANCHES / independent walks, inherited identity",0.81,0.88,0.96);
+  ui_control(37,x,y+657,cw,"CHILD LEVEL",0,1,0.25,0);
+  ui_control(38,x+cw+8,y+657,cw,"INHERITANCE",0,1,0.85,0);
+  ui_control(53,x+2*(cw+8),y+657,cw,"CHILD STEREO SPREAD",0,1,0.3,0);
+  ui_text(x,y+746,w-28,18,"MAP / manual navigation and duration-normalized path",0.79,0.90,0.94);
+  ui_control(39,x,y+783,cw,"PATH INFLUENCE",0,1,0.75,0);
+  ui_control(44,x+cw+8,y+783,cw,"FOCUS INFLUENCE",0,1,0,0);
+  ui_control(47,x+2*(cw+8),y+783,cw,"GATED CYCLE (s)",0.2,20,2,4);
+  ui_control(42,x,y+861,cw,"FOCUS X",0,1,0.5,0);
+  ui_control(43,x+cw+8,y+861,cw,"FOCUS Y",0,1,0.5,0);
+  ui_control(48,x+2*(cw+8),y+861,cw,"BROWSER ELIGIBILITY",0,1,0.35,0);
+  ui_text(x,y+951,w-28,18,"RENDERING / unchanged source identity, bounded excerpts",0.79,0.90,0.94);
+  ui_control(7,x,y+988,cw,"OUTPUT",-36,6,-12,1);
+  ui_control(8,x+cw+8,y+988,cw,"PITCH",-24,24,0,2);
+  ui_control(52,x+2*(cw+8),y+988,cw,"EXCERPT CEILING",30,1000,240,3);
+  ui_choice(20,x,y+1067,cw,"Peak catch","Off|On");
+  ui_choice(49,x+cw+8,y+1067,cw,"Duration packets","Off|On");
+  ui_button(x+2*(cw+8),y+1067,cw,34,"RESET REUSE",0) ? ui_enqueue(14,0);
+  ui_text(x,y+1123,w-28,18,"INDEX / edits below require APPLY",0.80,0.90,0.94);
+  ui_control(5,x,y+1160,cw,"REQUESTED GRAIN",30,1000,120,3);
+  ui_choice(6,x+cw+8,y+1177,cw,"Index capacity","4096|8192|16384|32768|65536");
+  ui_choice(21,x+2*(cw+8),y+1177,cw,"Analysis","Fast|Balanced|Detailed");
+  ui_button(x,y+1248,cw,34,"APPLY / REINDEX",0) ? ui_enqueue(6,0);
+  ui_button(x+cw+8,y+1248,cw,34,"CLEAR GRAIN EDITS",0) ? ui_enqueue(10,0);
+  ui_button(x+2*(cw+8),y+1248,cw,34,"NEW SEED",0) ? (
+    ui_seed=ui_now*1000000;ui_seed=1+floor(ui_seed-floor(ui_seed/16777212)*16777212);ui_notify(11,ui_seed,1);
+  );
+  sprintf(#ui_txt,"Current seed %d. Pool budget %.0f MB (0 = resident).",floor(slider11),slider13);ui_text(x,y+1297,w-28,15,#ui_txt,0.65,0.78,0.86);
+  ui_control(13,x,y+1333,cw,"POOL RAM MB",0,65536,0,4);
+  ui_text(x,y+1428,w-28,15,"Role bias is per-grain, via the inspector. Material labels are not inferred.",0.70,0.79,0.86);
+  ui_text(x,y+1458,w-28,15,"Wheel scrolls; Shift+wheel scrolls horizontally. Alt+wheel edits a control.",0.70,0.79,0.86);
+);
+function ui_diagnostics(w) local(h x y i yy) (
+  h=ui_snapshot_base;x=14;y=12;
+  ui_text(x,y,w-28,23,"EVIDENCE / CAPACITY / PROTOCOL",0.91,0.97,0.97);
+  ui_text(x,y+43,w-28,16,"Role ESS = effective candidate count, not a confidence percentage.",0.70,0.82,0.87);
+  i=0;loop(4,ui_role(i);
+    sprintf(#ui_txt,"%s: membership sum %.1f / effective %.1f / >=0.35: %d grains",#ui_role,h[64+i],h[68+i],h[72+i]);
+    ui_text(x,y+82+i*35,w-28,17,#ui_txt,0.76,0.89,0.91);i+=1;
+  );
+  sprintf(#ui_txt,"Corpus %d grains / %d playable / %d sources / %.0f MB decoded",h[3],h[18],h[2],h[9]);ui_text(x,y+247,w-28,16,#ui_txt,0.79,0.89,0.94);
+  sprintf(#ui_txt,"Effective index window %.1f ms / %d analysis reads / epoch %d",h[17]*1000,h[52],h[24]);ui_text(x,y+282,w-28,16,#ui_txt,0.70,0.83,0.89);
+  sprintf(#ui_txt,"Voices %d/64 / events %d/8 / dropped triggers %d / voice drops %d",h[10],h[11],h[12],h[13]);ui_text(x,y+317,w-28,16,#ui_txt,0.78,0.88,0.93);
+  sprintf(#ui_txt,"Scheduler overload %d / no candidate %d / sub-10ms hops %d",h[27],h[28],h[29]);ui_text(x,y+352,w-28,16,#ui_txt,0.82,0.80,0.62);
+  sprintf(#ui_txt,"Invalid reads/output %d / peak %.3f / safety activations %d samples",h[14],h[15],h[16]);ui_text(x,y+387,w-28,16,#ui_txt,0.82,0.80,0.62);
+  sprintf(#ui_txt,"Edits %d/512 / inactive edits %d / edit capacity failures %d",h[20],h[21],h[53]);ui_text(x,y+422,w-28,16,#ui_txt,0.72,0.83,0.91);
+  sprintf(#ui_txt,"Files skipped or invalid %d / pool failed %d / bank pending %d",h[51],h[8],h[22]);ui_text(x,y+457,w-28,16,#ui_txt,0.79,0.80,0.67);
+  ui_text(x,y+510,w-28,19,"EXACT REPLAY CONTRACT",0.83,0.92,0.95);
+  sprintf(#ui_txt,"Recorded %d/1024 / complete %d / replay block %d / valid epoch %d",h[30],h[31],h[32],h[34]);ui_text(x,y+549,w-28,16,#ui_txt,0.75,0.86,0.92);
+  sprintf(#ui_txt,"Replaying %d / unavailable requests %d / missing replay grains %d",h[33],h[37],h[56]);ui_text(x,y+584,w-28,16,#ui_txt,0.74,0.84,0.92);
+  ui_text(x,y+623,w-28,15,"Replay keeps recorded decisions; master output and peak catch remain live.",0.65,0.77,0.84);
+  ui_text(x,y+651,w-28,15,"Replay blocks: 1 capacity, 2 Continue edits, 3 forced stop. Unfinished plans wait.",0.71,0.75,0.81);
+  ui_text(x,y+710,w-28,19,"SAMPLE HUB CC118 / CC119 v1",0.83,0.92,0.95);
+  sprintf(#ui_txt,"Accepted %d / rejected %d / unsupported %d / MIDI capacity drops %d",h[43],h[44],h[45],h[50]);ui_text(x,y+750,w-28,16,#ui_txt,0.76,0.86,0.93);
+  sprintf(#ui_txt,"Last action %d / event ID %d / duration %.6f s / reason %d",h[46],h[47],h[48],h[49]);ui_text(x,y+785,w-28,16,#ui_txt,0.73,0.85,0.93);
+  ui_text(x,y+830,w-28,15,"0 Play, 4 Choke, 5 Retrigger, 6 Continue, 7 End. Modifiers 1/2/3 rejected.",0.68,0.78,0.86);
+  ui_text(x,y+860,w-28,15,"Reason 1 incomplete, 2 checksum/length, 3 offset mismatch, 4 invalid fields.",0.66,0.76,0.83);
+  ui_text(x,y+890,w-28,15,"Reason 5 duplicate ID, 6 target, 7 capacity, 8 unsupported, 9 Continue limit.",0.66,0.76,0.83);
+  ui_text(x,y+940,w-28,19,"READ THE MAP CORRECTLY",0.83,0.92,0.95);
+  ui_text(x,y+980,w-28,15,"Dots are actual source regions. Two axes cannot show every relationship.",0.68,0.79,0.85);
+  ui_text(x,y+1010,w-28,15,"Feature vertices have no waveform: clicking one auditions a member grain.",0.68,0.79,0.85);
+  ui_text(x,y+1040,w-28,15,"A single true timbre still limits diversity; role labels cannot invent new evidence.",0.75,0.80,0.82);
+  ui_text(x,y+1070,w-28,15,"Analysis is burst-sampled. A very coarse window can hide short transients.",0.75,0.80,0.82);
+  ui_text(x,y+1100,w-28,15,"Large sources are coarsened across their full length, never silently truncated.",0.68,0.79,0.85);
+  ui_text(x,y+1130,w-28,15,"Generation uses bounded excerpts. Grain audition plays the full indexed region.",0.68,0.79,0.85);
+  sprintf(#ui_txt,"UI queue %d/128 / queue drops %d / path overflow %d",ui_qn,ui_qoverflow,h[42]);ui_text(x,y+1180,w-28,16,#ui_txt,0.69,0.80,0.87);
+);
+
+@serialize
+file_var(0,state_schema);file_var(0,edit_key);file_var(0,edit_count);
+edit_count=cp_clamp(floor(edit_count),0,512);file_mem(0,12288,edit_count*3);
+file_var(0,path_count);path_count=cp_clamp(floor(path_count),0,32);
+file_var(0,path_axis_x);file_var(0,path_axis_y);file_mem(0,7100,path_count*2);
+
+@slider
+output_target=cp_amp(slider7);
+slider11!=last_seed ? (rng_state=max(1,floor(slider11));last_seed=slider11;);
+
+@block
+block_start_clock=clock;steps_this_block=0;output_target=cp_amp(slider7);
+cp_collect();
+env_i=0;loop(8,env_e=cp_e(env_i);env_e[33]=clock;env_e[34]=0;env_i+=1;);
+slider24!=cmd_seen ? (cmd_seen=slider24;cp_action(floor(slider24+0.5)););
+playing=(play_state&1)>0;
+(last_playing && !playing) || host_transport_discontinuity ? (
+  cp_stop_all(clock,max(8,srate*0.003),-1);memset(packet_base,0,512);memset(pedal_base,0,16);
+);last_playing=playing;
+poll_left-=samplesblock;poll_left<=0 ? (cp_poll();poll_left=max(64,floor(srate*0.20)););
+build_phase>0 ? cp_build(min(4096,max(256,samplesblock*8)));
+cp_browse_update();
+block_midi_count=0;block_note_count=0;walk_clock=block_start_clock;
+while(midirecv(moff,m1,m23)) (
+  mstatus=m1&240;mchan=m1&15;mnote=m23&127;mvel=(m23>>8)&127;
+  at_clock=block_start_clock+cp_clamp(floor(moff),0,max(0,samplesblock-1));
+  // Process every command at an offset BEFORE selecting the next grain there.
+  at_clock>=walk_clock ? (cp_walk_until(at_clock);walk_clock=at_clock;);
+  block_midi_count<2048 ? (
+    mstatus==144 && mvel>0 ? (
+      block_note_count<32 ? (cp_start(mvel/127,mnote,mchan,at_clock,0,0,127,127,0);block_note_count+=1;) : dropped_triggers+=1;
+    ) : (
+      mstatus==128 || (mstatus==144 && mvel==0) ? cp_midi_noteoff(mnote,mchan,at_clock) : (
+        mstatus==176 ? cp_midi_cc(mchan,mnote,mvel,at_clock);
+      );
+    );
+  ) : midi_overflow+=1;
+  block_midi_count+=1;
+);
+packet_ch=0;loop(16,
+  packet_ptr=packet_base+packet_ch*32;
+  packet_ptr[0]>0 ? (packet_ptr[0]=0;packet_rejected+=1;packet_last_reason=1;);packet_ch+=1;
+);
+cp_walk_until(block_start_clock+samplesblock);
+active_voices=voice_list_n;event_count=cp_hold_count();
+ui_snapshot_base[0]=cmd_seen;ui_left-=samplesblock;
+ui_left<=0 ? (cp_ui_publish();ui_left=max(64,floor(srate/20)););
+za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || pool_state==1 || pool_state==2;
+
+@sample
+out_l=0;out_r=0;vi=0;
+while(vi<voice_list_n) (
+  vv=cp_v(voice_list[vi]);alive=vv[0]>0 && clock<vv[14];
+  vv[26]>=0 ? (ev=cp_e(vv[26]);alive=alive && ev[0]>0 && ev[1]==vv[17];);
+  alive ? (
+    clock>=vv[2] ? (
+      age=clock-vv[2];duration=vv[3]-vv[2];phase=min(vv[6]-1,vv[5]+age*vv[7]);
+      env=min(1,age/max(1,vv[9]));env=min(env,(vv[3]-clock)/max(1,vv[10]));
+      // Event envelope owns generated release/stop timing. Do not pre-fade an
+      // event merely because its known deadline clips this grain's natural end.
+      // Otherwise a late Note Off and a pre-known duration render differently.
+      vv[26]<0 && vv[14]<vv[3] ? env=min(env,(vv[14]-clock)/max(1,vv[15]));
+      env=cp_01(env);env=env*env*(3-2*env);
+      vv[26]>=0 ? env*=cp_env(ev,clock);
+      env>0.000000001 ? (
+        read_ok=sample_read2_interp(bank_pool,vv[4],phase,vl,vr);
+        !read_ok ? (vl=0;vr=0;vv[0]=0;output_faults+=1;);
+        (!(vl==vl) || abs(vl)>1000000) ? (vl=0;output_faults+=1;);
+        (!(vr==vr) || abs(vr)>1000000) ? (vr=0;output_faults+=1;);
+        vg=vv[8]*env;out_l+=vl*vg*vv[24];out_r+=vr*vg*vv[25];
+      );vv[18]=cp_01(age/max(1,duration));vv[19]=env;
+    );vi+=1;
+  ) : (vv[0]=0;voice_list_n-=1;voice_list[vi]=voice_list[voice_list_n];);
+);
+output_smooth+=(output_target-output_smooth)*0.002;
+out_l*=output_smooth;out_r*=output_smooth;output_peak=max(abs(out_l),abs(out_r));
+slider20>=0.5 && output_peak>0.98 ? (catch_gain=0.98/output_peak;out_l*=catch_gain;out_r*=catch_gain;limited_samples+=1;);
+peak_meter=max(output_peak,peak_meter*0.9995);spl0=out_l;spl1=out_r;clock+=1;
+za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || pool_state==1 || pool_state==2;
+
+@gfx 1120 780
+ui_now=time_precise();ui_key=gfx_getchar();ui_h=ui_snapshot_base;
+ui_down=mouse_cap&1;ui_right=mouse_cap&2;ui_lpress=ui_down && !ui_prev_down;ui_rpress=ui_right && !ui_prev_right;
+ui_wheel=mouse_wheel;mouse_wheel=0;
+!ui_down ? (
+  ui_prev_down && ui_drag>0 ? slider_automate(pow(2,ui_drag-1),1);
+  ui_drag=0;ui_scroll_drag=0;
+);
+ui_flush();
+strcpy(#ui_tooltip,"Wheel scrolls the pane under the pointer. Shift+wheel = horizontal. Click grains or feature vertices to listen.");
+ui_key==32 ? ui_enqueue(3,0);ui_key==27 ? ui_enqueue(5,0);
+gfx_dest=-1;gfx_mode=0;ui_ox=0;ui_oy=0;ui_vh=gfx_h;ui_mx=mouse_x;ui_my=mouse_y;ui_mouse_in=1;
+ui_box(0,0,gfx_w,gfx_h,0.038,0.050,0.071);
+ui_text(12,9,144,27,"CORPUS",0.91,0.97,0.97);ui_text(162,18,90,14,"v0.7.0",0.40,0.77,0.70);
+ui_h[1]>0.5 ? sprintf(#ui_status,"READY / %d grains",ui_h[3]) : (
+  ui_h[4]>0 ? sprintf(#ui_status,"INDEX %d/5 / %d grains",ui_h[4],ui_h[3]) : strcpy(#ui_status,"Load files in slot 0");
+);
+ui_h[22]>0.5 ? strcpy(#ui_status,"Bank pending / STOP to adopt");
+gfx_w>480 ? ui_text(260,17,gfx_w-275,15,#ui_status,0.66,0.84,0.88);
+ui_button(12,47,96,32,"GENERATE",0) ? ui_enqueue(3,0);
+ui_button(116,47,84,32,"REPEAT",ui_h[31]>0.5 && ui_h[32]==0) ? ui_enqueue(4,0);
+ui_button(208,47,72,32,"STOP",0) ? ui_enqueue(5,0);
+gfx_w>620 ? (
+  sprintf(#ui_txt,"%d voices / %d families / %.0f MB",ui_h[10],ui_h[11],ui_h[9]);ui_text(301,55,gfx_w-313,14,#ui_txt,0.61,0.75,0.83);
+);
+ui_page=floor(slider55);
+gfx_w>=530 ? (
+  ui_button(12,87,116,31,"EXPLORE",ui_page==0) ? ui_notify(55,0,0);
+  ui_button(136,87,116,31,"WALK",ui_page==1) ? ui_notify(55,1,0);
+  ui_button(260,87,116,31,"CONTROLS",ui_page==2) ? ui_notify(55,2,0);
+  ui_button(384,87,132,31,"DIAGNOSTICS",ui_page==3) ? ui_notify(55,3,0);
+) : ui_choice(55,12,87,max(100,gfx_w-24),"PAGE","Explore / corpus map|Walk / trace|Controls|Diagnostics");
+ui_body_y=126;ui_body_h=max(28,gfx_h-ui_body_y-32);
+ui_page==0 ? (
+  gfx_w>=980 ? (
+    ui_leftw=gfx_w-364;
+    ui_explore_width=max(520,ui_leftw-14);ui_explore_rows=ceil(20/max(3,min(5,floor((ui_explore_width-28)/165))));
+    ui_pane_begin(0,10,ui_body_y,ui_leftw,ui_body_h,ui_explore_width,1140+ui_explore_rows*148);
+    ui_explore(ui_cw,0);ui_pane_end();
+    ui_pane_begin(1,ui_leftw+22,ui_body_y,gfx_w-ui_leftw-32,ui_body_h,320,1230);
+    ui_inspector(12,12,ui_cw-24);ui_pane_end();
+  ) : (
+    ui_explore_width=max(520,gfx_w-34);ui_explore_rows=ceil(20/max(3,min(5,floor((ui_explore_width-28)/165))));
+    ui_pane_begin(0,10,ui_body_y,max(40,gfx_w-20),ui_body_h,ui_explore_width,2380+ui_explore_rows*148);
+    ui_explore(ui_cw,1);ui_pane_end();
+  );
+);
+ui_page==1 ? (ui_pane_begin(2,10,ui_body_y,max(40,gfx_w-20),ui_body_h,760,3430);ui_walk_view(ui_cw);ui_pane_end(););
+ui_page==2 ? (ui_pane_begin(3,10,ui_body_y,max(40,gfx_w-20),ui_body_h,670,1540);ui_controls(ui_cw);ui_pane_end(););
+ui_page==3 ? (ui_pane_begin(4,10,ui_body_y,max(40,gfx_w-20),ui_body_h,760,1290);ui_diagnostics(ui_cw);ui_pane_end(););
+ui_ox=0;ui_oy=0;ui_vh=gfx_h;ui_mouse_in=1;ui_mx=mouse_x;ui_my=mouse_y;gfx_dest=-1;
+ui_box(0,gfx_h-25,gfx_w,25,0.066,0.088,0.11);ui_text(10,gfx_h-21,gfx_w-18,14,#ui_tooltip,0.68,0.81,0.86);
+!ui_down ? ui_drawing=0;ui_flush();ui_prev_down=ui_down;ui_prev_right=ui_right;

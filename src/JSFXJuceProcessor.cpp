@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <regex>
+#include <sstream>
 #include <set>
 #include <string>
 #include <vector>
@@ -57,6 +58,8 @@
 #include "DspJsfxRuntime.h"
 #include "DspJsfxSamplePool.h"
 #include "DspJsfxHostTransport.h"
+#include "JsfxGfxFramePool.h"
+#include "JsfxGfxMemorySync.h"
 #include "DspJsfxAudioFilePreflight.h"
 
 // Back-compat: older generated headers may not export bus inference macros.
@@ -203,180 +206,6 @@ static bool copyTrackPropertyName (const std::optional<juce::String>& name, juce
 
     out = *name;
     return true;
-}
-
-// @gfx only needs a bounded shared-state view, not the entire DSP heap.
-//
-// A simple low-prefix cap fixed the soft-lock, but it regressed scripts that
-// intentionally keep UI-visible summaries at very high addresses (Texture keeps
-// its waveform summary far away from the raw sample buffer). To preserve that
-// usage pattern without reintroducing catastrophic whole-heap mirroring, we
-// snapshot two bounded windows:
-//   1) a low shared prefix, where most UI state lives
-//   2) a high shared suffix, which catches far-away summaries near the heap end
-//
-// That keeps copy cost constant while still making "summary-at-the-top" layouts
-// visible to @gfx.
-
-static constexpr int kGfxSharedPrefixDoubles = 262144; // ~= 2 MiB
-static constexpr int kGfxSharedSuffixDoubles = 262144 * 8; // ~= 16 MiB
-static constexpr int kMaxGfxMemSpans = 16; // ZA-GFX-MEM-SYNC: auto prefix/suffix + explicit sparse ranges
-
-static constexpr uint8_t kGfxSyncToGfx   = 1u;
-static constexpr uint8_t kGfxSyncFromGfx = 2u;
-
-struct GfxMirrorRange
-{
-    int64_t base = 0;
-    int count = 0;
-};
-
-struct GfxSyncMemRange
-{
-    int64_t base = 0;
-    int64_t count = 0;
-    uint8_t flags = kGfxSyncToGfx;
-};
-
-static inline uint8_t parseGfxSyncMemDirectionToken (std::string token) noexcept
-{
-    for (auto& c : token)
-        c = (char) std::toupper ((unsigned char) c);
-
-    if (token == "FROM_GFX" || token == "GFX_TO_DSP")
-        return kGfxSyncFromGfx;
-
-    if (token == "BIDIR" || token == "BIDIRECTIONAL" || token == "BOTH")
-        return (uint8_t) (kGfxSyncToGfx | kGfxSyncFromGfx);
-
-    return kGfxSyncToGfx;
-}
-
-static inline int64_t gfxSafeEndExclusive (int64_t base, int64_t count) noexcept
-{
-    if (count <= 0)
-        return base;
-
-    if (base > std::numeric_limits<int64_t>::max() - count)
-        return std::numeric_limits<int64_t>::max();
-
-    return base + count;
-}
-
-static inline int appendGfxMirrorRange (std::array<GfxMirrorRange, kMaxGfxMemSpans>& out,
-                                        int n,
-                                        int64_t base,
-                                        int64_t count,
-                                        int64_t memN) noexcept
-{
-    if (memN <= 0 || count <= 0)
-        return n;
-
-    if (n >= (int) out.size())
-        return n;
-
-    base = std::max<int64_t> ((int64_t) 0, base);
-
-    if (base >= memN)
-        return n;
-
-    const int64_t end = std::min<int64_t> (memN, gfxSafeEndExclusive (base, count));
-
-    if (end <= base)
-        return n;
-
-    const int64_t safeCount = std::min<int64_t> (end - base,
-                                                 (int64_t) std::numeric_limits<int>::max());
-
-    out[(size_t) n++] = GfxMirrorRange { base, (int) safeCount };
-    return n;
-}
-
-static inline int sortAndMergeGfxMirrorRanges (std::array<GfxMirrorRange, kMaxGfxMemSpans>& ranges,
-                                               int n) noexcept
-{
-    n = std::max (0, std::min (n, (int) ranges.size()));
-
-    std::sort (ranges.begin(), ranges.begin() + n,
-               [] (const GfxMirrorRange& a, const GfxMirrorRange& b)
-               {
-                   return a.base < b.base;
-               });
-
-    int outN = 0;
-
-    for (int i = 0; i < n; ++i)
-    {
-        auto r = ranges[(size_t) i];
-
-        if (r.count <= 0)
-            continue;
-
-        if (outN == 0)
-        {
-            ranges[(size_t) outN++] = r;
-            continue;
-        }
-
-        auto& prev = ranges[(size_t) (outN - 1)];
-        const int64_t prevEnd = gfxSafeEndExclusive (prev.base, (int64_t) prev.count);
-        const int64_t rEnd = gfxSafeEndExclusive (r.base, (int64_t) r.count);
-
-        if (r.base <= prevEnd)
-        {
-            prev.count = (int) std::min<int64_t> (std::max<int64_t> (prevEnd, rEnd) - prev.base,
-                                                 (int64_t) std::numeric_limits<int>::max());
-        }
-        else if (outN < (int) ranges.size())
-        {
-            ranges[(size_t) outN++] = r;
-        }
-    }
-
-    return outN;
-}
-
-static inline int buildGfxMirrorRanges (int64_t memN,
-                                        std::array<GfxMirrorRange, kMaxGfxMemSpans>& out) noexcept
-{
-    int n = 0;
-
-    if (memN <= 0)
-        return 0;
-
-    const int64_t prefixCount = std::min<int64_t> (memN, (int64_t) kGfxSharedPrefixDoubles);
-    n = appendGfxMirrorRange (out, n, 0, prefixCount, memN);
-
-    if (memN > prefixCount)
-    {
-        const int64_t remaining = memN - prefixCount;
-        const int64_t suffixCount = std::min<int64_t> (remaining,
-                                                       (int64_t) kGfxSharedSuffixDoubles);
-
-        if (suffixCount > 0)
-            n = appendGfxMirrorRange (out, n, memN - suffixCount, suffixCount, memN);
-    }
-
-    return sortAndMergeGfxMirrorRanges (out, n);
-}
-
-static inline bool isGfxMirroredMemIndex (int64_t index, int64_t memN) noexcept
-{
-    if (index < 0 || index >= memN)
-        return false;
-
-    std::array<GfxMirrorRange, kMaxGfxMemSpans> ranges {};
-    const int count = buildGfxMirrorRanges (memN, ranges);
-
-    for (int i = 0; i < count; ++i)
-    {
-        const auto& r = ranges[(size_t) i];
-
-        if (index >= r.base && index < gfxSafeEndExclusive (r.base, (int64_t) r.count))
-            return true;
-    }
-
-    return false;
 }
 
 static inline int64_t getTrackedJsfxMemUsed (DSPJSFX_State* st) noexcept
@@ -570,6 +399,27 @@ static inline std::string trimAscii (std::string s)
     while (! s.empty() && std::isspace ((unsigned char) s.back()))
         s.pop_back();
     return s;
+}
+
+static bool parseJsfxExplicitGfxSyncPolicy (const char* jsfxText)
+{
+    if (jsfxText == nullptr) return false;
+    const std::regex re (R"(^\s*//\s*@za:gfx_sync_policy\s*:?\s*(EXPLICIT|AUTO)\s*(?://.*)?$)",
+                         std::regex::ECMAScript | std::regex::icase);
+    std::istringstream lines (jsfxText);
+    std::string line;
+    bool explicitOnly = false;
+    while (std::getline (lines, line))
+    {
+        std::smatch m;
+        if (std::regex_match (line, m, re))
+        {
+            auto token = m[1].str();
+            for (auto& c : token) c = (char) std::toupper ((unsigned char) c);
+            explicitOnly = token == "EXPLICIT";
+        }
+    }
+    return explicitOnly;
 }
 
 static std::vector<GfxSyncMemRange> parseJsfxGfxSyncMemRanges (const char* jsfxText)
@@ -2930,6 +2780,10 @@ public:
 
         jsfxDeclaredMaxMem = parseJsfxDeclaredMaxMem (kJsfxSourceText);
         gfxSyncMemRanges = parseJsfxGfxSyncMemRanges (kJsfxSourceText);
+        gfxSyncExplicitOnly = parseJsfxExplicitGfxSyncPolicy (kJsfxSourceText);
+        gfxProfileEnabled = juce::SystemStats::getEnvironmentVariable ("ZA_GFX_PROFILE", "0").getIntValue() != 0;
+        if (gfxSyncMemRanges.size() > (size_t) kMaxGfxSyncDeclarations)
+            juce::Logger::writeToLog ("GFX: too many gfx_sync_mem declarations (maximum 30); memory transfer disabled.");
 
         initStateMemory();
         jsfxRuntime.attachToState (&st);
@@ -4055,6 +3909,7 @@ public:
         }
 
         importPreviewAuditionStopRequested.store (false, std::memory_order_release);
+        importPreviewAuditionPaused.store (false, std::memory_order_release);
 
         auto clip = std::make_unique<ImportPreviewAuditionClip>();
         clip->buffer = std::move (buffer);
@@ -4069,8 +3924,16 @@ public:
         requestExternalWakeEvent (true);
     }
 
+    void pauseImportPreviewAudition (bool shouldPause)
+    {
+        // The audio thread retains the clip and its position while paused.
+        importPreviewAuditionPaused.store (shouldPause, std::memory_order_release);
+        requestExternalWakeEvent (true);
+    }
+
     void stopImportPreviewAudition()
     {
+        importPreviewAuditionPaused.store (false, std::memory_order_release);
         {
             std::lock_guard<std::mutex> lk (importPreviewAuditionMutex);
             pendingImportPreviewAudition.reset();
@@ -5905,11 +5768,18 @@ public:
         std::vector<double> vars;
         std::array<MemSpan, kMaxGfxMemSpans> memSpans {};
         int memSpanCount = 0;
+        std::array<GfxMirrorRange, kMaxGfxMemSpans> writableMemRanges {};
+        int writableMemRangeCount = 0;
+        uint64_t sequence = 0;
+        double copyMilliseconds = 0.0;
         int64_t logicalMemN = 0;
         int varsCount = 0;
         double srate = 0.0;
         double samplesblock = 0.0;
     };
+
+    bool usesExplicitGfxSync() const noexcept { return gfxSyncExplicitOnly; }
+    bool isGfxProfilingEnabled() const noexcept { return gfxProfileEnabled; }
 
     // A reader pin and a writer claim compete on the same slot atomic.
     // No reader can enter after a writer has selected a slot, even if its
@@ -6221,7 +6091,7 @@ private:
             }
         }
 
-        if (activeImportPreviewAudition == nullptr)
+        if (activeImportPreviewAudition == nullptr || importPreviewAuditionPaused.load (std::memory_order_acquire))
             return;
 
         auto& clip = *activeImportPreviewAudition;
@@ -8540,7 +8410,13 @@ private:
             return nullptr;
 
         auto recipe = za::fileimport::recipeFromValueTree (tree);
-        auto result = za::fileimport::renderImportAction (sourceFiles, recipe.action, recipe.rules);
+        auto recipeFiles = sourceFiles;
+        if (! recipe.inputs.empty())
+        {
+            recipeFiles.clear();
+            for (const auto& input : recipe.inputs) recipeFiles.emplace_back (input.path);
+        }
+        auto result = za::fileimport::renderImportAction (recipeFiles, recipe.action, recipe.rules);
         if (! result.ok)
             return nullptr;
 
@@ -9606,24 +9482,6 @@ private:
         return true;
     }
 
-    bool isExplicitGfxMemWriteAllowed (int64_t index) const noexcept
-    {
-        if (index < 0)
-            return false;
-
-        for (const auto& r : gfxSyncMemRanges)
-        {
-            if ((r.flags & kGfxSyncFromGfx) == 0u)
-                continue;
-
-            if (index >= r.base && index < gfxSafeEndExclusive (r.base, r.count))
-                return true;
-        }
-
-        return false;
-    }
-
-
     bool applyQueuedGfxStateWrites() noexcept
     {
         uint32_t tail = gfxWriteTail.load (std::memory_order_relaxed);
@@ -9639,7 +9497,8 @@ private:
 
             if (w.kind == GfxStateWrite::Kind::Var)
             {
-                if (w.index >= 0 && w.index < varsCap)
+                if (w.index >= 0 && w.index < varsCap
+                    && (getJsfxGfxVarFlags (w.index) & DSPJSFX_GFX_VAR_FLAG_FROM_GFX) != 0u)
                 {
                     st.vars[(size_t) w.index] = w.value;
                    #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
@@ -9653,13 +9512,13 @@ private:
                 const int64_t mi = (int64_t) w.index;
                 const int64_t logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
 
-                const bool inAutoMirror = isGfxMirroredMemIndex (mi, logicalMemN);
-                const bool inExplicitWritableRange = isExplicitGfxMemWriteAllowed (mi);
+                const bool writable = isDirectionalGfxMemIndex (
+                    mi, logicalMemN, st.memN, gfxSyncExplicitOnly, gfxSyncMemRanges, kGfxSyncFromGfx);
 
                 if (st.mem != nullptr
                     && mi >= 0
                     && mi < st.memN
-                    && (inAutoMirror || inExplicitWritableRange))
+                    && writable)
                 {
                     st.mem[(size_t) mi] = w.value;
                    #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
@@ -9826,8 +9685,20 @@ void initGfxSnapshots()
         b.memSpanCount = 0;
         b.logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
 
-        b.memSpans[0].data.reserve ((size_t) kGfxSharedPrefixDoubles);
-        b.memSpans[1].data.reserve ((size_t) kGfxSharedSuffixDoubles);
+        if (gfxSyncExplicitOnly)
+        {
+            std::array<GfxMirrorRange, kMaxGfxMemSpans> ranges {};
+            const int64_t capacity = std::max<int64_t> (st.memN, jsfxDeclaredMaxMem);
+            const int n = buildDirectionalGfxRanges (capacity, capacity, true,
+                                                     gfxSyncMemRanges, kGfxSyncToGfx, ranges);
+            for (int i = 0; i < n; ++i)
+                b.memSpans[(size_t) i].data.reserve ((size_t) ranges[(size_t) i].count);
+        }
+        else
+        {
+            b.memSpans[0].data.reserve ((size_t) kGfxSharedPrefixDoubles);
+            b.memSpans[1].data.reserve ((size_t) kGfxSharedSuffixDoubles);
+        }
     }
 }
 
@@ -9884,6 +9755,7 @@ void updateGfxSnapshotIfNeeded (int numSamples)
     try
     {
     auto& b = gfxSnaps[(size_t) writeIdx];
+    const double copyStart = gfxProfileEnabled ? juce::Time::getMillisecondCounterHiRes() : 0.0;
 
     // Ensure buffers are large enough (rare; can allocate on audio thread).
     const int varCount = (int) (sizeof (st.vars) / sizeof (st.vars[0]));
@@ -9910,6 +9782,7 @@ void updateGfxSnapshotIfNeeded (int numSamples)
     }
 
     b.memSpanCount = 0;
+    b.writableMemRangeCount = 0;
 
     const int64_t automaticLogicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
     b.logicalMemN = automaticLogicalMemN;
@@ -9917,34 +9790,17 @@ void updateGfxSnapshotIfNeeded (int numSamples)
     if (st.mem != nullptr && st.memN > 0)
     {
         std::array<GfxMirrorRange, kMaxGfxMemSpans> ranges {};
+        for (const auto& r : gfxSyncMemRanges)
+            if (r.base >= 0 && r.count > 0)
+                b.logicalMemN = std::max<int64_t> (b.logicalMemN,
+                    std::min<int64_t> (st.memN, gfxSafeEndExclusive (r.base, r.count)));
 
-        int rangeCount = automaticLogicalMemN > 0
-            ? buildGfxMirrorRanges (automaticLogicalMemN, ranges)
-            : 0;
-
-        // ZA-GFX-MEM-SYNC: explicit sparse DSP->@gfx ranges are appended
-        // after the automatic bounded mirror, so a far-away requested range
-        // does not accidentally inflate the automatic suffix copy.
-        for (const auto& extra : gfxSyncMemRanges)
-        {
-            if ((extra.flags & kGfxSyncToGfx) == 0u)
-                continue;
-
-            rangeCount = appendGfxMirrorRange (ranges,
-                                               rangeCount,
-                                               extra.base,
-                                               extra.count,
-                                               st.memN);
-
-            if (extra.base >= 0 && extra.count > 0)
-            {
-                b.logicalMemN = std::max<int64_t> (
-                    b.logicalMemN,
-                    std::min<int64_t> (st.memN, gfxSafeEndExclusive (extra.base, extra.count)));
-            }
-        }
-
-        rangeCount = sortAndMergeGfxMirrorRanges (ranges, rangeCount);
+        const int rangeCount = buildDirectionalGfxRanges (
+            automaticLogicalMemN, st.memN, gfxSyncExplicitOnly,
+            gfxSyncMemRanges, kGfxSyncToGfx, ranges);
+        b.writableMemRangeCount = buildDirectionalGfxRanges (
+            automaticLogicalMemN, st.memN, gfxSyncExplicitOnly,
+            gfxSyncMemRanges, kGfxSyncFromGfx, b.writableMemRanges);
 
         for (int i = 0; i < rangeCount && b.memSpanCount < (int) b.memSpans.size(); ++i)
         {
@@ -9986,6 +9842,8 @@ void updateGfxSnapshotIfNeeded (int numSamples)
     b.srate = st.srate;
     b.samplesblock = st.samplesblock;
 
+    b.sequence = ++gfxSnapshotSequence;
+    b.copyMilliseconds = gfxProfileEnabled ? juce::Time::getMillisecondCounterHiRes() - copyStart : 0.0;
     gfxSnapFront.store (writeIdx, std::memory_order_release);
     }
     catch (const std::bad_alloc&)
@@ -10006,6 +9864,7 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     std::unique_ptr<ImportPreviewAuditionClip> activeImportPreviewAudition;
     std::atomic<bool> importPreviewAuditionPending { false };
     std::atomic<bool> importPreviewAuditionStopRequested { false };
+    std::atomic<bool> importPreviewAuditionPaused { false };
     std::atomic<bool> pendingExternalWakeEvent { false };
     std::atomic<std::uint32_t> pendingEventWakeCount { 0 };
     std::atomic<bool> pendingParameterWakeEvent { false };
@@ -10022,6 +9881,9 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     int64_t gfxSnapCountdown = 0;
     int64_t jsfxDeclaredMaxMem = 0;
     std::vector<GfxSyncMemRange> gfxSyncMemRanges;
+    bool gfxSyncExplicitOnly = false; // Immutable after construction.
+    bool gfxProfileEnabled = false;
+    uint64_t gfxSnapshotSequence = 0; // Producer-owned, unlike the recycled slot index.
     double smartIdleTailLengthSeconds = 0.0;
     SmartIdleConfig smartIdleConfig {};
     SmartIdleRuntimeState smartIdleRuntime {};
@@ -11368,7 +11230,7 @@ private:
                                     za::fileimport::ImportAction action,
                                     FileBrowseFilter filter = FileBrowseFilter::CommonMedia)
     {
-        const bool allowMultiple = (action != za::fileimport::ImportAction::SegmentLongFile);
+        const bool allowMultiple = true; // Extraction also supports multiple source recordings.
         const auto startDir = proc.getPreferredFileChooserStartDirectory (slot, true);
         const auto filterSpec = getFileBrowseFilterSpec (filter);
 
@@ -11464,8 +11326,14 @@ private:
             {
                 auto tree = juce::ValueTree::fromXml (*xml);
                 auto recipe = za::fileimport::recipeFromValueTree (tree);
-                for (const auto& input : recipe.inputs)
-                    addIfValid (input.path);
+                if (! recipe.inputs.empty())
+                {
+                    // Indices refer to this exact recipe order. Missing sources
+                    // stay visible placeholders; filtering would retarget cuts.
+                    for (const auto& input : recipe.inputs)
+                        files.emplace_back (input.path);
+                    return files;
+                }
             }
         }
 
@@ -11527,7 +11395,12 @@ private:
             {
                 if (safeThis != nullptr)
                     safeThis->proc.stopImportPreviewAudition();
-            });
+            },
+            [safeThis] (bool paused)
+            {
+                if (safeThis != nullptr)
+                    safeThis->proc.pauseImportPreviewAudition (paused);
+            }, "File slot " + juce::String (slot + 1));
     }
 
     void startImportActionForFileSlot (int slot, std::vector<juce::File> files, za::fileimport::ImportAction action)
@@ -11577,7 +11450,12 @@ private:
             {
                 if (safeThis != nullptr)
                     safeThis->proc.stopImportPreviewAudition();
-            });
+            },
+            [safeThis] (bool paused)
+            {
+                if (safeThis != nullptr)
+                    safeThis->proc.pauseImportPreviewAudition (paused);
+            }, "File slot " + juce::String (slot + 1));
     }
 
     void renderImportActionForFileSlotAsync (int slot,
@@ -11933,13 +11811,13 @@ private:
 
         menu.addSeparator();
         addRecipeImportItem ("Build Mega Texture...", za::fileimport::ImportAction::BuildMegaTexture);
-        addRecipeImportItem ("Segment Long File...", za::fileimport::ImportAction::SegmentLongFile);
+        addRecipeImportItem ("Extract Samples...", za::fileimport::ImportAction::SegmentLongFile);
         addRecipeImportItem ("Modify / Preprocess Existing...", za::fileimport::ImportAction::ModifyExisting);
         addRecipeImportItem ("Segment Then Build Mega Texture...", za::fileimport::ImportAction::SegmentThenMegaTexture);
         menu.addItem (kPasteClipboardMenuId, "Paste Files / URIs from Clipboard...");
         menu.addItem (kAutoSegmentCurrentMenuId, "Auto-Segment Current Selection...", hasSelection);
         menu.addItem (kModifyCurrentMenuId, "Modify Current Selection...", hasSelection);
-        menu.addItem (kEditCurrentRecipeMenuId, "Edit Current Import Recipe...", hasImportRecipe);
+        menu.addItem (kEditCurrentRecipeMenuId, "Edit Samples / Import Recipe...", hasImportRecipe);
 
         menu.addSeparator();
         menu.addItem (kAddFavoriteMenuId, "Add to Favorites...", hasSelection);
@@ -12848,7 +12726,12 @@ public:
             {
                 if (safeThis != nullptr)
                     safeThis->processor.stopImportPreviewAudition();
-            });
+            },
+            [safeThis] (bool paused)
+            {
+                if (safeThis != nullptr)
+                    safeThis->processor.pauseImportPreviewAudition (paused);
+            }, "File slot " + juce::String (slot + 1));
     }
 
     void renderImportActionAsync (int slot, std::vector<juce::File> files, za::fileimport::ImportAction action, za::fileimport::ImportRules rules)
@@ -14021,11 +13904,7 @@ public:
             return;
         }
 
-        juce::Image frame;
-        {
-            const std::lock_guard<std::mutex> lock (publishedImageMutex);
-            frame = publishedImage;
-        }
+        const juce::Image frame = framePool.front();
 
         if (frame.isNull())
             return;
@@ -14841,10 +14720,7 @@ private:
 
     void publishCanvas()
     {
-        {
-            const std::lock_guard<std::mutex> lock (publishedImageMutex);
-            publishedImage = workerCanvas.createCopy();
-        }
+        framePool.publish (workerCanvas);
 
         repaintPending.store (true, std::memory_order_release);
         triggerAsyncUpdate();
@@ -14877,15 +14753,21 @@ private:
         const int w = juce::jmax (1, targetWidth.load (std::memory_order_acquire));
         const int h = juce::jmax (1, targetHeight.load (std::memory_order_acquire));
 
-        if (canvasResetRequested.exchange (false, std::memory_order_acq_rel)
-            || workerCanvas.isNull()
-            || workerCanvas.getWidth() != w
-            || workerCanvas.getHeight() != h)
+        // Acquire before consuming input/executing @gfx: never drop a resize or
+        // UI command just because the presentation buffers are still leased.
+        if (! framePool.acquire (workerCanvas, w, h))
+            return;
+        // Pin before consuming queued input; a contested snapshot must not lose a wheel/button event.
+        int snapIdx = -1;
+        const auto* snap = processor.beginGfxSnapshotRead (snapIdx);
+        if (snap == nullptr)
+            return;
+        struct ReleaseSnapshot
         {
-            workerCanvas = juce::Image (juce::Image::ARGB, w, h, true);
-            juce::Graphics cg (workerCanvas);
-            cg.fillAll (juce::Colours::black);
-        }
+            JSFXJuceProcessor& owner;
+            int index;
+            ~ReleaseSnapshot() { owner.endGfxSnapshotRead (index); }
+        } releaseSnapshot { processor, snapIdx };
 
         SharedInputState inputCopy;
         bool hasQueuedMouseFramesRemaining = false;
@@ -14935,17 +14817,6 @@ private:
             interp->setKeyDown (evt.jsfxCode, evt.keyDown);
         }
 
-        int snapIdx = -1;
-        const auto* snap = processor.beginGfxSnapshotRead (snapIdx);
-        if (snap == nullptr)
-            return;
-        struct ReleaseSnapshot
-        {
-            JSFXJuceProcessor& owner;
-            int index;
-            ~ReleaseSnapshot() { owner.endGfxSnapshotRead (index); }
-        } releaseSnapshot { processor, snapIdx };
-
         const auto sameDouble = [] (double a, double b) noexcept
         {
             if (a == b)
@@ -14955,10 +14826,10 @@ private:
             return std::abs (a - b) <= 1.0e-12;
         };
 
-        if (preserveVmStateUntilNewSnapshot && snapIdx != preserveVmStateSnapshotIndex)
+        if (preserveVmStateUntilNewSnapshot && snap->sequence != preserveVmStateSnapshotSequence)
         {
             preserveVmStateUntilNewSnapshot = false;
-            preserveVmStateSnapshotIndex = -1;
+            preserveVmStateSnapshotSequence = 0;
         }
 
         const int currentMouseButtons = inputCopy.mouseCap & kMouseButtonMask;
@@ -15029,63 +14900,51 @@ private:
         if (preserveVmStateThisFrame)
         {
             s.vars = nullptr;
-            s.memSpans = nullptr;
-            s.mem = nullptr;
-            s.memN = 0;
+            if (! processor.usesExplicitGfxSync() || snap->writableMemRangeCount > 0)
+            {
+                s.memSpans = nullptr;
+                s.mem = nullptr;
+                s.memN = 0;
+            }
         }
 
-        const bool captureStateWrites = inputCopy.captureStateWrites;
-        const bool baselineFromVm = preserveVmStateThisFrame;
-
+        const bool captureStateWrites = inputCopy.captureStateWrites
+            || (processor.usesExplicitGfxSync() && snap->writableMemRangeCount > 0);
         bool wrotePersistentVmState = false;
+        const bool profiling = processor.isGfxProfilingEnabled();
+        interp->setProfilingEnabled (profiling);
+        interp->setMouse (inputCopy.mouseX, inputCopy.mouseY, inputCopy.mouseCap,
+                          inputCopy.pendingWheel, inputCopy.pendingHWheel);
+        interp->prepareFrame (w, h, s);
 
+        // Read baselines AFTER init/snapshot sync and BEFORE @gfx execution.
+        // This covers FROM_GFX-only regions too, without copying read-only data
+        // or mistaking a DSP refresh for a GFX-authored write.
+        double diffStart = profiling ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+        double diffMilliseconds = 0.0;
+        memDiffSpanCount = 0;
         if (captureStateWrites)
         {
-            if ((int) varsBefore.size() != snap->varsCount)
-                varsBefore.resize ((size_t) snap->varsCount);
-
-            if (baselineFromVm)
+            varsBefore.resize ((size_t) snap->varsCount);
+            if (! varsBefore.empty()) interp->readVars (varsBefore.data(), (int) varsBefore.size());
+            for (int i = 0; i < snap->writableMemRangeCount && i < (int) memDiffSpans.size(); ++i)
             {
-                if (! varsBefore.empty())
-                    interp->readVars (varsBefore.data(), (int) varsBefore.size());
-            }
-            else
-            {
-                if (! varsBefore.empty())
-                    std::memcpy (varsBefore.data(), snap->vars.data(),
-                                 sizeof (double) * varsBefore.size());
-            }
-
-            memDiffSpanCount = 0;
-            for (int i = 0; i < s.memSpanCount && i < (int) memDiffSpans.size(); ++i)
-            {
-                const auto& span = snapMemSpans[(size_t) i];
-                if (span.count <= 0 || span.data == nullptr)
-                    continue;
-
-                auto& diff = memDiffSpans[(size_t) memDiffSpanCount];
-                diff.base = span.base;
-
-                if ((int) diff.before.size() != span.count)
-                    diff.before.resize ((size_t) span.count);
-
-                if (baselineFromVm)
-                    interp->readMemRange (diff.base, diff.before.data(), (int) diff.before.size());
-                else
-                    std::memcpy (diff.before.data(), span.data,
-                                 sizeof (double) * (size_t) span.count);
-
-                ++memDiffSpanCount;
+                const auto& range = snap->writableMemRanges[(size_t) i];
+                if (range.count <= 0) continue;
+                auto& diff = memDiffSpans[(size_t) memDiffSpanCount++];
+                diff.base = range.base;
+                diff.before.resize ((size_t) range.count);
+                interp->readMemRange (diff.base, diff.before.data(), range.count);
             }
         }
         else
         {
-            memDiffSpanCount = 0;
+            varsBefore.clear();
+            varsAfter.clear();
         }
-
-        interp->setMouse (inputCopy.mouseX, inputCopy.mouseY, inputCopy.mouseCap,
-                          inputCopy.pendingWheel, inputCopy.pendingHWheel);
-        interp->renderFrame (w, h, s);
+        if (profiling) diffMilliseconds = juce::Time::getMillisecondCounterHiRes() - diffStart;
+        interp->executeFrame();
+        if (profiling) diffStart = juce::Time::getMillisecondCounterHiRes();
 
         if (captureStateWrites)
         {
@@ -15098,6 +14957,7 @@ private:
 
             for (int i = 0; i < (int) varsAfter.size() && pushed < kMaxWritesPerFrame; ++i)
             {
+                if ((getJsfxGfxVarFlags (i) & DSPJSFX_GFX_VAR_FLAG_FROM_GFX) == 0u) continue;
                 const double a = varsBefore[(size_t) i];
                 const double b = varsAfter[(size_t) i];
 
@@ -15137,6 +14997,7 @@ private:
             }
         }
 
+        if (profiling) diffMilliseconds += juce::Time::getMillisecondCounterHiRes() - diffStart;
         interp->readSliders (vmSliders.data(), 64);
 
         const uint64_t mChange  = interp->popSliderChangeMask();
@@ -15182,18 +15043,77 @@ private:
         if (wrotePersistentVmState)
         {
             preserveVmStateUntilNewSnapshot = true;
-            preserveVmStateSnapshotIndex = snapIdx;
+            preserveVmStateSnapshotSequence = snap->sequence;
         }
 
+        const double rasterStart = profiling ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+        const auto& commands = interp->getCommands();
+        const bool resetCanvas = canvasResetRequested.exchange (false, std::memory_order_acq_rel)
+            || lastCanvasWidth != w || lastCanvasHeight != h;
+        lastCanvasWidth = w;
+        lastCanvasHeight = h;
+        bool historyCopied = false;
+        if (resetCanvas)
+            workerCanvas.clear (workerCanvas.getBounds(), juce::Colours::black);
+        else if (! jsfx_gfx::canDiscardPreviousFramebuffer (commands, w, h))
         {
-            juce::Graphics cg (workerCanvas);
-            jsfx_gfx::paintCommands (cg, interp->getCommands());
+            const auto previous = framePool.front();
+            historyCopied = jsfx_gfx::copyFramebufferHistory (workerCanvas, previous);
+            if (! historyCopied) workerCanvas.clear (workerCanvas.getBounds(), juce::Colours::black);
         }
+        const auto renderStats = jsfx_gfx::paintCommands (workerCanvas, commands);
+        const double rasterMilliseconds = profiling ? juce::Time::getMillisecondCounterHiRes() - rasterStart : 0.0;
+        const double publishStart = profiling ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+        if (resetCanvas || renderStats.mainFramebufferChanged)
+            publishCanvas(); // An offscreen-only/empty frame leaves the displayed canvas intact.
+        const double publishMilliseconds = profiling ? juce::Time::getMillisecondCounterHiRes() - publishStart : 0.0;
+        if (profiling)
+            recordGfxProfile (*snap, renderStats, diffMilliseconds, rasterMilliseconds,
+                              publishMilliseconds, historyCopied);
 
-        publishCanvas();
 
         if (hasQueuedMouseFramesRemaining)
             notifyWorker();
+    }
+
+    void recordGfxProfile (const JSFXJuceProcessor::GfxSnapshot& snap,
+                           const jsfx_gfx::GfxRenderStats& render,
+                           double diffMs, double rasterMs, double publishMs, bool historyCopied)
+    {
+        ++profileFrames;
+        profileSnapshotMs += snap.copyMilliseconds;
+        profileSyncMs += interp->getSyncMilliseconds();
+        profileGfxMs += interp->getGfxMilliseconds();
+        profileDiffMs += diffMs;
+        profileRasterMs += rasterMs;
+        profilePublishMs += publishMs;
+        profileCommands += render.commandCount;
+        profileContexts += render.graphicsContexts;
+        profileSelfCopies += render.selfBlitCopies;
+        if (historyCopied) ++profileHistoryCopies;
+        for (int i = 0; i < snap.memSpanCount; ++i)
+            profileSnapshotBytes += (uint64_t) snap.memSpans[(size_t) i].count * sizeof (double);
+        for (int i = 0; i < memDiffSpanCount; ++i)
+            profileDiffBytes += (uint64_t) memDiffSpans[(size_t) i].before.size() * sizeof (double);
+        if (profileFrames < 60) return;
+        const double n = (double) profileFrames;
+        juce::String line = "[ZA GFX] " + processor.getName()
+            + " ms(avg): snapshot=" + juce::String (profileSnapshotMs / n, 3)
+            + " sync=" + juce::String (profileSyncMs / n, 3)
+            + " eel=" + juce::String (profileGfxMs / n, 3)
+            + " diff=" + juce::String (profileDiffMs / n, 3)
+            + " raster=" + juce::String (profileRasterMs / n, 3)
+            + " publish=" + juce::String (profilePublishMs / n, 3)
+            + " | KiB/frame: snapshot=" + juce::String ((double) profileSnapshotBytes / n / 1024.0, 1)
+            + " writable-scan=" + juce::String ((double) profileDiffBytes / n / 1024.0, 1)
+            + " | commands=" + juce::String ((double) profileCommands / n, 1)
+            + " contexts=" + juce::String ((double) profileContexts / n, 1)
+            + " history-copies=" + juce::String ((int) profileHistoryCopies)
+            + " self-blit-copies=" + juce::String ((int) profileSelfCopies);
+        juce::Logger::writeToLog (line);
+        profileFrames = profileHistoryCopies = profileSelfCopies = 0;
+        profileSnapshotMs = profileSyncMs = profileGfxMs = profileDiffMs = profileRasterMs = profilePublishMs = 0.0;
+        profileCommands = profileContexts = profileSnapshotBytes = profileDiffBytes = 0;
     }
 
     static int packCC(const char* s) noexcept
@@ -15359,8 +15279,9 @@ private:
     std::unordered_map<uint32_t, int> trackedKeys;
     int mouseCap = 0;
 
-    std::mutex publishedImageMutex;
-    juce::Image publishedImage;
+    jsfx_gfx::FramePool framePool;
+    int lastCanvasWidth = 0;
+    int lastCanvasHeight = 0;
     std::atomic<bool> repaintPending { false };
     std::atomic<int> targetWidth { 1 };
     std::atomic<int> targetHeight { 1 };
@@ -15370,6 +15291,10 @@ private:
     PendingSliderApply pendingSliderApply;
 
     juce::Image workerCanvas;
+    unsigned int profileFrames = 0, profileHistoryCopies = 0, profileSelfCopies = 0;
+    double profileSnapshotMs = 0.0, profileSyncMs = 0.0, profileGfxMs = 0.0;
+    double profileDiffMs = 0.0, profileRasterMs = 0.0, profilePublishMs = 0.0;
+    uint64_t profileCommands = 0, profileContexts = 0, profileSnapshotBytes = 0, profileDiffBytes = 0;
     std::vector<double> varsBefore;
     std::vector<double> varsAfter;
     std::array<MemDiffSpan, kMaxGfxMemSpans> memDiffSpans {};
@@ -15380,7 +15305,7 @@ private:
     std::array<double, 64> uiSliderOverrideValues {};
     uint64_t uiSliderOverrideMask = 0;
     bool preserveVmStateUntilNewSnapshot = false;
-    int preserveVmStateSnapshotIndex = -1;
+    uint64_t preserveVmStateSnapshotSequence = 0;
     int lastRenderMouseButtons = 0;
 };
 

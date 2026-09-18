@@ -14,11 +14,13 @@
  #include <juce_gui_basics/juce_gui_basics.h>
 #endif
 
+#include <atomic>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -30,6 +32,7 @@
 #include <vector>
 
 #include "ZAUnicodeText.h"
+#include "ZAEventExtractor.h"
 
 namespace za::fileimport
 {
@@ -77,6 +80,12 @@ struct SegmentRegion
     double spectralFlux = 0.0;
     double novelty = 0.0;
     bool enabled = true;
+    // Automatic proposals are replaceable. User edits, confirms and rejections
+    // are authoritative constraints, including disabled/deleted regions.
+    bool locked = false;
+    bool example = false;
+    float eventScore = 0.8f, startBoundaryScore = 0.8f, endBoundaryScore = 0.8f;
+    extractor::Reason reason = extractor::Reason::Quiet;
 
     int length() const noexcept { return juce::jmax (0, endSample - startSample); }
 };
@@ -93,7 +102,7 @@ struct AudioFeatureVector
 
 struct ImportRules
 {
-    int version = 1;
+    int version = 2;
 
     bool trimEdges = true;
     bool stripInternalSilence = false;
@@ -140,11 +149,27 @@ struct ImportRules
 
     // Non-destructive preview/editor state. Disabled inputs are skipped by
     // recipe rendering but retained in the recipe so the user can restore them
-    // when editing the import again. Manual segments are indexed by input file
-    // order after supported-file filtering. Segment samples are expressed in
-    // the post-read/post-resample preview domain used by renderImportAction().
+    // when editing the import again. Input indices refer to the immutable
+    // sourceBindings order, including missing/disabled placeholders. Version 2
+    // stores cuts in native-source samples with an explicit coordinate rate.
     std::vector<int> disabledInputIndices;
     std::vector<std::vector<SegmentRegion>> manualSegmentsByInput;
+
+    // Source-native coordinate system, bound to fingerprints rather than a
+    // filtered file-list position. Legacy recipes migrate when first reopened.
+    std::vector<SourceFingerprint> sourceBindings;
+    std::vector<double> manualSegmentSampleRates;
+    std::vector<uint64_t> snapshotRevisions;
+    uint64_t segmentationRevision = 1;
+    bool assistedExtraction = false; // legacy recipes retain their old detector
+    bool adaptiveBackground = true;
+    double cutSensitivity = 0.5, wholeGestures = 0.65, tailPreservation = 0.65;
+    bool useExamples = false;
+    bool matchesOnly = false;
+    int segmentationOutput = -1; // -1 legacy action; 0 separate samples; 1 texture
+    double matchThreshold = 0.70;
+    extractor::Profile exampleProfile;
+
 };
 
 struct ImportRecipe
@@ -352,10 +377,123 @@ static inline SourceFingerprint fingerprintForFile (const juce::File& file)
     return fp;
 }
 
+static inline juce::ValueTree extractionProfileToValueTree (const extractor::Profile& profile)
+{
+    juce::ValueTree t ("ZA_EXTRACTION_PROFILE");
+    t.setProperty ("featureVersion", profile.version, nullptr);
+    t.setProperty ("name", juce::String::fromUTF8 (profile.name.c_str()), nullptr);
+    for (const auto& e : profile.examples)
+    {
+        juce::ValueTree node ("EXAMPLE");
+        node.setProperty ("name", juce::String::fromUTF8 (e.name.c_str()), nullptr);
+        node.setProperty ("sourceId", juce::String::fromUTF8 (e.sourceId.c_str()), nullptr);
+        node.setProperty ("start", e.sourceStart, nullptr);
+        node.setProperty ("end", e.sourceEnd, nullptr);
+        node.setProperty ("sourceRate", e.sourceRate, nullptr);
+        node.setProperty ("duration", e.duration, nullptr);
+        node.setProperty ("negative", e.negative, nullptr);
+        node.setProperty ("lead", e.leadFraction, nullptr);
+        node.setProperty ("tail", e.tailFraction, nullptr);
+        for (const auto& f : e.frames)
+        {
+            juce::ValueTree frame ("FRAME");
+            juce::StringArray values;
+            for (float v : f.bands) values.add (juce::String (v, 9));
+            frame.setProperty ("bands", values.joinIntoString (","), nullptr);
+            frame.setProperty ("energy", (double) f.energy, nullptr);
+            frame.setProperty ("onset", (double) f.onset, nullptr);
+            frame.setProperty ("zcr", (double) f.zcr, nullptr);
+            node.addChild (frame, -1, nullptr);
+        }
+        t.addChild (node, -1, nullptr);
+    }
+    return t;
+}
+
+static inline bool extractionProfileFromValueTree (const juce::ValueTree& t, extractor::Profile& profile)
+{
+    if (! t.hasType ("ZA_EXTRACTION_PROFILE") || (int) t.getProperty ("featureVersion", -1) != extractor::featureVersion
+        || t.getNumChildren() > extractor::maxExamples)
+        return false;
+    extractor::Profile parsed;
+    parsed.name = t.getProperty ("name").toString().toStdString();
+    auto finite = [] (double v) { return std::isfinite (v); };
+    for (const auto& node : t)
+    {
+        if (! node.hasType ("EXAMPLE") || node.getNumChildren() < 4 || node.getNumChildren() > extractor::maxExampleFrames) return false;
+        extractor::Example e;
+        e.name = node.getProperty ("name").toString().toStdString();
+        e.sourceId = node.getProperty ("sourceId").toString().toStdString();
+        e.sourceStart = (int) node.getProperty ("start", 0);
+        e.sourceEnd = (int) node.getProperty ("end", 0);
+        e.sourceRate = (double) node.getProperty ("sourceRate", 0.0);
+        e.duration = (double) node.getProperty ("duration", 0.0);
+        e.negative = (bool) node.getProperty ("negative", false);
+        e.leadFraction = (float) (double) node.getProperty ("lead", 0.0);
+        e.tailFraction = (float) (double) node.getProperty ("tail", 0.0);
+        if (! finite (e.duration) || e.duration <= 0.0 || e.duration > 60.0 || ! finite (e.sourceRate)
+            || ! finite (e.leadFraction) || ! finite (e.tailFraction)
+            || e.leadFraction < 0.0f || e.leadFraction > 1.0f || e.tailFraction < 0.0f || e.tailFraction > 1.0f) return false;
+        for (const auto& frame : node)
+        {
+            extractor::TemplateFrame f;
+            const auto values = juce::StringArray::fromTokens (frame.getProperty ("bands").toString(), ",", "");
+            if (! frame.hasType ("FRAME") || values.size() != extractor::bandCount) return false;
+            for (int k = 0; k < extractor::bandCount; ++k)
+            {
+                const double v = values[k].getDoubleValue();
+                if (! finite (v) || v < 0.0 || v > 1.001) return false;
+                f.bands[(size_t) k] = (float) v;
+            }
+            // Stored spectra are unit-length (or all-zero for silence).
+            // Normalise small serialization rounding error, reject other data.
+            float norm = 0.0f;
+            for (float value : f.bands) norm += value * value;
+            if (norm > 1.0e-12f)
+            {
+                if (std::abs (norm - 1.0f) > 0.02f) return false;
+                for (auto& value : f.bands) value /= std::sqrt (norm);
+            }
+            f.energy = (float) (double) frame.getProperty ("energy", 0.0);
+            f.onset = (float) (double) frame.getProperty ("onset", 0.0);
+            f.zcr = (float) (double) frame.getProperty ("zcr", 0.0);
+            if (! finite (f.energy) || ! finite (f.onset) || ! finite (f.zcr)
+                || f.energy < -1.001f || f.energy > 0.001f || f.onset < 0 || f.onset > 1 || f.zcr < 0 || f.zcr > 1) return false;
+            e.frames.push_back (f);
+        }
+        parsed.examples.push_back (std::move (e));
+    }
+    profile = std::move (parsed);
+    return true;
+}
+
+static inline void writeSourceFingerprint (juce::ValueTree& t, const SourceFingerprint& fp)
+{
+    t.setProperty ("path", fp.path, nullptr);
+    t.setProperty ("sizeBytes", (juce::int64) fp.sizeBytes, nullptr);
+    t.setProperty ("modifiedUtcMs", (juce::int64) fp.modifiedUtcMs, nullptr);
+    t.setProperty ("quickHash", (juce::int64) fp.quickHash, nullptr);
+}
+
+static inline SourceFingerprint readSourceFingerprint (const juce::ValueTree& t)
+{
+    return { t.getProperty ("path").toString(), (juce::int64) t.getProperty ("sizeBytes", (juce::int64) 0),
+             (juce::int64) t.getProperty ("modifiedUtcMs", (juce::int64) 0),
+             (uint64_t) (juce::int64) t.getProperty ("quickHash", (juce::int64) 0) };
+}
+
+static inline bool sourceFingerprintMatches (const SourceFingerprint& expected, const SourceFingerprint& actual)
+{
+    // An unanalysed input has only its path bound. Once decoded, all saved
+    // fingerprint fields must agree; changed files are never silently trusted.
+    return expected.path == actual.path && (expected.sizeBytes <= 0
+        || (expected.sizeBytes == actual.sizeBytes && expected.modifiedUtcMs == actual.modifiedUtcMs && expected.quickHash == actual.quickHash));
+}
+
 static inline juce::ValueTree rulesToValueTree (const ImportRules& r)
 {
     juce::ValueTree t ("RULES");
-    t.setProperty ("version", r.version, nullptr);
+    t.setProperty ("version", juce::jmax (2, r.version), nullptr);
     t.setProperty ("trimEdges", r.trimEdges, nullptr);
     t.setProperty ("stripInternalSilence", r.stripInternalSilence, nullptr);
     t.setProperty ("segmentBySilence", r.segmentBySilence, nullptr);
@@ -385,6 +523,29 @@ static inline juce::ValueTree rulesToValueTree (const ImportRules& r)
     t.setProperty ("finalTargetRmsDb", r.finalTargetRmsDb, nullptr);
     t.setProperty ("outputChannels", r.outputChannels, nullptr);
     t.setProperty ("outputSampleRate", r.outputSampleRate, nullptr);
+    t.setProperty ("previewSeconds", r.previewSeconds, nullptr);
+    t.setProperty ("assistedExtraction", r.assistedExtraction, nullptr);
+    t.setProperty ("adaptiveBackground", r.adaptiveBackground, nullptr);
+    t.setProperty ("cutSensitivity", r.cutSensitivity, nullptr);
+    t.setProperty ("wholeGestures", r.wholeGestures, nullptr);
+    t.setProperty ("tailPreservation", r.tailPreservation, nullptr);
+    t.setProperty ("useExamples", r.useExamples, nullptr);
+    t.setProperty ("matchesOnly", r.matchesOnly, nullptr);
+    t.setProperty ("segmentationOutput", r.segmentationOutput, nullptr);
+    t.setProperty ("matchThreshold", r.matchThreshold, nullptr);
+    t.setProperty ("segmentationRevision", (juce::int64) r.segmentationRevision, nullptr);
+    if (! r.exampleProfile.examples.empty()) t.addChild (extractionProfileToValueTree (r.exampleProfile), -1, nullptr);
+    juce::ValueTree bindings ("SOURCE_BINDINGS");
+    for (size_t i = 0; i < r.sourceBindings.size(); ++i)
+    {
+        juce::ValueTree source ("SOURCE");
+        writeSourceFingerprint (source, r.sourceBindings[i]);
+        source.setProperty ("sampleRate", i < r.manualSegmentSampleRates.size() ? r.manualSegmentSampleRates[i] : 0.0, nullptr);
+        source.setProperty ("revision", (juce::int64) (i < r.snapshotRevisions.size() ? r.snapshotRevisions[i] : 0), nullptr);
+        bindings.addChild (source, -1, nullptr);
+    }
+    if (bindings.getNumChildren() > 0) t.addChild (bindings, -1, nullptr);
+
 
     if (! r.disabledInputIndices.empty())
     {
@@ -417,6 +578,12 @@ static inline juce::ValueTree rulesToValueTree (const ImportRules& r)
                 seg.setProperty ("enabled", segment.enabled, nullptr);
                 seg.setProperty ("rmsDb", segment.rmsDb, nullptr);
                 seg.setProperty ("peakDb", segment.peakDb, nullptr);
+                seg.setProperty ("locked", segment.locked, nullptr);
+                seg.setProperty ("example", segment.example, nullptr);
+                seg.setProperty ("eventScore", (double) segment.eventScore, nullptr);
+                seg.setProperty ("startScore", (double) segment.startBoundaryScore, nullptr);
+                seg.setProperty ("endScore", (double) segment.endBoundaryScore, nullptr);
+                seg.setProperty ("reason", (int) segment.reason, nullptr);
                 fileNode.addChild (seg, -1, nullptr);
             }
             manual.addChild (fileNode, -1, nullptr);
@@ -465,6 +632,34 @@ static inline ImportRules rulesFromValueTree (const juce::ValueTree& t)
     r.finalTargetRmsDb = (double) t.getProperty ("finalTargetRmsDb", r.finalTargetRmsDb);
     r.outputChannels = (int) t.getProperty ("outputChannels", r.outputChannels);
     r.outputSampleRate = (double) t.getProperty ("outputSampleRate", r.outputSampleRate);
+    const double previewSeconds = (double) t.getProperty ("previewSeconds", r.previewSeconds);
+    if (std::isfinite (previewSeconds) && previewSeconds > 0.0) r.previewSeconds = previewSeconds;
+    r.assistedExtraction = (bool) t.getProperty ("assistedExtraction", false);
+    r.adaptiveBackground = (bool) t.getProperty ("adaptiveBackground", true);
+    auto readUnit = [&] (const char* name, double fallback)
+    {
+        const double value = (double) t.getProperty (name, fallback);
+        return std::isfinite (value) ? juce::jlimit (0.0, 1.0, value) : fallback;
+    };
+    r.cutSensitivity = readUnit ("cutSensitivity", 0.5);
+    r.wholeGestures = readUnit ("wholeGestures", 0.65);
+    r.tailPreservation = readUnit ("tailPreservation", 0.65);
+    r.matchThreshold = juce::jlimit (0.4, 0.95, readUnit ("matchThreshold", 0.70));
+    r.useExamples = (bool) t.getProperty ("useExamples", false);
+    r.matchesOnly = (bool) t.getProperty ("matchesOnly", false);
+    r.segmentationOutput = juce::jlimit (-1, 1, (int) t.getProperty ("segmentationOutput", -1));
+    r.segmentationRevision = (uint64_t) (juce::int64) t.getProperty ("segmentationRevision", (juce::int64) 1);
+    if (! extractionProfileFromValueTree (t.getChildWithName ("ZA_EXTRACTION_PROFILE"), r.exampleProfile)) r.useExamples = false;
+    if (auto bindings = t.getChildWithName ("SOURCE_BINDINGS"); bindings.isValid())
+        for (const auto& source : bindings)
+        {
+            if (r.sourceBindings.size() >= 16384) break;
+            r.sourceBindings.push_back (readSourceFingerprint (source));
+            const double rate = (double) source.getProperty ("sampleRate", 0.0);
+            r.manualSegmentSampleRates.push_back (std::isfinite (rate) && rate >= 0.0 ? rate : 0.0);
+            r.snapshotRevisions.push_back ((uint64_t) (juce::int64) source.getProperty ("revision", (juce::int64) 0));
+        }
+
 
     if (auto disabled = t.getChildWithName ("DISABLED_INPUTS"); disabled.isValid())
     {
@@ -483,7 +678,7 @@ static inline ImportRules rulesFromValueTree (const juce::ValueTree& t)
         {
             const auto fileNode = manual.getChild (fileNodeIndex);
             const int fileIndex = (int) fileNode.getProperty ("index", -1);
-            if (fileIndex < 0)
+            if (fileIndex < 0 || fileIndex >= 16384)
                 continue;
 
             if ((int) r.manualSegmentsByInput.size() <= fileIndex)
@@ -501,6 +696,14 @@ static inline ImportRules rulesFromValueTree (const juce::ValueTree& t)
                 segment.enabled = (bool) segNode.getProperty ("enabled", true);
                 segment.rmsDb = (double) segNode.getProperty ("rmsDb", segment.rmsDb);
                 segment.peakDb = (double) segNode.getProperty ("peakDb", segment.peakDb);
+                // Old manual-only snapshots represent deliberate user edits.
+                segment.locked = (bool) segNode.getProperty ("locked", true);
+                segment.example = (bool) segNode.getProperty ("example", false);
+                auto score = [&] (const char* name) { const double v = (double) segNode.getProperty (name, 0.8); return (float) (std::isfinite (v) ? juce::jlimit (0.0, 1.0, v) : 0.0); };
+                segment.eventScore = score ("eventScore");
+                segment.startBoundaryScore = score ("startScore");
+                segment.endBoundaryScore = score ("endScore");
+                segment.reason = (extractor::Reason) juce::jlimit (0, 6, (int) segNode.getProperty ("reason", 5));
                 outSegments.push_back (segment);
             }
         }
@@ -558,6 +761,14 @@ static inline ImportRecipe recipeFromValueTree (const juce::ValueTree& t)
         }
     }
 
+    if (recipe.rules.sourceBindings.empty())
+    {
+        recipe.rules.sourceBindings = recipe.inputs;
+        recipe.rules.manualSegmentSampleRates.resize (recipe.inputs.size(), recipe.rules.outputSampleRate);
+        recipe.rules.snapshotRevisions.resize (recipe.inputs.size(), 0);
+        for (size_t i = 0; i < recipe.rules.manualSegmentsByInput.size() && i < recipe.inputs.size(); ++i)
+            if (! recipe.rules.manualSegmentsByInput[i].empty()) recipe.rules.snapshotRevisions[i] = recipe.rules.segmentationRevision;
+    }
     return recipe;
 }
 
@@ -942,19 +1153,157 @@ static inline std::vector<SegmentRegion> sanitiseSegmentsForBuffer (const juce::
     return segments;
 }
 
+static inline extractor::AudioView audioView (const juce::AudioBuffer<float>& b, double rate)
+{
+    return { b.getArrayOfReadPointers(), b.getNumChannels(), b.getNumSamples(), rate };
+}
+
+static inline extractor::Settings extractionSettings (const ImportRules& rules)
+{
+    extractor::Settings s;
+    s.adaptive = rules.adaptiveBackground; s.silenceDb = (float) rules.silenceThresholdDb;
+    s.sensitivity = (float) rules.cutSensitivity; s.gesture = (float) rules.wholeGestures; s.tails = (float) rules.tailPreservation;
+    s.quietMs = rules.minSilenceMs; s.minimumMs = rules.minSegmentMs; s.maximumMs = rules.maxSegmentMs;
+    s.preMs = rules.preRollMs; s.postMs = rules.postRollMs;
+    return s;
+}
+
+static inline void storeSegmentSnapshot (ImportRules& rules, int index, const std::vector<SegmentRegion>& segments, double rate)
+{
+    if (index < 0) return;
+    const size_t size = (size_t) index + 1;
+    setManualSegmentsForInput (rules, index, segments);
+    if (rules.manualSegmentSampleRates.size() < size) rules.manualSegmentSampleRates.resize (size, 0.0);
+    if (rules.snapshotRevisions.size() < size) rules.snapshotRevisions.resize (size, 0);
+    rules.manualSegmentSampleRates[(size_t) index] = rate;
+    rules.snapshotRevisions[(size_t) index] = rules.segmentationRevision;
+}
+
+static inline std::vector<SegmentRegion> snapshotAtRate (const ImportRules& rules, int index, int samples, double rate)
+{
+    if (index < 0 || index >= (int) rules.manualSegmentsByInput.size()) return {};
+    auto segments = rules.manualSegmentsByInput[(size_t) index];
+    double savedRate = index < (int) rules.manualSegmentSampleRates.size() ? rules.manualSegmentSampleRates[(size_t) index] : rules.outputSampleRate;
+    if (savedRate <= 0.0) savedRate = rate;
+    for (auto& segment : segments)
+    {
+        if (std::abs (savedRate - rate) > 1.0e-6)
+        {
+            segment.startSample = (int) std::clamp (std::llround (segment.startSample * rate / savedRate), 0ll, (long long) samples);
+            segment.endSample = (int) std::clamp (std::llround (segment.endSample * rate / savedRate), 0ll, (long long) samples);
+        }
+        segment.startSample = juce::jlimit (0, samples, segment.startSample);
+        segment.endSample = juce::jlimit (segment.startSample, samples, segment.endSample);
+        if (segment.length() <= 0) segment.enabled = false;
+    }
+    return segments;
+}
+
+static inline std::vector<SegmentRegion> preserveProtectedSegments (std::vector<SegmentRegion> automatic,
+                                                                   const std::vector<SegmentRegion>& existing)
+{
+    return extractor::preserveConstraints (std::move (automatic), existing);
+}
+
 static inline std::vector<SegmentRegion> segmentsForInput (const ImportRules& rules,
                                                            int inputIndex,
                                                            const juce::AudioBuffer<float>& b,
-                                                           double sr)
+                                                           double sr,
+                                                           const extractor::Analysis* cached = nullptr,
+                                                           const extractor::Cancel& cancel = {},
+                                                           std::vector<extractor::Region>* reviewSpans = nullptr,
+                                                           bool forceReanalyse = false)
 {
-    if (inputIndex >= 0 && inputIndex < (int) rules.manualSegmentsByInput.size())
-    {
-        const auto& manual = rules.manualSegmentsByInput[(size_t) inputIndex];
-        if (! manual.empty())
-            return sanitiseSegmentsForBuffer (b, manual);
-    }
+    auto existing = snapshotAtRate (rules, inputIndex, b.getNumSamples(), sr);
+    const bool hasSnapshot = inputIndex >= 0 && inputIndex < (int) rules.snapshotRevisions.size()
+                          && rules.snapshotRevisions[(size_t) inputIndex] == rules.segmentationRevision;
+    if (! forceReanalyse && hasSnapshot)
+        return existing; // Empty is a valid reviewed result too; never resurrect it.
+    if (! forceReanalyse && ! existing.empty() && rules.snapshotRevisions.empty()) return existing;
 
-    return detectSegmentsBySilence (b, sr, rules);
+    extractor::Analysis analysed;
+    const bool useProfile = rules.useExamples && rules.exampleProfile.version == extractor::featureVersion && rules.exampleProfile.positives() > 0;
+    if ((rules.assistedExtraction || useProfile) && cached == nullptr)
+    {
+        analysed = extractor::analyse (audioView (b, sr), cancel);
+        cached = &analysed;
+    }
+    if (extractor::cancelled (cancel)) return {};
+    std::vector<SegmentRegion> proposals;
+    auto makeRegion = [&] (const extractor::Region& r)
+    {
+        SegmentRegion s;
+        s.startSample = r.start; s.endSample = r.end;
+        s.eventScore = r.event; s.startBoundaryScore = r.startQuality; s.endBoundaryScore = r.endQuality; s.reason = r.reason;
+        return s;
+    };
+    if (rules.assistedExtraction && cached != nullptr)
+    {
+        auto detection = extractor::detect (*cached, extractionSettings (rules), cancel);
+        for (const auto& r : detection.regions) proposals.push_back (makeRegion (r));
+        if (reviewSpans != nullptr) *reviewSpans = std::move (detection.reviewSpans);
+    }
+    else proposals = detectSegmentsBySilence (b, sr, rules);
+
+    if (useProfile && cached != nullptr)
+    {
+        auto matches = extractor::findMatches (*cached, rules.exampleProfile, (float) rules.matchThreshold, cancel);
+        for (auto& candidate : proposals)
+        {
+            if (extractor::cancelled (cancel)) return {};
+            const auto features = extractor::makeExample (*cached, candidate.startSample, candidate.endSample);
+            float positive = 0.0f, negative = 0.0f;
+            for (const auto& example : rules.exampleProfile.examples)
+                if (example.negative) negative = std::max (negative, extractor::similarity (example, features));
+                else positive = std::max (positive, extractor::similarity (example, features));
+            candidate.eventScore = extractor::contrastiveScore (positive, negative);
+            if (rules.matchesOnly && candidate.eventScore < rules.matchThreshold) candidate.enabled = false;
+        }
+        // A complete example can span several preliminary cuts. Its proposal
+        // replaces only overlapping *automatic* regions; locks are applied last.
+        proposals.erase (std::remove_if (proposals.begin(), proposals.end(), [&] (const SegmentRegion& candidate)
+        {
+            for (const auto& match : matches)
+                if (candidate.startSample < match.end && candidate.endSample > match.start) return true;
+            return false;
+        }), proposals.end());
+        // Add as a batch: legitimate overlapping tails must not cause a later
+        // accepted match to erase an earlier accepted event.
+        for (const auto& match : matches) proposals.push_back (makeRegion (match));
+    }
+    for (auto& candidate : proposals)
+    {
+        if (extractor::cancelled (cancel)) return {};
+        if (rules.assistedExtraction)
+        {
+            const int radius = juce::jmax (1, (int) std::llround (sr * 0.002));
+            candidate.startSample = extractor::snapBoundary (audioView (b, sr), candidate.startSample, radius);
+            candidate.endSample = extractor::snapBoundary (audioView (b, sr), candidate.endSample, radius);
+        }
+        candidate.endSample = juce::jlimit (candidate.startSample, b.getNumSamples(), candidate.endSample);
+        if (cached != nullptr)
+        {
+            candidate.startBoundaryScore = extractor::boundaryQuality (*cached, candidate.startSample, true);
+            candidate.endBoundaryScore = extractor::boundaryQuality (*cached, candidate.endSample, false);
+        }
+    }
+    if (reviewSpans != nullptr)
+        reviewSpans->erase (std::remove_if (reviewSpans->begin(), reviewSpans->end(), [&] (const extractor::Region& span)
+        {
+            for (const auto& s : existing) if (s.locked && span.start < s.endSample && span.end > s.startSample) return true;
+            for (const auto& s : proposals) if (span.start < s.endSample && span.end > s.startSample) return true;
+            return false;
+        }), reviewSpans->end());
+    auto result = preserveProtectedSegments (std::move (proposals), existing);
+    for (auto& candidate : result)
+    {
+        if (extractor::cancelled (cancel)) return {};
+        if (candidate.locked) continue;
+        candidate.rmsDb = linearToDb (computeRmsLinear (b, candidate.startSample, candidate.length()));
+        candidate.peakDb = linearToDb (computePeakLinear (b, candidate.startSample, candidate.length()));
+        if (candidate.length() <= 0 || (rules.removeLowRms && candidate.rmsDb < rules.minRmsDb)) candidate.enabled = false;
+    }
+    return result;
 }
 
 static inline void applyEdgeFades (juce::AudioBuffer<float>& b, double sr, double fadeMs)
@@ -970,8 +1319,8 @@ static inline void applyEdgeFades (juce::AudioBuffer<float>& b, double sr, doubl
         auto* p = b.getWritePointer (ch);
         for (int i = 0; i < fade; ++i)
         {
-            const float gIn = (float) i / (float) fade;
-            const float gOut = (float) (fade - i) / (float) fade;
+            const float gIn = (float) i / (float) (fade - 1);
+            const float gOut = gIn; // reverse index: the final sample must be zero
             p[i] *= gIn;
             p[n - 1 - i] *= gOut;
         }
@@ -1093,6 +1442,7 @@ static inline juce::AudioBuffer<float> resampleLinear (const juce::AudioBuffer<f
         return in;
 
     const int inN = in.getNumSamples();
+    if (inN <= 0 || in.getNumChannels() <= 0) return {};
     const int64_t outN64 = (int64_t) std::llround ((double) inN * targetRate / sourceRate);
     const int outN = (int) juce::jlimit<int64_t> (0, (int64_t) std::numeric_limits<int>::max() / 4, outN64);
     juce::AudioBuffer<float> out (in.getNumChannels(), outN);
@@ -1115,7 +1465,7 @@ static inline juce::AudioBuffer<float> resampleLinear (const juce::AudioBuffer<f
     return out;
 }
 
-static inline std::optional<AudioFileData> readAudioFile (const juce::File& file, int targetChannels, double targetRate, double maxSeconds, juce::String& error)
+static inline std::optional<AudioFileData> readAudioFile (const juce::File& file, int targetChannels, double targetRate, double maxSeconds, juce::String& error, const extractor::Cancel& cancel = {})
 {
     juce::AudioFormatManager fm;
     fm.registerBasicFormats();
@@ -1127,6 +1477,11 @@ static inline std::optional<AudioFileData> readAudioFile (const juce::File& file
         return std::nullopt;
     }
 
+    if (! std::isfinite (reader->sampleRate) || reader->sampleRate <= 0.0 || reader->numChannels == 0)
+    {
+        error = "Invalid audio format metadata: " + file.getFileName();
+        return std::nullopt;
+    }
     const int64_t srcLen64 = reader->lengthInSamples;
     if (srcLen64 <= 0)
     {
@@ -1149,7 +1504,12 @@ static inline std::optional<AudioFileData> readAudioFile (const juce::File& file
     juce::AudioBuffer<float> buffer (initialCh, readLen);
     buffer.clear();
 
-    const bool ok = reader->read (&buffer, 0, readLen, 0, true, true);
+    bool ok = true;
+    for (int offset = 0; offset < readLen && ok; offset += 65536)
+    {
+        if (extractor::cancelled (cancel)) { error = "Analysis cancelled."; return std::nullopt; }
+        ok = reader->read (&buffer, offset, juce::jmin (65536, readLen - offset), offset, true, true);
+    }
     if (! ok)
     {
         error = "Read failed: " + file.getFileName();
@@ -1158,10 +1518,11 @@ static inline std::optional<AudioFileData> readAudioFile (const juce::File& file
 
     const double sourceRate = reader->sampleRate > 0.0 ? reader->sampleRate : 44100.0;
     const double outRate = targetRate > 0.0 ? targetRate : sourceRate;
-    auto converted = resampleLinear (convertChannels (buffer, targetChannels), sourceRate, outRate);
+    if (targetChannels > 0 && targetChannels != buffer.getNumChannels()) buffer = convertChannels (buffer, targetChannels);
+    if (std::abs (sourceRate - outRate) > 1.0e-6) buffer = resampleLinear (buffer, sourceRate, outRate);
 
     AudioFileData data;
-    data.buffer = std::move (converted);
+    data.buffer = std::move (buffer);
     data.sampleRate = outRate;
     data.sourceName = file.getFileNameWithoutExtension();
     return data;
@@ -1454,9 +1815,9 @@ static inline ImportRules makeDefaultRulesForAction (ImportAction action)
                                   || action == ImportAction::SegmentThenMegaTexture);
     rules.segmentBySilence = (action == ImportAction::SegmentLongFile
                               || action == ImportAction::SegmentThenMegaTexture);
+    rules.assistedExtraction = rules.segmentBySilence;
     rules.trimEdges = true;
-    rules.rejectNearDuplicates = (action == ImportAction::BuildMegaTexture
-                                  || action == ImportAction::SegmentThenMegaTexture);
+    rules.rejectNearDuplicates = (action == ImportAction::BuildMegaTexture);
     rules.preferNovelSamples = (action == ImportAction::BuildMegaTexture);
     rules.randomSeed = 0; // Resolved from source fingerprints at render time for deterministic replay.
     return rules;
@@ -1501,16 +1862,48 @@ static inline void finaliseClipOrdering (std::vector<ProcessedClip>& clips, cons
     }
 }
 
-static inline RenderResult renderImportAction (const std::vector<juce::File>& inputFiles, ImportAction action, ImportRules rules)
+static inline RenderResult renderImportActionImpl (const std::vector<juce::File>& inputFiles, ImportAction action, ImportRules rules)
 {
     RenderResult result;
-    auto files = filterSupportedExistingFiles (inputFiles);
+    if ((action == ImportAction::SegmentLongFile || action == ImportAction::SegmentThenMegaTexture) && rules.segmentationOutput >= 0)
+        action = rules.segmentationOutput == 1 ? ImportAction::SegmentThenMegaTexture : ImportAction::SegmentLongFile;
+    // Keep recipe placeholders in their original order, including missing files.
+    auto files = rules.sourceBindings.empty() ? filterSupportedExistingFiles (inputFiles) : inputFiles;
     if (files.empty())
     {
         result.message = "No supported audio files were provided.";
         return result;
     }
 
+    if (! rules.sourceBindings.empty() && rules.sourceBindings.size() != files.size())
+    {
+        result.message = "Recipe source order no longer matches the saved edits. Reopen the original recipe inputs.";
+        return result;
+    }
+    if (rules.sourceBindings.empty()) rules.sourceBindings.resize (files.size());
+    for (size_t i = 0; i < files.size(); ++i)
+    {
+        auto& binding = rules.sourceBindings[i];
+        if (binding.path.isEmpty()) binding.path = files[i].getFullPathName();
+        if (binding.path != files[i].getFullPathName())
+        {
+            result.message = "Recipe source order changed: " + files[i].getFileName();
+            return result;
+        }
+        if (isInputIndexDisabled (rules, (int) i)) continue;
+        if (! files[i].existsAsFile())
+        {
+            result.message = "Missing recipe source: " + binding.path + ". Restore the file or remove that source in the extractor.";
+            return result;
+        }
+        const auto current = fingerprintForFile (files[i]);
+        if (! sourceFingerprintMatches (binding, current))
+        {
+            result.message = "Source changed since its cuts were saved: " + files[i].getFileName() + ". Start a fresh import rather than applying old cuts.";
+            return result;
+        }
+        binding = current;
+    }
     if (rules.randomSeed == 0)
         rules.randomSeed = deterministicSeedForImport (files, action);
 
@@ -1518,8 +1911,7 @@ static inline RenderResult renderImportAction (const std::vector<juce::File>& in
     result.recipe.rules = rules;
     result.recipe.seed = rules.randomSeed;
     result.recipe.displayName = "File Import Recipe";
-    for (const auto& f : files)
-        result.recipe.inputs.push_back (fingerprintForFile (f));
+    result.recipe.inputs = rules.sourceBindings;
 
     result.files = files; // Source paths are retained for deterministic recipe replay and favorites.
 
@@ -1616,11 +2008,11 @@ static inline RenderResult renderImportAction (const std::vector<juce::File>& in
                 continue;
 
             const auto& f = files[(size_t) fileIndex];
-            auto data = readAudioFile (f, rules.outputChannels <= 0 ? 2 : rules.outputChannels, rules.outputSampleRate, 0.0, error);
-            if (! data.has_value())
-                continue;
+            auto data = readAudioFile (f, 0, 0.0, 0.0, error);
+            if (! data.has_value()) { result.message = error; result.renderedAudio.clear(); return result; }
 
             auto segments = segmentsForInput (rules, fileIndex, data->buffer, data->sampleRate);
+            storeSegmentSnapshot (result.recipe.rules, fileIndex, segments, data->sampleRate);
             for (const auto& s : segments)
             {
                 if (! s.enabled || s.length() <= 0)
@@ -1628,7 +2020,15 @@ static inline RenderResult renderImportAction (const std::vector<juce::File>& in
 
                 auto part = copyRange (data->buffer, s.startSample, s.endSample);
                 applyEdgeFades (part, data->sampleRate, rules.edgeFadeMs);
-                result.renderedAudio.push_back (makeRenderedAudioData (std::move (part), data->sampleRate,
+                if (rules.normalizeClipsRms)
+                {
+                    const double rms = computeRmsLinear (part);
+                    if (rms > 1.0e-9) part.applyGain ((float) (dbToLinear (rules.clipTargetRmsDb) / rms));
+                }
+                if (rules.outputChannels > 0 && part.getNumChannels() != rules.outputChannels) part = convertChannels (part, rules.outputChannels);
+                const double partRate = rules.outputSampleRate > 0.0 ? rules.outputSampleRate : data->sampleRate;
+                if (std::abs (partRate - data->sampleRate) > 1.0e-6) part = resampleLinear (part, data->sampleRate, partRate);
+                result.renderedAudio.push_back (makeRenderedAudioData (std::move (part), partRate,
                                                                        sanitiseRecipeFileStem (data->sourceName) + "_part" + paddedImportIndex (idx++)));
             }
         }
@@ -1649,11 +2049,11 @@ static inline RenderResult renderImportAction (const std::vector<juce::File>& in
                 continue;
 
             const auto& f = files[(size_t) fileIndex];
-            auto data = readAudioFile (f, rules.outputChannels <= 0 ? 2 : rules.outputChannels, rules.outputSampleRate, 0.0, error);
-            if (! data.has_value())
-                continue;
+            auto data = readAudioFile (f, 0, 0.0, 0.0, error);
+            if (! data.has_value()) { result.message = error; result.renderedAudio.clear(); return result; }
 
             auto segments = segmentsForInput (rules, fileIndex, data->buffer, data->sampleRate);
+            storeSegmentSnapshot (result.recipe.rules, fileIndex, segments, data->sampleRate);
             int localPart = 1;
             for (const auto& s : segments)
             {
@@ -1662,11 +2062,20 @@ static inline RenderResult renderImportAction (const std::vector<juce::File>& in
 
                 auto part = copyRange (data->buffer, s.startSample, s.endSample);
                 applyEdgeFades (part, data->sampleRate, rules.edgeFadeMs);
-                auto features = analyseAudioFeatures (part, data->sampleRate);
-                if (! clipPassesRules (features, clips, rules))
+                if (rules.normalizeClipsRms)
+                {
+                    const double rms = computeRmsLinear (part);
+                    if (rms > 1.0e-9) part.applyGain ((float) (dbToLinear (rules.clipTargetRmsDb) / rms));
+                }
+                if (rules.outputChannels > 0 && part.getNumChannels() != rules.outputChannels) part = convertChannels (part, rules.outputChannels);
+                const double partRate = rules.outputSampleRate > 0.0 ? rules.outputSampleRate : data->sampleRate;
+                if (std::abs (partRate - data->sampleRate) > 1.0e-6) part = resampleLinear (part, data->sampleRate, partRate);
+                auto features = analyseAudioFeatures (part, partRate);
+                // A confirmed kept segment is not silently pruned at export.
+                if (! s.locked && ! clipPassesRules (features, clips, rules))
                     continue;
 
-                clips.push_back ({ std::move (part), data->sampleRate,
+                clips.push_back ({ std::move (part), partRate,
                                    sanitiseRecipeFileStem (data->sourceName) + "_part" + paddedImportIndex (localPart++),
                                    features });
             }
@@ -1690,7 +2099,14 @@ static inline RenderResult renderImportAction (const std::vector<juce::File>& in
         juce::AudioBuffer<float> mega;
         double sr = clips.front().sampleRate > 0.0 ? clips.front().sampleRate : 48000.0;
         for (const auto& c : clips)
-            appendBuffer (mega, c.buffer, sr, rules);
+        {
+            if (std::abs (c.sampleRate - sr) > 1.0e-6)
+            {
+                auto converted = resampleLinear (c.buffer, c.sampleRate, sr);
+                appendBuffer (mega, converted, sr, rules);
+            }
+            else appendBuffer (mega, c.buffer, sr, rules);
+        }
 
         if (rules.normalizeFinalRms)
         {
@@ -1711,6 +2127,22 @@ static inline RenderResult renderImportAction (const std::vector<juce::File>& in
 }
 
 
+// Do not let an allocation/decoder/analysis exception escape an import worker
+// and terminate the host. All callers receive the existing result/error API.
+static inline RenderResult renderImportAction (const std::vector<juce::File>& files, ImportAction action, ImportRules rules)
+{
+    try { return renderImportActionImpl (files, action, std::move (rules)); }
+    catch (const std::exception& error)
+    {
+        RenderResult result; result.message = "Import failed: " + juce::String (error.what()); return result;
+    }
+    catch (...)
+    {
+        RenderResult result; result.message = "Import failed with an unexpected decoder or analysis error."; return result;
+    }
+}
+
+
 class ImportLandingPad final : public juce::Component
 {
 public:
@@ -1721,9 +2153,15 @@ public:
 
     ImportAction actionForPoint (juce::Point<int> p, bool multipleFiles) const
     {
-        const auto area = getLocalBounds().reduced (juce::jlimit (12, 44, getWidth() / 20));
-        const int rowH = area.getHeight() / 4;
-        const int row = juce::jlimit (0, 3, (p.y - area.getY()) / juce::jmax (1, rowH));
+        const auto rows = rowBounds();
+        int row = 0;
+        int distance = std::numeric_limits<int>::max();
+        for (int i = 0; i < 4; ++i)
+        {
+            const int d = std::abs (rows[(size_t) i].getCentreY() - p.y);
+            if (rows[(size_t) i].contains (p)) { row = i; break; }
+            if (d < distance) { distance = d; row = i; }
+        }
         switch (row)
         {
             case 0: return multipleFiles ? ImportAction::LoadSeparate : ImportAction::LoadSeparate;
@@ -1743,9 +2181,7 @@ public:
     {
         g.fillAll (juce::Colours::black.withAlpha (0.62f));
 
-        auto outer = getLocalBounds().reduced (juce::jlimit (12, 44, getWidth() / 20));
-        const int gap = 10;
-        const int rowH = juce::jmax (54, (outer.getHeight() - gap * 3) / 4);
+        const auto rows = rowBounds();
 
         const std::array<juce::String, 4> titles {
             "Load Directly",
@@ -1762,8 +2198,7 @@ public:
 
         for (int i = 0; i < 4; ++i)
         {
-            auto r = outer.removeFromTop (rowH);
-            outer.removeFromTop (gap);
+            auto r = rows[(size_t) i];
             const bool hot = r.contains (hoverPoint);
             auto rf = r.toFloat();
             g.setColour (hot ? juce::Colour (0xff1687ff) : juce::Colour (0xff0f66d0));
@@ -1782,1838 +2217,18 @@ public:
     }
 
 private:
+    std::array<juce::Rectangle<int>, 4> rowBounds() const
+    {
+        auto area = getLocalBounds().reduced (juce::jlimit (12, 44, getWidth() / 20));
+        const int gap = 10;
+        const int height = juce::jmax (1, (area.getHeight() - gap * 3) / 4);
+        std::array<juce::Rectangle<int>, 4> rows;
+        for (auto& row : rows) { row = area.removeFromTop (height); area.removeFromTop (gap); }
+        return rows;
+    }
     juce::Point<int> hoverPoint { -10000, -10000 };
 };
 
-class WaveformPreview final : public juce::Component
-{
-public:
-    using SegmentSelectCallback = std::function<void (int)>;
-    using SegmentBoundaryCallback = std::function<void (int, bool, int)>;
-    using SegmentDragFinishedCallback = std::function<void()>;
-    using SegmentCreatedCallback = std::function<void (int, int)>;
-
-    void setCallbacks (SegmentSelectCallback selectCb,
-                       SegmentBoundaryCallback boundaryCb,
-                       SegmentDragFinishedCallback dragFinishedCb = {},
-                       SegmentCreatedCallback createdCb = {})
-    {
-        onSegmentSelected = std::move (selectCb);
-        onSegmentBoundaryMoved = std::move (boundaryCb);
-        onSegmentDragFinished = std::move (dragFinishedCb);
-        onSegmentCreated = std::move (createdCb);
-    }
-
-    void setSelectedSegment (int index)
-    {
-        selectedSegment = index;
-        repaint();
-    }
-
-    void setBuffers (juce::AudioBuffer<float> originalIn,
-                     juce::AudioBuffer<float> processedIn,
-                     std::vector<SegmentRegion> segmentsIn = {},
-                     double sampleRateIn = 0.0,
-                     bool segmentationPreviewIn = false,
-                     juce::String statusIn = {})
-    {
-        const int oldNumSamples = original.getNumSamples();
-        const int newNumSamples = originalIn.getNumSamples();
-        const double oldSampleRate = sampleRate;
-
-        original = std::move (originalIn);
-        processed = std::move (processedIn);
-        segments = std::move (segmentsIn);
-        sampleRate = sampleRateIn;
-        segmentationPreview = segmentationPreviewIn;
-        status = std::move (statusIn);
-
-        if (oldNumSamples != newNumSamples || std::abs (oldSampleRate - sampleRateIn) > 1.0 || visibleEndSample <= visibleStartSample)
-            resetZoomToFull();
-        else
-            clampZoomRange();
-
-        repaint();
-    }
-
-    void paint (juce::Graphics& g) override
-    {
-        g.fillAll (juce::Colour (0xff15191d));
-
-        auto r = getLocalBounds().reduced (8);
-        auto kept = getKeptPanelBoundsFor (r);
-        auto source = r;
-        source.removeFromBottom (kept.getHeight());
-        source.removeFromBottom (8);
-
-        drawWave (g, source, original, segmentationPreview ? "Source / Editable Cuts" : "Before", true);
-        drawWave (g, kept, processed, segmentationPreview ? "Kept Audio" : "After", false);
-    }
-
-    void mouseDown (const juce::MouseEvent& e) override
-    {
-        draggingSegment = -1;
-        draggingStart = false;
-        creatingSegment = false;
-        scrollingZoom = false;
-
-        if (! segmentationPreview || original.getNumSamples() <= 0)
-            return;
-
-        const auto wave = getSourceWaveBounds();
-        if (! wave.contains (e.getPosition()))
-            return;
-
-        if (e.mods.isMiddleButtonDown())
-        {
-            const int start = getVisibleStartSample();
-            const int end = getVisibleEndSample();
-            if (end > start && end - start < original.getNumSamples())
-            {
-                scrollingZoom = true;
-                scrollDragStartX = e.position.x;
-                scrollDragStartSample = start;
-                scrollDragVisibleSpan = end - start;
-            }
-            return;
-        }
-
-        if (e.mods.isCtrlDown() || e.mods.isCommandDown())
-        {
-            creatingSegment = true;
-            createStartSample = sampleFromX (e.position.x);
-            createEndSample = createStartSample;
-            repaint();
-            return;
-        }
-
-        const int hit = findSegmentAtX (e.position.x);
-        if (hit >= 0)
-        {
-            selectedSegment = hit;
-            if (onSegmentSelected)
-                onSegmentSelected (hit);
-
-            const int x = (int) std::lround (e.position.x);
-            const int startX = xFromSample (segments[(size_t) hit].startSample);
-            const int endX = xFromSample (segments[(size_t) hit].endSample);
-            const int handleSlop = juce::jlimit (5, 12, getWidth() / 120);
-
-            if (std::abs (x - startX) <= handleSlop)
-            {
-                draggingSegment = hit;
-                draggingStart = true;
-            }
-            else if (std::abs (x - endX) <= handleSlop)
-            {
-                draggingSegment = hit;
-                draggingStart = false;
-            }
-
-            repaint();
-        }
-    }
-
-    void mouseDoubleClick (const juce::MouseEvent& e) override
-    {
-        if (segmentationPreview && getSourceWaveBounds().contains (e.getPosition()))
-            resetZoomToFull();
-    }
-
-    void mouseDrag (const juce::MouseEvent& e) override
-    {
-        if (scrollingZoom)
-        {
-            dragZoomScrollTo (e.position.x);
-            return;
-        }
-
-        if (creatingSegment)
-        {
-            createEndSample = sampleFromX (e.position.x);
-            repaint();
-            return;
-        }
-
-        if (draggingSegment < 0 || ! onSegmentBoundaryMoved)
-            return;
-
-        onSegmentBoundaryMoved (draggingSegment, draggingStart, sampleFromX (e.position.x));
-    }
-
-    void mouseUp (const juce::MouseEvent&) override
-    {
-        const bool wasCreating = creatingSegment;
-        const bool wasScrolling = scrollingZoom;
-        const bool wasDragging = draggingSegment >= 0;
-        const int start = juce::jmin (createStartSample, createEndSample);
-        const int end = juce::jmax (createStartSample, createEndSample);
-
-        draggingSegment = -1;
-        creatingSegment = false;
-        scrollingZoom = false;
-
-        if (wasCreating)
-        {
-            if (onSegmentCreated && end > start)
-                onSegmentCreated (start, end);
-            repaint();
-            return;
-        }
-
-        if (wasScrolling)
-        {
-            repaint();
-            return;
-        }
-
-        if (wasDragging && onSegmentDragFinished)
-            onSegmentDragFinished();
-    }
-
-    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override
-    {
-        if (! segmentationPreview || original.getNumSamples() <= 0 || ! getSourceWaveBounds().contains (e.getPosition()))
-        {
-            juce::Component::mouseWheelMove (e, wheel);
-            return;
-        }
-
-        const float dominantDelta = std::abs (wheel.deltaX) > std::abs (wheel.deltaY) ? wheel.deltaX : wheel.deltaY;
-        if (std::abs (dominantDelta) <= 0.000001f)
-            return;
-
-        if (e.mods.isShiftDown() || std::abs (wheel.deltaX) > std::abs (wheel.deltaY))
-            panZoomedView (dominantDelta);
-        else
-            zoomAtX (e.position.x, dominantDelta);
-    }
-
-private:
-    int getKeptPanelHeightForTotal (int totalHeight) const noexcept
-    {
-        if (! segmentationPreview)
-            return juce::jmax (48, totalHeight / 2 - 4);
-
-        constexpr int minKept = 72;
-        constexpr int minSource = 140;
-        const int preferred = (int) std::llround ((double) totalHeight * 0.20);
-        const int maxKept = juce::jmax (minKept, totalHeight - minSource - 8);
-        return juce::jlimit (minKept, maxKept, preferred);
-    }
-
-    juce::Rectangle<int> getKeptPanelBoundsFor (juce::Rectangle<int> area) const noexcept
-    {
-        return area.removeFromBottom (getKeptPanelHeightForTotal (area.getHeight()));
-    }
-
-    juce::Rectangle<int> getSourceWaveBounds() const
-    {
-        auto r = getLocalBounds().reduced (8);
-        const auto kept = getKeptPanelBoundsFor (r);
-        juce::ignoreUnused (kept);
-        r.removeFromBottom (getKeptPanelHeightForTotal (r.getHeight()));
-        r.removeFromBottom (8);
-        r.removeFromTop (22);
-        return r.reduced (8, 6);
-    }
-
-    int getVisibleStartSample() const noexcept
-    {
-        const int n = original.getNumSamples();
-        if (n <= 0)
-            return 0;
-        return juce::jlimit (0, juce::jmax (0, n - 1), visibleStartSample);
-    }
-
-    int getVisibleEndSample() const noexcept
-    {
-        const int n = original.getNumSamples();
-        if (n <= 0)
-            return 0;
-        return juce::jlimit (getVisibleStartSample() + 1, n, visibleEndSample);
-    }
-
-    int minimumVisibleSamples() const noexcept
-    {
-        const int n = original.getNumSamples();
-        if (n <= 0)
-            return 0;
-
-        const int timeFloor = sampleRate > 0.0 ? (int) std::llround (sampleRate * 0.020) : 64;
-        return juce::jlimit (1, n, juce::jmax (64, timeFloor));
-    }
-
-    void resetZoomToFull()
-    {
-        visibleStartSample = 0;
-        visibleEndSample = juce::jmax (0, original.getNumSamples());
-        repaint();
-    }
-
-    void clampZoomRange()
-    {
-        const int n = original.getNumSamples();
-        if (n <= 0)
-        {
-            visibleStartSample = 0;
-            visibleEndSample = 0;
-            return;
-        }
-
-        const int minVisible = minimumVisibleSamples();
-        int span = juce::jlimit (minVisible, n, visibleEndSample - visibleStartSample);
-        visibleStartSample = juce::jlimit (0, juce::jmax (0, n - span), visibleStartSample);
-        visibleEndSample = visibleStartSample + span;
-    }
-
-    void zoomAtX (float x, float wheelDelta)
-    {
-        const int n = original.getNumSamples();
-        if (n <= 0)
-            return;
-
-        const auto wave = getSourceWaveBounds();
-        const int oldStart = getVisibleStartSample();
-        const int oldEnd = getVisibleEndSample();
-        const int oldSpan = juce::jmax (1, oldEnd - oldStart);
-        const int minVisible = minimumVisibleSamples();
-
-        const double norm = juce::jlimit (0.0, 1.0, ((double) x - (double) wave.getX()) / (double) juce::jmax (1, wave.getWidth()));
-        const int anchor = juce::jlimit (0, n, (int) std::llround ((double) oldStart + norm * (double) oldSpan));
-        const double factor = juce::jlimit (0.20, 5.0, std::exp ((double) -wheelDelta * 1.75));
-        const int newSpan = juce::jlimit (minVisible, n, (int) std::llround ((double) oldSpan * factor));
-        int newStart = (int) std::llround ((double) anchor - norm * (double) newSpan);
-        newStart = juce::jlimit (0, juce::jmax (0, n - newSpan), newStart);
-
-        visibleStartSample = newStart;
-        visibleEndSample = newStart + newSpan;
-        repaint();
-    }
-
-    void panZoomedView (float wheelDelta)
-    {
-        const int n = original.getNumSamples();
-        const int oldStart = getVisibleStartSample();
-        const int oldEnd = getVisibleEndSample();
-        const int span = oldEnd - oldStart;
-        if (n <= 0 || span <= 0 || span >= n)
-            return;
-
-        const int step = juce::jmax (1, (int) std::llround ((double) span * 0.18 * (double) wheelDelta));
-        int newStart = oldStart - step;
-        newStart = juce::jlimit (0, juce::jmax (0, n - span), newStart);
-        visibleStartSample = newStart;
-        visibleEndSample = newStart + span;
-        repaint();
-    }
-
-    void dragZoomScrollTo (float x)
-    {
-        const int n = original.getNumSamples();
-        const auto wave = getSourceWaveBounds();
-        const int span = scrollDragVisibleSpan;
-        if (n <= 0 || span <= 0 || span >= n || wave.getWidth() <= 1)
-            return;
-
-        const double samplesPerPixel = (double) span / (double) wave.getWidth();
-        const int deltaSamples = (int) std::llround (((double) x - (double) scrollDragStartX) * samplesPerPixel);
-        const int newStart = juce::jlimit (0, juce::jmax (0, n - span), scrollDragStartSample - deltaSamples);
-        visibleStartSample = newStart;
-        visibleEndSample = newStart + span;
-        repaint();
-    }
-
-    int xFromSample (int sample) const
-    {
-        const auto wave = getSourceWaveBounds();
-        const int start = getVisibleStartSample();
-        const int end = getVisibleEndSample();
-        const int span = juce::jmax (1, end - start);
-        return wave.getX() + (int) std::llround ((double) (sample - start) * (double) wave.getWidth() / (double) span);
-    }
-
-    int sampleFromX (float x) const
-    {
-        const auto wave = getSourceWaveBounds();
-        const int n = juce::jmax (1, original.getNumSamples());
-        const int start = getVisibleStartSample();
-        const int end = getVisibleEndSample();
-        const int span = juce::jmax (1, end - start);
-        const double norm = ((double) x - (double) wave.getX()) / (double) juce::jmax (1, wave.getWidth());
-        return juce::jlimit (0, n, (int) std::llround ((double) start + norm * (double) span));
-    }
-
-    int findSegmentAtX (float x) const
-    {
-        const int xi = (int) std::lround (x);
-        int bodyHit = -1;
-        int bestHandle = -1;
-        int bestDistance = 1000000;
-        const int handleSlop = juce::jlimit (5, 12, getWidth() / 120);
-        const auto wave = getSourceWaveBounds();
-
-        for (int i = 0; i < (int) segments.size(); ++i)
-        {
-            const auto& s = segments[(size_t) i];
-            if (! s.enabled || s.length() <= 0)
-                continue;
-
-            if (s.endSample < getVisibleStartSample() || s.startSample > getVisibleEndSample())
-                continue;
-
-            const int sx = xFromSample (s.startSample);
-            const int ex = xFromSample (s.endSample);
-            if (juce::jmax (sx, ex) < wave.getX() - handleSlop || juce::jmin (sx, ex) > wave.getRight() + handleSlop)
-                continue;
-
-            const int ds = std::abs (xi - sx);
-            const int de = std::abs (xi - ex);
-            const int d = juce::jmin (ds, de);
-            if (d <= handleSlop && d < bestDistance)
-            {
-                bestDistance = d;
-                bestHandle = i;
-            }
-
-            if (xi >= juce::jmin (sx, ex) && xi <= juce::jmax (sx, ex))
-                bodyHit = i;
-        }
-
-        return bestHandle >= 0 ? bestHandle : bodyHit;
-    }
-
-    void drawWave (juce::Graphics& g, juce::Rectangle<int> area, const juce::AudioBuffer<float>& b, const juce::String& label, bool drawSegments)
-    {
-        g.setColour (juce::Colour (0xff0f1318));
-        g.fillRoundedRectangle (area.toFloat(), 8.0f);
-        g.setColour (juce::Colours::white.withAlpha (0.16f));
-        g.drawRoundedRectangle (area.toFloat().reduced (0.5f), 8.0f, 1.0f);
-
-        auto header = area.removeFromTop (22).reduced (8, 0);
-        g.setColour (juce::Colours::white.withAlpha (0.84f));
-        g.setFont (13.0f);
-        juce::String text = label;
-        if (drawSegments && segmentationPreview)
-        {
-            int enabledCount = 0;
-            for (const auto& s : segments)
-                if (s.enabled && s.length() > 0)
-                    ++enabledCount;
-            text << "  |  " << enabledCount << " segment" << (enabledCount == 1 ? "" : "s");
-            if (sampleRate > 0.0 && original.getNumSamples() > 0)
-            {
-                text << "  |  " << juce::String ((double) original.getNumSamples() / sampleRate, 2) << "s full source";
-                const int visibleSpan = juce::jmax (1, getVisibleEndSample() - getVisibleStartSample());
-                const double zoom = (double) original.getNumSamples() / (double) visibleSpan;
-                if (zoom > 1.01)
-                    text << "  |  zoom " << juce::String (zoom, 1) << "x";
-            }
-            text << "  |  wheel zoom, Shift+wheel/MMB-drag pan, Ctrl+drag new, Tab/Shift+Tab nav, Space play/pause, Delete remove, Ctrl+Z undo";
-        }
-        if (drawSegments && status.isNotEmpty())
-            text << "  |  " << status;
-        g.drawText (text, header, juce::Justification::centredLeft, true);
-
-        auto wave = area.reduced (8, 6);
-        if (b.getNumSamples() <= 0 || b.getNumChannels() <= 0 || wave.getWidth() <= 1)
-        {
-            g.setColour (juce::Colours::white.withAlpha (0.4f));
-            g.drawText (status.isNotEmpty() ? status : juce::String ("No preview data"), wave, juce::Justification::centred, true);
-            return;
-        }
-
-        if (drawSegments && segmentationPreview && ! segments.empty())
-            drawSegmentOverlay (g, wave, b.getNumSamples());
-
-        const float mid = (float) wave.getCentreY();
-        const float half = (float) wave.getHeight() * 0.45f;
-        juce::Path path;
-        const int width = juce::jmax (1, wave.getWidth());
-        const int n = b.getNumSamples();
-        const bool useZoom = drawSegments && segmentationPreview && (&b == &original);
-        const int viewStart = useZoom ? getVisibleStartSample() : 0;
-        const int viewEnd = useZoom ? getVisibleEndSample() : n;
-        const int viewSpan = juce::jmax (1, viewEnd - viewStart);
-
-        for (int x = 0; x < width; ++x)
-        {
-            const int start = viewStart + (int) ((int64_t) x * viewSpan / width);
-            const int end = viewStart + (int) ((int64_t) (x + 1) * viewSpan / width);
-            float mn = 0.0f;
-            float mx = 0.0f;
-            for (int ch = 0; ch < b.getNumChannels(); ++ch)
-            {
-                const auto* p = b.getReadPointer (ch);
-                for (int i = start; i < juce::jmax (start + 1, end); ++i)
-                {
-                    const float v = p[juce::jlimit (0, n - 1, i)];
-                    mn = juce::jmin (mn, v);
-                    mx = juce::jmax (mx, v);
-                }
-            }
-
-            const float y1 = mid - mx * half;
-            const float y2 = mid - mn * half;
-            path.startNewSubPath ((float) wave.getX() + (float) x, y1);
-            path.lineTo ((float) wave.getX() + (float) x, y2);
-        }
-
-        g.setColour (juce::Colour (0xff7cc7ff));
-        g.strokePath (path, juce::PathStrokeType (1.0f));
-
-        if (! drawSegments && segmentationPreview && ! segments.empty())
-            drawKeptSegmentOverlay (g, wave, b.getNumSamples());
-    }
-
-    void drawKeptSegmentOverlay (juce::Graphics& g, juce::Rectangle<int> wave, int totalSamples)
-    {
-        if (totalSamples <= 0 || wave.getWidth() <= 1)
-            return;
-
-        int cursor = 0;
-        for (int i = 0; i < (int) segments.size(); ++i)
-        {
-            const auto& s = segments[(size_t) i];
-            if (! s.enabled || s.length() <= 0)
-                continue;
-
-            const int start = cursor;
-            const int end = juce::jmin (totalSamples, cursor + s.length());
-            cursor = end;
-
-            if (end <= start)
-                continue;
-
-            const int x1 = wave.getX() + (int) std::llround ((double) start * (double) wave.getWidth() / (double) totalSamples);
-            const int x2 = wave.getX() + (int) std::llround ((double) end * (double) wave.getWidth() / (double) totalSamples);
-            const auto region = juce::Rectangle<int> (juce::jmin (x1, x2), wave.getY(), juce::jmax (1, std::abs (x2 - x1)), wave.getHeight());
-            const bool selected = i == selectedSegment;
-
-            g.setColour ((selected ? juce::Colour (0xff60a5fa) : juce::Colour (0xff34d399)).withAlpha (selected ? 0.16f : 0.07f));
-            g.fillRect (region);
-            g.setColour ((selected ? juce::Colour (0xff93c5fd) : juce::Colour (0xffffd166)).withAlpha (0.75f));
-            g.drawLine ((float) x1, (float) wave.getY(), (float) x1, (float) wave.getBottom(), selected ? 2.0f : 1.0f);
-            g.drawLine ((float) x2, (float) wave.getY(), (float) x2, (float) wave.getBottom(), selected ? 2.0f : 1.0f);
-        }
-    }
-
-    void drawSegmentOverlay (juce::Graphics& g, juce::Rectangle<int> wave, int totalSamples)
-    {
-        if (totalSamples <= 0)
-            return;
-
-        for (int i = 0; i < (int) segments.size(); ++i)
-        {
-            const auto& s = segments[(size_t) i];
-            if (! s.enabled || s.length() <= 0)
-                continue;
-
-            const int rawX1 = xFromSample (s.startSample);
-            const int rawX2 = xFromSample (s.endSample);
-            if (juce::jmax (rawX1, rawX2) < wave.getX() || juce::jmin (rawX1, rawX2) > wave.getRight())
-                continue;
-
-            const int x1 = juce::jlimit (wave.getX(), wave.getRight(), rawX1);
-            const int x2 = juce::jlimit (wave.getX(), wave.getRight(), rawX2);
-            const auto region = juce::Rectangle<int> (juce::jmin (x1, x2), wave.getY(), juce::jmax (1, std::abs (x2 - x1)), wave.getHeight());
-            const bool selected = i == selectedSegment;
-            g.setColour ((selected ? juce::Colour (0xff60a5fa) : juce::Colour (0xff34d399)).withAlpha (selected ? 0.22f : 0.13f));
-            g.fillRect (region);
-            g.setColour ((selected ? juce::Colour (0xff93c5fd) : juce::Colour (0xffffd166)).withAlpha (0.92f));
-            if (rawX1 >= wave.getX() && rawX1 <= wave.getRight())
-                g.drawLine ((float) rawX1, (float) wave.getY(), (float) rawX1, (float) wave.getBottom(), selected ? 2.0f : 1.2f);
-            if (rawX2 >= wave.getX() && rawX2 <= wave.getRight())
-                g.drawLine ((float) rawX2, (float) wave.getY(), (float) rawX2, (float) wave.getBottom(), selected ? 2.0f : 1.2f);
-            if (selected)
-            {
-                g.setColour (juce::Colour (0xff93c5fd).withAlpha (0.75f));
-                g.drawRect (region, 1);
-            }
-        }
-
-        drawPendingCreatedSegment (g, wave);
-    }
-
-    void drawPendingCreatedSegment (juce::Graphics& g, juce::Rectangle<int> wave)
-    {
-        if (! creatingSegment)
-            return;
-
-        const int start = juce::jmin (createStartSample, createEndSample);
-        const int end = juce::jmax (createStartSample, createEndSample);
-        if (end <= start)
-            return;
-
-        const int rawX1 = xFromSample (start);
-        const int rawX2 = xFromSample (end);
-        if (juce::jmax (rawX1, rawX2) < wave.getX() || juce::jmin (rawX1, rawX2) > wave.getRight())
-            return;
-
-        const int x1 = juce::jlimit (wave.getX(), wave.getRight(), rawX1);
-        const int x2 = juce::jlimit (wave.getX(), wave.getRight(), rawX2);
-        const auto region = juce::Rectangle<int> (juce::jmin (x1, x2), wave.getY(), juce::jmax (1, std::abs (x2 - x1)), wave.getHeight());
-        g.setColour (juce::Colour (0xffffd166).withAlpha (0.24f));
-        g.fillRect (region);
-        g.setColour (juce::Colour (0xffffe6a8).withAlpha (0.92f));
-        g.drawRect (region, 2);
-    }
-
-    juce::AudioBuffer<float> original;
-    juce::AudioBuffer<float> processed;
-    std::vector<SegmentRegion> segments;
-    double sampleRate = 0.0;
-    bool segmentationPreview = false;
-    juce::String status;
-    int visibleStartSample = 0;
-    int visibleEndSample = 0;
-    int selectedSegment = -1;
-    int draggingSegment = -1;
-    bool draggingStart = false;
-    bool creatingSegment = false;
-    int createStartSample = 0;
-    int createEndSample = 0;
-    bool scrollingZoom = false;
-    float scrollDragStartX = 0.0f;
-    int scrollDragStartSample = 0;
-    int scrollDragVisibleSpan = 0;
-    SegmentSelectCallback onSegmentSelected;
-    SegmentBoundaryCallback onSegmentBoundaryMoved;
-    SegmentDragFinishedCallback onSegmentDragFinished;
-    SegmentCreatedCallback onSegmentCreated;
-};
-
-class ResettableSlider final : public juce::Slider
-{
-public:
-    void setResetValue (double v)
-    {
-        resetValue = v;
-        setDoubleClickReturnValue (true, resetValue);
-    }
-
-    void mouseDown (const juce::MouseEvent& e) override
-    {
-        if (e.mods.isRightButtonDown())
-        {
-            setValue (resetValue, juce::sendNotificationAsync);
-            return;
-        }
-
-        juce::Slider::mouseDown (e);
-    }
-
-private:
-    double resetValue = 0.0;
-};
-
-class ImportPreviewComponent final : public juce::Component,
-                                     private juce::Slider::Listener,
-                                     private juce::Timer,
-                                     private juce::KeyListener
-{
-public:
-    using ApplyCallback = std::function<void (ImportRules)>;
-    using AuditionCallback = std::function<void (juce::AudioBuffer<float>, double)>;
-    using StopAuditionCallback = std::function<void()>;
-    using PauseAuditionCallback = std::function<void (bool)>;
-
-    ImportPreviewComponent (std::vector<juce::File> inputFiles,
-                            ImportAction actionIn,
-                            ImportRules initialRules,
-                            ApplyCallback cb,
-                            AuditionCallback auditionCb = {},
-                            StopAuditionCallback stopAuditionCb = {},
-                            PauseAuditionCallback pauseAuditionCb = {})
-        : files (filterSupportedExistingFiles (inputFiles)),
-          action (actionIn),
-          rules (std::move (initialRules)),
-          onApply (std::move (cb)),
-          onAudition (std::move (auditionCb)),
-          onStopAudition (std::move (stopAuditionCb)),
-          onPauseAudition (std::move (pauseAuditionCb))
-    {
-        setWantsKeyboardFocus (true);
-        setMouseClickGrabsKeyboardFocus (true);
-        title.setText (isSegmentationMode() ? "Segmentation Preview" : "Preprocess Preview", juce::dontSendNotification);
-        title.setFont (juce::Font (17.0f, juce::Font::bold));
-        title.setJustificationType (juce::Justification::centredLeft);
-        addAndMakeVisible (title);
-
-        defaultRules = makeDefaultRulesForAction (action);
-
-        sourceLabel.setText ("Preview source", juce::dontSendNotification);
-        sourceLabel.setJustificationType (juce::Justification::centredLeft);
-        addAndMakeVisible (sourceLabel);
-
-        sourceSelector.setTextWhenNothingSelected ("No source files");
-        sourceSelector.onChange = [this]
-        {
-            const int index = sourceSelector.getSelectedId() - 1;
-            if (index >= 0 && index < (int) files.size() && index != previewFileIndex)
-            {
-                stopAuditionNow();
-                previewFileIndex = index;
-                selectedSegment = -1;
-                refreshPreview();
-                maybeAutoPlaySelectedSegment();
-            }
-        };
-        addAndMakeVisible (sourceSelector);
-
-        configureSlider (silenceDb, "Silence threshold dBFS", -90.0, -6.0, 0.5, rules.silenceThresholdDb, defaultRules.silenceThresholdDb, -50.0);
-        configureSlider (threshold, za::text::utf8 ("Relative RMS ×"), 0.0, 2.0, 0.01, rules.silenceThresholdRatio, defaultRules.silenceThresholdRatio, 0.25);
-        configureSlider (minSilence, "Min quiet gap ms", 1.0, 5000.0, 1.0, rules.minSilenceMs, defaultRules.minSilenceMs, 100.0);
-        configureSlider (minSegment, "Min segment ms", 1.0, 10000.0, 1.0, rules.minSegmentMs, defaultRules.minSegmentMs, 250.0);
-        configureSlider (preRoll, "Pre-roll ms", 0.0, 500.0, 1.0, rules.preRollMs, defaultRules.preRollMs, 20.0);
-        configureSlider (postRoll, "Post-roll ms", 0.0, 1000.0, 1.0, rules.postRollMs, defaultRules.postRollMs, 25.0);
-        configureSlider (fade, "Fade ms", 0.0, 100.0, 0.5, rules.edgeFadeMs, defaultRules.edgeFadeMs, 10.0);
-        configureSlider (rmsReject, "Reject below dB RMS", -120.0, -12.0, 0.5, rules.minRmsDb, defaultRules.minRmsDb, -65.0);
-
-        configureSlider (segmentStart, "Segment start sec", 0.0, 1.0, 0.0001, 0.0, 0.0);
-        configureSlider (segmentEnd, "Segment end sec", 0.0, 1.0, 0.0001, 1.0, 1.0);
-
-        relativeToggle.setButtonText ("Also use relative RMS gate");
-        relativeToggle.setToggleState (rules.useRelativeRmsThreshold, juce::dontSendNotification);
-        relativeToggle.onClick = [this] { captureUndoState(); updateRulesFromUi(); updateControlEnablement(); refreshPreview(); };
-        addAndMakeVisible (relativeToggle);
-
-        trimToggle.setButtonText ("Trim leading/trailing silence");
-        trimToggle.setToggleState (rules.trimEdges, juce::dontSendNotification);
-        trimToggle.onClick = [this] { captureUndoState(); updateRulesFromUi(); refreshPreview(); };
-        addAndMakeVisible (trimToggle);
-
-        stripToggle.setButtonText ("Strip internal silence");
-        stripToggle.setToggleState (rules.stripInternalSilence, juce::dontSendNotification);
-        stripToggle.onClick = [this] { captureUndoState(); updateRulesFromUi(); refreshPreview(); };
-        addAndMakeVisible (stripToggle);
-
-        rejectToggle.setButtonText ("Reject quiet clips");
-        rejectToggle.setToggleState (rules.removeLowRms, juce::dontSendNotification);
-        rejectToggle.onClick = [this] { captureUndoState(); updateRulesFromUi(); updateControlEnablement(); refreshPreview(); };
-        addAndMakeVisible (rejectToggle);
-
-        normalizeToggle.setButtonText ("Normalize clip RMS");
-        normalizeToggle.setToggleState (rules.normalizeClipsRms, juce::dontSendNotification);
-        normalizeToggle.onClick = [this] { captureUndoState(); updateRulesFromUi(); refreshPreview(); };
-        addAndMakeVisible (normalizeToggle);
-
-        segmentLabel.setText ("Segment edit", juce::dontSendNotification);
-        segmentLabel.setJustificationType (juce::Justification::centredLeft);
-        addAndMakeVisible (segmentLabel);
-
-        prevSegment.setButtonText ("Prev");
-        prevSegment.onClick = [this] { selectAdjacentSegment (-1); };
-        addAndMakeVisible (prevSegment);
-
-        nextSegment.setButtonText ("Next");
-        nextSegment.onClick = [this] { selectAdjacentSegment (1); };
-        addAndMakeVisible (nextSegment);
-
-        playSegment.setButtonText ("Play seg");
-        playSegment.setTooltip ("Audition the currently selected segment through the plugin output.");
-        playSegment.onClick = [this] { toggleSelectedSegmentAudition(); };
-        addAndMakeVisible (playSegment);
-
-        stopAudition.setButtonText ("Stop");
-        stopAudition.setTooltip ("Stop the current segment audition.");
-        stopAudition.onClick = [this] { stopAuditionNow(); };
-        addAndMakeVisible (stopAudition);
-
-        autoPlaySegment.setButtonText ("Auto-play selected");
-        autoPlaySegment.setTooltip ("Automatically audition a segment when it is selected with Tab, click, or newly created.");
-        autoPlaySegment.onClick = [this]
-        {
-            segmentAutoPlay = autoPlaySegment.getToggleState();
-            if (segmentAutoPlay)
-                auditionSelectedSegment();
-        };
-        addAndMakeVisible (autoPlaySegment);
-
-        deleteSegment.setButtonText ("Delete seg");
-        deleteSegment.setTooltip ("Remove the selected segment from the rendered import. This does not delete anything on disk.");
-        deleteSegment.onClick = [this] { deleteSelectedSegment(); };
-        addAndMakeVisible (deleteSegment);
-
-        restoreSegments.setButtonText ("Auto cuts");
-        restoreSegments.setTooltip ("Discard manual cuts for this source and re-run auto segmentation with the current rules.");
-        restoreSegments.onClick = [this]
-        {
-            captureUndoState();
-            clearManualSegmentsForInput (rules, previewFileIndex);
-            selectedSegment = -1;
-            refreshPreview();
-        };
-        addAndMakeVisible (restoreSegments);
-
-        removeCurrentFile.setButtonText ("Remove source");
-        removeCurrentFile.setTooltip ("Remove/restore this source from the rendered import. The source file remains on disk and stays restorable in this recipe.");
-        removeCurrentFile.onClick = [this]
-        {
-            captureUndoState();
-            stopAuditionNow();
-            setInputIndexDisabled (rules, previewFileIndex, ! isCurrentInputDisabled());
-            syncSourceSelector();
-            refreshPreview();
-        };
-        addAndMakeVisible (removeCurrentFile);
-
-        waveform.setCallbacks ([this] (int index)
-        {
-            selectedSegment = index;
-            syncSegmentControls();
-            maybeAutoPlaySelectedSegment();
-        },
-        [this] (int index, bool isStart, int sample)
-        {
-            editSegmentBoundary (index, isStart, sample);
-        },
-        [this]
-        {
-            boundaryEditUndoCaptured = false;
-            boundaryEditSegment = -1;
-        },
-        [this] (int startSample, int endSample)
-        {
-            createSegmentFromDrag (startSample, endSample);
-        });
-        waveform.setWantsKeyboardFocus (true);
-        waveform.setMouseClickGrabsKeyboardFocus (true);
-        addAndMakeVisible (waveform);
-
-        apply.setButtonText ("Apply");
-        apply.onClick = [this]
-        {
-            updateRulesFromUi();
-            if (onApply)
-                onApply (rules);
-            if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
-                dw->exitModalState (1);
-        };
-        addAndMakeVisible (apply);
-
-        cancel.setButtonText ("Cancel");
-        cancel.onClick = [this]
-        {
-            if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
-                dw->exitModalState (0);
-        };
-        addAndMakeVisible (cancel);
-
-        resetDefaults.setButtonText ("Reset");
-        resetDefaults.setTooltip ("Reset import/segmentation controls and clear manual cuts/source removals. Right-click any slider to reset only that control.");
-        resetDefaults.onClick = [this]
-        {
-            captureUndoState();
-            stopAuditionNow();
-            rules = defaultRules;
-            syncUiFromRules();
-            selectedSegment = -1;
-            refreshPreview();
-        };
-        addAndMakeVisible (resetDefaults);
-
-        syncSourceSelector();
-        updateControlEnablement();
-        setSegmentationControlsVisible (isSegmentationMode());
-
-        installShortcutKeyListeners();
-
-        setSize (1120, 740);
-
-        waveform.setBuffers (juce::AudioBuffer<float>(), juce::AudioBuffer<float>(), {}, 0.0,
-                             isSegmentationMode(),
-                             files.empty() ? juce::String ("No input file was passed to the preview.") : za::text::utf8 ("Loading preview…"));
-
-        juce::Component::SafePointer<ImportPreviewComponent> safeThis (this);
-        juce::MessageManager::callAsync ([safeThis]
-        {
-            if (safeThis != nullptr)
-            {
-                safeThis->refreshPreview();
-                safeThis->grabKeyboardFocus();
-            }
-        });
-    }
-
-    ~ImportPreviewComponent() override
-    {
-        removeShortcutKeyListeners();
-        stopTimer();
-        stopAuditionNow();
-    }
-
-    void resized() override
-    {
-        auto r = getLocalBounds().reduced (14);
-        title.setBounds (r.removeFromTop (28));
-        r.removeFromTop (6);
-
-        auto sourceRow = r.removeFromTop (30);
-        sourceLabel.setBounds (sourceRow.removeFromLeft (110));
-        sourceRow.removeFromLeft (8);
-        sourceSelector.setBounds (sourceRow);
-        r.removeFromTop (8);
-
-        auto bottom = r.removeFromBottom (36);
-        cancel.setBounds (bottom.removeFromRight (100));
-        bottom.removeFromRight (8);
-        apply.setBounds (bottom.removeFromRight (100));
-        bottom.removeFromRight (8);
-        resetDefaults.setBounds (bottom.removeFromRight (90));
-
-        auto left = r.removeFromLeft (300);
-        r.removeFromLeft (12);
-        auto sliderH = 39;
-        silenceDb.setBounds (left.removeFromTop (sliderH));
-        threshold.setBounds (left.removeFromTop (sliderH));
-        minSilence.setBounds (left.removeFromTop (sliderH));
-        minSegment.setBounds (left.removeFromTop (sliderH));
-        preRoll.setBounds (left.removeFromTop (sliderH));
-        postRoll.setBounds (left.removeFromTop (sliderH));
-        fade.setBounds (left.removeFromTop (sliderH));
-        rmsReject.setBounds (left.removeFromTop (sliderH));
-        left.removeFromTop (4);
-        relativeToggle.setBounds (left.removeFromTop (24));
-        trimToggle.setBounds (left.removeFromTop (24));
-        stripToggle.setBounds (left.removeFromTop (24));
-        rejectToggle.setBounds (left.removeFromTop (24));
-        normalizeToggle.setBounds (left.removeFromTop (24));
-
-        left.removeFromTop (8);
-        segmentLabel.setBounds (left.removeFromTop (24));
-        segmentStart.setBounds (left.removeFromTop (sliderH));
-        segmentEnd.setBounds (left.removeFromTop (sliderH));
-        auto segButtons1 = left.removeFromTop (28);
-        prevSegment.setBounds (segButtons1.removeFromLeft (54));
-        segButtons1.removeFromLeft (6);
-        nextSegment.setBounds (segButtons1.removeFromLeft (54));
-        segButtons1.removeFromLeft (6);
-        playSegment.setBounds (segButtons1.removeFromLeft (82));
-        segButtons1.removeFromLeft (6);
-        stopAudition.setBounds (segButtons1);
-        left.removeFromTop (6);
-        auto segButtons2 = left.removeFromTop (30);
-        restoreSegments.setBounds (segButtons2.removeFromLeft (92));
-        segButtons2.removeFromLeft (8);
-        removeCurrentFile.setBounds (segButtons2.removeFromLeft (120));
-        segButtons2.removeFromLeft (8);
-        deleteSegment.setBounds (segButtons2);
-        left.removeFromTop (6);
-        autoPlaySegment.setBounds (left.removeFromTop (24));
-
-        waveform.setBounds (r);
-    }
-
-private:
-    bool isSegmentationMode() const noexcept
-    {
-        return action == ImportAction::SegmentLongFile || action == ImportAction::SegmentThenMegaTexture;
-    }
-
-    struct UndoState
-    {
-        ImportRules rules;
-        int previewFileIndex = 0;
-        int selectedSegment = -1;
-    };
-
-    UndoState currentUndoState() const
-    {
-        return { rules, previewFileIndex, selectedSegment };
-    }
-
-    void captureUndoState()
-    {
-        if (restoringUndoState)
-            return;
-
-        undoStack.push_back (currentUndoState());
-        if (undoStack.size() > 64)
-            undoStack.erase (undoStack.begin());
-        redoStack.clear();
-    }
-
-    void applyUndoState (const UndoState& state)
-    {
-        restoringUndoState = true;
-        stopAuditionNow();
-        rules = state.rules;
-        previewFileIndex = juce::jlimit (files.empty() ? -1 : 0,
-                                           juce::jmax (-1, (int) files.size() - 1),
-                                           state.previewFileIndex);
-        selectedSegment = state.selectedSegment;
-        syncUiFromRules();
-        refreshPreview();
-        restoringUndoState = false;
-    }
-
-    void undoLastEdit()
-    {
-        if (undoStack.empty())
-            return;
-
-        redoStack.push_back (currentUndoState());
-        const auto state = undoStack.back();
-        undoStack.pop_back();
-        applyUndoState (state);
-    }
-
-    void redoLastEdit()
-    {
-        if (redoStack.empty())
-            return;
-
-        undoStack.push_back (currentUndoState());
-        const auto state = redoStack.back();
-        redoStack.pop_back();
-        applyUndoState (state);
-    }
-
-    bool isTextEditorFocused() const
-    {
-        if (auto* focused = juce::Component::getCurrentlyFocusedComponent())
-            return dynamic_cast<juce::TextEditor*> (focused) != nullptr;
-        return false;
-    }
-
-    bool handleShortcutKey (const juce::KeyPress& key)
-    {
-        if (! isSegmentationMode())
-            return false;
-
-        const auto mods = key.getModifiers();
-        const int code = key.getKeyCode();
-        const bool ctrlOrCmd = mods.isCtrlDown() || mods.isCommandDown();
-
-        if (ctrlOrCmd && (code == 'z' || code == 'Z'))
-        {
-            if (mods.isShiftDown())
-                redoLastEdit();
-            else
-                undoLastEdit();
-            return true;
-        }
-
-        if (isTextEditorFocused())
-            return false;
-
-        if (! ctrlOrCmd && code == juce::KeyPress::tabKey)
-        {
-            selectAdjacentSegment (mods.isShiftDown() ? -1 : 1);
-            return true;
-        }
-
-        if (code == juce::KeyPress::spaceKey)
-        {
-            toggleSelectedSegmentAudition();
-            return true;
-        }
-
-        if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey)
-        {
-            deleteSelectedSegment();
-            return true;
-        }
-
-        return false;
-    }
-
-    bool keyPressed (const juce::KeyPress& key) override
-    {
-        return handleShortcutKey (key);
-    }
-
-    bool keyPressed (const juce::KeyPress& key, juce::Component*) override
-    {
-        return handleShortcutKey (key);
-    }
-
-    void installShortcutKeyListeners()
-    {
-        setWantsKeyboardFocus (true);
-        addKeyListener (this);
-        for (int i = 0; i < getNumChildComponents(); ++i)
-            if (auto* child = getChildComponent (i))
-                child->addKeyListener (this);
-    }
-
-    void removeShortcutKeyListeners()
-    {
-        removeKeyListener (this);
-        for (int i = 0; i < getNumChildComponents(); ++i)
-            if (auto* child = getChildComponent (i))
-                child->removeKeyListener (this);
-    }
-
-    void timerCallback() override
-    {
-        if (segmentAuditionActive && ! segmentAuditionPaused
-            && juce::Time::getMillisecondCounterHiRes() >= segmentAuditionEndMs)
-        {
-            clearSegmentAuditionUiState();
-        }
-    }
-
-    void configureSlider (ResettableSlider& s, const juce::String& label, double min, double max, double step, double value, double defaultValue, double midpoint = 0.0)
-    {
-        s.setTextValueSuffix (juce::String ("  ") + label);
-        s.setRange (min, max, step);
-        s.setValue (value, juce::dontSendNotification);
-        s.setResetValue (defaultValue);
-        s.setSliderStyle (juce::Slider::LinearHorizontal);
-        s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 104, 18);
-        if (midpoint > min && midpoint < max)
-            s.setSkewFactorFromMidPoint (midpoint);
-        s.addListener (this);
-        addAndMakeVisible (s);
-    }
-
-    void sliderValueChanged (juce::Slider* slider) override
-    {
-        if (updatingUi)
-            return;
-
-        if (! sliderEditUndoCaptured)
-        {
-            captureUndoState();
-            sliderEditUndoCaptured = true;
-        }
-
-        const bool mouseDriven = slider != nullptr && slider->isMouseButtonDown();
-
-        if (slider == &segmentStart || slider == &segmentEnd)
-        {
-            updateSelectedSegmentFromSliders();
-            if (! mouseDriven)
-                sliderEditUndoCaptured = false;
-            return;
-        }
-
-        updateRulesFromUi();
-        clearManualSegmentsForInput (rules, previewFileIndex);
-        selectedSegment = -1;
-        refreshPreview();
-        if (! mouseDriven)
-            sliderEditUndoCaptured = false;
-    }
-
-    void sliderDragStarted (juce::Slider*) override
-    {
-        if (! updatingUi && ! sliderEditUndoCaptured)
-        {
-            captureUndoState();
-            sliderEditUndoCaptured = true;
-        }
-    }
-
-    void sliderDragEnded (juce::Slider*) override
-    {
-        sliderEditUndoCaptured = false;
-    }
-
-    void updateRulesFromUi()
-    {
-        rules.silenceThresholdDb = silenceDb.getValue();
-        rules.silenceThresholdRatio = (float) threshold.getValue();
-        rules.useRelativeRmsThreshold = relativeToggle.getToggleState();
-        rules.minSilenceMs = minSilence.getValue();
-        rules.minSegmentMs = minSegment.getValue();
-        rules.preRollMs = preRoll.getValue();
-        rules.postRollMs = postRoll.getValue();
-        rules.edgeFadeMs = fade.getValue();
-        rules.minRmsDb = rmsReject.getValue();
-        rules.stripInternalSilence = stripToggle.getToggleState();
-        rules.trimEdges = trimToggle.getToggleState();
-        rules.removeLowRms = rejectToggle.getToggleState();
-        rules.normalizeClipsRms = normalizeToggle.getToggleState();
-    }
-
-    void syncUiFromRules()
-    {
-        updatingUi = true;
-        silenceDb.setValue (rules.silenceThresholdDb, juce::dontSendNotification);
-        threshold.setValue (rules.silenceThresholdRatio, juce::dontSendNotification);
-        relativeToggle.setToggleState (rules.useRelativeRmsThreshold, juce::dontSendNotification);
-        minSilence.setValue (rules.minSilenceMs, juce::dontSendNotification);
-        minSegment.setValue (rules.minSegmentMs, juce::dontSendNotification);
-        preRoll.setValue (rules.preRollMs, juce::dontSendNotification);
-        postRoll.setValue (rules.postRollMs, juce::dontSendNotification);
-        fade.setValue (rules.edgeFadeMs, juce::dontSendNotification);
-        rmsReject.setValue (rules.minRmsDb, juce::dontSendNotification);
-        stripToggle.setToggleState (rules.stripInternalSilence, juce::dontSendNotification);
-        trimToggle.setToggleState (rules.trimEdges, juce::dontSendNotification);
-        rejectToggle.setToggleState (rules.removeLowRms, juce::dontSendNotification);
-        normalizeToggle.setToggleState (rules.normalizeClipsRms, juce::dontSendNotification);
-        updatingUi = false;
-        syncSourceSelector();
-        updateControlEnablement();
-        syncSegmentControls();
-    }
-
-    void updateControlEnablement()
-    {
-        threshold.setEnabled (relativeToggle.getToggleState());
-        rmsReject.setEnabled (rejectToggle.getToggleState());
-        apply.setEnabled (! allInputsDisabled());
-        removeCurrentFile.setEnabled (! files.empty());
-    }
-
-    void setSegmentationControlsVisible (bool shouldShow)
-    {
-        segmentLabel.setVisible (shouldShow);
-        segmentStart.setVisible (shouldShow);
-        segmentEnd.setVisible (shouldShow);
-        prevSegment.setVisible (shouldShow);
-        nextSegment.setVisible (shouldShow);
-        playSegment.setVisible (shouldShow);
-        stopAudition.setVisible (shouldShow);
-        autoPlaySegment.setVisible (shouldShow);
-        deleteSegment.setVisible (shouldShow);
-        restoreSegments.setVisible (shouldShow);
-    }
-
-    bool allInputsDisabled() const noexcept
-    {
-        if (files.empty())
-            return true;
-
-        for (int i = 0; i < (int) files.size(); ++i)
-            if (! isInputIndexDisabled (rules, i))
-                return false;
-
-        return true;
-    }
-
-    bool isCurrentInputDisabled() const noexcept
-    {
-        return isInputIndexDisabled (rules, previewFileIndex);
-    }
-
-    void syncSourceSelector()
-    {
-        updatingUi = true;
-        sourceSelector.clear (juce::dontSendNotification);
-        for (int i = 0; i < (int) files.size(); ++i)
-        {
-            juce::String label = files[(size_t) i].getFileName();
-            if (isInputIndexDisabled (rules, i))
-                label << "  (removed)";
-            sourceSelector.addItem (label, i + 1);
-        }
-
-        if (previewFileIndex < 0 || previewFileIndex >= (int) files.size())
-            previewFileIndex = files.empty() ? -1 : 0;
-
-        sourceSelector.setSelectedId (previewFileIndex + 1, juce::dontSendNotification);
-        updatingUi = false;
-        removeCurrentFile.setButtonText (isCurrentInputDisabled() ? "Restore source" : "Remove source");
-        updateControlEnablement();
-    }
-
-    int minEditableSegmentSamples() const noexcept
-    {
-        if (previewSampleRate <= 0.0)
-            return 1;
-        return juce::jmax (1, (int) std::llround (previewSampleRate * juce::jlimit (1.0, 10000.0, rules.minSegmentMs) / 1000.0));
-    }
-
-    int enabledSegmentCount() const noexcept
-    {
-        int count = 0;
-        for (const auto& segment : previewSegments)
-            if (segment.enabled && segment.length() > 0)
-                ++count;
-        return count;
-    }
-
-    int firstEnabledSegment() const noexcept
-    {
-        for (int i = 0; i < (int) previewSegments.size(); ++i)
-            if (previewSegments[(size_t) i].enabled && previewSegments[(size_t) i].length() > 0)
-                return i;
-        return -1;
-    }
-
-    void syncSegmentControls()
-    {
-        const bool canEdit = isSegmentationMode()
-                          && ! isCurrentInputDisabled()
-                          && previewSampleRate > 0.0
-                          && selectedSegment >= 0
-                          && selectedSegment < (int) previewSegments.size()
-                          && previewSegments[(size_t) selectedSegment].enabled
-                          && previewSegments[(size_t) selectedSegment].length() > 0;
-
-        segmentStart.setEnabled (canEdit);
-        segmentEnd.setEnabled (canEdit);
-        prevSegment.setEnabled (isSegmentationMode() && enabledSegmentCount() > 1);
-        nextSegment.setEnabled (isSegmentationMode() && enabledSegmentCount() > 1);
-        playSegment.setEnabled (canEdit && onAudition != nullptr);
-        stopAudition.setEnabled (isSegmentationMode() && onStopAudition != nullptr && segmentAuditionActive);
-        autoPlaySegment.setEnabled (isSegmentationMode() && onAudition != nullptr);
-        updateAuditionButtonText();
-        deleteSegment.setEnabled (canEdit);
-        restoreSegments.setEnabled (isSegmentationMode() && previewFileIndex >= 0);
-
-        if (! canEdit)
-        {
-            updatingUi = true;
-            segmentStart.setRange (0.0, 1.0, 0.0001);
-            segmentEnd.setRange (0.0, 1.0, 0.0001);
-            segmentStart.setValue (0.0, juce::dontSendNotification);
-            segmentEnd.setValue (0.0, juce::dontSendNotification);
-            segmentLabel.setText (isCurrentInputDisabled() ? "Source removed from import" : "No editable segment selected", juce::dontSendNotification);
-            updatingUi = false;
-            waveform.setSelectedSegment (selectedSegment);
-            return;
-        }
-
-        const auto& s = previewSegments[(size_t) selectedSegment];
-        const double duration = previewSampleRate > 0.0 ? (double) previewOriginal.getNumSamples() / previewSampleRate : 1.0;
-        const double startSec = (double) s.startSample / previewSampleRate;
-        const double endSec = (double) s.endSample / previewSampleRate;
-
-        updatingUi = true;
-        segmentStart.setRange (0.0, duration, 0.0001);
-        segmentEnd.setRange (0.0, duration, 0.0001);
-        segmentStart.setResetValue (startSec);
-        segmentEnd.setResetValue (endSec);
-        segmentStart.setValue (startSec, juce::dontSendNotification);
-        segmentEnd.setValue (endSec, juce::dontSendNotification);
-        segmentLabel.setText ("Segment " + juce::String (selectedSegment + 1) + " / " + juce::String ((int) previewSegments.size())
-                                + "  |  " + juce::String (endSec - startSec, 3) + " s",
-                              juce::dontSendNotification);
-        updatingUi = false;
-        waveform.setSelectedSegment (selectedSegment);
-    }
-
-    void selectAdjacentSegment (int direction)
-    {
-        if (previewSegments.empty())
-            return;
-
-        int index = selectedSegment;
-        for (int guard = 0; guard < (int) previewSegments.size(); ++guard)
-        {
-            index += direction;
-            if (index < 0)
-                index = (int) previewSegments.size() - 1;
-            else if (index >= (int) previewSegments.size())
-                index = 0;
-
-            if (previewSegments[(size_t) index].enabled && previewSegments[(size_t) index].length() > 0)
-            {
-                selectedSegment = index;
-                syncSegmentControls();
-                maybeAutoPlaySelectedSegment();
-                return;
-            }
-        }
-    }
-
-    void maybeAutoPlaySelectedSegment()
-    {
-        if (segmentAutoPlay && isSegmentationMode())
-            auditionSelectedSegment();
-    }
-
-    void createSegmentFromDrag (int startSample, int endSample)
-    {
-        if (! isSegmentationMode()
-            || isCurrentInputDisabled()
-            || previewOriginal.getNumSamples() <= 0
-            || previewSampleRate <= 0.0)
-            return;
-
-        const int n = previewOriginal.getNumSamples();
-        int start = juce::jlimit (0, juce::jmax (0, n - 1), juce::jmin (startSample, endSample));
-        int end = juce::jlimit (start + 1, n, juce::jmax (startSample, endSample));
-        const int minLen = juce::jmin (minEditableSegmentSamples(), juce::jmax (1, n));
-        if (end - start < minLen)
-        {
-            end = juce::jlimit (start + 1, n, start + minLen);
-            if (end - start < minLen)
-                start = juce::jlimit (0, juce::jmax (0, end - 1), end - minLen);
-        }
-
-        if (end <= start)
-            return;
-
-        captureUndoState();
-        stopAuditionNow();
-
-        SegmentRegion created;
-        created.startSample = start;
-        created.endSample = end;
-        created.enabled = true;
-        created.rmsDb = linearToDb (computeRmsLinear (previewOriginal, created.startSample, created.length()));
-        created.peakDb = linearToDb (computePeakLinear (previewOriginal, created.startSample, created.length()));
-
-        std::vector<SegmentRegion> updated;
-        updated.reserve (previewSegments.size() + 2);
-        for (auto segment : previewSegments)
-        {
-            if (! segment.enabled || segment.length() <= 0 || segment.endSample <= start || segment.startSample >= end)
-            {
-                updated.push_back (segment);
-                continue;
-            }
-
-            const int oldStart = segment.startSample;
-            const int oldEnd = segment.endSample;
-
-            if (oldStart < start)
-            {
-                segment.endSample = start;
-                if (segment.length() > 0)
-                    updated.push_back (segment);
-            }
-
-            if (oldEnd > end)
-            {
-                SegmentRegion tail = segment;
-                tail.startSample = end;
-                tail.endSample = oldEnd;
-                if (tail.length() > 0)
-                    updated.push_back (tail);
-            }
-        }
-
-        updated.push_back (created);
-        std::stable_sort (updated.begin(), updated.end(), [] (const auto& a, const auto& b) { return a.startSample < b.startSample; });
-
-        previewSegments = sanitiseSegmentsForBuffer (previewOriginal, std::move (updated));
-        selectedSegment = -1;
-        for (int i = 0; i < (int) previewSegments.size(); ++i)
-        {
-            const auto& segment = previewSegments[(size_t) i];
-            if (segment.enabled && segment.startSample == start && segment.endSample == end)
-            {
-                selectedSegment = i;
-                break;
-            }
-        }
-        if (selectedSegment < 0)
-            selectedSegment = firstEnabledSegment();
-
-        saveManualSegmentsForCurrentFile();
-        refreshProcessedPreviewOnly();
-        maybeAutoPlaySelectedSegment();
-    }
-
-    void repairNeighbourOverlap (int index)
-    {
-        if (index < 0 || index >= (int) previewSegments.size())
-            return;
-
-        auto& s = previewSegments[(size_t) index];
-        const int n = previewOriginal.getNumSamples();
-        const int minLen = juce::jmin (minEditableSegmentSamples(), juce::jmax (1, n));
-        s.startSample = juce::jlimit (0, juce::jmax (0, n - 1), s.startSample);
-        s.endSample = juce::jlimit (s.startSample + 1, n, s.endSample);
-
-        if (s.endSample - s.startSample < minLen)
-            s.endSample = juce::jlimit (s.startSample + 1, n, s.startSample + minLen);
-
-        if (index > 0)
-        {
-            auto& prev = previewSegments[(size_t) index - 1];
-            if (prev.enabled && prev.endSample > s.startSample)
-                prev.endSample = juce::jmax (prev.startSample, s.startSample);
-        }
-
-        if (index + 1 < (int) previewSegments.size())
-        {
-            auto& next = previewSegments[(size_t) index + 1];
-            if (next.enabled && next.startSample < s.endSample)
-                next.startSample = juce::jmin (next.endSample, s.endSample);
-        }
-
-        for (auto& segment : previewSegments)
-            if (segment.enabled && segment.length() <= 0)
-                segment.enabled = false;
-    }
-
-    void editSegmentBoundary (int index, bool isStart, int sample)
-    {
-        if (index < 0 || index >= (int) previewSegments.size() || previewOriginal.getNumSamples() <= 0)
-            return;
-
-        selectedSegment = index;
-        if (! boundaryEditUndoCaptured || boundaryEditSegment != index)
-        {
-            captureUndoState();
-            boundaryEditUndoCaptured = true;
-            boundaryEditSegment = index;
-        }
-
-        auto& s = previewSegments[(size_t) index];
-        const int n = previewOriginal.getNumSamples();
-        const int minLen = juce::jmin (minEditableSegmentSamples(), juce::jmax (1, n));
-
-        if (isStart)
-            s.startSample = juce::jlimit (0, juce::jmax (0, s.endSample - minLen), sample);
-        else
-            s.endSample = juce::jlimit (juce::jmin (n, s.startSample + minLen), n, sample);
-
-        repairNeighbourOverlap (index);
-        saveManualSegmentsForCurrentFile();
-        refreshProcessedPreviewOnly();
-    }
-
-    void updateSelectedSegmentFromSliders()
-    {
-        if (selectedSegment < 0 || selectedSegment >= (int) previewSegments.size() || previewSampleRate <= 0.0)
-            return;
-
-        auto& s = previewSegments[(size_t) selectedSegment];
-        const int n = previewOriginal.getNumSamples();
-        int start = juce::jlimit (0, juce::jmax (0, n - 1), (int) std::llround (segmentStart.getValue() * previewSampleRate));
-        int end = juce::jlimit (start + 1, n, (int) std::llround (segmentEnd.getValue() * previewSampleRate));
-        if (end <= start)
-            end = juce::jlimit (start + 1, n, start + juce::jmin (minEditableSegmentSamples(), juce::jmax (1, n)));
-
-        s.startSample = start;
-        s.endSample = end;
-        repairNeighbourOverlap (selectedSegment);
-        saveManualSegmentsForCurrentFile();
-        refreshProcessedPreviewOnly();
-    }
-
-    void auditionSelectedSegment()
-    {
-        if (onAudition == nullptr
-            || selectedSegment < 0
-            || selectedSegment >= (int) previewSegments.size()
-            || previewSampleRate <= 0.0
-            || previewOriginal.getNumSamples() <= 0
-            || isCurrentInputDisabled())
-            return;
-
-        const auto& s = previewSegments[(size_t) selectedSegment];
-        if (! s.enabled || s.length() <= 0)
-            return;
-
-        auto clip = copyRange (previewOriginal, s.startSample, s.endSample);
-        applyEdgeFades (clip, previewSampleRate, rules.edgeFadeMs);
-        const int clipSamples = clip.getNumSamples();
-        onAudition (std::move (clip), previewSampleRate);
-
-        segmentAuditionActive = true;
-        segmentAuditionPaused = false;
-        segmentAuditionFileIndex = previewFileIndex;
-        segmentAuditionSegment = selectedSegment;
-        segmentAuditionRemainingMs = juce::jmax (1.0, 1000.0 * (double) clipSamples / previewSampleRate);
-        segmentAuditionEndMs = juce::Time::getMillisecondCounterHiRes() + segmentAuditionRemainingMs;
-        startTimerHz (20);
-        updateAuditionButtonText();
-        syncSegmentControls();
-    }
-
-    void toggleSelectedSegmentAudition()
-    {
-        const bool sameSegment = segmentAuditionActive
-                              && segmentAuditionFileIndex == previewFileIndex
-                              && segmentAuditionSegment == selectedSegment;
-
-        if (! sameSegment)
-        {
-            auditionSelectedSegment();
-            return;
-        }
-
-        if (segmentAuditionPaused)
-            resumeSegmentAudition();
-        else
-            pauseSegmentAudition();
-    }
-
-    void pauseSegmentAudition()
-    {
-        if (! segmentAuditionActive || segmentAuditionPaused)
-            return;
-
-        segmentAuditionRemainingMs = juce::jmax (1.0, segmentAuditionEndMs - juce::Time::getMillisecondCounterHiRes());
-        segmentAuditionPaused = true;
-        stopTimer();
-
-        if (onPauseAudition)
-            onPauseAudition (true);
-
-        updateAuditionButtonText();
-        syncSegmentControls();
-    }
-
-    void resumeSegmentAudition()
-    {
-        if (! segmentAuditionActive || ! segmentAuditionPaused)
-            return;
-
-        segmentAuditionPaused = false;
-        segmentAuditionEndMs = juce::Time::getMillisecondCounterHiRes() + juce::jmax (1.0, segmentAuditionRemainingMs);
-        startTimerHz (20);
-
-        if (onPauseAudition)
-            onPauseAudition (false);
-
-        updateAuditionButtonText();
-        syncSegmentControls();
-    }
-
-    void clearSegmentAuditionUiState()
-    {
-        segmentAuditionActive = false;
-        segmentAuditionPaused = false;
-        segmentAuditionFileIndex = -1;
-        segmentAuditionSegment = -1;
-        segmentAuditionEndMs = 0.0;
-        segmentAuditionRemainingMs = 0.0;
-        stopTimer();
-        updateAuditionButtonText();
-        syncSegmentControls();
-    }
-
-    void updateAuditionButtonText()
-    {
-        const bool sameSegment = segmentAuditionActive
-                              && segmentAuditionFileIndex == previewFileIndex
-                              && segmentAuditionSegment == selectedSegment;
-
-        if (sameSegment && segmentAuditionPaused)
-            playSegment.setButtonText ("Resume seg");
-        else if (sameSegment)
-            playSegment.setButtonText ("Pause seg");
-        else
-            playSegment.setButtonText ("Play seg");
-    }
-
-    void saveManualSegmentsForCurrentFile()
-    {
-        if (previewFileIndex >= 0)
-            setManualSegmentsForInput (rules, previewFileIndex, previewSegments);
-    }
-
-    void deleteSelectedSegment()
-    {
-        if (selectedSegment < 0 || selectedSegment >= (int) previewSegments.size())
-            return;
-
-        captureUndoState();
-        stopAuditionNow();
-        previewSegments[(size_t) selectedSegment].enabled = false;
-        saveManualSegmentsForCurrentFile();
-        const int old = selectedSegment;
-        selectedSegment = firstEnabledSegment();
-        if (selectedSegment < 0 && old + 1 < (int) previewSegments.size())
-            selectedSegment = old + 1;
-        refreshProcessedPreviewOnly();
-        maybeAutoPlaySelectedSegment();
-    }
-
-    void stopAuditionNow()
-    {
-        if (onStopAudition)
-            onStopAudition();
-
-        clearSegmentAuditionUiState();
-    }
-
-    void refreshProcessedPreviewOnly()
-    {
-        juce::AudioBuffer<float> processed;
-        if (isSegmentationMode() && ! isCurrentInputDisabled())
-            processed = concatenateRanges (previewOriginal, previewSegments, previewSampleRate, rules);
-        else if (! isCurrentInputDisabled())
-            processed = processBufferByRules (previewOriginal, previewSampleRate, rules);
-
-        waveform.setBuffers (previewOriginal, std::move (processed), previewSegments, previewSampleRate, isSegmentationMode(), previewStatus);
-        syncSegmentControls();
-        updateControlEnablement();
-    }
-
-    void refreshPreview()
-    {
-        updateControlEnablement();
-        syncSourceSelector();
-
-        if (files.empty() || previewFileIndex < 0)
-        {
-            previewOriginal = {};
-            previewSampleRate = 0.0;
-            previewSegments.clear();
-            waveform.setBuffers (juce::AudioBuffer<float>(), juce::AudioBuffer<float>(), {}, 0.0, isSegmentationMode(),
-                                 "No input file was passed to the preview.");
-            syncSegmentControls();
-            return;
-        }
-
-        juce::String error;
-        auto previewRules = rules;
-        const double maxPreviewSeconds = isSegmentationMode() ? 0.0 : previewRules.previewSeconds;
-        const auto data = readAudioFile (files[(size_t) previewFileIndex], previewRules.outputChannels <= 0 ? 2 : previewRules.outputChannels,
-                                         previewRules.outputSampleRate, maxPreviewSeconds, error);
-        if (! data.has_value())
-        {
-            previewOriginal = {};
-            previewSampleRate = 0.0;
-            previewSegments.clear();
-            waveform.setBuffers (juce::AudioBuffer<float>(), juce::AudioBuffer<float>(), {}, 0.0, isSegmentationMode(),
-                                 error.isNotEmpty() ? error : juce::String ("Could not read preview audio."));
-            syncSegmentControls();
-            return;
-        }
-
-        previewOriginal = data->buffer;
-        previewSampleRate = data->sampleRate;
-        previewSegments.clear();
-
-        juce::AudioBuffer<float> processed;
-        const bool removed = isCurrentInputDisabled();
-
-        if (isSegmentationMode())
-        {
-            previewSegments = segmentsForInput (rules, previewFileIndex, previewOriginal, previewSampleRate);
-            if (! removed)
-                processed = concatenateRanges (previewOriginal, previewSegments, previewSampleRate, rules);
-        }
-        else if (! removed)
-        {
-            processed = processBufferByRules (previewOriginal, previewSampleRate, rules);
-            if (previewRules.stripInternalSilence || previewRules.trimEdges)
-                previewSegments = detectSegmentsBySilence (previewOriginal, previewSampleRate, previewRules);
-        }
-
-        previewStatus.clear();
-        if (previewSampleRate > 0.0)
-            previewStatus << files[(size_t) previewFileIndex].getFileName() << " | " << juce::String ((double) previewOriginal.getNumSamples() / previewSampleRate, 2) << "s";
-        else
-            previewStatus << files[(size_t) previewFileIndex].getFileName();
-
-        if (removed)
-            previewStatus << " | removed from import";
-
-        if (isSegmentationMode())
-        {
-            previewStatus << " | " << enabledSegmentCount() << " kept / " << (int) previewSegments.size() << " total"
-                          << za::text::utf8 (" | silence≤") << juce::String (previewRules.silenceThresholdDb, 1) << " dBFS"
-                          << za::text::utf8 (" | gap≥") << juce::String (previewRules.minSilenceMs, 0) << " ms"
-                          << za::text::utf8 (" | minLen≥") << juce::String (previewRules.minSegmentMs, 0) << " ms";
-            if (previewRules.removeLowRms)
-                previewStatus << " | reject<" << juce::String (previewRules.minRmsDb, 1) << " dB RMS";
-        }
-
-        if (selectedSegment < 0 || selectedSegment >= (int) previewSegments.size() || ! previewSegments[(size_t) selectedSegment].enabled)
-            selectedSegment = firstEnabledSegment();
-
-        waveform.setBuffers (previewOriginal, std::move (processed), previewSegments, previewSampleRate, isSegmentationMode(), previewStatus);
-        syncSegmentControls();
-        updateControlEnablement();
-    }
-
-    std::vector<juce::File> files;
-    ImportAction action;
-    ImportRules rules;
-    ImportRules defaultRules;
-    ApplyCallback onApply;
-    AuditionCallback onAudition;
-    StopAuditionCallback onStopAudition;
-    PauseAuditionCallback onPauseAudition;
-
-    juce::Label title;
-    juce::Label sourceLabel;
-    juce::ComboBox sourceSelector;
-    ResettableSlider silenceDb, threshold, minSilence, minSegment, preRoll, postRoll, fade, rmsReject;
-    ResettableSlider segmentStart, segmentEnd;
-    juce::ToggleButton relativeToggle, stripToggle, trimToggle, rejectToggle, normalizeToggle;
-    juce::Label segmentLabel;
-    juce::TextButton prevSegment, nextSegment, playSegment, stopAudition, deleteSegment, restoreSegments, removeCurrentFile;
-    juce::ToggleButton autoPlaySegment;
-    WaveformPreview waveform;
-    juce::TextButton apply, cancel, resetDefaults;
-
-    bool updatingUi = false;
-    bool restoringUndoState = false;
-    bool sliderEditUndoCaptured = false;
-    bool boundaryEditUndoCaptured = false;
-    int boundaryEditSegment = -1;
-    bool segmentAutoPlay = false;
-    bool segmentAuditionActive = false;
-    bool segmentAuditionPaused = false;
-    int segmentAuditionFileIndex = -1;
-    int segmentAuditionSegment = -1;
-    double segmentAuditionEndMs = 0.0;
-    double segmentAuditionRemainingMs = 0.0;
-    std::vector<UndoState> undoStack;
-    std::vector<UndoState> redoStack;
-    int previewFileIndex = 0;
-    int selectedSegment = -1;
-    juce::AudioBuffer<float> previewOriginal;
-    double previewSampleRate = 0.0;
-    std::vector<SegmentRegion> previewSegments;
-    juce::String previewStatus;
-};
-
-static inline juce::Rectangle<int> importPreviewUsableDisplayAreaFor (juce::Component& parent)
-{
-    const auto& displays = juce::Desktop::getInstance().getDisplays();
-    if (auto* display = displays.getDisplayForRect (parent.getScreenBounds(), false))
-        return display->userArea;
-
-    if (auto* display = displays.getPrimaryDisplay())
-        return display->userArea;
-
-    return { 0, 0, 1280, 800 };
-}
-
-static inline juce::Rectangle<int> importPreviewDialogBoundsFor (juce::Component& parent, int desiredW, int desiredH)
-{
-    constexpr int edgeMargin = 18;
-    auto userArea = importPreviewUsableDisplayAreaFor (parent).reduced (edgeMargin);
-    if (userArea.isEmpty())
-        userArea = { edgeMargin, edgeMargin, 1280 - edgeMargin * 2, 800 - edgeMargin * 2 };
-
-    const int minW = juce::jmin (720, userArea.getWidth());
-    const int minH = juce::jmin (520, userArea.getHeight());
-    const int w = juce::jlimit (minW, userArea.getWidth(), desiredW);
-    const int h = juce::jlimit (minH, userArea.getHeight(), desiredH);
-
-    auto centre = parent.getScreenBounds().getCentre();
-    if (! userArea.contains (centre))
-        centre = userArea.getCentre();
-
-    return juce::Rectangle<int> (w, h).withCentre (centre).constrainedWithin (userArea);
-}
-
-static inline void showImportPreviewDialog (juce::Component& parent,
-                                           std::vector<juce::File> files,
-                                           ImportAction action,
-                                           ImportRules rules,
-                                           ImportPreviewComponent::ApplyCallback onApply,
-                                           ImportPreviewComponent::AuditionCallback onAudition = {},
-                                           ImportPreviewComponent::StopAuditionCallback onStopAudition = {},
-                                           ImportPreviewComponent::PauseAuditionCallback onPauseAudition = {})
-{
-    const bool segmentation = action == ImportAction::SegmentLongFile || action == ImportAction::SegmentThenMegaTexture;
-    const auto bounds = importPreviewDialogBoundsFor (parent, segmentation ? 1180 : 1040, segmentation ? 760 : 700);
-    auto* content = new ImportPreviewComponent (std::move (files), action, rules, std::move (onApply), std::move (onAudition), std::move (onStopAudition), std::move (onPauseAudition));
-    content->setSize (bounds.getWidth(), bounds.getHeight());
-
-    juce::DialogWindow::LaunchOptions opts;
-    opts.dialogTitle = segmentation ? "Segmentation Preview" : "Import / Preprocess";
-    opts.dialogBackgroundColour = juce::Colour (0xff20272d);
-    opts.escapeKeyTriggersCloseButton = true;
-    opts.useNativeTitleBar = true;
-    opts.resizable = true;
-    opts.content.setOwned (content);
-
-    if (auto* window = opts.launchAsync())
-    {
-        window->setResizable (true, true);
-        window->setResizeLimits (juce::jmin (720, bounds.getWidth()), juce::jmin (520, bounds.getHeight()), bounds.getWidth(), bounds.getHeight());
-        window->setBounds (bounds);
-    }
-}
-
 } // namespace za::fileimport
 
+#include "ZAImportPreview.h"

@@ -63,6 +63,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -521,29 +522,31 @@ static std::string formatGfxPrintf(const char* fmt, int argc, NumberAt numberAt,
     if (width > 0) nativeFmt += std::to_string(width);
     if (precision >= 0 && spec != 'c') nativeFmt += "." + std::to_string(precision);
     nativeFmt.push_back(spec);
+    // Unqualified snprintf: WDL redirects this name on Windows; POSIX uses libc.
+    // std::snprintf would macro-expand to std::WDL_snprintf on Windows.
     char buf[512] {};
     if (spec == 's')
     {
       const char* text = stringAt(value);
-      WDL_snprintf(buf, sizeof(buf), nativeFmt.c_str(), text ? text : "");
+      snprintf(buf, sizeof(buf), nativeFmt.c_str(), text ? text : "");
     }
     else if (spec == 'd' || spec == 'i')
     {
       const double v = std::isfinite(value) ? std::round(value) : 0.0;
       const int n = (int)std::max((double)std::numeric_limits<int>::min(),
                                  std::min((double)std::numeric_limits<int>::max(), v));
-      WDL_snprintf(buf, sizeof(buf), nativeFmt.c_str(), n);
+      snprintf(buf, sizeof(buf), nativeFmt.c_str(), n);
     }
     else if (std::strchr("uoxXc", spec))
     {
       double v = std::isfinite(value) ? std::fmod(std::round(value), 4294967296.0) : 0.0;
       if (v < 0.0) v += 4294967296.0;
       const unsigned int n = (unsigned int)v;
-      if (spec == 'c') WDL_snprintf(buf, sizeof(buf), nativeFmt.c_str(), (int)(n & 255u));
-      else WDL_snprintf(buf, sizeof(buf), nativeFmt.c_str(), n);
+      if (spec == 'c') snprintf(buf, sizeof(buf), nativeFmt.c_str(), (int)(n & 255u));
+      else snprintf(buf, sizeof(buf), nativeFmt.c_str(), n);
     }
     else
-      WDL_snprintf(buf, sizeof(buf), nativeFmt.c_str(), value);
+      snprintf(buf, sizeof(buf), nativeFmt.c_str(), value);
     out.append(buf, std::min(std::strlen(buf), maxOutput - out.size()));
   }
   if (out.size() > maxOutput) out.resize(maxOutput);
@@ -553,10 +556,55 @@ static std::string formatGfxPrintf(const char* fmt, int argc, NumberAt numberAt,
 // -------------------------
 // Draw command list (JUCE playback)
 // -------------------------
+// Quick/hackable JSFX offscreen-image backing store.
+//
+// The normal @gfx path records commands and paints them after EEL execution. Keeping
+// the images here lets gfx_dest / gfx_blit participate in that same ordered command
+// stream without forcing JSFXJuceProcessor.cpp to know about individual image slots.
+// The bank is owned by GfxVm; DrawCmd only carries a non-owning pointer to it.
+struct GfxImageBank
+{
+  static constexpr int kNumImages = 128;
+  static constexpr int kMaxImageDimension = 2048;
+
+  std::array<juce::Image, kNumImages> images {};
+
+  void resizeImage(int index, int width, int height)
+  {
+    if (index < 0 || index >= kNumImages)
+      return;
+
+    width = juce::jlimit(0, kMaxImageDimension, width);
+    height = juce::jlimit(0, kMaxImageDimension, height);
+
+    if (width <= 0 || height <= 0)
+    {
+      images[(size_t) index] = juce::Image();
+      return;
+    }
+
+    auto& image = images[(size_t) index];
+    if (image.isValid() && image.getWidth() == width && image.getHeight() == height)
+      return; // Repeated size requests must not allocate a new surface every frame.
+
+    // The GFX worker uses CPU-backed surfaces, not a native GUI/GPU context.
+    // A destination is flushed before it is sampled or resized during playback.
+    image = juce::Image(juce::Image::ARGB, width, height, true, juce::SoftwareImageType());
+  }
+
+
+};
+
 struct DrawCmd
 {
-  enum class Type { Rect, Line, Text, Circle, RoundRect, Arc, Triangle };
+  enum class Type { Rect, Line, Text, Circle, RoundRect, Arc, Triangle, SetImageDim, Blit };
   Type type = Type::Rect;
+
+  // Destination: -1 = main framebuffer, 0..127 = offscreen image.
+  int dest = -1;
+  GfxImageBank* imageBank = nullptr;
+  int frameWidth = 0;
+  int frameHeight = 0;
 
   // Common
   juce::Colour colour { 0xff000000 };
@@ -582,6 +630,21 @@ struct DrawCmd
 
   // Triangle / convex polygon (gfx_triangle)
   std::vector<juce::Point<float>> points;
+
+  // gfx_setimgdim
+  int imageIndex = -1;
+  int imageWidth = 0;
+  int imageHeight = 0;
+
+  // gfx_blit
+  int source = -1;
+  float srcX = 0.0f, srcY = 0.0f, srcW = 0.0f, srcH = 0.0f;
+  float destX = 0.0f, destY = 0.0f, destW = 0.0f, destH = 0.0f;
+  float rotation = 0.0f;
+  float rotationXOffset = 0.0f;
+  float rotationYOffset = 0.0f;
+  float opacity = 1.0f;
+  int blitMode = 0;
 };
 
 // A sparse mem[] span mirrored into the @gfx VM.
@@ -732,9 +795,49 @@ public:
     return juce::Colour::fromFloatRGBA(r, g, b, juce::jlimit(0.0f, 1.0f, a));
   }
 
+  static constexpr int kInvalidGfxDestination = -2;
+
+  int currentGfxDestination() const noexcept
+  {
+    if (!gfx_dest)
+      return -1;
+
+    const double raw = (double) *gfx_dest;
+    if (!std::isfinite(raw))
+      return kInvalidGfxDestination;
+    if (raw < 0.0)
+      return -1;
+    if (raw >= (double) GfxImageBank::kNumImages)
+      return kInvalidGfxDestination;
+
+    const int dest = (int) std::trunc(raw);
+    return (dest >= 0 && dest < GfxImageBank::kNumImages) ? dest : kInvalidGfxDestination;
+  }
+
   bool isDrawingToMainFramebuffer() const
   {
-    return !gfx_dest || *gfx_dest < 0.0;
+    return currentGfxDestination() == -1;
+  }
+
+  void stampCommand(DrawCmd& cmd, int dest) noexcept
+  {
+    cmd.dest = dest;
+    cmd.imageBank = &imageBank;
+    cmd.frameWidth = frameW;
+    cmd.frameHeight = frameH;
+  }
+
+  bool beginDrawCommand(DrawCmd& cmd)
+  {
+    const int dest = currentGfxDestination();
+    if (dest == kInvalidGfxDestination)
+      return false;
+
+    if (dest == -1)
+      setImageDirty();
+
+    stampCommand(cmd, dest);
+    return true;
   }
 
   // -------------------------------------------------------------------
@@ -744,7 +847,9 @@ public:
   // -------------------------------------------------------------------
   void setImageDirty()
   {
-    if (framebufferDirty)
+    // gfx_clear applies to the main framebuffer. Drawing only to gfx_dest>=0
+    // must not implicitly clear the visible UI.
+    if (!isDrawingToMainFramebuffer() || framebufferDirty)
       return;
 
     framebufferDirty = true;
@@ -759,6 +864,7 @@ public:
 
       DrawCmd cmd;
       cmd.type = DrawCmd::Type::Rect;
+      stampCommand(cmd, -1);
       cmd.colour = juce::Colour::fromRGB((juce::uint8)r, (juce::uint8)g, (juce::uint8)b);
       cmd.x = 0.0f;
       cmd.y = 0.0f;
@@ -786,6 +892,7 @@ public:
     frameW = w;
     frameH = h;
     framebufferDirty = false;
+    frameRecording = true;
 
     *gfx_w = (double)w;
     *gfx_h = (double)h;
@@ -1002,48 +1109,36 @@ public:
     }
   }
 
+  void ensureMemSize(int64_t requiredMem)
+  {
+    if (!m_vm) return;
+    const int requested = (int) std::max<int64_t>(0, std::min<int64_t>(requiredMem,
+                                                  (int64_t) NSEEL_RAM_BLOCKS * NSEEL_RAM_ITEMSPERBLOCK));
+    if (memSize <= 0) memSize = NSEEL_VM_setramsize(m_vm, 0);
+    // A sparse snapshot is not permission to truncate private UI scratch.
+    if (requested > memSize) memSize = NSEEL_VM_setramsize(m_vm, requested);
+  }
+
   void syncMem(const double* mem, int memN)
   {
     if (!mem || memN <= 0) return;
-
-    // Avoid redundant VM RAM resize calls on steady-state frames.
-    if (memN != memSize)
-      NSEEL_VM_setramsize(m_vm, (unsigned int)memN);
-
+    ensureMemSize(memN);
     syncMemRange(mem, 0, memN);
-
-    // Remember the effective RAM size so we can read it back later.
-    memSize = memN;
   }
 
   void syncMemSpans(const MemSpanView* spans, int spanCount, int64_t logicalMemN)
   {
-    if (!spans || spanCount <= 0)
-      return;
-
-    int64_t requiredMem = std::max<int64_t>(0, logicalMemN);
+    ensureMemSize(logicalMemN);
+    if (!spans || spanCount <= 0) return;
     for (int i = 0; i < spanCount; ++i)
     {
       const auto& span = spans[i];
-      if (!span.data || span.count <= 0 || span.base < 0)
+      if (!span.data || span.count <= 0 || span.base < 0
+          || span.base > (int64_t) std::numeric_limits<int>::max() - span.count)
         continue;
-      requiredMem = std::max<int64_t>(requiredMem, span.base + (int64_t) span.count);
-    }
-
-    requiredMem = std::min<int64_t>(requiredMem, (int64_t) std::numeric_limits<unsigned int>::max());
-
-    if ((int) requiredMem != memSize)
-      NSEEL_VM_setramsize(m_vm, (unsigned int) requiredMem);
-
-    for (int i = 0; i < spanCount; ++i)
-    {
-      const auto& span = spans[i];
-      if (!span.data || span.count <= 0)
-        continue;
+      ensureMemSize(span.base + span.count);
       syncMemRange(span.data, span.base, span.count);
     }
-
-    memSize = (int) requiredMem;
   }
 
   // Read back bound user vars into a JSFX-style vars[] array.
@@ -1062,30 +1157,26 @@ public:
 
   void readMemRange(int64_t base, double* dst, int count) const
   {
-    if (!dst || count <= 0 || memSize <= 0 || base < 0) return;
-    if (base >= (int64_t) memSize) return;
-
-    const int64_t available = (int64_t) memSize - base;
-    const int n = (int) std::min<int64_t>((int64_t) count, available);
+    if (!dst || count <= 0) return;
+    // Unallocated EEL pages read as zero. Never allocate them just for a diff.
+    std::fill(dst, dst + count, 0.0);
+    if (!m_vm || memSize <= 0 || base < 0 || base >= memSize) return;
+    const int n = (int) std::min<int64_t>(count, (int64_t) memSize - base);
     int copied = 0;
-    int64_t pos64 = base;
     while (copied < n)
     {
-      if (pos64 > (int64_t) std::numeric_limits<unsigned int>::max())
-        break;
-
+      const auto pos = (unsigned int)(base + copied);
       int validCount = 0;
-      EEL_F* src = NSEEL_VM_getramptr(m_vm, (unsigned int) pos64, &validCount);
-      if (!src || validCount <= 0) break;
-      const int m = std::min(validCount, n - copied);
-      std::memcpy(dst + copied, src, (size_t) m * sizeof(EEL_F));
+      const EEL_F* src = NSEEL_VM_getramptr_noalloc(m_vm, pos, &validCount);
+      const int pageRemaining = NSEEL_RAM_ITEMSPERBLOCK - (int)(pos % NSEEL_RAM_ITEMSPERBLOCK);
+      const int m = std::min(n - copied, src && validCount > 0 ? validCount : pageRemaining);
+      if (src && validCount > 0) std::memcpy(dst + copied, src, (size_t)m * sizeof(EEL_F));
       copied += m;
-      pos64 += (int64_t) m;
     }
   }
 
   // Read back the EEL RAM (JSFX mem[]) into dst.
-  // This copies [0..min(count, memSize)) and leaves the rest unchanged.
+  // This copies allocated cells and returns zero for absent/out-of-range cells.
   void readMem(double* dst, int count) const
   {
     readMemRange(0, dst, count);
@@ -1107,6 +1198,9 @@ public:
     // Signature required: EEL_F (NSEEL_CGEN_CALL *)(void* opaque, INT_PTR np, EEL_F** parms)
     // want_exact=0 => varargs with minimum parameter count.
     NSEEL_addfunc_varparm_ex("gfx_set",        1, 0, NSEEL_PProc_THIS, &eel_gfx_set,        nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_setimgdim",  3, 0, NSEEL_PProc_THIS, &eel_gfx_setimgdim,  nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_getimgdim",  3, 0, NSEEL_PProc_THIS, &eel_gfx_getimgdim,  nullptr);
+    NSEEL_addfunc_varparm_ex("gfx_blit",       3, 0, NSEEL_PProc_THIS, &eel_gfx_blit,       nullptr);
     NSEEL_addfunc_varparm_ex("gfx_rect",       4, 0, NSEEL_PProc_THIS, &eel_gfx_rect,       nullptr);
     NSEEL_addfunc_varparm_ex("gfx_rectto",     2, 0, NSEEL_PProc_THIS, &eel_gfx_rectto,     nullptr);
     NSEEL_addfunc_varparm_ex("gfx_circle",     3, 0, NSEEL_PProc_THIS, &eel_gfx_circle,     nullptr);
@@ -1209,21 +1303,172 @@ public:
     return 0.0;
   }
 
+
+  static int gfxImageIndexFromValue(double value) noexcept
+  {
+    if (!std::isfinite(value) || value < 0.0 || value >= (double) GfxImageBank::kNumImages)
+      return -1;
+    return (int) std::trunc(value);
+  }
+
+  static int gfxImageDimensionFromValue(double value) noexcept
+  {
+    if (!std::isfinite(value))
+      return 0;
+    value = std::max(0.0, std::min((double) GfxImageBank::kMaxImageDimension, value));
+    return (int) std::floor(value);
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_gfx_setimgdim(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*) opaque;
+    if (!self || np < 3)
+      return 0.0;
+
+    const int image = gfxImageIndexFromValue((double) *parms[0]);
+    if (image < 0)
+      return 0.0;
+
+    const int width = gfxImageDimensionFromValue((double) *parms[1]);
+    const int height = gfxImageDimensionFromValue((double) *parms[2]);
+
+    self->imageWidths[(size_t) image] = width;
+    self->imageHeights[(size_t) image] = height;
+
+    // @init is executed before beginFrame(), whose command-list reset would
+    // otherwise discard a resize command. Apply @init allocations immediately.
+    if (!self->frameRecording)
+    {
+      self->imageBank.resizeImage(image, width, height);
+      return 0.0;
+    }
+
+    DrawCmd cmd;
+    cmd.type = DrawCmd::Type::SetImageDim;
+    self->stampCommand(cmd, -1);
+    cmd.imageIndex = image;
+    cmd.imageWidth = width;
+    cmd.imageHeight = height;
+    self->commands.push_back(std::move(cmd));
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_gfx_getimgdim(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*) opaque;
+    if (!self || np < 3)
+      return 0.0;
+
+    int width = 0;
+    int height = 0;
+    const double imageValue = (double) *parms[0];
+
+    if (std::isfinite(imageValue) && imageValue < 0.0)
+    {
+      // Handy compatibility extension: -1 describes the main framebuffer.
+      width = self->frameW;
+      height = self->frameH;
+    }
+    else
+    {
+      const int image = gfxImageIndexFromValue(imageValue);
+      if (image >= 0)
+      {
+        width = self->imageWidths[(size_t) image];
+        height = self->imageHeights[(size_t) image];
+      }
+    }
+
+    if (parms[1]) *parms[1] = (EEL_F) width;
+    if (parms[2]) *parms[2] = (EEL_F) height;
+    return 0.0;
+  }
+
+  static EEL_F NSEEL_CGEN_CALL eel_gfx_blit(void* opaque, INT_PTR np, EEL_F** parms)
+  {
+    auto* self = (GfxVm*) opaque;
+    if (!self || np < 3)
+      return 0.0;
+
+    const double sourceValue = (double) *parms[0];
+    int source = -1;
+    int sourceWidth = self->frameW;
+    int sourceHeight = self->frameH;
+
+    if (!(std::isfinite(sourceValue) && sourceValue < 0.0))
+    {
+      source = gfxImageIndexFromValue(sourceValue);
+      if (source < 0)
+        return 0.0;
+      sourceWidth = self->imageWidths[(size_t) source];
+      sourceHeight = self->imageHeights[(size_t) source];
+    }
+
+    if (sourceWidth <= 0 || sourceHeight <= 0)
+      return 0.0;
+
+    DrawCmd cmd;
+    cmd.type = DrawCmd::Type::Blit;
+    if (!self->beginDrawCommand(cmd))
+      return 0.0;
+
+    const double scale = std::isfinite((double) *parms[1]) ? (double) *parms[1] : 1.0;
+    const double rotation = std::isfinite((double) *parms[2]) ? (double) *parms[2] : 0.0;
+
+    cmd.source = source;
+    cmd.rotation = (float) rotation;
+    cmd.opacity = juce::jlimit(0.0f, 1.0f, self->gfx_a ? (float) *self->gfx_a : 1.0f);
+    cmd.blitMode = self->gfx_mode ? boundedGfxInt(std::floor((double) *self->gfx_mode)) : 0;
+
+    cmd.srcX = (np >= 4 && std::isfinite((double) *parms[3])) ? (float) *parms[3] : 0.0f;
+    cmd.srcY = (np >= 5 && std::isfinite((double) *parms[4])) ? (float) *parms[4] : 0.0f;
+    cmd.srcW = (np >= 6 && std::isfinite((double) *parms[5])) ? (float) *parms[5] : (float) sourceWidth;
+    cmd.srcH = (np >= 7 && std::isfinite((double) *parms[6])) ? (float) *parms[6] : (float) sourceHeight;
+
+    cmd.destX = (np >= 8 && std::isfinite((double) *parms[7]))
+                  ? (float) *parms[7]
+                  : (float) (self->gfx_x ? *self->gfx_x : 0.0);
+    cmd.destY = (np >= 9 && std::isfinite((double) *parms[8]))
+                  ? (float) *parms[8]
+                  : (float) (self->gfx_y ? *self->gfx_y : 0.0);
+
+    cmd.destW = (np >= 10 && std::isfinite((double) *parms[9]))
+                  ? (float) *parms[9]
+                  : (float) ((double) cmd.srcW * scale);
+    cmd.destH = (np >= 11 && std::isfinite((double) *parms[10]))
+                  ? (float) *parms[10]
+                  : (float) ((double) cmd.srcH * scale);
+
+    cmd.rotationXOffset = (np >= 12 && std::isfinite((double) *parms[11])) ? (float) *parms[11] : 0.0f;
+    cmd.rotationYOffset = (np >= 13 && std::isfinite((double) *parms[12])) ? (float) *parms[12] : 0.0f;
+
+    if (!std::isfinite(cmd.srcX) || !std::isfinite(cmd.srcY)
+        || !std::isfinite(cmd.srcW) || !std::isfinite(cmd.srcH)
+        || !std::isfinite(cmd.destX) || !std::isfinite(cmd.destY)
+        || !std::isfinite(cmd.destW) || !std::isfinite(cmd.destH)
+        || !std::isfinite(cmd.rotation))
+      return 0.0;
+
+    if (cmd.srcW <= 0.0f || cmd.srcH <= 0.0f || cmd.destW <= 0.0f || cmd.destH <= 0.0f)
+      return 0.0;
+
+    self->commands.push_back(std::move(cmd));
+    return 0.0;
+  }
+
   static EEL_F NSEEL_CGEN_CALL eel_gfx_rect(void* opaque, INT_PTR np, EEL_F** parms)
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 4) return 0.0;
-    if (!self->isDrawingToMainFramebuffer()) return 0.0;
 
     const float w = (float) std::floor(*parms[2]);
     const float h = (float) std::floor(*parms[3]);
     if (!(w > 0.0f) || !(h > 0.0f))
       return 0.0;
 
-    self->setImageDirty();
-
     DrawCmd cmd;
     cmd.type = DrawCmd::Type::Rect;
+    if (!self->beginDrawCommand(cmd)) return 0.0;
     cmd.colour = self->getCurrentColour();
     cmd.x = (float) std::floor(*parms[0]);
     cmd.y = (float) std::floor(*parms[1]);
@@ -1239,9 +1484,6 @@ public:
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 2) return 0.0;
-    if (!self->isDrawingToMainFramebuffer()) return 0.0;
-
-    self->setImageDirty();
 
     const float x1 = (float) std::floor(self->gfx_x ? *self->gfx_x : 0.0);
     const float y1 = (float) std::floor(self->gfx_y ? *self->gfx_y : 0.0);
@@ -1250,6 +1492,7 @@ public:
 
     DrawCmd cmd;
     cmd.type = DrawCmd::Type::Rect;
+    if (!self->beginDrawCommand(cmd)) return 0.0;
     cmd.colour = self->getCurrentColour();
     cmd.x = std::min(x1, x2);
     cmd.y = std::min(y1, y2);
@@ -1267,12 +1510,10 @@ public:
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 4) return 0.0;
-    if (!self->isDrawingToMainFramebuffer()) return 0.0;
-
-    self->setImageDirty();
 
     DrawCmd cmd;
     cmd.type = DrawCmd::Type::Line;
+    if (!self->beginDrawCommand(cmd)) return 0.0;
     cmd.colour = self->getCurrentColour();
     cmd.x = (float) std::floor(*parms[0]);
     cmd.y = (float) std::floor(*parms[1]);
@@ -1287,9 +1528,6 @@ public:
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 2) return 0.0;
-    if (!self->isDrawingToMainFramebuffer()) return 0.0;
-
-    self->setImageDirty();
 
     const float x1 = (float) std::floor(self->gfx_x ? *self->gfx_x : 0.0);
     const float y1 = (float) std::floor(self->gfx_y ? *self->gfx_y : 0.0);
@@ -1298,6 +1536,7 @@ public:
 
     DrawCmd cmd;
     cmd.type = DrawCmd::Type::Line;
+    if (!self->beginDrawCommand(cmd)) return 0.0;
     cmd.colour = self->getCurrentColour();
     cmd.x = x1;
     cmd.y = y1;
@@ -1333,7 +1572,8 @@ public:
     }
 
     if (np >= 3)
-      fontSize = std::max(1.0f, (float) *parms[2]);
+      fontSize = std::isfinite((double)*parms[2])
+                   ? (float) std::max(1.0, std::min(2048.0, (double)*parms[2])) : 10.0f;
 
     if (np >= 4)
     {
@@ -1350,7 +1590,7 @@ public:
       }
     }
 
-    juce::Font f(fontName, fontSize, styleFlags);
+    const juce::Font f = self->getCachedFont(fontName, fontSize, styleFlags);
     self->fonts[fontId] = f;
     self->currentFontId = fontId;
     self->currentFont = f;
@@ -1425,13 +1665,11 @@ public:
   {
     if (!self)
       return 0.0;
-    if (!self->isDrawingToMainFramebuffer())
-      return np > 0 ? *parms[0] : 0.0;
-
-    self->setImageDirty();
 
     DrawCmd cmd;
     cmd.type = DrawCmd::Type::Text;
+    if (!self->beginDrawCommand(cmd))
+      return np > 0 ? *parms[0] : 0.0;
     cmd.colour = self->getCurrentColour();
     cmd.font = self->currentFont;
     cmd.text = text;
@@ -1571,12 +1809,10 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 3) return 0.0;
-    if (!self->isDrawingToMainFramebuffer()) return 0.0;
-
-    self->setImageDirty();
 
     DrawCmd cmd;
     cmd.type   = DrawCmd::Type::Circle;
+    if (!self->beginDrawCommand(cmd)) return 0.0;
     cmd.colour = self->getCurrentColour();
     cmd.x      = (float) *parms[0];
     cmd.y      = (float) *parms[1];
@@ -1591,9 +1827,6 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 5) return 0.0;
-    if (!self->isDrawingToMainFramebuffer()) return 0.0;
-
-    self->setImageDirty();
 
     const float w = (float)*parms[2];
     const float h = (float)*parms[3];
@@ -1602,6 +1835,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
 
     DrawCmd cmd;
     cmd.type         = DrawCmd::Type::RoundRect;
+    if (!self->beginDrawCommand(cmd)) return 0.0;
     cmd.colour       = self->getCurrentColour();
     cmd.x            = (float)*parms[0];
     cmd.y            = (float)*parms[1];
@@ -1618,9 +1852,6 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 5) return 0.0;
-    if (!self->isDrawingToMainFramebuffer()) return 0.0;
-
-    self->setImageDirty();
 
     const double cx = (double)*parms[0];
     const double cy = (double)*parms[1];
@@ -1638,6 +1869,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
 
     DrawCmd cmd;
     cmd.type   = DrawCmd::Type::Arc;
+    if (!self->beginDrawCommand(cmd)) return 0.0;
     cmd.colour = self->getCurrentColour();
     cmd.x      = (float)cx;
     cmd.y      = (float)cy;
@@ -1654,9 +1886,6 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   {
     auto* self = (GfxVm*)opaque;
     if (!self || np < 6) return 0.0;
-    if (!self->isDrawingToMainFramebuffer()) return 0.0;
-
-    self->setImageDirty();
 
     // gfx_triangle(x1,y1,x2,y2,x3,y3[,x4,y4...]) -- always filled.
     const int pairs = (int)(np / 2);
@@ -1664,6 +1893,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
 
     DrawCmd cmd;
     cmd.type   = DrawCmd::Type::Triangle;
+    if (!self->beginDrawCommand(cmd)) return 0.0;
     cmd.colour = self->getCurrentColour();
     cmd.fill   = true;
 
@@ -2058,7 +2288,38 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   eel_function_table privateFunctionTable {};
   AsyncMenuPort* asyncMenuPort = nullptr;
 
+  struct FontCacheEntry
+  {
+    juce::String name;
+    float size;
+    int flags;
+    juce::Font font;
+  };
+  std::vector<FontCacheEntry> fontCache;
+  size_t nextFontCacheSlot = 0;
+
+  juce::Font getCachedFont(const juce::String& name, float size, int flags)
+  {
+    for (const auto& e : fontCache)
+      if (e.size == size && e.flags == flags && e.name == name) return e.font;
+    juce::Font font(name, size, flags);
+    FontCacheEntry entry { name, size, flags, font };
+    constexpr size_t capacity = 64;
+    if (fontCache.size() < capacity) fontCache.push_back(std::move(entry));
+    else
+    {
+      fontCache[nextFontCacheSlot] = std::move(entry);
+      nextFontCacheSlot = (nextFontCacheSlot + 1) % capacity;
+    }
+    return font;
+  }
+
   // Drawing state
+  GfxImageBank imageBank;
+  std::array<int, GfxImageBank::kNumImages> imageWidths {};
+  std::array<int, GfxImageBank::kNumImages> imageHeights {};
+  bool frameRecording = false;
+
   std::unordered_map<int, juce::Font> fonts;
   int currentFontId = 0;
   juce::Font currentFont;
@@ -2236,12 +2497,15 @@ public:
     if (vm) vm->setMenuPort(port);
   }
 
-  void renderFrame(int width, int height, const Snapshot& snap)
+  void prepareFrame(int width, int height, const Snapshot& snap)
   {
     if (!hasGfxSection() || !gfxCompiledOk()) return;
 
     juce::ScopedNoDenormals noDenormals;
-
+    const auto start = profilingEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+    vm->ensureMemSize(snap.logicalMemN);
+    // Record init draws/allocations in order rather than clearing them afterwards.
+    vm->beginFrame(width, height);
     vm->setHostTrackName(snap.hostTrackName, snap.hostTrackNameSeq);
 
     // One-time init, with current snapshot state applied first.
@@ -2278,15 +2542,34 @@ public:
 
     vm->setMouse(mouseX, mouseY, mouseCap, mouseWheel, mouseHWheel);
 
-    vm->beginFrame(width, height);
+    framePrepared = true;
+    syncMilliseconds = profilingEnabled ? std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count() : 0.0;
+  }
 
-    // Execute gfx code.
+  void executeFrame()
+  {
+    if (!framePrepared || !vm || !code_gfx) return;
+    framePrepared = false;
+    juce::ScopedNoDenormals noDenormals;
+    const auto start = profilingEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
     NSEEL_code_execute(code_gfx);
-
-    // reset wheels after one tick
+    vm->frameRecording = false;
+    gfxMilliseconds = profilingEnabled ? std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count() : 0.0;
     mouseWheel = 0.0f;
     mouseHWheel = 0.0f;
   }
+
+  void renderFrame(int width, int height, const Snapshot& snap)
+  {
+    prepareFrame(width, height, snap);
+    executeFrame();
+  }
+
+  void setProfilingEnabled(bool enabled) noexcept { profilingEnabled = enabled; }
+  double getSyncMilliseconds() const noexcept { return syncMilliseconds; }
+  double getGfxMilliseconds() const noexcept { return gfxMilliseconds; }
 
   const std::vector<DrawCmd>& getCommands() const
   {
@@ -2302,6 +2585,10 @@ private:
   NSEEL_CODEHANDLE code_gfx = nullptr;
 
   bool initRan = false;
+  bool framePrepared = false;
+  bool profilingEnabled = false;
+  double syncMilliseconds = 0.0;
+  double gfxMilliseconds = 0.0;
 
   juce::String lastError;
 
@@ -2315,95 +2602,355 @@ private:
 // -------------------------
 // JUCE helper: paint commands
 // -------------------------
-static inline void paintCommands(juce::Graphics& g, const std::vector<DrawCmd>& cmds)
+// Cull before creating paths/text layouts. The script still executes normally
+// (including hit testing and gfx_x/gfx_y advances); only invisible raster work is skipped.
+static inline bool primitiveIntersectsClip(juce::Graphics& g, const DrawCmd& cmd)
+{
+  double x0 = cmd.x, y0 = cmd.y, x1 = x0 + cmd.w, y1 = y0 + cmd.h;
+  switch (cmd.type)
+  {
+    case DrawCmd::Type::Line:
+      x0 = std::min(cmd.x, cmd.x2); y0 = std::min(cmd.y, cmd.y2);
+      x1 = std::max(cmd.x, cmd.x2); y1 = std::max(cmd.y, cmd.y2);
+      break;
+    case DrawCmd::Type::Circle:
+    case DrawCmd::Type::Arc:
+      x0 = (double)cmd.x - cmd.radius; y0 = (double)cmd.y - cmd.radius;
+      x1 = (double)cmd.x + cmd.radius; y1 = (double)cmd.y + cmd.radius;
+      break;
+    case DrawCmd::Type::Text:
+      if (!cmd.useTextBounds) { x1 = x0 + 10000.0; y1 = y0 + cmd.font.getHeight() + 4.0; }
+      break;
+    case DrawCmd::Type::Triangle:
+      if (cmd.points.empty()) return false;
+      x0 = x1 = cmd.points[0].x; y0 = y1 = cmd.points[0].y;
+      for (const auto& point : cmd.points)
+      {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y)) return false;
+        x0 = std::min(x0, (double)point.x); y0 = std::min(y0, (double)point.y);
+        x1 = std::max(x1, (double)point.x); y1 = std::max(y1, (double)point.y);
+      }
+      break;
+    case DrawCmd::Type::SetImageDim:
+    case DrawCmd::Type::Blit:
+      return false;
+    default: break;
+  }
+  if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(x1) || !std::isfinite(y1))
+    return false;
+  const int left = boundedGfxInt(std::floor(x0) - 2.0);
+  const int top = boundedGfxInt(std::floor(y0) - 2.0);
+  const int right = boundedGfxInt(std::ceil(x1) + 2.0);
+  const int bottom = boundedGfxInt(std::ceil(y1) + 2.0);
+  return right > left && bottom > top
+      && g.clipRegionIntersects(juce::Rectangle<int>(left, top, right - left, bottom - top));
+}
+
+static inline bool paintPrimitiveCommand(juce::Graphics& g, const DrawCmd& cmd)
+{
+  if (!primitiveIntersectsClip(g, cmd)) return false;
+  g.setColour(cmd.colour);
+
+  switch (cmd.type)
+  {
+    case DrawCmd::Type::Rect:
+    {
+      if (cmd.fill)
+        g.fillRect(cmd.x, cmd.y, cmd.w, cmd.h);
+      else
+        g.drawRect(cmd.x, cmd.y, std::max(0.0f, cmd.w - 1.0f), std::max(0.0f, cmd.h - 1.0f), 1.0f);
+      break;
+    }
+
+    case DrawCmd::Type::Line:
+      g.drawLine(cmd.x, cmd.y, cmd.x2, cmd.y2, 1.0f);
+      break;
+
+    case DrawCmd::Type::Text:
+      g.setFont(cmd.font);
+      if (cmd.useTextBounds)
+      {
+        g.drawText(cmd.text,
+                   juce::Rectangle<int>(boundedGfxInt(cmd.x), boundedGfxInt(cmd.y),
+                                        boundedGfxInt(cmd.w), boundedGfxInt(cmd.h)),
+                   cmd.textJustification,
+                   false);
+      }
+      else
+      {
+        g.drawText(cmd.text, boundedGfxInt(cmd.x), boundedGfxInt(cmd.y), 10000, boundedGfxInt(cmd.font.getHeight()) + 4,
+                   juce::Justification::topLeft, false);
+      }
+      break;
+
+    case DrawCmd::Type::Circle:
+    {
+      const float d = cmd.radius * 2.0f;
+      const float x = cmd.x - cmd.radius;
+      const float y = cmd.y - cmd.radius;
+      if (cmd.fill) g.fillEllipse(x, y, d, d);
+      else          g.drawEllipse(x, y, d, d, 1.0f);
+      break;
+    }
+
+    case DrawCmd::Type::RoundRect:
+    {
+      const juce::Rectangle<float> rc(cmd.x, cmd.y, cmd.w, cmd.h);
+      if (cmd.fill) g.fillRoundedRectangle(rc, cmd.cornerRadius);
+      else          g.drawRoundedRectangle(rc, cmd.cornerRadius, 1.0f);
+      break;
+    }
+
+    case DrawCmd::Type::Arc:
+    {
+      const double delta = (double)cmd.angle2 - (double)cmd.angle1;
+      const int segments = gfxArcSegments((double)cmd.radius, std::abs(delta));
+      if (segments > 0 && std::isfinite(cmd.x) && std::isfinite(cmd.y)
+          && std::isfinite(cmd.angle1) && std::isfinite(cmd.angle2))
+      {
+        juce::Path p;
+        bool valid = true;
+        for (int i = 0; i <= segments; ++i)
+        {
+          const double a = (double)cmd.angle1 + delta * ((double)i / segments);
+          const double px = (double)cmd.x + std::cos(a) * (double)cmd.radius;
+          const double py = (double)cmd.y + std::sin(a) * (double)cmd.radius;
+          if (!std::isfinite(px) || !std::isfinite(py)
+              || std::abs(px) > 16777216.0 || std::abs(py) > 16777216.0)
+          { valid = false; break; }
+          if (i == 0) p.startNewSubPath((float)px, (float)py);
+          else p.lineTo((float)px, (float)py);
+        }
+        if (valid) g.strokePath(p, juce::PathStrokeType(1.0f));
+      }
+      break;
+    }
+
+    case DrawCmd::Type::Triangle:
+    {
+      if (cmd.points.size() >= 3)
+      {
+        juce::Path p;
+        p.startNewSubPath(cmd.points[0]);
+        for (size_t i = 1; i < cmd.points.size(); ++i)
+          p.lineTo(cmd.points[i]);
+        p.closeSubPath();
+        g.fillPath(p);
+      }
+      break;
+    }
+
+    case DrawCmd::Type::SetImageDim:
+    case DrawCmd::Type::Blit:
+      break;
+  }
+  return true;
+}
+
+static inline juce::Rectangle<int> clippedBlitSourceRect(const juce::Image& image, const DrawCmd& cmd)
+{
+  if (!image.isValid())
+    return {};
+
+  int x = boundedGfxInt(std::floor((double)cmd.srcX));
+  int y = boundedGfxInt(std::floor((double)cmd.srcY));
+  int w = boundedGfxInt(std::floor((double)cmd.srcW));
+  int h = boundedGfxInt(std::floor((double)cmd.srcH));
+
+  // Negative source dimensions are not useful in this quick compatibility
+  // path. Full LICE parity (including mirrored source rectangles) can come later.
+  if (w <= 0 || h <= 0)
+    return {};
+
+  return juce::Rectangle<int>(x, y, w, h)
+           .getIntersection(juce::Rectangle<int>(0, 0, image.getWidth(), image.getHeight()));
+}
+
+static inline void paintBlitCommandToGraphics(juce::Graphics& target,
+                                              const juce::Image& sourceImage,
+                                              const DrawCmd& cmd)
+{
+  if (!sourceImage.isValid())
+    return;
+
+  const auto srcRect = clippedBlitSourceRect(sourceImage, cmd);
+  if (srcRect.isEmpty())
+    return;
+
+  if (!std::isfinite(cmd.destX) || !std::isfinite(cmd.destY)
+      || !std::isfinite(cmd.destW) || !std::isfinite(cmd.destH)
+      || !std::isfinite(cmd.rotation))
+    return;
+
+  const int destX = boundedGfxInt(std::floor((double)cmd.destX));
+  const int destY = boundedGfxInt(std::floor((double)cmd.destY));
+  const int destW = boundedGfxInt(std::floor((double)cmd.destW));
+  const int destH = boundedGfxInt(std::floor((double)cmd.destH));
+
+  if (destW <= 0 || destH <= 0)
+    return;
+
+  target.saveState();
+  target.setOpacity(juce::jlimit(0.0f, 1.0f, cmd.opacity));
+  target.setImageResamplingQuality((cmd.blitMode & 4) != 0
+                                     ? juce::Graphics::lowResamplingQuality
+                                     : juce::Graphics::mediumResamplingQuality);
+
+  // gfx_mode&1 (additive) and gfx_mode&2 (ignore source alpha) intentionally
+  // remain outside this quick path. JUCE's normal source-over compositor is used.
+  if (std::abs(cmd.rotation) < 1.0e-7f)
+  {
+    target.drawImage(sourceImage,
+                     destX, destY, destW, destH,
+                     srcRect.getX(), srcRect.getY(), srcRect.getWidth(), srcRect.getHeight(),
+                     false);
+  }
+  else
+  {
+    const juce::Image clipped = sourceImage.getClippedImage(srcRect);
+
+    // Map the clipped source image into the requested destination rectangle, then
+    // rotate around the destination centre plus REAPER's optional rotation offsets.
+    const double sx = (double)cmd.destW / (double)std::max(1, srcRect.getWidth());
+    const double sy = (double)cmd.destH / (double)std::max(1, srcRect.getHeight());
+    const double angle = (double)cmd.rotation;
+    const double c = std::cos(angle);
+    const double s = std::sin(angle);
+
+    const double pivotX = (double)cmd.destX + (double)cmd.destW * 0.5 + (double)cmd.rotationXOffset;
+    const double pivotY = (double)cmd.destY + (double)cmd.destH * 0.5 + (double)cmd.rotationYOffset;
+
+    const double m00 = c * sx;
+    const double m01 = -s * sy;
+    const double m10 = s * sx;
+    const double m11 = c * sy;
+    const double m02 = c * ((double)cmd.destX - pivotX)
+                     - s * ((double)cmd.destY - pivotY) + pivotX;
+    const double m12 = s * ((double)cmd.destX - pivotX)
+                     + c * ((double)cmd.destY - pivotY) + pivotY;
+
+    const juce::AffineTransform transform((float)m00, (float)m01, (float)m02,
+                                          (float)m10, (float)m11, (float)m12);
+    target.drawImageTransformed(clipped, transform, false);
+  }
+
+  target.restoreState();
+}
+
+struct GfxRenderStats
+{
+  size_t commandCount = 0;
+  unsigned int graphicsContexts = 0;
+  unsigned int blits = 0;
+  unsigned int selfBlitCopies = 0;
+  bool mainFramebufferChanged = false;
+};
+
+// True only when a full opaque replacement occurs before ANY framebuffer read
+// or write. Otherwise a recycled canvas must inherit the previous frame's pixels.
+static inline bool canDiscardPreviousFramebuffer(const std::vector<DrawCmd>& cmds, int width, int height)
 {
   for (const auto& cmd : cmds)
   {
-    g.setColour(cmd.colour);
-    switch (cmd.type)
+    if (cmd.type == DrawCmd::Type::SetImageDim) continue;
+    if (cmd.type == DrawCmd::Type::Blit && cmd.source == -1) return false;
+    if (cmd.dest != -1) continue;
+    return cmd.type == DrawCmd::Type::Rect && cmd.fill && cmd.colour.isOpaque()
+        && std::isfinite(cmd.x) && std::isfinite(cmd.y) && std::isfinite(cmd.w) && std::isfinite(cmd.h)
+        && cmd.x <= 0.0f && cmd.y <= 0.0f
+        && (double)cmd.x + cmd.w >= width && (double)cmd.y + cmd.h >= height;
+  }
+  return true; // Offscreen-only work doesn't depend on the old canvas.
+}
+
+// All contexts and surfaces stay on the GFX worker. Commands are NEVER sorted:
+// source reads flush their writer, and resize invalidates only that destination.
+// Passing the actual canvas (rather than only a Graphics) makes gfx_blit(-1)
+// sample the real framebuffer, including previous-frame pixels when requested.
+static inline GfxRenderStats paintCommands(juce::Image& framebuffer, const std::vector<DrawCmd>& cmds)
+{
+  GfxRenderStats stats;
+  stats.commandCount = cmds.size();
+  if (!framebuffer.isValid()) return stats;
+  std::unique_ptr<juce::Graphics> mainContext;
+  std::array<std::unique_ptr<juce::Graphics>, GfxImageBank::kNumImages> imageContexts {};
+  GfxImageBank* activeBank = nullptr;
+
+  const auto contextFor = [&](int dest, GfxImageBank* bank) -> juce::Graphics*
+  {
+    if (dest == -1)
     {
-      case DrawCmd::Type::Rect:
+      if (!mainContext)
       {
-        if (cmd.fill)
-          g.fillRect(cmd.x, cmd.y, cmd.w, cmd.h);
-        else
-          g.drawRect(cmd.x, cmd.y, std::max(0.0f, cmd.w - 1.0f), std::max(0.0f, cmd.h - 1.0f), 1.0f);
-        break;
+        mainContext = std::make_unique<juce::Graphics>(framebuffer);
+        ++stats.graphicsContexts;
       }
-      case DrawCmd::Type::Line:
-        g.drawLine(cmd.x, cmd.y, cmd.x2, cmd.y2, 1.0f);
-        break;
-      case DrawCmd::Type::Text:
-        g.setFont(cmd.font);
-        if (cmd.useTextBounds)
-        {
-          g.drawText(cmd.text,
-                     juce::Rectangle<int>(boundedGfxInt(cmd.x), boundedGfxInt(cmd.y),
-                                          boundedGfxInt(cmd.w), boundedGfxInt(cmd.h)),
-                     cmd.textJustification,
-                     false);
-        }
-        else
-        {
-          g.drawText(cmd.text, boundedGfxInt(cmd.x), boundedGfxInt(cmd.y), 10000, boundedGfxInt(cmd.font.getHeight()) + 4,
-                     juce::Justification::topLeft, false);
-        }
-        break;
-      case DrawCmd::Type::Circle:
+      return mainContext.get();
+    }
+    if (!bank || dest < 0 || dest >= GfxImageBank::kNumImages) return nullptr;
+    const size_t index = (size_t) dest;
+    if (!bank->images[index].isValid()) return nullptr;
+    if (!imageContexts[index])
+    {
+      imageContexts[index] = std::make_unique<juce::Graphics>(bank->images[index]);
+      ++stats.graphicsContexts;
+    }
+    return imageContexts[index].get();
+  };
+
+  for (const auto& cmd : cmds)
+  {
+    auto* bank = cmd.imageBank;
+    if (bank != activeBank)
+    {
+      for (auto& ctx : imageContexts) ctx.reset();
+      activeBank = bank;
+    }
+    if (cmd.type == DrawCmd::Type::SetImageDim)
+    {
+      if (bank && cmd.imageIndex >= 0 && cmd.imageIndex < GfxImageBank::kNumImages)
       {
-        const float d = cmd.radius * 2.0f;
-        const float x = cmd.x - cmd.radius;
-        const float y = cmd.y - cmd.radius;
-        if (cmd.fill) g.fillEllipse(x, y, d, d);
-        else          g.drawEllipse(x, y, d, d, 1.0f);
-        break;
+        imageContexts[(size_t)cmd.imageIndex].reset();
+        bank->resizeImage(cmd.imageIndex, cmd.imageWidth, cmd.imageHeight);
       }
-      case DrawCmd::Type::RoundRect:
+      continue;
+    }
+
+    if (cmd.type == DrawCmd::Type::Blit)
+    {
+      juce::Image sourceImage;
+      if (cmd.source == -1)
       {
-        const juce::Rectangle<float> rc(cmd.x, cmd.y, cmd.w, cmd.h);
-        if (cmd.fill) g.fillRoundedRectangle(rc, cmd.cornerRadius);
-        else          g.drawRoundedRectangle(rc, cmd.cornerRadius, 1.0f);
-        break;
+        mainContext.reset(); // Finish writes before sampling the framebuffer.
+        sourceImage = framebuffer;
       }
-      case DrawCmd::Type::Arc:
+      else if (bank && cmd.source >= 0 && cmd.source < GfxImageBank::kNumImages)
       {
-        const double delta = (double)cmd.angle2 - (double)cmd.angle1;
-        const int segments = gfxArcSegments((double)cmd.radius, std::abs(delta));
-        if (segments > 0 && std::isfinite(cmd.x) && std::isfinite(cmd.y)
-            && std::isfinite(cmd.angle1) && std::isfinite(cmd.angle2))
-        {
-          juce::Path p;
-          bool valid = true;
-          for (int i = 0; i <= segments; ++i)
-          {
-            const double a = (double)cmd.angle1 + delta * ((double)i / segments);
-            const double px = (double)cmd.x + std::cos(a) * (double)cmd.radius;
-            const double py = (double)cmd.y + std::sin(a) * (double)cmd.radius;
-            if (!std::isfinite(px) || !std::isfinite(py)
-                || std::abs(px) > 16777216.0 || std::abs(py) > 16777216.0)
-            { valid = false; break; }
-            if (i == 0) p.startNewSubPath((float)px, (float)py);
-            else p.lineTo((float)px, (float)py);
-          }
-          if (valid) g.strokePath(p, juce::PathStrokeType(1.0f));
-        }
-        break;
+        imageContexts[(size_t)cmd.source].reset();
+        sourceImage = bank->images[(size_t)cmd.source];
       }
-      case DrawCmd::Type::Triangle:
+      if (!sourceImage.isValid()) continue;
+      if (cmd.source == cmd.dest)
       {
-        if (cmd.points.size() >= 3)
-        {
-          juce::Path p;
-          p.startNewSubPath(cmd.points[0]);
-          for (size_t i = 1; i < cmd.points.size(); ++i)
-            p.lineTo(cmd.points[i]);
-          p.closeSubPath();
-          g.fillPath(p);
-        }
-        break;
+        sourceImage = sourceImage.createCopy(); // The only full-image blit copy.
+        ++stats.selfBlitCopies;
       }
+      if (auto* target = contextFor(cmd.dest, bank))
+      {
+        paintBlitCommandToGraphics(*target, sourceImage, cmd);
+        ++stats.blits;
+        if (cmd.dest == -1) stats.mainFramebufferChanged = true;
+      }
+      continue;
+    }
+
+    if (auto* target = contextFor(cmd.dest, bank))
+    {
+      const bool drawn = paintPrimitiveCommand(*target, cmd);
+      if (drawn && cmd.dest == -1) stats.mainFramebufferChanged = true;
     }
   }
+  return stats;
 }
 
 
