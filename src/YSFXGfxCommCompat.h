@@ -32,37 +32,6 @@ static EEL_F NSEEL_CGEN_CALL eel_return_one (void* opaque, INT_PTR np, EEL_F** p
     return 1.0;
 }
 
-static EEL_F NSEEL_CGEN_CALL eel_gfx_drawnumber (void* opaque, INT_PTR np, EEL_F** parms)
-{
-    auto* self = (jsfx_gfx::GfxVm*) opaque;
-    if (self == nullptr || np < 1 || parms == nullptr || parms[0] == nullptr)
-        return 0.0;
-
-    const double value = (double) *parms[0];
-    int digits = 0;
-    if (np >= 2 && parms[1] != nullptr)
-        digits = (int) std::llround ((double) *parms[1]);
-
-    juce::String text;
-    if (std::isfinite (value))
-    {
-        if (digits >= 0 && digits <= 24)
-            text = juce::String (value, digits);
-        else
-            text = juce::String (value, 15);
-    }
-    else if (std::isnan (value))
-    {
-        text = "nan";
-    }
-    else
-    {
-        text = value < 0.0 ? "-inf" : "inf";
-    }
-
-    return jsfx_gfx::GfxVm::emitTextCommand (self, text, 1, parms);
-}
-
 inline void registerBuiltins()
 {
     static std::once_flag once;
@@ -76,7 +45,8 @@ inline void registerBuiltins()
         jsfx_gfx::GfxVm warmup;
         (void) warmup;
 
-        NSEEL_addfunc_varparm_ex ("gfx_drawnumber", 1, 0, NSEEL_PProc_THIS, &eel_gfx_drawnumber, nullptr);
+        // All gfx_* functions are owned by GfxVm. Do not override its renderer
+        // builtins when appending DSP-only compatibility shims.
 
         // Identity / domain. Return harmless values inside @gfx.
         NSEEL_addfunc_varparm_ex ("instance_id", 0, 0, NSEEL_PProc_THIS, &eel_return_one, nullptr);

@@ -95,6 +95,14 @@ def copy_bundle(src: Path, dst_dir: Path) -> Path:
     return dst
 
 
+def copy_upstream_notice(spec: PluginSpec, target_dir: Path) -> None:
+    """Keep vendored third-party license text beside each staged plugin format."""
+    notice = spec.root_dir / "LICENSE.upstream"
+    if notice.is_file():
+        target_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(notice, target_dir / f"{spec.slug}.LICENSE.upstream.txt")
+
+
 def die(msg: str) -> None:
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(2)
@@ -144,148 +152,13 @@ def find_jsfx_aot_compiler(repo_root: Path) -> Path:
 
 
 
-# --- Joep/JSFX compatibility: section-aware textual import preprocessing for embedded source ---
-_JSFX_IMPORT_RE = re.compile(
-    r"^\s*import\s+(?:\"([^\"]+)\"|'([^']+)'|([^\s;]+))\s*;?\s*(?://.*)?$"
-)
-
-
-def _merge_import_bundle(dst_preamble: list[str], dst_order: list[str], dst_sections: dict[str, list[str]],
-                         dst_headers: dict[str, str],
-                         src_preamble: list[str], src_order: list[str], src_sections: dict[str, list[str]],
-                         src_headers: dict[str, str]) -> None:
-    dst_preamble.extend(src_preamble)
-    for sec in src_order:
-        if sec not in dst_sections:
-            dst_sections[sec] = []
-            dst_order.append(sec)
-        if sec not in dst_headers and sec in src_headers:
-            dst_headers[sec] = src_headers[sec]
-        dst_sections[sec].extend(src_sections.get(sec, []))
-
-
-def _parse_preprocessed_jsfx_bundle(text: str) -> tuple[list[str], list[str], dict[str, list[str]], dict[str, str]]:
-    preamble: list[str] = []
-    order: list[str] = []
-    sections: dict[str, list[str]] = {}
-    headers: dict[str, str] = {}
-    current: str | None = None
-    current_lines: list[str] = []
-    section_re = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b.*$")
-
-    def flush_current() -> None:
-        nonlocal current_lines
-        if current is None:
-            return
-        if current not in sections:
-            sections[current] = []
-            order.append(current)
-        sections[current].extend(current_lines)
-        current_lines = []
-
-    for raw_line in text.splitlines(True):
-        m_sec = section_re.match(raw_line)
-        if m_sec:
-            flush_current()
-            current = m_sec.group(1)
-            headers[current] = raw_line
-            current_lines = []
-            continue
-
-        if current is None:
-            preamble.append(raw_line)
-        else:
-            current_lines.append(raw_line)
-
-    flush_current()
-    return preamble, order, sections, headers
-
-
 def preprocess_jsfx_imports_from_path(path: Path, _stack: tuple[Path, ...] = ()) -> str:
-    path = path.resolve()
-    if path in _stack:
-        chain = " -> ".join(str(p) for p in (_stack + (path,)))
-        raise RuntimeError(f"Cyclic JSFX import chain: {chain}")
-
-    text = path.read_text(encoding="utf-8", errors="replace")
-    preamble: list[str] = []
-    order: list[str] = []
-    sections: dict[str, list[str]] = {}
-    headers: dict[str, str] = {}
-    current: str | None = None
-    current_lines: list[str] = []
-    section_re = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b.*$")
-
-    def flush_current() -> None:
-        nonlocal current_lines
-        if current is None:
-            return
-        if current not in sections:
-            sections[current] = []
-            order.append(current)
-        sections[current].extend(current_lines)
-        current_lines = []
-
-    for raw_line in text.splitlines(True):
-        m_imp = _JSFX_IMPORT_RE.match(raw_line)
-        m_sec = section_re.match(raw_line)
-
-        if m_imp:
-            token = next((g for g in m_imp.groups() if g), "")
-            if not token:
-                if current is None:
-                    preamble.append(raw_line)
-                else:
-                    current_lines.append(raw_line)
-                continue
-
-            inc_path = (path.parent / token).resolve()
-            if not inc_path.exists():
-                raise FileNotFoundError(
-                    f"Unable to resolve JSFX import {token!r} from {path}"
-                )
-
-            child_text = preprocess_jsfx_imports_from_path(inc_path, _stack + (path,))
-            child_preamble, child_order, child_sections, child_headers = _parse_preprocessed_jsfx_bundle(child_text)
-
-            if current is None:
-                _merge_import_bundle(preamble, order, sections, headers,
-                                     child_preamble, child_order, child_sections, child_headers)
-            else:
-                current_lines.extend(child_preamble)
-                for sec in child_order:
-                    if sec == current:
-                        current_lines.extend(child_sections.get(sec, []))
-                    else:
-                        if sec not in sections:
-                            sections[sec] = []
-                            order.append(sec)
-                        if sec not in headers and sec in child_headers:
-                            headers[sec] = child_headers[sec]
-                        sections[sec].extend(child_sections.get(sec, []))
-            continue
-
-        if m_sec:
-            flush_current()
-            current = m_sec.group(1)
-            headers[current] = raw_line
-            current_lines = []
-            continue
-
-        if current is None:
-            preamble.append(raw_line)
-        else:
-            current_lines.append(raw_line)
-
-    flush_current()
-    out: list[str] = list(preamble)
-    for sec in order:
-        header = headers.get(sec, f"@{sec}\n")
-        out.append(header if header.endswith("\n") else header + "\n")
-        out.extend(sections.get(sec, []))
-        if out and not out[-1].endswith("\n"):
-            out.append("\n")
-    return "".join(out)
+    # Kept as a public wrapper for local callers; there is only one expander.
+    if __package__:
+        from .jsfx_source import resolve_source
+    else:
+        from jsfx_source import resolve_source
+    return resolve_source(path).text
 
 def _c_escape_utf8_units(text: str) -> list[str]:
     units: list[str] = []
@@ -340,7 +213,7 @@ def write_plugin_readme_header(cmake_build: Path, readme_path: Path) -> Path:
     )
 
 
-def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Path) -> tuple[Path, Path, Path, Path]:
+def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Path, compatibility: dict | None = None) -> tuple[Path, Path, Path, Path]:
     """
     Produces:
       - JSFXDSP.o / JSFXDSP.obj
@@ -359,7 +232,23 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
     out_ll = cmake_build / "JSFXDSP.ll"
     out_src_h = cmake_build / "JSFXSource.h"
 
-    jsfx_text = preprocess_jsfx_imports_from_path(jsfx_path.resolve())
+    if __package__:
+        from .jsfx_source import resolve_source, apply_host_options
+    else:
+        from jsfx_source import resolve_source, apply_host_options
+    resolved = apply_host_options(resolve_source(jsfx_path.resolve()), compatibility)
+    jsfx_text = resolved.text
+    # Compile exactly what is embedded for @gfx, not a second import expansion.
+    expanded_path = cmake_build / "JSFXExpanded.jsfx"
+    expanded_path.write_text(jsfx_text, encoding="utf-8")
+    (cmake_build / "JSFXImports.json").write_text(
+        json.dumps(resolved.manifest(jsfx_path.parent), indent=2) + "\n", encoding="utf-8")
+
+    if __package__:
+        from .embed_gfx_resources import write_gfx_resources
+    else:
+        from embed_gfx_resources import write_gfx_resources
+    write_gfx_resources(jsfx_path, jsfx_text, cmake_build / "JSFXResources.h")
 
     write_embedded_text_header(
         text=jsfx_text,
@@ -384,7 +273,7 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
     comp = find_jsfx_aot_compiler(repo_root)
     cmd = [
         sys.executable, str(comp),
-        str(jsfx_path),
+        str(expanded_path),
         "--out-ll", str(out_ll),
         "--out-obj", str(out_obj),
         "--out-h", str(out_h),
@@ -613,7 +502,7 @@ def main() -> None:
         if spec.plugin_type == "faust":
             dsp = spec.entry_path
         else:
-            jsfx_obj, _, jsfx_meta_path, _ = build_jsfx_aot(repo_root, cmake_build, slug, spec.entry_path)
+            jsfx_obj, _, jsfx_meta_path, _ = build_jsfx_aot(repo_root, cmake_build, slug, spec.entry_path, spec.raw.get("jsfxCompatibility"))
             jsfx_meta = json.loads(jsfx_meta_path.read_text(encoding="utf-8")) if jsfx_meta_path.exists() else {}
             jsfx_caps = derive_jsfx_plugin_capabilities(jsfx_meta)
             comm_meta = dict(jsfx_meta.get("comm") or {})
@@ -693,10 +582,12 @@ def main() -> None:
 
         for artifact in vst3s:
             copy_bundle(artifact, install_vst3_dir)
+            copy_upstream_notice(spec, install_vst3_dir)
 
         if enable_clap:
             for artifact in claps:
                 copy_bundle(artifact, install_clap_dir)
+                copy_upstream_notice(spec, install_clap_dir)
 
         built_specs.append(spec)
 

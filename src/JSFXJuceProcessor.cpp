@@ -174,10 +174,10 @@ extern "C" double jsfx_slider_next_chg (DSPJSFX_State* st,
 // Optional JSFX @gfx interpreter (WDL/YSFX EEL2)
 //
 // This is included as a single translation-unit chunk to keep the project
-// monolithic: you only need to add YSFXGfxInterpreter.h (+ WDL folder) next
-// to this file.
+// monolithic. Keep the JsfxGfx* helper headers and WDL directory alongside it.
 // ------------------------------
 #include "YSFXGfxInterpreter.h"
+#include "JsfxGfxResources.h"
 #include "YSFXGfxCommCompat.h"
 #include "WDL/fft.h"
 
@@ -13763,6 +13763,7 @@ private:
 };
 
 class GfxView final : public juce::Component,
+                      public juce::FileDragAndDropTarget,
                       private juce::AsyncUpdater
 {
 public:
@@ -13803,7 +13804,7 @@ public:
         menuOverlay.setVisible (false);
 
         jsfx_gfx_compat::registerBuiltins();
-        interp = std::make_unique<jsfx_gfx::Interpreter> (kJsfxSourceText);
+        interp = std::make_unique<jsfx_gfx::Interpreter> (kJsfxSourceText, jsfx_gfx_resources::loadImage);
 
         if (interp != nullptr)
         {
@@ -13847,6 +13848,10 @@ public:
 
     void updateAnalysisVisibility()
     {
+        windowFocused.store (hasKeyboardFocus (true), std::memory_order_release);
+        windowVisible.store (isShowing(), std::memory_order_release);
+        if (auto* peer = getPeer())
+            displayScale.store (juce::jlimit (1.0, 4.0, (double) peer->getPlatformScaleFactor()), std::memory_order_release);
         processor.setGfxAnalysisVisible(hasGfxFlag && gfxCompiledOkFlag && isShowing()
                                        && getWidth() > 0 && getHeight() > 0);
     }
@@ -13911,7 +13916,8 @@ public:
 
         const auto placement = getFramePlacement (getWidth(), getHeight());
         g.saveState();
-        g.addTransform (juce::AffineTransform::scale (placement.scale)
+        const float pixelScale = placement.scale * (float) placement.renderW / (float) juce::jmax (1, frame.getWidth());
+        g.addTransform (juce::AffineTransform::scale (pixelScale)
                             .translated (placement.offsetX, placement.offsetY));
         g.drawImageAt (frame, 0, 0);
         g.restoreState();
@@ -13985,7 +13991,7 @@ public:
             updateMouseCapFromModifiers (juce::ModifierKeys::getCurrentModifiers());
             sharedInput.mouseCap = mouseCap;
             sharedInput.captureStateWrites = true;
-            sharedInput.keyEvents.push_back (KeyEvent { jsfxCode, true, true });
+            sharedInput.keyEvents.push_back (KeyEvent { jsfxCode, true, true, key.getKeyCode() });
         }
 
         trackedKeys[(uint32_t) jsfxCode] = key.getKeyCode();
@@ -14014,7 +14020,7 @@ public:
 
                 if (! downNow)
                 {
-                    sharedInput.keyEvents.push_back (KeyEvent { jsfxCode, false, false });
+                    sharedInput.keyEvents.push_back (KeyEvent { jsfxCode, false, false, juceKeyCode });
                     it = trackedKeys.erase (it);
                     changed = true;
                 }
@@ -14034,8 +14040,27 @@ public:
         return changed || capChanged;
     }
 
+    void focusGained (juce::Component::FocusChangeType) override
+    {
+        updateAnalysisVisibility();
+        notifyWorker();
+    }
+
+    bool isInterestedInFileDrag (const juce::StringArray&) override { return hasGfxFlag && gfxCompiledOkFlag; }
+    void filesDropped (const juce::StringArray& files, int, int) override
+    {
+        {
+            const std::lock_guard<std::mutex> lock (inputMutex);
+            for (const auto& path : files)
+                if (sharedInput.droppedFiles.size() < 1024) sharedInput.droppedFiles.push_back (path);
+            sharedInput.captureStateWrites = true;
+        }
+        notifyWorker();
+    }
+
     void focusLost (juce::Component::FocusChangeType) override
     {
+        windowFocused.store (false, std::memory_order_release);
         trackedKeys.clear();
 
         {
@@ -14077,6 +14102,7 @@ private:
         int jsfxCode = 0;
         bool keyDown = false;
         bool enqueueChar = false;
+        int rawKeyCode = 0;
     };
 
     struct MouseStateFrame
@@ -14100,6 +14126,7 @@ private:
         bool captureStateWrites = false;
         bool clearKeys = false;
         std::deque<KeyEvent> keyEvents;
+        std::vector<juce::String> droppedFiles;
         std::deque<MouseStateFrame> mouseFrames;
     };
 
@@ -14539,21 +14566,37 @@ private:
     {
         const auto placement = getFramePlacement (getWidth(), getHeight());
         const float safeScale = juce::jmax (placement.scale, 0.0001f);
-        return { (physical.x - placement.offsetX) / safeScale,
-                 (physical.y - placement.offsetY) / safeScale };
+        const float pixels = (float) framebufferPixelScale.load (std::memory_order_acquire);
+        return { (physical.x - placement.offsetX) * pixels / safeScale,
+                 (physical.y - placement.offsetY) * pixels / safeScale };
     }
 
     juce::Point<float> logicalToPhysical (juce::Point<float> logical) const noexcept
     {
         const auto placement = getFramePlacement (getWidth(), getHeight());
-        return { placement.offsetX + logical.x * placement.scale,
-                 placement.offsetY + logical.y * placement.scale };
+        const float pixels = (float) framebufferPixelScale.load (std::memory_order_acquire);
+        return { placement.offsetX + logical.x * placement.scale / pixels,
+                 placement.offsetY + logical.y * placement.scale / pixels };
     }
 
     void handleAsyncUpdate() override
     {
         updateAnalysisVisibility();
         bool repaintNeeded = repaintPending.exchange (false, std::memory_order_acq_rel);
+        {
+            int id = 0;
+            juce::String name;
+            juce::Image custom;
+            {
+                const std::lock_guard<std::mutex> lock (cursorMutex);
+                if (cursorPending) { id = pendingCursorId; name = pendingCursorName; custom = pendingCursorImage; cursorPending = false; }
+            }
+            if (id != 0)
+            {
+                if (custom.isValid()) setMouseCursor (juce::MouseCursor (custom, 0, 0));
+                else setMouseCursor (standardGfxCursor (id, name));
+            }
+        }
 
         if (menuBridge.takePendingCancel())
         {
@@ -14750,8 +14793,13 @@ private:
         if (! hasGfxFlag || ! gfxCompiledOkFlag || interp == nullptr)
             return;
 
-        const int w = juce::jmax (1, targetWidth.load (std::memory_order_acquire));
-        const int h = juce::jmax (1, targetHeight.load (std::memory_order_acquire));
+        double pixelScale = 1.0;
+       #if JUCE_MAC
+        if (interp->wantsRetina()) pixelScale = displayScale.load (std::memory_order_acquire);
+       #endif
+        framebufferPixelScale.store (pixelScale, std::memory_order_release);
+        const int w = juce::jlimit (1, 8192, (int) std::ceil (targetWidth.load (std::memory_order_acquire) * pixelScale));
+        const int h = juce::jlimit (1, 8192, (int) std::ceil (targetHeight.load (std::memory_order_acquire) * pixelScale));
 
         // Acquire before consuming input/executing @gfx: never drop a resize or
         // UI command just because the presentation buffers are still leased.
@@ -14799,6 +14847,7 @@ private:
             inputCopy.captureStateWrites = inputCopy.captureStateWrites || sharedInput.captureStateWrites;
             inputCopy.clearKeys = sharedInput.clearKeys;
             inputCopy.keyEvents.swap (sharedInput.keyEvents);
+            inputCopy.droppedFiles.swap (sharedInput.droppedFiles);
 
             sharedInput.pendingWheel = 0.0f;
             sharedInput.pendingHWheel = 0.0f;
@@ -14815,7 +14864,18 @@ private:
             if (evt.enqueueChar)
                 interp->pushKey (evt.jsfxCode);
             interp->setKeyDown (evt.jsfxCode, evt.keyDown);
+            if (evt.rawKeyCode > 0 && evt.rawKeyCode < 128)
+            {
+                interp->setKeyDown (evt.rawKeyCode, evt.keyDown);
+                if (evt.rawKeyCode >= 'A' && evt.rawKeyCode <= 'Z')
+                    interp->setKeyDown (evt.rawKeyCode + ('a' - 'A'), evt.keyDown);
+            }
         }
+
+        for (const auto& path : inputCopy.droppedFiles) interp->addDroppedFile (path);
+        interp->setHostWindowState (windowFocused.load (std::memory_order_acquire),
+                                   windowVisible.load (std::memory_order_acquire),
+                                   displayScale.load (std::memory_order_acquire));
 
         const auto sameDouble = [] (double a, double b) noexcept
         {
@@ -14915,6 +14975,22 @@ private:
         interp->setProfilingEnabled (profiling);
         interp->setMouse (inputCopy.mouseX, inputCopy.mouseY, inputCopy.mouseCap,
                           inputCopy.pendingWheel, inputCopy.pendingHWheel);
+        const bool resetCanvas = canvasResetRequested.exchange (false, std::memory_order_acq_rel)
+            || lastCanvasWidth != w || lastCanvasHeight != h;
+        lastCanvasWidth = w;
+        lastCanvasHeight = h;
+        bool historyCopied = false;
+        if (resetCanvas) workerCanvas.clear (workerCanvas.getBounds(), juce::Colours::black);
+        jsfx_gfx::GfxRenderSession renderSession (workerCanvas, [&] (bool discard)
+        {
+            if (! resetCanvas && ! discard)
+            {
+                const auto previous = framePool.front();
+                historyCopied = jsfx_gfx::copyFramebufferHistory (workerCanvas, previous);
+                if (! historyCopied) workerCanvas.clear (workerCanvas.getBounds(), juce::Colours::black);
+            }
+        });
+        auto renderBinding = interp->bindRenderer (renderSession);
         interp->prepareFrame (w, h, s);
 
         // Read baselines AFTER init/snapshot sync and BEFORE @gfx execution.
@@ -15047,21 +15123,7 @@ private:
         }
 
         const double rasterStart = profiling ? juce::Time::getMillisecondCounterHiRes() : 0.0;
-        const auto& commands = interp->getCommands();
-        const bool resetCanvas = canvasResetRequested.exchange (false, std::memory_order_acq_rel)
-            || lastCanvasWidth != w || lastCanvasHeight != h;
-        lastCanvasWidth = w;
-        lastCanvasHeight = h;
-        bool historyCopied = false;
-        if (resetCanvas)
-            workerCanvas.clear (workerCanvas.getBounds(), juce::Colours::black);
-        else if (! jsfx_gfx::canDiscardPreviousFramebuffer (commands, w, h))
-        {
-            const auto previous = framePool.front();
-            historyCopied = jsfx_gfx::copyFramebufferHistory (workerCanvas, previous);
-            if (! historyCopied) workerCanvas.clear (workerCanvas.getBounds(), juce::Colours::black);
-        }
-        const auto renderStats = jsfx_gfx::paintCommands (workerCanvas, commands);
+        const auto renderStats = renderSession.finish (interp->getCommands());
         const double rasterMilliseconds = profiling ? juce::Time::getMillisecondCounterHiRes() - rasterStart : 0.0;
         const double publishStart = profiling ? juce::Time::getMillisecondCounterHiRes() : 0.0;
         if (resetCanvas || renderStats.mainFramebufferChanged)
@@ -15071,6 +15133,26 @@ private:
             recordGfxProfile (*snap, renderStats, diffMilliseconds, rasterMilliseconds,
                               publishMilliseconds, historyCopied);
 
+
+        int cursorId = 0;
+        juce::String cursorName;
+        if (interp->takeCursorRequest (cursorId, cursorName))
+        {
+            juce::Image custom;
+            if (cursorName.endsWithIgnoreCase (".png")) custom = jsfx_gfx_resources::cursorImage (cursorName);
+            {
+                const std::lock_guard<std::mutex> lock (cursorMutex);
+                pendingCursorId = cursorId;
+                pendingCursorName = cursorName;
+                pendingCursorImage = custom;
+                cursorPending = true;
+            }
+            triggerAsyncUpdate();
+        }
+       #if JUCE_MAC
+        if (interp->wantsRetina() && pixelScale != displayScale.load (std::memory_order_acquire))
+            notifyWorker(); // @init may have opted in on this frame.
+       #endif
 
         if (hasQueuedMouseFramesRemaining)
             notifyWorker();
@@ -15089,6 +15171,9 @@ private:
         profilePublishMs += publishMs;
         profileCommands += render.commandCount;
         profileContexts += render.graphicsContexts;
+        profileSurfaceMaps += render.surfaceMaps;
+        profileTextMisses += render.textCacheMisses;
+        profileReadbacks += render.readbacks;
         profileSelfCopies += render.selfBlitCopies;
         if (historyCopied) ++profileHistoryCopies;
         for (int i = 0; i < snap.memSpanCount; ++i)
@@ -15107,13 +15192,17 @@ private:
             + " | KiB/frame: snapshot=" + juce::String ((double) profileSnapshotBytes / n / 1024.0, 1)
             + " writable-scan=" + juce::String ((double) profileDiffBytes / n / 1024.0, 1)
             + " | commands=" + juce::String ((double) profileCommands / n, 1)
-            + " contexts=" + juce::String ((double) profileContexts / n, 1)
+            + " glyph-contexts=" + juce::String ((double) profileContexts / n, 1)
+            + " surface-maps=" + juce::String ((double) profileSurfaceMaps / n, 1)
+            + " glyph-misses=" + juce::String ((double) profileTextMisses / n, 1)
+            + " pixel-reads=" + juce::String ((double) profileReadbacks / n, 1)
             + " history-copies=" + juce::String ((int) profileHistoryCopies)
             + " self-blit-copies=" + juce::String ((int) profileSelfCopies);
         juce::Logger::writeToLog (line);
         profileFrames = profileHistoryCopies = profileSelfCopies = 0;
         profileSnapshotMs = profileSyncMs = profileGfxMs = profileDiffMs = profileRasterMs = profilePublishMs = 0.0;
         profileCommands = profileContexts = profileSnapshotBytes = profileDiffBytes = 0;
+        profileSurfaceMaps = profileTextMisses = profileReadbacks = 0;
     }
 
     static int packCC(const char* s) noexcept
@@ -15122,6 +15211,34 @@ private:
         for (int i = 0; i < 4 && s[i] != 0; ++i)
             v |= (uint32_t) (uint8_t) s[i] << (8u * (uint32_t)i);
         return (int) v;
+    }
+
+    static juce::MouseCursor standardGfxCursor (int id, const juce::String& customName)
+    {
+        const auto name = customName.toLowerCase();
+        using C = juce::MouseCursor;
+        if (name == "arrow") return C (C::NormalCursor);
+        if (name == "hand" || name == "pointing_hand") return C (C::PointingHandCursor);
+        if (name == "ibeam" || name == "text") return C (C::IBeamCursor);
+        if (name == "cross" || name == "crosshair") return C (C::CrosshairCursor);
+        if (name == "wait" || name == "busy") return C (C::WaitCursor);
+        if (name == "sizeall" || name == "move") return C (C::UpDownLeftRightResizeCursor);
+        if (name == "sizens") return C (C::UpDownResizeCursor);
+        if (name == "sizewe") return C (C::LeftRightResizeCursor);
+        switch (id)
+        {
+            case 32513: return C (C::IBeamCursor);
+            case 32514: case 32650: return C (C::WaitCursor);
+            case 32515: return C (C::CrosshairCursor);
+            case 32642: return C (C::TopLeftCornerResizeCursor);
+            case 32643: return C (C::TopRightCornerResizeCursor);
+            case 32644: return C (C::LeftRightResizeCursor);
+            case 32645: return C (C::UpDownResizeCursor);
+            case 32646: return C (C::UpDownLeftRightResizeCursor);
+            case 32648: return C (C::NormalCursor); // Portable fallback; REAPER-private resources are unavailable.
+            case 32649: return C (C::PointingHandCursor);
+            default: return C (C::NormalCursor);
+        }
     }
 
     static int juceKeyPressToJsfx (const juce::KeyPress& key)
@@ -15156,29 +15273,24 @@ private:
             return packCC (s);
         }
 
+        if (kc == juce::KeyPress::backspaceKey) return 8;
+        if (kc == juce::KeyPress::tabKey) return 9;
         const auto ch = key.getTextCharacter();
-        if (ch > 0 && ch <= 127)
+       #if JUCE_MAC
+        const bool control = key.getModifiers().isCommandDown();
+       #else
+        const bool control = key.getModifiers().isCtrlDown();
+       #endif
+        const bool alt = key.getModifiers().isAltDown();
+        const int upper = (kc >= 'a' && kc <= 'z') ? kc - ('a' - 'A') : kc;
+        if (upper >= 'A' && upper <= 'Z')
         {
-            const bool ctrlOrCmd = key.getModifiers().isCtrlDown() || key.getModifiers().isCommandDown();
-            const bool alt = key.getModifiers().isAltDown();
-
-            if (ctrlOrCmd)
-            {
-                const auto up = juce::CharacterFunctions::toUpperCase (ch);
-                if (up >= 'A' && up <= 'Z')
-                {
-                    int v = (int) (up - 'A') + 1;
-                    if (alt) v += 256;
-                    return v;
-                }
-            }
-
-            if (alt)
-                return (int) ch + 256;
-
-            return (int) ch;
+            if (control) return upper - 'A' + 1 + (alt ? 256 : 0);
+            if (alt) return upper + 256;
         }
-
+        if (ch > 127 && ch <= 0x10ffff && !(ch >= 0xd800 && ch <= 0xdfff))
+            return (int) (((uint32_t) 'u' << 24) | (uint32_t) ch);
+        if (ch > 0 && ch <= 127) return (int) ch + (alt ? 256 : 0);
         return 0;
     }
 
@@ -15257,6 +15369,13 @@ private:
 
     JSFXJuceProcessor& processor;
 
+    std::atomic<bool> windowFocused { false }, windowVisible { false };
+    std::atomic<double> displayScale { 1.0 }, framebufferPixelScale { 1.0 };
+    std::mutex cursorMutex;
+    bool cursorPending = false;
+    int pendingCursorId = 32512;
+    juce::String pendingCursorName;
+    juce::Image pendingCursorImage;
     std::unique_ptr<jsfx_gfx::Interpreter> interp;
     bool hasGfxFlag = false;
     bool gfxCompiledOkFlag = false;
@@ -15295,6 +15414,7 @@ private:
     double profileSnapshotMs = 0.0, profileSyncMs = 0.0, profileGfxMs = 0.0;
     double profileDiffMs = 0.0, profileRasterMs = 0.0, profilePublishMs = 0.0;
     uint64_t profileCommands = 0, profileContexts = 0, profileSnapshotBytes = 0, profileDiffBytes = 0;
+    uint64_t profileSurfaceMaps = 0, profileTextMisses = 0, profileReadbacks = 0;
     std::vector<double> varsBefore;
     std::vector<double> varsAfter;
     std::array<MemDiffSpan, kMaxGfxMemSpans> memDiffSpans {};

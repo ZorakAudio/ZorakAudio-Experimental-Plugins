@@ -836,117 +836,12 @@ _SECTION_RE = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b.*$")
 
 
 
-# --- Joep/JSFX compatibility: section-aware textual import preprocessing ---
-_IMPORT_LINE_RE = re.compile(
-    r"^\s*import\s+(?:\"([^\"]+)\"|'([^']+)'|([^\s;]+))\s*;?\s*(?://.*)?$"
-)
-
-def _read_text_file(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
-
-def _merge_import_bundle(dst_preamble: List[str], dst_order: List[str], dst_sections: Dict[str, List[str]],
-                         dst_headers: Dict[str, str],
-                         src_preamble: List[str], src_order: List[str], src_sections: Dict[str, List[str]],
-                         src_headers: Dict[str, str]) -> None:
-    dst_preamble.extend(src_preamble)
-    for sec in src_order:
-        if sec not in dst_sections:
-            dst_sections[sec] = []
-            dst_order.append(sec)
-        if sec not in dst_headers and sec in src_headers:
-            dst_headers[sec] = src_headers[sec]
-        dst_sections[sec].extend(src_sections.get(sec, []))
-
-
-def _parse_jsfx_import_bundle(source_path: Path, stack: List[Path]) -> Tuple[List[str], List[str], Dict[str, List[str]], Dict[str, str]]:
-    text = _read_text_file(source_path)
-    preamble: List[str] = []
-    order: List[str] = []
-    sections: Dict[str, List[str]] = {}
-    headers: Dict[str, str] = {}
-
-    current: Optional[str] = None
-    current_lines: List[str] = []
-
-    def flush_current() -> None:
-        nonlocal current_lines
-        if current is None:
-            return
-        if current not in sections:
-            sections[current] = []
-            order.append(current)
-        sections[current].extend(current_lines)
-        current_lines = []
-
-    for raw_line in text.splitlines(True):
-        m_imp = _IMPORT_LINE_RE.match(raw_line)
-        m_sec = _SECTION_RE.match(raw_line)
-
-        if m_imp:
-            token = next((g for g in m_imp.groups() if g), "")
-            if not token:
-                if current is None:
-                    preamble.append(raw_line)
-                else:
-                    current_lines.append(raw_line)
-                continue
-
-            inc_path = (source_path.parent / token).resolve()
-            if not inc_path.exists():
-                raise FileNotFoundError(
-                    f"Unable to resolve JSFX import {token!r} from {source_path}"
-                )
-            if inc_path in stack:
-                chain = " -> ".join(str(p) for p in (stack + [inc_path]))
-                raise ValueError(f"Cyclic JSFX import chain: {chain}")
-
-            child_preamble, child_order, child_sections, child_headers = _parse_jsfx_import_bundle(inc_path, stack + [inc_path])
-            if current is None:
-                _merge_import_bundle(preamble, order, sections, headers,
-                                     child_preamble, child_order, child_sections, child_headers)
-            else:
-                current_lines.extend(child_preamble)
-                for sec in child_order:
-                    if sec == current:
-                        current_lines.extend(child_sections.get(sec, []))
-                    else:
-                        if sec not in sections:
-                            sections[sec] = []
-                            order.append(sec)
-                        if sec not in headers and sec in child_headers:
-                            headers[sec] = child_headers[sec]
-                        sections[sec].extend(child_sections.get(sec, []))
-            continue
-
-        if m_sec:
-            flush_current()
-            current = m_sec.group(1)
-            headers[current] = raw_line
-            current_lines = []
-            continue
-
-        if current is None:
-            preamble.append(raw_line)
-        else:
-            current_lines.append(raw_line)
-
-    flush_current()
-    return preamble, order, sections, headers
-
-
+# Both DSP and GFX consume the same section-aware source resolver.
 def preprocess_jsfx_imports(jsfx_text: str, source_path: Optional[Path]) -> str:
     if source_path is None:
         return jsfx_text
-    src = source_path.resolve()
-    preamble, order, sections, headers = _parse_jsfx_import_bundle(src, [src])
-    out_lines: List[str] = list(preamble)
-    for sec in order:
-        header = headers.get(sec, f"@{sec}\n")
-        out_lines.append(header if header.endswith("\n") else header + "\n")
-        out_lines.extend(sections.get(sec, []))
-        if out_lines and not out_lines[-1].endswith("\n"):
-            out_lines.append("\n")
-    return "".join(out_lines)
+    from scripts.jsfx_source import resolve_source
+    return resolve_source(source_path, text=jsfx_text).text
 
 def extract_sections(jsfx_text: str) -> Dict[str, Tuple[str, int]]:
     """
@@ -1936,6 +1831,14 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
             return local_map[name]
         if name in instance_map:
             return instance_map[name]
+        # instance(buffer) makes both buffer.member and buffer.method()
+        # relative to the receiver, not global objects shared by every caller.
+        # Longest prefix also handles dotted local/instance declarations.
+        for mapping in (local_map, instance_map):
+            matches = [key for key in mapping if name.startswith(key + ".")]
+            if matches:
+                key = max(matches, key=len)
+                return mapping[key] + name[len(key):]
         if name == "this":
             return current_namespace or name
         if name.startswith("this."):
@@ -1945,7 +1848,7 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
             return suffix or name
         return name
 
-    def resolve_user_call(fn_name: str, current_namespace: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    def resolve_user_call(fn_name: str, current_namespace: Optional[str], params: Set[str], local_map: Dict[str, str], instance_map: Dict[str, str]) -> Tuple[Optional[str], Optional[str]]:
         if fn_name in fn_defs:
             return fn_name, None
 
@@ -1953,7 +1856,7 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
         if len(parts) >= 2 and parts[-1] in fn_defs:
             base = parts[-1]
             prefix = ".".join(parts[:-1])
-            return base, _resolve_relative_namespace(prefix, current_namespace)
+            return base, rewrite_var_name(prefix, params, local_map, instance_map, current_namespace)
 
         return None, None
 
@@ -1996,8 +1899,8 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
         in_progress.remove(key)
         return spec_name
 
-    def rewrite_call_name(fn_name: str, section: str, current_namespace: Optional[str]) -> str:
-        base_fn, call_namespace = resolve_user_call(fn_name, current_namespace)
+    def rewrite_call_name(fn_name: str, section: str, current_namespace: Optional[str], params: Set[str], local_map: Dict[str, str], instance_map: Dict[str, str]) -> str:
+        base_fn, call_namespace = resolve_user_call(fn_name, current_namespace, params, local_map, instance_map)
         if base_fn is None:
             return fn_name
         return ensure_specialized(section, base_fn, call_namespace)
@@ -2019,7 +1922,7 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
         if isinstance(n, Assign):
             return Assign(n.id, n.span, n.op, rewrite_node(n.target, section, current_namespace, params, local_map, instance_map), rewrite_node(n.value, section, current_namespace, params, local_map, instance_map))
         if isinstance(n, Call):
-            new_fn = rewrite_call_name(n.fn, section, current_namespace)
+            new_fn = rewrite_call_name(n.fn, section, current_namespace, params, local_map, instance_map)
             new_args = [rewrite_node(a, section, current_namespace, params, local_map, instance_map) for a in n.args]
             if new_fn == n.fn and len(new_args) == len(n.args) and all(a1 is a2 for a1, a2 in zip(new_args, n.args)):
                 return n
@@ -2351,6 +2254,9 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
 
     emitter = LLVMModuleEmitter(sym)
     emitter.jsfx_memtop_slots = resolve_jsfx_memtop_slots(options)
+    # Opt in per imported plugin; existing native plugins keep their arithmetic
+    # and do not pay assignment checks when this option is absent.
+    emitter.eel2_store_filter = options.get("za_eel2_stores", "0") == "1"
     emitter.loop_hoists = loop_hoists
     emitter.declare_user_functions(fn_defs)
 
@@ -2390,6 +2296,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
         "gfx_var_sync_mode": gfx_var_sync_mode,
         "gfx_var_flags": gfx_var_flags,
         "gfx_mem_shared": gfx_mem_shared,
+        "numeric_semantics": "eel2-stores" if emitter.eel2_store_filter else "native",
     }
     return emitter.module, meta
 
@@ -3669,6 +3576,7 @@ class LLVMModuleEmitter:
         )
 
         self._intrinsics: Dict[str, ir.Function] = {}
+        self.eel2_store_filter = False
         self._rand_gen32_fn: Optional[ir.Function] = None
         self.user_fn_defs: Dict[str, FunctionDef] = {}
         self.user_fn_ir: Dict[str, ir.Function] = {}
@@ -4287,6 +4195,16 @@ class LLVMModuleEmitter:
         finally:
             self._hoisted_value_stack.pop()
 
+    def _filter_assignment(self, builder: ir.IRBuilder, value: ir.Value) -> ir.Value:
+        if not self.eel2_store_filter:
+            return value
+        # WDL denormal_filter_double2: exponent 0 (subnormal/zero) and
+        # exponent 2047 (NaN/infinity) become +0 on a checked store.
+        bits = builder.bitcast(value, self.i64)
+        exponent = builder.and_(builder.lshr(bits, ir.Constant(self.i64, 52)), ir.Constant(self.i64, 2047))
+        normal = builder.icmp_unsigned("<", builder.sub(exponent, ir.Constant(self.i64, 1)), ir.Constant(self.i64, 2046))
+        return builder.select(normal, value, self._const_f64(0.0))
+
     def emit_expr(self, builder: ir.IRBuilder, st: ir.Value, n: Node) -> ir.Value:
         cached = self._lookup_hoisted_value(n)
         if cached is not None:
@@ -4454,7 +4372,7 @@ class LLVMModuleEmitter:
                     out = self._to_f64(builder, oi)
                 else:
                     raise ValueError(f"Unsupported assign op {n.op}")
-                return builder.call(self.fn_gmem_store, [st, idx, out])
+                return builder.call(self.fn_gmem_store, [st, idx, self._filter_assignment(builder, out)])
 
             elif isinstance(n.target, Index):
                 ptr = self._mem_elem_ptr(builder, st, n.target.base, n.target.index)
@@ -4469,6 +4387,7 @@ class LLVMModuleEmitter:
                 raise ValueError("Invalid assignment target")
 
             if n.op == "=":
+                rhs = self._filter_assignment(builder, rhs)
                 if guarded:
                     with builder.if_then(in_range):
                         builder.store(rhs, ptr)
@@ -4509,6 +4428,7 @@ class LLVMModuleEmitter:
             else:
                 raise ValueError(f"Unsupported assign op {n.op}")
 
+            out = self._filter_assignment(builder, out)
             if guarded:
                 # JSFX behavior: out-of-range writes are ignored
                 with builder.if_then(in_range):

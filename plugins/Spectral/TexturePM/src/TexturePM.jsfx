@@ -1,0 +1,526 @@
+desc:TexturePhase Surface PM - Input Only (DSP-JSFX sample_pool + 3-waveform UI)
+tags:effect texture pm input sampler ui
+
+// INPUT-ONLY PROTOTYPE
+// Slot 0: load one texture sample. The texture becomes the phase/time-warp modulator.
+// No MIDI carrier. No analog fallback. No input = no generated output.
+// #FILE: Texture Sample {Load one sample; it becomes the PM / micro time-warp source.}
+filename:0,texture.wav
+
+slider1:0<0,1,1{idle,rescan}>--Rescan texture
+slider2:0.55<0,1,0.001>--Surface transfer
+slider3:0.65<0.02,3.00,0.001>--Max depth (ms)
+slider4:1.00<0.05,4.00,0.001>--Texture motion
+slider5:0.28<0,1,0.001>--Stabilize
+slider6:1<0,1,1{free,onset}>--Texture lock
+slider7:-42<-72,-12,0.1>--Onset sensitivity (dB)
+slider8:-6<-36,12,0.1>--Output (dB)
+slider9:3<0.25,16,0.01>--Scope gain
+
+@init
+SAMPLE_MODE_RESIDENT = 0;
+SAMPLE_MODE_BUDGETED = 1;
+SAMPLE_MODE_LAZY = 2;
+
+SAMPLE_POOL_EMPTY = 0;
+SAMPLE_POOL_SCANNING = 1;
+SAMPLE_POOL_LOADING  = 2;
+SAMPLE_POOL_READY    = 3;
+SAMPLE_POOL_PARTIAL  = 4;
+SAMPLE_POOL_FAILED   = 5;
+
+TWO_PI = 6.283185307179586;
+DB_TO_AMP = 0.11512925464970229;
+
+DELAY_LEN = 65536;
+SCOPE_N = 896;
+PREVIEW_N = 896;
+
+DELAY_L = 0;
+DELAY_R = DELAY_L + DELAY_LEN + 8;
+SCOPE_IN_MIN = DELAY_R + DELAY_LEN + 8;
+SCOPE_IN_MAX = SCOPE_IN_MIN + SCOPE_N + 8;
+SCOPE_OUT_MIN = SCOPE_IN_MAX + SCOPE_N + 8;
+SCOPE_OUT_MAX = SCOPE_OUT_MIN + SCOPE_N + 8;
+PREVIEW_TEX_MIN = SCOPE_OUT_MAX + SCOPE_N + 8;
+PREVIEW_TEX_MAX = PREVIEW_TEX_MIN + PREVIEW_N + 8;
+MEM_TOP = PREVIEW_TEX_MAX + PREVIEW_N + 1024;
+freembuf(MEM_TOP);
+
+tex_pool = sample_pool_from_slot(0, "texture");
+tex_id = -1;
+tex_loaded = 0;
+tex_selected = 0;
+tex_loaded_count = 0;
+tex_failed_count = 0;
+tex_pool_state = SAMPLE_POOL_EMPTY;
+tex_frames = 0;
+tex_nch = 1;
+tex_sr = 44100;
+tex_peak = 1;
+tex_preview_peak = 1;
+tex_generation = -999999;
+tex_phase = 0;
+tex_raw = 0;
+tex_dc = 0;
+tex_lp = 0;
+tex_mod = 0;
+tex_rescan_wait = 0;
+
+write_pos = 0;
+scope_pos = 0;
+scope_decim = 0;
+scope_in_min_acc = 0;
+scope_in_max_acc = 0;
+scope_out_min_acc = 0;
+scope_out_max_acc = 0;
+
+input_env = 0;
+input_was_active = 0;
+actual_depth_ms = 0;
+actual_depth_samps = 0;
+
+function clamp(x lo hi)
+(
+  min(hi, max(lo, x));
+);
+
+function clamp01(x)
+(
+  clamp(x, 0, 1);
+);
+
+function db2amp(db)
+(
+  exp(db * DB_TO_AMP);
+);
+
+function wrap_pos(p len)
+(
+  len <= 0 ? 0 : (
+    while (p < 0) (p += len;);
+    while (p >= len) (p -= len;);
+    p;
+  );
+);
+
+function read_delay(base pos) local(i0 i1 frac)
+(
+  pos = wrap_pos(pos, DELAY_LEN);
+  i0 = floor(pos);
+  i1 = i0 + 1;
+  i1 >= DELAY_LEN ? i1 = 0;
+  frac = pos - i0;
+  base[i0] + (base[i1] - base[i0]) * frac;
+);
+
+function tex_read_mono_raw(pos) local(v)
+(
+  v = sample_read_interp(tex_pool, tex_id, 0, pos);
+  tex_nch >= 2 ? v = 0.5 * (v + sample_read_interp(tex_pool, tex_id, 1, pos));
+  v;
+);
+
+function tex_read_mono(pos) local(v)
+(
+  tex_loaded ? (
+    pos = wrap_pos(pos, tex_frames);
+    v = tex_read_mono_raw(pos);
+    v;
+  ) : 0;
+);
+
+function clear_texture_preview() local(i)
+(
+  i = 0;
+  while (i < PREVIEW_N) (
+    PREVIEW_TEX_MIN[i] = 0;
+    PREVIEW_TEX_MAX[i] = 0;
+    i += 1;
+  );
+);
+
+function build_texture_preview() local(i j p0 p1 span step v mn mx pk srcpk srcrms norm)
+(
+  clear_texture_preview();
+  pk = 0;
+
+  tex_loaded ? (
+    i = 0;
+    while (i < PREVIEW_N) (
+      p0 = floor(i * tex_frames / PREVIEW_N);
+      p1 = floor((i + 1) * tex_frames / PREVIEW_N);
+      p1 <= p0 ? p1 = p0 + 1;
+      p1 > tex_frames ? p1 = tex_frames;
+
+      span = max(1, p1 - p0);
+      step = max(1, floor(span / 96));
+      mn = 1;
+      mx = -1;
+      j = p0;
+      while (j < p1) (
+        v = tex_read_mono_raw(j);
+        v < mn ? mn = v;
+        v > mx ? mx = v;
+        abs(v) > pk ? pk = abs(v);
+        j += step;
+      );
+
+      mn > mx ? (mn = 0; mx = 0;);
+      PREVIEW_TEX_MIN[i] = mn;
+      PREVIEW_TEX_MAX[i] = mx;
+      i += 1;
+    );
+
+    srcpk = abs(sample_peak(tex_pool, tex_id));
+    srcrms = abs(sample_rms(tex_pool, tex_id));
+    tex_preview_peak = max(pk, max(srcpk, max(srcrms * 4, 0.000001)));
+    tex_peak = tex_preview_peak;
+    norm = 1 / tex_preview_peak;
+
+    i = 0;
+    while (i < PREVIEW_N) (
+      PREVIEW_TEX_MIN[i] = clamp(PREVIEW_TEX_MIN[i] * norm, -1, 1);
+      PREVIEW_TEX_MAX[i] = clamp(PREVIEW_TEX_MAX[i] * norm, -1, 1);
+      i += 1;
+    );
+  );
+);
+
+function reset_scope_accum()
+(
+  scope_in_min_acc = 1000000;
+  scope_in_max_acc = -1000000;
+  scope_out_min_acc = 1000000;
+  scope_out_max_acc = -1000000;
+);
+
+function clear_scopes() local(i)
+(
+  i = 0;
+  while (i < SCOPE_N) (
+    SCOPE_IN_MIN[i] = 0;
+    SCOPE_IN_MAX[i] = 0;
+    SCOPE_OUT_MIN[i] = 0;
+    SCOPE_OUT_MAX[i] = 0;
+    i += 1;
+  );
+  scope_pos = 0;
+  scope_decim = 0;
+  reset_scope_accum();
+);
+
+function load_texture() local(sid nch sr frames pk rms)
+(
+  sample_pool_set_mode(tex_pool, SAMPLE_MODE_RESIDENT);
+  sample_pool_commit(tex_pool);
+
+  tex_selected = max(0, sample_pool_selected(tex_pool) | 0);
+  tex_loaded_count = max(0, sample_pool_loaded(tex_pool) | 0);
+  tex_failed_count = max(0, sample_pool_failed(tex_pool) | 0);
+  tex_pool_state = sample_pool_state(tex_pool);
+
+  ((tex_pool_state == SAMPLE_POOL_SCANNING || tex_pool_state == SAMPLE_POOL_LOADING) && tex_loaded_count <= 0 && tex_loaded > 0) ? (
+    // Keep the previous texture visible/playable while the runtime decodes the next one.
+    tex_rescan_wait = 1;
+  ) : (
+    tex_loaded = 0;
+    tex_id = -1;
+    tex_frames = 0;
+    tex_rescan_wait = 0;
+    clear_texture_preview();
+
+    tex_loaded_count > 0 ? (
+      sid = sample_get(tex_pool, 0);
+      sid > 0 ? (
+        nch = max(1, sample_channels(tex_pool, sid) | 0);
+        sr = sample_srate(tex_pool, sid);
+        frames = sample_len(tex_pool, sid) | 0;
+        pk = abs(sample_peak(tex_pool, sid));
+        rms = abs(sample_rms(tex_pool, sid));
+
+        (frames > 2 && sr > 1000) ? (
+          tex_id = sid;
+          tex_nch = nch;
+          tex_sr = sr;
+          tex_frames = frames;
+          tex_peak = max(pk, max(rms * 4, 0.000001));
+          tex_phase = clamp01(0) * max(0, tex_frames - 1);
+          tex_dc = 0;
+          tex_lp = 0;
+          tex_mod = 0;
+          tex_loaded = 1;
+          build_texture_preview();
+        );
+      );
+    );
+  );
+);
+
+function compute_texture_signature() local(sig)
+(
+  sample_pool_set_mode(tex_pool, SAMPLE_MODE_RESIDENT);
+  sample_pool_commit(tex_pool);
+
+  tex_selected = max(0, sample_pool_selected(tex_pool) | 0);
+  tex_loaded_count = max(0, sample_pool_loaded(tex_pool) | 0);
+  tex_failed_count = max(0, sample_pool_failed(tex_pool) | 0);
+  tex_pool_state = sample_pool_state(tex_pool);
+
+  sig = sample_pool_generation(tex_pool);
+  sig += tex_loaded_count * 8191;
+  sig += tex_failed_count * 131;
+  sig += tex_pool_state * 17;
+  sig += tex_selected * 11;
+  sig;
+);
+
+function poll_texture(force) local(sig)
+(
+  sig = compute_texture_signature();
+  force || sig != tex_generation ? (
+    load_texture();
+    tex_generation = sig;
+  );
+);
+
+function reset_texture_phase()
+(
+  tex_loaded ? (
+    tex_phase = 0;
+    tex_dc = 0;
+    tex_lp = 0;
+    tex_mod = 0;
+  );
+);
+
+function capture_scope(inv outv)
+(
+  inv < scope_in_min_acc ? scope_in_min_acc = inv;
+  inv > scope_in_max_acc ? scope_in_max_acc = inv;
+  outv < scope_out_min_acc ? scope_out_min_acc = outv;
+  outv > scope_out_max_acc ? scope_out_max_acc = outv;
+
+  scope_decim += 1;
+  scope_decim >= scope_stride ? (
+    scope_decim = 0;
+
+    scope_in_min_acc > scope_in_max_acc ? (scope_in_min_acc = 0; scope_in_max_acc = 0;);
+    scope_out_min_acc > scope_out_max_acc ? (scope_out_min_acc = 0; scope_out_max_acc = 0;);
+
+    SCOPE_IN_MIN[scope_pos] = clamp(scope_in_min_acc, -1.5, 1.5);
+    SCOPE_IN_MAX[scope_pos] = clamp(scope_in_max_acc, -1.5, 1.5);
+    SCOPE_OUT_MIN[scope_pos] = clamp(scope_out_min_acc, -1.5, 1.5);
+    SCOPE_OUT_MAX[scope_pos] = clamp(scope_out_max_acc, -1.5, 1.5);
+
+    scope_pos += 1;
+    scope_pos >= SCOPE_N ? scope_pos = 0;
+    reset_scope_accum();
+  );
+);
+
+poll_texture(1);
+clear_scopes();
+
+@slider
+surface = clamp01(slider2);
+max_depth_ms = max(0.001, slider3);
+tex_speed = max(0.001, slider4);
+stabilize = clamp01(slider5);
+lock_mode = slider6 | 0;
+onset_thresh = db2amp(slider7);
+out_gain = db2amp(slider8);
+scope_gain = slider9;
+
+// One manifold knob: Surface Transfer increases wet blend, modulation gain, and depth curve together.
+wet_mix = surface;
+actual_depth_ms = max_depth_ms * surface * surface;
+actual_depth_samps = actual_depth_ms * 0.001 * srate;
+tex_drive = 0.65 + surface * 2.35;
+
+// Stabilize is intentionally macro-style: left = rawer/faster texture, right = safer/smoother movement.
+tex_smooth_hz = 18 + (1 - stabilize) * (1 - stabilize) * 1800;
+tex_lp_a = 1 - exp(-TWO_PI * tex_smooth_hz / max(srate, 1));
+
+// Fixed DC/rumble reject so a biased texture does not become a static delay offset.
+tex_dc_hz = 18 + stabilize * 90;
+tex_dc_a = 1 - exp(-TWO_PI * tex_dc_hz / max(srate, 1));
+
+input_env_a = 1 - exp(-TWO_PI * 55 / max(srate, 1));
+scope_stride = max(1, floor(srate / 3200));
+
+slider1 > 0.5 ? (
+  poll_texture(1);
+  slider1 = 0;
+  sliderchange(1);
+);
+
+@block
+poll_texture(0);
+
+@sample
+in_l = spl0;
+in_r = spl1;
+in_mono = 0.5 * (in_l + in_r);
+in_abs = max(abs(in_l), abs(in_r));
+
+input_env += (in_abs - input_env) * input_env_a;
+input_active = input_env > onset_thresh;
+
+(lock_mode == 1 && input_active && !input_was_active) ? reset_texture_phase();
+input_was_active = input_active;
+
+// Always write the real input. There is no synthetic carrier anywhere in this prototype.
+DELAY_L[write_pos] = in_l;
+DELAY_R[write_pos] = in_r;
+
+// Texture -> conditioned PM/time-warp signal.
+tex_loaded ? (
+  tex_raw = tex_read_mono(tex_phase) / max(tex_peak, 0.000001);
+  tex_dc += (tex_raw - tex_dc) * tex_dc_a;
+  tex_ac = clamp(tex_raw - tex_dc, -2, 2);
+  tex_lp += (tex_ac - tex_lp) * tex_lp_a;
+  tex_mod = clamp(tex_lp * tex_drive, -1, 1);
+
+  tex_phase += (tex_sr / max(srate, 1)) * tex_speed;
+  tex_phase = wrap_pos(tex_phase, tex_frames);
+) : (
+  tex_raw = 0;
+  tex_mod = 0;
+);
+
+(tex_loaded && surface > 0.0001) ? (
+  depth_samps = actual_depth_samps;
+  base_delay = max(8, depth_samps + 8);
+
+  dry_pos = write_pos - base_delay;
+  pm_pos = dry_pos - tex_mod * depth_samps;
+
+  dry_l = read_delay(DELAY_L, dry_pos);
+  dry_r = read_delay(DELAY_R, dry_pos);
+  wet_l = read_delay(DELAY_L, pm_pos);
+  wet_r = read_delay(DELAY_R, pm_pos);
+
+  out_l = dry_l + (wet_l - dry_l) * wet_mix;
+  out_r = dry_r + (wet_r - dry_r) * wet_mix;
+) : (
+  // Missing texture or zero Surface Transfer: transparent input pass-through.
+  out_l = in_l;
+  out_r = in_r;
+);
+
+write_pos += 1;
+write_pos >= DELAY_LEN ? write_pos = 0;
+
+out_l *= out_gain;
+out_r *= out_gain;
+out_mono = 0.5 * (out_l + out_r);
+
+capture_scope(in_mono, out_mono);
+
+spl0 = out_l;
+spl1 = out_r;
+
+@gfx 960 570
+function draw_panel(x y w h)
+(
+  gfx_r = 0.055; gfx_g = 0.063; gfx_b = 0.080; gfx_a = 1;
+  gfx_rect(x, y, w, h, 1);
+  gfx_r = 0.18; gfx_g = 0.21; gfx_b = 0.26; gfx_a = 1;
+  gfx_rect(x, y, w, h, 0);
+);
+
+function draw_env_wave(minbase maxbase n x y w h amp use_ring) local(i idx vmin vmax px py1 py2 mid tmp)
+(
+  gfx_r = 0.15; gfx_g = 0.17; gfx_b = 0.21; gfx_a = 1;
+  mid = y + h * 0.5;
+  gfx_line(x, mid, x + w, mid, 1);
+
+  gfx_r = 0.74; gfx_g = 0.84; gfx_b = 0.98; gfx_a = 1;
+  i = 0;
+  while (i < n) (
+    idx = use_ring ? scope_pos + i : i;
+    idx >= n ? idx -= n;
+
+    vmin = clamp(minbase[idx] * amp, -1, 1);
+    vmax = clamp(maxbase[idx] * amp, -1, 1);
+    vmin > vmax ? (tmp = vmin; vmin = vmax; vmax = tmp;);
+
+    px = x + (i / max(1, n - 1)) * w;
+    py1 = mid - vmax * h * 0.44;
+    py2 = mid - vmin * h * 0.44;
+    abs(py2 - py1) < 1 ? (
+      gfx_line(px, py1 - 0.5, px, py1 + 0.5, 1);
+    ) : (
+      gfx_line(px, py1, px, py2, 1);
+    );
+    i += 1;
+  );
+);
+
+gfx_getchar();
+gfx_setfont(1, "Arial", 16, 0);
+gfx_r = 0.042; gfx_g = 0.047; gfx_b = 0.060; gfx_a = 1;
+gfx_rect(0, 0, gfx_w, gfx_h, 1);
+
+pad = 18;
+title_h = 46;
+row_gap = 18;
+row_h = (gfx_h - title_h - pad * 2 - row_gap * 2) / 3;
+row_h < 96 ? row_h = 96;
+
+x = pad;
+w = gfx_w - pad * 2;
+y1 = title_h + pad;
+y2 = y1 + row_h + row_gap;
+y3 = y2 + row_h + row_gap;
+
+// Header.
+gfx_r = 0.90; gfx_g = 0.94; gfx_b = 1.00; gfx_a = 1;
+gfx_x = pad; gfx_y = 12;
+gfx_drawstr("TexturePhase Surface PM - input only");
+
+tex_pool_state == SAMPLE_POOL_EMPTY ? sprintf(#stname, "empty") :
+tex_pool_state == SAMPLE_POOL_SCANNING ? sprintf(#stname, "scanning") :
+tex_pool_state == SAMPLE_POOL_LOADING ? sprintf(#stname, "loading") :
+tex_pool_state == SAMPLE_POOL_READY ? sprintf(#stname, "ready") :
+tex_pool_state == SAMPLE_POOL_PARTIAL ? sprintf(#stname, "partial") :
+tex_pool_state == SAMPLE_POOL_FAILED ? sprintf(#stname, "failed") : sprintf(#stname, "unknown");
+gfx_r = 0.62; gfx_g = 0.68; gfx_b = 0.76; gfx_a = 1;
+gfx_x = pad + 310; gfx_y = 12;
+tex_loaded ? (
+  sprintf(#status, "texture %s | %d frames @ %d Hz | depth %.3f ms | no input = no carrier", #stname, tex_frames, tex_sr, actual_depth_ms);
+) : (
+  sprintf(#status, "texture %s | selected %d loaded %d failed %d | load slot 0 then rescan", #stname, tex_selected, tex_loaded_count, tex_failed_count);
+);
+gfx_drawstr(#status);
+
+// 1. Loaded texture sample preview / PM source.
+draw_panel(x, y1, w, row_h);
+gfx_r = 0.90; gfx_g = 0.94; gfx_b = 1.00; gfx_a = 1;
+gfx_x = x + 12; gfx_y = y1 + 10;
+gfx_drawstr("1  Texture sample / PM source");
+tex_loaded ? (
+  draw_env_wave(PREVIEW_TEX_MIN, PREVIEW_TEX_MAX, PREVIEW_N, x + 12, y1 + 35, w - 24, row_h - 50, 1, 0);
+  phx = x + 12 + clamp01(tex_phase / max(1, tex_frames - 1)) * (w - 24);
+  gfx_r = 1.0; gfx_g = 0.78; gfx_b = 0.36; gfx_a = 0.90;
+  gfx_line(phx, y1 + 34, phx, y1 + row_h - 12, 1);
+) : (
+  gfx_r = 0.55; gfx_g = 0.60; gfx_b = 0.68; gfx_a = 1;
+  gfx_x = x + 18; gfx_y = y1 + 50;
+  gfx_drawstr("No texture decoded. Use slot 0 file picker, then Rescan texture.");
+);
+
+// 2. Input carrier waveform.
+draw_panel(x, y2, w, row_h);
+gfx_r = 0.90; gfx_g = 0.94; gfx_b = 1.00; gfx_a = 1;
+gfx_x = x + 12; gfx_y = y2 + 10;
+gfx_drawstr("2  Base carrier: input audio only");
+draw_env_wave(SCOPE_IN_MIN, SCOPE_IN_MAX, SCOPE_N, x + 12, y2 + 35, w - 24, row_h - 50, scope_gain, 1);
+
+// 3. PM/time-warp output waveform.
+draw_panel(x, y3, w, row_h);
+gfx_r = 0.90; gfx_g = 0.94; gfx_b = 1.00; gfx_a = 1;
+gfx_x = x + 12; gfx_y = y3 + 10;
+gfx_drawstr("3  Output: texture PM / micro time-warped input");
+draw_env_wave(SCOPE_OUT_MIN, SCOPE_OUT_MAX, SCOPE_N, x + 12, y3 + 35, w - 24, row_h - 50, scope_gain, 1);
