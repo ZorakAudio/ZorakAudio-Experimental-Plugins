@@ -744,8 +744,8 @@ function compute_turnpulse_target() local(oldPhase newPhase inc wraps cycle n rn
     gmem[BUS_PISTON_ACTIVE] = n;
     gmem[BUS_PISTON_SWAP_ON] = swapOn;
     gmem[BUS_PISTON_SWAP_A] = swapA;
-    gmem[BUS_PISTON_RATE] = bus_piston_rate;
-    gmem[BUS_PISTON_SURPRISE] = bus_piston_surprise;
+    gmem[BUS_IDX_PISTON_RATE] = bus_piston_rate;
+    gmem[BUS_IDX_PISTON_SURPRISE] = bus_piston_surprise;
   );
 
   phase = sanitize(gmem[BUS_PISTON_PHASE], 0);
@@ -826,8 +826,8 @@ BUS_PISTON_SEED = 5;
 BUS_PISTON_ACTIVE = 6;
 BUS_PISTON_SWAP_A = 7;
 BUS_PISTON_SWAP_ON = 8;
-BUS_PISTON_RATE = 9;
-BUS_PISTON_SURPRISE = 10;
+BUS_IDX_PISTON_RATE = 9;
+BUS_IDX_PISTON_SURPRISE = 10;
 BUS_HEADER = 64;
 
 SLOT_ID = 0;

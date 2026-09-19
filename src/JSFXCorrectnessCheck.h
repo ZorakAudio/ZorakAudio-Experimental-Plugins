@@ -164,7 +164,7 @@ public:
     ~ShadowVm() override
     {
         setMenuPort(nullptr);
-        runAtExitCode(); // Shadow callbacks still have valid queues and bridge state.
+        runAtExitSafely(); // Keep shadow-EEL faults contained as well.
         bridgeState.hostOwner = nullptr;
 
         if (bridgeState.mem != nullptr)
@@ -327,8 +327,11 @@ public:
 private:
     void execute (NSEEL_CODEHANDLE h)
     {
-        if (h != nullptr)
-            NSEEL_code_execute (h);
+        if (h != nullptr && ! jsfx_gfx::executeEelCodeGuarded (h))
+        {
+            ready = false;
+            lastError = "Portable EEL runtime fault in correctness shadow VM";
+        }
     }
 
     void bindSplPtrs()
@@ -352,7 +355,7 @@ private:
             if (decl.index0 < 0 || decl.index0 >= 64 || decl.varName.isEmpty())
                 continue;
 
-            sliderAliasPtrs[(size_t) decl.index0] = get_var (decl.varName.toRawUTF8());
+            bindSliderAlias (decl.index0, decl.varName.toRawUTF8());
         }
     }
 
@@ -713,7 +716,6 @@ private:
     juce::String lastError;
 
     std::array<EEL_F*, 64> splPtrs {};
-    std::array<EEL_F*, 64> sliderAliasPtrs {};
 
     std::vector<DSPJSFX_MidiEvent> midiInQueue;
     std::vector<DSPJSFX_MidiEvent> midiOutQueue;

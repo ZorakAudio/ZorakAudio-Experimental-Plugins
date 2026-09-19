@@ -174,6 +174,15 @@ class Lexer:
                 assert m
                 txt = m.group(0)
                 self._adv(len(txt))
+
+                # WDL/EEL2 resolves identifiers case-insensitively (its symbol
+                # and function tables use stricmp/strnicmp). Canonicalise at
+                # the lexer boundary so variables, user functions, builtins,
+                # local()/instance() names, sliderN/splN and dotted namespace
+                # components all share exactly the same semantics downstream.
+                # String *contents* are tokenised separately and remain case
+                # sensitive.
+                txt = txt.lower()
                 kind = "kw" if txt in ("if", "else", "while") else "ident"
                 return Tok(kind, txt, sp)
 
@@ -856,7 +865,9 @@ def extract_sections(jsfx_text: str) -> Dict[str, Tuple[str, int]]:
     for i, ln in enumerate(lines):
         m = _SECTION_RE.match(ln)
         if m:
-            current = m.group(1)
+            # Section names are identifiers too; REAPER/WDL accepts their
+            # spelling case-insensitively. Keep one canonical namespace.
+            current = m.group(1).lower()
             sections.setdefault(current, [])
             starts.setdefault(current, i + 2)  # first line after marker
             continue
@@ -1856,6 +1867,25 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
         if len(parts) >= 2 and parts[-1] in fn_defs:
             base = parts[-1]
             prefix = ".".join(parts[:-1])
+
+            # EEL2/JSFX permits a qualified method name itself to appear in
+            # instance(), e.g. instance(comp_l1.compressor_gain).  In that
+            # form the receiver (comp_l1) is relative to the current function
+            # instance just as an ordinary instance(comp_l1) declaration
+            # would be.  Looking up only the receiver prefix loses that fact
+            # and incorrectly specializes the call against a global comp_l1
+            # namespace instead of e.g. filterbank.comp_l1.
+            #
+            # Preserve the declaration's fully-qualified mapping and strip the
+            # method suffix back off to recover the correct receiver namespace.
+            mapped_call = instance_map.get(fn_name)
+            if mapped_call is not None:
+                suffix = "." + base
+                if mapped_call.endswith(suffix):
+                    mapped_receiver = mapped_call[:-len(suffix)]
+                    if mapped_receiver:
+                        return base, mapped_receiver
+
             return base, rewrite_var_name(prefix, params, local_map, instance_map, current_namespace)
 
         return None, None
@@ -2254,9 +2284,12 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
 
     emitter = LLVMModuleEmitter(sym)
     emitter.jsfx_memtop_slots = resolve_jsfx_memtop_slots(options)
-    # Opt in per imported plugin; existing native plugins keep their arithmetic
-    # and do not pay assignment checks when this option is absent.
-    emitter.eel2_store_filter = options.get("za_eel2_stores", "0") == "1"
+    # EEL2 assignments normally pass through WDL's denormal_filter_double2,
+    # which maps subnormals, NaN, and +/-infinity to +0. This is observable
+    # language behaviour (for example, log(0) assigned to a variable becomes
+    # 0), not merely an audio-thread denormal optimisation. Keep the legacy
+    # native/IEEE path available only as an explicit compatibility opt-out.
+    emitter.eel2_store_filter = options.get("za_eel2_stores", "1") != "0"
     emitter.loop_hoists = loop_hoists
     emitter.declare_user_functions(fn_defs)
 

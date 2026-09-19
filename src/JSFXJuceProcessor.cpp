@@ -358,9 +358,16 @@ struct JsfxSliderDecl
     juce::String name;
     juce::String varName; // optional slider alias variable (e.g. slider1:thresh_db=...)
     float def  = 0.0f;
+    // Numeric domain is always stored ascending for JUCE/clamping, while
+    // rangeStart/rangeEnd preserve the JSFX declaration order. REAPER uses
+    // that order to determine slider direction, so <0,-340,...> is a
+    // right-to-left numeric range rather than an ascending [-340,0] control.
     float min  = 0.0f;
     float max  = 1.0f;
+    float rangeStart = 0.0f;
+    float rangeEnd   = 1.0f;
     float step = 0.001f;
+    bool reversed = false;
     float shapeModifier = 0.0f; // for :log=mid or :sqr=exp
 
     enum class Shape { Linear = 0, Log = 1, Sqr = 2 };
@@ -745,13 +752,13 @@ static std::vector<JsfxSliderDecl> parseJsfxSliderDecls (const char* jsfxText, j
                 d.shapeModifier = shapeMod;
             }
 
-            if (vmax < vmin)
-                std::swap (vmax, vmin);
-
-            d.min  = vmin;
-            d.max  = vmax;
-            d.step = (vstep > 0.0f ? vstep : 0.001f);
-            d.def  = juce::jlimit (d.min, d.max, d.def);
+            d.rangeStart = vmin;
+            d.rangeEnd   = vmax;
+            d.reversed   = vmax < vmin;
+            d.min        = juce::jmin (vmin, vmax);
+            d.max        = juce::jmax (vmin, vmax);
+            d.step       = (vstep > 0.0f ? vstep : 0.001f);
+            d.def        = juce::jlimit (d.min, d.max, d.def);
         }
 
         auto label = juce::String::fromUTF8 (m[4].str().c_str()).trim();
@@ -2369,7 +2376,10 @@ public:
         juce::String pid;
         float min  = 0.0f;
         float max  = 1.0f;
+        float rangeStart = 0.0f;
+        float rangeEnd   = 1.0f;
         float step = 1.0f;
+        bool reversed = false;
         bool isChoice = false;
         float shapeModifier = 0.0f;
         
@@ -2627,7 +2637,8 @@ public:
 
         for (int vi = 0; vi < DSPJSFX_VARS_COUNT; ++vi)
             if (DSPJSFX_VARS[vi].name != nullptr)
-                varIndexByName.emplace (DSPJSFX_VARS[vi].name, DSPJSFX_VARS[vi].index);
+                varIndexByName.emplace (juce::String (DSPJSFX_VARS[vi].name).toLowerCase().toStdString(),
+                                        DSPJSFX_VARS[vi].index);
 
         for (const auto& s : sliderDecls)
         {
@@ -2637,7 +2648,7 @@ public:
             if (s.varName.isEmpty())
                 continue;
 
-            if (auto it = varIndexByName.find (s.varName.toStdString()); it != varIndexByName.end())
+            if (auto it = varIndexByName.find (s.varName.toLowerCase().toStdString()); it != varIndexByName.end())
                 sliderAliasVarIndex[(size_t) s.index0] = it->second;
         }
 
@@ -2658,10 +2669,13 @@ public:
             {
                 SliderParamInfo info;
                 info.pid      = pid;
-                info.min      = s.min;
-                info.max      = s.max;
-                info.step     = (s.step > 0.0f ? s.step : 1.0f);
-                info.isChoice = (s.isChoice && s.choices.size() > 0);
+                info.min        = s.min;
+                info.max        = s.max;
+                info.rangeStart = s.rangeStart;
+                info.rangeEnd   = s.rangeEnd;
+                info.step       = (s.step > 0.0f ? s.step : 1.0f);
+                info.reversed   = s.reversed;
+                info.isChoice   = (s.isChoice && s.choices.size() > 0);
                 info.shape = s.shape;
                 info.shapeModifier = s.shapeModifier;
                 sliderParamInfo[(size_t) s.index0] = info;
@@ -2676,51 +2690,64 @@ public:
                 // We expose it as a CHOICE so hosts show the textual options.
                 // Then at runtime we convert choice-index -> JSFX numeric value.
                 const float step = (s.step > 0.0f ? s.step : 1.0f);
-                int defIdx = (int) std::llround ((s.def - s.min) / step);
+                const float signedStep = s.reversed ? -step : step;
+                int defIdx = (int) std::llround ((s.def - s.rangeStart) / signedStep);
                 defIdx = juce::jlimit (0, s.choices.size() - 1, defIdx);
 
                 layout.add (std::make_unique<juce::AudioParameterChoice> (pid, s.name, s.choices, defIdx));
             }
             else
             {
-                auto toValue = [sh = s.shape, mod = s.shapeModifier] (float start, float end, float t) -> float
+                // JUCE requires an ascending numeric domain, but JSFX range
+                // declaration order controls the slider direction. Keep the
+                // actual parameter values in [min,max] while custom normalising
+                // against the original endpoints. Thus <0,-340,...> maps
+                // normalised 0 -> 0 and 1 -> -340, exactly like REAPER.
+                auto toValue = [sh = s.shape, mod = s.shapeModifier,
+                                declaredStart = s.rangeStart, declaredEnd = s.rangeEnd]
+                               (float /*start*/, float /*end*/, float t) -> float
                 {
                     t = clamp01f (t);
 
                     if (sh == JsfxSliderDecl::Shape::Sqr)
                     {
                         const float exp = (mod > 0.0f ? mod : 2.0f);
-                        return curveFrom01_sqr (t, start, end, exp);
+                        return curveFrom01_sqr (t, declaredStart, declaredEnd, exp);
                     }
 
                     if (sh == JsfxSliderDecl::Shape::Log)
-                        return curveFrom01_log (t, start, end, mod);
+                        return curveFrom01_log (t, declaredStart, declaredEnd, mod);
 
-                    return start + t * (end - start);
+                    return declaredStart + t * (declaredEnd - declaredStart);
                 };
 
-                auto toNorm = [sh = s.shape, mod = s.shapeModifier] (float start, float end, float v) -> float
+                auto toNorm = [sh = s.shape, mod = s.shapeModifier,
+                               declaredStart = s.rangeStart, declaredEnd = s.rangeEnd]
+                              (float /*start*/, float /*end*/, float v) -> float
                 {
                     if (sh == JsfxSliderDecl::Shape::Sqr)
                     {
                         const float exp = (mod > 0.0f ? mod : 2.0f);
-                        return curveTo01_sqr (v, start, end, exp);
+                        return curveTo01_sqr (v, declaredStart, declaredEnd, exp);
                     }
 
                     if (sh == JsfxSliderDecl::Shape::Log)
-                        return curveTo01_log (v, start, end, mod);
+                        return curveTo01_log (v, declaredStart, declaredEnd, mod);
 
-                    if (end == start) return 0.0f;
-                    return clamp01f ((v - start) / (end - start));
+                    if (declaredEnd == declaredStart) return 0.0f;
+                    return clamp01f ((v - declaredStart) / (declaredEnd - declaredStart));
                 };
 
-                auto snap = [st = s.step] (float start, float end, float v) -> float
+                const float signedStep = s.reversed ? -s.step : s.step;
+                auto snap = [st = signedStep, origin = s.rangeStart, lo = s.min, hi = s.max]
+                            (float /*start*/, float /*end*/, float v) -> float
                 {
-                    if (st <= 0.0f) return juce::jlimit (start, end, v);
+                    v = juce::jlimit (lo, hi, v);
+                    if (st == 0.0f) return v;
 
-                    const float q = std::round ((v - start) / st);
-                    const float snapped = start + q * st;
-                    return juce::jlimit (start, end, snapped);
+                    const float q = std::round ((v - origin) / st);
+                    const float snapped = origin + q * st;
+                    return juce::jlimit (lo, hi, snapped);
                 };
 
                 juce::NormalisableRange<float> range (s.min, s.max, toValue, toNorm, snap);
@@ -2877,7 +2904,7 @@ public:
             const uint64_t bit = (uint64_t) 1u << (uint64_t) i;
             if ((applyMask & bit) == 0)
                 continue;
-            if (! sliderParamUsed[(size_t) i])
+            if (! sliderParamUsed[(size_t) i] || ! std::isfinite (newSliders[(size_t) i]))
                 continue;
 
             gfxSliderPreviewValues[(size_t) i].store (newSliders[(size_t) i], std::memory_order_release);
@@ -2946,8 +2973,9 @@ public:
             const double step = (double) (info.step > 0.0f ? info.step : (info.isChoice ? 1.0f : 0.0f));
             if (step > 0.0)
             {
-                const double q = std::llround ((v - (double) info.min) / step);
-                v = (double) info.min + q * step;
+                const double signedStep = info.reversed ? -step : step;
+                const double q = std::llround ((v - (double) info.rangeStart) / signedStep);
+                v = (double) info.rangeStart + q * signedStep;
                 v = juce::jlimit<double> ((double) info.min, (double) info.max, v);
             }
 
@@ -5469,6 +5497,9 @@ public:
 
     bool jsfxSliderValueToParameterNormalised (size_t sliderIndex, double jsfxValue, float& outNorm) const
     {
+        if (! std::isfinite (jsfxValue))
+            return false;
+
         if (apvts == nullptr || sliderIndex >= sliderParamUsed.size() || ! sliderParamUsed[sliderIndex])
             return false;
 
@@ -5481,7 +5512,8 @@ public:
         if (info.isChoice)
         {
             const double step = (double) (info.step > 0.0f ? info.step : 1.0f);
-            int idx = (int) std::llround ((jsfxValue - (double) info.min) / step);
+            const double signedStep = info.reversed ? -step : step;
+            int idx = (int) std::llround ((jsfxValue - (double) info.rangeStart) / signedStep);
 
             if (auto* c = dynamic_cast<juce::AudioParameterChoice*> (p))
             {
@@ -5502,8 +5534,9 @@ public:
             const double step = (double) (info.step > 0.0f ? info.step : 0.0f);
             if (step > 0.0)
             {
-                const double q = std::llround ((v - (double) info.min) / step);
-                v = (double) info.min + q * step;
+                const double signedStep = info.reversed ? -step : step;
+                const double q = std::llround ((v - (double) info.rangeStart) / signedStep);
+                v = (double) info.rangeStart + q * signedStep;
                 v = juce::jlimit<double> ((double) info.min, (double) info.max, v);
             }
             rawForParam = (float) v;
@@ -5537,7 +5570,9 @@ public:
         if (info.isChoice)
         {
             const auto idx = (int64_t) std::llround (newVal);
-            newVal = (double) info.min + (double) idx * (double) info.step;
+            const double step = (double) (info.step > 0.0f ? info.step : 1.0f);
+            const double signedStep = info.reversed ? -step : step;
+            newVal = (double) info.rangeStart + (double) idx * signedStep;
         }
 
         newVal = juce::jlimit<double> ((double) info.min, (double) info.max, newVal);
@@ -5547,8 +5582,9 @@ public:
             const double step = (double) (info.step > 0.0f ? info.step : 0.0f);
             if (step > 0.0)
             {
-                const double q = std::llround ((newVal - (double) info.min) / step);
-                newVal = (double) info.min + q * step;
+                const double signedStep = info.reversed ? -step : step;
+                const double q = std::llround ((newVal - (double) info.rangeStart) / signedStep);
+                newVal = (double) info.rangeStart + q * signedStep;
                 newVal = juce::jlimit<double> ((double) info.min, (double) info.max, newVal);
             }
         }
@@ -5558,8 +5594,16 @@ public:
 
     static bool sliderValuesEquivalent (const SliderParamInfo& info, double a, double b) noexcept
     {
+        if (! std::isfinite (a) || ! std::isfinite (b))
+            return false;
+
         if (info.isChoice)
-            return (int64_t) std::llround (a) == (int64_t) std::llround (b);
+        {
+            const double step = (double) (info.step > 0.0f ? info.step : 1.0f);
+            const double signedStep = info.reversed ? -step : step;
+            return (int64_t) std::llround ((a - (double) info.rangeStart) / signedStep)
+                == (int64_t) std::llround ((b - (double) info.rangeStart) / signedStep);
+        }
 
         const double tol = std::max (1.0e-6, (info.step > 0.0f ? (double) info.step * 0.25 : 1.0e-6));
         return std::abs (a - b) <= tol;
@@ -5582,7 +5626,7 @@ public:
             if ((applyMask & bit) == 0)
                 continue;
 
-            if (! sliderParamUsed[(size_t)i])
+            if (! sliderParamUsed[(size_t)i] || ! std::isfinite (newSliders[i]))
                 continue;
 
             const auto& info = sliderParamInfo[(size_t)i];
@@ -9468,7 +9512,7 @@ private:
 
     bool enqueueGfxStateWrite (GfxStateWrite::Kind kind, int index, double value) noexcept
     {
-        if (index < 0)
+        if (index < 0 || ! std::isfinite (value))
             return false;
 
         const uint32_t head = gfxWriteHead.load (std::memory_order_relaxed);
@@ -9564,9 +9608,10 @@ private:
         if (hi == lo) return 0.0f;
         if (modifier <= 0.0f) modifier = 2.0f;
 
-        // clamp v into range first
-        if (v < lo) v = lo;
-        if (v > hi) v = hi;
+        // Clamp against the numeric domain, independent of declaration order.
+        const float domainLo = juce::jmin (lo, hi);
+        const float domainHi = juce::jmax (lo, hi);
+        v = juce::jlimit (domainLo, domainHi, v);
 
         const float inv = 1.0f / modifier;
 
@@ -9617,8 +9662,9 @@ private:
     {
         if (hi == lo) return 0.0f;
 
-        if (v < lo) v = lo;
-        if (v > hi) v = hi;
+        const float domainLo = juce::jmin (lo, hi);
+        const float domainHi = juce::jmax (lo, hi);
+        v = juce::jlimit (domainLo, domainHi, v);
 
         if (modifier == 0.0f)
         {
@@ -12438,15 +12484,20 @@ public:
                                             juce::jmax (kMinimumScaledGfxHeight, targetGfxH / 2));
 
             const int availableH = r.getHeight();
-            int controlsH = genericPrefH;
 
-            if (availableH < genericPrefH + kSectionGap + targetGfxH)
-            {
-                controlsH = juce::jmin (genericPrefH,
-                                        juce::jmax (getMinControlsViewportHeight(),
-                                                    availableH - kSectionGap - minGfxH));
-            }
+            // Mixed generic-controls + @gfx scripts are common in upstream
+            // JSFX (including Joep Vanlier's). Treat the controls as a compact
+            // scrollable header rather than allowing them to consume their full
+            // preferred height and squeeze the actual @gfx UI. Around 30% keeps
+            // six-ish REAPER-style sliders visible while making @gfx dominant.
+            const int combinedControlsCap = juce::jmax (getMinControlsViewportHeight(),
+                                                        (int) std::lround ((double) availableH * 0.30));
+            int controlsH = juce::jmin (genericPrefH, combinedControlsCap);
 
+            // The declared @gfx size still gets a protected minimum when the
+            // host window is small; excess controls simply scroll vertically.
+            controlsH = juce::jmin (controlsH,
+                                    juce::jmax (0, availableH - kSectionGap - minGfxH));
             controlsH = juce::jmax (0, controlsH);
             auto controlsArea = r.removeFromTop (juce::jmax (0, controlsH));
             controlsViewport.setVisible (true);
@@ -14790,7 +14841,7 @@ private:
 
     void renderWorkerFrame()
     {
-        if (! hasGfxFlag || ! gfxCompiledOkFlag || interp == nullptr)
+        if (! hasGfxFlag || ! gfxCompiledOkFlag || interp == nullptr || interp->hasRuntimeFaulted())
             return;
 
         double pixelScale = 1.0;
@@ -15019,7 +15070,12 @@ private:
             varsAfter.clear();
         }
         if (profiling) diffMilliseconds = juce::Time::getMillisecondCounterHiRes() - diffStart;
-        interp->executeFrame();
+        if (! interp->executeFrame())
+        {
+            juce::Logger::writeToLog ("[ZA GFX] " + processor.getName()
+                                      + ": " + interp->getLastError());
+            return;
+        }
         if (profiling) diffStart = juce::Time::getMillisecondCounterHiRes();
 
         if (captureStateWrites)

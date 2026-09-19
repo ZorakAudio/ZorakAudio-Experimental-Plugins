@@ -1,0 +1,1037 @@
+@init
+dbl_click_speed = 0.25;
+
+function reset_font()
+(
+  gfx_setfont(1, "Verdana", 18 * max(1, scaling));
+);
+
+function label_font()
+(
+  gfx_setfont(2, "Verdana", 14 * max(1, scaling));
+);
+
+function hinter.sethint(label)
+instance(hint_time, hint_label, was_over)
+global(delta_time)
+(
+  hint_label != label ? (
+    hint_time = 0;
+  );
+  hint_label = label;
+  hint_time += delta_time;
+  was_over = 1;
+);
+
+function hinter.drawhint()
+instance(hint_time, hint_label, was_over)
+global(gfx_x, gfx_y, gfx_w, gfx_h, mouse_x, mouse_y, scaling)
+local(w, h)
+(
+  !was_over ? hint_time = 0;
+  was_over = 0;
+
+  ( hint_time > 1.25 ) ? (
+    gfx_setfont(7, "Arial", 16 * max(1, scaling));
+    gfx_measurestr(hint_label, w, h);
+      
+    gfx_x = mouse_x+15;
+    gfx_y = mouse_y+15;
+    ( gfx_x > 0.5*gfx_w ) ? gfx_x = mouse_x - w - 8;
+    ( gfx_y > 0.5*gfx_h ) ? gfx_y = mouse_y - h - 8;
+    gfx_x = max(2, gfx_x);
+    gfx_y = max(2, gfx_y);
+
+    gfx_set( 0.05, 0.05, 0.1, .8 );
+    gfx_rect(gfx_x - 2, gfx_y - 2, w+4, h+4);
+    gfx_set( .7, .7, .7, 1 );      
+    gfx_printf(hint_label);
+  );
+  reset_font();
+);
+
+function init_knob(_start, _stop, _default, _slider_idx, _vel_slider_idx, _rel_slider_idx)
+instance(start, stop, default, slider_idx, vel_slider_idx, rel_slider_idx)
+global()
+(
+  start = _start;
+  stop = _stop;
+  default = _default;
+  slider_idx = _slider_idx;
+  vel_slider_idx = _vel_slider_idx;
+  rel_slider_idx = _rel_slider_idx;
+);
+
+function disabled_color()
+global(gfx_r, gfx_g, gfx_b, gfx_a)
+local()
+(
+  gfx_r = gfx_r * 0.04 + 0.16;
+  gfx_g = gfx_g * 0.04 + 0.16;
+  gfx_b = gfx_b * 0.04 + 0.16;
+  gfx_a *= 0.3;
+);
+
+function draw_choice(me, x, y, w, h, slider_idx, hint)
+local(over)
+global(gfx_a, last_cap, mouse_cap, mouse_x, mouse_y, hinter.sethint)
+instance(_x, _y, _w, _h, _me, active)
+(
+  active = me == slider(slider_idx);
+  _x = x; _y = y; _w = w; _h = h; _me = me;
+  over = (mouse_x > x) && (mouse_y > y) && (mouse_x < (x + w)) && (mouse_y < (y + h));
+
+  active ? (
+    colormodel(0); gfx_a = 0.85;
+  ) : (
+    disabled_color();
+  );
+  gfx_rect(x, y, w, h, 0);
+  gfx_rect(x - 1, y - 1, w + 2, h + 2, 0);
+//  gfx_rect(x, y + 1, w - 2, h - 2, 0);
+  
+  gfx_set(0, 0, 0, 0.5);
+  gfx_rect(x + 3, y + 3, w - 7, h - 7, 1);
+  
+  over ? (
+    ((mouse_cap == 1) && (last_cap == 0)) ? (
+      slider_automate(slider(slider_idx) = me);
+    ) : (
+      hinter.sethint(hint);
+    );
+  );
+);
+
+function textbox_control(cx, cy, base_height, enabled, hint, step_size)
+local(ww, hh, speed, dy, ly, new_value, range, minimum, maximum)
+global(gfx_x, gfx_y, gfx_a, mouse_x, mouse_y, mouse_cap,
+       scaling, captured, last_cap, dbl_click_speed, settings_changed, hinter.sethint)
+instance(slider_idx, last_click, default, start, stop, over)
+(
+  gfx_x = floor(cx); gfx_y = floor(cy);
+  gfx_setfont(5, "Arial", base_height * scaling);
+  sprintf(16, "%d", step_size * floor((slider(slider_idx) / step_size)));
+  gfx_measurestr(16, ww, hh);
+  ww += 4;
+
+  gfx_set(0, 0, 0, 0.7);
+  gfx_rect(gfx_x, gfx_y, ww, hh, 1);
+  colormodel(1); gfx_a = 0.1 + 0.2 * enabled;
+  gfx_rect(gfx_x, gfx_y, ww, hh, 0, 1);
+  colormodel(1); gfx_a = 0.2 + 0.8 * enabled;
+  gfx_drawstr(16, 5, gfx_x + ww, gfx_y + hh);
+  
+  over = (mouse_x > cx) && (mouse_y > cy) && (mouse_x < (cx + ww)) && (mouse_y < (cy + hh));
+  
+  range = stop - start;
+  minimum = min(start, stop);
+  maximum = max(start, stop);
+  (mouse_cap & 1) && enabled ? (
+    (last_cap & 1 == 0) ? (
+      over ? (
+        ((time_precise() - last_click) < dbl_click_speed) ? (
+          slider_automate(slider(slider_idx) = default);
+          settings_changed = 1;
+        ) : (
+          last_click = time_precise();
+          captured = slider_idx;
+        );
+      );
+    ) : ( captured == slider_idx ) ? (
+      speed = 0.004;
+      dy = ly - mouse_y;
+      new_value = min(max(slider(slider_idx) + speed * dy * range, minimum), maximum);
+      slider_automate(slider(slider_idx) = new_value);
+      settings_changed = 1;
+    );
+  ) : (
+    over ? hinter.sethint(hint);
+  );
+  
+  ly = mouse_y;
+  
+  over
+);
+
+function draw_knob(x, y, r, label, hint, fancy, enabled)
+instance(start, stop, default, slider_idx, vel_slider_idx, rel_slider_idx, lx, ly, last_click, relative_position, _x, _y, _r, over)
+local(style, range, dx2, dy2, dx, dy, rr, ang, irange, speed, new_value, cc, velocity_part, velocity_mode, release_part, release_mode, minimum, maximum)
+global(gfx_x, gfx_y, gfx_r, gfx_g, gfx_b, captured, last_cap, gfx_a, mouse_cap, mouse_x, mouse_y, mouse_wheel, last_mouse_y, dbl_click_speed, hinter.sethint, settings_changed, change_vel_mod, change_rel_mod)
+(
+  style = 3;
+  dx = mouse_x - x;
+  dy = mouse_y - y;
+  over = dx * dx + dy * dy < r * r;
+  x = floor(x);
+  y = floor(y);
+  _x = x;
+  _y = y;
+  _r = r;
+  velocity_mode = change_vel_mod && (vel_slider_idx > 0);
+  release_mode = change_rel_mod && (rel_slider_idx > 0);
+  
+  cc = 1;
+  gfx_set(0, 0, 0, .4);
+  gfx_circle(x, y, r, 1);
+  loop(15,
+    colormodel(pow(cc - cc * cc, 2.5)); gfx_a = 0.85;
+    !enabled ? disabled_color();
+
+    gfx_circle(x, y, r * (0.97 + 0.08 * cc), 0);
+    cc -= 0.05;
+  );
+  
+  range = stop - start;
+  minimum = min(start, stop);
+  maximum = max(start, stop);
+  irange = 1.0 / range;
+  relative_position = (slider(slider_idx) - start) * irange;
+  
+  velocity_part = 1.5 * min(max(-relative_position, slider(vel_slider_idx) * irange), 1 - relative_position);
+  ang = 1.25 + 1.5 * relative_position;
+  
+  release_part = 1.5 * min(max(-relative_position, slider(rel_slider_idx) * irange), 1 - relative_position);
+  ang = 1.25 + 1.5 * relative_position;
+  
+  fancy ? (
+    (style == 3) ? (
+      /*
+      cc = 6;
+      loop(18,
+        colormodel(cc - 0.15 * cc * cc); gfx_a = 0.65;
+        !enabled ? disabled_color();
+        gfx_arc(x, y, ceil(r * (1.05 + 0.02 * cc)), 1.25 * $pi, ang * $pi, 1);
+        cc *= 0.95;
+      );
+      */
+      
+      cc = 0;
+      loop(0.28 * r,
+        colormodel(1.0 - 0.05 * cc); gfx_a = 1.0;
+        !enabled ? disabled_color();
+        gfx_arc(x, y, ceil(r * 1.08) + cc, 1.25 * $pi, ang * $pi, 1);
+        cc += 0.3;
+      );
+      
+      (velocity_part != 0) ? (
+        cc = 0;
+        colormodel(0.05); gfx_a = 1.0; gfx_r *= 0.7; gfx_g *= 0.7; gfx_b *= 0.7;
+        !enabled ? ( disabled_color(); gfx_r *= 0.5; gfx_g *= 0.5; gfx_b *= 0.5; );
+        loop(0.1 * r,
+          gfx_arc(x, y, ceil(r * 0.8) - cc, ang * $pi, (ang + velocity_part) * $pi, 1);
+          cc -= 0.5;
+        );
+      );
+      
+      (release_part != 0) ? (
+        cc = 0;
+        colormodel(0.65); gfx_a = 1.0; gfx_r *= 0.6; gfx_g *= 0.6; gfx_b *= 0.6;
+        !enabled ? ( disabled_color(); gfx_r *= 0.5; gfx_g *= 0.5; gfx_b *= 0.5; );
+        loop(0.1 * r,
+          gfx_arc(x, y, ceil(r * 0.89) - cc, ang * $pi, (ang + release_part) * $pi, 1);
+          cc -= 0.5;
+        );
+      );
+    ) : (style == 2) ? (
+      cc = 6;
+      loop(18,
+        colormodel(cc - 0.15 * cc * cc); gfx_a = 0.65;
+        !enabled ? disabled_color();
+        gfx_arc(x, y, ceil(r * (1.05 + 0.02 * cc)), 1.25 * $pi, ang * $pi, 1);
+        cc *= 0.95;
+      );
+      
+      (velocity_part != 0) ? (
+        cc = 6;
+        colormodel(0.05); gfx_a = 0.55;
+        !enabled ? ( disabled_color(); gfx_r *= 0.5; gfx_g *= 0.5; gfx_b *= 0.5; );
+        loop(18,
+          gfx_arc(x, y, ceil(r * (1.15 + 0.02 * cc)), ang * $pi, (ang + velocity_part) * $pi, 1);
+          cc *= 0.95;
+        );
+      );
+      
+      (release_part != 0) ? (
+        cc = 6;
+        colormodel(0.65); gfx_a = 0.55;
+        !enabled ? ( disabled_color(); gfx_r *= 0.5; gfx_g *= 0.5; gfx_b *= 0.5; );
+        loop(18,
+          gfx_arc(x, y, ceil(r * (0.8 + 0.02 * cc)), ang * $pi, (ang + release_part) * $pi, 1);
+          cc *= 0.95;
+        );
+      );
+    ) : ( style == 1 ) ? (
+      cc = 6;
+      loop(18,
+        colormodel(cc - 0.15 * cc * cc); gfx_a = 0.65;
+        !enabled ? disabled_color();
+        gfx_arc(x, y, ceil(r * (1.05 + 0.02 * cc)), 1.25 * $pi, ang * $pi, 1);
+        cc *= 0.95;
+      );
+      
+      (velocity_part != 0) ? (
+        cc = 6;
+        colormodel(0.03); gfx_a = 0.85;
+        !enabled ? ( disabled_color(); gfx_r *= 0.5; gfx_g *= 0.5; gfx_b *= 0.5; );
+        loop(18,
+          gfx_arc(x, y, ceil(r * (1.05 + 0.02 * cc)), ang * $pi, (ang + velocity_part) * $pi, 1);
+          cc *= 0.95;
+        );
+      );
+      
+      (release_part != 0) ? (
+        cc = 6;
+        colormodel(0.5); gfx_a = 0.55;
+        !enabled ? ( disabled_color(); gfx_r *= 0.5; gfx_g *= 0.5; gfx_b *= 0.5; );
+        loop(18,
+          gfx_arc(x, y, ceil(r * (0.8 + 0.02 * cc)), ang * $pi, (ang + release_part) * $pi, 1);
+          cc *= 0.95;
+        );
+      );
+    ) : (
+      (velocity_part != 0) ? (
+        cc = 6;
+        colormodel(0.03); gfx_a = 0.85;
+        !enabled ? ( disabled_color(); gfx_r *= 0.5; gfx_g *= 0.5; gfx_b *= 0.5; );
+        loop(18,
+          gfx_arc(x, y, ceil(r * (1.05 + 0.02 * cc)), ang * $pi, (ang + velocity_part) * $pi, 1);
+          cc *= 0.95;
+        );
+      );
+      
+      (release_part != 0) ? (
+        cc = 6;
+        colormodel(0.5); gfx_a = 0.55;
+        !enabled ? ( disabled_color(); gfx_r *= 0.5; gfx_g *= 0.5; gfx_b *= 0.5; );
+        loop(18,
+          gfx_arc(x, y, ceil(r * (1.2 + 0.02 * cc)), ang * $pi, (ang + release_part) * $pi, 1);
+          cc *= 0.95;
+        );
+      );
+      
+      cc = -4 * 0.001;
+      colormodel(0.03); gfx_a = 1.0;
+      dx2 = 0.75 * r* sin((ang + cc) * $pi);
+      dy2 = -0.75 * r * cos((ang + cc) * $pi);
+      gfx_circle(x + dx2, y + dy2, 2.5, 1);
+      
+      /*loop(8,
+        colormodel(0.5); gfx_a = 1.0;
+        !enabled ? ( disabled_color(); gfx_r *= 0.5; gfx_g *= 0.5; gfx_b *= 0.5; );
+        dx2 = sin((ang + cc) * $pi);
+        dy2 = -cos((ang + cc) * $pi);
+        gfx_line(
+          x + 0.95 * r * dx2, y + 0.95 * r * dy2,
+          x + 0.77 * r * dx2, y + 0.77 * r * dy2
+        );
+        cc += 0.002;
+      );*/
+    );
+  );
+
+  gfx_set(0, 0, 0, 0.2);
+  gfx_circle(x, y, r+1, 0);
+  gfx_set(0, 0, 0, 0.05);
+  gfx_circle(x, y, 0.82 * r, 0);
+  gfx_circle(x, y, 0.82 * r + 1, 0);
+  
+  gfx_set(1, 1, 1, 1);
+  gfx_x = x - r;
+  gfx_y = y - r;
+  gfx_drawstr(label, 5, x + r, y + r);
+  
+  over && enabled ? (
+    (abs(mouse_wheel) > 0) ? (
+      speed = 0.0002;
+      (mouse_cap & 4 > 0) ? speed *= 0.5;
+      (mouse_cap & 8 > 0) ? speed *= 0.25;
+      release_mode ? (
+        new_value = min(max(slider(rel_slider_idx) + speed * mouse_wheel * range, -abs(range)), abs(range));
+        slider_automate(slider(rel_slider_idx) = new_value);
+      ) : ( velocity_mode ) ? (
+        new_value = min(max(slider(vel_slider_idx) + speed * mouse_wheel * range, -abs(range)), abs(range));
+        slider_automate(slider(vel_slider_idx) = new_value);
+      ) : (
+        new_value = min(max(slider(slider_idx) + speed * mouse_wheel * (stop - start), minimum), maximum);
+        slider_automate(slider(slider_idx) = new_value);
+      );
+      mouse_wheel = 0;
+      settings_changed = 1;
+    );
+  );
+
+  (mouse_cap & 1) && enabled ? (
+    (last_cap & 1 == 0) ? (
+      over ? (
+        ((time_precise() - last_click) < dbl_click_speed) ? (
+          release_mode ? (
+            slider_automate(slider(rel_slider_idx) = 0);
+          ) : ( velocity_mode ) ? (
+            slider_automate(slider(vel_slider_idx) = 0);
+          ) : (
+            slider_automate(slider(slider_idx) = default);
+          );
+          settings_changed = 1;
+        ) : (
+          last_click = time_precise();
+          captured = slider_idx;
+        );
+      );
+    ) : ( captured == slider_idx ) ? (
+      speed = 0.004;
+      (mouse_cap & 4 > 0) ? speed *= 0.25;
+      (mouse_cap & 8 > 0) ? speed *= 0.025;
+      dy = ly - mouse_y;
+      release_mode ? (
+        new_value = min(max(slider(rel_slider_idx) + speed * dy * range, -abs(range)), abs(range));
+        slider_automate(slider(rel_slider_idx) = new_value);        
+      ) : ( velocity_mode ) ? (
+        new_value = min(max(slider(vel_slider_idx) + speed * dy * range, -abs(range)), abs(range));
+        slider_automate(slider(vel_slider_idx) = new_value);
+      ) : (
+        new_value = min(max(slider(slider_idx) + speed * dy * range, minimum), maximum);
+        slider_automate(slider(slider_idx) = new_value);
+      );
+      settings_changed = 1;
+    );
+  ) : (
+    over ? hinter.sethint(hint);
+  );
+  
+  // Highlight if knob can be made velocity dependent
+  release_mode ? (
+    colormodel(0.05);
+    gfx_a = 0.2 * abs(sin(3 * time_precise()));
+    gfx_circle(x, y, 1.1 * r, 1);
+  ) : ( velocity_mode ) ? (
+    colormodel(0.65);
+    gfx_a = 0.2 * abs(sin(3 * time_precise()));
+    gfx_circle(x, y, 1.1 * r, 1);
+  );
+  
+  ly = mouse_y;
+  
+  over
+);
+
+function drawToggle(_x, _y, _w, _h, _on, _str)
+local(ww, hh)
+instance(x, y, w, h, str, on, invert, label)
+global(gfx_x, gfx_y, gfx_a, gfx_mode, 
+       TOGGLE_FONT, knob_font_color_r, knob_font_color_g, knob_font_color_b, knob_font_color_a)
+(
+  x = _x;
+  y = _y;
+  w = _w;
+  h = _h;
+  on = _on;
+  str = _str;
+
+  gfx_set(0, 0, 0, 0);
+  gfx_rect(x, y, w, h);
+  
+  colormodel(on * 0.3);
+  gfx_rect(x, y, w, h);
+  
+  colormodel(on * 0.3); gfx_a = 0.3;
+  gfx_line(x, y, x+w, y);
+  gfx_line(x, y, x, y+h);
+  gfx_line(x+w, y, x+w, y+h);
+  gfx_line(x, y+h, x+w, y+h);
+
+  ( label ) ? (
+    gfx_set(knob_font_color_r, knob_font_color_g, knob_font_color_b, knob_font_color_a);
+    gfx_setfont(TOGGLE_FONT);
+    gfx_measurestr(label, ww, hh);
+    gfx_x = floor(x+1.5*w);
+    gfx_y = floor(y-.5*hh+.5*h);
+    gfx_printf(label);
+  );
+  
+  ( (on && !invert) || (!on && invert) ) ? (
+    colormodel(0.8);
+    gfx_rect(x, y, w, h);
+    gfx_a *= .6;
+    gfx_rect(x-1, y-1, w+2, h+2);
+    gfx_a *= .6;
+    gfx_rect(x-2, y-2, w+4, h+4);
+    gfx_a *= .6;
+    gfx_rect(x-3, y-3, w+6, h+6);
+    gfx_a *= .4;
+    gfx_circle(x+.5*w-1, y+.5*h-1, 2*max(w,h), 2*max(w,h));
+    gfx_a *= .4;
+    gfx_circle(x+.5*w-1, y+.5*h-1, 3*max(w,h), 3*max(w,h));
+    gfx_a *= .4;
+    gfx_circle(x+.5*w-1, y+.5*h-1, 4*max(w,h), 4*max(w,h));
+    gfx_a *= .4;
+    gfx_circle(x+.5*w-1, y+.5*h-1, 5*max(w,h), 5*max(w,h));
+  );
+);
+
+function processMouseToggle(x, y, w, h, on, str, mx, my, mousecap)
+instance(x, y, w, h, on, lastleft, str)
+local(left, slack, over)
+global(hinter.sethint, comboboxOpen)
+(
+  !comboboxOpen ? (
+    slack = 5;
+    left = mousecap & 1;
+    
+    over = ( (mx >= (x-slack)) && ( mx <= (x+w+slack) ) && ( my >= (y-slack) ) && ( my <= (y+h+slack) ) );
+    
+    over ? (
+      ( (left == 1) && (lastleft == 0) ) ?  (
+        on = 1 - on;
+      );
+      hinter.sethint(str);
+    );
+    
+    this.drawToggle(x, y, w, h, on, str);
+    
+    lastleft = left;
+  );
+  
+  on
+);
+ 
+
+function draw_keyboard(base_note, x, y, w, h)
+local(xc, yc, cw, w, h, first_white_key, white_key_id, white_keys)
+global(gfx_a, scaling)
+instance(note_width, start_octave, start_note, _x, _y, _w, _h)
+(
+  _x = x; _y = y; _w = w; _h = h;
+  
+  start_octave = floor(base_note / 12);
+  start_note = base_note - start_octave * 12;
+  
+  // Don't start on a black key
+  ((start_note == 1) || (start_note == 3) || (start_note == 6) || (start_note == 8) || (start_note == 10)) ? start_note -= 1;
+  
+  first_white_key = 
+  (start_note == 0) ? ( 0 ) : 
+  (start_note == 2) ? ( 1 ) : 
+  (start_note == 4) ? ( 2 ) : 
+  (start_note == 5) ? ( 3 ) : 
+  (start_note == 7) ? ( 4 ) : 
+  (start_note == 9) ? ( 5 ) : 
+  (start_note == 11) ? ( 6 );
+
+  note_width = floor(12 * max(1, scaling));
+  //white_keys = 7 * 8;
+  //note_width = floor(w / white_keys) - 2;
+  white_keys = floor(w / note_width);
+  _w = white_keys * note_width;
+  
+  // Keys
+  xc = x + 1;
+  yc = floor(y);
+  loop(white_keys,
+    gfx_set(1, 1, 1, .5);
+    gfx_rect(xc, yc, note_width - 2, h);
+    xc += note_width;
+  );
+  
+  // Highlights
+  xc = x + 1;
+  colormodel(1); gfx_a = 0.45;
+  loop(white_keys,
+    gfx_line(xc + 1, yc, xc + 1, yc + h - 2);
+    xc += note_width;
+  );
+  
+  xc = x + 1;
+  cw = 0;
+  white_key_id = first_white_key;
+  while(cw < white_keys - 1)
+  (
+    ((white_key_id != 2) && (white_key_id != 6)) ? (
+      gfx_set(0, 0, 0, 1.0);
+      gfx_rect(xc + 0.5 * note_width - 2, yc, note_width - 2, floor(0.55 * h));
+      
+      colormodel(1); gfx_a = 0.45;
+      gfx_line(xc + 0.5 * note_width - 1, yc, xc + 0.5 * note_width - 1, yc + floor(0.55 * h) - 2);
+      gfx_a = 0.15;
+      gfx_line(xc + 0.5 * note_width, yc, xc + 0.5 * note_width, yc + floor(0.55 * h) - 2);
+    );
+    xc += note_width;
+    white_key_id += 1;
+    (white_key_id > 6) ? white_key_id = 0;
+    cw += 1;
+  );
+);
+
+function note_coord_x(rel_note)
+local()
+global()
+(
+  (rel_note < 5) ? 0.5 * rel_note : 0.5 * rel_note + 0.5
+);
+
+function note_coord_y(rel_note)
+local()
+global()
+(
+  (rel_note < 5) ? (
+    // Even is white
+    (2 * floor(0.5 * rel_note) == rel_note) ? 0 : 1
+  ) : (
+    // Odd is white
+    (2 * floor(0.5 * rel_note) == rel_note) ? 1 : 0
+  );
+);
+
+function highlight_note(note)
+local(ts, c0_x, octave, rel_note, nx, ny, idx, black)
+global(gfx_a)
+instance(start_note, start_octave, note_width,
+         _x, _y, _w, _h)
+(
+  note > 0 ? (
+    // Reference point is at octave 0
+    c0_x = _x - note_coord_x(start_note) * note_width - 7 * start_octave * note_width;
+    
+    octave = floor(note / 12);
+    rel_note = note - 12 * octave;
+    
+    nx = c0_x + (octave * 7 + note_coord_x(rel_note)) * note_width;
+    black = note_coord_y(rel_note);
+    ny = _y + 0.75 * _h - 0.5 * black * _h;
+
+    colormodel(0.5 + 0.5 * sin(3 * time_precise())); gfx_a = 0.5;
+    black ? (
+      gfx_rect(nx - 1, _y, note_width - 2, floor(0.55 * _h));
+    ) : (
+      gfx_rect(nx + 1, _y, note_width - 2, _h);
+    );
+    
+    /*idx = 0;
+    ts = time_precise();
+    loop(1,
+      colormodel(abs(sin(ts)));
+      gfx_circle(nx + 0.5 * note_width - 1, ny, 3 - idx, 0);
+      idx += 1; ts += 1;
+    );*/
+  );
+);
+
+function note_clicked(mode)
+local(c0_x, white_note_x, note_x, octave)
+global(mouse_x, mouse_y)
+instance(start_note, start_octave, note_width, _x, _y, _w, _h, over)
+(
+  // Reference point is at octave 0
+  c0_x = _x - note_coord_x(start_note) * note_width - 7 * start_octave * note_width;
+  
+  white_note_x = (mouse_x - c0_x) / note_width;
+  octave = floor(white_note_x / 7);
+  
+  white_note_x -= (octave * 7);
+  
+  (mouse_y > (_y + floor(0.55 * _h))) ? (
+    note_x = white_note_x < 3 ? floor(white_note_x) * 2 : floor(white_note_x) * 2 - 1;
+  ) : ( 
+    note_x = (12 / 7) * white_note_x;
+  );
+  note_x = floor(note_x);
+  
+  over = (mouse_x > _x) && (mouse_y > _y) && (mouse_x < (_x + _w)) && (mouse_y < (_y + _h));
+  
+  floor(octave * 12 + note_x);
+);
+
+
+function init_envelope(_env_idx, _attack_slider_idx, _decay_slider_idx, _sustain_level_idx, _release_slider_idx)
+local()
+instance(env_idx, attack_slider_idx, decay_slider_idx, sustain_level_idx, release_slider_idx)
+global()
+(
+  env_idx = _env_idx;
+  attack_slider_idx = _attack_slider_idx;
+  decay_slider_idx = _decay_slider_idx;
+  sustain_level_idx = _sustain_level_idx;
+  release_slider_idx = _release_slider_idx;
+);
+
+function block_envelope()
+local()
+global()
+instance(
+  attack_s, decay_s, sustain_level, release_s,
+  attack_slider_idx, decay_slider_idx, sustain_level_idx, release_slider_idx
+)
+(
+  attack_s = exp(-5.809142990314027 + 2.302585092994046 * slider(attack_slider_idx)); // 3 - 300 ms <=> 0 - 2
+  decay_s = exp(-5.809142990314027 + 2.302585092994046 * slider(decay_slider_idx)); // 3 - 3000 ms <=> 0 - 3
+  release_s = exp(-5.809142990314027 + 2.302585092994046 * slider(release_slider_idx)); // 3 - 3000 ms <=> 0 - 3
+  sustain_level = slider(sustain_level_idx);
+);
+
+function draw_envelope_old_linear_time_mode(x, y, w, h, active)
+instance(
+  t_max, last_x, last_y, last_cap, attack_s, decay_s, release_s, sustain_level,
+  env_idx, attack_slider_idx, decay_slider_idx, sustain_level_idx, release_slider_idx,
+)
+local(plot_srate, attack_samples, decay_samples,
+      k_attack, k_decay, k_release,
+      x_cur, y_cur, x_new, y_new, state, rate, current_target, target,
+      time_per_pixel, attack_pos, decay_pos, modifier, dx,
+      over, highlight,
+      capture_start,
+      drag_atk, drag_decay, drag_release)
+global(mlog0p05, gfx_a,
+       mouse_x, mouse_y, mouse_wheel, mouse_cap, captured,
+       hinter.sethint, hinter.hint_time,
+       DRAG_ENV)
+(
+  t_max = attack_s + 2 * decay_s + release_s;
+  drag_atk = DRAG_ENV + 5 * env_idx;
+  drag_decay = drag_atk + 1;
+  drag_release = drag_atk + 2;
+  
+  gfx_set(0, 0, 0, 0.2);
+  gfx_rect(x, y, w, h, 1);
+  
+  plot_srate = (w - 4) / t_max;
+  
+  attack_samples = attack_s * plot_srate;
+  decay_samples = 2 * decay_s * plot_srate;
+  k_attack = mlog0p05 / attack_samples;
+  k_decay = mlog0p05 / (decay_s * plot_srate);
+  k_release = mlog0p05 / (release_s * plot_srate);
+  
+  (t_max == 0) ? t_max = 0.1;
+  over = (mouse_x > x) && (mouse_y > y) && (mouse_x < (x + w)) && (mouse_y < (y + h));
+  (over) ? (
+    (abs(mouse_wheel) > 0) ? (
+      modifier = 0.00025 * t_max;
+      (mouse_cap & 4 > 0) ? modifier *= 0.5;
+      (mouse_cap & 8 > 0) ? modifier *= 0.25;
+      t_max = max(0.0001, min(t_max - modifier * mouse_wheel, attack_s + 2 * decay_s + release_s));
+      mouse_wheel = 0;
+    );
+  
+    time_per_pixel = t_max / w;
+    attack_pos = attack_s / time_per_pixel;
+    decay_pos = 2 * decay_s / time_per_pixel;
+    
+    (last_cap == 0) ? (
+      (mouse_x < (x + attack_pos)) ? (
+        over = 2;
+      ) : (mouse_x < (x + attack_pos + decay_pos)) ? (
+        over = 3;
+      ) : (mouse_x < (x + w)) ? (
+        over = 4;
+      );
+    ) : (
+      (captured == drag_atk) ? ( over = 2; )
+      : (captured == drag_decay) ? ( over = 3; )
+      : (captured == drag_release) ? ( over = 4; )
+    );
+  
+    (last_cap == 0) && (mouse_cap == 1) ? (
+      // Fetch click ranges for the various parts of the envelope
+      time_per_pixel = t_max / w;
+      attack_pos = attack_s / time_per_pixel;
+      decay_pos = 2 * decay_s / time_per_pixel;
+    
+      (over == 2) ? (
+        captured = drag_atk;
+      ) : (over == 3) ? (
+        captured = drag_decay;
+      ) : (over == 4) ? (
+        captured = drag_release;
+      );
+    );
+  );
+  
+  x_cur = x + 2;
+  y_cur = y + h - 4;
+  state = 0;
+  loop(w - 4,
+    x_new = x_cur + 1;
+    y_new = y + 1 + (h - 4) * (1 - state);
+    
+    (attack_samples > 0) ? (
+      rate = k_attack;
+      current_target = 1;
+      highlight = (over == 2);
+      attack_samples -= 1;
+      (attack_samples == 0) ? state = 1;
+    ) : (
+      // Release and decay
+      (decay_samples > 0) ? (
+        rate = k_decay;
+        current_target = sustain_level;
+        highlight = (over == 3);
+        decay_samples -= 1;
+        (decay_samples == 0) ? state = sustain_level;
+      ) : (
+        rate = k_release;
+        current_target = 0;
+        highlight = (over == 4);
+      );
+    );
+    
+    state += min(1, rate * (current_target - state));
+  
+    colormodel(0.94); gfx_a = 0.2 + 0.2 * active * highlight * abs(sin(2 * time_precise()));
+    !active ? grayscale();
+    gfx_line(x_cur + 1, y + h - 3, x_new + 1, y_new);
+
+    colormodel(1);
+    !active ? grayscale();
+    highlight ? (
+      gfx_a = 0.8 * abs(sin(time_precise()));
+      gfx_line(x_cur + 1, y_cur - 1, x_new + 1, y_new - 1);
+      gfx_line(x_cur + 1, y_cur + 1, x_new + 1, y_new + 1);
+    );
+    gfx_a = 1;
+    gfx_line(x_cur + 1, y_cur, x_new + 1, y_new);
+    gfx_line(x_cur, y_cur + 1, x_new, y_new + 1);
+    gfx_line(x_cur, y_cur, x_new, y_new);
+    
+    x_cur = x_new;
+    y_cur = y_new;
+  );
+  
+  active && ((captured >= drag_atk) && (captured <= drag_release)) ? (
+    (mouse_cap == 0) ? (
+      captured = 0;
+    ) : (
+      modifier = 0.01;
+      (mouse_cap & 4 > 0) ? modifier *= 0.5;
+      (mouse_cap & 8 > 0) ? modifier *= 0.25;
+      
+      dx = modifier * (mouse_x - last_x);
+      (captured == drag_atk) ? (
+        // Attack
+        slider_automate(slider(attack_slider_idx) = min(2, max(0, slider(attack_slider_idx) + dx)));
+        hinter.sethint(sprintf(90, "Attack:\n%.2f ms", attack_s * 1000));
+        hinter.hint_time = 1000;
+      ) : (captured == drag_decay) ? (
+        // Decay
+        slider_automate(slider(decay_slider_idx) = min(3, max(0, slider(decay_slider_idx) + dx)));
+        slider_automate(slider(sustain_level_idx) = min(1, max(0, slider(sustain_level_idx) - modifier * (mouse_y - last_y))));
+        hinter.sethint(sprintf(90, "Decay:\n%.2f ms\nSustain: %d \n", decay_s * 1000, 100 * sustain_level));
+        hinter.hint_time = 1000;
+      ) : (captured == drag_release) ? (
+        // Release
+        slider_automate(slider(release_slider_idx) = min(3, max(0, slider(release_slider_idx) + dx)));
+        hinter.sethint(sprintf(90, "Release:\n%.2f ms", release_s * 1000));
+        hinter.hint_time = 1000;
+      )
+    );
+  );
+  
+  colormodel(0);
+  !active ? grayscale();
+  
+  last_x = mouse_x;
+  last_y = mouse_y;
+  last_cap = mouse_cap;
+  
+  gfx_a = 0.7;
+  gfx_rect(x, y, w, h, 0);
+  gfx_rect(x + 1, y + 1, w - 2, h - 2, 0);
+);
+
+/* Updated log-time version */
+function draw_envelope(x, y, w, h, active)
+instance(
+  last_x, last_y, last_cap, attack_s, decay_s, release_s, sustain_level,
+  env_idx,
+  attack_slider_idx, decay_slider_idx, sustain_level_idx, release_slider_idx,
+  attack_pos, decay_pos, release_pos, hold_pos,
+  o2, o3, o4, o5,
+)
+local(
+  atk_min, atk_max, dec_min, dec_max, rel_min, rel_max,
+  modifier, dx,
+  over, highlight,
+  drag_atk, drag_decay, drag_release, drag_sustain
+  t_max, t_min,
+  x1, x2, x3, x4, x5,
+  y1, y2, y3, y4, y5,
+)
+global(
+  mlog0p05, gfx_a,
+  mouse_x, mouse_y, mouse_wheel, mouse_cap, captured,
+  hinter.sethint, hinter.hint_time,
+  DRAG_ENV
+)
+(
+  t_max = log(6.3);
+  t_min = log(0.0015);
+  w = floor(w);
+  h = floor(h);
+  
+  drag_atk = DRAG_ENV + 5 * env_idx;
+  drag_decay = drag_atk + 1;
+  drag_sustain = drag_atk + 2;
+  drag_release = drag_atk + 3;
+  
+  gfx_set(0.0, 0.0, 0.0, 0.75 - 0.2 * (1 - active));
+  gfx_rect(x, y, w, h);
+  
+  colormodel(0); gfx_a = 0.1;
+  !active ? grayscale();
+  gfx_rect(x, y, w, h);
+  
+  //attack_pos = floor(w * (log(attack_s) - t_min) / (t_max - t_min));
+  //decay_pos = floor(w * (log(attack_s + decay_s) - t_min) / (t_max - t_min));
+  //release_pos = floor(w * (log(attack_s + decay_s + release_s) - t_min) / (t_max - t_min));
+  
+  atk_min = 0;
+  atk_max = 2;
+  dec_min = 0;
+  dec_max = 3;
+  rel_min = 0;
+  rel_max = 3;
+  
+  /*attack_pos = floor(0.25 * w * (0.25 + 0.75 * (slider(attack_slider_idx) - atk_min) / (atk_max - atk_min)));
+  decay_pos = attack_pos + floor(0.5 * 0.65 * w * (0.25 + 0.75 * (slider(decay_slider_idx) - dec_min) / (dec_max - dec_min)));
+  release_pos = decay_pos + floor(0.5 * 0.65 * w * (0.25 + 0.75 * (slider(release_slider_idx) - rel_min) / (rel_max - rel_min)));
+  hold_pos = decay_pos + floor(w - release_pos);
+  release_pos = w - 2;*/
+  
+  attack_pos = floor(0.25 * w * (0.25 + 0.75 * (slider(attack_slider_idx) - atk_min) / (atk_max - atk_min)));
+  decay_pos = attack_pos + floor(0.5 * 0.65 * w * (0.25 + 0.75 * (slider(decay_slider_idx) - dec_min) / (dec_max - dec_min)));
+  hold_pos = decay_pos + floor(0.1 * w);
+  release_pos = hold_pos + floor(0.5 * 0.65 * w * (0.25 + 0.75 * (slider(release_slider_idx) - rel_min) / (rel_max - rel_min)));
+  
+  over = (mouse_x > x) && (mouse_y > y) && (mouse_x < (x + w)) && (mouse_y < (y + h));
+  (over) ? (
+    (abs(mouse_wheel) > 0) ? (
+      modifier = 0.00025 * t_max;
+      (mouse_cap & 4 > 0) ? modifier *= 0.5;
+      (mouse_cap & 8 > 0) ? modifier *= 0.25;
+      t_max = max(0.0001, min(t_max - modifier * mouse_wheel, attack_s + 2 * decay_s + release_s));
+      mouse_wheel = 0;
+    );
+   
+    (last_cap == 0) ? (
+      (mouse_x < (x + attack_pos)) ? (
+        over = 2;
+      ) : (mouse_x < (x + decay_pos)) ? (
+        over = 3;
+      ) : (mouse_x < (x + hold_pos)) ? (
+        over = 4;
+      ) : (
+        over = 5;
+      );
+    ) : (
+      (captured == drag_atk) ? ( over = 2; )
+      : (captured == drag_decay) ? ( over = 3; )
+      : (captured == drag_sustain) ? ( over = 4; )
+      : (captured == drag_release) ? ( over = 5; )
+    );
+  
+    (last_cap == 0) && (mouse_cap == 1) ? (
+      (over == 2) ? (
+        captured = drag_atk;
+      ) : (over == 3) ? (
+        captured = drag_decay;
+      ) : (over == 4) ? (
+        captured = drag_sustain;
+      ) : (over == 5) ? (
+        captured = drag_release;
+      );
+    );
+  );
+  
+  colormodel(0.94); gfx_a = 1;
+  !active ? grayscale();
+  
+  x1 = floor(x) + 1;
+  x2 = floor(x + attack_pos);
+  x3 = floor(x + decay_pos);
+  x4 = floor(x + hold_pos);
+  x5 = floor(x + release_pos);
+  y1 = floor(y + h - 2);
+  y2 = floor(y + 0.1 * h);
+  y3 = floor(y + h - 2 - (h - 0.1 * h - 2) * sustain_level);
+  y4 = floor(y + h - 2 - (h - 0.1 * h - 2) * sustain_level);
+  y5 = floor(y + h - 3);
+  
+  colormodel(1);
+  !active ? grayscale();
+  gfx_line(x1, y1, x2, y2, 1);
+  gfx_line(x2, y2, x3, y3, 1);
+  gfx_line(x3, y3, x4, y4, 1);
+  gfx_line(x4, y4, x5, y5, 1);
+  gfx_line(x5, y5, x + w - 2, y5, 1);
+  gfx_line(x1, y1 - 0.5, x2, y2 - 0.5, 1);
+  gfx_line(x2, y2 - 0.5, x3, y3 - 0.5, 1);
+  gfx_line(x3, y3 - 0.5, x4, y4 - 0.5, 1);
+  gfx_line(x4, y4 - 0.5, x5, y5 - 0.5, 1);
+  gfx_line(x5, y5 - 0.5, x + w - 2, y5 - 0.5, 1);
+  
+  o2 = 0.2 * ((over == 2) || (captured == drag_atk)) + 0.8 * o2;
+  o3 = 0.2 * ((over == 3) || (captured == drag_decay)) + 0.8 * o3;
+  o4 = 0.2 * ((over == 4) || (captured == drag_sustain)) + 0.8 * o4;
+  o5 = 0.2 * ((over == 5) || (captured == drag_release)) + 0.8 * o5;
+  
+  gfx_a = 0.05;
+  !active ? grayscale();
+  gfx_triangle(x1, y1, x2 - 1, y2, x2 - 1, y1);
+  gfx_triangle(x2, y1, x2, y2, x3, y3, x3, y1);
+  gfx_triangle(x3 + 1, y1, x3 + 1, y3, x4, y4, x4, y1);
+  gfx_triangle(x4 + 1, y1, x4 + 1, y4, x5, y5, x5, y1);
+  
+  active ? (
+    gfx_a = 0.7 * abs(sin(time_precise())) * o2;
+    gfx_triangle(x1, y1, x2 - 1, y2, x2 - 1, y1);
+    gfx_a = 0.7 * abs(sin(time_precise())) * o3;
+    gfx_triangle(x2, y1, x2, y2, x3, y3, x3, y1);
+    gfx_a = 0.7 * abs(sin(time_precise())) * o4;
+    gfx_triangle(x3 + 1, y1, x3 + 1, y3, x4, y4, x4, y1);
+    gfx_a = 0.7 * abs(sin(time_precise())) * o5;
+    gfx_triangle(x4 + 1, y1, x4 + 1, y4, x5, y5, x5, y1);
+  );
+
+  active && ((captured >= drag_atk) && (captured <= drag_release)) ? (
+    (mouse_cap == 0) ? (
+      captured = 0;
+    ) : (
+      modifier = 0.01;
+      (mouse_cap & 4 > 0) ? modifier *= 0.5;
+      (mouse_cap & 8 > 0) ? modifier *= 0.25;
+    
+      dx = modifier * (mouse_x - last_x);
+      (captured == drag_atk) ? (
+        // Attack
+        slider_automate(slider(attack_slider_idx) = min(atk_max, max(atk_min, slider(attack_slider_idx) + dx)));
+        hinter.sethint(sprintf(90, "Attack:\n%.2f ms", attack_s * 1000));
+        hinter.hint_time = 1000;
+      ) : (captured == drag_decay) ? (
+        // Decay
+        slider_automate(slider(sustain_level_idx) = min(1, max(0, slider(sustain_level_idx) - modifier * (mouse_y - last_y))));
+        slider_automate(slider(decay_slider_idx) = min(dec_max, max(dec_min, slider(decay_slider_idx) + dx)));
+        hinter.sethint(sprintf(90, "Decay:\n%.2f ms\nSustain:\n%d\n", decay_s * 1000, 100 * sustain_level));
+        hinter.hint_time = 1000;
+      ) : (captured == drag_sustain) ? (
+        slider_automate(slider(decay_slider_idx) = min(dec_max, max(dec_min, slider(decay_slider_idx) + dx)));
+        slider_automate(slider(sustain_level_idx) = min(1, max(0, slider(sustain_level_idx) - modifier * (mouse_y - last_y))));
+        hinter.sethint(sprintf(90, "Sustain:\n%d\nDecay:\n%.2f ms\n", 100 * sustain_level, decay_s * 1000));
+        hinter.hint_time = 1000;
+      ) : (captured == drag_release) ? (
+        // Release
+        slider_automate(slider(release_slider_idx) = min(rel_max, max(rel_min, slider(release_slider_idx) + dx)));
+        hinter.sethint(sprintf(90, "Release:\n%.2f ms", release_s * 1000));
+        hinter.hint_time = 1000;
+      )
+    );
+  );
+  
+  colormodel(0);
+  !active ? grayscale();
+  
+  last_x = mouse_x;
+  last_y = mouse_y;
+  last_cap = mouse_cap;
+  
+  gfx_a = 0.7;
+  gfx_rect(x, y, w, h, 0);
+  gfx_rect(x + 1, y + 1, w - 2, h - 2, 0);
+);

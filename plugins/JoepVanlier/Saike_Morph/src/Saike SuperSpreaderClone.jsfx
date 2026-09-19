@@ -1,0 +1,603 @@
+desc:Super Spreader
+tags: chorus pitch shifting supersaw
+version: 0.09
+author: Original code by lkjb, basic port by Saike (Joep Vanlier)
+changelog: Added optional highpass filter.
+
+slider1:spread_slider=0.5<0, 1, 0.0001>Spread
+slider2:mix=100<0, 200, 0.01>Mix
+slider3:reconstruct_envelope=0<0, 2, 1{Off,Audio,MIDI}>Reconstruct Attack
+slider4:spreader_filter_mode=0<0,4,1{Off,Highpass wet side,Highpass wet mid,Highpass wet,Highpass mix side}>Filter
+slider5:spreader_filter_order=0<0,1,1{4p,8p}>Filter order
+slider6:frequency=1<1,22050,0.01:log>Filter frequency
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+function init_butter2(f0)
+global(srate)
+local(g)
+instance(
+  <?k = 1; loop(2, printf("k_%d, a1_%d, a2_%d, a3_%d, ", k, k, k, k); k += 1);?>
+)
+(
+  g = tan($pi * f0 / srate);
+  
+  k_1 = 1.84775906552; // 1 / Q
+  k_2 = 0.76536684415;
+
+  <?
+    k = 1;
+    loop(2,
+      printf("a1_%d = 1 / (1 + g * (g + k_%d));", k, k);
+      printf("a2_%d = g * a1_%d;", k, k);
+      printf("a3_%d = g * a2_%d;", k, k);
+      k += 1;
+    );
+  ?>
+);
+
+function init_butter4(f0)
+global(srate)
+local(g)
+instance(
+  <?k = 1; loop(4, printf("k_%d, a1_%d, a2_%d, a3_%d, ", k, k, k, k); k += 1);?>
+)
+(
+  g = tan($pi * f0 / srate);
+  
+  k_1 = 1.96157055736; // 1 / Q
+  k_2 = 1.66293921613;
+  k_3 = 1.11114046991;
+  k_4 = 0.3901806513;
+   
+  <?
+    k = 1;
+    loop(4,
+      printf("a1_%d = 1 / (1 + g * (g + k_%d));", k, k);
+      printf("a2_%d = g * a1_%d;", k, k);
+      printf("a3_%d = g * a2_%d;", k, k);
+      k += 1;
+    );
+  ?>
+);
+
+function eval_butter2_ap(v0)
+global()
+local(v1, v2, v3)
+instance(
+  <?k = 1; loop(2, printf("ic1eq_%d, ic2eq_%d, k_%d, a1_%d, a2_%d, a3_%d, ", k, k, k, k, k, k); k += 1);?>
+)
+(
+  <?
+    k = 1;
+    loop(2,
+      printf("v3 = v0 - ic2eq_%d;", k);
+      printf("v1 = a1_%d * ic1eq_%d + a2_%d * v3;", k, k, k);
+      printf("v2 = ic2eq_%d + a2_%d * ic1eq_%d + a3_%d * v3;", k, k, k, k);
+      printf("ic1eq_%d = v1 + v1 - ic1eq_%d;", k, k);
+      printf("ic2eq_%d = v2 + v2 - ic2eq_%d;", k, k);
+      printf("v0 = v0 - 2 * k_%d * v1;", k);
+    
+      k += 1;
+    );
+  ?>
+);
+
+function eval_butter2(v0)
+global()
+local(v1, v2, v3)
+instance(
+  <?k = 1; loop(2, printf("ic1eq_%d, ic2eq_%d, k_%d, a1_%d, a2_%d, a3_%d, ", k, k, k, k, k, k); k += 1);?>
+)
+(
+  <?
+    k = 1;
+    loop(2,
+      printf("v3 = v0 - ic2eq_%d;", k);
+      printf("v1 = a1_%d * ic1eq_%d + a2_%d * v3;", k, k, k);
+      printf("v2 = ic2eq_%d + a2_%d * ic1eq_%d + a3_%d * v3;", k, k, k, k);
+      printf("ic1eq_%d = v1 + v1 - ic1eq_%d;", k, k);
+      printf("ic2eq_%d = v2 + v2 - ic2eq_%d;", k, k);
+      printf("v0 = v0 - k_%d * v1 - v2;", k);
+    
+      k += 1;
+    );
+  ?>
+);
+
+
+function eval_butter2_2(v0)
+global()
+local(v1, v2, v3)
+instance(
+  <?k = 1; loop(2, printf("ic3eq_%d, ic4eq_%d, k_%d, a1_%d, a2_%d, a3_%d, ", k, k, k, k, k, k); k += 1);?>
+)
+(
+  <?
+    k = 1;
+    loop(2,
+      printf("v3 = v0 - ic4eq_%d;", k);
+      printf("v1 = a1_%d * ic3eq_%d + a2_%d * v3;", k, k, k);
+      printf("v2 = ic4eq_%d + a2_%d * ic3eq_%d + a3_%d * v3;", k, k, k, k);
+      printf("ic3eq_%d = v1 + v1 - ic3eq_%d;", k, k);
+      printf("ic4eq_%d = v2 + v2 - ic4eq_%d;", k, k);
+      printf("v0 = v0 - k_%d * v1 - v2;", k);
+    
+      k += 1;
+    );
+  ?>
+);
+
+function eval_butter4_ap(v0)
+global()
+local(v1, v2, v3)
+instance(
+  <?k = 1; loop(4, printf("ic1eq_%d, ic2eq_%d, k_%d, a1_%d, a2_%d, a3_%d, ", k, k, k, k, k, k); k += 1);?>
+)
+(
+  <?
+    k = 1;
+    loop(4,
+      printf("v3 = v0 - ic2eq_%d;", k);
+      printf("v1 = a1_%d * ic1eq_%d + a2_%d * v3;", k, k, k);
+      printf("v2 = ic2eq_%d + a2_%d * ic1eq_%d + a3_%d * v3;", k, k, k, k);
+      printf("ic1eq_%d = v1 + v1 - ic1eq_%d;", k, k);
+      printf("ic2eq_%d = v2 + v2 - ic2eq_%d;", k, k);
+      printf("v0 = v0 - 2 * k_%d * v1;", k);
+    
+      k += 1;
+    );
+  ?>
+);
+
+function eval_butter4(v0)
+global()
+local(v1, v2, v3)
+instance(
+  <?k = 1; loop(4, printf("ic1eq_%d, ic2eq_%d, k_%d, a1_%d, a2_%d, a3_%d, ", k, k, k, k, k, k); k += 1);?>
+)
+(
+  <?
+    k = 1;
+    loop(4,
+      printf("v3 = v0 - ic2eq_%d;", k);
+      printf("v1 = a1_%d * ic1eq_%d + a2_%d * v3;", k, k, k);
+      printf("v2 = ic2eq_%d + a2_%d * ic1eq_%d + a3_%d * v3;", k, k, k, k);
+      printf("ic1eq_%d = v1 + v1 - ic1eq_%d;", k, k);
+      printf("ic2eq_%d = v2 + v2 - ic2eq_%d;", k, k);
+      printf("v0 = v0 - k_%d * v1 - v2;", k);
+    
+      k += 1;
+    );
+  ?>
+);
+
+function eval_butter4_2(v0)
+global()
+local(v1, v2, v3)
+instance(
+  <?k = 1; loop(4, printf("ic3eq_%d, ic4eq_%d, k_%d, a1_%d, a2_%d, a3_%d, ", k, k, k, k, k, k); k += 1);?>
+)
+(
+  <?
+    k = 1;
+    loop(4,
+      printf("v3 = v0 - ic4eq_%d;", k);
+      printf("v1 = a1_%d * ic3eq_%d + a2_%d * v3;", k, k, k);
+      printf("v2 = ic4eq_%d + a2_%d * ic3eq_%d + a3_%d * v3;", k, k, k, k);
+      printf("ic3eq_%d = v1 + v1 - ic3eq_%d;", k, k);
+      printf("ic4eq_%d = v2 + v2 - ic4eq_%d;", k, k);
+      printf("v0 = v0 - k_%d * v1 - v2;", k);
+    
+      k += 1;
+    );
+  ?>
+);
+
+function initialize_midi(freemem)
+local()
+global()
+instance(active_notes, note_mem)
+(
+  active_notes = 0;
+  note_mem = freemem;
+  memset(note_mem, 0, 2048);
+  note_mem + 2048
+);
+
+function calc_smooth_coeff(cutoff)
+instance()
+global(srate)
+local(g)
+( 
+  g = tan($pi * cutoff / srate);
+  g /(1 + g)
+);
+
+function smooth(target)
+global(smooth_coeff)
+local(y, v)
+instance(s)
+(
+  v = smooth_coeff * (target - s);
+  y = v + s;
+  s = y + v;
+  y
+);
+
+function midi_block()
+local(offset, msg1, msg2, msg3, note_on, note_off)
+global()
+instance(note_mem, note_ptr, remaining_notes, next_note, current_sample)
+(
+  note_ptr = note_mem;
+  while (midirecv(offset,msg1,msg2,msg3)) (
+    note_on = msg1>$x8F&&msg1<$xA0 && msg3!=0;
+    note_off = (msg1>$x7F&&msg1<$x90) || (msg1>$x89&&msg1<$xA0 && msg3==0);
+      
+    note_on ? (
+      note_ptr[] = offset;
+      note_ptr += 1;
+      note_ptr[] = msg3;
+      note_ptr += 1;
+      note_ptr[] = msg2;
+      note_ptr += 1;
+    ) : ( note_off ) ? (
+      note_ptr[] = offset;
+      note_ptr += 1;
+      note_ptr[] = -1;
+      note_ptr += 1;
+      note_ptr[] = msg2;
+      note_ptr += 1;
+    );
+    midisend(offset, msg1, msg2, msg3); // passthrough MIDI events
+  );
+  note_ptr[]      = -1337;    // Signal end of note buffer
+  note_ptr        = note_mem;
+  current_sample  = 0;        // Current sample in block
+  remaining_notes = 1;        // End of the note buffer?
+  next_note       = note_ptr[];
+);
+
+function midi_sample()
+local()
+global()
+instance(
+  active_notes,
+  remaining_notes, current_sample,
+  note_ptr, next_note,
+)
+(
+  // Take notes from the stack until we hit the end marker -1
+  (remaining_notes) ? (
+    while(next_note == current_sample) (
+      note_ptr += 1;
+      (note_ptr[] > 0) ? ( // note-on
+        active_notes += 1;
+        //lastVel = note_ptr[]/127;
+        note_ptr += 1;
+        //lastNote = note_ptr[];
+        //newNote = 1;
+      ) : (note_ptr[] == -1) ? ( // note-off
+        active_notes -= 1;
+        active_notes = max(0, active_notes);
+        note_ptr += 1;
+        //note = note_ptr[];
+      );
+      note_ptr += 1;
+      
+      // Avoid constantly dereferencing by picking up the next one
+      next_note = note_ptr[];
+      remaining_notes = next_note != -1337;
+    );
+  );
+  
+  current_sample += 1;
+  
+  active_notes
+);
+
+function _init_spreader_buffer(freemem, in_buffer_size, window_in)
+instance(buf, p0, p2, buffer_size, half_buffer, window)
+global()
+local()
+(
+  buffer_size = in_buffer_size;
+  half_buffer = in_buffer_size / 2;
+  window = window_in;
+  p0 = 0;
+  p2 = floor(rand() * (buffer_size - 1));
+  buf = freemem;
+  
+  buf + buffer_size
+);
+
+function spreader_update_parameters(spread_slider, mix)
+local(detune_fade, detuned_gain, spread)
+global()
+instance(
+  <?i=0; loop(12, printf("shifter%d, ", i); i += 1;)?>
+  dry_gain, total_gain, spread_gain,
+)
+(
+  // Wrangle input parameters
+  detune_fade = min(10.0 * spread_slider, 1.0);
+  detuned_gain = (mix >= 100.0) ? 1.0 : 0.01 * mix;
+  dry_gain = (mix <= 100.0) ? 1.0 : (detune_fade < 1.0) ? max(0.5 * (1.0 - detune_fade), (200.0 - mix) / 100.0) : (200.0 - mix) / 100.0;
+  spread_gain = detuned_gain * detune_fade;
+  total_gain = (spread_gain == 0.0) ? 1.0 : (1.41 / (1.0 + 2.4494897427831780981972840747059 * spread_gain));
+  spread = 0.5 * spread_slider * spread_slider;
+  
+  // Set individual pitch shifter pitches
+  shifter0.out_delta = pow(0.893, spread);
+  shifter1.out_delta = pow(0.939, spread);
+  shifter2.out_delta = pow(0.98, spread);
+  shifter3.out_delta = pow(1.02, spread);
+  shifter4.out_delta = pow(1.064, spread);
+  shifter5.out_delta = pow(1.11, spread);
+  
+  shifter6.out_delta = pow(1.0 / 0.893, spread);
+  shifter7.out_delta = pow(1.0 / 0.939, spread);
+  shifter8.out_delta = pow(1.0 / 0.98, spread);
+  shifter9.out_delta = pow(1.0 / 1.02, spread);
+  shifter10.out_delta = pow(1.0 / 1.064, spread);
+  shifter11.out_delta = pow(1.0 / 1.11, spread);
+);
+
+function _spreadshifter_tick(data)
+instance(buf, p0, p2)
+global()
+local(p1i, p1f, p2i, x3, x3a, x3b, x4, x4a, x4b, fade34)
+instance(out_delta, test, buffer_size, half_buffer, window)
+(
+  p0 -= 1;
+  (p0 < 0) ? ( p0 += buffer_size; );
+  buf[p0] = data;
+
+  p2 -= out_delta;
+  (p2 < 0) ? ( p2 += buffer_size; );
+
+  p1i = floor(p2);
+  p1f = p2 - p1i;
+  x3a = buf[p1i];
+  
+  p1i += 1;
+  (p1i >= buffer_size) ? ( p1i -= buffer_size; );
+
+  x3b = buf[p1i];
+  x3 = x3a + p1f * (x3b - x3a);
+  
+  p2i = (p1i + half_buffer);
+  (p2i >= buffer_size) ? ( p2i -= buffer_size; );
+  x4a = buf[p2i];
+  
+  p2i += 1;
+  (p2i >= buffer_size) ? ( p2i -= buffer_size; );
+
+  x4b = buf[p2i];
+  x4 = x4a + p1f * (x4b - x4a);
+
+  p2i = (p1i - p0);
+  (p2i < 0) ? ( p2i += buffer_size; );
+  
+  fade34 = window[p2i];
+  
+  x4 + fade34 * (x3 - x4)
+);
+
+function init_follower(atk, release)
+local()
+instance(at, rt, LPF)
+global(srate)
+(
+  at = ( atk > 0 ) ? exp(-1.0/(.0005 * atk * srate)) : 0;
+  rt = exp(-1.0/(.0005 * release * srate));
+);
+
+function eval_follower(x)
+local()
+instance(state, at, rt, x)
+global()
+(
+  x > state ? (
+    state = at * state + ( 1.0 - at ) * x;
+  ) : (
+    state = rt * state + ( 1.0 - rt ) * x;
+  );
+  
+  state
+);
+
+function spreader_tick(inL, inR, reconstruct_envelope, reset_env)
+global(spreader_filter_mode, spreader_filter_order)
+local(delayed_in, total_out, avg, side)
+instance(
+  window,
+  buffer_size, half_buffer,
+  delayL, delayR, delay_ix, read_ix, read_ix2, outL, outR,
+  <?i=0; loop(12, printf("shifter%d, ", i); i += 1;)?>
+  dry_gain, total_gain, spread_gain,
+  env_follower, env_follower2, env_correction, follower_state, zero_time, smooth_total_gain, smooth_total_gain.smooth,
+  filt,
+)
+(
+  // Delay the main signal
+  delayL[delay_ix] = inL;
+  delayR[delay_ix] = inR;
+  delay_ix += 1;
+  (delay_ix >= buffer_size) ? delay_ix -= buffer_size;
+  read_ix = delay_ix - half_buffer;
+  (read_ix < 0) ? ( read_ix += buffer_size; );
+  
+  // Process the chorus
+  outL = outR = 0;
+  <?i = 0; loop(6, printf("outL += shifter%d._spreadshifter_tick(inL);", i); i += 1; );?>
+  <?i = 6; loop(6, printf("outR += shifter%d._spreadshifter_tick(inR);", i); i += 1; );?>
+  
+  (reconstruct_envelope == 1) ? (
+    read_ix2 = read_ix - 1;
+    (read_ix2 < 0) ? ( read_ix2 += buffer_size; );
+    delayed_in = max(abs(delayL[read_ix] - delayL[read_ix2]), abs(delayR[read_ix] - delayR[read_ix2]));
+    total_out = follower_state * max(abs(outL), abs(outR));
+    follower_state = env_follower2.eval_follower(env_follower.eval_follower((total_out + delayed_in) > 0.001) > 0.2);
+    env_correction = follower_state;
+  ) : (reconstruct_envelope == 2) ? (
+    reset_env ? (
+      zero_time = 1024;
+    );
+    (zero_time > 0) ? (
+      env_correction = window[zero_time];
+      zero_time -= 1;
+    ) : (
+      env_correction += 0.01 * (1.0 - env_correction);
+    );
+  ) : (
+    env_correction = 1;
+  );
+  
+  smooth_total_gain = smooth_total_gain.smooth(total_gain);
+
+  
+  (spreader_filter_mode == 1) ? (
+    avg  = 0.5 * (outL + outR);
+    side = 0.5 * (outL - outR);
+    
+    (spreader_filter_order == 0) ? (
+      avg = filt.eval_butter2_ap(avg);
+      side = filt.eval_butter2_2(side);
+    ) : (
+      avg = filt.eval_butter4_ap(avg);
+      side = filt.eval_butter4_2(side);
+    );
+    
+    outL = avg + side;
+    outR = avg - side;
+  ) : (spreader_filter_mode == 2) ? (
+    avg  = 0.5 * (outL + outR);
+    side = 0.5 * (outL - outR);
+    
+    (spreader_filter_order == 0) ? (
+      side = filt.eval_butter2_ap(side);
+      avg = filt.eval_butter2_2(avg);
+    ) : (
+      side = filt.eval_butter4_ap(side);
+      avg = filt.eval_butter4_2(avg);
+    );
+    
+    outL = avg + side;
+    outR = avg - side;
+  ) : (spreader_filter_mode == 3) ? (
+    (spreader_filter_order == 0) ? (
+      outL = filt.eval_butter2(outL);
+      outR = filt.eval_butter2_2(outR);
+    ) : (
+      outL = filt.eval_butter4(outL);
+      outR = filt.eval_butter4_2(outR);
+    );
+  );
+
+  outL = (dry_gain * delayL[read_ix] + outL * spread_gain * env_correction) * smooth_total_gain;
+  outR = (dry_gain * delayR[read_ix] + outR * spread_gain * env_correction) * smooth_total_gain;
+  
+  (spreader_filter_mode == 4) ? (
+    avg  = 0.5 * (outL + outR);
+    side = 0.5 * (outL - outR);
+    
+    (spreader_filter_order == 0) ? (
+      avg = filt.eval_butter2_ap(avg);
+      side = filt.eval_butter2_2(side);
+    ) : (
+      avg = filt.eval_butter4_ap(avg);
+      side = filt.eval_butter4_2(side);
+    );
+    
+    outL = avg + side;
+    outR = avg - side;
+  );
+);
+
+function init_spreader(freemem, _buffer_size)
+local(i)
+global()
+instance(
+  <?i=0; loop(12, printf("shifter%d, ", i); i += 1;)?>
+  delayL, delayR, buffer_size, half_buffer, delay_ix, window, env_follower, env_follower2,
+)
+(
+  buffer_size = _buffer_size;
+  half_buffer = _buffer_size / 2;
+  freemem = (window = freemem) + buffer_size;
+  i = 0;
+  loop(buffer_size,
+    window[i] = 0.5 - 0.5 * cos(2.0 * $PI * i / buffer_size);
+    i += 1;
+  );
+
+  freemem = (delayL = freemem) + buffer_size;
+  freemem = (delayR = freemem) + buffer_size;
+  
+  delay_ix = 0;
+  
+  <?
+    i = 0;
+    loop(12,
+      printf("freemem = shifter%d._init_spreader_buffer(freemem, buffer_size, window);", i);
+      i += 1;
+    );
+  ?>
+  
+  env_follower.init_follower(0, 50);
+  env_follower2.init_follower(1, 50);
+  
+  freemem
+);
+
+freemem = 0;
+freemem = spreader.init_spreader(freemem, 2048);
+freemem = midi.initialize_midi(freemem);
+
+pdc_top_ch = 2;
+pdc_bot_ch = 0;
+pdc_delay = spreader.half_buffer;
+
+smooth_coeff = calc_smooth_coeff(1000.0 / 25.0);
+
+current_spread = spread_slider;
+current_mix = mix;
+current_frequency = frequency;
+
+@slider
+
+@gfx
+
+@block
+dspread = spread_slider - current_spread;
+dmix = mix - current_mix;
+dfrequency = frequency - current_frequency;
+
+spreader.filt.init_butter4(current_frequency);
+spreader.spreader_update_parameters(current_spread, current_mix);
+midi.midi_block();
+
+@sample
+(d_frequency != 0) ? (
+  spreader.filt.init_butter4(current_frequency);
+);
+
+last_active_notes = midi.active_notes;
+midi.midi_sample();
+
+spreader.spreader_tick(spl0, spl1, reconstruct_envelope, (last_active_notes == 0) && midi.active_notes);
+spl0 = spreader.outL;
+spl1 = spreader.outR;
+
+((dspread != 0) || (dmix != 0)) ? (
+  spreader.spreader_update_parameters(current_spread, current_mix);
+);
+
+current_spread = current_spread.smooth(spread_slider);
+current_mix = current_mix.smooth(mix);
+current_frequency = current_frequency.smooth(frequency);

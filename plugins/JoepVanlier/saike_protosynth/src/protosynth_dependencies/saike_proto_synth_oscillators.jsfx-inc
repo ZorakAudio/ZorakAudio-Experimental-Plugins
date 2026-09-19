@@ -1,0 +1,708 @@
+import saike_proto_synth_modal.jsfx-inc
+
+@init
+max_frequency = 18000;
+
+function init_dsf_osc()
+local()
+instance(
+  x, x2, x3, x4, x5,
+  y, y2, y3, y4, y5,
+  _dsf_ft, _dsf_bt,
+  last_n,
+)
+(
+  last_n = -1;
+  y = y2 = y3 = y4 = y5 = 1.0;
+  x = x2 = x3 = x4 = x5 = 0.0;
+  _dsf_ft = _dsf_bt = 0;
+);
+
+function init_ssaw()
+local(phase_factor)
+global()
+instance(yn, t1, t2, t3, t4, t5, t6, t7, ph1, ph2, ph3, ph4, ph5, ph6, ph7)
+(
+  phase_factor = 25;
+  yn = 0;
+  t1.phase = 0;
+  t2.phase = 0.05646 * phase_factor;
+  t3.phase = 0.102456 * phase_factor;
+  t4.phase = 0.02465 * phase_factor;
+  t5.phase = 0.0465 * phase_factor;
+  t6.phase = 0.065 * phase_factor;
+  t7.phase = 0.03256 * phase_factor;
+  
+  ph1 ? (
+    t1.from_phase = 1.0 / ph1;
+    t2.from_phase = 1.0 / ph2;
+    t3.from_phase = 1.0 / ph3;
+    t4.from_phase = 1.0 / ph4;
+    t5.from_phase = 1.0 / ph5;
+    t6.from_phase = 1.0 / ph6;
+    t7.from_phase = 1.0 / ph7;
+  );
+);
+
+function renormalize()
+local(imag)
+global()
+instance(
+  x, y, x2, y2, x3, y3, x4, y4, x5, y5,
+)
+(
+  imag = 1.0 / sqrt(x * x + y * y);
+  x *= imag; y *= imag;
+  
+  imag = 1.0 / sqrt(x2 * x2 + y2 * y2);
+  x2 *= imag; y2 *= imag;
+  
+  imag = 1.0 / sqrt(x3 * x3 + y3 * y3);
+  x3 *= imag; y3 *= imag;
+  
+  imag = 1.0 / sqrt(x4 * x4 + y4 * y4);
+  x4 *= imag; y4 *= imag;
+  
+  imag = 1.0 / sqrt(x5 * x5 + y5 * y5);
+  x5 *= imag; y5 *= imag;
+);
+
+function init_tri()
+local()
+instance(t, lint, ic1eq, ic2eq)
+global(srate)
+(
+  lint = 0;
+  ic1eq = ic2eq = 0;
+  t = 0;
+);
+
+function force_reinit()
+instance(last_freq, last_freq_ss, last_a)
+local()
+global()
+(
+  last_freq_ss = -1;
+  last_a = -1;
+  //last_n = -1;
+  last_freq = -1;
+  //last_beta = -1;
+  
+  <?loop(i=1;8,
+    printf("this.init_ssaw();\n", i); i += 1;
+  )?>
+  
+  <?loop(i=1;8,
+    printf("this.sqr.init_tri();\n", i); i += 1;
+  )?>
+);
+
+function update_dsf_osc(freq, beta, attenuation, n)
+local(
+  delta_step, desired_rotation,
+  re, im, tn,
+  
+  phase_inc2, phase_inc3, phase_inc4,
+)
+global(tpiT, max_frequency)
+instance(
+  a, a2, asq, an1,
+  coeff, coeff2, coeff3, coeff4, coeff5,
+  coeff_re, coeff_re2, coeff_re3, coeff_re4, coeff_re5,
+  norm_factor,
+  x, y,
+  x2, y2,
+  x3, y3,
+  x4, y4,
+  x5, y5,
+  
+  last_n,
+  last_beta,
+  last_freq,
+  last_a,
+  
+  phase_inc,
+  beta_factor,
+  _dsf_ft, _dsf_bt,
+  
+  current_ifreq,
+)
+(
+  (n == 0) ? (
+    n = max(1, floor((max_frequency - freq) / beta));
+  ) : (n < 0) ? (
+    n = max(1, floor((max_frequency - (freq - n)) / beta));
+  );
+
+  ((last_freq != freq) || (last_beta != beta) || (n != last_n)) ? (
+    phase_inc  = freq * tpiT;
+    beta_factor = beta * tpiT;
+    phase_inc2 = phase_inc - beta_factor;
+    phase_inc3 = phase_inc + (N + 1) * beta_factor;  // Peak variant would require phase_inc here to be zero
+    phase_inc4 = phase_inc + N * beta_factor;  // Peak variant would require phase_inc here to be zero
+
+    coeff = -sin(phase_inc);
+    coeff2 = -sin(phase_inc2);
+    coeff3 = -sin(phase_inc3);
+    coeff4 = -sin(phase_inc4); 
+    coeff5 = -sin(beta_factor);
+  
+    coeff_re = cos(phase_inc);
+    coeff_re2 = cos(phase_inc2);
+    coeff_re3 = cos(phase_inc3);
+    coeff_re4 = cos(phase_inc4);
+    coeff_re5 = cos(beta_factor);
+    
+    x = sin(_dsf_ft);
+    y = cos(_dsf_ft);
+    x2 = sin(_dsf_ft - _dsf_bt);
+    y2 = cos(_dsf_ft - _dsf_bt);
+    tn = _dsf_ft + N * _dsf_bt;
+    x4 = sin(tn);
+    y4 = cos(tn);
+    tn += _dsf_bt;
+    x3 = sin(tn);
+    y3 = cos(tn);
+    x5 = sin(_dsf_bt);
+    y5 = cos(_dsf_bt);
+  );
+
+  ((attenuation != last_a) || (n != last_n)) ? (
+    a = attenuation;
+    asq = a * a;
+    a2 = a + a;
+    norm_factor = sqrt((1 - asq) / (1 - pow(a, 2 * N + 2)));
+    an1 = pow(a, N + 1);
+  );
+ 
+  last_freq = freq;
+  last_n = n;
+  last_beta = beta;
+  last_a = attenuation;
+  current_ifreq = 1.0 / freq;
+);
+
+function update_cha(freq, beta, attenuation)
+local()
+global(srate)
+instance(cha_ph_inc, cha_beta, cha_attn)
+(
+  cha_ph_inc = 2.0 * $PI * freq / srate;
+  cha_beta = 1.0 - (beta + beta);
+  cha_beta *= cha_beta;
+  cha_attn = attenuation + attenuation + attenuation;
+);
+
+function cha_step()
+local()
+instance(ph, lp_fb, cha_ph_inc, y_last, y_last_2, cha_beta, cha_attn)
+global(twopi)
+(
+  ph += cha_ph_inc;
+  ph > twopi ? ph -= twopi;
+  lp_fb += y_last - cha_beta * lp_fb;
+  
+  y_last = sin(ph + 0.5 * sin(cha_attn * lp_fb))
+);
+
+function update_ssaw_osc(freq, beta, attenuation, n)
+local(filter_freq)
+global(srate)
+instance(ss_factor, last_freq_ss, ph1, ph2, ph3, ph4, ph5, ph6, ph7, current_ifreq)
+(
+  current_ifreq = 1.0 / freq;
+  ss_factor = (beta - 0.25) * 0.5;
+  (last_freq_ss != (freq + ss_factor)) ? (
+    last_freq_ss = (freq + ss_factor);
+    ph1 = freq / srate;
+    ph2 = ph1 * exp(-0.004043358553266347 * ss_factor); // 2^(-7/1200);
+    ph3 = ph1 * exp(-0.008086717106532694 * ss_factor); // 2^(-14/1200);
+    ph4 = ph1 * exp(-0.012130075659799042 * ss_factor); // 2^(-21/1200);
+    ph5 = ph1 * exp(0.0023104906018664843 * ss_factor); // 2^(4/1200);
+    ph6 = ph1 * exp(0.0046209812037329686 * ss_factor); // 2^(8/1200);
+    ph7 = ph1 * exp(0.006931471805599452 * ss_factor); // 2^(12/1200);
+  );
+  
+  filter_freq = min(0.5 * srate, freq * exp(7.4 * attenuation));
+  this.init_linearSVF_absolute(filter_freq - 1, 0);
+);
+
+// Thanks Tale for the polybleps!
+function poly_blep(t, dt)
+(
+  (t < dt) ? (
+    -sqr(t/dt - 1)
+  ) : (t > 1 - dt) ? (
+    sqr((t - 1) / dt + 1)
+  );
+);
+
+function pulse()
+instance(t, dt, idt, pw)
+local(t1, t2, y)
+global()
+(
+  t2 = (t1 = t) - pw + 1;
+  t += dt;
+  t -= t|0;
+
+  y = ((t1 < pw) - pw) * 2;
+  t1 < dt ? y -= sqr(t1 * idt - 1) : t1 > 1 - dt ? y += sqr((t1 - 1) * idt + 1);
+  (t2 -= t2|0) < dt ? y += sqr(t2 * idt - 1) : t2 > 1 - dt ? y -= sqr((t2 - 1) * idt + 1);
+
+  this.eval_linearSVF_LP(y)
+);
+
+function pulse2()
+instance(t, dt, idt, pw)
+local(t1, t2, t3, y, pw2)
+global()
+(
+  pw2 = pw + pw;
+
+  t2 = (t1 = t) - pw2 + 1;
+  t3 = t - pw + 1;
+  
+  t += dt;
+  t -= t|0;
+
+  y = ((t1 < pw2) - pw2);
+  y -= ((t1 < pw) - pw) * 2;
+
+  y -= 0.5 * poly_blep(t1, dt);
+  y += poly_blep(t3 - (t3|0), dt);
+  y -= 0.5 * poly_blep(t2 - (t2|0), dt);
+  
+  this.eval_linearSVF_LP(y)
+);
+
+function tri()
+instance(t, dt, idt, pw, lint, iconst)
+local(t1, t2, t3, y, pw2)
+global()
+(
+  pw2 = pw + pw;
+
+  t2 = (t1 = t) - pw2 + 1;
+  t3 = t - pw + 1;
+  
+  t += dt;
+  t -= t|0;
+
+  y = ((t1 < pw2) - pw2) * 2;
+  y -= ((t1 < pw) - pw) * 4;
+
+  y -= poly_blep(t1, dt);
+  y += 2 * poly_blep(t3 - (t3|0), dt);
+  y -= poly_blep(t2 - (t2|0), dt);
+  
+  lint += y;
+  lint *= 0.998;
+  
+  this.eval_linearSVF_LP(iconst * lint)
+);
+
+function update_pulse(freq, cur_spacing, attenuation)
+local(filter_freq)
+instance(dt, idt, pw, filter_freq)
+global(srate)
+(
+  dt = freq / srate;
+  idt = 1 / dt;
+  pw = cur_spacing;
+  filter_freq = min(0.5 * srate, freq * exp(7.4 * attenuation));
+  this.init_linearSVF_absolute(filter_freq - 1, 0);
+);
+
+function update_tri(freq, cur_spacing, attenuation)
+local(filter_freq)
+instance(dt, idt, pw, filter_freq, iconst)
+global(srate)
+(
+  dt = freq / srate;
+  iconst = 2 * dt / (0.0001 + pw);
+  idt = 1 / dt;
+  pw = cur_spacing;
+  filter_freq = min(0.5 * srate, freq * exp(7.4 * attenuation));
+  this.init_linearSVF_absolute(filter_freq - 1, 0);
+);
+
+function bspline_train(phase_advance)
+instance(phase, from_phase)
+local(old_phase, rel_sample)
+global()
+(
+  old_phase = phase;
+  phase += phase_advance;
+  phase > 0.5 ? (
+    phase -= 1;
+  );
+
+  rel_sample = from_phase * phase;
+  ((rel_sample >= -1.5) && (rel_sample < 1.5)) ? (
+    // To convert phase back to sample, we do
+    //   phase / phase_advance
+    from_phase = 1.0 / phase_advance;
+    (rel_sample < -0.5) ? (
+      0.5 * sqr(rel_sample + 1.5) - phase_advance
+    ) : (
+      (rel_sample < 0.5) ? (
+        0.75 - sqr(rel_sample) - phase_advance
+      ) : (
+        0.5 * sqr(rel_sample - 3/2) - phase_advance
+      );
+    );
+  ) : - phase_advance;
+);
+
+function ssaw_step()
+local(inc)
+global()
+instance(yn, t1, t2, t3, t4, t5, t6, t7, ph1, ph2, ph3, ph4, ph5, ph6, ph7)
+(
+  ph1 ? (
+    yn *= 0.995;
+    inc = 0;
+    inc += t1.bspline_train(ph1);
+    inc += t2.bspline_train(ph2);
+    inc += t3.bspline_train(ph3);
+    inc += t4.bspline_train(ph4);
+    inc += t5.bspline_train(ph5);
+    inc += t6.bspline_train(ph6);
+    inc += t7.bspline_train(ph7);
+    yn += 0.85 * inc;
+    
+    this.eval_linearSVF_LP(yn)
+  ) : 0
+);
+
+function ssaw_step2()
+local(inc)
+global()
+instance(yn, t1, t2, t3, t4, t5, t6, t7, ph1, ph2, ph3, ph4, ph5, ph6, ph7)
+(
+  ph1 ? (
+    yn *= 0.99995;
+    inc = 0;
+    inc += t1.bspline_train(ph1);
+    inc -= t2.bspline_train(ph2);
+    inc *= (1.0 - t3.bspline_train(ph3));
+    inc -= t4.bspline_train(ph4 + ph4);
+    inc += t5.bspline_train(ph5);
+    inc -= t6.bspline_train(ph6 + ph6);
+    inc += t7.bspline_train(ph7);
+    yn += 0.85 * inc;
+    
+    this.eval_linearSVF_LP(yn)
+  ) : 0
+);
+
+function dsf_step()
+local(nom, denom, ry5, tn)
+global()
+instance(
+  a, a2, asq, an1,
+  x, y, coeff, coeff_re,
+  x2, y2, coeff2, coeff_re2,
+  x3, y3, coeff3, coeff_re3,
+  x4, y4, coeff4, coeff_re4,
+  x5, y5, coeff5, coeff_re5,
+  norm_factor,
+  
+  phase_inc,
+  beta_factor,
+  _dsf_ft, _dsf_bt,
+)
+(
+  // Complex stepper
+  _dsf_ft += phase_inc;
+  _dsf_bt += beta_factor;
+  
+  tn = x * coeff_re - y * coeff;
+  y = x * coeff + y * coeff_re;
+  x = tn;
+  
+  tn = x2 * coeff_re2 - y2 * coeff2;
+  y2 = x2 * coeff2 + y2 * coeff_re2;
+  x2 = tn;
+  
+  tn = x3 * coeff_re3 - y3 * coeff3;
+  y3 = x3 * coeff3 + y3 * coeff_re3;
+  x3 = tn;
+  
+  tn = x4 * coeff_re4 - y4 * coeff4;
+  y4 = x4 * coeff4 + y4 * coeff_re4;
+  x4 = tn;
+  
+  tn = x5 * coeff_re5 - y5 * coeff5;
+  y5 = x5 * coeff5 + y5 * coeff_re5;
+  x5 = tn;
+  
+  nom = norm_factor * (x - a * x2 - an1 * (x3 - a * x4));
+  
+  denom = 1.0 + asq - a2 * y5;
+  nom / denom;
+);
+
+function dsf_step_peak()
+local(nom, denom, ry5, tn)
+global()
+instance(
+  a, a2, asq, an1,
+  x, y, coeff, coeff_re,
+  x2, y2, coeff2, coeff_re2,
+  x3, y3, coeff3, coeff_re3,
+  x4, y4, coeff4, coeff_re4,
+  x5, y5, coeff5, coeff_re5,
+  norm_factor,
+  
+  phase_inc,
+  beta_factor,
+  _dsf_ft, _dsf_bt,
+)
+(
+  // Complex stepper
+  _dsf_ft += phase_inc;
+  _dsf_bt += beta_factor;
+  
+  tn = x * coeff_re - y * coeff;
+  y = x * coeff + y * coeff_re;
+  x = tn;
+  
+  tn = x2 * coeff_re2 - y2 * coeff2;
+  y2 = x2 * coeff2 + y2 * coeff_re2;
+  x2 = tn;
+  
+  tn = x3 * coeff_re3 - y3 * coeff3;
+  y3 = x3 * coeff3 + y3 * coeff_re3;
+  x3 = tn;
+  
+  tn = x4 * coeff_re4 - y4 * coeff4;
+  y4 = x4 * coeff4 + y4 * coeff_re4;
+  x4 = tn;
+  
+  tn = x5 * coeff_re5 - y5 * coeff5;
+  y5 = x5 * coeff5 + y5 * coeff_re5;
+  x5 = tn;
+  
+  //nom = norm_factor * (x - a * x2 - an1 * (x3 - a * x4));
+  nom = norm_factor * x * (1.0 - asq - (an1 + an1) * (y3 - a * y4));   // Peak variant
+  
+  denom = 1.0 + asq - a2 * y5;
+  nom / denom;
+);
+
+function update_dsf_osc_peak(freq, beta, attenuation, n)
+local(
+  phase_inc2,
+  phase_inc3,
+  phase_inc4,
+  
+  delta_step, desired_rotation,
+  re, im, tn,
+  
+  beta_prime, freq_prime,
+)
+global(tpiT, max_frequency)
+instance(
+  a, a2, asq, an1,
+  coeff, coeff2, coeff3, coeff4, coeff5,
+  coeff_re, coeff_re2, coeff_re3, coeff_re4, coeff_re5,
+  norm_factor,
+  x, y,
+  x2, y2,
+  x3, y3,
+  x4, y4,
+  x5, y5,
+  
+  last_n,
+  last_beta,
+  last_freq,
+  last_a,
+  
+  phase_inc,
+  beta_factor,
+  _dsf_ft, _dsf_bt,
+  
+  current_ifreq,
+)
+(
+  (n == 0) ? (
+    n = max(1, floor((max_frequency - freq) / beta));
+  ) : (n < 0) ? (
+    n = max(1, floor((max_frequency - (freq - n)) / beta));
+  );
+
+  ((last_freq != freq) || (last_beta != beta) || (n != last_n)) ? (
+    phase_inc  = freq * tpiT;
+    beta_factor = beta * tpiT;
+    phase_inc2 = phase_inc - beta_factor;
+    phase_inc4 = N * beta_factor;
+    phase_inc3 = phase_inc4 + beta_factor;
+  
+    coeff = -sin(phase_inc);
+    coeff2 = -sin(phase_inc2);
+    coeff3 = -sin(phase_inc3);
+    coeff4 = -sin(phase_inc4);
+    coeff5 = -sin(beta_factor);
+  
+    coeff_re = cos(phase_inc);
+    coeff_re2 = cos(phase_inc2);
+    coeff_re3 = cos(phase_inc3);
+    coeff_re4 = cos(phase_inc4);
+    coeff_re5 = cos(beta_factor);
+    
+    x = sin(_dsf_ft);
+    y = cos(_dsf_ft);
+    x2 = sin(_dsf_ft - _dsf_bt);
+    y2 = cos(_dsf_ft - _dsf_bt);
+    tn = N * _dsf_bt;
+    x4 = sin(tn);
+    y4 = cos(tn);
+    tn += _dsf_bt;
+    x3 = sin(tn);
+    y3 = cos(tn);
+    x5 = sin(_dsf_bt);
+    y5 = cos(_dsf_bt);
+  );
+
+  ((attenuation != last_a) || (n != last_n)) ? (
+    a = attenuation;
+    asq = a * a;
+    a2 = a + a;
+    norm_factor = sqrt((1 - asq) / (1 - pow(a, 2 * N + 2)));
+    an1 = pow(a, N + 1);
+  );
+  
+  last_freq = freq;
+  last_n = n;
+  last_beta = beta;
+  last_a = attenuation;
+  current_ifreq = 1.0/freq;
+);
+
+function update_noise_settings(freq, beta, attenuation, n)
+local(filter_freq, resf)
+global(srate)
+instance(f1, sc)
+(
+  //resf = beta * 0.124;
+  //resf *= resf;
+  resf = 1.0 - 0.999 * exp(-beta);
+  filter_freq = min(0.5 * srate, freq);
+  f1.init_linearSVF_all_absolute(filter_freq, resf, attenuation * 0.5);
+  sc = 5 * sqrt((1 - resf * resf));
+);
+
+function noise_step()
+local(r1)
+global()
+instance(f1, sc)
+(
+  r1 = rand();
+  r1 = r1 + r1 - 1;
+  r1 = r1 + r1;
+  sc * f1.eval_linearSVF_all(r1);
+);
+
+function handle_dropped_files_microtuning(tuning_memory)
+local(file_handle, note_index, frequency, found_tuning, cent_scaling)
+global(
+  DROPPED_FILE_STR, PARSE_STR, microtuned, base_freq, reading_tuning, has_microtuning
+)
+instance()
+(
+  DROPPED_FILE_STR = 80;
+  PARSE_STR = 88;
+  
+  // Scaling to convert from 2^(x/1200) to exp(cent_scaling * x)
+  cent_scaling = log(2) / 1200;
+  gfx_getdropfile(0, DROPPED_FILE_STR) ? (
+    (matchi("*.TUN", 80) == 1) ? (
+      microtuned = 0;
+      file_handle = file_open(DROPPED_FILE_STR);
+      file_handle >= 0 ? (
+        memset(tuning_memory, 0, 128);
+        file_rewind(file_handle);
+        
+        /* Prefer exact if possible */
+        found_tuning = 0;
+        base_freq = 8.17579891564371;
+        while(file_avail(file_handle) && (!found_tuning))
+        (
+          file_string(file_handle, PARSE_STR);
+          (strnicmp("[Exact Tuning]", PARSE_STR, 13) == 0) ? (
+            found_tuning = 1;
+          );
+        );
+        
+        /* Read the tuning */
+        (found_tuning == 1) ? (
+        
+          found_tuning = 0;
+          while(file_avail(file_handle) && (found_tuning < 2))
+          (
+            file_string(file_handle, PARSE_STR);
+            matchi("basefreq*?=*?%f*", PARSE_STR, base_freq);
+            matchi("note %d*?=*?%f*", PARSE_STR, note_index, frequency) ? (
+              ((note_index > 0) && (note_index < 128)) ? (
+                tuning_memory[note_index] = base_freq * exp(cent_scaling * frequency);
+                found_tuning = 1;
+              );
+            );
+            
+            // Other section starts
+            matchi("[*", PARSE_STR) ? (
+              found_tuning = 2;
+            );
+          );
+        );
+        
+        /* We didn't find an exact tuning, see if we can find a sloppy one */
+        (found_tuning == 0) ? (
+          /* Prefer exact if possible */
+          found_tuning = 0;
+          file_rewind(file_handle);
+          while(file_avail(file_handle) && (!found_tuning))
+          (
+            file_string(file_handle, PARSE_STR);
+            (strnicmp("[Tuning]", PARSE_STR, 7) == 0) ? (
+              found_tuning = 1;
+            );
+          );
+          
+          /* Read the tuning */
+          (found_tuning == 1) ? (
+            found_tuning = 0;
+            while(file_avail(file_handle) && (found_tuning == 0))
+            (
+              file_string(file_handle, PARSE_STR);
+              matchi("note %d*?=*?%d*", PARSE_STR, note_index, frequency) ? (
+                ((note_index > 0) && (note_index < 128)) ? (
+                  tuning_memory[note_index] = base_freq * exp(cent_scaling * frequency);
+                  found_tuning = 1;
+                );
+              );
+              
+              // Other section starts
+              matchi("[*", PARSE_STR) ? (
+                found_tuning = 1;
+              );
+            );
+          );
+        );
+        
+      
+      );
+      file_close(file_handle);
+    );
+    
+    found_tuning ? (
+      microtuned = 1;
+      has_microtuning = 1;
+    );
+  );
+  
+  DROPPED_FILE_STR = 0;
+);
+

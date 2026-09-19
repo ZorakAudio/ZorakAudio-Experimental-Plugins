@@ -1,0 +1,1659 @@
+desc:Saike MIDI ARP (beta)
+tags: midi arpeggiator
+version: 0.44
+author: Joep Vanlier
+changelog: Add option to reset play position with CC trigger (right click on menu to enable). To only trigger on CC's, set to "Free" mode and then enable Reset position on CC (and pick a CC value to trigger on).
+license: MIT
+provides:
+  midi_arp_dependencies/*
+about:
+  # A small utility JSFX to arpeggiate midi chords.
+  Program patterns and play chords. The JSFX will then play the notes according to that note pattern.
+options:no_meter
+
+slider1:current_speed=4<-6,16,1>-Current speed
+slider2:current_pattern_index=0<0,63,1>-Current pattern
+slider3:polyphony=5<1,12,1>-Max Polyphony
+slider4:poly_mode=0<0,5,1,{No extend,Repeat,Back_Forth}>-Poly Mode
+slider5:extra_octaves=0<0,2,1>-Extra octaves
+slider6:min_vel=1<0,127,1>-Minimum Velocity
+slider7:max_vel=127<0,128,1>-Maximum Velocity
+slider8:min_modwheel=1<0,127,1>-Minimum Modwheel
+slider9:max_modwheel=127<0,128,1>-Maximum Modwheel
+slider10:cc1_choice=0<0,119,1>-Assignable CC1
+slider11:min_cc1=1<0,127,1>-Minimum Assignable CC1
+slider12:max_cc1=127<0,128,1>-Maximum Assignable CC1
+slider13:cc2_choice=0<0,119,1>-Assignable CC2
+slider14:min_cc2=1<0,127,1>-Minimum Assignable CC2
+slider15:max_cc2=127<0,128,1>-Maximum Assignable CC2
+slider16:cc3_choice=0<0,119,1>-Assignable CC3
+slider17:min_cc3=1<0,127,1>-Minimum Assignable CC3
+slider18:max_cc3=127<0,128,1>-Maximum Assignable CC3
+slider19:cc4_choice=0<0,119,1>-Assignable CC4
+slider20:min_cc4=1<0,127,1>-Minimum Assignable CC4
+slider21:max_cc4=127<0,128,1>-Maximum Assignable CC4
+
+slider22:dummy=0<0,1,1>-Dummy for undo
+slider23:swing=0<-50,50,1>-Swing
+
+slider24:in_channel=0<0,16,1>-In channel
+slider25:out_channel=1<1,16,1>-Out channel
+
+slider26:cc5_choice=0<0,119,1>-Assignable CC5
+slider27:min_cc5=1<0,127,1>-Minimum Assignable CC5
+slider28:max_cc5=127<0,128,1>-Maximum Assignable CC5
+slider29:cc6_choice=0<0,119,1>-Assignable CC6
+slider30:min_cc6=1<0,127,1>-Minimum Assignable CC6
+slider31:max_cc6=127<0,128,1>-Maximum Assignable CC6
+slider32:cc7_choice=0<0,119,1>-Assignable CC7
+slider33:min_cc7=1<0,127,1>-Minimum Assignable CC7
+slider34:max_cc7=127<0,128,1>-Maximum Assignable CC7
+slider35:cc8_choice=0<0,119,1>-Assignable CC8
+slider36:min_cc8=1<0,127,1>-Minimum Assignable CC8
+slider37:max_cc8=127<0,128,1>-Maximum Assignable CC8
+slider38:enable_speed=0<0,1,1>-Enable speed override
+slider39:pattern_loop_length=32<2,64,1>-Loop length
+slider40:cc_reset=102<0,255,1>-CC which resets MIDI position
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+import saike_arp_midi_handling.jsfx-inc
+import saike_midi_arp_pattern_handling.jsfx-inc
+import saike_midi_arp_gfx_funcs.jsfx-inc
+
+@init
+(file_version == 0) ? (
+  follow_current_pattern = 1;
+);
+
+blocks_in_view = loop_length <= 32 ? 32 : 64;
+file_version = CURRENT_VERSION = 9;
+last_sequencer_index = -1;
+
+function init_scaling()
+(
+  block_scaling = pattern_loop_length <= 32 ? 1.0 : 0.5;
+  blocks_in_view = pattern_loop_length <= 32 ? 32 : 64;
+);
+init_scaling();
+
+gfx_ext_retina = 1;
+MAX_POLYPHONY = 12;
+function assign_notes(arp_mem, poly_mode)
+local(idx, idx2, dir, used_note_mem, change, idx, tmp)
+instance(notes_on, active_note_mem, sorted_note_mem)
+global(enable_midi_sort)
+(
+  enable_midi_sort ? (
+    memset(sorted_note_mem, 0, 128);
+    memcpy(sorted_note_mem, active_note_mem, notes_on);
+    
+    // Simple bubble sort
+    change = 1;
+    while(change) (
+      change = 0;
+      idx = 0;
+      loop(notes_on - 1,
+        (sorted_note_mem[idx] > sorted_note_mem[idx + 1]) ? (
+          // Swap elements
+          tmp = sorted_note_mem[idx];
+          sorted_note_mem[idx] = sorted_note_mem[idx + 1];
+          sorted_note_mem[idx + 1] = tmp;
+          
+          change = 1; // Need another pass
+        );
+        idx += 1;
+      );
+    );
+  
+    used_note_mem = sorted_note_mem;
+  ) : (
+    used_note_mem = active_note_mem;
+  );
+
+  idx = 0;
+  (poly_mode == 0) ? (
+    // No extend
+    loop(notes_on,
+      arp_mem[idx] = used_note_mem[idx];
+      idx += 1;
+    );
+    loop(12 - notes_on,
+      arp_mem[idx] = 0;
+      idx += 1;
+    );
+  ) : (poly_mode == 1) ? (
+    // Repeat
+    idx = 0;
+    idx2 = 0;
+    loop(12,
+      arp_mem[idx] = used_note_mem[idx2];
+      idx += 1; idx2 += 1;
+      (idx2 == notes_on) ? idx2 = 0;
+    );
+  ) : (
+    // Back_Forth
+    idx = 0;
+    idx2 = 0;
+    dir = 1;
+    loop(12,
+      arp_mem[idx] = used_note_mem[idx2];
+      idx += 1; idx2 += dir;
+      (idx2 == notes_on - 1) ? (dir = -dir);
+      (idx2 == 0) ? (dir = -dir);
+    );
+  );
+);
+
+max_segments = 64;
+max_notes = 12;
+max_octaves = 5;
+max_lines = 5 * 12;
+max_stored_patterns = 64;
+initialize_patterns();
+
+n_segments == 0 ? n_segments = blocks_in_view;
+pattern_loop_length == 0 ? pattern_loop_length = 32;
+
+DRAG_STRING = 50;
+DRAG_BLOCK = 1;
+DRAG_NUDGE = 2;
+DRAG_EFFECT = 3;
+DRAG_EFFECT_2 = 4;
+DRAG_SOLO = 5;
+DRAG_MODSIZE = 6;
+DRAG_SETTING = 7;
+DRAG_NUDGE_ALL = 8;
+DRAG_AREA = 20;
+DRAG_MODULATORS = 21;
+
+sample_clock = 0;
+pattern_change = 1;
+current_sample = 0;
+
+/* Allocate memory */
+freemem = 0;
+freemem = (midimem = freemem) + 32768;
+freemem = (note_history = freemem) + 32768;
+freemem = (shuffle_buffer = freemem) + max_segments;
+freemem = (order_mem = freemem) + max_segments;
+freemem = midi.init_midi(freemem);
+freemem = (current_arp = freemem) + 128;
+freemem = (notes_in_flight = freemem) + 128;
+midi.assign_notes(current_arp, poly_mode);
+
+function setup_theme()
+(
+  base_r = .1;
+  base_g = .1;
+  base_b = .1; 
+  
+  size_factor = gfx_w / 920 * block_scaling;
+  scaling = size_factor - 1;
+  fontscaling = scaling;
+  
+  grid_origin_x = floor(5 * (1 + scaling));
+  block_width = floor(25 * (1 + scaling));
+  block_spacing = floor(2 * (1 + scaling));
+  label_width = floor(2 * block_width);
+  button_height = 25;
+  grid_origin_y = floor(5 * (1 + scaling)) + block_width + (button_height - block_width) * micro_view - 1;
+  
+  y_total = (block_width + block_spacing) * (polyphony * octave + 1) + block_spacing * octave;
+  y_fixed = 0;
+  enable_cc1 ? (y_fixed += max(cc1_row.h + block_width, 2 * block_width) + block_spacing);
+  enable_cc2 ? (y_fixed += max(cc2_row.h, 2 * block_width) + block_spacing);
+  enable_cc3 ? (y_fixed += max(cc3_row.h, 2 * block_width) + block_spacing);
+  enable_cc4 ? (y_fixed += max(cc4_row.h, 2 * block_width) + block_spacing);
+  enable_cc5 ? (y_fixed += max(cc5_row.h, 2 * block_width) + block_spacing);
+  enable_cc6 ? (y_fixed += max(cc6_row.h, 2 * block_width) + block_spacing);
+  enable_cc7 ? (y_fixed += max(cc7_row.h, 2 * block_width) + block_spacing);
+  enable_cc8 ? (y_fixed += max(cc8_row.h, 2 * block_width) + block_spacing);
+  enable_mod ? (y_fixed += max(mwrow.h, 2 * block_width) + block_spacing);
+  enable_vel ? (y_fixed += max(velrow.h, 2 * block_width) + block_spacing);
+  
+  y_scale = (gfx_h - y_fixed) / y_total;
+  
+  (y_scale < 1) ? (
+    size_factor *= y_scale;
+    scaling = size_factor - 1;
+    fontscaling = scaling;
+    
+    grid_origin_x = floor(5 * (1 + scaling));
+    block_width = floor(25 * (1 + scaling));
+    block_spacing = floor(2 * (1 + scaling));
+    label_width = floor(2 * block_width);
+    button_height = 25;
+    grid_origin_y = floor(5 * (1 + scaling)) + block_width + (button_height - block_width) * micro_view - 1;
+  );
+  
+  BASE_FONT = 1;
+  gfx_setfont(BASE_FONT, "Arial", 16 * (1 + fontscaling));
+  font_r = .8;
+  font_g = .7;
+  font_b = .8;
+  
+  BAND_FONT = 5;
+  gfx_setfont(BAND_FONT, "Arial", floor(16 * (1+fontscaling)));
+  
+  KNOB_FONT = 6;
+  gfx_setfont(KNOB_FONT, "Arial", floor(14 * (1+fontscaling)));
+  
+  KNOB_FONT2 = 7;
+  gfx_setfont(KNOB_FONT2, "Arial", floor(13 * (1+fontscaling)));
+  
+  HINT_FONT = 8;
+  gfx_setfont(HINT_FONT, "Arial", floor(13 * (1+fontscaling)));
+  
+  TOGGLE_FONT = 9;
+  gfx_setfont(TOGGLE_FONT, "Arial", floor(13 * (1+fontscaling)));
+  
+  MOD_FONT = 10;
+  !microview ? (
+    gfx_setfont(MOD_FONT, "Arial", 20);
+  ) : (
+    gfx_setfont(MOD_FONT, "Arial", floor(12 * (1+fontscaling)));
+  );
+  
+  SAMPLE_FONT = 11;
+  BETA_FONT = 12;
+
+  style == 0 ? (
+    font_color_r = .7;
+    font_color_g = .6;
+    font_color_b = .8;
+  ) : (
+    font_color_r = .7;
+    font_color_g = .7;
+    font_color_b = .7;
+  );
+  dial_animation = 1;
+  dial_position_color_r = 0.2;
+  dial_position_color_g = 0.7;
+  dial_position_color_b = 0.4;
+  
+  font_color_a = 1;
+  knob_font_color_r = 0.9;
+  knob_font_color_g = 0.9;
+  knob_font_color_b = 0.8;
+  knob_font_color_a = 1;
+  edge_r = 39/255 * .5;
+  edge_g = 39/255 * .5;
+  edge_b = 41/255 * .5;
+  edge_a = 1.0;
+  
+  edge_font_r = 0.9;
+  edge_font_g = 0.9;
+  edge_font_b = 0.8;
+  
+  widget_r = 35/255;
+  widget_g = 155/255;
+  widget_b = 30/255;
+  widget_a = 1.0;
+  toggle_r = .5;
+  toggle_g = 1.6;
+  toggle_b = .5;
+  toggle_a = 1.0;
+);
+setup_theme();
+
+@serialize
+writing = file_avail(0) < 0;
+file_var(0, file_version);
+serialize_patterns(writing, file_version);
+file_var(0, loop_point);
+(file_version < 8.5) ? (
+  pattern_loop_length = loop_point;  // Legacy loop point storage
+);
+file_var(0, enable_vel);
+file_var(0, enable_mod);
+
+(file_version > 2) ? (
+  file_var(0, enable_cc1);
+  file_var(0, enable_cc2);
+  file_var(0, enable_cc3);
+  file_var(0, enable_cc4);
+) : (
+  enable_cc1 = 0;
+  enable_cc2 = 0;
+  enable_cc3 = 0;
+  enable_cc4 = 0;
+);
+
+(file_version > 3) ? (
+  file_var(0, velrow.randomize);
+  file_var(0, mwrow.randomize);
+  file_var(0, cc1_row.randomize);
+  file_var(0, cc2_row.randomize);
+  file_var(0, cc3_row.randomize);
+  file_var(0, cc4_row.randomize);
+) : (
+  velrow.randomize = 0;
+  mwrow.randomize = 0;
+  cc1_row.randomize = 0;
+  cc2_row.randomize = 0;
+  cc3_row.randomize = 0;
+  cc4_row.randomize = 0;
+);
+
+(file_version > 4) ? (
+  file_var(0, enable_cc5);
+  file_var(0, enable_cc6);
+  file_var(0, enable_cc7);
+  file_var(0, enable_cc8);
+  file_var(0, cc5_row.randomize);
+  file_var(0, cc6_row.randomize);
+  file_var(0, cc7_row.randomize);
+  file_var(0, cc8_row.randomize);
+  file_var(0, disable_midi);
+) : (
+  cc5_row.randomize = 0;
+  cc6_row.randomize = 0;
+  cc7_row.randomize = 0;
+  cc8_row.randomize = 0;
+  enable_cc5 = 0;
+  enable_cc6 = 0;
+  enable_cc7 = 0;
+  enable_cc8 = 0;
+  disable_midi = 0;
+);
+
+(file_version > 5) ? (
+  file_var(0, enable_midi_sort);
+) : (
+  enable_midi_sort = 0;
+);
+
+(file_version > 6) ? (
+  file_var(0, time_mode);
+) : (
+  time_mode = 0;
+);
+
+(file_version > 7) ? (
+  file_var(0, viewed_pattern_index);
+  file_var(0, follow_current_pattern);
+  follow_current_pattern ? (
+    viewed_pattern_index = current_pattern_index;
+  );
+) : (
+  viewed_pattern_index = current_pattern_index;
+  follow_current_pattern = 1;
+);
+
+file_var(0, reset_on_cc);
+
+file_version = CURRENT_VERSION;
+
+@slider
+
+@block
+init_scaling();
+n_segments = blocks_in_view;
+(_disable_midi != disable_midi) ? (
+  _disable_midi = disable_midi;
+);
+
+function process_sequence(current_pattern_index, block_position)
+local(current_pattern, idx, current_idx, audio_octave, current_row, new_note, mod, vel, to_play)
+instance(
+  modulator1_values,
+  modulator2_values,
+  midi_cc_1, midi_cc_2, midi_cc_3, midi_cc_4,
+  midi_cc_5, midi_cc_6, midi_cc_7, midi_cc_8,
+  speed_values,
+)
+global(
+  pattern_buffer,
+  extra_octaves,
+  polyphony,
+  sequencer_index,
+  last_sequencer_index,
+  pattern_size,
+  max_segments,
+  MAX_POLYPHONY,
+  notes_in_flight,
+  current_arp,
+  min_vel, max_vel,
+  min_modwheel, max_modwheel,
+  enable_vel, enable_mod,
+  cpos,
+  enable_cc1, enable_cc2, enable_cc3, enable_cc4,
+  enable_cc5, enable_cc6, enable_cc7, enable_cc8,
+  cc1_choice, cc2_choice, cc3_choice, cc4_choice,
+  cc5_choice, cc6_choice, cc7_choice, cc8_choice,
+  min_cc1, min_cc2, min_cc3, min_cc4,
+  min_cc5, min_cc6, min_cc7, min_cc8,
+  max_cc1, max_cc2, max_cc3, max_cc4,
+  max_cc5, max_cc6, max_cc7, max_cc8,
+  proba,
+  out_channel,
+  cc1_row.randomize,
+  cc2_row.randomize,
+  cc3_row.randomize,
+  cc4_row.randomize,
+  cc5_row.randomize,
+  cc6_row.randomize,
+  cc7_row.randomize,
+  cc8_row.randomize,
+  mwrow.randomize,
+  velrow.randomize,
+  n_segments,
+  disable_midi,
+)
+(
+  (sequencer_index != last_sequencer_index) ? (
+    (sequencer_index == 0) ? (
+      cc1_row.randomize ? randomize_row_modulator(midi_cc_1, n_segments);
+      cc2_row.randomize ? randomize_row_modulator(midi_cc_2, n_segments);
+      cc3_row.randomize ? randomize_row_modulator(midi_cc_3, n_segments);
+      cc4_row.randomize ? randomize_row_modulator(midi_cc_4, n_segments);
+      cc5_row.randomize ? randomize_row_modulator(midi_cc_5, n_segments);
+      cc6_row.randomize ? randomize_row_modulator(midi_cc_6, n_segments);
+      cc7_row.randomize ? randomize_row_modulator(midi_cc_7, n_segments);
+      cc8_row.randomize ? randomize_row_modulator(midi_cc_8, n_segments);
+      mwrow.randomize ? randomize_row_modulator(modulator1_values, n_segments);
+      velrow.randomize ? randomize_row_modulator(modulator2_values, n_segments);
+    );
+  
+    last_sequencer_index = sequencer_index;
+    current_pattern = pattern_buffer + current_pattern_index * pattern_size;
+    
+    // Read velocities and mw
+    vel = enable_vel ? modulator2_values[sequencer_index] * (max_vel - min_vel) + min_vel : 127;
+    
+    enable_mod ? (
+      mod = modulator1_values[sequencer_index] * (max_modwheel - min_modwheel) + min_modwheel;
+      midisend(block_position, $xB0 + (out_channel - 1), 1, mod);
+    );
+    
+    enable_cc1 ? midisend(block_position, $xB0 + (out_channel - 1), cc1_choice, midi_cc_1[sequencer_index] * (max_cc1 - min_cc1) + min_cc1);
+    enable_cc2 ? midisend(block_position, $xB0 + (out_channel - 1), cc2_choice, midi_cc_2[sequencer_index] * (max_cc2 - min_cc2) + min_cc2);
+    enable_cc3 ? midisend(block_position, $xB0 + (out_channel - 1), cc3_choice, midi_cc_3[sequencer_index] * (max_cc3 - min_cc3) + min_cc3);
+    enable_cc4 ? midisend(block_position, $xB0 + (out_channel - 1), cc4_choice, midi_cc_4[sequencer_index] * (max_cc4 - min_cc4) + min_cc4);
+    enable_cc5 ? midisend(block_position, $xB0 + (out_channel - 1), cc5_choice, midi_cc_5[sequencer_index] * (max_cc5 - min_cc5) + min_cc5);
+    enable_cc6 ? midisend(block_position, $xB0 + (out_channel - 1), cc6_choice, midi_cc_6[sequencer_index] * (max_cc6 - min_cc6) + min_cc6);
+    enable_cc7 ? midisend(block_position, $xB0 + (out_channel - 1), cc7_choice, midi_cc_7[sequencer_index] * (max_cc7 - min_cc7) + min_cc7);
+    enable_cc8 ? midisend(block_position, $xB0 + (out_channel - 1), cc8_choice, midi_cc_8[sequencer_index] * (max_cc8 - min_cc8) + min_cc8);
+    
+    !disable_midi ? (
+      audio_octave = 0;
+      cpos = max(cpos, block_position);
+      loop(extra_octaves + 1,
+        idx = 0;
+        loop(polyphony,
+          current_row = current_pattern + (idx + MAX_POLYPHONY * audio_octave) * max_segments;
+          current_idx = idx + MAX_POLYPHONY * audio_octave;
+          to_play = current_row[sequencer_index];
+          
+          // Disable based on probability
+          to_play > 0 ? (
+            proba = to_play % 16; // Get probability
+            (rand() * 15 + 1 < proba) ? to_play = 0;
+          );
+          
+          (to_play == 0) ? (
+            // No note / Terminate one if it is playing
+            (notes_in_flight[current_idx] > 0) ? (
+              midisend(block_position, $x80 + (out_channel - 1), notes_in_flight[current_idx], 0);
+              notes_in_flight[current_idx] = 0;
+            );
+          ) : (to_play > 0) ? (
+            // If something playing, stop before starting new note
+            (notes_in_flight[current_idx] > 0) ? (
+              midisend(block_position, $x80 + (out_channel - 1), notes_in_flight[current_idx], 0);
+              notes_in_flight[current_idx] = 0;
+            );
+            // Start new note
+            (current_arp[idx] > 0) ? (
+              new_note = current_arp[idx] + 12 * audio_octave;
+              midisend(block_position + 1, $x90 + (out_channel - 1), new_note, vel);
+              notes_in_flight[current_idx] = new_note;
+            );
+          );
+          idx += 1;
+        );
+        audio_octave += 1;
+      );
+    );
+  );
+);
+
+function interpret_speed_mod(mod)
+local()
+(
+  ((mod == 8) || (mod == 0)) ? (
+    1
+  ) : (mod == 9) ? (
+    3/4
+  ) : (mod == 7) ? (
+    4/3
+  ) : (mod == 10) ? (
+    2/3
+  ) : (mod == 6) ? (
+    3/2
+  ) : (mod == 11) ? (
+    1/2
+  ) : (mod == 5) ? (
+    2
+  ) : (mod == 12) ? (
+    1/4
+  ) : (mod == 4) ? (
+    3
+  ) : (mod == 13) ? (
+    1/5
+  ) : (mod == 3) ? (
+    4
+  ) : (mod == 14) ? (
+    1/6
+  ) : (mod == 2) ? (
+    6
+  ) : (mod == 1) ? (
+    8
+  );
+);
+
+function update_time_info()
+(
+  samples_per_beat = current_speed > 0 ? (srate * 60) / tempo / current_speed : (srate * 60) / tempo * (abs(current_speed) + 2);
+  loop_length = pattern_loop_length * samples_per_beat;
+  pattern_length = n_segments * samples_per_beat;
+  to_index = n_segments / pattern_length;
+  from_beat = 60 * srate / tempo;
+);
+
+update_time_info();
+play.loaded_pattern = -1;
+view.loaded_pattern = -1;
+play.pattern_update(current_pattern_index);
+midi.midi_block(_disable_midi);
+
+// Sync to block
+time_mode == 0 ? current_sample = beat_position * from_beat;
+
+// Loop my own samples
+block_position = 0;
+
+// Reset free mode position when play state changes.
+(time_mode == 1) ? (
+  play_state != last_play_state ? (
+    current_sample = beat_position * from_beat;
+    last_play_state =  play_state;
+  );
+);
+
+loop(samplesblock,
+  midi.curSample += 1;
+
+  midi.notes_remain ? (
+    midi.midi_sample();
+    midi.assign_notes(current_arp, poly_mode);
+  );
+  
+  ((time_mode == 1) || reset_on_cc) ? ( reset_playhead ? ( current_sample = 0; reset_playhead = 0; ) );
+  play.pattern_update(current_pattern_index);
+  
+  current_sample > loop_length ? 
+  (
+    while(
+      current_sample -= loop_length;
+      current_sample > loop_length
+    );
+  );
+  
+  current_index = to_index * current_sample;
+  even_index = 2 * floor(0.5 * current_index);
+  sequencer_index = even_index + ((current_index - even_index) > (1 + 0.01 * swing));
+  
+  (!enable_speed) ? (
+    current_sample += 1;
+  ) : (
+    speed_mod = interpret_speed_mod(abs(play.speed_values[sequencer_index]));
+    current_sample += speed_mod;
+  );
+  play.process_sequence(current_pattern_index, block_position);
+  block_position += 1; 
+);
+
+midi.curSample += 1;
+midi.notes_remain ? (
+  midi.midi_sample();
+  midi.assign_notes(current_arp, poly_mode);
+); 
+
+@sample
+
+@gfx 919 302
+follow_current_pattern ? (
+  viewed_pattern_index = current_pattern_index;
+);
+view.pattern_update(viewed_pattern_index);
+
+micro_view = gfx_ext_flags & 1;
+
+setup_theme();
+current_cursor = randomize_toggle.value ? 32515 : 32512;
+
+function mouse_wheel_values(mem, idx, n_segments, max_value, sgn)
+local(start_idx, end_idx, ptr, old, value)
+global(mouse_wheel)
+(
+  (mouse_wheel != 0) ? (
+    abs(mem[idx]) > 0 ? (
+      start_idx = idx;
+  
+      // Is it a start point? Check if it's a continuation of a block. If so seek backwards to the start
+      mem[start_idx] < 0 ? (
+        while((mem[start_idx] < 0) && (start_idx > 0))
+        (
+          start_idx -= 1;
+        );
+      );
+      
+      end_idx = idx + 1;
+      while((mem[end_idx] < 0) && (end_idx < n_segments))
+      (
+        end_idx += 1;
+      );
+      
+      ptr = mem + start_idx;
+      loop(end_idx - start_idx,
+        old = ptr[];
+        value = abs(old) + sgn * sign(mouse_wheel);
+        value = min(max(1, value), max_value);
+        ptr[] = sign(old) * value;
+        ptr += 1;
+      );
+    );
+    mouse_wheel = 0;
+  );
+);
+
+function shift_drag(y_over, me, mem, idx)
+global(pattern_loop_length, mouse_cap, last_cap, current_cursor, shuffle_buffer, last_shift,
+       shift_ref, dragging, captured_by, drag_mode, idx_ref,
+       DRAG_NUDGE, DRAG_NUDGE_ALL)
+local(shift)
+(
+  // Shift row
+  y_over && (idx >= 0) && (idx <= pattern_loop_length) ? (
+    (mouse_cap & 16) == 16 ? (
+      current_cursor = 32644;
+      ((mouse_cap & 1 == 1) && (mouse_cap & 16 == 16)) ? (
+        // ALT + DRAG
+        (last_cap & 1 == 0) ? (
+          captured_by = me;
+          dragging = 1;
+          drag_mode = (mouse_cap & 4 > 0) ? DRAG_NUDGE_ALL : DRAG_NUDGE;
+          idx_ref = idx;
+        );
+      );
+    );
+  );
+  
+  // Shifting rows ...
+  (((drag_mode == DRAG_NUDGE) && (captured_by == me)) || (drag_mode == DRAG_NUDGE_ALL)) ? (
+    (mouse_cap & 1 == 0) ? (
+      release_drag();
+    ) : (
+      shift = idx - idx_ref;
+      
+      last_shift = max(last_shift, shift);
+      // It's a rotate!
+      //   ... albeit a very inefficient one.
+      loop(abs(shift),
+        shift > 0 ? (
+          shuffle_buffer[0] = mem[pattern_loop_length - 1];
+          memcpy(shuffle_buffer + 1, mem, pattern_loop_length - 1);
+        ) : ( shift < 0 ) ? (
+          shuffle_buffer[pattern_loop_length - 1] = mem[0];
+          memcpy(shuffle_buffer, mem + 1, pattern_loop_length - 1);
+        );
+        memcpy(mem, shuffle_buffer, pattern_loop_length);
+      );
+      
+      (drag_mode != DRAG_NUDGE_ALL) ? idx_ref = idx;
+    );
+  );
+);
+
+function speed_mod_str(mod)
+local()
+(
+  ((mod == 8) || (mod == 0)) ? (
+    ""
+  ) : (mod == 9) ? (
+    "4/3"
+  ) : (mod == 7) ? (
+    "3/4"
+  ) : (mod == 10) ? (
+    "3/2"
+  ) : (mod == 6) ? (
+    "2/3"
+  ) : (mod == 11) ? (
+    "2"
+  ) : (mod == 5) ? (
+    "1/2"
+  ) : (mod == 12) ? (
+    "4"
+  ) : (mod == 4) ? (
+    "1/3"
+  ) : (mod == 13) ? (
+    "5"
+  ) : (mod == 3) ? (
+    "1/4"
+  ) : (mod == 14) ? (
+    "6"
+  ) : (mod == 2) ? (
+    "1/6"
+  ) : (mod == 15) ? (
+    "S"
+  ) : (mod == 1) ? (
+    "1/8"
+  );
+);
+
+function process_effect_row(row_index, me, mem, x, y, label, max_value, hint, block_type)
+global(label_width, block_width, block_spacing, selected_details,
+       nice_rect, scaling,
+       n_segments, potato,
+       font_r, font_g, font_b,
+       gfx_x, gfx_y,
+       BASE_FONT
+       mouse_wheel, mouse_cap, mouse_x, mouse_y,
+       last_cap, captured_by,
+       hinter.updateHintTime,
+       retrig_toggle.value
+       base_r, base_g, base_b,
+       row_color_r, row_color_g, row_color_b, printed_value,
+       start_idx, selected_row, dragging, drag_mode, current_cursor, drag_row_index, drag_color_idx, DRAG_STRING, drag_ref_x, drag_ref_y,
+       DRAG_EFFECT, DRAG_NUDGE, DRAG_BLOCK, DRAG_SOLO,
+       randomize_toggle.value,
+       micro_view)
+local(connect_size, txt_w, txt_h, ptr, idx, target, y_over, last, current, active_r, active_g, active_b, cur_height, tmp)
+(
+  x = floor(x);
+  set_row_color(row_index);
+  nice_rect(x, y, label_width - block_spacing, block_width, 0, row_color_r * .8, row_color_g * .8, row_color_b * .8);
+  ptr = mem;
+  
+  !micro_view ? (
+    gfx_set(font_r, font_r, font_r, 1.0);
+    gfx_setfont(BASE_FONT);
+    gfx_measurestr(label, txt_w, txt_h);
+    gfx_x = x - 0.5 * (txt_w - label_width);
+    gfx_y = y - 0.5 * (txt_h - block_width);
+    gfx_printf(label);
+  );
+  
+  // Move to the actual sequencer cols
+  x += label_width;
+  
+  ptr = mem;
+  target = 0;
+  connect_size = 2 * (1 + scaling) + 2 * micro_view;
+  loop(n_segments,
+    current = ptr[];
+    cur_height = block_type == 0 ? (abs(current) - 1) * block_width / 16 : 0;
+    abs(current) > 0 ? (
+      active_r = row_color_r;
+      active_g = row_color_g;
+      active_b = row_color_b;
+//      printed_value = max_value > 1 ? abs(current) : 0;
+      printed_value = 0;
+      (abs(last) == abs(current)) && (current < 0) ? (
+        nice_rect(x, y, block_width, block_width, printed_value, active_r, active_g, active_b);
+        connecting_rect(x - connect_size, y + 1, 2 * connect_size + 1, block_width - 1, printed_value, active_r, active_g, active_b);
+        gfx_set(0, 0, 0, 0.5); gfx_rect(x - connect_size - 1, y, block_width + 2 * connect_size, cur_height);
+      ) : (
+        nice_rect(x, y, block_width, block_width, printed_value, active_r, active_g, active_b);
+        gfx_set(0, 0, 0, 0.5); gfx_rect(x, y, block_width, cur_height);
+      );
+      
+      (block_type == 1) ? (
+        gfx_set(active_r * 2, active_g * 2, active_b * 2, 1);
+        gfx_measurestr(speed_mod_str(abs(current)), txt_w, txt_h);
+        gfx_x = x + 0.5 * (block_width - txt_w);
+        gfx_y = floor(y + 0.5 * (block_width - txt_h));
+        gfx_printf("%s", speed_mod_str(abs(current)));
+        //tmp = block_width * (abs(current) - 8) / 15 + 0.5 * block_width;
+        //gfx_line(x, y + tmp, x + block_width, y + tmp);
+      );
+    ) : (
+      printed_value = 0;
+      micro_view ? (
+        gfx_set(base_r, base_g, base_b, 0.8);
+        gfx_rect(x, y + 1, block_width - 1, block_width - 1);
+      ) : (
+        nice_rect(x, y, block_width, block_width, printed_value, base_r, base_g, base_b);
+      );
+    );
+    micro_view ? printed_value = 0;
+    
+    target == 0 ? (gfx_set(1.0, 1.0, 1.0, 0.05); gfx_rect(x, y, block_width, block_width));
+    x += block_spacing + block_width;
+    ptr += 1;
+    target = (target + 1) % 4;
+    last = current;
+  );
+  
+  y_over = (mouse_y > y) && (mouse_y < (y + block_width));
+  
+  y_over ? (
+    (block_type == 0) ? (
+      hinter.updateHintTime("LMB - Create block\nRMB - remove block\nCTRL + LMB - Remove blocks\nAlt + LMB - Nudge row\nCTRL + ALT + LMB - Nudge all\nShift + Drag - Drag block\nShift + RMB - Copy/paste block\nScrollwheel - Alter note probability");
+    ) : (
+      hinter.updateHintTime("Speed Column (beta feature)\n\nLMB - Create block\nRMB - remove block\nCTRL + LMB - Remove blocks\nAlt + LMB - Nudge row\nCTRL + ALT + LMB - Nudge all\nShift + Drag - Drag block\nShift + RMB - Copy/paste block\nScroll-wheel - Alter column speed\n\nNOTE: This mode only works\nwhen time mode is set to\nFree or MIDI.");
+    );
+  );
+   
+  (captured_by == me) ? dragging = 1;
+  
+  // Process events
+  x -= n_segments * (block_width + block_spacing);
+  idx = min(floor((mouse_x - x) / (block_width + block_spacing)), n_segments);
+  
+  shift_drag(y_over, me, mem, idx);
+  
+  // Allow increasing / decreasing value by mouse_wheel
+  y_over && (idx > -1 && idx < n_segments) ? (
+    mouse_wheel_values(mem, idx, n_segments, max_value, -1);
+  );
+ 
+  // Drag out new items
+  (mouse_cap == 1 || mouse_cap == 2 || mouse_cap == 5) ? (
+    // Not captured, start dragging.
+    (last_cap == 0) ? (
+      // Are we in the positional columns?
+      y_over && (mouse_x > x) && (mouse_x < (x + (n_segments + 1) * (block_width + block_spacing))) ? (
+        // Start dragging a region
+        start_idx = idx;
+        drag_mode = DRAG_BLOCK;
+        ((mouse_cap & 1) > 0) ? captured_by = me : captured_by = -me;
+      ) : (
+        y_over ? (
+          (mouse_x < x) ? (
+            (randomize_toggle.value) ? (
+              // Randomize drag
+              (mouse_cap & 1) ? ( randomize_row(mem, n_segments, 1); );
+              (mouse_cap & 2 == 2) ? ( randomize_row_proba(mem, n_segments); );
+            );
+          );
+        );
+      );
+    ) : ( me == abs(captured_by) ) ? (
+      captured_by > 0 ? gfx_set(0, 0, 1, .1) : gfx_set(1, 0, 0, .1);
+      ptr = max(min(start_idx, idx), 0);
+      idx = min(max(start_idx, idx), n_segments - 1);
+      gfx_rect(x + (block_width + block_spacing) * ptr, y, (idx - ptr + 1) * (block_width + block_spacing), block_width, 1);
+      
+      gfx_set(0, 0, 0, .6);
+      mouse_cap == 5 ? gfx_rect(x + (block_width + block_spacing) * ptr + 2, y + 2, (idx - ptr + 1) * (block_width + block_spacing) - 4, block_width - 4, 1);
+    );
+  ) : (
+    ( (abs(captured_by) == me) && (drag_mode == DRAG_BLOCK) ) ? (
+      // We dragged an area
+      ptr = max(min(start_idx, idx), 0);
+      idx = min(max(start_idx, idx), n_segments - 1);
+      start_idx = ptr;
+      // Left or right mouse drag
+      captured_by > 0 ? (
+        target = ((last_cap & 4) > 0) ? 0 : max(block_type == 0 ? 1 : 8, abs(mem[ptr]));
+        //target > max_value ? target = max_value;
+      ) : (
+        target = 0;//abs(mem[ptr]) - 1;
+        target < 0 ? target = 0; // max_value;
+      );
+      // Negative values mean a continuation
+      mem[ptr] = target;
+      ptr += 1;
+      target = retrig_toggle.value ? target : - target;
+      loop(idx - start_idx,
+        mem[ptr] = target;
+        ptr += 1;
+      );
+      
+      mem[ptr] = abs(mem[ptr]); /* TODO: Add bound verification here for last sample */
+      release_drag();
+    );
+    
+    (drag_mode == DRAG_SOLO) ? (
+      release_drag();
+    );
+  );
+  
+  y += block_width + block_spacing;
+);
+
+
+function process_modulation_row(row_index, modulator_index, me, mem, x, y, height, label, hint)
+global(label_width, block_width, block_spacing, selected_details,
+       nice_rect,
+       scaling,
+       n_segments,
+       font_r, font_g, font_b,
+       gfx_x, gfx_y,
+       BASE_FONT, MOD_FONT,
+       mouse_cap, mouse_x, mouse_y, last_cap, captured_by,
+       hinter.updateHintTime,
+       retrig_toggle.value
+       base_r, base_g, base_b,
+       row_color_r, row_color_g, row_color_b, printed_value,
+       activeModifier, dragging, captured_by, drag_mode, DRAG_BLOCK,
+       randomize_toggle.value
+       resize_drag.handle_drag_y_resize,
+       micro_view)
+local(txt_w, txt_h, ptr, idx_unclamped, idx, target, y_over, last, current, active_r, active_g, active_b, offset, drag_min, drag_max, d_mouse, n_steps)
+instance(start_idx, y_loc, h, subdiv, snap, randomize, idx_last, mouse_last)
+(
+  h == 0 ? h = height;
+  subdiv == 0 ? subdiv = 12;
+  y_loc = y;
+
+  drag_min = y + h - 5 * (1 + scaling);
+  drag_max = drag_min + 10 * (1+scaling);
+  y_over = (mouse_y > y + 5 * (1+scaling)) && (mouse_y < drag_min);
+
+  h = max(h + resize_drag.handle_drag_y_resize(me, x + label_width, drag_min, drag_max), height);
+
+  set_row_color(row_index);
+  nice_rect(x, y, label_width - 1, h, 0, row_color_r, row_color_g, row_color_b);
+  nice_rect(x + label_width, y, block_width - 1, h, 0, base_r, base_g, base_b);
+  ptr = mem;
+  
+  gfx_set(font_r, font_r, font_r, 1.0);
+  gfx_setfont(BASE_FONT);
+  gfx_measurestr(label, txt_w, txt_h);
+  gfx_x = x - 0.5 * (txt_w - label_width);
+  gfx_y = y - 0.5 * (txt_h - block_width);
+  gfx_printf(label);
+  
+  // Move to the actual sequencer cols
+  x += label_width;
+  
+  (mouse_x < x) && y_over ? (
+    hinter.updateHintTime(hint);
+    (last_cap == 0) ? (
+      (mouse_cap == 1) ? (
+        (randomize_toggle.value) ? (
+          randomize_row_modulator(mem, n_segments);
+        ) : (
+          // Select row
+          activeModifier = (activeModifier == modulator_index) ? 0 : modulator_index;
+        );
+      ) : (mouse_cap == 2) ? (
+        gfx_showmenu(sprintf(8, "%sRandomize after bar", randomize ? "!" : "")) > 0 ? (
+          randomize = 1 - randomize;
+        );
+      );
+    );
+  );
+  
+  ptr = mem;
+  target = 0;
+  loop(n_segments,
+    current = ptr[];
+    
+    micro_view ? (
+      gfx_set(base_r, base_g, base_b, 0.2);
+      gfx_rect(x, y, block_width, h);
+    ) : (
+      nice_rect(x, y, block_width, h, printed_value, base_r, base_g, base_b);
+    );
+    
+    offset = floor(current * h);
+    nice_rect(x, y + h - offset, block_width, offset, printed_value, 1.5 * row_color_r, 1.5 * row_color_g, 1.5 * row_color_b);
+    
+    target == 0 ? (
+      micro_view ? (
+        gfx_set(1.0, 1.0, 1.0, 0.05); gfx_rect(x - 1, y, block_width - 1, h)
+      ) : (
+        gfx_set(1.0, 1.0, 1.0, 0.05); gfx_rect(x, y, block_width, h)
+      );
+    );
+    x += block_spacing + block_width;
+    ptr += 1;
+    target = (target + 1) % 4;
+    last = current;
+  );
+  
+  x -= n_segments * (block_width + block_spacing);
+  idx_unclamped = floor((mouse_x - x) / (block_width + block_spacing));
+  idx = max(min(idx_unclamped, n_segments - 1), 0);
+  
+  gfx_y = y;
+  loop(subdiv,
+    gfx_set(1, 1, 1, .02);
+    !micro_view ? gfx_rect(x, floor(gfx_y), n_segments * (block_width + block_spacing), 1);
+    gfx_y += h / subdiv;
+  );
+  
+  shift_drag(y_over, me, mem, idx);
+  
+  // Process events
+  ((y_over && (idx_unclamped == idx)) || (captured_by == me)) && (drag_mode == DRAG_BLOCK || drag_mode == 0) && (idx >= 0) && (idx < n_segments) && !dragging && (captured_by == 0 || captured_by == me) ? (
+    mouse_cap == 1 ? (
+      (drag_mode == 0) ? (
+        // We werent't dragging yet
+        idx_last = idx; mouse_last = mouse_y;
+      );
+      
+      n_steps = idx - idx_last;
+      d_mouse = (mouse_y - mouse_last) / abs(n_steps);
+      loop(abs(n_steps) + 1,
+        mem[idx_last] = snap ? ceil(subdiv * (1.0 - clamp((mouse_last - y) / h, 0, 1))) / subdiv : mem[idx_last] = 1.0 - clamp((mouse_last - y) / h, 0, 1);
+        idx_last += sign(n_steps);
+        mouse_last += d_mouse;
+      );
+      captured_by = me;
+      drag_mode = DRAG_BLOCK;
+      idx_last = idx; mouse_last = mouse_y;
+    ) : (
+      (captured_by == me) && (drag_mode == DRAG_BLOCK) ? release_drag();
+    );
+  );
+  
+  y += h + block_spacing;
+);
+
+function setup_menu_string(str_var, value, start)
+local(s, i)
+global()
+(
+  s = sprintf(str_var, "");
+  i = start;
+  loop(17 - start ,
+    i == 0 ? (
+      s = sprintf(str_var, "%s|%s%sAny", s, (i == 16) ? "<" : "", (i == value) ? "!" : "");
+    ) : (
+      s = sprintf(str_var, "%s|%s%s%d", s, (i == 16) ? "<" : "", (i == value) ? "!" : "", i);
+    );
+    
+    i += 1;
+  );
+  
+  s
+);
+
+function setup_cc_string(menu_cc_string)
+local(cc_menu_idx)
+global(cc_reset)
+(
+  cc_menu_idx = 0;
+  menu_cc_string = sprintf(menu_cc_string, "|>CC to use for reset");
+  loop(255,
+    menu_cc_string = sprintf(menu_cc_string, "%s|%sCC%d", menu_cc_string, cc_reset == cc_menu_idx ? "!" : "", cc_menu_idx);
+    cc_menu_idx += 1;
+  );
+  
+  menu_cc_string
+);
+
+
+mouse_y < (2 + block_width) && mouse_x < cc_pos ? (
+  mouse_cap & 2 == 2 ? (
+    gfx_x = mouse_x;
+    gfx_y = mouse_y;
+
+    menu_selection = gfx_showmenu(sprintf(8, ">In channel%s|>Out channel%s|%sMIDI passthrough|%s%sReset position on CC%s", setup_menu_string(8, in_channel, 0), setup_menu_string(9, out_channel, 1), disable_midi ? "!" : "", reset_on_cc ? "!" : "", time_mode == 0 ? "#" : "", (reset_on_cc && (time_mode > 0)) ? setup_cc_string(10) : ""));
+    (menu_selection > 0) ? (
+      menu_selection < 18 ? (
+        slider_automate(in_channel = menu_selection - 1);
+      ) : (
+        menu_selection < 34 ? (
+          slider_automate(out_channel = menu_selection - 17);
+        ) : (menu_selection == 34) ? (
+          disable_midi = 1 - disable_midi;
+        ) : (menu_selection == 35) ? (
+          reset_on_cc = 1 - reset_on_cc;
+        ) : (
+          cc_reset = menu_selection - 36;
+        );
+      );
+    );
+  );
+);
+
+ctrl_spacing = 1;
+cx = grid_origin_x + 2;
+yc = 2;
+
+micro_view ? (
+  pattern_toggle.value = -1;
+  cx += ctrl_spacing;
+  full_width = label_width + (block_width + block_spacing) * blocks_in_view - 6;
+  cx = pattern_toggle.selection_button(0, grid_origin_x, yc, full_width / 3, button_height - 4, "<", 0.3, 0.1, 0.05, "Decrease pattern index.");
+  cx = pattern_toggle.drag_button(1, grid_origin_x + full_width / 3 + 3, yc, full_width / 3, button_height - 4, sprintf(3, "%d", viewed_pattern_index), 0.3, 0.1, 0.05, "Current pattern index", DRAG_SETTING);
+  cx = pattern_toggle.selection_button(2, grid_origin_x + 2 * full_width / 3 + 6, yc, full_width / 3, button_height - 4, ">", 0.3, 0.1, 0.05, "Increase pattern index.");
+) : (
+  gfx_setfont(HINT_FONT, "Arial", floor(13 * (1+fontscaling)));
+  host_toggles = block_width - 4;
+  
+  time_mode.value = time_mode;
+  cx = time_mode.selection_button(0, cx, yc + 2, 1.8 * block_width, host_toggles, "Host", 0.05, 0.2, 0.1, "Run sequencer based on host\nplayback position.");
+  cx = time_mode.selection_button(2, cx, yc + 2, 1.8 * block_width, host_toggles, "Free", 0.05, 0.2, 0.1, "Run sequencer in free running mode.\nSequencer resets when playback is reset\nor when seeking to new position.");
+  cx = time_mode.selection_button(1, cx, yc + 2, 1.8 * block_width, host_toggles, "MIDI", 0.05, 0.2, 0.1, "Run sequencer in MIDI mode.\nPattern resets on incoming MIDI note.");
+  time_mode = time_mode.value;
+  
+  poly_mode.value = poly_mode;
+  !disable_midi ? (
+    cx += ctrl_spacing;
+    cx = poly_mode.selection_button(0, cx, yc + 2, 1.8 * block_width, host_toggles, "Once", 0.2, 0.1, 0.05, "Don't repeat notes.");
+    cx = poly_mode.selection_button(1, cx, yc + 2, 2.0 * block_width, host_toggles, "Rep", 0.2, 0.1, 0.05, "Repeat notes to fill polyphony.");
+    cx = poly_mode.selection_button(2, cx, yc + 2, 1.8 * block_width, host_toggles, "Bidi", 0.2, 0.1, 0.05, "Repeat notes bidirectionally to fill polyphony.");
+    poly_mode = poly_mode.value;
+  );
+  
+  sort_midi.value = enable_midi_sort;
+  cx = sort_midi.selection_button(-1, cx, yc + 2, 0.75 * block_width, block_width - 4, "↗", 0.2, 0.1, 0.05, "Sort incoming MIDI notes.");
+  enable_midi_sort = sort_midi.value;
+  
+  pattern_toggle.value = -1;
+  cx += ctrl_spacing;
+  cx = pattern_toggle.selection_button(0, cx, yc + 2, 0.8 * block_width, host_toggles, "«", 0.3, 0.1, 0.05, "Decrease pattern index.");
+  cx = pattern_toggle.drag_button(1, cx, yc + 2, 1.2 * block_width, host_toggles, sprintf(3, "%d", viewed_pattern_index), 0.3, 0.1, 0.05, "Current pattern index", DRAG_SETTING);
+  cx = pattern_toggle.selection_button(2, cx, yc + 2, 0.8 * block_width, host_toggles, "»", 0.3, 0.1, 0.05, "Increase pattern index.");
+  
+  follow_pattern_toggle.value = follow_current_pattern;
+  cx = follow_pattern_toggle.selection_button(-1, cx, yc + 2, 0.8 * block_width, host_toggles, "↪", 0.3, 0.1, 0.05, "Follow pattern.\n\nDisabling this decouples what you see from what you hear\nand allows moving through patterns while pattern index\nis programmed.");
+  
+  follow_current_pattern = follow_pattern_toggle.value;
+  
+  cx += ctrl_spacing;
+  
+  cx = pattern_toggle.selection_button(5, cx, yc + 2, 0.8 * block_width, host_toggles, "▲", 0.316, 0.3, 0.425, "Increase pattern length.");
+  cx = pattern_toggle.drag_button(6, cx, yc + 2, 1.2 * block_width, host_toggles, sprintf(3, "%d", pattern_loop_length), 0.316, 0.3, 0.425, "Current pattern length", DRAG_SETTING);
+  cx = pattern_toggle.selection_button(7, cx, yc + 2, 0.8 * block_width, host_toggles, "▼", 0.316, 0.3, 0.425, "Decrease pattern length.");
+  
+  cx += ctrl_spacing;
+  
+  cx = pattern_toggle.selection_button(8, cx, yc + 2, 0.8 * block_width, host_toggles, "-", 0.16, 0.1, 0.425, "Decrease speed.");
+  cx = pattern_toggle.drag_button(9, cx, yc + 2, 1 * block_width, host_toggles, current_speed > 0 ? sprintf(3, "%d", current_speed) : sprintf(3, "1/%d", abs(current_speed) + 2), 0.16, 0.1, 0.425, "Speed", DRAG_SETTING);
+  cx = pattern_toggle.selection_button(10, cx, yc + 2, 0.8 * block_width, host_toggles, "+", 0.16, 0.1, 0.425, "Increase speed.");
+  
+  cx += ctrl_spacing;
+  spd_active.value = enable_speed;
+  cx = spd_active.selection_button(-1, cx, yc + 2, 0.75 * block_width, block_width - 4, "¾", 0.16, 0.1, 0.425, "Add row for customizable column\ndurations. This allows for more\ntempo variety.\n\nNote: This mode is only functional\nduring free and MIDI mode.");
+  enable_speed = spd_active.value;
+  
+  cx = pattern_toggle.selection_button(3, cx + ctrl_spacing, yc + 2, 2 * block_width, host_toggles, "Copy", 0.3, 0.2, 0.00, "Copy pattern.");
+  cx = pattern_toggle.selection_button(4, cx, yc + 2, 2 * block_width,host_toggles, "Paste", 0.3, 0.2, 0.05, "Paste pattern.");
+  
+  cx += ctrl_spacing;
+  randomize_block = 0;
+  cx = randomize_toggle.selection_button(-1, cx, yc + 2, 3.05 * block_width, host_toggles, "Randomize", 0.1, 0.2, 0.35, "Randomize sequences.
+
+Clicking this will toggle randomize mode.
+In randomize mode, clicking a note label 
+will randomize its pattern. In this mode
+left click randomizes the blocks, while
+right click randomizes only the note 
+probabilities.
+
+Alternatively, select region with shift + left
+mouse button drag then press this button
+with shift + left mouse button.");
+  ((randomize_toggle.value == 1) && (mouse_cap == 9)) ? (
+    randomize_toggle.value = 0;
+    randomize_block = 1;
+  );
+  
+  !disable_midi ? (
+    cx += ctrl_spacing;
+    cx = pattern_toggle.drag_button(11, cx, yc + 2, block_width, block_width - 4, sprintf(3, "%d", polyphony), 0.36, 0.1, 0.225, "Max polyphony.\n\nThis determines how many rows each octave will have.", DRAG_SETTING);
+  
+    cx += ctrl_spacing;
+    cx = pattern_toggle.drag_button(12, cx, yc + 2, block_width, block_width - 4, sprintf(3, "%d", extra_octaves), 0.16, 0.3, 0.225, "Extra octaves.\n\nThis determines how many extra octaves will be displayed.\nThese can be used to sequence notes one or two octaves\nup from what is being played.", DRAG_SETTING);
+  
+    cx += ctrl_spacing;
+    vel_active.value = enable_vel;
+    cx = vel_active.selection_button(-1, cx, yc + 2, 1.25 * block_width, block_width - 4, "Vel", 0.05, 0.2, 0.1, "Add row for programming velocity.");
+    enable_vel = vel_active.value;
+  );
+  
+  mod_active.value = enable_mod;
+  cx = mod_active.selection_button(-1, cx, yc + 2, 1.35 * block_width, block_width - 4, "Mod", 0.05, 0.2, 0.1, "Add row for programming mod wheel.");
+  enable_mod = mod_active.value;
+
+  cc_pos = cx; 
+  cc_active.value = (enable_cc1 + enable_cc2 + enable_cc3 + enable_cc4 + enable_cc5 + enable_cc6 + enable_cc7 + enable_cc8) > 0;
+  cx = cc_active.selection_button(-1, cx, yc + 2, 1.15 * block_width, block_width - 4, "CC", 0.05, 0.2, 0.1, "Left click - Add CC\nRight click - Remove CC.");
+  (cc_active.over) ? (
+    (last_cap == 0) ? (
+      (mouse_cap == 1) ? (
+        (enable_cc7 == 1) ? (enable_cc8 = 1;)
+        : (enable_cc6 == 1) ? (enable_cc7 = 1;)
+        : (enable_cc5 == 1) ? (enable_cc6 = 1;)
+        : (enable_cc4 == 1) ? (enable_cc5 = 1;)
+        : (enable_cc3 == 1) ? (enable_cc4 = 1;)
+        : (enable_cc2 == 1) ? (enable_cc3 = 1;)
+        : (enable_cc1 == 1) ? (enable_cc2 = 1;)
+        : (enable_cc1 = 1;);
+      ) : (mouse_cap == 2) ? (
+        (enable_cc8 == 1) ? (enable_cc8 = 0)
+        : (enable_cc7 == 1) ? (enable_cc7 = 0)
+        : (enable_cc6 == 1) ? (enable_cc6 = 0)
+        : (enable_cc5 == 1) ? (enable_cc5 = 0)
+        : (enable_cc4 == 1) ? (enable_cc4 = 0)
+        : (enable_cc3 == 1) ? (enable_cc3 = 0)
+        : (enable_cc2 == 1) ? (enable_cc2 = 0)
+        : (enable_cc1 == 1) ? (enable_cc1 = 0)
+      );
+    );
+  );
+  
+  cx = pattern_toggle.drag_button(13, cx, yc + 2, 1.2 * block_width, block_width - 4, sprintf(3, "%d", swing), 0.016, 0.3, 0.425, "Swing amount\n\nMoves odd columns by set amount.", DRAG_SETTING);
+);
+
+pattern_toggle.value == 0 ? ( 
+  viewed_pattern_index -= 1;
+  viewed_pattern_index < 0 ? (
+    viewed_pattern_index = max_stored_patterns - 1;
+  );
+  slider_automate(2);  
+) : ( pattern_toggle.value == 1 ) ? (
+  viewed_pattern_index = max(min(viewed_pattern_index += pattern_toggle.change, max_stored_patterns), 0);
+  slider_automate(2);
+) : ( pattern_toggle.value == 2 ) ? (
+  viewed_pattern_index += 1;
+  ( viewed_pattern_index >= max_stored_patterns ) ? (
+    viewed_pattern_index = 0;
+  );
+  slider_automate(2);
+)
+: ( pattern_toggle.value == 3 ) ? ( copy_pattern(viewed_pattern_index) ) :
+( pattern_toggle.value == 4 ) ? ( paste_pattern(viewed_pattern_index) ) :
+( pattern_toggle.value == 5 ) ? ( pattern_loop_length = min(pattern_loop_length + 1, 64); ) :
+( pattern_toggle.value == 6 ) ? ( pattern_loop_length = max(min(pattern_loop_length + pattern_toggle.change, 64), 2); ) :
+( pattern_toggle.value == 7 ) ? ( pattern_loop_length = max(pattern_loop_length - 1, 2); ) :
+( pattern_toggle.value == 10 ) ? ( current_speed = min(current_speed + 1, 16); slider_automate(1); ) :
+( pattern_toggle.value == 9 ) ? ( current_speed = max(min(current_speed + pattern_toggle.change, 16), -6); slider_automate(1);) :
+( pattern_toggle.value == 8 ) ? ( current_speed = max(current_speed - 1, -6); slider_automate(1); ) :
+( pattern_toggle.value == 11 ) ? ( polyphony = max(min(polyphony + pattern_toggle.change, 8), 2); ) : 
+( pattern_toggle.value == 12 ) ? ( extra_octaves = max(min(extra_octaves + pattern_toggle.change, 4), 0); ) :
+( pattern_toggle.value == 13 ) ? ( slider_automate(swing = max(min(swing + pattern_toggle.change, 50), -50 );); );
+
+x = grid_origin_x;
+yc = grid_origin_y;
+select_colormap(polyphony * (extra_octaves + 1));
+
+!disable_midi ? (
+  octave = 0;
+  row_idx = 0;
+  loop(extra_octaves + 1,
+    c_idx = 0;
+    current_octave = extra_octaves - octave;
+    loop(polyphony,
+      note = current_arp[polyphony - c_idx - 1]; 
+      label = identify_note(note > 0 ? note + 12 * current_octave : 0);
+      yc = process_effect_row(row_idx, row_idx + 1, view.current_pattern + (MAX_POLYPHONY * current_octave + polyphony - c_idx - 1) * max_segments, x, yc, label, 15, "", 0);
+      row_idx += 1;
+      c_idx += 1;
+    );
+    octave += 1;
+    yc += 1;
+  );
+);
+
+enable_speed ? yc = process_effect_row((time_mode == 0) ? -1 : row_idx, row_idx + 1, view.speed_values, x, yc, "Speed", 15, "", 1);
+
+select_colormap(enable_vel + enable_mod + enable_cc1 + enable_cc2 + enable_cc3 + enable_cc4 + enable_cc5 + enable_cc6 + enable_cc7 + enable_cc8);
+enable_vel ? (
+  yc = velrow.process_modulation_row(0, 0, 51, view.modulator2_values, x, yc, 2 * block_width, "Vel", "Note velocity");
+  vel_drag.value = -1;
+  
+  !micro_view ? (
+    vel_drag.drag_button(91, x + 1, yc - block_width, 0.9 * block_width, block_width - 4, sprintf(3, "%d", min_vel), row_color_r, row_color_g, row_color_b, "Minimum velocity (drag to change)", DRAG_SETTING);
+    vel_drag.drag_button(92, x + block_width, yc - block_width, 0.9 * block_width, block_width - 4, sprintf(3, "%d", max_vel), row_color_r, row_color_g, row_color_b, "Maximum velocity (drag to change)", DRAG_SETTING);
+    (vel_drag.value == 91) ? (
+      min_vel = min(128, max(0, min_vel + 2 * vel_drag.change));
+      slider_automate(6);
+    ) : (vel_drag.value == 92) ? (
+      max_vel = min(128, max(0, max_vel + 2 * vel_drag.change));
+      slider_automate(7);
+    );
+  );
+  vel_drag.change = 0;
+);
+
+function draw_cc_row(yc, me, mem, min_slider, max_slider, drag_mode_left, drag_mode_right, drag_mode_cc, label, hint, color, cc_select)
+local()
+global(cc1test,
+  x, block_width, DRAG_SETTING,
+  row_color_r, row_color_g, row_color_b,
+)
+instance(mod_drag, micro_view)
+(
+  yc = this.process_modulation_row(color, 0, me, mem, x, yc, 2 * block_width, label, hint);
+  mod_drag.value = -1;
+ 
+  // Drawn first so the ugly box is hidden
+  !micro_view ? (
+    (cc_select > 0) ? mod_drag.drag_button_motion(drag_mode_cc, x, yc - 2 * block_width, 2 * block_width - 2, block_width - 4, sprintf(3, "%d", slider(min_slider)), "Control change value to use for this row\n\nClick and drag to change which control\nchange to emit for this row.", DRAG_SETTING);
+  
+    mod_drag.drag_button(drag_mode_left, x + 1, yc - block_width, 0.9 * block_width, block_width - 4, sprintf(3, "%d", slider(min_slider)), row_color_r, row_color_g, row_color_b, "Minimum modwheel (drag to change)", DRAG_SETTING);
+    mod_drag.drag_button(drag_mode_right, x + block_width, yc - block_width, 0.9 * block_width, block_width - 4, sprintf(3, "%d", slider(max_slider)), row_color_r, row_color_g, row_color_b, "Maximum modwheel (drag to change)", DRAG_SETTING);
+    (mod_drag.value == drag_mode_left) ? (
+      slider_automate(slider(min_slider) = min(128, max(0, slider(min_slider) + mod_drag.change)));
+    ) : (mod_drag.value == drag_mode_right) ? (
+      slider_automate(slider(max_slider) = min(128, max(0, slider(max_slider) + mod_drag.change)));
+    ) : (mod_drag.value == drag_mode_cc) ? (
+      // Is this one configurable?
+      (cc_select > 0) ? (
+        slider_automate(slider(cc_select) = min(119, max(0, slider(cc_select) + mod_drag.change)));
+      );
+    );
+  );
+  mod_drag.change = 0;  
+  
+  yc
+);
+
+enable_mod ? (
+  yc = mwrow.draw_cc_row(yc, 50, view.modulator1_values, 8, 9, 93, 94, 0, "Mod", "Mod wheel", enable_vel + 1, 0); 
+);
+
+enable_cc1 ? ( yc = cc1_row.draw_cc_row(yc, 52, view.midi_cc_1, 11, 12, 95, 96, 103, sprintf(20, "CC %d", cc1_choice), "Custom Control Change", enable_vel + enable_mod + 1, 10); );
+enable_cc2 ? ( yc = cc2_row.draw_cc_row(yc, 53, view.midi_cc_2, 14, 15, 97, 98, 104, sprintf(20, "CC %d", cc2_choice), "Custom Control Change", enable_vel + enable_mod + 2, 13); );
+enable_cc3 ? ( yc = cc3_row.draw_cc_row(yc, 54, view.midi_cc_3, 17, 18, 99, 100, 105, sprintf(20, "CC %d", cc3_choice), "Custom Control Change", enable_vel + enable_mod + 3, 16); );
+enable_cc4 ? ( yc = cc4_row.draw_cc_row(yc, 55, view.midi_cc_4, 20, 21, 101, 102, 106, sprintf(20, "CC %d", cc4_choice), "Custom Control Change", enable_vel + enable_mod + 4, 19); );
+enable_cc5 ? ( yc = cc5_row.draw_cc_row(yc, 56, view.midi_cc_5, 27, 28, 107, 108, 109, sprintf(20, "CC %d", cc5_choice), "Custom Control Change", enable_vel + enable_mod + 5, 26); );
+enable_cc6 ? ( yc = cc6_row.draw_cc_row(yc, 57, view.midi_cc_6, 30, 31, 110, 111, 112, sprintf(20, "CC %d", cc6_choice), "Custom Control Change", enable_vel + enable_mod + 6, 29); );
+enable_cc7 ? ( yc = cc7_row.draw_cc_row(yc, 58, view.midi_cc_7, 33, 34, 113, 114, 115, sprintf(20, "CC %d", cc7_choice), "Custom Control Change", enable_vel + enable_mod + 7, 32); );
+enable_cc8 ? ( yc = cc8_row.draw_cc_row(yc, 59, view.midi_cc_8, 36, 37, 116, 117, 118, sprintf(20, "CC %d", cc8_choice), "Custom Control Change", enable_vel + enable_mod + 8, 35); );
+
+function line_idx(me, cy)
+global(
+  extra_octaves, polyphony, MAX_POLYPHONY,
+  enable_vel, enable_mod,
+  enable_cc1, enable_cc2, enable_cc3, enable_cc4,
+  enable_cc5, enable_cc6, enable_cc7, enable_cc8,
+)
+local(current_octave, current_y, ix, yyo, yya)
+(
+  (me == 1) ? (
+    // Blocks
+    yya = current_octave = floor(cy/polyphony);
+    current_y = floor(cy - polyphony * current_octave);
+    yyo = MAX_POLYPHONY * (extra_octaves - current_octave) + polyphony - current_y - 1
+  ) : (
+    // Modulators
+    ix = floor(cy);
+    enable_vel ? ( (ix == 0) ? ( yyo = 51; ); ix -= 1; );
+    enable_mod ? ( (ix == 0) ? ( yyo = 50; ); ix -= 1; );
+    enable_cc1 ? ( (ix == 0) ? ( yyo = 52; ); ix -= 1; );
+    enable_cc2 ? ( (ix == 0) ? ( yyo = 53; ); ix -= 1; );
+    enable_cc3 ? ( (ix == 0) ? ( yyo = 54; ); ix -= 1; );
+    enable_cc4 ? ( (ix == 0) ? ( yyo = 55; ); ix -= 1; );
+    enable_cc5 ? ( (ix == 0) ? ( yyo = 56; ); ix -= 1; );
+    enable_cc6 ? ( (ix == 0) ? ( yyo = 57; ); ix -= 1; );
+    enable_cc7 ? ( (ix == 0) ? ( yyo = 58; ); ix -= 1; );
+    enable_cc8 ? ( (ix == 0) ? ( yyo = 59; ); ix -= 1; );    
+    yyo
+  );
+);
+
+function rel_position(y)
+local()
+instance(y_loc, h)
+global()
+(
+  min(max(0, (y - y_loc) / h), 1);
+);
+
+function mod_screen_to_y(screen_y)
+(
+  (enable_vel ? velrow.rel_position(screen_y) : 0)
+  + (enable_mod ? mwrow.rel_position(screen_y) : 0)
+  + (enable_cc1 ? cc1_row.rel_position(screen_y) : 0)
+  + (enable_cc2 ? cc2_row.rel_position(screen_y) : 0)
+  + (enable_cc3 ? cc3_row.rel_position(screen_y) : 0)
+  + (enable_cc4 ? cc4_row.rel_position(screen_y) : 0)
+  + (enable_cc5 ? cc5_row.rel_position(screen_y) : 0)
+  + (enable_cc6 ? cc6_row.rel_position(screen_y) : 0)
+  + (enable_cc7 ? cc7_row.rel_position(screen_y) : 0)
+  + (enable_cc8 ? cc8_row.rel_position(screen_y) : 0)
+);
+
+function mod_y_to_screen(y)
+local(ix, yyo, _start_y, _end_y)
+(
+  // Barf! Sorry. Too sleepy to fix this up right now.
+  yyo = -1;
+  (y < 0) ? (0)
+  : (
+    ix = floor(y) + 1;
+    zz_block_selector = ix;
+    
+    enable_vel ? (_start_y = velrow.y_loc; _end_y = _start_y + velrow.h; ix -= 1;); 
+    (ix == 0) ? ( yyo = _start_y; );
+    enable_mod ? (_start_y = mwrow.y_loc; _end_y = _start_y + mwrow.h; ix -= 1;); 
+    (ix == 0) ? ( yyo = _start_y; );
+    enable_cc1 ? (_start_y = cc1_row.y_loc; _end_y = _start_y + cc1_row.h; ix -= 1;); 
+    (ix == 0) ? ( yyo = _start_y; );
+    enable_cc2 ? (_start_y = cc2_row.y_loc; _end_y = _start_y + cc2_row.h; ix -= 1;); 
+    (ix == 0) ? ( yyo = _start_y; );
+    enable_cc3 ? (_start_y = cc3_row.y_loc; _end_y = _start_y + cc3_row.h; ix -= 1;); 
+    (ix == 0) ? ( yyo = _start_y; );
+    enable_cc4 ? (_start_y = cc4_row.y_loc; _end_y = _start_y + cc4_row.h; ix -= 1;); 
+    (ix == 0) ? ( yyo = _start_y; );
+    enable_cc5 ? (_start_y = cc5_row.y_loc; _end_y = _start_y + cc5_row.h; ix -= 1;); 
+    (ix == 0) ? ( yyo = _start_y; );
+    enable_cc6 ? (_start_y = cc6_row.y_loc; _end_y = _start_y + cc6_row.h; ix -= 1;); 
+    (ix == 0) ? ( yyo = _start_y; );
+    enable_cc7 ? (_start_y = cc7_row.y_loc; _end_y = _start_y + cc7_row.h; ix -= 1;); 
+    (ix == 0) ? ( yyo = _start_y; );
+    enable_cc8 ? (_start_y = cc8_row.y_loc; _end_y = _start_y + cc8_row.h; ix -= 1;); 
+    (ix == 0) ? ( yyo = _start_y; );
+  );
+  (yyo == -1) ? _end_y : yyo;
+);
+
+function handle_drag(me, current_pattern, grid_origin_x, grid_origin_y, block_width, block_spacing, label_width, max_rows, this_drag_mode)
+local(
+  block_step, current_x, start_x, start_y, end_x, end_y, sel_ptr, bounce,
+  max_val, current_y, block_action,
+)
+instance(
+  xs, ys, xe, ye
+  area_marked,
+  cx, cy,
+  read_ptr,
+  row, rect_origin_x, rect_origin_y, rect_width, rect_height,
+  active_block,
+)
+global(mouse_cap, last_cap, gfx_x, gfx_y, mouse_x, mouse_y, 
+       drag_mode, DRAG_AREA, n_segments, FIXED_LINES,
+       order_mem, selection_buffer, max_segments,
+       animate_copy, randomize_block)
+(
+  gfx_set(1, 1, 1, 1);
+  block_step = block_width + block_spacing;
+
+  current_x = (mouse_x - (grid_origin_x + label_width)) / block_step;
+  (me == 1) ? (
+    // Blocks
+    current_y = (mouse_y - (grid_origin_y)) / block_step;
+  ) : (
+    // Modulators
+    current_y = mod_screen_to_y(mouse_y);
+  );
+
+  ((mouse_cap == 9) && (last_cap == 0) && (drag_mode == 0) && (current_x > 0) && (current_y > 0) && (current_y < max_rows)) ? (
+    DRAG_MODE = this_drag_mode;
+    xs = current_x;
+    ys = current_y;
+    area_marked = 1;
+    active_block = me;
+  );
+
+  block_action = ((mouse_cap == 10) && (last_cap == 0)) || randomize_block;
+  (block_action && area_marked && (active_block == me)) ? (
+    (area_marked == 1) ? (
+      // Copy to memory
+      (!randomize_block) ? (
+        area_marked = 2;
+        animate_copy = 10;
+      );
+      cy = start_y;
+      sel_ptr = selection_buffer;
+      loop(end_y - start_y,
+        // First effects are fixed, other ones are determined in order_mem
+        row = line_idx(me, cy);
+        read_ptr = current_pattern + row * max_segments + start_x;
+        
+        randomize_block ? (
+          force_undo_point();
+          // Randomize this block.
+          // row_offset > 0 is indicative that we are dealing with a modulator
+          (me == 1) ? (
+            randomize_row(read_ptr, end_x - start_x + 1, 1);
+          ) : (
+            randomize_row_modulator(read_ptr, end_x - start_x + 1);
+          );
+        ) : (
+          // Copy behaviour
+          loop(end_x - start_x,
+            sel_ptr[] = read_ptr[];
+            sel_ptr += 1;
+            read_ptr += 1;
+          );
+        );
+        
+        cy += 1;
+      );
+    ) : (area_marked == 2) ? (
+      // Paste
+      force_undo_point();
+      cy = current_y;
+      sel_ptr = selection_buffer;
+      loop(min(end_y - start_y, max_rows - cy + 1),
+        // First effects are fixed, other ones are determined in order_mem
+        row = line_idx(me, cy);
+        read_ptr = current_pattern + row * max_segments + current_x;
+        cx = current_x;
+        loop(end_x - start_x,
+          max_val = 1;
+          (cx < (n_segments - 1)) ? read_ptr[] = min(max_val, max(-max_val, sel_ptr[]));
+          sel_ptr += 1;
+          read_ptr += 1;
+          cx += 1;
+        );
+        cy += 1;
+      );
+    );
+  );
+
+  ((drag_mode == this_drag_mode) && (active_block == me)) ? (
+    xe = current_x;
+    ye = current_y;
+    DRAG_MODE = (mouse_cap == 0) ? 0 : DRAG_MODE;
+  );
+
+  (active_block == me) ? (
+    start_x = min(xs, xe);
+    end_x = max(xs, xe);
+    start_y = min(ys, ye);
+    end_y = max(ys, ye);
+    start_x = min(max(0, floor(start_x)), n_segments);
+    end_x = min(max(0, ceil(end_x)), n_segments);
+    start_y = min(max(0, floor(start_y)), max_rows);
+    end_y = min(max(0, ceil(end_y)), max_rows);
+  
+    ((area_marked == 1) || (animate_copy > 0)) ? (
+      rect_origin_x = grid_origin_x + label_width + block_step * start_x;
+      rect_width = block_step * (end_x - start_x);
+      
+      (me == 1) ? (
+        // Blocks
+        rect_origin_y = grid_origin_y + block_step * start_y;
+        rect_height = block_step * (end_y - start_y);
+      ) : (
+        // Modulators
+        rect_origin_y = mod_y_to_screen(start_y);
+        rect_height = mod_y_to_screen(end_y) - rect_origin_y;
+      );
+    );
+
+    (area_marked == 1) ? (
+      gfx_set(0.3, 0.3, 1, 0.001);
+      gfx_rect(rect_origin_x, rect_origin_y, rect_width, rect_height, 1);
+  
+      gfx_set(0.3, 0.3, 1, 1);
+      gfx_rect(rect_origin_x, rect_origin_y, rect_width, rect_height, 0);
+    );
+    (animate_copy > 0) ? (
+      bounce = 0.25 * block_step * cos(- 0.25 * (10 - animate_copy));
+      gfx_set(0, 0, 0, 0.04 * animate_copy);
+      gfx_rect(rect_origin_x - bounce, rect_origin_y - bounce, rect_width + 2 * bounce, rect_height + 2 * bounce, 1);
+  
+      gfx_set(0.3, 0.3, 1, animate_copy / 10);
+      gfx_rect(rect_origin_x - bounce, rect_origin_y - bounce, rect_width + 2 * bounce, rect_height + 2 * bounce, 0);
+      animate_copy -= 1;
+  
+      gfx_x = rect_origin_x;
+      gfx_y = rect_origin_y;
+      gfx_set(1, 1, 1, animate_copy / 10);
+      gfx_drawstr("COPIED", 5, rect_origin_x + rect_width, rect_origin_y + rect_height);
+    );
+  );
+);
+
+idx_ref = min(floor((mouse_x - (x + label_width)) / (block_width + block_spacing)), n_segments);
+
+gfx_set(0, 0, 0, .6);
+gfx_rect(grid_origin_x + label_width + (block_width + block_spacing) * (pattern_loop_length) - 2, grid_origin_y, (n_segments - pattern_loop_length) * (block_width + block_spacing) + 1, yc - grid_origin_y);
+
+gfx_set(1, 1, 1, .1);
+// current_sample / samples_per_beat
+gfx_rect(grid_origin_x + label_width + (block_width + block_spacing) * floor(sequencer_index), grid_origin_y, block_width, yc - 4 * block_spacing - block_width);
+
+block_selector.handle_drag(2, view.current_pattern, grid_origin_x, modulator_origin_y, block_width, block_spacing, label_width, enable_cc1 + enable_cc2 + enable_cc3 + enable_cc4 + enable_cc5 + enable_cc6 + enable_cc7 + enable_cc8 + enable_mod + enable_vel, DRAG_MODULATORS);
+block_selector.handle_drag(1, view.current_pattern, grid_origin_x, grid_origin_y, block_width, block_spacing, label_width, polyphony * (extra_octaves + 1), DRAG_AREA);
+
+last_cap = mouse_cap;
+gfx_setcursor(current_cursor, "arrow");
+
+critical_error ? (
+  gfx_set(1, 0, 0, 1);
+  gfx_setfont(5, "Arial", 55);
+  gfx_x = 35;
+  gfx_y = 45;
+  gfx_printf("CRITICAL ERROR LOADING PRESET!");
+  gfx_x = 35;
+  gfx_y += 55;
+  gfx_printf("PLEASE NOTIFY ME OF THIS");
+);
+
+/*
+gfx_y = 0.5 * gfx_h;
+gfx_x = 0;
+gfx_set(1, 1, 1, 1);
+idx = 0;
+loop(midi.notes_on + 2,
+  gfx_printf("%d  ", midi.active_note_mem[idx]);
+  idx += 1;
+);
+
+gfx_y = 0.6 * gfx_h;
+gfx_x = 0;
+idx = 0;
+loop(10,
+  gfx_printf("%d  ", notes_in_flight[idx]);
+  idx += 1;
+);
+*/
+!micro_view ? hinter.drawHint_draw();
+
+follow_current_pattern ? (
+  current_pattern_index = viewed_pattern_index;
+);
+
+(data_change) ? (
+  sliderchange(-1);
+  data_change = 0;
+);
+

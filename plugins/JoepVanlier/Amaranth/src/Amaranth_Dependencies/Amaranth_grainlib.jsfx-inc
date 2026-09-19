@@ -1,0 +1,480 @@
+/* Graintable library */
+
+@init
+/* Cosine rise. N is number of samples rise time. */
+function grainPrepRise(N)
+  local(w, ip)
+  instance(y0, y1, y2, b1)
+  global()  
+  (
+    w = $pi/(N-1);
+    ip = -.5*$pi;
+    
+    y0 = 0;
+    b1 = 2.0 * cos(w);
+    y1 = sin( ip - w );
+    y2 = sin( ip - 2.0*w );
+  );
+  
+/* Cosine fall. N is number of samples fall time. */
+function grainPrepFall(N)
+  local(w, ip)
+  instance(y0, y1, y2, b1)
+  global()  
+  (
+    w = $pi/(N-1);
+    ip = .5*$pi;
+    
+    y0 = 0;
+    b1 = 2.0 * cos(w);
+    y1 = sin( ip - w );
+    y2 = sin( ip - 2.0*w );
+  );
+
+function initGrain(_ptr, _nTransition, nHold, _nTransition2, _ptrMin, _ptrMax, speed, _lmul, _rmul)
+  local()
+  instance(advance, loc, ptrMin, ptrMax, nTransition, nTransition2, N2, N3, idx, ds, lmul, rmul)
+  global()  
+  (
+    ( idx <= N3 ) ? ( 0 ) : (
+      loc = .5*_ptr;
+      ptrMin = _ptrMin;
+      ptrMax = _ptrMax;
+      lmul = _lmul;
+      rmul = _rmul;
+      nTransition = _nTransition;
+      nTransition2 = _nTransition2;
+      N2 = nTransition + nHold;
+      N3 = N2 + _nTransition2;
+      advance = speed;
+      idx = 0;
+      loc < .5*ptrMin ? (
+        loc += .5*(ptrMax - ptrMin);
+      );
+      this.grainPrepRise(nTransition);
+      1
+    );
+  );
+
+function fadeIn(_N)
+  local()
+  global()
+  instance(N, idx)
+  (
+    N = _N;
+    idx = 0;
+    this.grainPrepRise(N);
+  );
+  
+function evaluateFade()
+  local()
+  instance(y0, y1, y2, b1, N, idx)
+  global()
+  (
+    ( idx < N ) ?
+    (
+      idx += 1;
+      y0 = b1 * y1 - y2;
+      y2 = y1;
+      y1 = y0;
+      .5*(y0+1);
+    ) : (
+      1
+    )
+  );
+
+function grainRead_LQ()
+  local(out, frac,
+        id0, id1, id2, id3,
+        ism1, is0, is1, is2, floc)
+  instance(ptr, 
+           nTransition, nTransition2, N2, N3, idx,
+           y0, y1, y2, b1, lOut, rOut, outL, outR,
+           loc, hloc, ptrMin, ptrMax, 
+           advance, hadvance, lmul, rmul)
+  global(_G_L, _G_R, _G_GL, _G_GR, ACTIVE_GRAINS)
+  (
+    ( idx < N3 ) ? (
+      floc = floor(loc);
+      frac = loc - floc;
+      ptr = floc + floc;
+      
+      /* Evaluate the cosine grain windowing function */
+      idx < nTransition ? (
+        // Continue the window
+        y0 = b1 * y1 - y2;
+        y2 = y1;
+        y1 = y0;
+        out = 0.5 * (y0 + 1);
+        outL = out * lmul;
+        outR = out * rmul;
+      ) : ( idx < N2 ) ? (
+        outL = lmul;
+        outR = rmul;
+      ) : (
+        ( idx < (N2 + 1) ) ? (
+          this.grainPrepFall(nTransition2);
+        );
+        
+        // Continue the window
+        y0 = b1 * y1 - y2;
+        y2 = y1;
+        y1 = y0;
+        out = 0.5 * (y0+1);
+        outL = out * lmul;
+        outR = out * rmul;
+      );
+      
+      // Simple linear interpolation to keep CPU cost in check
+      // Big step up from sample & hold, but not nearly as expensive as AA filters.
+      lOut = outL * (ptr[] * (1-frac) + ptr[2]*frac);
+      rOut = outR * (ptr[1] * (1-frac) + ptr[3]*frac);
+      
+      idx += 1;
+      loc += advance;
+      
+      loc > .5*ptrMax ? (
+        loc -= .5*(ptrMax - ptrMin);
+      );
+      
+      ACTIVE_GRAINS += 1;
+      _G_L += lOut;
+      _G_R += rOut;
+      _G_GL += outL;
+      _G_GR += outR;
+    ) : ( idx += 1; );
+  );
+
+function grainRead_HQ()
+  local(out, frac,
+        id0, id1, id2, id3,
+        ism1, is0, is1, is2)
+  instance(ptr, 
+           nTransition, nTransition2, N2, N3, idx,
+           y0, y1, y2, b1, lOut, rOut, outL, outR,
+           loc, hloc, ptrMin, ptrMax, 
+           advance, hadvance, lmul, rmul)
+  global(_G_L, _G_R, _G_GL, _G_GR, ACTIVE_GRAINS)
+  (
+    ( idx < N3 ) ? (
+      ptr = 2*loc - floor(2*loc) + floor(loc)*2;
+      frac = loc-floor(loc);
+      ptr = floor(ptr);
+    
+      /* Evaluate the cosine grain windowing function */
+      idx < nTransition ? (
+        // Continue the window
+        y0 = b1 * y1 - y2;
+        y2 = y1;
+        y1 = y0;
+        out = 0.5 * (y0 + 1);
+      ) : ( idx < N2 ) ? (
+        out = 1;
+      ) : (
+        ( idx < (N2 + 1) ) ? (
+          this.grainPrepFall(nTransition2);
+        );
+        
+        // Continue the window
+        y0 = b1 * y1 - y2;
+        y2 = y1;
+        y1 = y0;
+        out = 0.5 * (y0 + 1);
+      );
+      
+      outL = out * lmul;
+      outR = out * rmul;
+      
+      /* Higher order Hermite interpolation */
+      ism1 = ptr[-4];
+      is0 = ptr[-2];
+      is1 = ptr[];
+      is2 = ptr[2];
+      
+      id0 = is0;
+      id1 = 0.5*(is1 - ism1);
+      id2 = ism1 - 2.5*is0 + 2*is1 - 0.5*is2;
+      id3 = 0.5*(is2 - ism1) + 1.5 * (is0 - is1);
+      lOut = outL * (((id3*frac+id2)*frac+id1)*frac+id0);
+      
+      ism1 = ptr[-3];
+      is0 = ptr[-1];
+      is1 = ptr[1];
+      is2 = ptr[3];
+      
+      id0 = is0;
+      id1 = 0.5*(is1 - ism1);
+      id2 = ism1 - 2.5*is0 + 2*is1 - 0.5*is2;
+      id3 = 0.5*(is2 - ism1) + 1.5 * (is0 - is1);
+      rOut = outL * (((id3*frac+id2)*frac+id1)*frac+id0);
+      
+      idx += 1;
+      loc += advance;
+      
+      loc > .5*ptrMax ? (
+        loc -= .5*(ptrMax - ptrMin);
+      );
+      
+      ACTIVE_GRAINS += 1;
+      _G_L += lOut;
+      _G_R += rOut;
+      _G_GL += outL;
+      _G_GR += outR;
+      
+    ) : ( idx += 1; );
+  );
+
+function granulator_init()
+  local()
+  global()
+  instance(nextGrain, cPos)
+  (
+    cPos = 0;
+    nextGrain = 0;
+    <?
+      ix = 0;
+      loop(60,
+        printf("this.grain%d.idx = 100000000000000000000000000000000;", ix);
+        ix += 1;
+      )
+    ?>
+  );
+
+
+function grainDrawHead(x, y, w, h, wb)
+  local(xloc, dist)
+  global(poo)
+  instance(ptr, ptrMin, ptrMax, idx, N3)
+  (
+    ( idx <= N3 ) ? (
+      dist = (wb - ptr);
+      ( dist < 0 ) ? ( dist += (ptrMax - ptrMin); );
+      dist = dist / (ptrMax - ptrMin);
+    
+      xloc = x + w * ( 1 - dist );
+      gfx_line(xloc, y, xloc, y+h);
+    );
+  );
+
+<?
+function draw_heads(count)
+local(i)
+global()
+instance()
+(
+  loop(i=0;count,
+    printf("this.grain%d.grainDrawHead(x, y, w, h, wb);", i);
+    i += 1
+  );
+)
+?>
+
+function grainDrawHeads(x, y, w, h, wb)
+  local()
+  global(max_grain)
+  instance()
+  (
+    (max_grain == 0) ? (
+      <?draw_heads(15);?>
+    ) : (max_grain == 1) ? (
+      <?draw_heads(30);?>
+    ) : (max_grain == 2) ? (
+      <?draw_heads(45);?>
+    ) : (
+      <?draw_heads(60);?>
+    );
+  );
+
+<?
+function write_grain_processors(mode, count)
+local(i)
+global()
+instance()
+(
+  loop(i=0;count,
+    printf("this.grain%d.grainRead_%s();", i, mode);
+    i += 1
+  );
+)
+?>
+
+
+
+
+<?
+function write_gain_func(count, phase_sizes)
+local(i)
+global()
+instance()
+(
+  loop(i=0;count,
+    printf("this.grain%d.initGrain(ptr, %s, readBufMin, readBufMax, spd, cpan_l, cpan_r) ? ( 0 ) ", i, phase_sizes);
+    (i < (count - 1)) ? ( printf(":"); );
+    i += 1
+  );
+);
+
+
+function write_grain_init(count)
+local()
+global()
+instance()
+(
+  printf("(grain_type < 1) ? (");
+    write_gain_func(count, "N, N, N");
+  printf(") : (grain_type < 2) ? (");
+    write_gain_func(count, "N * 1.5, 1, N * 1.5");
+  printf(") : (grain_type < 3) ? (");
+    write_gain_func(count, "N * 0.75, 1, N * 0.75");
+  printf(") : (grain_type < 4) ? (");
+    write_gain_func(count, "N * 2.5 - 1, 1, 0.5 * N");
+  printf(") : (");
+    write_gain_func(count, "N * 0.5, 1, N + N * 2.5 - 1");
+  printf(");");
+);
+?>
+
+function fixed_rand()
+instance()
+local()
+global(_rand_seed)
+(
+  _rand_seed = _rand_seed * 48271 + ((_rand_seed * 0.000022477936010098986327476744406794750830158591270446777344)|0) * -2147483647;
+  _rand_seed * 0.000000000465661287958260561303802660404471680521965026855469;
+);
+
+function init_rand()
+instance()
+local()
+global(_rand_seed)
+(
+  _rand_seed = <?printf("%d", seed)?>;
+);
+
+function resetGrain()
+instance()
+local()
+global()
+(
+  0;
+);
+
+function granulator_update(grainLength, useAbsoluteVar, jitter, useAbsoluteDist, overlapOrDist, spd, spdSpread, panSpread, reverseProbability, playing, readBufCur, readBufMin, readBufMax, writeBufCur, relPosition, pitchTimeInvariance, updateBuffer)
+  local(grainVar, N, ptr, pan, dist, safetyFactor, lostBuffer, total, reverse, lowLatencyCompensation, cpan, cpan_l, cpan_r, stoich_interval)
+  global(GRAINDISTMIN, GRAINDISTMAX, OVERLAPMAX, VARIANCEMIN, VARIANCEMAX, srate, oversamplingMode, _G_L, _G_R, _G_GL, _G_GR, max_grain, ACTIVE_GRAINS, igrain, grain_type, stochasticity)
+  instance(nextGrain, L, R, normalize, fixedGrainSize)
+  (
+    fixedGrainSize = 1;
+    nextGrain -= 1;
+
+    (playing && nextGrain <= 0) ? (
+      grainLength   = .001*grainLength*srate;
+    
+      /* Detune */
+      spd = spd + spdSpread * (<?printf(seed ? "fixed_rand()" : "rand()")?> - 0.5);
+      pitchTimeInvariance ? grainLength = grainLength * spd;
+      N = floor(grainLength*.3333333333333333333333);
+      
+      useAbsoluteVar ? (
+        grainVar = .001 * srate * exp(VARIANCEMIN + .001*(VARIANCEMAX-VARIANCEMIN)*jitter);
+      ) : (
+        grainVar = .01 * jitter * grainLength;
+      );
+      reverse = reverseProbability > <?printf(seed ? "fixed_rand()" : "rand()")?>;
+      
+      pan = .5 + panSpread*(<?printf(seed ? "fixed_rand()" : "rand()")?> - 0.5);
+      
+      fixedGrainSize ? (
+        N = N/spd;
+        
+        useAbsoluteDist ? (
+          nextGrain = .001*srate*exp(GRAINDISTMIN + .01075268*(GRAINDISTMAX-GRAINDISTMIN)*overlapOrDist);
+        ) : (
+          nextGrain = 3*N*igrain*(1-.01*overlapOrDist);
+        );
+        
+        total = readBufMax - readBufMin;
+        
+        safetyFactor = 1/spd;
+        safetyFactor < 1 ? (
+          // Correct for overshooting the buffer at the front
+          lowLatencyCompensation = 2 * grainLength * relPosition * safetyFactor * updateBuffer;
+        ) : (
+          // Correct for overshooting the buffer at the back (not actually desirable)
+          //lowLatencyCompensation = 2 * grainLength * (1-relPosition) * (safetyFactor-1) * updateBuffer;
+          1
+        );
+        
+        grainVar = min(grainVar, .25*total);
+        ptr = writeBufCur - readBufCur * total - 2*floor((<?printf(seed ? "fixed_rand()" : "rand()")?> - (1-relPosition)) * grainVar) - 2 * grainLength * relPosition + lowLatencyCompensation - 16;
+        
+        // Prevent going over the edge
+        ptr = min(ptr, (writeBufCur - 2 * grainLength));
+        
+        reverse ? (
+          spd = -spd;
+          ptr = ptr + 4 * grainLength * ( 1 - relPosition ) * updateBuffer + 2*grainLength * (1-updateBuffer);
+        );
+      
+        stochasticity ? (
+          stoich_interval = - nextGrain * log(<?printf(seed ? "fixed_rand()" : "rand()")?>);
+          stoich_interval > (5 * nextGrain) ? (
+            stoich_interval = (5 * nextGrain);
+          );
+          nextGrain = stochasticity * stoich_interval + (1.0 - stochasticity) * nextGrain;
+        );
+      );
+      
+      cpan = 0.5 * $pi * pan;
+      cpan_l = cos(cpan);
+      cpan_r = sin(cpan);
+      
+      (max_grain == 0) ? (
+        <?write_grain_init(15);?>
+      ) : (max_grain == 1) ? (
+        <?write_grain_init(30);?>
+      ) : (max_grain == 2) ? (
+        <?write_grain_init(45);?>
+      ) : (
+        <?write_grain_init(60);?>
+      );
+    );
+    
+    // Messy global sum passing
+    _G_L = _G_R = _G_GL = _G_GR = ACTIVE_GRAINS = 0;
+    
+    
+    (max_grain == 0) ? (
+      oversamplingMode == 0 ? (
+        <?write_grain_processors("LQ", 15);?>
+      ) : (
+        <?write_grain_processors("HQ", 15);?>
+      );
+    ) : (max_grain == 1) ? (
+      oversamplingMode == 0 ? (
+        <?write_grain_processors("LQ", 30);?>
+      ) : (
+        <?write_grain_processors("HQ", 30);?>
+      );
+    ) : (max_grain == 2) ? (
+      oversamplingMode == 0 ? (
+        <?write_grain_processors("LQ", 45);?>
+      ) : (
+        <?write_grain_processors("HQ", 45);?>
+      );
+    ) : (
+      oversamplingMode == 0 ? (
+        <?write_grain_processors("LQ", 60);?>
+      ) : (
+        <?write_grain_processors("HQ", 60);?>
+      );
+    );;
+    
+    L = _G_L;
+    R = _G_R;
+    
+    normalize ? (
+      L /= max(1,_G_GL);
+      R /= max(1,_G_GR);
+    );
+  );

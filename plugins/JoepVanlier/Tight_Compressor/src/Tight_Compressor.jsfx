@@ -1,0 +1,552 @@
+desc:Saike Tight Compressor
+tags: Tight Compressor
+version: 0.23
+author: Joep Vanlier
+changelog: Disable auto make-up gain by default. Report gain reduction. Make the gain level indicator in side chain mode report the gain level of the side chain rather than the modified chain.
+provides: saike_upsamplers.jsfx-inc
+Copyright (C) 2024 Joep Vanlier
+License: MIT
+Based on: Giannoulis et al, "Digital Dynamic Range Compressor Design—A Tutorial and Analysis", Journal of the Audio Engineering Society 60(6)
+
+import saike_upsamplers.jsfx-inc
+
+slider1:Treshold1=-20<-40,0,.1>Threshold (dB)
+slider2:Ratio1=.85<0,2,.0001>Ratio (-)
+slider3:sAttack1=0.1<0,1,.00001>Attack (-)
+slider4:sDecay1=0.1<0,1,.00001>Release (-)
+slider5:Knee1=0<0,30,0.1>Knee (dB)
+slider6:MakeUp1=0<0,1,1{No,Yes}>Auto make-up gain
+slider7:PreGain=0<-24,12,0.01>Pre-Gain
+slider8:PostGain=0<-24,12,0.01>Post-Gain
+slider9:Scrolls=0<0,1,1{No,Yes}>Scrolls?
+slider10:Topology=0<0,4,1{LogDetect (Smoother),LinDetect (Harsher),LogDetect Non-smooth,LinDetect Non-smooth}>Topology
+slider11:DryWet=1<0,1,.00001>Dry/Wet
+slider12:Oversampling=1<1,8,1>Oversampling factor
+slider13:LinkStereo=1<0,1,1{No,Yes}>Link Stereo
+slider14:OperatingMode=0<0,1,1{Normal (1-2),Sidechain (3-4)}>Operating Mode
+
+
+in_pin:Input L
+in_pin:Input R
+in_pin:Sidechain L
+in_pin:Sidechain R
+out_pin:Output L
+out_pin:Output R
+
+@init
+ext_gr_meter = 0;
+MIN_ATTACK = 0;
+MAX_ATTACK = 120;
+
+MIN_DECAY = 15;
+MAX_DECAY = 500;
+
+/* Set location of a window */
+function setWindowLocation(_x, _y, _w, _h)
+  global()
+  instance(x, y, w, h, cap, meterSpace)
+  local()
+  ( 
+    x = _x;
+    y = _y;
+    w = _w;
+    h = _h;
+    meterSpace = 40;
+  );
+
+function draw_compressor_window(floorLevel, compression, gradBlitTarget)
+  instance(x, y, w, h, meterSpace, lw, lh)
+  global(gfx_mode, gfx_dest, gfx_x, gfx_y, tester)
+  local(stepsize, steps, dy, yc, xs, xe, cStep, ww, hh, oldDest)
+  (
+    gfx_mode = 0; gfx_set(1,1,1,1);
+    ( ( lw != w ) || ( lh != h ) ) ? (
+      /* Only draw new gradients when size changes */
+      lw = w;
+      lh = h;
+      oldDest = gfx_dest;
+      gfx_setimgdim(gradBlitTarget, w, h);
+      gfx_dest = gradBlitTarget;
+      gfx_set(0,0,0,1);
+      gfx_rect(x,y,w,h);
+      gfx_gradrect(x, y, w, h, 0, 0, 0, .3, .0001, .0001, .0006, .0001, -.0001, -.0001, .0001, .0001);
+      gfx_gradrect(x, y, w, h, 0, 0, 0, 0, 0, .0, 0, .0001, .008, .0001, .001, .0004);
+      gfx_dest = oldDest;
+    );
+    gfx_x = gfx_y = 0;
+    gfx_blit(gradBlitTarget, 1, 0);
+  
+    stepsize = 3;
+    cStep = 0;
+    dy = stepsize*h/floorLevel;
+    
+    gfx_set(1,.3,.3,.6);
+    steps = floor( h * (compression/floorLevel) / 2 );
+    yc = y;
+    xs = x+(w-meterSpace)+4;
+    xe = x+w-4;
+    loop(-steps,
+      gfx_line(xs, floor(yc), xe, floor(yc));
+      yc += 2;
+    );
+   
+    steps = floor(-floorLevel/stepsize); 
+    yc = y;
+    gfx_setfont(1, "Arial", 16);
+    loop(steps,
+      gfx_set(1,1,1,.7);
+      sprintf(0, "-%2d", cStep);
+      gfx_measurestr(0, ww, hh);
+      gfx_x = x+w-.5*meterSpace-.5*ww;
+      gfx_y = yc-.5*hh-1;
+      gfx_drawstr(0);
+      gfx_set(1,1,1,.2);
+      gfx_line(x, floor(yc), x+w-.8*meterSpace, floor(yc));
+      gfx_line(x+w-.2*meterSpace, floor(yc), x+w, floor(yc));
+      //gfx_line(0, 50, 150, 5);
+      yc -= dy;
+      cStep += stepsize;
+    );
+  );
+
+function draw_buffer_db(scopeptr, scopebuffer, scopebuffermax, floorLevel)
+  instance(x, y, w, h, meterSpace)
+  globals(gfx_r, gfx_g, gfx_b, gfx_x, gfx_y, scrolls)
+  local(skipFactor, xx, yy, ybase, dx, lptr, lastx, lasty, scale)
+  (
+    skipFactor = 16;
+    scale = h / abs(floorLevel);
+    ybase = y;
+    xx    = x;
+    dx    = (skipFactor)*(w-meterSpace)/(scopebuffermax-scopebuffer);
+    
+    scrolls ? (
+      lptr  = scopeptr;
+      gfx_x = xx;
+      gfx_y = ybase;
+      loop((scopebuffermax-scopeptr)/skipFactor,
+        yy = ybase - scale*max(floorLevel,lptr[]);
+        gfx_lineto(xx, yy);
+        lptr += skipFactor;
+        xx += dx;
+      );
+      
+      lptr = scopebuffer;
+      loop((scopeptr - scopebuffer)/skipFactor,
+        yy = ybase - scale*max(floorLevel,lptr[]);
+        gfx_lineto(xx, yy);
+        lptr += skipFactor;
+        xx += dx;
+      );
+    ) : (
+      lptr  = scopebuffer;
+      
+      gfx_x = xx;
+      gfx_y = ybase;
+      loop((scopebuffermax-scopebuffer)/skipFactor,
+        yy = ybase - scale*max(floorLevel,lptr[]);
+        gfx_lineto(xx, yy);
+        lptr += skipFactor;
+        xx += dx;
+      );
+    );
+  );
+
+function updateBuffer(M)
+  local()
+  global()
+  instance(scopeptr, scopebuffermax, scopebuffer)
+  (
+    scopeptr[] = M;
+    scopeptr += 1;
+    scopeptr > scopebuffermax ? scopeptr = scopebuffer;
+    
+    M
+  );
+  
+function initBufferNoReset(scopebuffer_in, scopebuffermax_in)
+  local()
+  global()
+  instance(scopeptr, scopebuffermax, scopebuffer)
+  (
+    scopebuffer     = scopebuffer_in;
+    scopebuffermax  = scopebuffermax_in;
+    
+    scopeptr < scopebuffer ? (
+      scopeptr = scopebuffer 
+    ) : ( scopeptr > scopebuffermax ) ? scopeptr = scopebuffer    
+  );
+  
+/* Gain computer */
+function calcGain(xG)
+  instance(kWidth, quadF, thresh, ratio, iratio)
+  local(diff, tmp)
+  global()
+  (
+    diff = xG - thresh;
+    
+    // With knee?
+    (kWidth > 0) ? (
+      ( 2*diff < -kWidth ) ? (
+        xG
+      ) : ( (2 * abs(diff)) <= kWidth ) ? (
+        tmp = (diff + 0.5*kWidth);
+        xG + tmp*tmp*quadF
+      ) : (
+        thresh + diff * iratio
+      );
+    ) : (
+      ( xG >= thresh ) ? (
+        thresh + diff * iratio
+      ) : (
+        xG
+      );
+    );
+  );
+  
+function setCompressorOptions( thr, rat, atk, release, knee, makeupToggle )
+  instance( rt, at, thresh, ratio, iratio, kWidth, makeUp, quadF )
+  global(srate, Oversampling)
+  local(csrate)
+  (
+    csrate        = Oversampling*srate;
+    thresh        = thr;
+    ratio         = exp(rat*rat);
+    iratio        = 1/ratio;
+    at            = exp(-1/(.5*.001*atk*csrate));
+    rt            = exp(-1/(.5*.001*release*csrate));
+    kWidth        = knee;
+    quadF         = ((1/ratio)-1)/(2*kWidth);
+    makeUp        = makeupToggle ? -this.calcGain(0) : 0;
+  );  
+
+// Topology 3:
+/* Level detection log domain */
+function compressor(mx)
+  instance( rt, at, yL, makeUp, 
+            xG, c, ya, outGain, gain_reduction )
+  global()
+  local(xL, yG)
+  (
+    xG  = 20 * log10(max(abs(mx), 0.000001)); /* Peak */
+   
+    /* Calculate the gain curve */
+    yG = this.calcGain(xG);
+    xL  = xG - yG;
+   
+    // Update smooth peak detector (peak)
+    xL > yL ? (
+      yL = at * yL + (1.0-at) * xL;
+    ) : (
+      ya = max( xL, rt * ya + (1.0-rt) * xL );
+      yL = at * yL + (1.0-at) * ya;
+    );
+   
+    // Calculate gain correction
+    c   = -yL;
+   
+    // Determine current gain correction
+    //outGain = 10^((c + makeUp)/20);
+    gain_reduction = c + makeUp;
+    outGain = exp(.11512925464970228420089957273422 * (c + makeUp)); //log(10)/20 = .11512925464970228420089957273422;
+  );  
+  
+  
+// Topology 3:
+// Level detection linear domain
+function compressor2(mx)
+  instance(rt, at, c, xG, yL, ratio, makeUp, outGain, gain_reduction)
+  global()
+  local(xL, yG, ya)
+  (
+    xG = 20*log10(yL);
+    yG = this.calcGain(xG);
+    
+    xL = max(abs(mx), 0.000001);
+    xL > yL ? (
+      yL = at * yL + (1.0-at) * xL;
+    ) : (
+      ya = max( xL, rt * ya + (1.0-rt) * xL );
+      yL = at * yL + (1.0-at) * ya;
+    );
+    
+    c = yG - xG;
+    
+    //outGain = 10^((c + makeUp)/20);
+    gain_reduction = c + makeUp;
+    outGain = exp(.11512925464970228420089957273422 * (c + makeUp)); //log(10)/20 = .11512925464970228420089957273422;
+  );  
+  
+// Topology 3:
+/* Level detection log domain (decoupled) */
+function compressor_dc(mx)
+  instance( rt, at, yL, makeUp, 
+            xG, c, ya, outGain, gain_reduction)
+  global()
+  local(xL, yG)
+  (
+    xG  = 20 * log10(max(abs(mx), 0.000001)); /* Peak */
+   
+    /* Calculate the gain curve */
+    yG = this.calcGain(xG);
+    xL = xG - yG;
+   
+    // Update smooth peak detector (peak)
+    xL > yL ? (
+      yL = at * yL + (1.0-at) * xL;
+    ) : (
+      yL = rt * yL + (1.0-rt) * xL;
+    );
+   
+    // Calculate gain correction
+    c   = -yL;
+   
+    // Determine current gain correction
+    //outGain = 10^((c + makeUp)/20);
+    gain_reduction = c + makeUp;
+    outGain = exp(.11512925464970228420089957273422 * (c + makeUp)); //log(10)/20 = .11512925464970228420089957273422;
+  );
+  
+  
+// Topology 3:
+// Level detection linear domain (decoupled)
+function compressor2_dc(mx)
+  instance(rt, at, c, xG, yL, ratio, makeUp, outGain, gain_reduction)
+  global()
+  local(xL, yG, ya)
+  (
+    xG = 20*log10(yL);
+    yG = this.calcGain(xG);
+    
+    xL = max(abs(mx), 0.000001);
+    xL > yL ? (
+      yL = at * yL + (1.0-at) * xL;
+    ) : (
+      yL = rt * yL + (1.0-rt) * xL;
+    );
+    
+    c = yG - xG;
+    
+    //outGain = 10^((c + makeUp)/20);
+    gain_reduction = c + makeUp;
+    outGain = exp(.11512925464970228420089957273422 * (c + makeUp)); //log(10)/20 = .11512925464970228420089957273422;
+  );    
+  
+function drawGainCurve(floorLevel, current)
+  instance(x, y, w, h)
+  global(dcx)
+  local(N, cx, in, dIn, lastIn, out, lastOut)
+  (
+    N   = 120;
+    in  = floorLevel;
+    cx  = x;
+    dIn = - floorLevel / N;
+    dcx = h / abs(floorLevel);
+    lastIn  = 0;
+    lastOut = y - dcx * floorLevel;
+    loop(N-1,
+      in += dIn;
+      cx += .25*dcx;
+      out = y - dcx * this.calcGain(in);
+      current > in ? gfx_set(0.4,1.0,.4,1) : gfx_set(0,0,0,1);
+      gfx_line(lastIn, lastOut+1, cx, out+2);
+      gfx_line(lastIn, lastOut+1, cx, out+1);
+      gfx_line(lastIn, lastOut-2, cx, out-2);
+      gfx_line(lastIn, lastOut-2, cx, out-3);
+      gfx_set(1,1,1,1);
+      gfx_line(lastIn, lastOut, cx, out);
+      gfx_line(lastIn, lastOut-1, cx, out-1);
+      lastOut = out;
+      lastIn = cx;
+    );
+    
+    gfx_set(0.4,1.0,.4,1);
+    gfx_circle(.25*dcx*(current - floorLevel)/dIn, y - dcx * this.calcGain(current)-1, 4, 1, 1);
+    gfx_set(1,1,1,1);
+    gfx_circle(.25*dcx*(current - floorLevel)/dIn, y - dcx * this.calcGain(current)-1, 2, 1, 1);
+  );  
+  
+DYNAMICS_IN         = 100000;
+DYNAMICS_OUT        = 200000;
+DYNAMICS_GAIN       = 300000;
+DYNAMICS_BUFSIZE    = 100000;  
+  
+inBuf.initBufferNoReset(DYNAMICS_IN, DYNAMICS_IN+DYNAMICS_BUFSIZE-1);
+outBuf.initBufferNoReset(DYNAMICS_OUT, DYNAMICS_OUT+DYNAMICS_BUFSIZE-1);
+gainBuf.initBufferNoReset(DYNAMICS_GAIN, DYNAMICS_GAIN+DYNAMICS_BUFSIZE-1);
+
+@slider
+preGainLin      = 10^(PreGain/20);
+postGainLin     = 10^(PostGain/20);
+
+beta            = log(MIN_ATTACK);
+alpha           = log(MAX_ATTACK)-beta;
+Attack1         = exp(alpha * sAttack1 + beta) - 1;
+beta            = log(MIN_DECAY);
+alpha           = log(MAX_DECAY)-beta;
+Decay1          = exp(alpha * sDecay1 + beta);
+
+@block
+cL.setCompressorOptions( Treshold1, Ratio1, Attack1, Decay1, Knee1, MakeUp1 );
+cR.setCompressorOptions( Treshold1, Ratio1, Attack1, Decay1, Knee1, MakeUp1 );
+
+curFIRdelay = getFIRdelay(overSampling); 
+( curpdc != curFIRdelay ) ? (
+  pdc_top_ch = 2;
+  pdc_delay = curFIRdelay;
+  curpdc = curFIRdelay;
+);
+
+@sample
+function processSample()
+  global(inL, inR, measL, measR, Topology, outL, outR, LinkStereo,
+         cL.compressor, cR.compressor, cL.compressor2, cR.compressor2, 
+         cL.compressor_dc, cR.compressor_dc, cL.compressor2_dc, cR.compressor2_dc, 
+         cL.gain_reduction, cR.gain_reduction,
+         DryWet, ext_gr_meter)
+  local(G)
+  (
+    LinkStereo ? (
+      ( Topology == 0 ) ? (
+        G = cL.compressor(max(abs(measL), abs(measR)));
+      ) : ( Topology == 1 ) ? (
+        G = cL.compressor2(max(abs(measL), abs(measR)));
+      ) : ( Topology == 2 ) ? (
+        G = cL.compressor_dc(max(abs(measL), abs(measR)));
+      ) : ( Topology == 3 ) ? (
+        G = cL.compressor2_dc(max(abs(measL), abs(measR)));
+      );
+      outL = G * inL;
+      outR = G * inR;
+      ext_gr_meter = cL.gain_reduction;
+    ) : (
+      ( Topology == 0 ) ? (
+        outL = cL.compressor(measL) * inL;
+        outR = cR.compressor(measR) * inR;
+      ) : ( Topology == 1 ) ? (
+        outL = cL.compressor2(measL) * inL;
+        outR = cR.compressor2(measR) * inR;
+      ) : ( Topology == 2 ) ? (
+        outL = cL.compressor_dc(measL) * inL;
+        outR = cR.compressor_dc(measR) * inR;
+      ) : ( Topology == 3 ) ? (
+        outL = cL.compressor2_dc(measL) * inL;
+        outR = cR.compressor2_dc(measR) * inR;
+      );
+      ext_gr_meter = (cL.gain_reduction + cR.gain_reduction) * 0.5;
+    );
+    
+    outL = inL * (1-DryWet) + outL * DryWet;
+    outR = inR * (1-DryWet) + outR * DryWet;
+  );
+
+inL = spl0 *= preGainLin;
+inR = spl1 *= preGainLin;
+
+in  = 20*log10(.5*(abs(spl0)+abs(spl1)));
+
+( overSampling == 1 ) ? (
+  OperatingMode == 0 ? (
+    measL = spl0;
+    measR = spl1;
+  ) : (
+    measL = spl2;
+    measR = spl3;
+  );
+
+  processSample();
+  spl0 = outL;
+  spl1 = outR;
+) : (
+  upsampleL.updateUpHist(overSampling, inL);
+  upsampleR.updateUpHist(overSampling, inR);
+
+  (OperatingMode == 1) ? (
+    sideChainUpsampleL.updateUpHist(overSampling, spl2);
+    sideChainUpsampleR.updateUpHist(overSampling, spl3);
+  );
+
+  f = 0;
+  loop(overSampling,
+    f += 1;
+    inL = overSampling * upsampleL.upSample(overSampling);
+    inR = overSampling * upsampleR.upSample(overSampling);
+
+    OperatingMode == 0 ? (
+      measL = inL;
+      measR = inR;
+    ) : (
+      measL = overSampling * sideChainUpsampleL.upSample(overSampling);
+      measR = overSampling * sideChainUpsampleR.upSample(overSampling);
+    );
+
+    processSample();
+    
+    downL.updateDownHist(overSampling, outL);
+    downR.updateDownHist(overSampling, outR);
+    
+    ( f == 1 ) ? (
+      spl0 = downL.downSample(overSampling);
+      spl1 = downR.downSample(overSampling);
+    );
+  );
+);
+
+spl0 *= postGainLin;
+spl1 *= postGainLin;
+
+out = 20*log10(.5*(abs(spl0)+abs(spl1)));
+
+bufSmoothing = .995;
+OperatingMode ? (
+  sideIn = 20*log10(.5*(abs(spl2)+abs(spl3)));
+  movIn = movIn * bufSmoothing + sideIn * (1-bufSmoothing);
+) : (
+  movIn = movIn * bufSmoothing + in * (1-bufSmoothing);
+);
+
+inBuf.updateBuffer( movIn );
+gainBuf.updateBuffer( cL.c );
+
+ol4 = ol3;
+ol3 = ol2;
+ol2 = ol1;
+ol1 = out;
+
+movOut = movOut * bufSmoothing + out * (1-bufSmoothing);
+outBuf.updateBuffer( movOut );
+
+@gfx 800 300
+gfx_set(0,0,0,0);
+gfx_rect(0,0,400,400);
+
+floorLevel = -40;
+cL.setWindowLocation(0, 0, gfx_w, gfx_h);
+cL.draw_compressor_window(floorLevel, -cL.c, 1);
+gfx_set(.3, .3, .5, .8);
+cL.draw_buffer_db(inBuf.scopeptr,   inBuf.scopebuffer,    inBuf.scopebuffermax,     floorLevel);
+gfx_set(1, 0, 1, .8);
+cL.draw_buffer_db(gainBuf.scopeptr, gainBuf.scopebuffer,  gainBuf.scopebuffermax,   floorLevel);
+gfx_set(.9, .3, .3, .8);
+cL.draw_buffer_db(outBuf.scopeptr,  outBuf.scopebuffer,   outBuf.scopebuffermax,    floorLevel);
+
+cL.drawGainCurve(floorLevel, movIn);
+
+writeX = cL.w - 200;
+writeY = cL.h - fSize*4;
+fSize = 24;
+gfx_set(0,0,0,.15);
+gfx_rect(writeX-12, writeY-7, 174, 3*fSize+14);
+gfx_set(0,0,0,.25);
+gfx_rect(writeX-10, writeY-5, 170, 3*fSize+10);
+gfx_set(1,1,1,1);
+gfx_x = writeX;
+gfx_y = writeY;
+gfx_setfont(1, "Arial", fSize);
+gfx_printf("Ratio: %.3g", cL.ratio);
+gfx_x = writeX;
+gfx_y += 24;
+gfx_printf("Attack: %.3g ms", Attack1);
+gfx_x = writeX;
+gfx_y += 24;
+gfx_printf("Decay: %.3g ms", Decay1);

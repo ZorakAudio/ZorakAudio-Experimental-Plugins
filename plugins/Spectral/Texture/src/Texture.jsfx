@@ -46,7 +46,7 @@ slider36:0<0,1,1{Mono,Poly}>-MIDI Note Mode
 @init
 ln10 = 2.302585092994046;
 ln2  = 0.6931471805599453;
-PI   = 3.14159265358979323846;
+PI_CONST = 3.14159265358979323846;
 eps  = 0.000000000001;
 
 tex_base = 0;
@@ -538,9 +538,9 @@ env_band_atk_c = exp(-1 / env_shape_atk_s);
 env_band_rel_c = exp(-1 / env_shape_speed_s);
 env_gain_atk_c = exp(-1 / env_gain_atk_s);
 env_gain_rel_c = exp(-1 / env_shape_speed_s);
-env_lp1_c = exp(-2 * PI * 180 / srate);
-env_lp2_c = exp(-2 * PI * 900 / srate);
-env_lp3_c = exp(-2 * PI * 3800 / srate);
+env_lp1_c = exp(-2 * PI_CONST * 180 / srate);
+env_lp2_c = exp(-2 * PI_CONST * 900 / srate);
+env_lp3_c = exp(-2 * PI_CONST * 3800 / srate);
 env_shape_max_ratio = exp((8 / 20) * ln10);
 
 // lightweight material profile layer: changes priors, not engines.
@@ -3488,7 +3488,7 @@ function env_eval(age, env_len, is_gran) local(a_s, d_s, r_s, hold_s, tot, scale
   );
 
   is_gran > 0 ? (
-    gw = sin(PI * clamp1(age / max(1, env_len - 1), 0, 1));
+    gw = sin(PI_CONST * clamp1(age / max(1, env_len - 1), 0, 1));
     gw *= gw;
     out = out * 0.78 + gw * 0.22;
   );
@@ -3533,7 +3533,7 @@ function ola_window(age, env_len, mode_local, cand_phase) local(fade_ratio, fade
   fade_len > 1 ? (
     age < fade_len ? (
       t = age / max(1, fade_len);
-      win_in = sin(0.5 * PI * clamp1(t, 0, 1));
+      win_in = sin(0.5 * PI_CONST * clamp1(t, 0, 1));
       win_in *= win_in;
     ) : (
       win_in = 1;
@@ -3542,7 +3542,7 @@ function ola_window(age, env_len, mode_local, cand_phase) local(fade_ratio, fade
     rem = env_len - 1 - age;
     rem < fade_len ? (
       t = rem / max(1, fade_len);
-      win_out = sin(0.5 * PI * clamp1(t, 0, 1));
+      win_out = sin(0.5 * PI_CONST * clamp1(t, 0, 1));
       win_out *= win_out;
     ) : (
       win_out = 1;
@@ -3753,14 +3753,14 @@ function preview_edge_window(age, env_len) local(fade_len, t, rem, win_in, win_o
   fade_len > 1 ? (
     age < fade_len ? (
       t = age / max(1, fade_len);
-      win_in = sin(0.5 * PI * clamp1(t, 0, 1));
+      win_in = sin(0.5 * PI_CONST * clamp1(t, 0, 1));
       win_in *= win_in;
     );
 
     rem = env_len - 1 - age;
     rem < fade_len ? (
       t = rem / max(1, fade_len);
-      win_out = sin(0.5 * PI * clamp1(t, 0, 1));
+      win_out = sin(0.5 * PI_CONST * clamp1(t, 0, 1));
       win_out *= win_out;
     );
   );
@@ -4769,8 +4769,8 @@ function draw_curve_seg(x1, y1, x2, y2, k) local(i, steps, t, tt, px, py, lx, ly
 
 function draw_knob_shell(cx, cy, rad, n, rr, gg, bb, hovered, active)
 local(start_ang, end_ang, ang, i, px1, py1, px2, py2) (
-  start_ang = PI * 0.75;
-  end_ang   = PI * 2.25;
+  start_ang = PI_CONST * 0.75;
+  end_ang   = PI_CONST * 2.25;
   n = clampg(n, 0, 1);
   ang = start_ang + (end_ang - start_ang) * n;
 

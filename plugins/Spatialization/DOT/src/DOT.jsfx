@@ -236,7 +236,7 @@ slider8:-24<-60,-10,0.5>Leak Floor (dB)
 
   function build_kernel() local(i,N,n0,f3db,sigma,sum,t,a,wetcol,sz,br,col,hard,cav,thick,
                                 tap_base,tapA,tapB,tapC,d0,d1,d2,topo,w_taps,w_modes,leak,
-                                seed,modeA,damp,tau,fbase,K,k,r,jit,fk,ak,acc,
+                                seed,modeA,damp,tau,fbase,mode_count,k,r,jit,fk,ak,acc,
                                 x,xi,xj,frac,b,peak,s) (
 
     topo = slider1|0;
@@ -368,7 +368,7 @@ slider8:-24<-60,-10,0.5>Leak Floor (dB)
     fbase = (240 + 1400*br) / vol;
     fbase = clamp(fbase, 120, 2200);
 
-    topo == 1 ? K=4 : (topo == 2 ? K=3 : (topo == 3 ? K=3 : K=2));
+    topo == 1 ? mode_count=4 : (topo == 2 ? mode_count=3 : (topo == 3 ? mode_count=3 : mode_count=2));
 
     i=0;
     loop(N,
@@ -377,7 +377,7 @@ slider8:-24<-60,-10,0.5>Leak Floor (dB)
 
       acc = 0;
       k=0;
-      loop(K,
+      loop(mode_count,
         r = 1 + k*0.72;
         jit = (hash01(seed + k*97) - 0.5) * 0.18;
         fk = fbase * (r + jit);
@@ -390,7 +390,7 @@ slider8:-24<-60,-10,0.5>Leak Floor (dB)
         k += 1;
       );
 
-      acc *= (1 / max(1, K));
+      acc *= (1 / max(1, mode_count));
       h[h_base+i] += modeA * a * acc;
 
       i += 1;

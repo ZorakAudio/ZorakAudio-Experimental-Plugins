@@ -1,0 +1,211 @@
+desc:Saike Phase Mangler (BETA)
+tags: phase shifting plugin
+version: 0.05
+author: Joep Vanlier
+changelog: Fix graphical glitch that happened when updating the nodes while rendering (threading issue).
+license: MIT
+provides:
+  PhaseMangler_Dependencies/* 
+about:
+  # A plugin to manipulate audio phase in a frequency dependent manner
+  This plugin can be used to shift the phase of audio in a frequency dependent manner. One can
+  draw a phase distortion using a spline. This distortion can be modulated by scaling the amount
+  of phase distortion.
+  
+  The plugin has a number of modes of operation.
+    Linked - Left and right are distorted according to the same shape.
+    Opposite - Left and right are phase shifted in an opposite manner. Good for making whoosy
+    laser-like sounds, but can lead to loss of mono compatiblity.
+    Mono-Opposite - This mode works like opposite, but computes the changes applied to the left and
+    right channel and adds an opposite change to the other channel. This serves more as a 
+    widener.
+    
+  This plugin operates using an STFT. Sharp phase transitions can lead to a loss of allpass response.
+
+slider1:x1=0<0,1,0.000001>-1X
+slider2:y1=0<-0.5,0.5,0.000001>-1Y
+slider3:x2=0.1<0,1,0.000001>-2X
+slider4:y2=0<-0.5,0.5,0.000001>-2Y
+slider5:x3=0.2<0,1,0.000001>-3X
+slider6:y3=0<-0.5,0.5,0.000001>-3Y
+slider7:x4=0.3<0,1,0.000001>-4X
+slider8:y4=0<-0.5,0.5,0.000001>-4Y
+slider9:x5=0.4<0,1,0.000001>-5X
+slider10:y5=0<-0.5,0.5,0.000001>-5Y
+slider11:x6=0.5<0,1,0.000001>-6X
+slider12:y6=0<-0.5,0.5,0.000001>-6Y
+slider13:x7=0.6<0,1,0.000001>-7X
+slider14:y7=0<-0.5,0.5,0.000001>-7Y
+slider15:x8=0.7<0,1,0.000001>-8X
+slider16:y8=0<-0.5,0.5,0.000001>-8Y
+slider17:x9=0<0,1,0.000001>-9X
+slider18:y9=0<-0.5,0.5,0.000001>-9Y
+slider19:x10=0.1<0,1,0.000001>-10X
+slider20:y10=0<-0.5,0.5,0.000001>-10Y
+slider21:x11=0.2<0,1,0.000001>-11X
+slider22:y11=0<-0.5,0.5,0.000001>-11Y
+slider23:x12=0.3<0,1,0.000001>-12X
+slider24:y12=0<-0.5,0.5,0.000001>-12Y
+slider25:x13=0.4<0,1,0.000001>-13X
+slider26:y13=0<-0.5,0.5,0.000001>-13Y
+slider27:x14=0.5<0,1,0.000001>-14X
+slider28:y14=0<-0.5,0.5,0.000001>-14Y
+slider29:x15=0.6<0,1,0.000001>-15X
+slider30:y15=0<-0.5,0.5,0.000001>-15Y
+slider31:x16=0.7<0,1,0.000001>-16X
+slider32:y16=0<-0.5,0.5,0.000001>-16Y
+slider33:polarity=0<0,1,{Same,Opposite,Opposite Compensated (not flat but effect disappears when summed to mono)}>-Polarity
+slider34:compensation=0.5<0,1,0.0001>-Mono compensation
+slider35:test_mono=0<0,1,{Off,On}>-Test mono
+slider36:scale=1<0,20,0.1>-scale
+
+import saike_splines.jsfx-inc
+import saike_phase_mangler_stft.jsfx-inc
+import saike_fft_view.jsfx-inc
+import saike_phase_mangler_gfx.jsfx-inc
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+ext_noinit = 1.0;
+version = 1;
+freemem = 0;
+freemem = stft.init_stft_mem(freemem, 5);
+freemem = gfx_fft.init_fft_scope_mem(freemem, 5);
+freemem = stereo_delay.allocate_stereo_delay_mem(freemem, 32768);
+spline.init_spline(freemem, 1);
+scale_slider.init_slider(36, 1, 0, 20);
+mono_compensation_slider.init_slider(34, 0.5, 0, 1);
+
+function set_sliders_now()
+(
+  current_compensation = compensation;
+);
+
+set_sliders_now();
+
+@slider
+spline.read_data();
+spline.should_update = 1;
+
+@serialize
+file_var(0, version);
+file_var(0, spline.n_points);
+
+spline.read_data();
+spline.should_update = 1;
+set_sliders_now();
+
+@block
+spline.spline_block();
+stft.block_stft();
+pdc_top_ch = 2;
+pdc_bot_ch = 0;
+pdc_delay = stft.fft_size;
+
+@sample
+gfx_fft.process_fft_view(spl0, spl1);
+stft.process_stft(spl0, spl1);
+
+(polarity == 2) ? (
+  stereo_delay.simple_stereo_delay(spl0, spl1, stft.fft_size);
+  
+  // Rough anti-click
+  current_compensation += 0.01 * (compensation - current_compensation);
+  
+  l_diff = stft.out_left - stereo_delay.l;
+  r_diff = stft.out_right - stereo_delay.r;
+  
+  spl0 = stereo_delay.l + (l_diff - r_diff * current_compensation) * 0.5;
+  spl1 = stereo_delay.r + (r_diff - l_diff * current_compensation) * 0.5;
+) : (
+  spl0 = stft.out_left;
+  spl1 = stft.out_right;
+);
+
+test_mono ? (
+  spl0 = spl1 = (spl0 + spl1) / 2
+);
+
+@gfx 600 300
+floor_db = -84 + 12;
+ceil_db = 0;
+db_step_size = 6;
+
+gfx_set(0.15, 0.1, 0.2, 0.3);
+gfx_rect(0, 0, gfx_w, gfx_h);
+
+xmin = 0.05 * gfx_w;
+ymin = 0.2 * gfx_h;
+width = 0.9 * gfx_w;
+height = 0.7 * gfx_h;
+
+x_left = 0.05 * gfx_w;
+y_top = 0.05 * gfx_h;
+button_size = 0.1 * gfx_h;
+d_button = button_size + 4;
+toggle_button(x_left, y_top, button_size, button_size, polarity, 0, "Use same phase shift\nfor left and right.") ? polarity = 0;
+toggle_button(x_left + d_button, y_top, button_size, button_size, polarity, 1, "Use opposite phase shift\nfor left and right.") ? polarity = 1;
+toggle_button(x_left + 2 * d_button, y_top, button_size, button_size, polarity, 2, "Use opposite phase shift\nfor left and right. Then transfers\nopposite change from the\nleft to the right channel and\nvice versa so that downmixing\nto mono partially cancels the\neffect.") ? polarity = 2;
+toggle_button(x_left + 3 * d_button, y_top, button_size, button_size, test_mono * 3, 3, "Convert output signal to mono\n(to test mono compatibility).") ? test_mono = 1 - test_mono;
+
+(polarity == 2) ? (
+  mono_compensation_slider.simple_control(x_left + 4 * d_button, y_top + 0.5 * button_size, 0.9 * gfx_w - 4 * d_button, 0.5 * button_size, "Mono-ization");
+  scale_slider.simple_control(x_left + 4 * d_button, y_top, 0.9 * gfx_w - 4 * d_button, 0.5 * button_size, "Effect strength");
+) : (
+  scale_slider.simple_control(x_left + 4 * d_button, y_top, 0.9 * gfx_w - 4 * d_button, button_size, "Effect strength");
+);
+
+gfx_fft.block_fft_view();
+gfx_fft.render_fft(xmin, ymin, width, height, floor_db, ceil_db, db_step_size, 20, srate / 2, 0.9, 0.6);
+
+function draw_phase_grid(x, y, w, h)
+global(gfx_a, scale)
+local(cy, yh, cc)
+(
+  cy = 0;
+  yh = y + h;
+  gfx_a = 1;
+  cc = 1;
+  colormodel(0.7);
+  loop(2 * scale,
+    gfx_a = cc == 1 ? 0.5 / (1 + 0.15 * scale) : 1 / (1 + 0.15 * scale);
+    
+    cy += 0.25 * h / scale;
+    gfx_line(x, yh + cy, x + w, yh + cy);
+    scale < 5 ? gfx_line(x, yh + cy + 1, x + w, yh + cy + 1);
+    
+    gfx_line(x, yh - cy, x + w, yh - cy);
+    scale < 5 ? gfx_line(x, yh - cy + 1, x + w, yh - cy + 1);
+    cc = 1 - cc;
+  );
+
+);
+
+gfx_set(1, 1, 1, 1);
+draw_phase_grid(xmin, ymin - height / 2, width, height);
+spline.draw(xmin, ymin - height / 2, width, height);
+
+/*
+// Debug stuff
+gfx_set(1, 1, 1, 1);
+gfx_x = 0;
+gfx_y = 0;
+i = 0;
+loop(512,
+  gfx_circle(i, 0.5 * gfx_h + 0.25 * gfx_h * stft.phase_left[i], 2);
+  i += 1;
+);
+*/
+
+last_cap = mouse_cap;
+last_x = mouse_x;
+last_y = mouse_y;
+
+HINT_FONT = 6;
+gfx_setfont(HINT_FONT, "Arial", max(12, 10 * (gfx_h / 300)));
+hinter.drawHint_draw();
+

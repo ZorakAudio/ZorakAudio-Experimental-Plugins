@@ -1,0 +1,266 @@
+desc:Saike Never Odd or Even (Distortion)
+tags: static waveshaper
+version: 0.05
+author: Joep Vanlier
+changelog: Add DC blocker that induces less phase distortion. Add oversampling option.
+provides: nooo_deps/*
+Copyright (C) 2019 Joep Vanlier
+License: MIT
+
+slider1:current_gain=0<-6,24,0.0001>Gain (dB)
+slider2:current_ceiling=0<-36,0,0.0001>Ceiling (dB)
+slider3:even=0<0,1,.0001>Even
+slider4:odd=0<0,1,.0001>Odd
+slider5:warmth=0<-12,12,.001>Warmth (dB)
+slider7:dc_correct=2<0,2,1{IIR (can induce phase distortion),OFF,Improved IIR (less phase distortion)}>DC Correction
+slider8:agc=0<0,2,1{OFF,active adjustment,fixed}>Dynamic Gain Compensation
+slider9:oversampling=1<1,4,1>Oversampling factor
+
+import nooo_upsamplers.jsfx-inc
+import nooo_agc.jsfx-inc
+
+@init
+  /* Very flat 6-pole butterworth made of cascade of cytomics' SVF */
+  function init_HP6(freq)
+    global(srate)
+    local(res)
+    instance(g, a1_1, a1_2, a1_3, a2_1, a2_2, a2_3, k1, k2, k3)
+    (
+      g = tan( $pi * freq );
+      
+      k1  = 1.93185165257814; // sqrt(2+sqrt(3))
+      a1_1 = 1/(1+g*(g+k1));
+      
+      k2 = 1.41421356474619; // sqrt(2)
+      a1_2 = 1/(1+g*(g+k2));
+      
+      k3 = 0.517638090205042; // sqrt(2-sqrt(3))
+      a1_3 = 1/(1+g*(g+k3));
+      
+      a2_1 = g*a1_1;
+      a2_2 = g*a1_2;
+      a2_3 = g*a1_3;
+    );
+
+  function eval_HP6(v0)
+    global()
+    local(v1, v2, hp)
+    instance(ic1eq, ic2eq, ic3eq, ic4eq, ic5eq, ic6eq,
+             g, a1_1, a1_2, a1_3, a2_1, a2_2, a2_3, k1, k2, k3)
+    (
+      v1 = a1_1 * ic1eq + a2_1*(v0-ic2eq);
+      v2 = ic2eq + g*v1;
+      ic1eq = 2*v1 - ic1eq;
+      ic2eq = 2*v2 - ic2eq;
+      hp    = v0 - k1*v1 - v2;
+      
+      v1 = a1_2 * ic3eq + a2_2*(hp-ic4eq);
+      v2 = ic4eq + g*v1;
+      ic3eq = 2*v1 - ic3eq;
+      ic4eq = 2*v2 - ic4eq;
+      hp    = hp - k2*v1 - v2;
+      
+      v1 = a1_3 * ic5eq + a2_3*(hp-ic6eq);
+      v2 = ic6eq + g*v1;
+      ic5eq = 2*v1 - ic5eq;
+      ic6eq = 2*v2 - ic6eq;
+      
+      hp    = hp - k3*v1 - v2;
+    );
+    
+  function eval_SubLP(v0)
+    global()
+    local(v1, v2)
+    instance(ic1eq, ic2eq, ic3eq, ic4eq, ic5eq, ic6eq,
+             g, a1_1, a1_2, a1_3, a2_1, a2_2, a2_3, k1, k2, k3)
+    (
+      v1 = a1_1 * ic1eq + a2_1*(v0-ic2eq);
+      v2 = ic2eq + g*v1;
+      ic1eq = 2*v1 - ic1eq;
+      ic2eq = 2*v2 - ic2eq;
+      
+      v1 = a1_2 * ic3eq + a2_2*(v2-ic4eq);
+      v2 = ic4eq + g*v1;
+      ic3eq = 2*v1 - ic3eq;
+      ic4eq = 2*v2 - ic4eq;
+      
+      v1 = a1_3 * ic5eq + a2_3*(v2-ic6eq);
+      v2 = ic6eq + g*v1;
+      ic5eq = 2*v1 - ic5eq;
+      ic6eq = 2*v2 - ic6eq;
+      
+      v0 - v2
+    );    
+
+  function init_tilt(freq, res, A)
+    global(srate, slider54)
+    local(g, k)
+    instance(ic1eq, ic2eq, A, a1, a2, a3, m0, m1, m2)
+    (
+      g = tan(.5 * $pi * freq) / sqrt(A);
+      k = 2 - 2*res;
+      
+      a1 = 1/(1+g*(g+k));
+      a2 = g*a1;
+      a3 = g*a2;
+      
+      m0 = 1;
+      m1 = k*(A-1);
+      m2 = (A*A - 1);
+    );
+
+  function eval_tilt(v0)
+    global()
+    local(v1, v2, v3)
+    instance(ic1eq, ic2eq, a1, a2, a3, m0, m1, m2)
+    (
+      v3 = v0 - ic2eq;
+      v1 = a1 * ic1eq + a2 * v3;
+      v2 = ic2eq + a2 * ic1eq + a3*v3;
+      ic1eq = 2*v1 - ic1eq;
+      ic2eq = 2*v2 - ic2eq;    
+      
+      (v0 + m1 * v1 + m2 * v2)
+    );
+
+dc0.init_HP6(7/srate);
+dc1.init_HP6(7/srate);
+dc2.init_HP6(10/srate);
+dc3.init_HP6(10/srate);
+
+freemem = 0;
+freemem = in_level.level_estimator(freemem, 0.4);
+freemem = out_level.level_estimator(freemem, 0.4);
+
+@slider
+log10d20_conversion = .11512925464970228420089957273422; //log(10)/20;
+preamp      = exp(log10d20_conversion * current_gain);
+ceiling     = exp(-log10d20_conversion * current_ceiling);
+slew_target = exp(log10d20_conversion * 15 * slew);
+inv_ceiling = 1.0 / ceiling;
+
+tilt_gain = 10^(warmth / 20);
+inverse_tilt_gain = 1.0 / tilt_gain;
+omega_tilt = 3200 / srate;
+l_tilt.init_tilt(omega_tilt, 0, tilt_gain);
+r_tilt.init_tilt(omega_tilt, 0, tilt_gain);
+l_itilt.init_tilt(omega_tilt, 0, inverse_tilt_gain);
+r_itilt.init_tilt(omega_tilt, 0, inverse_tilt_gain);
+
+@block
+g_const = 0.9999^(1 / oversampling);
+
+curFIRdelay = getFIRdelay(oversampling);
+( pdc_delay != curFIRdelay ) ? (
+  pdc_top_ch = 2;
+  pdc_delay = curFIRdelay;
+);
+
+// mode 2 doesn't make sense unless a reference was taken
+(agc == 2) && (agc_gain_reduction == 0) ? agc = 1;
+
+@serialize
+// Force initialization if not writing
+writing = file_avail(0) < 0;
+!writing ? ( agc_gain_reduction = 0; );
+file_var(0, agc_gain_reduction);
+
+@sample
+function tanh(x)
+local()
+global()
+instance()
+(
+  2/(1+exp(-2*x)) - 1
+);
+
+function processChannel(x)
+local(t1, x_corrected)
+global(even, odd, g_const)
+instance(current_gain)
+(
+  current_gain = max(g_const*current_gain, abs(x));
+  t1 = tanh(x);
+  x_corrected = x*(tanh(current_gain))/current_gain;
+  t1 = x_corrected + odd*(t1-x_corrected) + even*(t1 * t1);    
+  t1
+);
+
+inL = ceiling*preamp*spl0;
+inR = ceiling*preamp*spl1;
+
+// De-emphasize before for warmth
+warmth != 0 ? (
+  inL=l_itilt.eval_tilt(inL)*tilt_gain;
+  inR=r_itilt.eval_tilt(inR)*tilt_gain;
+);
+
+// Oversample here
+(oversampling == 1) ? (
+  l = left.processChannel(inL);
+  r = right.processChannel(inR);
+) : (
+  upsampleL.updateUpHist(oversampling, inL);
+  upsampleR.updateUpHist(oversampling, inR);
+  
+  f = 0;
+  loop(oversampling,
+    f += 1;
+    inL = oversampling*upsampleL.upSample(oversampling);
+    inR = oversampling*upsampleR.upSample(oversampling);
+  
+    outL = left.processChannel(inL);
+    outR = right.processChannel(inR);
+    downL.updateDownHist(oversampling, outL);
+    downR.updateDownHist(oversampling, outR);
+    
+    ( f == 1 ) ? (
+      l = downL.downSample(oversampling);
+      r = downR.downSample(oversampling);
+    );
+  );
+);
+
+l *= inv_ceiling;
+r *= inv_ceiling;
+
+// Re-emphasize before for warmth
+warmth != 0 ? (
+  l=l_tilt.eval_tilt(l)*inverse_tilt_gain;
+  r=r_tilt.eval_tilt(r)*inverse_tilt_gain;
+);
+
+(dc_correct == 0) ? (
+  l = dc0.eval_HP6(l);
+  r = dc1.eval_HP6(r);
+) : (dc_correct == 2) ? (
+  l = dc2.eval_SubLP(l);
+  r = dc3.eval_SubLP(r);
+);
+
+(agc == 2) ? (
+  l *= agc_gain_reduction;
+  r *= agc_gain_reduction;
+) : (agc == 1) ? (
+  pklvl = 0.999 * pklvl + 0.001 * max(abs(spl0), abs(spl1));
+  (pklvl > 0.001) ? (
+    in_level.eval_gain(spl0, spl1);
+    out_level.eval_gain(l, r);
+  );
+  
+  in_level.got_full_buf ? (
+    out_total = out_level.sum_l + out_level.sum_r;
+    new_agc_gain_reduction = (out_total > 0.0001) ? sqrt((in_level.sum_l + in_level.sum_r) / out_total) : 1;
+    
+    agc_gain_reduction = 
+      (new_agc_gain_reduction > agc_gain_reduction) ? 
+      new_agc_gain_reduction
+      : 0.9999 * agc_gain_reduction + 0.0001 * new_agc_gain_reduction;
+    
+    l *= agc_gain_reduction;
+    r *= agc_gain_reduction;
+  );
+);
+
+spl0 = l;
+spl1 = r;

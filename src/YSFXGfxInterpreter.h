@@ -120,7 +120,54 @@ static const uint8_t DSPJSFX_GFX_VAR_FLAGS[1] = { 0 };
 
 static inline int64_t jsfxTruncIndexLikeAot (double v) noexcept
 {
-  return (int64_t) (v + 1.0e-5);
+  // A direct floating-point -> integer conversion is undefined for NaN/Inf
+  // and for values outside int64_t. @gfx code is user code, so keep malformed
+  // values from reaching a native conversion.
+  if (!std::isfinite(v))
+    return 0;
+
+  const double biased = v + 1.0e-5;
+  constexpr double i64Min = -9223372036854775808.0;
+  constexpr double i64MaxExclusive = 9223372036854775808.0;
+
+  if (biased <= i64Min)
+    return std::numeric_limits<int64_t>::min();
+  if (biased >= i64MaxExclusive)
+    return std::numeric_limits<int64_t>::max();
+
+  return (int64_t) biased;
+}
+
+// Portable EEL still executes native host callbacks. On Windows, a bad pointer
+// in either EEL or one of those callbacks would otherwise escape straight
+// through the plug-in and terminate the DAW. Keep SEH in a tiny leaf helper so
+// MSVC does not have to mix it with C++ object unwinding in the render path.
+static inline bool executeEelCodeGuarded (NSEEL_CODEHANDLE code) noexcept
+{
+  if (code == nullptr)
+    return true;
+
+#if defined(_WIN32) && defined(_MSC_VER)
+  __try
+  {
+    NSEEL_code_execute(code);
+    return true;
+  }
+  __except (1)
+  {
+    return false;
+  }
+#else
+  try
+  {
+    NSEEL_code_execute(code);
+    return true;
+  }
+  catch (...)
+  {
+    return false;
+  }
+#endif
 }
 
 // -------------------------
@@ -787,9 +834,30 @@ public:
   ~GfxVm() override
   {
     setMenuPort(nullptr);
-    runAtExitCode(); // Drain before commands/fonts/keys/string callback state die.
+    runAtExitSafely(); // Malformed @exit code must not escape into the host.
     if (m_vm != nullptr) NSEEL_VM_SetFunctionTable(m_vm, nullptr);
     NSEEL_freefunctiontable(&privateFunctionTable);
+  }
+
+  void runAtExitSafely() noexcept
+  {
+#if defined(_WIN32) && defined(_MSC_VER)
+    __try
+    {
+      runAtExitCode();
+    }
+    __except (1)
+    {
+    }
+#else
+    try
+    {
+      runAtExitCode();
+    }
+    catch (...)
+    {
+    }
+#endif
   }
 
   bool usePrivateFunctionTable()
@@ -942,6 +1010,18 @@ public:
     if (gfx_frame) *gfx_frame = frameCounter++;
   }
 
+  void abortFrame() noexcept
+  {
+    frameRecording = false;
+    framebufferDirty = false;
+    commands.clear();
+    pendingImageBytes = 0;
+    sliderChangeMask = 0;
+    sliderAutomateMask = 0;
+    sliderAutomateEndMask = 0;
+    undoPointRequested = false;
+  }
+
   void setMouse(float x, float y, int cap, float wheel, float hwheel)
   {
     *mouse_x = (double)x;
@@ -1009,6 +1089,10 @@ public:
   // Host sync helpers
   // -------------------------------------------------------------------
   std::array<EEL_F*, 64> sliderPtrs {{}};
+  std::array<EEL_F*, 64> sliderAliasPtrs {{}};
+  std::array<double, 64> sliderFrameInput {{}};
+  std::array<uint8_t, 64> sliderFrameInputValid {{}};
+
   void bindSliderPtrs()
   {
     for (int i = 0; i < 64; ++i)
@@ -1016,6 +1100,21 @@ public:
       const std::string nm = std::string("slider") + std::to_string(i + 1);
       sliderPtrs[(size_t)i] = get_var(nm.c_str());
     }
+  }
+
+  void bindSliderAlias(int index0, const char* name)
+  {
+    if (index0 < 0 || index0 >= 64 || name == nullptr || *name == '\0' || *name == '#')
+      return;
+
+    sliderAliasPtrs[(size_t)index0] = get_var(name);
+  }
+
+  void syncSliderAliasesFromSliders()
+  {
+    for (int i = 0; i < 64; ++i)
+      if (sliderAliasPtrs[(size_t)i] != nullptr && sliderPtrs[(size_t)i] != nullptr)
+        *sliderAliasPtrs[(size_t)i] = *sliderPtrs[(size_t)i];
   }
 
   // These are GFX/host-owned state, not DSP globals even when the AOT
@@ -1061,17 +1160,49 @@ public:
 
   void syncSliders(const double* sliders, int count)
   {
-    const int n = std::min(count, 64);
+    sliderFrameInputValid.fill(0u);
+    if (!sliders) return;
+
+    const int n = std::max(0, std::min(count, 64));
     for (int i = 0; i < n; ++i)
-      if (sliderPtrs[(size_t)i]) *sliderPtrs[(size_t)i] = sliders[i];
+    {
+      const double value = std::isfinite(sliders[i]) ? sliders[i] : 0.0;
+      if (sliderPtrs[(size_t)i]) *sliderPtrs[(size_t)i] = value;
+      if (sliderAliasPtrs[(size_t)i]) *sliderAliasPtrs[(size_t)i] = value;
+      sliderFrameInput[(size_t)i] = value;
+      sliderFrameInputValid[(size_t)i] = 1u;
+    }
   }
 
   void readSliders(double* dst, int count) const
   {
     if (!dst) return;
-    const int n = std::min(count, 64);
+    const int n = std::max(0, std::min(count, 64));
+
     for (int i = 0; i < n; ++i)
-      dst[i] = sliderPtrs[(size_t)i] ? (double)*sliderPtrs[(size_t)i] : 0.0;
+    {
+      const bool haveBaseline = sliderFrameInputValid[(size_t)i] != 0u;
+      const double baseline = haveBaseline ? sliderFrameInput[(size_t)i] : 0.0;
+
+      double direct = sliderPtrs[(size_t)i] ? (double)*sliderPtrs[(size_t)i] : baseline;
+      double alias = sliderAliasPtrs[(size_t)i] ? (double)*sliderAliasPtrs[(size_t)i] : baseline;
+
+      if (!std::isfinite(direct)) direct = baseline;
+      if (!std::isfinite(alias)) alias = baseline;
+
+      const bool directChanged = haveBaseline && direct != baseline;
+      const bool aliasChanged = haveBaseline && alias != baseline;
+
+      // Extended declarations (sliderN:name=...) make `name` the normal
+      // script-facing variable. Portable EEL gives name and sliderN separate
+      // cells, so choose whichever side actually changed this frame. Calls to
+      // sliderchange()/slider_automate() mirror the two immediately below.
+      double value = direct;
+      if (sliderAliasPtrs[(size_t)i] != nullptr && aliasChanged && !directChanged)
+        value = alias;
+
+      dst[i] = std::isfinite(value) ? value : baseline;
+    }
   }
 
 
@@ -1146,7 +1277,10 @@ public:
       if ((bv.flags & DSPJSFX_GFX_VAR_FLAG_TO_GFX) == 0u)
         continue;
       if (bv.index >= 0 && bv.index < count && bv.ptr)
-        *bv.ptr = vars[bv.index];
+      {
+        const double value = vars[bv.index];
+        *bv.ptr = std::isfinite(value) ? value : 0.0;
+      }
     }
   }
 
@@ -1214,7 +1348,13 @@ public:
       if ((bv.flags & DSPJSFX_GFX_VAR_FLAG_FROM_GFX) == 0u)
         continue;
       if (bv.index >= 0 && bv.index < count && bv.ptr)
-        dst[bv.index] = *bv.ptr;
+      {
+        const double value = (double) *bv.ptr;
+        // Do not let malformed @gfx math inject NaN/Inf into the AOT DSP
+        // snapshot. Leaving dst unchanged preserves the caller's baseline.
+        if (std::isfinite(value))
+          dst[bv.index] = value;
+      }
     }
   }
 
@@ -1609,7 +1749,21 @@ public:
       for (int i = 0; i < 64; ++i)
       {
         if (self->sliderPtrs[(size_t)i] == argPtr)
+        {
+          if (self->sliderAliasPtrs[(size_t)i] != nullptr && argPtr != nullptr)
+            *self->sliderAliasPtrs[(size_t)i] = *argPtr;
           return (uint64_t)1u << (uint64_t)i;
+        }
+
+        if (self->sliderAliasPtrs[(size_t)i] == argPtr)
+        {
+          // In `sliderN:name=...`, name and sliderN are the same slider in
+          // REAPER. Portable EEL stores them separately, so resolve automation
+          // by pointer and mirror the value back into sliderN immediately.
+          if (self->sliderPtrs[(size_t)i] != nullptr && argPtr != nullptr)
+            *self->sliderPtrs[(size_t)i] = *argPtr;
+          return (uint64_t)1u << (uint64_t)i;
+        }
       }
     }
 
@@ -2081,8 +2235,8 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     if (! decodeMenuDescription(opaque, parms[0], description))
       return 0.0;
 
-    const int x = (int) std::llround(self->gfx_x ? (double) *self->gfx_x : 0.0);
-    const int y = (int) std::llround(self->gfx_y ? (double) *self->gfx_y : 0.0);
+    const int x = boundedGfxInt(self->gfx_x ? (double) *self->gfx_x : 0.0);
+    const int y = boundedGfxInt(self->gfx_y ? (double) *self->gfx_y : 0.0);
     return (EEL_F) self->asyncMenuPort->showMenuModal(description, x, y);
   }
 
@@ -2096,8 +2250,8 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     if (! decodeMenuDescription(opaque, parms[0], description))
       return 0.0;
 
-    const int x = (int) std::llround(self->gfx_x ? (double) *self->gfx_x : 0.0);
-    const int y = (int) std::llround(self->gfx_y ? (double) *self->gfx_y : 0.0);
+    const int x = boundedGfxInt(self->gfx_x ? (double) *self->gfx_x : 0.0);
+    const int y = boundedGfxInt(self->gfx_y ? (double) *self->gfx_y : 0.0);
     return (EEL_F) self->asyncMenuPort->showMenuNonBlockingOpen(description, x, y);
   }
 
@@ -2399,6 +2553,8 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     if (np >= 2)
     {
       *ptr = *parms[1];
+      if (self->sliderAliasPtrs[(size_t)(idx - 1)] != nullptr)
+        *self->sliderAliasPtrs[(size_t)(idx - 1)] = *ptr;
       return *ptr;
     }
 
@@ -2706,6 +2862,58 @@ public:
     // Bind sliders and user vars.
     vm->bindSliderPtrs();
 
+    // REAPER's extended declaration syntax `sliderN:name=value...` makes
+    // `name` the script-facing numeric slider variable. Portable EEL otherwise
+    // creates `name` and `sliderN` as unrelated cells, which breaks code such
+    // as Ravager's slider_automate(Freq1 = ...).
+    size_t sliderLineStart = 0;
+    while (sliderLineStart < source.size())
+    {
+      auto end = source.find('\n', sliderLineStart);
+      if (end == std::string::npos) end = source.size();
+
+      std::string line = source.substr(sliderLineStart, end - sliderLineStart);
+      sliderLineStart = end + 1;
+
+      const auto start = line.find_first_not_of(" \t\r");
+      if (start == std::string::npos) continue;
+      line.erase(0, start);
+      if (!line.empty() && line[0] == '@') break;
+      if (line.size() < 8) continue;
+
+      const char sliderWord[] = "slider";
+      bool sliderPrefix = true;
+      for (size_t i = 0; i < 6; ++i)
+        if (std::tolower((unsigned char)line[i]) != sliderWord[i]) { sliderPrefix = false; break; }
+      if (!sliderPrefix) continue;
+
+      char* tail = nullptr;
+      const long sliderNumber = std::strtol(line.c_str() + 6, &tail, 10);
+      if (tail == line.c_str() + 6 || *tail != ':' || sliderNumber < 1 || sliderNumber > 64)
+        continue;
+
+      std::string rhs(tail + 1);
+      const auto eq = rhs.find('=');
+      if (eq == std::string::npos) continue;
+
+      std::string alias = rhs.substr(0, eq);
+      const auto first = alias.find_first_not_of(" \t\r");
+      const auto last = alias.find_last_not_of(" \t\r");
+      if (first == std::string::npos || last == std::string::npos) continue;
+      alias = alias.substr(first, last - first + 1);
+
+      // String sliders (#name) use EEL's string context, not a numeric var.
+      if (alias.empty() || alias[0] == '#') continue;
+      if (!(std::isalpha((unsigned char)alias[0]) || alias[0] == '_')) continue;
+
+      bool valid = true;
+      for (const char ch : alias)
+        if (!(std::isalnum((unsigned char)ch) || ch == '_' || ch == '.')) { valid = false; break; }
+
+      if (valid)
+        vm->bindSliderAlias((int)sliderNumber - 1, alias.c_str());
+    }
+
     // DSPJSFX_VARS is a *symbol* emitted by dsp_jsfx_aot.py (static const array),
     // not a preprocessor macro. So `defined(DSPJSFX_VARS)` is always false.
     // The fallback table at the top of this file guarantees DSPJSFX_VARS exists anyway.
@@ -2842,7 +3050,7 @@ public:
 
   void prepareFrame(int width, int height, const Snapshot& snap)
   {
-    if (!hasGfxSection() || !gfxCompiledOk()) return;
+    if (!hasGfxSection() || !gfxCompiledOk() || runtimeFaulted) return;
 
     juce::ScopedNoDenormals noDenormals;
     const auto start = profilingEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
@@ -2856,10 +3064,18 @@ public:
     {
       if (snap.sliders) vm->syncSliders(snap.sliders, snap.slidersCount);
       if (snap.vars)    vm->syncVars(snap.vars, snap.varsCount);
+      vm->syncSliderAliasesFromSliders();
       if (snap.memSpans && snap.memSpanCount > 0) vm->syncMemSpans(snap.memSpans, snap.memSpanCount, snap.logicalMemN);
       else if (snap.mem)                     vm->syncMem(snap.mem, snap.memN);
       vm->setTiming(snap.srate, snap.samplesblock);
-      NSEEL_code_execute(code_init);
+      if (!executeEelCodeGuarded(code_init))
+      {
+        runtimeFaulted = true;
+        lastError = "@init runtime fault; portable EEL execution disabled for this instance";
+        framePrepared = false;
+        vm->abortFrame();
+        return;
+      }
       initRan = true;
       if(vm->gfx_ext_retina && *vm->gfx_ext_retina>0)*vm->gfx_ext_retina=vm->displayScale;
     }
@@ -2879,6 +3095,7 @@ public:
     if (snap.sliders) vm->syncSliders(snap.sliders, snap.slidersCount);
 
     if (snap.vars)    vm->syncVars(snap.vars, snap.varsCount);
+    vm->syncSliderAliasesFromSliders();
     if (snap.memSpans && snap.memSpanCount > 0) vm->syncMemSpans(snap.memSpans, snap.memSpanCount, snap.logicalMemN);
     else if (snap.mem)                     vm->syncMem(snap.mem, snap.memN);
 
@@ -2891,25 +3108,42 @@ public:
         std::chrono::steady_clock::now() - start).count() : 0.0;
   }
 
-  void executeFrame()
+  bool executeFrame()
   {
-    if (!framePrepared || !vm || !code_gfx) return;
+    if (runtimeFaulted) return false;
+    if (!framePrepared || !vm || !code_gfx) return true;
+
     framePrepared = false;
     juce::ScopedNoDenormals noDenormals;
     const auto start = profilingEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
-    NSEEL_code_execute(code_gfx);
+
+    if (!executeEelCodeGuarded(code_gfx))
+    {
+      runtimeFaulted = true;
+      lastError = "@gfx runtime fault; portable EEL execution disabled for this instance";
+      vm->abortFrame();
+      gfxMilliseconds = profilingEnabled ? std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - start).count() : 0.0;
+      mouseWheel = 0.0f;
+      mouseHWheel = 0.0f;
+      return false;
+    }
+
     vm->frameRecording = false;
     gfxMilliseconds = profilingEnabled ? std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - start).count() : 0.0;
     mouseWheel = 0.0f;
     mouseHWheel = 0.0f;
+    return true;
   }
 
   void renderFrame(int width, int height, const Snapshot& snap)
   {
     prepareFrame(width, height, snap);
-    executeFrame();
+    (void) executeFrame();
   }
+
+  bool hasRuntimeFaulted() const noexcept { return runtimeFaulted; }
 
   void setProfilingEnabled(bool enabled) noexcept { profilingEnabled = enabled; }
   double getSyncMilliseconds() const noexcept { return syncMilliseconds; }
@@ -2930,6 +3164,7 @@ private:
 
   bool initRan = false;
   bool framePrepared = false;
+  bool runtimeFaulted = false;
   bool profilingEnabled = false;
   double syncMilliseconds = 0.0;
   double gfxMilliseconds = 0.0;

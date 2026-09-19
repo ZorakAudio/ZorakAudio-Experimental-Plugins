@@ -1,0 +1,990 @@
+desc:Saike FM Filter
+tags: audio-rate filters
+version: 0.21
+author: Joep Vanlier
+changelog: Fix retina support.
+license: MIT
+provides:
+  FMFilter_Dependencies/*
+  FM Filter.jsfx.rpl
+
+Attribution: Moog filter implementation was based on the paper:
+S. D'Angelo and V. Vaelimaeki, "Generalized Moog Ladder Filter: Part II - Explicit Non linear Model through a Novel Delay-Free
+Loop Implementation Method". IEEE Trans. Audio,Speech, and Lang. Process., vol. 22, no. 12, pp. 1873-1883, December 2014.
+303 emulation is Copyright (c) 2012 Dominique Wurtz (www.blaukraut.info)
+
+import Saike_FMF_midilib.jsfx-inc
+import Saike_FMF_widgets.jsfx-inc
+import Saike_FMF_distortion.jsfx-inc
+import Saike_FMF_filters.jsfx-inc
+import Saike_FMF_oversampling.jsfx-inc
+import Saike_FMF_interpolators.jsfx-inc
+
+in_pin:left input
+in_pin:right input
+in_pin:secondary_input_left
+in_pin:secondary_input_right
+out_pin:left output
+out_pin:right output
+
+slider1:0<-6,48,1>-Drive (dB)
+slider2:0<-6,48,1>-Post Boost (dB)
+slider3:autokill=0<0,1,1>-Autokill
+slider4:dummy=0<0,1,1>-Dummy
+slider5:dummy=0<0,1,1>-Dummy
+slider6:inertia=60<0,200,.001>-Inertia [ms]
+slider7:dummy=0<0,1,1>-Dummy
+slider8:dummy=0<0,1,1>-Dummy
+slider9:dummy=0<0,1,1>-Dummy
+slider10:dummy=0<0,1,1>-Dummy
+slider11:dummy=0<0,1,1>-Dummy
+slider12:filter_type=1<0,5,1{Linear,MS-20,Linear x2,Moog,Ladder,303}>-Filter type
+slider13:.6<0,1,.0001>-Cutoff
+slider14:0.7<0,1,.0001>-Resonance
+slider15:morph=0<0,1,.0001>-Morph
+slider16:bleed=0<0,1,1>-Bleed
+
+slider17:m_lfo_amnt=0<0,1,.00001>-Morph LFO amount
+slider18:m_lfo_speed=0<0,20,.001>-Morph LFO speed [Hz]
+slider19:m_lfo_phase=0<0,30,.001>-Morph LFO phase [radian]
+slider20:c_lfo_amnt=0<0,1,.00001>-Cutoff LFO amount
+slider21:c_lfo_speed=0<0,20,.001>-Cutoff LFO speed [Hz]
+slider22:c_lfo_phase=0<0,36,.001>-Cutoff LFO phase [radian]
+
+slider23:fm_mode=0<0,5,1{MIDI sin,MIDI square,Self,Self Abs,Audio Stereo 3/4,Audio Mono 3/4}>-FM mode
+slider24:fm_amnt=0<0,1,.0001>-FM level
+slider25:fm_factor=<-8,8,1>-FM rate factor
+slider26:fm_spread=<0,1,.001>-FM spread
+slider27:key_follow=0<0,1,.0001>-Key Follow
+slider28:fm_cutoff=1<0,1,.0001>-FM Cutoff
+
+slider29:env_amnt=0<-1,1,.0001>-Envelope Amount
+slider30:env_decay=0<0,1,.0001>-Decay [ms]
+
+slider31:current_ceiling=0<0,48,1>-Distortion level [dB]
+slider32:warmth=0<-12,12,1>-Warmth
+
+slider60:oversampling=1<1,8,1>-Oversampling
+
+@init
+gfx_ext_retina == 0 ? gfx_ext_retina = 1;
+  function calc_times()
+  global(k_rise, k_decay, env_decay, srate, time_factor)
+  local(rise_time)
+  (
+    // time in [ms] to get to .1
+    rise_time = 3.0;
+    time_factor = - (1000.0 / srate) * log(0.1);
+    k_rise = time_factor / rise_time;
+    
+    // Decay time between 3 and 300 ms
+    // Strange way to write 1 / (3 * 10^(2*env_decay))
+    k_decay = time_factor * (0.33 * exp(-4.605170185988092*env_decay));
+  );
+  calc_times();
+  
+  function envelopeTempo(cTime)
+    instance(cRate, tempoLabel)
+    local()
+    global(tempo)
+    (
+    ( cTime < 0.0416667 ) ?
+    (
+      tempoLabel = "1/16";
+      cRate = 0.0625;
+    ) : ( cTime < 0.0833333 ) ?
+    (
+      tempoLabel = "1/12";
+      cRate = 0.0833333;
+    ) : ( cTime < 0.125 ) ?
+    (
+      tempoLabel = "1/8";
+      cRate = 0.125;
+    ) : ( cTime < 0.166667 ) ?
+    (
+      tempoLabel = "1/6";
+      cRate = 0.166667;
+    ) : ( cTime < 0.208333 ) ?
+    (
+      tempoLabel = "1/5";
+      cRate = 0.2;
+    ) : ( cTime < 0.25 ) ?
+    (
+      tempoLabel = "1/4";
+      cRate = 0.25;
+    ) : ( cTime < 0.291667 ) ?
+    (
+      tempoLabel = "1/3";
+      cRate = 0.333333;
+    ) : ( cTime < 0.333333 ) ?
+    (
+      tempoLabel = "1/2";
+      cRate = 0.5;
+    ) : ( cTime < 0.375 ) ?
+    (
+      tempoLabel = "1";
+      cRate = 1;
+    ) : ( cTime < 0.416667 ) ?
+    (
+      tempoLabel = "2";
+      cRate = 2;
+    ) : ( cTime < 0.458333 ) ?
+    (
+      tempoLabel = "3";
+      cRate = 3;
+    ) : ( cTime < 0.5 ) ?
+    (
+      tempoLabel = "4";
+      cRate = 4;
+    ) : ( cTime < 0.541667 ) ?
+    (
+      tempoLabel = "6";
+      cRate = 6;
+    ) : ( cTime < 0.583333 ) ?
+    (
+      tempoLabel = "7";
+      cRate = 7;
+    ) : ( cTime < 0.625 ) ?
+    (
+      tempoLabel = "8";
+      cRate = 8;
+    ) : ( cTime < 0.666667 ) ?
+    (
+      tempoLabel = "12";
+      cRate = 12;
+    ) : ( cTime < 0.708333 ) ?
+    (
+      tempoLabel = "16";
+      cRate = 16;
+    ) : ( cTime < 0.75 ) ?
+    (
+      tempoLabel = "24";
+      cRate = 24;
+    ) : ( cTime < 0.791667 ) ?
+    (
+      tempoLabel = "32";
+      cRate = 32;
+    ) : ( cTime < 0.833333 ) ?
+    (
+      tempoLabel = "64";
+      cRate = 64;
+    ) : ( cTime < 0.875 ) ?
+    (
+      tempoLabel = "128";
+      cRate = 128;
+    ) : ( cTime < 0.916667 ) ?
+    (
+      tempoLabel = "256";
+      cRate = 256;
+    ) : ( cTime < 0.958333 ) ?
+    (
+      tempoLabel = "512";
+      cRate = 512;
+    ) : ( 
+      tempoLabel = "1024";
+      cRate = 1024;
+    );
+    
+    cRate = tempo *  (.25/60) / cRate;
+  );
+
+  midimem = 0;
+  midi.initializeMIDI(midimem, 0, 1);
+  midi.notesOn = 0;
+
+  m_lfo_time = 0;
+  c_lfo_time = 0;
+
+  // Approximate, but good enough for most things
+  function tanh(s)
+  local(s2, a, b, c)
+  global()
+  (
+    s2 = s * s;
+    a = s * (135135.0 + s2 * (17325.0 + s2 * (378.0 + s2)));
+    b = 135135.0 + s2 * (62370.0 + s2 * (3150.0 + s2 * 28.0));
+    c = a / b;
+    (c < -1) ? c = -1 : (c > 1) ? c = 1 : c;
+  );
+  
+  function initialize_interpolators()
+  (
+    cutoff_interpolator.interpolator_init(13);
+    reso_interpolator.interpolator_init(14);
+    morph_interpolator.interpolator_init(15);
+    drive_interpolator.interpolator_init(1);
+    gain_interpolator.interpolator_init(2);
+    morph_phase_interpolator.interpolator_init(19);
+    cutoff_phase_interpolator.interpolator_init(22);
+    
+    current_ceiling_interpolator.interpolator_init(31);
+    warmth_interpolator.interpolator_init(32);
+     
+    (last_inertia != inertia) ? (
+      last_inertia = inertia;
+      inertia_cutoff = 1000.0/inertia;
+      cutoff_interpolator.initialize_smoother(inertia_cutoff);
+      reso_interpolator.initialize_smoother(inertia_cutoff);
+      morph_interpolator.initialize_smoother(inertia_cutoff);
+      drive_interpolator.initialize_smoother(inertia_cutoff);
+      gain_interpolator.initialize_smoother(inertia_cutoff);
+      morph_phase_interpolator.initialize_smoother(inertia_cutoff);
+      cutoff_phase_interpolator.initialize_smoother(inertia_cutoff);
+      current_ceiling_interpolator.initialize_smoother(inertia_cutoff);
+      warmth_interpolator.initialize_smoother(inertia_cutoff);
+      cutoff_interpolator.s = slider(13);
+      reso_interpolator.s = slider(14);
+      morph_interpolator.s = slider(15);
+      drive_interpolator.s = slider(1);
+      gain_interpolator.s = slider(2);
+      morph_phase_interpolator.s = slider(19);
+      cutoff_phase_interpolator.s = slider(22);
+      current_ceiling_interpolator.s = slider(31);
+      warmth_interpolator.s = slider(32);
+      change += 1;
+    );
+  );
+  
+  initialize_interpolators();
+
+bpos=0;
+
+sinc_hist1  = 20000;
+sinc_hist2  = 30000;
+sinc_flt    = 40000;
+sinc_flt2   = 50000;
+sinc_flt3   = 60000;
+sinc_flt4   = 70000;
+sinc_tmp    = 80000;
+
+function updateFMFilter()
+local()
+global(FM_left.init_linearSVF, FM_right.init_linearSVF, fm_cutoff, last_fm_cutoff)
+instance()
+(
+  (fm_cutoff != last_fm_cutoff) ? (
+    FM_left.init_linearSVF(fm_cutoff, 0);
+    FM_right.init_linearSVF(fm_cutoff, 0);
+    last_fm_cutoff = fm_cutoff;
+  );
+);
+
+function updateSlider()
+(
+  current_safety_moog = (1.0 - log(safety_limit_moog * oversampling) / log(20/22050));
+  initialize_interpolators();
+  check_safety();
+);
+
+cutoff_LFO.tempoLabel = 8;
+morph_LFO.tempoLabel = 9;
+function updateTempo()
+(
+  cutoff_LFO.envelopeTempo(c_lfo_speed/20);
+  morph_LFO.envelopeTempo(m_lfo_speed/20);
+);
+
+last_fm_cutoff = -1;
+UpdateFMFilter();
+
+@slider
+updateSlider();
+updateTempo();
+israte = 2.0*$pi/srate;
+
+@serialize
+file_var(0, m_lfo_sync);
+file_var(0, c_lfo_sync);
+file_var(0, shaper);
+file_var(0, higain);
+
+@block
+    updateTempo();
+    midi.processMIDIBlock();
+    israte = 2.0*$pi/srate;
+    
+    cutoff_interpolator.interpolator_block();
+    reso_interpolator.interpolator_block();
+    morph_interpolator.interpolator_block();
+    drive_interpolator.interpolator_block();
+    gain_interpolator.interpolator_block();
+    morph_phase_interpolator.interpolator_block();
+    cutoff_phase_interpolator.interpolator_block();
+    current_ceiling_interpolator.interpolator_block();
+    warmth_interpolator.interpolator_block();
+    
+   // Update the oversampling filters when needed.
+   ( oversampling != lastOversample ) ? 
+   (
+     lastOversample = oversampling;   
+  
+     // Memory for the sincs is located at sinc_tmp, sinc_flt, sinc_flt2, sinc_flt3 and sinc_flt4
+     sincFilterL.updateSincFilter(oversampling, 8, sinc_flt,  sinc_tmp);
+     sincFilterR.updateSincFilter(oversampling, 8, sinc_flt2, sinc_tmp);
+     nTapSinc = oversampling < 5 ? 16 : oversampling*4;
+     sincDownL.updateSincDownsampleFilter(oversampling, nTapSinc, sinc_hist1, sinc_flt3);
+     sincDownR.updateSincDownsampleFilter(oversampling, nTapSinc, sinc_hist2, sinc_flt4);  
+  );
+  
+  env_attack_samples = oversampling * srate * 5 / 1000;
+  
+
+@sample
+  midi.processMIDISample() ? (
+    pitchMod = 2^((midi.lastNote - 69)/12);
+    sliderMod = log(pitchMod) / log(20/22050);
+    t = 0;
+    midi.notesOn == 1  ? tEnvelope = 0;
+    midiChange = 1;
+    
+    calc_times();
+  );
+  
+  updateFMFilter();
+  
+  k = .0005;
+  tEnvelope < env_attack_samples ? (
+    env += k_rise * (1.0 - env);
+  ) : (
+    env -= k_decay * env;
+  );
+  tEnvelope += 1;
+  
+  t += (2^floor(fm_factor))*440*israte*pitchMod;
+ 
+  function clamp(v, lb, ub)
+  (
+    min(ub, max(v, lb))
+  );
+  
+  function processSample()
+  (
+    filter_type == 0 ? (
+      ssl = L.processSample_lin(ssl, filter_choiceL) * i_morphL + L.processSample_lin(ssl, filter_choiceL + 1) * frac_morphL;
+      ssr = R.processSample_lin(ssr, filter_choiceR) * i_morphR + R.processSample_lin(ssr, filter_choiceR + 1) * frac_morphR;
+    ) : ( filter_type == 1 ) ? (
+      ssl = L.processSample_ms20(ssl, filter_choiceL) * i_morphL + L.processSample_ms20(ssl, filter_choiceL + 1) * frac_morphL;
+      ssr = R.processSample_ms20(ssr, filter_choiceR) * i_morphR + R.processSample_ms20(ssr, filter_choiceR + 1) * frac_morphR;
+    ) : ( filter_type == 2 ) ? (
+      ssl = L.processSample_lin(ssl, filter_choiceL) * i_morphL + L.processSample_lin(ssl, filter_choiceL + 1) * frac_morphL;
+      ssr = R.processSample_lin(ssr, filter_choiceR) * i_morphR + R.processSample_lin(ssr, filter_choiceR + 1) * frac_morphR;
+      ssl = L2.processSample_lin(ssl, filter_choiceL) * i_morphL + L2.processSample_lin(ssl, filter_choiceL + 1) * frac_morphL;
+      ssr = R2.processSample_lin(ssr, filter_choiceR) * i_morphR + R2.processSample_lin(ssr, filter_choiceR + 1) * frac_morphR;
+    ) : ( filter_type == 3 ) ? (
+      ssl = L.moog.mix_moog(ssl, filter_choiceL, frac_morphL);
+      ssr = R.moog.mix_moog(ssr, filter_choiceR, frac_morphR);
+    ) : ( filter_type == 4 ) ? (
+      ssl = L.moog2.mix_moog2(ssl, filter_choiceL, frac_morphL);
+      ssr = R.moog2.mix_moog2(ssr, filter_choiceR, frac_morphR);
+    ) : ( filter_type == 5 ) ? (
+      ssl = L.b303.eval_303(ssl, filter_choiceL, frac_morphL);
+      ssr = R.b303.eval_303(ssr, filter_choiceR, frac_morphR);
+    );
+    
+    ssl *= inv_preamp;
+    ssr *= inv_preamp;
+    
+    shaper ? processShaper();
+  );
+
+  log10d20_conversion  = .11512925464970228420089957273422;
+   
+  bleed ? (
+    modul       = modul * .99 + .01 * (1.0+.15*sin(.5*t));
+    preamp      = exp(log10d20_conversion*(modul*drive_interpolator.interpolate()));
+    inv_preamp  = exp(-log10d20_conversion*(modul*drive_interpolator.interpolate()) + log10d20_conversion*gain_interpolator.interpolate());
+  ) : (
+    preamp      = exp(log10d20_conversion*(drive_interpolator.interpolate()));
+    inv_preamp  = exp(-log10d20_conversion*(drive_interpolator.interpolate()) + log10d20_conversion*gain_interpolator.interpolate());
+  );
+
+  autokill > 0 ? (
+    cmax = abs(spl0) + abs(spl1);
+    on += cmax > .00000000000001 ? 1 : -1;
+    on = min(on, 40);
+    on <= 0 ? (
+      on = 0;
+      term = .99 * term;
+    ) : (
+      term = 1;
+    );
+  );
+
+  spl0 *= preamp;
+  spl1 *= preamp;
+  
+  sliderCutoffL = sliderCutoffR = cutoff_interpolator.interpolate();
+  sliderReso = reso_interpolator.interpolate();
+  sliderMorphL = sliderMorphR = morph_interpolator.interpolate();
+  morph_phase = morph_phase_interpolator.interpolate();
+  cutoff_phase = cutoff_phase_interpolator.interpolate();
+ 
+  sliderCutoffL += env * env_amnt;
+  sliderCutoffR += env * env_amnt;
+  
+  sliderCutoffL -= key_follow * sliderMod;
+  sliderCutoffR -= key_follow * sliderMod;
+  
+  c_lfo_amnt > 0 ? (
+    c_lfo_sync ? (
+      c_lfo_time += israte * cutoff_LFO.cRate;
+    ) : (
+      c_lfo_time += israte * c_lfo_speed;    
+    );
+    sliderCutoffL = sliderCutoffL + c_lfo_amnt * sin(c_lfo_time + cutoff_phase);
+    sliderCutoffR = sliderCutoffR + c_lfo_amnt * sin(c_lfo_time);
+  );
+  
+  m_lfo_amnt > 0 ? (
+    m_lfo_sync ? (
+      m_lfo_time += israte * morph_LFO.cRate;
+    ) : (
+      m_lfo_time += israte * m_lfo_speed;    
+    );
+    sliderMorphL = clamp(sliderMorphL + m_lfo_amnt * sin(m_lfo_time + morph_phase), 0, 1);
+    sliderMorphR = clamp(sliderMorphR + m_lfo_amnt * sin(m_lfo_time), 0, 1);
+  );
+  
+  fm_mode == 0 ? (
+    fmst = sin(t);
+    fmst2 = sin(t+$pi*fm_spread);
+  ) : ( fm_mode == 1 ) ? (
+    fmst = abs(sin(t)) * 2 - 1;
+    fmst2 = abs(sin(t+$pi*fm_spread)) * 2 - 1;
+  ) : ( fm_mode == 2 ) ? (
+    fmst = FM_left.eval_linearSVF_LP(spl0);
+    fmst2 = FM_right.eval_linearSVF_LP(spl1);
+  ) : ( fm_mode == 3 ) ? (
+    fmst = FM_left.eval_linearSVF_LP(abs(spl0));
+    fmst2 = FM_right.eval_linearSVF_LP(abs(spl1));
+  ) : ( fm_mode == 4 ) ? (
+    fmst = FM_left.eval_linearSVF_LP(spl2);
+    fmst2 = FM_right.eval_linearSVF_LP(spl3);
+  ) : ( fm_mode == 5 ) ? (
+    fmst2 = fmst = FM_left.eval_linearSVF_LP(.5 * (spl2 + spl3));
+  );
+  
+  sliderCutoffL = clamp(sliderCutoffL + fm_amnt * fmst, 0, .99);
+  sliderCutoffR = clamp(sliderCutoffR + fm_amnt * fmst2, 0, .99);
+  
+  
+  filter_type == 0 ? (
+    L.LP.init_linearSVF(sliderCutoffL, sliderReso);
+    L.HP.a1 = L.BR.a1 = L.BP.a1 = L.LP.a1;
+    L.HP.a2 = L.BR.a2 = L.BP.a2 = L.LP.a2;
+    L.HP.a3 = L.BR.a3 = L.BP.a3 = L.LP.a3;
+    L.HP.k  = L.BR.k  = L.BP.k  = L.LP.k;
+    
+    R.LP.init_linearSVF(sliderCutoffR, sliderReso);
+    R.HP.a1 = R.BR.a1 = R.BP.a1 = R.LP.a1;
+    R.HP.a2 = R.BR.a2 = R.BP.a2 = R.LP.a2;
+    R.HP.a3 = R.BR.a3 = R.BP.a3 = R.LP.a3;
+    R.HP.k  = R.BR.k  = R.BP.k  = R.LP.k;
+  ) : ( filter_type == 1 ) ? (
+    (oversampling == 1) ? (
+      sliderCutoffL = sliderCutoffL > safety_limit_ms20 ? safety_limit_ms20 : sliderCutoffL;
+      sliderCutoffR = sliderCutoffR > safety_limit_ms20 ? safety_limit_ms20 : sliderCutoffR;
+    );
+  
+    L.LP.init_MS20(sliderCutoffL, sliderReso);
+    L.HP.hh = L.BR.hh = L.BP.hh = L.LP.hh;
+    L.HP.h = L.BR.h = L.BP.h = L.LP.h;
+    L.HP.k = L.BR.k = L.BP.k = L.LP.k;
+    
+    R.LP.init_MS20(sliderCutoffR, sliderReso);
+    R.HP.hh = R.BR.hh = R.BP.hh = R.LP.hh;
+    R.HP.h = R.BR.h = R.BP.h = R.LP.h;
+    R.HP.k = R.BR.k = R.BP.k = R.LP.k;
+  ) : ( filter_type == 2 ) ? (
+    L.LP.init_linearSVF(sliderCutoffL, sliderReso);
+    L2.HP.a1 = L2.BR.a1 = L2.BP.a1 = L2.LP.a1 = L.HP.a1 = L.BR.a1 = L.BP.a1 = L.LP.a1;
+    L2.HP.a2 = L2.BR.a2 = L2.BP.a2 = L2.LP.a2 = L.HP.a2 = L.BR.a2 = L.BP.a2 = L.LP.a2;
+    L2.HP.a3 = L2.BR.a3 = L2.BP.a3 = L2.LP.a3 = L.HP.a3 = L.BR.a3 = L.BP.a3 = L.LP.a3;
+    L2.HP.k  = L2.BR.k  = L2.BP.k  = L2.LP.k  = L.HP.k  = L.BR.k  = L.BP.k  = L.LP.k;
+    
+    R.LP.init_linearSVF(sliderCutoffR, sliderReso);
+    R2.HP.a1 = R2.BR.a1 = R2.BP.a1 = R2.LP.a1 = R.HP.a1 = R.BR.a1 = R.BP.a1 = R.LP.a1;
+    R2.HP.a2 = R2.BR.a2 = R2.BP.a2 = R2.LP.a2 = R.HP.a2 = R.BR.a2 = R.BP.a2 = R.LP.a2;
+    R2.HP.a3 = R2.BR.a3 = R2.BP.a3 = R2.LP.a3 = R.HP.a3 = R.BR.a3 = R.BP.a3 = R.LP.a3;
+    R2.HP.k  = R2.BR.k  = R2.BP.k  = R2.LP.k  = R.HP.k  = R.BR.k  = R.BP.k  = R.LP.k;
+  ) : ( filter_type == 3 ) ? (
+    sliderCutoffL = sliderCutoffL > current_safety_moog ? current_safety_moog : sliderCutoffL;
+    sliderCutoffR = sliderCutoffR > current_safety_moog ? current_safety_moog : sliderCutoffR;
+  
+    L.moog.init_moog(sliderCutoffL, sliderReso);
+    R.moog.init_moog(sliderCutoffR, sliderReso);
+  ) : ( filter_type == 4 ) ? (
+    sliderCutoffL = sliderCutoffL > current_safety_moog ? current_safety_moog : sliderCutoffL;
+    sliderCutoffR = sliderCutoffR > current_safety_moog ? current_safety_moog : sliderCutoffR;
+    
+    L.moog2.init_moog2(sliderCutoffL, sliderReso);
+    R.moog2.init_moog2(sliderCutoffR, sliderReso);
+  ) : ( filter_type == 5 ) ? (
+    L.b303.init_303(sliderCutoffL, sliderReso);
+    R.b303.init_303(sliderCutoffR, sliderReso);    
+  );
+  
+  filter_choiceL = floor(sliderMorphL*4);
+  frac_morphL = sliderMorphL*4 - filter_choiceL;
+  i_morphL = 1.0 - frac_morphL;
+
+  filter_choiceR = floor(sliderMorphR*4);
+  frac_morphR = sliderMorphR*4 - filter_choiceR;
+  i_morphR = 1.0 - frac_morphR;
+  
+  shaper ? (
+    sat_slider_update(current_ceiling_interpolator.interpolate(), warmth_interpolator.interpolate(), oversampling);
+  );
+  
+  ( oversampling > 1 ) ? (
+    sincFilterL.advanceSinc(spl0);
+    sincFilterR.advanceSinc(spl1);
+    
+    loop( oversampling,
+      ssl = sincFilterL.getSubSample();
+      ssr = sincFilterR.getSubSample();
+      
+      processSample();
+      
+      sincDownL.advanceHist(ssl);
+      sincDownR.advanceHist(ssr);
+    );
+    
+    spl0 = sincDownL.sincDownSample();
+    spl1 = sincDownR.sincDownSample();
+  ) : (
+    ssl = spl0;
+    ssr = spl1;
+    
+    processSample();
+    
+    spl0 = ssl;
+    spl1 = ssr;
+  );
+  
+  shaper ? (  
+    spl0 = dc0.eval_HP6(spl0);
+    spl1 = dc1.eval_HP6(spl1);
+  );
+  
+  autokill ? (
+    spl0 *= term;
+    spl1 *= term;
+  );
+
+@gfx 1280 280
+size_fraction = gfx_w / 1280;
+(size_fraction - floor(size_fraction) < 0.2) ? size_fraction = floor(size_fraction);
+scaling = size_fraction - 1;
+
+render_time += .025;
+gfx_set(21/255, 20/255, 21/255, 1.0);
+gfx_rect(0, 0, gfx_w, gfx_h);
+
+xs = 10;
+ys = 10;
+
+knobSize = 35*(1+scaling);
+knobSpacing = .7 * knobSize;
+
+buttonSize = floor(.3 * knobSpacing);
+widget_r = 35/255;
+widget_g = 155/255;
+widget_b = 30/255;
+widget_a = 1.0;
+toggle_r = .5;
+toggle_g = 1.6;
+toggle_b = .5;
+toggle_a = 1.0;
+
+cY = w1y + w1h + .4*(gfx_h-w1h);
+panelY = cY - 32 * (1+scaling);
+panelPad = 6;
+panelHeight = 3.2 * knobSize;
+
+xOrigin = 75*(1+scaling);
+yOrigin = 65*(1+scaling);
+
+font_color_r = .7;
+font_color_g = .6;
+font_color_b = .8;
+font_color_a = 1;
+knob_font_color_r = 0.9;
+knob_font_color_g = 0.9;
+knob_font_color_b = 0.8;
+knob_font_color_a = 1;
+edge_r = 39/255;
+edge_g = 39/255;
+edge_b = 41/255;
+edge_a = 1.0;
+
+edge_font_r = 0.9;
+edge_font_g = 0.9;
+edge_font_b = 0.8;
+
+
+FONT_GRID = 4;
+gfx_setfont(FONT_GRID, "Arial", 16 * (1+scaling));
+
+BAND_FONT = 5;
+gfx_setfont(BAND_FONT, "Arial", 16 * (1+scaling));
+
+KNOB_FONT = 6;
+gfx_setfont(KNOB_FONT, "Arial", 14 * (1+scaling));
+
+KNOB_FONT2 = 7;
+gfx_setfont(KNOB_FONT2, "Arial", 13 * (1+scaling));
+
+HINT_FONT = 8;
+gfx_setfont(HINT_FONT, "Arial", 13 * (1+scaling));
+
+TOGGLE_FONT = 9;
+gfx_setfont(TOGGLE_FONT, "Arial", 16 * (1+scaling));
+
+
+cX = xOrigin;
+cY = yOrigin;
+drawPanel("DRIVE", cX - 2*knobSpacing, cY - .53*panelHeight + .2*knobSize, 10.25*knobSpacing, panelHeight);
+
+cX += knobSize;
+gfx_setfont(KNOB_FONT);
+y_move = .4 * knobSize;
+ww = 1.3*knobSize;
+hh = .35 * knobSize;
+drawSelectionButton("Lin 2p", cX - 2*knobSize, cY-1.1*knobSize, ww, hh, 0, 12);
+drawSelectionButton("Lin 4p", cX - 2*knobSize, cY-1.1*knobSize + y_move, ww, hh, 2, 12);
+drawSelectionButton("MS-20", cX - 2*knobSize, cY-1.1*knobSize + 2*y_move, ww, hh, 1, 12);
+drawSelectionButton("Moog", cX - 2*knobSize, cY-1.1*knobSize + 3*y_move, ww, hh, 3, 12);
+drawSelectionButton("Ladder", cX - 2*knobSize, cY-1.1*knobSize + 4*y_move, ww, hh, 4, 12);
+drawSelectionButton("303", cX - 2*knobSize, cY-1.1*knobSize + 5*y_move, ww, hh, 5, 12);
+
+cX += .65*knobSize;
+
+driveKnob.active = 1;
+driveKnob.value = (slider1 + 6)/54;
+driveKnob.label = sprintf(1, "%.1f dB", slider1);
+driveKnob.drawKnob(cX, cY, knobSize, "Drive", "Input Gain\n\nPushing this saturates the filter nicely.", 1.0);
+driveKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 6/54+.000001) ? (
+  slider1 = driveKnob.value * 54 - 6;
+  slider_automate(slider1);
+);
+
+bleedToggle.drawToggle(cX-knobSize, cy-knobSize, .15*knobSize, .15*knobSize, bleed, widget_r, widget_g, widget_b, widget_a, toggle_r, toggle_g, toggle_b, toggle_a, "Modulate gain by pitch.\nGives a more analog feel.");
+bleed = bleedToggle.processMouseToggle(mouse_x, mouse_y, mouse_cap);
+
+autokillToggle.drawToggle(cX+knobSize-2, cy-knobSize, .15*knobSize, .15*knobSize, autokill, widget_r, widget_g, widget_b, widget_a, toggle_r, toggle_g, toggle_b, toggle_a, "Kill audio after no more input comes in.\nPrevents resonance from singing.");
+autokill = autokillToggle.processMouseToggle(mouse_x, mouse_y, mouse_cap);
+
+cX += 2.5 * knobSize;
+postBoost.active = 1;
+postBoost.value = (slider2 + 6)/54;
+postBoost.label = sprintf(1, "%.1f dB", slider2);
+postBoost.drawKnob(cX, cY, knobSize, "Output Gain", "Output Gain", 1.0);
+postBoost.knob_processMouse(mouse_x, mouse_y, mouse_cap, 6/54+.000001) ? (
+  slider2 = postBoost.value * 54 - 6;
+  slider_automate(slider2);
+);
+cX += 2.5 * knobSize;
+
+cX += 1.5 * knobSize;
+
+drawPanel("FILTER", cX - 2.25*knobSpacing, cY - .53*panelHeight + .2*knobSize, 15*knobSpacing, panelHeight);
+
+
+morphKnob.active = 1;
+morphKnob.value = morph;
+morphKnob.drawKnob(cX, cY, knobSize, "Morph", "Filter Morph", 1.0);
+morphKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.25) ? (
+  morph = morphKnob.value;
+  slider_automate(morph);
+);
+gfx_set(1,1,1,1);
+drawKnobLabels(knobSize*1.25, 0, "LP");
+drawKnobLabels(knobSize*1.25, 1/4, "BP");
+drawKnobLabels(knobSize*1.25, 2/4, "HP");
+drawKnobLabels(knobSize*1.25, 3/4, "BR");
+drawKnobLabels(knobSize*1.25, 4/4, "LP");
+
+cX += knobSize*2.5;
+
+cutoffKnob.active = 1;
+cutoffKnob.value = slider13;
+center = .5 * srate * exp( (1-slider13) * log(20/22050) );
+center < 1000 ? (
+  cutoffKnob.label = sprintf(1, "%d Hz", center);
+) : (
+  cutoffKnob.label = sprintf(1, "%.1f kHz", center/1000);
+);
+cutoffKnob.drawKnob(cX, cY, knobSize, "Cutoff", "Filter Cutoff", 1.0);
+cutoffKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.25) ? (
+  slider13 = cutoffKnob.value;
+  slider_automate(slider13);
+  check_safety();
+);
+
+cX += knobSize*2.5;
+resonanceKnob.active = 1;
+resonanceKnob.value = slider14;
+resonanceKnob.label = sprintf(1, "%.1f", slider14);
+resonanceKnob.drawKnob(cX, cY, knobSize, "Resonance", "Filter Resonance", 1.0);
+resonanceKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.25) ? (
+  slider14 = resonanceKnob.value;
+  slider_automate(slider14);
+);
+
+cX += knobSize*2.5;
+
+keyFollowKnob.active = 1;
+keyFollowKnob.value = key_follow;
+keyFollowKnob.drawKnob(cX, cY, knobSize, "Follow", "Follow MIDI pitch", 1.0);
+keyFollowKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.25) ? (
+  key_follow = keyFollowKnob.value;
+  slider_automate(key_follow);
+);
+cX += 3.675 * knobSize;
+
+drawPanel("FM", cX - 2*knobSpacing, cY - .53*panelHeight + .2*knobSize, 13.5*knobSpacing, panelHeight);
+
+cX += knobSize;
+gfx_setfont(KNOB_FONT);
+y_move = .4 * knobSize;
+ww = 1.3*knobSize;
+hh = .35 * knobSize;
+drawSelectionButton("MIDI Sin", cX - 2*knobSize, cY-1.1*knobSize, ww, hh, 0, 23);
+drawSelectionButton("MIDI Sqr", cX - 2*knobSize, cY-1.1*knobSize + y_move, ww, hh, 1, 23);
+drawSelectionButton("Self", cX - 2*knobSize, cY-1.1*knobSize + 2*y_move, ww, hh, 2, 23);
+drawSelectionButton("Self Abs", cX - 2*knobSize, cY-1.1*knobSize + 3*y_move, ww, hh, 3, 23);
+drawSelectionButton("3/4", cX - 2*knobSize, cY-1.1*knobSize + 4*y_move, ww, hh, 4, 23);
+drawSelectionButton("3+4", cX - 2*knobSize, cY-1.1*knobSize + 5*y_move, ww, hh, 5, 23);
+cX += .65*knobSize;
+
+fmLevelKnob.active = 1;
+fmLevelKnob.value = fm_amnt;
+fmLevelKnob.drawKnob(cX, cY, knobSize, "FM Level", "FM Level\nLevel of FM modulation", 1.0);
+fmLevelKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0) ? (
+  fm_amnt = fmLevelKnob.value;
+  slider_automate(fm_amnt);
+);
+
+cX += 2.5 * knobSize;
+
+fm_mode < 2 ? (
+  fmRateKnob.active = 1;
+  fmRateKnob.value = (fm_factor+8)/16;
+  fmRateKnob.label = sprintf(1, "%.1f x", 2^floor(fm_factor));
+  fmRateKnob.drawKnob(cX, cY, knobSize, "FM factor", "FM factor.\n\nFilter cutoff will oscillate with\nthis factor times the MIDI pitch's\nfrequency.", .5);
+  fmRateKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0) ? (
+    fm_factor = fmRateKnob.value * 16 - 8;
+    slider_automate(fm_factor);
+  );
+) : (
+  fmCutoffKnob.active = 1;
+  fmCutoffKnob.value = fm_cutoff;
+  center = .5 * srate * exp( (1-fm_cutoff) * log(20/22050) );
+  center < 1000 ? (
+    fmCutoffKnob.label = sprintf(1, "%d Hz", center);
+  ) : (
+    fmCutoffKnob.label = sprintf(1, "%.1f kHz", center/1000);
+  );
+  fmCutoffKnob.drawKnob(cX, cY, knobSize, "FM cutoff", "FM Cutoff\n\nCutoff used to filter signal that\ncontrols the cutoff.", .5);
+  fmCutoffKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 1) ? (
+    fm_cutoff = fmCutoffKnob.value;
+    slider_automate(fm_cutoff);
+  );
+);
+cX += 2.5 * knobSize;
+
+fmPhaseKnob.active = 1;
+fmPhaseKnob.value = fm_spread;
+fmPhaseKnob.drawKnob(cX, cY, knobSize, "FM Spread", "FM Phase difference", 1.0);
+fmPhaseKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0) ? (
+  fm_spread = fmPhaseKnob.value;
+  slider_automate(fm_spread);
+);
+
+
+showOptions = 1;
+showOptions ? (
+  cX += 3.75 * knobSize;
+  drawPanel("OPTIONS", cX - 2*knobSpacing, cY - .53*panelHeight + .2*knobSize, 7.75*knobSpacing, panelHeight);
+  oversamplingKnob.active = 1;
+  oversampling != floor(oversamplingKnob.value * 7 + 1) ? (
+    oversamplingKnob.value = (oversampling - 1) / 7;
+  );
+  oversamplingKnob.drawKnob(cX, cY, knobSize, "Oversampling", "", 1.0);
+  oversamplingKnob.label = sprintf(7, "x%d", oversampling);
+  oversamplingKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0) ? (
+    newOversampling = floor(oversamplingKnob.value * 7 + 1);
+    floor(newOversampling) != overSampling ? (
+      oversampling = newOversampling;
+      slider_automate(oversampling);
+      updateSlider();
+    );
+  );
+  
+  cX += 2.5 * knobSize;
+  inertiaKnob.active = 1;
+  inertiaKnob.value = inertia / 200;
+  inertiaKnob.label = sprintf(8, "%d ms", inertia);
+  inertiaKnob.drawKnob(cX, cY, knobSize, "Inertia", "", 1.0);
+  inertiaKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 60/200) ? (
+    inertia = inertiaKnob.value * 200;
+    slider_automate(inertia);
+  );
+);
+
+
+
+cX = xOrigin;
+cY = cY + 4 * knobSize;
+
+drawPanel("ENVELOPE", cX - 2*knobSpacing, cY - .53*panelHeight + .2*knobSize, 7.675*knobSpacing, panelHeight);
+
+gfx_set(midiChange*.4+.1, .1, .1, midiChange); midiChange *= .9;
+gfx_rect(cX - 2.5*knobSpacing, cY - .4*panelHeight, 9, 9);
+
+envAmountKnob.active = 1;
+envAmountKnob.value = env_amnt * .5 + .5;
+envAmountKnob.drawKnob(cX, cY, knobSize, "- Amount +", "Envelope Amount", 1.0);
+envAmountKnob.label = sprintf(4, "   %d %%%%", 100*env_amnt);
+envAmountKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.5) ? (
+  env_amnt = envAmountKnob.value * 2 - 1;
+  slider_automate(env_amnt);
+);
+
+cX += knobSize*2.5;
+envDecayKnob.active = 1;
+envDecayKnob.value = env_decay;
+env_decay > .5 ? (
+  envDecayKnob.label = sprintf(1, "%d ms", (3 * 10^(2*env_decay)));
+) : (
+  envDecayKnob.label = sprintf(1, "%.1f ms", (3 * 10^(2*env_decay)));
+);
+envDecayKnob.drawKnob(cX, cY, knobSize, "Decay", "Decay Time", 1.0);
+envDecayKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.25) ? (
+  env_decay = envDecayKnob.value;
+  slider_automate(env_decay);
+);
+
+
+cX += 3.675 * knobSize;
+drawPanel("CUTOFF LFO", cX - 2*knobSpacing, cY - .53*panelHeight + .2*knobSize, 11.125*knobSpacing, panelHeight);
+
+cutoffLFOAmountKnob.active = 1;
+cutoffLFOAmountKnob.value = c_lfo_amnt;
+cutoffLFOAmountKnob.drawKnob(cX, cY, knobSize, "Amount", "Cutoff LFO Amount", 1.0);
+cutoffLFOAmountKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.25) ? (
+  c_lfo_amnt = cutoffLFOAmountKnob.value;
+  slider_automate(c_lfo_amnt);
+);
+
+cX += 2.5 * knobSize;
+cutoffSyncToggle.drawToggle(cX-knobSize, cy-knobSize, .15*knobSize, .15*knobSize, c_lfo_sync, widget_r, widget_g, widget_b, widget_a, toggle_r, toggle_g, toggle_b, toggle_a, "Modulate gain by pitch.");
+c_lfo_sync = cutoffSyncToggle.processMouseToggle(mouse_x, mouse_y, mouse_cap);
+
+cutoffLFOSpeedKnob.active = 1;
+cutoffLFOSpeedKnob.value = c_lfo_speed / 20;
+cutoffLFOSpeedKnob.drawKnob(cX, cY, knobSize, "Rate", "Cutoff LFO frequency", 1.0);
+c_lfo_sync ? (
+  cutoffLFOSpeedKnob.label = cutoff_LFO.tempoLabel;
+) : (
+  cutoffLFOSpeedKnob.label = sprintf(3, "%d Hz", c_lfo_speed);
+);
+cutoffLFOSpeedKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.25) ? (
+  c_lfo_speed = cutoffLFOSpeedKnob.value * 20;
+  updateTempo();
+  slider_automate(c_lfo_speed);
+);
+
+cX += 2.5 * knobSize;
+cutoffLFOPhaseKnob.active = 1;
+cutoffLFOPhaseKnob.value = c_lfo_phase / 36;
+cutoffLFOPhaseKnob.drawKnob(cX, cY, knobSize, "LR Phase", "Cutoff LFO Phase", 1.0);
+cutoffLFOPhaseKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.25) ? (
+  c_lfo_phase = cutoffLFOPhaseKnob.value * 36;
+  slider_automate(c_lfo_phase);
+);
+
+cX += 3.675 * knobSize;
+drawPanel("MORPH LFO", cX - 2*knobSpacing, cY - .53*panelHeight + .2*knobSize, 11.125*knobSpacing, panelHeight);
+morphLFOAmountKnob.active = 1;
+morphLFOAmountKnob.value = m_lfo_amnt;
+morphLFOAmountKnob.drawKnob(cX, cY, knobSize, "Amount", "Cutoff LFO Amount", 1.0);
+morphLFOAmountKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.25) ? (
+  m_lfo_amnt = morphLFOAmountKnob.value;
+  slider_automate(m_lfo_amnt);
+);
+
+cX += 2.5 * knobSize;
+morphSyncToggle.drawToggle(cX-knobSize, cy-knobSize, .15*knobSize, .15*knobSize, m_lfo_sync, widget_r, widget_g, widget_b, widget_a, toggle_r, toggle_g, toggle_b, toggle_a, "Modulate gain by pitch.");
+m_lfo_sync = morphSyncToggle.processMouseToggle(mouse_x, mouse_y, mouse_cap);
+
+morphLFOSpeedKnob.active = 1;
+morphLFOSpeedKnob.value = m_lfo_speed / 20;
+morphLFOSpeedKnob.drawKnob(cX, cY, knobSize, "Rate", "Cutoff LFO frequency", 1.0);
+m_lfo_sync ? (
+  morphLFOSpeedKnob.label = morph_LFO.tempoLabel;
+) : (
+  morphLFOSpeedKnob.label = sprintf(5, "%d Hz", m_lfo_speed);
+);
+morphLFOSpeedKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.25) ? (
+  m_lfo_speed = morphLFOSpeedKnob.value * 20;
+  updateTempo();
+  slider_automate(m_lfo_speed);
+);
+
+cX += 2.5 * knobSize;
+morphLFOPhaseKnob.active = 1;
+morphLFOPhaseKnob.value = m_lfo_phase / 36;
+morphLFOPhaseKnob.drawKnob(cX, cY, knobSize, "LR Phase", "Cutoff LFO Phase", 1.0);
+morphLFOPhaseKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.25) ? (
+  m_lfo_phase = morphLFOPhaseKnob.value * 36;
+  slider_automate(m_lfo_phase);
+);
+
+cX += 3.5 * knobSize;
+
+drawPanel("DISTORTION", cX - 2*knobSpacing, cY - .53*panelHeight + .2*knobSize, 7.75*knobSpacing, panelHeight);
+
+shaperToggle.drawToggle(cX-knobSize, cy-knobSize, .15*knobSize, .15*knobSize, shaper, widget_r, widget_g, widget_b, widget_a, toggle_r, toggle_g, toggle_b, toggle_a, "Modulate gain by pitch.\nGives a more analog feel.");
+shaper = shaperToggle.processMouseToggle(mouse_x, mouse_y, mouse_cap);
+
+higainToggle.drawToggle(cX+knobSize-2, cy-knobSize, .15*knobSize, .15*knobSize, higain, widget_r, widget_g, widget_b, widget_a, toggle_r, toggle_g, toggle_b, toggle_a, "High gain mode.");
+higain = higainToggle.processMouseToggle(mouse_x, mouse_y, mouse_cap);
+
+distKnob.active = shaper;
+distKnob.value = current_ceiling / 48;
+distKnob.label = sprintf(1, "%.1f dB", current_ceiling);
+distKnob.drawKnob(cX, cY, knobSize, "Distortion", "Distortion level\n\nDistortion applied post-filter.", 0);
+distKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0) ? (
+  current_ceiling = distKnob.value * 48;
+  slider_automate(current_ceiling);
+);
+
+cX += 2.5 * knobSize;
+
+warmthKnob.active = shaper;
+warmthKnob.value = (warmth + 12) / 24;
+warmthKnob.drawKnob(cX, cY, knobSize, "Warmth", "Distortion warmth.\n\nApplies pre- and post-emphasis filters.", .5);
+warmthKnob.knob_processMouse(mouse_x, mouse_y, mouse_cap, 0.5) ? (
+  warmth = warmthKnob.value * 24 - 12;
+  slider_automate(warmth);
+);
+
+
+gfx_set(0, 0, 0, 0);
+gfx_rect(0, 0, gfx_w, gfx_h);
+gfx_set(1, 1, 1, 1);
+
+warning > 0 ? (
+  gfx_set(1,1,1,1);
+  gfx_x = 0;
+  gfx_y = 0;
+  gfx_a = warning / 75;
+  gfx_printf("Warning, cutoff clamped! Without oversampling, this non-linear filter cannot safely go to higher cutoff frequencies.");
+  warning -= 1;
+);
+
+lcap = mouse_cap;
+
+hinter.drawHint_draw();

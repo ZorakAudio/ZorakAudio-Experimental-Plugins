@@ -1,0 +1,624 @@
+@init
+oversampling = 1;
+epsilon = 0.00000001;
+maxiter = 6;
+
+function f_trafo(freq)
+  local()
+  global(oversampling)
+  instance()
+  (
+    exp( (1-freq) * log(20/22050) ) * $pi / oversampling;
+  );
+
+////////////////////////////////
+// Initializers
+////////////////////////////////
+function bootvowel()
+  instance()
+  local(c, ptr)
+  global(vowel_src, vowel_A, vowel_E, vowel_I, vowel_O, vowel_U, vowel_EE)
+  (
+    c = vowel_src;
+    c[0] = vowel_A;
+    c[1] = vowel_E;
+    c[2] = vowel_I;
+    c[3] = vowel_O;
+    c[4] = vowel_U;
+    c[5] = vowel_EE;
+    
+    // 34 39 57
+    ptr = vowel_A;
+    ptr[] = 660;        ptr += 1;
+    ptr[] = 1700;       ptr += 1;
+    ptr[] = 2400;       ptr += 1;
+    ptr[] = 2^(0/6);    ptr += 1; // gain
+    ptr[] = 2^(-15/6);  ptr += 1; // gain
+    ptr[] = 2^(-15/6);  ptr += 1; // gain
+    ptr[] = 5;          ptr += 1; // Q
+    ptr[] = 20;         ptr += 1; // Q
+    ptr[] = 20;         ptr += 1; // Q
+
+    ptr = vowel_E;
+    ptr[] = 530;        ptr += 1;
+    ptr[] = 1850;       ptr += 1;
+    ptr[] = 2500;       ptr += 1;
+    ptr[] = 2^(0/6);    ptr += 1; // gain
+    ptr[] = 2^(-15/6);  ptr += 1; // gain
+    ptr[] = 2^(-9/6);   ptr += 1; // gain
+    ptr[] = 5;          ptr += 1; // Q
+    ptr[] = 20;         ptr += 1; // Q
+    ptr[] = 50;         ptr += 1; // Q
+
+    ptr = vowel_I;
+    ptr[] = 400;        ptr += 1;
+    ptr[] = 2000;       ptr += 1;
+    ptr[] = 2550;       ptr += 1;
+    ptr[] = 2^(0/6);    ptr += 1; // gain
+    ptr[] = 2^(-15/6);  ptr += 1; // gain
+    ptr[] = 2^(-9/6);   ptr += 1; // gain
+    ptr[] = 5;          ptr += 1; // Q
+    ptr[] = 20;         ptr += 1; // Q
+    ptr[] = 50;         ptr += 1; // Q
+
+    ptr = vowel_O;
+    ptr[] = 300;        ptr += 1;
+    ptr[] = 870;        ptr += 1;
+    ptr[] = 2250;       ptr += 1;
+    ptr[] = 2^(0/6);    ptr += 1; // gain
+    ptr[] = 2^(-15/6);  ptr += 1; // gain
+    ptr[] = 2^(-9/6);   ptr += 1; // gain
+    ptr[] = 5;          ptr += 1; // Q
+    ptr[] = 20;         ptr += 1; // Q
+    ptr[] = 50;         ptr += 1; // Q
+
+    ptr = vowel_U;
+    ptr[] = 640;        ptr += 1;
+    ptr[] = 1200;       ptr += 1;
+    ptr[] = 2400;       ptr += 1;
+    ptr[] = 2^(0/6);    ptr += 1; // gain
+    ptr[] = 2^(-11/6);  ptr += 1; // gain
+    ptr[] = 2^(-13/6);   ptr += 1; // gain
+    ptr[] = 9;          ptr += 1; // Q
+    ptr[] = 10;         ptr += 1; // Q
+    ptr[] = 20;         ptr += 1; // Q
+
+    ptr   = vowel_EE; // These are correct
+    ptr[] = 207;        ptr += 1; // freq
+    ptr[] = 2300;       ptr += 1; // freq
+    ptr[] = 3000;       ptr += 1; // freq
+    ptr[] = 2^(0/6);    ptr += 1; // gain
+    ptr[] = 2^(-15/6);  ptr += 1; // gain
+    ptr[] = 2^(-9/6);   ptr += 1; // gain
+    ptr[] = 5;          ptr += 1; // Q
+    ptr[] = 20;         ptr += 1; // Q
+    ptr[] = 50;         ptr += 1; // Q
+);
+
+function init_linearSVF(freq, res)
+  global()
+  local(f0, ct, st, div)
+  instance(ic1eq, ic2eq, k, a1, a2, a3)
+  (
+    f0 = 0.5 * f_trafo(freq);
+    k = 2 - 2*res;
+    
+    ct = cos(f0);
+    st = sin(f0);
+    div = 1.0 / (1.0 + k * st * ct);
+    a1 = ct * ct * div;
+    a2 = st * ct * div;
+    a3 = st * st * div;
+  );
+  
+  
+function init_linearSVF_direct(freq, res)
+  global(srate)
+  local(g, fn)
+  instance(ic1eq, ic2eq, k, a1, a2, a3)
+  (
+    /* Doesn't need the SSE fix since it is only used in modulatrix (0.125 fs) and vowel filter (also < .5 fs) */
+    fn = .5 * $pi * freq;
+    g = tan(fn); /* fn normally divided by oversampling ratio */
+    k = 2 - 2*res;
+    
+    a1 = 1/(1+g*(g+k));
+    a2 = g*a1;
+    a3 = g*a2;
+  );  
+
+function init303(freq, q)
+  local(dwc, dwc2, dwc3, qwc2, qwc3)
+  global()
+  instance(wc, wc2, wc3, wc4, A, k, b, g, z0, z1, z2, z3, y1, y2, y3, y4,
+  b0, a0, a1, a2, a3, b10, a10, a11, a12, a13, b20, a20, a21, a22, a23, c2, c3 )
+  (
+    // This specific filter came from
+    // Copyright (c) 2012 Dominique Wurtz (www.blaukraut.info)
+    wc  = .5 * f_trafo(freq);
+    wc2 = wc*wc;
+    wc3 = wc2*wc;
+    wc4 = wc3*wc;
+    b   = 1 / ( 1 + 8*wc + 20*wc2 + 16*wc3 + 2*wc4);
+    g   = 2 * wc4 * b;
+    
+    k   = 16*q; // Was 20
+    A   = 1 + 0.5 * k;
+    
+    dwc = 2*wc;
+    dwc2 = 2*wc2;
+    qwc2 = 4*wc2;
+    dwc3 = 2*wc3;
+    qwc3 = 4*wc3;
+    
+    b0 = dwc+12*wc2+20*wc3+8*wc4;
+    a0 = 1+6*wc+10*wc2+qwc3;
+    a1 = dwc+8*wc2+6*wc3;
+    a2 = dwc2+wc3;
+    a3 = dwc3;
+    
+    b10 = dwc2+8*wc3+6*wc4;
+    a10 = wc+4*wc2+3*wc3;
+    a11 = 1+6*wc+11*wc2+6*wc3;
+    a12 = wc+qwc2+qwc3;
+    a13 = wc2+dwc3;
+    
+    b20 = dwc3+4*wc4;
+    a20 = a13;
+    a21 = wc+qwc2+4*wc3;
+    a22 = 1+6*wc+10*wc2+qwc3;
+    a23 = wc+qwc2+dwc3;
+    
+    c2  = a21 - a3;
+    c3  = 1+6*wc+9*wc2+dwc3;
+  ); 
+
+function init_MS20(freq, reso)
+  global(oversampling)
+  local(f0)
+  instance(y1, y2, d1, d2, h, hh, k)
+  (
+    freq = min(0.935, freq);
+    f0 = exp( (1-freq) * log(20/22050) ) * $pi / oversampling;
+    h = tan(f0 / (2.1 * oversampling)) * 2.1 * oversampling;
+    hh = 0.5 * h;
+    k  = 2*reso;
+  );
+  
+function init_modulatrix(filterfreq, res)
+  local(fact)
+  global(srate)
+  instance(f, fs, dt, svf, reso)
+  (
+    //this.svf.init_linearSVF( filterfreq, res );
+    fact = .125 * f_trafo(filterfreq);
+    this.svf.init_linearSVF_direct( fact, res );
+    
+    fs = srate; /* Normally * oversampling */
+    dt = 1/fs;
+    f = .5 * fact;
+    reso = res;
+    
+    dt = dt * 2*$pi*srate*f;
+  );
+  
+function init_voodoo(filterFreq, res)
+  local()
+  global()
+  instance(filter_SVF_nores, filter_SVF)
+  (
+    this.filter_SVF_nores.init_linearSVF( filterFreq, 0 );
+    this.filter_SVF.init_linearSVF( filterFreq, res );  
+  );
+
+function init_vowelSVF(freq, qin)
+  instance( c, svf1, svf2, svf3, svf4, svf5, svf6, amp1, amp2, amp3, fr1, fr2, fr3, q1, q2, q3 )
+  local(loc, idx, rloc, fact, ampfac, sr, sq, ptr)
+  global(vowel_src, poopoo)
+  (
+    c     = vowel_src;
+    loc   = 5 * freq;
+    idx   = floor( loc - 0.0001 );
+    rloc  = loc-idx;
+    rloc  = 1.0 - rloc;
+    sr    = 1/22050;
+    sq    = .02;
+    
+    ampfac = .1;
+    ptr   = c[idx];
+    fr1   = ptr[]*rloc; ptr+=1;
+    fr2   = ptr[]*rloc; ptr+=1;
+    fr3   = ptr[]*rloc; ptr+=1;
+    amp1  = ampfac*ptr[]*rloc; ptr+=1;
+    amp2  = ampfac*ptr[]*rloc; ptr+=1;
+    amp3  = ampfac*ptr[]*rloc; ptr+=1;
+    q1    = ptr[]*rloc; ptr+=1;
+    q2    = ptr[]*rloc; ptr+=1;
+    q3    = ptr[]*rloc; ptr+=1;
+    
+    ptr   = c[idx+1];    
+    rloc  = 1 - rloc;
+    fr1   += ptr[]*rloc; ptr+=1;
+    fr2   += ptr[]*rloc; ptr+=1;
+    fr3   += ptr[]*rloc; ptr+=1;
+    amp1  += ampfac*ptr[]*rloc; ptr+=1;
+    amp2  += ampfac*ptr[]*rloc; ptr+=1;
+    amp3  += ampfac*ptr[]*rloc; ptr+=1;
+    q1    += ptr[]*rloc; ptr+=1;
+    q2    += ptr[]*rloc; ptr+=1;
+    q3    += ptr[]*rloc; ptr+=1;
+  
+    fr1 = fr1 * sr;
+    fr2 = fr2 * sr;
+    fr3 = fr3 * sr;
+    
+    q1 = 1-sqrt(q1)*sq;
+    q2 = 1-sqrt(q2)*sq;
+    q3 = 1-sqrt(q3)*sq;
+    
+    q1 = q1 * (.7+.28*qin);
+    q2 = q2 * (.7+.28*qin);
+    q3 = q3 * (.7+.28*qin);
+    poopoo = fr3;
+    this.svf1.init_linearSVF_direct(fr1, q1);
+    this.svf2.init_linearSVF_direct(fr2, q2);
+    this.svf3.init_linearSVF_direct(fr3, q3);
+    
+    this.svf4.init_linearSVF_direct(fr1, q1);
+    this.svf5.init_linearSVF_direct(fr2, q2);
+    this.svf6.init_linearSVF_direct(fr3, q3);
+  );
+
+////////////////////////////////
+// Reset functions
+////////////////////////////////
+function reset_linearSVF()
+  global()
+  local()
+  instance(ic1eq, ic2eq, k, a1, a2, a3)
+  (
+    ic1eq = ic2eq = 0;  
+  );
+  
+function reset303()
+  local(Kbig)
+  global()
+  instance(z0, z1, z2, z3, y1, y2, y3, y4)
+  (
+    z1 = z2 = z3 = 0;
+    y1 = y2 = y3 = y4 = 0;
+  );  
+  
+////////////////////////////////
+// Per sample
+////////////////////////////////
+function eval_linearSVF_LP(v0)
+  global()
+  local(v1, v2, v3)
+  instance(ic1eq, ic2eq, k, a1, a2, a3)
+  (
+    v3 = v0 - ic2eq;
+    v1 = a1 * ic1eq + a2 * v3;
+    v2 = ic2eq + a2 * ic1eq + a3*v3;
+    ic1eq = 2*v1 - ic1eq;
+    ic2eq = 2*v2 - ic2eq;    
+    
+    v2
+  );  
+  
+function eval_linearSVF_BP(v0)
+  global()
+  local(v1, v2, v3)
+  instance(ic1eq, ic2eq, k, a1, a2, a3)
+  (
+    v3 = v0 - ic2eq;
+    v1 = a1 * ic1eq + a2 * v3;
+    v2 = ic2eq + a2 * ic1eq + a3*v3;
+    ic1eq = 2*v1 - ic1eq;
+    ic2eq = 2*v2 - ic2eq;    
+    
+    v1
+  );  
+  
+function eval_linearSVF_HP(v0)
+  global()
+  local(v1, v2, v3)
+  instance(ic1eq, ic2eq, k, a1, a2, a3)
+  (
+    v3 = v0 - ic2eq;
+    v1 = a1 * ic1eq + a2 * v3;
+    v2 = ic2eq + a2 * ic1eq + a3*v3;
+    ic1eq = 2*v1 - ic1eq;
+    ic2eq = 2*v2 - ic2eq;    
+    
+    v0 - k*v1 - v2
+  );
+  
+function eval_linearSVF_notch(v0)
+  global()
+  local(v1, v2, v3)
+  instance(ic1eq, ic2eq, k, a1, a2, a3)
+  (
+    v3 = v0 - ic2eq;
+    v1 = a1 * ic1eq + a2 * v3;
+    v2 = ic2eq + a2 * ic1eq + a3*v3;
+    ic1eq = 2*v1 - ic1eq;
+    ic2eq = 2*v2 - ic2eq;    
+    
+    v0 - k*v1
+  );
+  
+function eval_linearSVF_peak(v0)
+  global()
+  local(v1, v2, v3)
+  instance(ic1eq, ic2eq, k, a1, a2, a3)
+  (
+    v3 = v0 - ic2eq;
+    v1 = a1 * ic1eq + a2 * v3;
+    v2 = ic2eq + a2 * ic1eq + a3*v3;
+    ic1eq = 2*v1 - ic1eq;
+    ic2eq = 2*v2 - ic2eq;
+    
+    v0 - k*v1 -2*v2
+  );
+
+function eval303(input)
+  local(y0, s0, s)
+  instance(wc, wc2, wc3, wc4, A, k, b, g, z0, z1, z2, z3, y1, y2, y3, y4
+            b0, a0, a1, a2, a3, b10, a10, a11, a12, a13, b20, a20, a21, a22, a23, c2, c3 )
+  global()
+  (
+    s = (z0*wc3 + z1*a20 + z2*c2 + z3*c3) * b;
+    y4 = (g*input + s)/(1 + g*k);
+    
+    y0 = max(-1,min(1,(input - k*y4)));
+ 
+    y1 = b * ( y0*b0 + z0*a0 + z1*a1 + z2*a2 + z3*a3 );
+    y2 = b * (y0*b10 + z0*a10 + z1*a11 + z2*a12 + z3*a13);
+    y3 = b * (y0*b20 + z0*a20 + z1*a21 + z2*a22 + z3*a23);
+    y4 = g*y0 + s;
+    
+    z0 += 4*wc*(y0 - y1   + y2);
+    z1 += 2*wc*(y1 - 2*y2 + y3);
+    z2 += 2*wc*(y2 - 2*y3 + y4);
+    z3 += 2*wc*(y3 - 2*y4);
+    
+    A*y4
+  );
+  
+  function tanh(x)
+  local(em2x) 
+  global()
+  instance()
+  (
+    x = x;
+    em2x = exp(-2*x);
+    (2/(1+em2x))-1
+  );
+  
+  function f_g(s)
+  local()
+  global(slider8)
+  instance()
+  (
+    //( slider8 == 0 ) ? max(-1,min(1,s)) : abs(s) > 1 ? s - .75*sign(s)*(abs(s)-1) : s;
+    max(-1,min(1,s));
+  );  
+  
+function eval_vowelSVF(sample)
+  instance( c, svf1, svf2, svf3, svf4, svf5, svf6, amp1, amp2, amp3 )
+  local(outA, outB, outC)
+  global()
+  (
+    outA = this.svf1.eval_linearSVF_peak(sample);
+    outB = this.svf2.eval_linearSVF_BP(sample);
+    outC = this.svf3.eval_linearSVF_BP(sample);
+    
+    outA = this.svf4.eval_linearSVF_BP(outA);
+    outB = this.svf5.eval_linearSVF_BP(outB);
+    outC = this.svf6.eval_linearSVF_BP(outC);
+    
+    amp1 * outA + amp2 * outB + amp3 * outC;
+  );      
+        
+function eval_vowelSVF2(sample)
+  instance( c, svf1, svf2, svf3, svf4, svf5, svf6, amp1, amp2, amp3 )
+  local(outA, outB, outC)
+  global()
+  (
+    outA = this.svf1.eval_linearSVF_peak(sample);
+    outB = this.svf2.eval_linearSVF_BP(sample);
+    outC = this.svf3.eval_linearSVF_BP(sample);
+    
+    outA = this.svf4.eval_linearSVF_LP(outA);
+    outB = this.svf5.eval_linearSVF_LP(outB);
+    outC = this.svf6.eval_linearSVF_LP(outC);
+    
+    amp1 * outA + amp2 * outB + amp3 * outC;
+  );  
+  
+function eval_voodoo(sample)
+  local(lp, reso, diff, sample)
+  instance()
+  global()
+  (
+    reso = this.filter_SVF.eval_linearSVF_LP( sample );
+    lp = this.filter_SVF_nores.eval_linearSVF_LP( sample );
+    diff = 10*(reso-lp);
+    this.resoint = .5*tanh(this.resoint + tanh(diff));
+    sample = lp + this.resoint;  
+  );
+  
+function eval_modulatrix(sample)
+  local(mterm)
+  global()
+  instance(dt, t, svf, c, reso)
+  (
+    t = t + dt;
+    mterm = ( sin(1.5*t)+sin(.125*t)+2*sin(.5*t) );
+    sample = tanh( sample - tanh( sample*( .5 * mterm ) ) );
+    
+    sample = sample - 1.7*reso*sample * sin(.9999*t);    
+    c = this.svf.eval_linearSVF_LP(sample);
+  );      
+
+function eval_monstro(sample)
+  local()
+  instance()
+  global()
+  (
+    sample = sample + tanh( -(this.vowel_svf.eval_vowelSVF2(sample) + sample) + this.xxos );
+    this.xxos = sample;
+  );
+  
+  function f_dg(s)
+  local()
+  global(slider8)
+  instance()
+  (
+    //( slider8 == 0 ) ? 1 - 1 * (abs(s)>1) : abs(s) > 1 ? .25 : 1;
+    1 - 1 * (abs(s)>1);
+  );
+
+  function eval_MS20_lp(x)
+    global(epsilon, maxiter)
+    local(iter, res, gd2k, ky2, gky2, dgky2,
+          f1, f2, a, b, c, d, norm, sig1, thsig1, thsig1sq, sig2, thsig2, thsig2sq, tanhterm1, tanhterm2, hhthsig1sqm1, hhthsig2sqm1 )
+    instance(i, y1, y2, d1, d2, h, hh, k, obs)
+    (
+      gd2k = f_g(d2*k);
+      tanhterm1 = tanh(-d1 + x - gd2k);
+      tanhterm2 = tanh(d1 - d2 + gd2k);
+      
+      iter = 0;
+      while(
+        iter += 1;
+        ky2 = k*y2;
+        gky2 = f_g(ky2);
+        dgky2 = f_dg(ky2);
+      
+        sig1 = x - y1 - gky2;
+        thsig1 = tanh(sig1);
+        thsig1sq = thsig1 * thsig1;
+      
+        sig2 = y1 - y2 + gky2;
+        thsig2 = tanh(sig2);
+        thsig2sq = thsig2 * thsig2;
+        hhthsig1sqm1 = hh*(thsig1sq - 1);
+        hhthsig2sqm1 = hh*(thsig2sq - 1);
+      
+        f1 = y1 - d1 - hh*(tanhterm1 + thsig1);
+        f2 = y2 - d2 - hh*(tanhterm2 + thsig2);
+        res = abs(f1) + abs(f2);
+        
+        a = -hhthsig1sqm1 + 1;
+        b = -k*hhthsig1sqm1*dgky2;
+        c = hhthsig2sqm1;
+        d = (k*dgky2 - 1)*hhthsig2sqm1 + 1;
+        
+        norm = 1 / ( a*d - b*c );
+        y1 = y1 - ( d*f1 - b*f2 ) * norm;
+        y2 = y2 - ( a*f2 - c*f1 ) * norm;
+      (res > epsilon) && (iter < maxiter);
+      );
+      
+      d1 = y1;
+      d2 = y2;
+    ); 
+
+
+  function eval_MS20_bp(x)
+    global(epsilon, maxiter)
+    local(iter, res, gd2k, ky2, gky2, dgky2,
+          f1, f2, a, b, c, d, norm, sig1, thsig1, thsig1sq, sig2, thsig2, thsig2sq, tanhterm1, tanhterm2, hhthsig1sqm1, hhthsig2sqm1 )
+    instance(i, y1, y2, d1, d2, h, hh, k, obs)
+    (
+      gd2k = f_g(d2*k);
+      tanhterm1 = tanh(-d1 - x - gd2k);
+      tanhterm2 = tanh(d1 - d2 + x + gd2k);
+      
+      iter = 0;
+      while(
+        iter += 1;
+        ky2 = k*y2;
+        gky2 = f_g(ky2);
+        dgky2 = f_dg(ky2);
+      
+        sig1 = -x - y1 - gky2;
+        thsig1 = tanh(sig1);
+        thsig1sq = thsig1 * thsig1;
+      
+        sig2 = x + y1 - y2 + gky2;
+        thsig2 = tanh(sig2);
+        thsig2sq = thsig2 * thsig2;
+      
+        hhthsig1sqm1 = hh*(thsig1sq - 1);
+        hhthsig2sqm1 = hh*(thsig2sq - 1);
+      
+        f1 = y1 - d1 - hh*(tanhterm1 + thsig1);
+        f2 = y2 - d2 - hh*(tanhterm2 + thsig2);
+        res = abs(f1) + abs(f2);
+        
+        a = 1 - hhthsig1sqm1;
+        b = -k*hhthsig1sqm1*dgky2;
+        c = hhthsig2sqm1;
+        d = (k*dgky2 - 1)*hhthsig2sqm1 + 1;
+      
+        norm = 1 / ( a*d - b*c );
+        y1 = y1 - ( d*f1 - b*f2 ) * norm;
+        y2 = y2 - ( a*f2 - c*f1 ) * norm;
+      (res > epsilon) && (iter < maxiter);
+      );
+      
+      d1 = y1;
+      d2 = y2;
+    );
+    
+    function eval_MS20_hp(x)
+      global(epsilon, maxiter)
+      local(iter, res, gkd2px, kxpy2, gkxpy2, dgky2px,
+            f1, f2, a, b, c, d, norm, sig1, thsig1, thsig1sq, sig2, thsig2, thsig2sq, tanhterm1, tanhterm2, hhthsig1sqm1, hhthsig2sqm1 )
+      instance(i, y1, y2, d1, d2, h, hh, k, obs)
+      (
+        gkd2px = f_g(k*(d2 + x));
+        tanhterm1 = tanh(-d1 - gkd2px);
+        tanhterm2 = tanh(d1 - d2 - x + gkd2px);
+        
+        iter = 0;
+        while(
+          iter += 1;
+          kxpy2 = k*(x + y2);
+          gkxpy2 = f_g(kxpy2);
+          dgky2px = f_dg(kxpy2);
+        
+          sig1 = -y1 - gkxpy2;
+          thsig1 = tanh(sig1);
+          thsig2sq = thsig2 * thsig2;
+        
+          sig2 = -x + y1 - y2 + gkxpy2;
+          thsig2 = tanh(sig2);
+          thsig2sq = thsig2 * thsig2;
+        
+          hhthsig1sqm1 = (thsig1sq - 1);
+          hhthsig2sqm1 = (thsig2sq - 1);
+        
+          f1 = y1 - d1 - hh*(tanhterm1 + thsig1);
+          f2 = y2 - d2 - hh*(tanhterm2 + thsig2);
+          res = abs(f1) + abs(f2);
+          
+          a = -hhthsig1sqm1 + 1;
+          b = -k*hhthsig1sqm1*dgky2px;
+          c = hhthsig2sqm1;
+          d = (k*dgky2px - 1)*hhthsig2sqm1 + 1;
+          
+          norm = 1 / ( a*d - b*c );
+          y1 = y1 - ( d*f1 - b*f2 ) * norm;
+          y2 = y2 - ( a*f2 - c*f1 ) * norm;
+        (res > epsilon) && (iter < maxiter);
+        );
+          
+        d1 = y1;
+        d2 = y2;
+        
+        y2 + x
+      ); 

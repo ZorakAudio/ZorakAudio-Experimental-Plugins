@@ -1,0 +1,477 @@
+@init
+function naive_triangle(t)
+(
+  t -= floor(t);
+  t <= 0.5 ? (
+    (4.0 * t - 1.0)
+  ) : (
+    (3.0 - 4.0 * t)
+  )
+);
+
+function simple_buffer(buffer_in, buffer_max_in)
+local()
+global()
+instance(write_ptr, buffer_max, buffer)
+(
+  buffer      = buffer_in;
+  buffer_max  = buffer_max_in;
+  
+  write_ptr < buffer ? (
+    write_ptr = buffer 
+  ) : ( write_ptr > buffer_max ) ? write_ptr = buffer
+);
+  
+function reset_buffer()
+local()
+global()
+instance(buffer_max, buffer)
+(
+  memset(buffer, 0, buffer_max - buffer + 1);
+);
+  
+function write_simple_buffer(sample)
+local()
+global()
+instance(write_ptr, buffer, buffer_max)
+(
+  write_ptr[] = sample;
+  write_ptr += 1;
+  write_ptr > buffer_max ? write_ptr = buffer;
+);
+  
+function read_simple_buffer(offset)
+local(id0, id1, id2, id3, ism1, is0, is1, is2, frac)
+global()
+instance(read_ptr, write_ptr, buffer, buffer_max)
+(
+  read_ptr = write_ptr - offset - 3;
+  
+  frac = read_ptr - floor(read_ptr);
+  read_ptr = floor(read_ptr);
+  read_ptr < buffer ? read_ptr += (buffer_max - buffer + 1);    
+
+  ism1 = read_ptr[];
+  read_ptr += 1; read_ptr > buffer_max ? read_ptr = buffer;
+  is0 = read_ptr[];
+  read_ptr += 1; read_ptr > buffer_max ? read_ptr = buffer;
+  is1 = read_ptr[];
+  read_ptr += 1; read_ptr > buffer_max ? read_ptr = buffer;    
+  is2 = read_ptr[];
+  
+  id0 = is0;
+  id1 = 0.5*(is1 - ism1);
+  id2 = ism1 - 2.5*is0 + 2*is1 - 0.5*is2;
+  id3 = 0.5*(is2 - ism1) + 1.5 * (is0 - is1);
+  ((id3*frac+id2)*frac+id1)*frac+id0;
+);
+
+
+function read_cheapo(offset)
+local(last, new, frac)
+global()
+instance(read_ptr, write_ptr, buffer, buffer_max)
+(
+  read_ptr = write_ptr - offset - 1;
+  
+  frac = read_ptr - floor(read_ptr);
+  read_ptr = floor(read_ptr);
+  read_ptr < buffer ? read_ptr += (buffer_max - buffer + 1);    
+
+  last = read_ptr[];
+  read_ptr += 1; read_ptr > buffer_max ? read_ptr = buffer;
+  
+  last * (1 - frac) + frac * read_ptr[];
+);
+
+function init_chorus(freemem, crossover_freq) // 340
+local()
+global()
+instance(l_delay, r_delay, l_delay_filt, r_delay_filt)
+(
+  // Chorus materials
+  l_delay.simple_buffer(freemem, freemem + 2046); freemem += 2048;
+  r_delay.simple_buffer(freemem, freemem + 2046); freemem += 2048;
+  l_delay_filt.init_linearSVF_absolute(crossover_freq, 0);
+  r_delay_filt.init_linearSVF_absolute(crossover_freq, 0);
+  
+  freemem
+);
+
+function reset_chorus()
+local()
+global()
+instance(l_delay, r_delay)
+(
+  l_delay.reset_buffer();
+  r_delay.reset_buffer();
+);
+
+function apply_chorus(chorus_amount)
+local(chorus_tri, l_offset, r_offset)
+global(spl0, spl1, srate, israte)
+instance(csample, ch_cur, l_delay, r_delay, l_delay_filt, r_delay_filt)
+(
+  (ch_cur + chorus_amount) > .01 ? (
+    // Subtle bass preserving chorus
+    l_delay.write_simple_buffer(l_delay_filt.eval_linearSVF_HP(spl0));
+    r_delay.write_simple_buffer(r_delay_filt.eval_linearSVF_HP(spl1));
+    
+    csample += 1;
+    chorus_tri = naive_triangle(csample * israte * .25);
+    ch_cur = chorus_amount * .001 + ch_cur * .999;
+    l_offset = ch_cur * (0.0075 + 0.002 * chorus_tri) * srate;
+    r_offset = ch_cur * (0.0075 - 0.002 * chorus_tri) * srate;
+    
+    spl0 = spl0 - .5 * r_delay.read_simple_buffer(r_offset);
+    spl1 = spl1 - .5 * l_delay.read_simple_buffer(l_offset);
+  );
+);
+
+
+function quick_ellip(x)
+local()
+instance(y, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15, s16)
+global()
+(
+  // Elliptical filter at 0.25
+  y = 0.03974403712835188 * x + s1;
+  s1 = 0.11443117839583584 * x - -1.2209793606380654 * y + s2;
+  s2 = 0.4102732984609602 * x - 6.918940386446262 * y + s3;
+  s3 = 0.8255281436307241 * x - -7.438409047076798 * y + s4;
+  s4 = 1.6689828207164152 * x - 20.47654014058037 * y + s5;
+  s5 = 2.5256753272317622 * x - -19.21733444638215 * y + s6;
+  s6 = 3.6193770241123127 * x - 33.69411950162771 * y + s7;
+  s7 = 4.250403515943048 * x - -27.235417392156258 * y + s8;
+  s8 = 4.641846929462009 * x - 33.46680351213294 * y + s9;
+  s9 = 4.25040351594302 * x - -22.8021725145997 * y + s10;
+  s10 = 3.6193770241123016 * x - 20.29444701618275 * y + s11;
+  s11 = 2.525675327231766 * x - -11.231790923026374 * y + s12;
+  s12 = 1.6689828207164181 * x - 7.173357397659418 * y + s13;
+  s13 = 0.8255281436307251 * x - -2.9956603900306376 * y + s14;
+  s14 = 0.41027329846095995 * x - 1.2866484319363045 * y + s15;
+  s15 = 0.11443117839583594 * x - -0.3305293493933626 * y + s16;
+  s16 = 0.0397440371283519 * x - 0.07745428581611816 * y;
+  
+  y
+);
+/*
+function init_cheapest_freq_shifter(shift)
+instance(osc_coeff_t1, osc_coeff_t2,
+         cos_t1_1, cos_t1_2, sin_t1_1, sin_t1_2,
+         cos_t2_1, cos_t2_2, sin_t2_1, sin_t2_2,
+         t1,  t2, dt1, dt2)
+local(ip, piblock, w)
+global(tpiT)
+(
+  piblock = 628.32; // 200 * $pi;
+  dt1 = 1.5771;  // oscillating at srate / 4 (2.0 * $pi * 0.251)
+  dt2 = dt1 + tpiT * shift;
+  (t1 > piblock) ? t1 -= piblock;
+  (t2 > piblock) ? t2 -= piblock;
+  
+  w = dt1;
+  osc_coeff_t1 = 2.0 * cos(w);
+  t1 += dt1;
+  cos_t1_1 = sin(- w + t1);
+  cos_t1_2 = sin(- 2.0*w + t1);
+  sin_t1_1 = - cos(- w + t1);
+  sin_t1_2 = - cos(- 2.0*w + t1);
+  t1 -= dt1;
+  
+  w = dt2;
+  osc_coeff_t2 = 2.0 * cos(w);
+  t2 += dt2;
+  cos_t2_1 = sin(- w + t2);
+  cos_t2_2 = sin(- 2.0 * w + t2);
+  sin_t2_1 = - cos(- w + t2);
+  sin_t2_2 = - cos(- 2.0 * w + t2);
+  t2 -= dt2;
+);
+*/
+
+function init_freq_shift_modulator()
+global(
+  fs.osc_coeff_t1,
+  fs.cos_t1_1, fs.cos_t1_2,
+  fs.sin_t1_1, fs.sin_t1_2,
+)
+local(dt1)
+(
+  dt1 = 1.5771;
+  fs.osc_coeff_t1 = 2.0 * cos(dt1);
+  fs.cos_t1_1 = sin(- dt1);
+  fs.cos_t1_2 = sin(- 2.0 * dt1);
+  fs.sin_t1_1 = - cos(- dt1);
+  fs.sin_t1_2 = - cos(- 2.0 * dt1);
+);
+
+function freq_shift_modulator_sample()
+global(
+  fs.ct1, fs.st1,
+  fs.osc_coeff_t1,
+  fs.cos_t1_1, fs.cos_t1_2,
+  fs.sin_t1_1, fs.sin_t1_2,
+)
+(
+  fs.ct1 = fs.osc_coeff_t1 * fs.cos_t1_1 - fs.cos_t1_2;
+  fs.cos_t1_2 = fs.cos_t1_1;
+  fs.cos_t1_1 = fs.ct1;
+  
+  fs.st1 = fs.osc_coeff_t1 * fs.sin_t1_1 - fs.sin_t1_2;
+  fs.sin_t1_2 = fs.sin_t1_1;
+  fs.sin_t1_1 = fs.st1;
+);
+
+
+function freq_shift_audio_rate(in, shift, fb)
+instance(
+  fs_l1, fs_r1, fs_l2, fs_r2, ly,
+  dt2, t2,
+)
+local(ct2, st2)
+global(tpiT, fs.ct1, fs.st1)
+(
+  t2 += 1.5771 + tpiT * (shift + fb * ly); // oscillating at srate / 4 (2.0 * $pi * 0.251)
+  (t2 > 628.32) ? t2 -= 628.32; // 200 * $pi;
+  
+  ly = fs_l1.quick_ellip(in * fs.ct1) * cos(t2) + fs_l2.quick_ellip(in * fs.st1) * sin(t2)
+);
+
+function poisson_noise(in_left, in_right, freq, polarity)
+instance(current_freq, l_hp, r_hp, l_ap, r_ap, out_left, out_right)
+local(pulse_l, pulse_r, noisiness, noise_l, noise_r)
+global()
+(
+  noisiness = 0.005;
+  (freq != current_freq) ? (
+    current_freq = freq;
+    l_hp.init_linearSVF_absolute(freq, 0);
+    l_ap.init_linearSVF_absolute(freq, 0);
+    r_hp.init_linearSVF_absolute(freq, 0);
+    r_ap.init_linearSVF_absolute(freq, 0);
+  );
+  
+  polarity ? (
+    pulse_l *= 1.0 - noisiness;
+    pulse_r *= 1.0 - noisiness;
+    (rand() > (abs(in_left) + abs(in_left))) ? pulse_l = min(1.0, pulse_l + rand());
+    (rand() > (abs(in_right) + abs(in_right))) ? pulse_r = min(1.0, pulse_r + rand());
+  ) : (
+    pulse_l *= 1.0 - noisiness;
+    pulse_r *= 1.0 - noisiness;
+    (rand() < (abs(in_left) + abs(in_left))) ? pulse_l = min(1.0, pulse_l + rand());
+    (rand() < (abs(in_right) + abs(in_right))) ? pulse_r = min(1.0, pulse_r + rand());
+  );
+  
+  noise_l = l_hp.eval_linearSVF_LP(pulse_l * in_left - in_left);
+  noise_r = r_hp.eval_linearSVF_LP(pulse_r * in_right - in_right);
+  
+  out_left = l_ap.eval_linearSVF_AP(in_left) + noise_l;
+  out_right = r_ap.eval_linearSVF_AP(in_right) + noise_r;
+);
+
+function reset_phasemod_mem()
+local()
+global()
+instance()
+(
+  this.buf1.reset_buffer();
+  this.buf2.reset_buffer();
+);
+
+function init_phasemod_mem(freemem)
+local()
+global()
+instance(lpf, lpf2, lpf3, lpf4, lpf5)
+(
+  this.buf1.simple_buffer(freemem, freemem + 4094 * 4); freemem += 4096 * 4;
+  this.buf2.simple_buffer(freemem, freemem + 4094 * 4); freemem += 4096 * 4;
+  
+  lpf.init_linearSVF_absolute(5000, 0);
+  lpf2.init_linearSVF_absolute(8000, 0);
+  freemem
+);
+
+<?
+  function input(sample2)
+  (
+    printf("this.buf1.read_cheapo(fm_offset + (max(-fm_offset, fm_factor * (%s))))", sample2);
+  );
+  
+  function input2(sample2, sample3)
+  (
+    printf("this.buf1.read_cheapo(fm_factor * (abs(%s) + abs(%s)))", sample2, sample3);
+  );
+  
+  function input3(sample2, sample3)
+  (
+    printf("this.buf1.read_cheapo(fm_factor * (abs(%s + %s)))", sample2, sample3);
+  );
+?>
+
+function process_phasemod(x1, x2, ifreq, feedback)
+local(y, y1, y2, y3, fm_factor)
+global(osc_feedback1, fm_offset, fm_scaling)
+instance(last_x1, last_x2, write_ptr, lpf, lpf2, y4)
+(
+  this.buf1.write_simple_buffer(x1);
+  this.buf2.write_simple_buffer(lpf2.eval_linearSVF_LP(lpf.eval_linearSVF_LP(x2)));
+  
+  fm_factor = fm_scaling * ifreq;
+  
+  y1 = <?input("this.buf2.read_cheapo(fm_offset + 1) + feedback * y4")?>;
+  y2 = <?input("this.buf2.read_cheapo(fm_offset + 0.75) + feedback * y1")?>;
+  y3 = <?input("this.buf2.read_cheapo(fm_offset + 0.5) + feedback * y2")?>;
+  y4 = <?input("this.buf2.read_cheapo(fm_offset + 0.25) + feedback * y3")?>;
+  
+  this.elliptic_4x(y1);
+  this.elliptic_4x(y2);
+  this.elliptic_4x(y3);
+  this.elliptic_4x(y3);
+  y = this.elliptic_4x(y4);
+    
+  last_x1 = x1;
+  last_x2 = x2;
+  
+  y
+);
+
+function process_phasemod2(x1, x2, ifreq, feedback)
+local(y, fm_factor, xx2, y1, y2, y3)
+global(fm_offset, fm_scaling)
+instance(last_x1, last_x2, write_ptr, lpf, lpf2, lifreq, y4)
+(
+  this.buf1.write_simple_buffer(x1);
+  fm_factor = fm_scaling * ifreq;
+  
+  xx2 = lpf2.eval_linearSVF_LP(lpf.eval_linearSVF_LP(x2));
+  
+  y1 = <?input2("last_x2", "feedback * y4")?>;
+  y2 = <?input2("last_x2 * 0.75 + xx2 * 0.25", "feedback * y1")?>;
+  y3 = <?input2("last_x2 * 0.5 + xx2 * 0.5", "feedback * y2")?>;
+  y4 = <?input2("last_x2 * 0.25 + xx2 * 0.75", "feedback * y3")?>;
+  
+  this.elliptic_4x(y1);
+  this.elliptic_4x(y2);
+  this.elliptic_4x(y3);
+  y = this.elliptic_4x(y4);
+    
+  last_x1 = x1;
+  last_x2 = xx2;
+  
+  y
+);
+
+function process_phasemod3(x1, x2, ifreq, feedback)
+local(y, fm_factor, xx2, y1, y2, y3)
+global(osc_feedback1, fm_offset, fm_scaling)
+instance(last_x1, last_x2, write_ptr, lpf, lpf2, lifreq, y4)
+(
+  this.buf1.write_simple_buffer(x1);
+  fm_factor = fm_scaling * ifreq;
+  
+  xx2 = lpf2.eval_linearSVF_LP(lpf.eval_linearSVF_LP(x2));
+  
+  y1 = <?input3("last_x2", "feedback * y4")?>;
+  y2 = <?input3("last_x2 * 0.75 + xx2 * 0.25", "feedback * y1")?>;
+  y3 = <?input3("last_x2 * 0.5 + xx2 * 0.5", "feedback * y2")?>;
+  y4 = <?input3("last_x2 * 0.25 + xx2 * 0.75", "feedback * y3")?>;
+  
+  this.elliptic_4x(y1);
+  this.elliptic_4x(y2);
+  this.elliptic_4x(y3);
+  y = this.elliptic_4x(y4);
+    
+  last_x1 = x1;
+  last_x2 = xx2;
+  
+  y
+);
+
+function allpass32(y0, m, m_last, sat)
+local(
+  x1, y1, x2, y2, x3, y3, x4, y4, x5, y5, x6, y6, x7, y7, x8, y8, x9, y9, x10, y10, x11, y11, x12, y12, x13, y13, x14, y14, x15, y15, x16, y16, x17, y17, x18, y18, x19, y19, x20, y20, x21, y21, x22, y22, x23, y23, x24, y24, x25, y25, x26, y26, x27, y27, x28, y28, x29, y29, x30, y30, x31, y31, x32, y32,
+)
+instance(
+  x1_last, y1_last, x2_last, y2_last, x3_last, y3_last, x4_last, y4_last, x5_last, y5_last, x6_last, y6_last, x7_last, y7_last, x8_last, y8_last, x9_last, y9_last, x10_last, y10_last, x11_last, y11_last, x12_last, y12_last, x13_last, y13_last, x14_last, y14_last, x15_last, y15_last, x16_last, y16_last, x17_last, y17_last, x18_last, y18_last, x19_last, y19_last, x20_last, y20_last, x21_last, y21_last, x22_last, y22_last, x23_last, y23_last, x24_last, y24_last, x25_last, y25_last, x26_last, y26_last, x27_last, y27_last, x28_last, y28_last, x29_last, y29_last, x30_last, y30_last, x31_last, y31_last, x32_last, y32_last,
+)
+global()
+(
+  x1 = y0; y1 = x1_last + x1 * m - y1_last * m_last; x1_last = x1; y1_last = y1;
+  y1 = y1 / (1.0 + sat * abs(y1));
+  x2 = y1; y2 = x2_last + x2 * m - y2_last * m_last; x2_last = x2; y2_last = y2;
+  y2 = y2 / (1.0 + sat * abs(y2));
+  x3 = y2; y3 = x3_last + x3 * m - y3_last * m_last; x3_last = x3; y3_last = y3;
+  y3 = y3 / (1.0 + sat * abs(y3));
+  x4 = y3; y4 = x4_last + x4 * m - y4_last * m_last; x4_last = x4; y4_last = y4;
+  y4 = y4 / (1.0 + sat * abs(y4));
+  x5 = y4; y5 = x5_last + x5 * m - y5_last * m_last; x5_last = x5; y5_last = y5;
+  y5 = y5 / (1.0 + sat * abs(y5));
+  x6 = y5; y6 = x6_last + x6 * m - y6_last * m_last; x6_last = x6; y6_last = y6;
+  y6 = y6 / (1.0 + sat * abs(y6));
+  x7 = y6; y7 = x7_last + x7 * m - y7_last * m_last; x7_last = x7; y7_last = y7;
+  y7 = y7 / (1.0 + sat * abs(y7));
+  x8 = y7; y8 = x8_last + x8 * m - y8_last * m_last; x8_last = x8; y8_last = y8;
+  y8 = y8 / (1.0 + sat * abs(y8));
+  x9 = y8; y9 = x9_last + x9 * m - y9_last * m_last; x9_last = x9; y9_last = y9;
+  y9 = y9 / (1.0 + sat * abs(y9));
+  x10 = y9; y10 = x10_last + x10 * m - y10_last * m_last; x10_last = x10; y10_last = y10;
+  y10 = y10 / (1.0 + sat * abs(y10));
+  x11 = y10; y11 = x11_last + x11 * m - y11_last * m_last; x11_last = x11; y11_last = y11;
+  y11 = y11 / (1.0 + sat * abs(y11));
+  x12 = y11; y12 = x12_last + x12 * m - y12_last * m_last; x12_last = x12; y12_last = y12;
+  y12 = y12 / (1.0 + sat * abs(y12));
+  x13 = y12; y13 = x13_last + x13 * m - y13_last * m_last; x13_last = x13; y13_last = y13;
+  y13 = y13 / (1.0 + sat * abs(y13));
+  x14 = y13; y14 = x14_last + x14 * m - y14_last * m_last; x14_last = x14; y14_last = y14;
+  y14 = y14 / (1.0 + sat * abs(y14));
+  x15 = y14; y15 = x15_last + x15 * m - y15_last * m_last; x15_last = x15; y15_last = y15;
+  y15 = y15 / (1.0 + sat * abs(y15));
+  x16 = y15; y16 = x16_last + x16 * m - y16_last * m_last; x16_last = x16; y16_last = y16;
+  y16 = y16 / (1.0 + sat * abs(y16));
+  x17 = y16; y17 = x17_last + x17 * m - y17_last * m_last; x17_last = x17; y17_last = y17;
+  y17 = y17 / (1.0 + sat * abs(y17));
+  x18 = y17; y18 = x18_last + x18 * m - y18_last * m_last; x18_last = x18; y18_last = y18;
+  y18 = y18 / (1.0 + sat * abs(y18));
+  x19 = y18; y19 = x19_last + x19 * m - y19_last * m_last; x19_last = x19; y19_last = y19;
+  y19 = y19 / (1.0 + sat * abs(y19));
+  x20 = y19; y20 = x20_last + x20 * m - y20_last * m_last; x20_last = x20; y20_last = y20;
+  y20 = y20 / (1.0 + sat * abs(y20));
+  x21 = y20; y21 = x21_last + x21 * m - y21_last * m_last; x21_last = x21; y21_last = y21;
+  y21 = y21 / (1.0 + sat * abs(y21));
+  x22 = y21; y22 = x22_last + x22 * m - y22_last * m_last; x22_last = x22; y22_last = y22;
+  y22 = y22 / (1.0 + sat * abs(y22));
+  x23 = y22; y23 = x23_last + x23 * m - y23_last * m_last; x23_last = x23; y23_last = y23;
+  y23 = y23 / (1.0 + sat * abs(y23));
+  x24 = y23; y24 = x24_last + x24 * m - y24_last * m_last; x24_last = x24; y24_last = y24;
+  y24 = y24 / (1.0 + sat * abs(y24));
+  x25 = y24; y25 = x25_last + x25 * m - y25_last * m_last; x25_last = x25; y25_last = y25;
+  y25 = y25 / (1.0 + sat * abs(y25));
+  x26 = y25; y26 = x26_last + x26 * m - y26_last * m_last; x26_last = x26; y26_last = y26;
+  y26 = y26 / (1.0 + sat * abs(y26));
+  x27 = y26; y27 = x27_last + x27 * m - y27_last * m_last; x27_last = x27; y27_last = y27;
+  y27 = y27 / (1.0 + sat * abs(y27));
+  x28 = y27; y28 = x28_last + x28 * m - y28_last * m_last; x28_last = x28; y28_last = y28;
+  y28 = y28 / (1.0 + sat * abs(y28));
+  x29 = y28; y29 = x29_last + x29 * m - y29_last * m_last; x29_last = x29; y29_last = y29;
+  y29 = y29 / (1.0 + sat * abs(y29));
+  x30 = y29; y30 = x30_last + x30 * m - y30_last * m_last; x30_last = x30; y30_last = y30;
+  y30 = y30 / (1.0 + sat * abs(y30));
+  x31 = y30; y31 = x31_last + x31 * m - y31_last * m_last; x31_last = x31; y31_last = y31;
+  y31 = y31 / (1.0 + sat * abs(y31));
+  x32 = y31; y32 = x32_last + x32 * m - y32_last * m_last; x32_last = x32; y32_last = y32;
+  y32 = y32 / (1.0 + sat * abs(y32));
+  
+  y32
+);
+
+function allpass_coeff(f0)
+local(factor)
+instance()
+global(piT)
+(
+  factor = tan(piT * f0);
+  (factor - 1.0) / (factor + 1.0);
+);
+

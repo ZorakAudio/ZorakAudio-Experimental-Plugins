@@ -1,0 +1,999 @@
+desc:Saike Swellotron
+tags: ambient, soundscape, long, reverb, convolution, stft
+version: 0.10
+author: Joep Vanlier
+changelog: Fix ice panned button (thanks fotisandstuff for the bug report).
+about:
+  # Swellotron
+  Swellotron computes the spectrum of both signals (using the STFT), multiplies the magnitudes in the spectral domain and puts the result of that in an energy buffer. This energy buffer is drained proportionally to its contents. The energy buffer is then used to resynthesize the sound, but this time with a random phase.
+  In plain terms, it behaves almost like a reverb, where frequencies that both sounds have in common are emphasized and frequencies where the sounds differ are attenuated. This will almost always lead to something that sounds pretty harmonic.
+  [Screenshot](https://i.imgur.com/ikizwwk.gif)
+  ### Demos
+  You can find demos of the plugin [here](https://www.youtube.com/watch?v=PSaL8BvYdKk) and [here](https://www.youtube.com/watch?v=Ggojmb9wd5U).
+  ### Features:
+  - FFT Reverberation
+  - Shimmer: Copies energy to twice the frequency (leading to iterative octave doubling).
+  - Aether: Same as shimmer but for fifths.
+  - Scorch: Input saturation.
+  - Ruin: Output saturation.
+  - Diffusion: Spectral blur.
+  - Ice: Chops small bandwidth bits from the energy at random, and copies them to a higher frequency (at 1x or 2x the frequency), thereby giving narrowband high frequency sounds (sounding very cold).
+
+Copyright (C) 2019 Joep Vanlier
+License: MIT
+
+-- Based on the STFT-Based Effect Template by Geraintluff
+
+slider1:fft_size_index=7<0,7,1{256,512,1024,2048,4096,8192,16384,32768>FFT size
+slider2:time_constant=-2<-2,0,.01>-Adapt
+slider3:octaver=0.3<0,1,.001>-Shine
+slider4:saturation=0.2<0,1,0.0000001>-Ruin
+slider5:diffusion=0<0,0.5,.001>-Diffusion
+slider6:scorch=0<0,1,0.0001>-Scorch
+slider7:aether=0<0,1,0.0001>-Aether
+slider8:pitch=0<-1,1,0.0001>-Pitch
+slider9:non_linear=1<0,1,1>-NonLinear
+slider10:ice=0<0,1,.00001>-Ice
+slider11:ice_panned=0<0,1,1>-IcePanned
+slider12:diff_mode=0<0,1,1>-Diffusion Mode
+slider13:noise_mode=0<0,5,.001>-Noise mode
+slider14:width=1<0,1,.001>-Width
+slider15:theta=0<-3.14,3.14,.001>-Theta
+slider16:input_gain=0<-12,0,12>-Input Gain
+slider17:output_gain=0<-12,0,12>-Output Gain
+slider18:buffer_mode=0<0,1,1>-Buffer mode
+
+@init
+ function smooth_parameter(target)
+  instance(s, coeff)
+  global(maxo, mino)
+  local(y, v)
+  (
+    v = coeff*(target - s);
+    y = v + s;
+    s = y + v;
+    y
+  );
+  
+  function initialize_smoother(cutoff)
+  instance(coeff)
+  global(srate)
+  local(g)
+  ( 
+    g = tan($pi*cutoff/srate);
+    coeff = g/(1+g);  
+  );
+
+  function interpolator_init(slider_idx)
+  instance(next_val)
+  local()
+  global()
+  (
+    next_val = slider(slider_idx);
+  );
+
+  function interpolator_block(slider_idx)
+  instance(delta, next_changepoint_t, next_val)
+  local(next_changepoint_y)
+  global(samplesblock)
+  (
+    next_changepoint_t = slider_next_chg(slider_idx, next_changepoint_y);
+    next_changepoint_t > 0 ? 
+    (
+      next_val = slider(slider_idx);
+    ) : (
+      next_changepoint_y = slider(slider_idx);
+      next_changepoint_t = samplesblock;
+    );
+    
+    delta = (next_changepoint_y - next_val) / next_changepoint_t;
+  );
+  
+  function interpolate(slider_idx)
+  instance(delta, next_changepoint_t, next_val)
+  local(current_value, next_changepoint_y)
+  global(current_sample)
+  (
+    current_value = next_val;
+    current_sample == next_changepoint_t ? 
+    (
+      delta = 0;
+      next_changepoint_t = slider_next_chg(slider_idx, next_changepoint_y);
+      delta = next_changepoint_t > current_sample ? (next_changepoint_y - current_value) / (next_changepoint_t-current_sample) : 0;
+    );
+    
+    next_val = current_value + delta;
+    current_value
+  );
+  
+  function initialize_interpolators()
+  (
+    input_gain_interpolator.interpolator_init(16);
+    output_gain_interpolator.interpolator_init(17);
+    new_cutoff = 20.0;
+    (new_cutoff != cutoff) ? (
+      cutoff = new_cutoff;
+      input_gain_smoother.initialize_smoother(cutoff);
+      output_gain_smoother.initialize_smoother(cutoff);
+      input_gain_smoother.s = input_gain;
+      output_gain_smoother.s = output_gain;
+    );
+  );
+
+function tanh(x)
+local()
+global()
+instance()
+(
+  2/(1+exp(-2*x)) - 1
+);
+
+function process_stft_segment(fft_buffer, fft_buffer2, fft_size)
+global(displacement, time_constant, pitch, aether, fft_size_index, 
+       fft_bin2, left2_real, ice, ice_panned, 
+       nrg, octaver, diffusion, diff, displacement, mode, non_linear,
+       fft_velocity, fft_height_gradient, fft_velocity_prediction, diff_mode,
+       noise_mode, width, buffer_mode)
+local(fft_bin, a, mag_L, mag_R,
+      g_rand1, g_rand2, g_rand3, g_rand4,
+      left_real, left_imag, right_real, right_imag,
+      left2_real, left2_imag, right2_real, right2_imag,
+      mag1_L, mag2_L, mag1_R, mag2_R,
+      out_left_real, out_left_imag, out_right_real, out_right_imag,
+      k, atk, to_10, tmp, mL, mR, phaseL, phaseR,
+      dHy, dUy, h, dtg, dth, fft_height) (
+  fft_bin = 0; // FFT bin number
+  to_10 = log(10);
+  k = exp(to_10 * time_constant);
+  atk = 10*k;
+  
+  g_rand1 = rand();
+  g_rand2 = g_rand1 * (1.0 - width) + width * rand();
+  g_rand3 = exp(-to_10 * (1.0+noise_mode));
+  phaseL = rand()*2*$pi;
+  phaseR = phaseL * (1.0 - width) + width * rand();
+  loop(fft_size/2,
+    fft_bin2 = fft_bin ? (fft_size - fft_bin) : 0;
+
+    // Unfold complex spectrum into two real spectra
+    left_real = fft_buffer[2*fft_bin] + fft_buffer[2*fft_bin2];
+    left_imag = fft_buffer[2*fft_bin + 1] - fft_buffer[2*fft_bin2 + 1];
+    right_real = fft_buffer[2*fft_bin + 1] + fft_buffer[2*fft_bin2 + 1];
+    right_imag = -fft_buffer[2*fft_bin] + fft_buffer[2*fft_bin2];
+
+    // Unfold complex spectrum into two real spectra
+    left2_real = fft_buffer2[2*fft_bin] + fft_buffer2[2*fft_bin2];
+    left2_imag = fft_buffer2[2*fft_bin + 1] - fft_buffer2[2*fft_bin2 + 1];
+    right2_real = fft_buffer2[2*fft_bin + 1] + fft_buffer2[2*fft_bin2 + 1];
+    right2_imag = -fft_buffer2[2*fft_bin] + fft_buffer2[2*fft_bin2];
+    
+    mag1_L = sqrt(left_real * left_real + left_imag * left_imag);
+    mag2_L = sqrt(left2_real * left2_real + left2_imag * left2_imag);
+
+    mag1_R = sqrt(right_real * right_real + right_imag * right_imag);
+    mag2_R = sqrt(right2_real * right2_real + right2_imag * right2_imag);
+      
+    mag_L = sqrt(mag1_L * mag2_L);
+    mag_R = sqrt(mag1_R * mag2_R);
+ 
+    // The actual dynamical model
+    buffer_mode ? (
+      mL = nrg[2*fft_bin]   = max((1-k)*nrg[2*fft_bin], 5*mag_L);
+      mR = nrg[2*fft_bin+1] = max((1-k)*nrg[2*fft_bin+1], 5*mag_R);
+    ) : (
+      mL = nrg[2*fft_bin]    += atk*mag_L - k*nrg[2*fft_bin];
+      mR = nrg[2*fft_bin+1]  += atk*mag_R - k*nrg[2*fft_bin+1];
+    );
+    
+    pitch ? (
+      displacement = 2*floor(pitch * fft_bin);
+      mL = nrg[2*fft_bin - displacement];
+      mR = nrg[2*fft_bin - displacement + 1];
+    );
+    
+    non_linear ? (
+      mL = pow(mL, 1.4)*.1;
+      mR = pow(mR, 1.4)*.1;
+    );
+    
+    noise_mode ? (
+      phaseL += sin(g_rand3*fft_bin+g_rand1)*2*$pi;
+      phaseR += sin(g_rand3*fft_bin+g_rand2)*2*$pi;
+    ) : (
+      phaseL = 2*$pi*rand();
+      phaseR = phaseL + width * 2 * $pi * rand();
+    );
+    
+    out_left_real = cos(phaseL) * mL;
+    out_left_imag = sin(phaseL) * mL;
+    out_right_real = cos(phaseR) * mR;
+    out_right_imag = sin(phaseR) * mR;
+    
+    // Re-fold back into complex spectrum
+    fft_buffer[2*fft_bin] = (out_left_real - out_right_imag)*0.5;
+    fft_buffer[2*fft_bin + 1] = (out_left_imag + out_right_real)*0.5;
+    fft_buffer[2*fft_bin2] = (out_left_real + out_right_imag)*0.5;
+    fft_buffer[2*fft_bin2 + 1] = (-out_left_imag + out_right_real)*0.5;
+
+    fft_bin += 1;
+  );
+  
+  ice ? (
+    fft_bin = 0;
+    g_rand1 = 2 * (1 + floor(rand() * 2));
+    g_rand2 = 0.01 * fft_size + rand() * fft_size/2;
+    g_rand4 = g_rand3 = 100 * rand() * k * ice;
+    
+    ice_panned ? (
+      tmp = rand();
+      g_rand3 = g_rand3 * sqrt(1.0-tmp);
+      g_rand4 = g_rand4 * sqrt(tmp);      
+    );
+    tmp = 0;    
+    loop(fft_size/2,
+      a = floor(g_rand1*fft_bin*0.5) * 2;
+      nrg[a]      = nrg[a] + g_rand3*nrg[2*fft_bin] * tmp;
+      nrg[a + 1]  = nrg[a + 1] + g_rand4*nrg[2*fft_bin + 1] * tmp;
+      tmp         = g_rand2 - fft_bin;
+      tmp         = -50 * tmp * tmp;
+      tmp         = exp(tmp / fft_size);
+      fft_bin += 1;
+    );
+  );
+  
+  octaver ? (
+    fft_bin = 0; 
+    loop(fft_size/2,
+      a = 4*fft_bin;
+      nrg[a]      = nrg[a] + octaver*k*nrg[2*fft_bin];
+      nrg[a + 1]  = nrg[a + 1] + octaver*k*nrg[2*fft_bin + 1];
+      fft_bin += 1;
+    );    
+  );
+  
+  /* Avoid HF buildup over the edge */
+  fft_bin = fft_size/4;
+  loop(fft_size/4,
+    a = 4*fft_bin;
+    nrg[a]      = nrg[a] - k * nrg[a];
+    nrg[a + 1]  = nrg[a + 1] - k * nrg[a + 1];
+    fft_bin += 1;
+  );  
+  
+  aether ? (
+    fft_bin = 0;
+    loop(fft_size/2,
+      a = floor(3*fft_bin/2)*2;
+      nrg[a]      = nrg[a] + aether*k*nrg[2*fft_bin];
+      nrg[a + 1]  = nrg[a + 1] + aether*k*nrg[2*fft_bin + 1];
+      fft_bin += 1;
+    );    
+  ); 
+    
+  // Crappy diffusion scheme (only stable up to k2 = .5)
+  diffusion ? (
+    (diff_mode == 0) ? (
+      loop(5,
+        fft_bin = 0; 
+        loop(fft_size/2,
+          diff[2*fft_bin]      = nrg[2*fft_bin] + 
+                                 diffusion * ( nrg[2*fft_bin-2] - 2 * nrg[2*fft_bin] + nrg[2*fft_bin+2] );
+          diff[2*fft_bin+1]     = nrg[2*fft_bin+1] + 
+                                 diffusion * ( nrg[2*fft_bin-1] - 2 * nrg[2*fft_bin+1] + nrg[2*fft_bin+3] );
+          
+          fft_bin += 1;
+        );
+        
+        fft_bin = 0;
+        loop(fft_size,
+          nrg[fft_bin] = diff[fft_bin];
+          fft_bin += 1;
+        );
+      );
+    ) : (
+      dtg = 9.81*0.2*diffusion;
+      dth = .4*0.2*diffusion;
+      
+      fft_height = nrg;
+      
+      fft_bin = 0;
+      tmp = 2;
+      loop(fft_size - 2,
+        h = fft_height[fft_bin];
+        dHy = h - fft_height[fft_bin - tmp];
+        
+        fft_velocity_prediction[fft_bin] = fft_velocity[fft_bin] - dtg * dHy;
+        fft_bin += 1;
+      );
+      
+      fft_velocity_prediction[0] = 0;
+      fft_velocity_prediction[fft_size] = 0;
+      
+      fft_bin = 0;
+      loop(fft_size - 2,
+        dUy = fft_velocity_prediction[fft_bin + tmp] - fft_velocity_prediction[fft_bin];
+        h = fft_height[fft_bin];
+        fft_height[fft_bin] = h - dth * dUy;
+        fft_bin += 1;
+      );
+      
+      fft_bin = 0;
+      loop(fft_size,
+        h = fft_height[fft_bin];
+        dHy = h - fft_height[fft_bin - tmp];
+        
+        fft_velocity[fft_bin] = fft_velocity[fft_bin] - dtg * dHy;
+        fft_bin += 1;
+      );
+    );
+  );
+);
+
+function setup_stft_state(fft_size, first_time) (
+  //////////////////////// Setup block
+  // This is called when playback starts, or when the FFT size is changed
+  0;
+  ////////////////////////
+);
+
+MAX_FFT_SIZE = 32768;
+
+/* There's some additional padding so that we don't have to range check when octaving */
+freemem = 0;
+freemem = (fft_buffer = freemem) + MAX_FFT_SIZE*4;
+freemem = (fft_buffer2 = freemem) + MAX_FFT_SIZE*4;
+freemem = (window_buffer = freemem) + MAX_FFT_SIZE*2;
+freemem = (nrg = freemem) + MAX_FFT_SIZE*4;
+freemem = (diff = freemem) + MAX_FFT_SIZE*4;
+freemem = (fft_velocity = freemem) + MAX_FFT_SIZE*4;
+freemem = (fft_height_gradient = freemem) + MAX_FFT_SIZE*4;
+freemem = (fft_velocity_prediction = freemem) + MAX_FFT_SIZE*4;
+
+buffer_length = srate;
+buffer_index = 0;
+freemem = (input_buffer = freemem) + buffer_length*2;
+freemem = (input_buffer2 = freemem) + buffer_length*2;
+freemem = (output_buffer = freemem) + buffer_length*2;
+freemem = (delay_line = freemem) + buffer_length*2;
+
+BUF_SIZE = 32768;
+freemem += 30*MAX_FFT_SIZE;
+
+freemem = (height = freemem) + BUF_SIZE;
+freemem = (velocity_x = freemem) + BUF_SIZE;
+freemem = (velocity_y = freemem) + BUF_SIZE;
+freemem = (height_gradient_x = freemem) + BUF_SIZE;
+freemem = (height_gradient_y = freemem) + BUF_SIZE;
+freemem = (velocity_prediction_x = freemem) + BUF_SIZE;
+freemem = (velocity_prediction_y = freemem) + BUF_SIZE;
+
+
+function window(r) local(s, s2, gaussian_width, x) (
+  // When squared, the Hann window adds up perfectly for overlap >= 4, so it's suitable for perfect reconstruction
+  (0.5 - 0.5*cos(r*2*$pi))/sqrt(0.375);
+);
+
+fft_size = 0;
+initialize_interpolators();
+
+@slider
+initialize_interpolators();
+
+@block
+overlap_factor = 6;
+fft_size = 256<<fft_size_index;
+fft_interval = fft_size/overlap_factor;
+fft_scaling_factor = 1/overlap_factor/fft_size;
+
+fft_size != prev_fft_size ? (
+  setup_stft_state(fft_size, prev_fft_size == 0);
+  prev_fft_size = fft_size;
+  // Fill window buffer
+  i = 0;
+  loop(fft_size,
+    r = (i + 0.5)/fft_size;
+    window_buffer[i] = window(r);
+    i += 1;
+  );
+);
+
+pdc_delay = fft_size;
+pdc_bot_ch = 0;
+pdc_top_ch = 4;
+
+input_gain_interpolator.interpolator_block(16);
+output_gain_interpolator.interpolator_block(17);
+
+@sample
+/* Sample accurate interpolation */
+current_input_gain = input_gain_interpolator.interpolate(1);
+current_output_gain = output_gain_interpolator.interpolate(2);
+current_input_gain = input_gain_smoother.smooth_parameter(current_input_gain);
+current_output_gain = output_gain_smoother.smooth_parameter(current_output_gain);
+ 
+// exp((log(10)/20) * X) is equivalent but faster than 10^(X/20), which is why we use this form
+log10d20_conversion  = .11512925464970228420089957273422; //log(10)/20;
+in_gain      = exp(log10d20_conversion * current_input_gain);
+out_gain     = exp(log10d20_conversion * current_output_gain);
+
+deadtime = (!spl2 && !spl3 && play_state) ? deadtime += 1 : 0;
+
+function fft_input(input_buffer, fft_buffer, window_buffer, fft_size, buffer_index, buffer_length, fft_scaling_factor)
+local(bi, i, i2)
+global()
+(
+  // Copy input to buffer
+  bi = buffer_index - fft_size + 1;
+  i = 0;
+  loop(fft_size,
+    i2 = bi + i;
+    i2 < 0 ? i2 += buffer_length;
+  
+    fft_buffer[2*i] = input_buffer[2*i2]*window_buffer[i];
+    fft_buffer[2*i + 1] = input_buffer[2*i2 + 1]*window_buffer[i];
+  
+    i += 1;
+  );
+  
+  // Process buffer
+  fft(fft_buffer, fft_size);
+  fft_permute(fft_buffer, fft_size);
+);
+
+in0 = spl0;
+in1 = spl1;
+in2 = spl2;
+in3 = spl3;
+
+scorch ? (
+  pref = exp(scorch*9-6);
+  ipref = 1.0 / pref;
+  in0 = tanh(pref*in0) * ipref;
+  in1 = tanh(pref*in1) * ipref;
+  in2 = tanh(pref*in2) * ipref;
+  in3 = tanh(pref*in3) * ipref;
+);
+
+input_buffer[buffer_index*2] = in_gain*in0;
+input_buffer[buffer_index*2 + 1] = in_gain*in1;
+input_buffer2[buffer_index*2] = in_gain*in2;
+input_buffer2[buffer_index*2 + 1] = in_gain*in3;
+
+fft_counter += 1;
+fft_counter >= fft_interval ? (
+  fft_counter = 0;
+  fft_input(input_buffer, fft_buffer, window_buffer, fft_size, buffer_index, buffer_length, fft_scaling_factor);
+  fft_input(input_buffer2, fft_buffer2, window_buffer, fft_size, buffer_index, buffer_length, fft_scaling_factor);
+
+  process_stft_segment(fft_buffer, fft_buffer2, fft_size);
+
+  fft_ipermute(fft_buffer, fft_size);
+  ifft(fft_buffer, fft_size);
+
+  // Add to output
+  bi = buffer_index - fft_size + 1;
+  i = 0;
+  loop(fft_size,
+    i2 = bi + i;
+    (i2 < 0) ? i2 += buffer_length;
+
+    output_buffer[2*i2] += fft_buffer[2*i]*window_buffer[i] * fft_scaling_factor;
+    output_buffer[2*i2 + 1] += fft_buffer[2*i + 1]*window_buffer[i] * fft_scaling_factor;
+
+    i += 1;
+  );
+);
+
+output_index = buffer_index - fft_size;
+output_index < 0 ? output_index += buffer_length;
+
+Saturation ? (
+  pref = exp(Saturation*9-6);
+  ipref = 1.0 / pref;
+  output_buffer[output_index*2] = out_gain * tanh(pref*output_buffer[output_index*2]) * ipref;
+  output_buffer[output_index*2+1] = out_gain * tanh(pref*output_buffer[output_index*2+1]) * ipref;
+);
+
+outl = output_buffer[output_index*2];
+outr = output_buffer[output_index*2 + 1];
+
+ctheta = 0.999 * ctheta + 0.001 * theta;
+ct = cos(ctheta);
+st = sin(ctheta);
+spl0 = outl * ct - outr * st;
+spl1 = outl * st + outr * ct;
+
+abs(spl0) > 0.001 ? deadtime = 0;
+output_buffer[output_index*2] = 0;
+output_buffer[output_index*2 + 1] = 0;
+
+buffer_index = (buffer_index + 1)%buffer_length;
+
+@gfx 1444 120
+render_time = render_time + 1/60;
+
+narrow = gfx_w < 1444;
+
+function clamp(value, mini, maxi)
+  local()
+  global()
+  (
+    max(min(value,maxi),mini)
+  );
+
+/* Hint handling */
+function drawHint_draw()
+  global(scaling, gfx_x, gfx_y, gfx_w, gfx_h, mouse_x, mouse_y, fontface)
+  local(w, h, globalTime)
+  instance(hintTime, currentHint, lastGlobalTime, delta_time)
+  (
+    globalTime = time_precise();
+    delta_time = globalTime - lastGlobalTime;
+    lastGlobalTime = globalTime;
+  
+    ( hintTime > .99 ) ? (
+      gfx_setfont(7, fontface, 14*(1+scaling));
+      gfx_measurestr(currentHint,w,h);
+      
+      gfx_x = mouse_x+15;
+      gfx_y = mouse_y+15;
+      ( gfx_x > 0.5*gfx_w ) ? gfx_x = mouse_x - w - 8;
+      ( gfx_y > 0.5*gfx_h ) ? gfx_y = mouse_y - h - 8;
+
+      gfx_set( 0.05, 0.05, 0.1, .8 );
+      gfx_rect(gfx_x-2, gfx_y-2, w+4, h+4);
+      gfx_set( .7, .7, .7, 1 );      
+      gfx_printf(currentHint);
+    );
+  );
+
+function updateHintTime(hint)
+  global(gfx_x, gfx_y, mouse_x, mouse_y)
+  local()
+  instance(lx, ly, hintTime, currentHint, delta_time)
+  (
+    ( ( abs(lx - mouse_x) + abs( ly - mouse_y ) ) > 0 ) ? (
+      hintTime = 0;
+    ) : (      
+      (hint != 0) ? (
+        currentHint = hint;
+        hintTime = hintTime + delta_time;
+        hintTime = min(1, hintTime)
+      ) : (
+        0
+      )
+    );
+    
+    lx = mouse_x;
+    ly = mouse_y;
+  );
+
+/* Knob handling */
+function drawKnob(_x, _y, _r, text, _hint, offset)
+  local(ang, dang, r0, r1, r2, r3, rk, tw, th)
+  instance(x, y, cy, r, value, active, label, hint)
+  global(gfx_x, gfx_y, fontface, render_time)
+  (
+    x = _x;
+    y = _y;
+    r = _r;
+    
+    r0 = .5*r;
+    r1 = 1.2*r;
+    r2 = 1.4*r;
+    r3 = 1.7*r;
+    rk = .1*r;
+    
+    cy = .5*sin(offset + 4*render_time);
+    
+    gfx_set(.3+cy, .3, .7, 1);
+    gfx_circle(x, y, r, 1, 1);
+    gfx_set(0, 0, 0, .9);
+    gfx_circle(x, y, .9*r, 1, 1);
+    gfx_set(.2, .3, .6, .7-.7*cy);
+    gfx_circle(x, y, .8*r, 1, 1);
+    gfx_set(.1, .1, .1, .3*cy);
+    gfx_circle(x, y, .7*r, 1, 1);
+    hint = _hint;
+
+    !active ? (
+      gfx_set(0, 0, 0, .5);
+      gfx_circle(x, y, r, 1, 1);
+    );
+  
+    gfx_set(0, 0, 0, .2);
+    gfx_circle(x, y, .78*r, 0, 1);
+    gfx_circle(x, y, .76*r, 0, 1);
+    gfx_set(.3, .4, .8, 1);
+     
+    ang = .75*$pi + 1.5*$pi*value;
+    active ? (
+      gfx_set(cy*3, cy/2, cy, .9);
+      gfx_circle( x + r0 * cos(ang), y + r0 * sin(ang), rk, 1, 1 );
+      gfx_set(cy*3, cy/2, cy, .3);
+      gfx_circle( x + r0 * cos(ang), y + r0 * sin(ang), 1.3*rk, 1, 1 );      
+    );
+    
+    gfx_set(.4, .6, .9, 1);
+    gfx_setfont(2, fontface, 13);
+    gfx_measurestr(text, tw, th);
+    gfx_x = x - .5*tw;
+    gfx_y = y + r + .25*th;
+    gfx_printf(text);
+    
+    label ? (
+      gfx_setfont(2, fontface, 13);
+      gfx_set(0,0,0,1);
+      gfx_measurestr(label, tw, th);
+      gfx_x = x - .5*tw;
+      gfx_y = y - .5*th + 1;
+      gfx_printf(label);
+    );
+  );
+  
+function processMouse(mx, my, mousecap, default)
+  local(left, dx, dy, change, mul, over)
+  instance(hint, value, x, y, r, cap, lleft, lx, ly, active, lastLeftClick, doubleClick, cTime)
+  global(hinter.updateHintTime, mouse_wheel)
+  (
+    change = 0;
+    mul = 1;
+    
+    dx = (mx-x);
+    dy = (my-y);
+    over = (dx*dx + dy*dy) < (r*r);
+
+    (mousecap&4) ? mul = mul * 0.1666666666667; /* CTRL */
+    (mousecap&8) ? mul = mul * 0.125; /* SHIFT */
+    
+    active ? (
+      left = mousecap & 1;
+      
+      ( over == 1 ) ? (
+        (mouse_wheel ~= 0) ? (
+          value = value + 0.0001 * mul * mouse_wheel;
+          mouse_wheel = 0;
+          value = clamp(value, 0, 1);
+          change = 1;
+        );
+      );
+      
+      ( left == 0 ) ? (
+        ( over == 1 ) ? (
+          hinter.updateHintTime(hint);
+        ) : ( 
+          hinter.updateHintTime(0);
+        );
+      );
+      
+      doubleClick = 0;
+      (left && !lleft) ? (
+         time_precise(cTime);
+         ( ( cTime - lastLeftClick ) < .25 ) ? (
+            doubleClick = 1;
+         ) : lastLeftClick = cTime;
+      );
+      
+      ( left && cap == 1 ) ? (
+        value = value - .01*mul*(my - ly);
+        value = clamp(value, 0, 1);
+        change = 1;
+      ) : ( cap = 0; );
+      
+      ( left && !lleft ) ? 
+      (
+        ( over ) ?
+        (
+          doubleClick ? (
+            lastLeftClick = -100;
+            change = 1;
+            value = default;
+          ) : ( 
+            cap = 1;
+          );
+        );
+      );
+      
+      lleft = left;
+      lx = mx;
+      ly = my;
+    );
+    
+    change
+  );
+  
+  
+function drawToggle(_x, _y, _w, _h, _on, wr, wg, wb, wa, r, g, b, a, _str)
+  local(ww, hh)
+  instance(x, y, w, h, str, on, invert, label)
+  global(gfx_x, gfx_y, gfx_a, gfx_mode, 
+         TOGGLE_FONT, knob_font_color_r, knob_font_color_g, knob_font_color_b, knob_font_color_a)
+  (
+    x = _x;
+    y = _y;
+    w = _w;
+    h = _h;
+    on = _on;
+    str = _str;
+
+    gfx_set(0, 0, 0, 0);
+    gfx_rect(x, y, w, h);
+    
+    gfx_set(r, g, b, a*.2);
+    gfx_rect(x, y, w, h);
+    
+    gfx_set(wr, wg, wb, wa);
+    gfx_line(x, y, x+w, y);
+    gfx_line(x, y, x, y+h);
+    gfx_line(x+w, y, x+w, y+h);
+    gfx_line(x, y+h, x+w, y+h);
+
+    ( label ) ? (
+      gfx_set(knob_font_color_r, knob_font_color_g, knob_font_color_b, knob_font_color_a);
+      gfx_setfont(TOGGLE_FONT);
+      gfx_measurestr(label, ww, hh);
+      gfx_x = floor(x+1.5*w);
+      gfx_y = floor(y-.5*hh+.5*h);
+      gfx_printf(label);
+    );
+    
+    ( (on && !invert) || (!on && invert) ) ? (
+      gfx_set(r, g, b, a);
+      gfx_rect(x, y, w, h);
+      gfx_a *= .6;
+      gfx_rect(x-1, y-1, w+2, h+2);
+      gfx_a *= .6;
+      gfx_rect(x-2, y-2, w+4, h+4);
+      gfx_a *= .6;
+      gfx_rect(x-3, y-3, w+6, h+6);
+      gfx_a *= .4;
+      gfx_circle(x+.5*w-1, y+.5*h-1, 2*max(w,h), 2*max(w,h));
+      gfx_a *= .4;
+      gfx_circle(x+.5*w-1, y+.5*h-1, 3*max(w,h), 3*max(w,h));
+      gfx_a *= .4;
+      gfx_circle(x+.5*w-1, y+.5*h-1, 4*max(w,h), 4*max(w,h));
+      gfx_a *= .4;
+      gfx_circle(x+.5*w-1, y+.5*h-1, 5*max(w,h), 5*max(w,h));
+    );
+  );
+  
+function processMouseToggle(mx, my, mousecap)
+  instance(x, y, w, h, on, lastleft, str)
+  local(left, slack, over)
+  global(hinter.updateHintTime, comboboxOpen)
+  (
+    !comboboxOpen ? (
+      slack = 5;
+      left = mousecap & 1;
+      
+      over = ( (mx >= (x-slack)) && ( mx <= (x+w+slack) ) && ( my >= (y-slack) ) && ( my <= (y+h+slack) ) );
+      
+      over ? (
+        ( (left == 1) && (lastleft == 0) ) ?  (
+          on = 1 - on;
+        );
+        hinter.updateHintTime(str);
+      );
+      
+      lastleft = left;
+    );
+    
+    on
+  );
+    
+x = 60*(1+scaling);
+y = 60*(1+scaling);
+ksize = 33*(1+scaling);
+dx = 110*(1+scaling);
+dy = 110*(1+scaling);
+c_offset = .2;
+
+AdaptKnob.active = 1;
+ShineKnob.active = 1;
+RuinKnob.active = 1;
+DiffuseKnob.active = 1;
+ScorchKnob.active = 1;
+AetherKnob.active = 1;
+PitchKnob.active = 1;
+IceKnob.active = 1;
+ChirpKnob.active = 1;
+WidthKnob.active = 1;
+AngleKnob.active = 1;
+InputGainKnob.active = 1;
+OutputGainKnob.active = 1;
+
+adapt_min = -2;
+adapt_max = 0;
+octaver_min = 0;
+octaver_max = 1;
+saturation_min = 0;
+saturation_max = 1;
+diffusion_min = 0;
+diffusion_max = 0.5;
+scorch_min = 0;
+scorch_max = 1;
+aether_min = 0;
+aether_max = 1;
+pitch_min = -1;
+pitch_max = 1;
+noise_max = 5;
+noise_min = 0;
+width_min = 0;
+width_max = 1;
+theta_min = -3.14;
+theta_max = 3.14;
+gain_min = -12;
+gain_max = 12;
+
+sim_w = 1444 / (1 + .85*narrow);
+sim_h = 120 * (1 + narrow);
+
+xs = 3;
+Nx = sim_w/xs;
+Ny = sim_h/xs;
+
+dtg = 9.81*0.1;
+dth = .4*0.1;
+
+(mouse_cap & 1 && !capped) > 0 ? (  
+  (mouse_x < sim_w) && (mouse_y < sim_h) && (mouse_x > 0) && (mouse_y > 0) ? (
+    dt = time_precise() - last_time;
+    vx = (mouse_x - last_mouse_x) / dt;
+    vy = (mouse_y - last_mouse_y) / dt;
+    cx = floor(mouse_x / xs);
+    cy = floor(mouse_y / xs);
+    height[cx * Ny + cy] += 3;
+  );
+);
+
+cx = (Nx-4) * rand() + 2;
+cy = (Ny-4) * rand() + 2;
+height[cx * Ny + cy] = 8*(rand()>.65)*(.5+rand());
+cx = 0;
+loop(Nx-1,
+  cy = 0;
+  loop(Ny-1,
+    h = height[cx * Ny + cy];
+    dHx = h - height[(cx-1) * Ny + cy];
+    dHy = h - height[cx * Ny + cy-1];
+  
+    velocity_prediction_x[cx * Ny + cy] = velocity_x[cx * Ny + cy] - dtg * dHx;
+    velocity_prediction_y[cx * Ny + cy] = velocity_y[cx * Ny + cy] - dtg * dHy;
+    cy += 1;
+  );
+  cx += 1;
+);
+
+cx = 0;
+loop(Ny,
+  velocity_prediction_x[0 + cy] = 0;
+  velocity_prediction_x[(Nx-1) * Ny + cy] = 0;
+  cy += 1;
+);
+
+cy = 0;
+loop(Nx,
+  velocity_prediction_y[cx * Ny + 0] = 0;
+  velocity_prediction_y[cx * Ny + (Ny-1)] = 0;
+  cx += 1;
+);
+
+cx = 0;
+loop(Nx-1,
+  cy = 0;
+  loop(Ny-1,
+    dUx = velocity_prediction_x[(cx+1) * Ny + cy] - velocity_prediction_x[cx * Ny + cy];
+    dUy = velocity_prediction_y[cx * Ny + cy + 1] - velocity_prediction_y[cx * Ny + cy];
+  
+    h = height[cx * Ny + cy];
+    height[cx * Ny + cy] = h - dth * (dUx + dUy) - .005*h;
+    cy += 1;
+    h += .2*ice;
+    gfx_set(.4+.2*ice, .6+.2*ice, .9, h>1?1:h);
+    gfx_rect(cx * xs, cy * xs, xs-1, xs-1);
+  );
+  cx += 1;
+);
+
+cx = 0;
+loop(Nx-1,
+  cy = 0;
+  loop(Ny-1,
+    h = height[cx * Ny + cy];
+    dHx = h - height[(cx-1) * Ny + cy];
+    dHy = h - height[cx * Ny + cy-1];
+  
+    velocity_x[cx * Ny + cy] = velocity_x[cx * Ny + cy] * (1-.4*ice) - dtg * dHx;
+    velocity_y[cx * Ny + cy] = velocity_y[cx * Ny + cy] * (1-.4*ice) - dtg * dHy;
+    cy += 1;
+  );
+  cx += 1;
+);
+
+toggleSize = 5*(1+scaling);
+
+AdaptKnob.value = (time_constant - adapt_min) / (adapt_max - adapt_min);
+ShineKnob.value = (octaver - octaver_min) / (octaver_max - octaver_min);
+RuinKnob.value = (saturation - saturation_min) / (saturation_max - saturation_min);
+DiffuseKnob.value = (diffusion - diffusion_min) / (diffusion_max - diffusion_min);
+ScorchKnob.value = (scorch - scorch_min) / (scorch_max - scorch_min);
+AetherKnob.value = (aether - aether_min) / (aether_max - aether_min);
+PitchKnob.value = (pitch - pitch_min) / (pitch_max - pitch_min);
+ChirpKnob.value = (noise_mode - noise_min) / (noise_max - noise_min);
+WidthKnob.value = (width - width_min) / (width_max - width_min);
+AngleKnob.value = (theta - theta_min) / (theta_max - theta_min);
+InputGainKnob.value = (input_gain - gain_min) / (gain_max - gain_min);
+OutputGainKnob.value = (output_gain - gain_min) / (gain_max - gain_min);
+IceKnob.value = ice;
+
+narrow ? (
+  AdaptKnob.drawKnob(x, y, ksize*(1+scaling), "Adapt", "Adaptivity to incoming sound.", 0);  
+  BufferToggle.drawToggle(x-1.05*ksize*(1+scaling), y-1.05*ksize*(1+scaling), toggleSize, toggleSize, buffer_mode, .3, .2, .2, 1, .3, .4, .7, 1, "Swell mode.\n\nSwitches from first order system\nto maximum system.\n\nWhen activated, the plugin responds\nto new input more sharply but\nsounds less smooth.\n");
+  ShineKnob.drawKnob(x+dx, y, ksize*(1+scaling), "Shine", "Add brightness with\nfrequency doubling.", c_offset);
+  RuinKnob.drawKnob(x+2*dx, y, ksize*(1+scaling), "Ruin", "Output saturation.", c_offset*2);
+  DiffuseKnob.drawKnob(x+3*dx, y, ksize*(1+scaling), "Diffusion", "Diffuse.\nOnly use on overly sharp sounds.", c_offset*3);
+  DiffMode.drawToggle(x+3*dx-1.05*ksize*(1+scaling), y-1.05*ksize*(1+scaling), toggleSize, toggleSize, diff_mode, .3, .2, .2, 1, .3, .4, .7, 1, "Diffusion mode.\n\nSwitches between a spectral diffusion\nand spectral wave propagation model.");
+  ScorchKnob.drawKnob(x+4*dx, y, ksize*(1+scaling), "Scorch", "Input saturation.", c_offset*4);
+  AetherKnob.drawKnob(x+5*dx, y, ksize*(1+scaling), "Aether", "Add brightness with fifths.", c_offset*5);
+  IceKnob.drawKnob(x+6*dx, y, ksize*(1+scaling), "Ice", "Ice.\nAdds bandpassed peaks of the\noriginal audio at different octaves.\n", c_offset*6);
+  IcePan.drawToggle(x+6*dx-1.05*ksize*(1+scaling), y-1.05*ksize*(1+scaling), toggleSize, toggleSize, ice_panned, .3, .2, .2, 1, .3, .4, .7, 1, "Pan icey spectral peaks.");
+  PitchKnob.drawKnob(x+0*dx, y+dx, ksize*(1+scaling), "Pitch", "Pitch shift.", c_offset*7);
+  ChirpKnob.drawKnob(x+1*dx, y+dx, ksize*(1+scaling), "Chirp", "Chirpiness.\n\nNonzero produces frequency\ndependent phases.", c_offset*8);
+  WidthKnob.drawKnob(x+2*dx, y+dx, ksize*(1+scaling), "Width", "Width.\n\nStereo field width.", c_offset*9);
+  AngleKnob.drawKnob(x+3*dx, y+dx, ksize*(1+scaling), "Angle", "Angle.\nStereo field angle..", c_offset*10);
+  InputGainKnob.drawKnob(x+4*dx, y+dx, ksize*(1+scaling), "In gain", "Input gain.", c_offset*11);
+  OutputGainKnob.drawKnob(x+5*dx, y+dx, ksize*(1+scaling), "Out gain", "Output gain.", c_offset*12);
+) : (
+  AdaptKnob.drawKnob(x, y, ksize*(1+scaling), "Adapt", "Adaptivity to incoming sound.", 0);  
+  BufferToggle.drawToggle(x-1.05*ksize*(1+scaling), y-1.05*ksize*(1+scaling), toggleSize, toggleSize, buffer_mode, .3, .2, .2, 1, .3, .4, .7, 1, "Swell mode.\n\nSwitches from first order system\nto maximum system.\n\nWhen activated, the plugin responds\nto new input more sharply but\nsounds less smooth.\n");
+  ShineKnob.drawKnob(x+dx, y, ksize*(1+scaling), "Shine", "Add brightness with\nfrequency doubling.", c_offset);
+  RuinKnob.drawKnob(x+2*dx, y, ksize*(1+scaling), "Ruin", "Output saturation.", c_offset*2);
+  DiffuseKnob.drawKnob(x+3*dx, y, ksize*(1+scaling), "Diffusion", "Diffuse.\nOnly use on overly sharp sounds.", c_offset*3);
+  ScorchKnob.drawKnob(x+4*dx, y, ksize*(1+scaling), "Scorch", "Input saturation.", c_offset*4);
+  AetherKnob.drawKnob(x+5*dx, y, ksize*(1+scaling), "Aether", "Add brightness with fifths.", c_offset*5);
+  IceKnob.drawKnob(x+6*dx, y, ksize*(1+scaling), "Ice", "Ice.\nAdds bandpassed peaks of the\noriginal audio at different octaves.\n", c_offset*6);
+  PitchKnob.drawKnob(x+7*dx, y, ksize*(1+scaling), "Pitch", "Pitch shift.", c_offset*7);
+  IcePan.drawToggle(x+6*dx-1.05*ksize*(1+scaling), y-1.05*ksize*(1+scaling), toggleSize, toggleSize, ice_panned, .3, .2, .2, 1, .3, .4, .7, 1, "Pan icey spectral peaks.");
+  DiffMode.drawToggle(x+3*dx-1.05*ksize*(1+scaling), y-1.05*ksize*(1+scaling), toggleSize, toggleSize, diff_mode, .3, .2, .2, 1, .3, .4, .7, 1, "Diffusion mode.\n\nSwitches between a spectral diffusion\nand spectral wave propagation model.");
+  ChirpKnob.drawKnob(x+8*dx, y, ksize*(1+scaling), "Chirp", "Chirpiness.\n\nNonzero produces frequency\ndependent phases.", c_offset*8);
+  WidthKnob.drawKnob(x+9*dx, y, ksize*(1+scaling), "Width", "Width.\n\nStereo field width.", c_offset*9);
+  AngleKnob.drawKnob(x+10*dx, y, ksize*(1+scaling), "Angle", "Angle.\nStereo field angle..", c_offset*10);
+  InputGainKnob.drawKnob(x+11*dx, y, ksize*(1+scaling), "In gain", "Input gain.", c_offset*11);
+  OutputGainKnob.drawKnob(x+12*dx, y, ksize*(1+scaling), "Out gain", "Output gain.", c_offset*12);
+);
+
+capped = 0;
+AdaptKnob.processMouse(mouse_x, mouse_y, mouse_cap, 0) ? ( slider_automate( time_constant = AdaptKnob.value * (adapt_max - adapt_min) + adapt_min; ); forceUpdate = 1; capped = 1; );
+buffer_mode = BufferToggle.processMouseToggle(mouse_x, mouse_y, mouse_cap);
+ShineKnob.processMouse(mouse_x, mouse_y, mouse_cap, 0.3) ? ( slider_automate( octaver = ShineKnob.value * (octaver_max - octaver_min) + octaver_min; ); forceUpdate = 1; capped = 1; );
+RuinKnob.processMouse(mouse_x, mouse_y, mouse_cap, 0) ? ( slider_automate( saturation = RuinKnob.value * (saturation_max - saturation_min) + saturation_min; ); forceUpdate = 1; capped = 1; );
+DiffuseKnob.processMouse(mouse_x, mouse_y, mouse_cap, 0) ? ( slider_automate( diffusion = DiffuseKnob.value * (diffusion_max - diffusion_min) + diffusion_min; ); forceUpdate = 1; capped = 1; );
+ScorchKnob.processMouse(mouse_x, mouse_y, mouse_cap, 0) ? ( slider_automate( scorch = ScorchKnob.value * (scorch_max - scorch_min) + scorch_min; ); forceUpdate = 1; capped = 1; );
+AetherKnob.processMouse(mouse_x, mouse_y, mouse_cap, 0) ? ( slider_automate( aether = AetherKnob.value * (aether_max - aether_min) + aether_min; ); forceUpdate = 1; capped = 1; );
+PitchKnob.processMouse(mouse_x, mouse_y, mouse_cap, 0.5) ? ( slider_automate( pitch = PitchKnob.value * (pitch_max - pitch_min) + pitch_min; ); forceUpdate = 1; capped = 1; );
+IceKnob.processMouse(mouse_x, mouse_y, mouse_cap, 0.5) ? ( slider_automate( ice = IceKnob.value; ); forceUpdate = 1; capped = 1; );
+ChirpKnob.processMouse(mouse_x, mouse_y, mouse_cap, 0) ? ( slider_automate( noise_mode = ChirpKnob.value * (noise_max - noise_min) + noise_min; ); forceUpdate = 1; capped = 1; );
+ice_panned = IcePan.processMouseToggle(mouse_x, mouse_y, mouse_cap);
+diff_mode = DiffMode.processMouseToggle(mouse_x, mouse_y, mouse_cap);
+
+WidthKnob.processMouse(mouse_x, mouse_y, mouse_cap, 1) ? ( slider_automate( width = WidthKnob.value * (width_max - width_min) + width_min; ); forceUpdate = 1; capped = 1; );
+AngleKnob.processMouse(mouse_x, mouse_y, mouse_cap, 0.5) ? ( slider_automate( theta = AngleKnob.value * (theta_max - theta_min) + theta_min; ); forceUpdate = 1; capped = 1; );
+
+InputGainKnob.processMouse(mouse_x, mouse_y, mouse_cap, .5) ? ( slider_automate( input_gain = InputGainKnob.value * (gain_max - gain_min) + gain_min; ); forceUpdate = 1; capped = 1; );
+OutputGainKnob.processMouse(mouse_x, mouse_y, mouse_cap, .5) ? ( slider_automate( output_gain = OutputGainKnob.value * (gain_max - gain_min) + gain_min; ); forceUpdate = 1; capped = 1; );
+
+
+gfx_x = 5;
+gfx_y = 5;
+
+norm_time = (deadtime / srate);
+norm_time = norm_time > 1 ? norm_time : 0;
+norm_time = norm_time > 2 ? 2 : norm_time;
+gfx_set(1, 1, 1, norm_time - 1);
+gfx_printf("Please note that this plugin needs two inputs to function.");
+
+hinter.drawHint_draw();
+
+last_mouse_x = mouse_x;
+last_mouse_y = mouse_y;
+last_time = time_precise();

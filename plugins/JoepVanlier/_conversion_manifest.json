@@ -1,0 +1,917 @@
+{
+  "category": "JoepValier",
+  "upstream": "JoepVanlier/JSFX",
+  "pluginCount": 50,
+  "notes": [
+    "Source trees are copied per plugin leaf because the repository build expects plugins/<Category>/<PluginKey>.",
+    "Bare imports remain unchanged; current scripts/jsfx_source.py resolves unique provided dependency files recursively and case-insensitively.",
+    "Image assets are mirrored to each leaf Resources/ directory for JSFXResources.h embedding.",
+    "File-specific license declarations are preserved; explicit LGPL files are not relabeled MIT."
+  ],
+  "plugins": [
+    {
+      "key": "saike_abyss",
+      "name": "Abyss Reverb (Saike) [BETA]",
+      "slug": "joep_saike_abyss",
+      "pluginCode": "JPIJ",
+      "entry": "plugins/JoepValier/saike_abyss/src/saike_abyss.jsfx",
+      "upstreamPath": "Abyss/saike_abyss.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.06",
+      "tags": "reverb",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "075b4f30285cdf8c67e343dd80b3279709fd5dc7ee1756a7f924a2d7830a85ec"
+    },
+    {
+      "key": "Amaranth",
+      "name": "Amaranth (Saike) [BETA]",
+      "slug": "joep_amaranth",
+      "pluginCode": "JBUM",
+      "entry": "plugins/JoepValier/Amaranth/src/Amaranth.jsfx",
+      "upstreamPath": "Amaranth/Amaranth.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.32",
+      "tags": "amaranth granular synth graintable grains",
+      "license": "MIT",
+      "clapFeatures": [
+        "instrument"
+      ],
+      "imagesMirrored": 1,
+      "imageBytes": 23491,
+      "sourceSha256": "75cf6f3ffc4387325d0c011ef8bd23f52ae914dd99ac04e9100d0f805cb48f64"
+    },
+    {
+      "key": "BandJoiner",
+      "name": "Saike BandJoiner",
+      "slug": "joep_bandjoiner",
+      "pluginCode": "JYET",
+      "entry": "plugins/JoepValier/BandJoiner/src/BandJoiner.jsfx",
+      "upstreamPath": "Basics/BandJoiner.jsfx",
+      "author": "Joep Vanlier",
+      "version": null,
+      "tags": null,
+      "license": "MIT (repository-level)",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "00ec7700c7ef85548ed6ae1893d436af041b4a5b549c021619f1cab07747511a"
+    },
+    {
+      "key": "BandSplitter",
+      "name": "Saike 4-pole BandSplitter",
+      "slug": "joep_bandsplitter",
+      "pluginCode": "JODR",
+      "entry": "plugins/JoepValier/BandSplitter/src/BandSplitter.jsfx",
+      "upstreamPath": "Basics/BandSplitter.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.23",
+      "tags": "bandsplitter",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "a4ab40c380d32278ab76068a94aadb2e7f78300fc892e43e166a25812c0428c0"
+    },
+    {
+      "key": "BandSplitter_phasematcher",
+      "name": "Saike 4-pole phase matcher for IIR BandSplitter",
+      "slug": "joep_bandsplitter_phasematcher",
+      "pluginCode": "JCLY",
+      "entry": "plugins/JoepValier/BandSplitter_phasematcher/src/BandSplitter_phasematcher.jsfx",
+      "upstreamPath": "Basics/BandSplitter_phasematcher.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.12",
+      "tags": "phasematcher for bandsplitter",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "698e2fc1053ae286f65e8e7f52580af1c2a720f842d683dc086400eb4d2eb628"
+    },
+    {
+      "key": "MS_20",
+      "name": "Saike MS-20 filter emulation",
+      "slug": "joep_ms_20",
+      "pluginCode": "JHLK",
+      "entry": "plugins/JoepValier/MS_20/src/MS-20.jsfx",
+      "upstreamPath": "Basics/MS-20.jsfx",
+      "author": "Joep Vanlier",
+      "version": "1.06",
+      "tags": "filter non-linear",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "93be6d9368261d6c977aa00b80899af1d400ac80cd1c1a2585f707b08d15764c"
+    },
+    {
+      "key": "Saike_Stereo_Bub_II",
+      "name": "Saike Stereo Bub II Stereoizer",
+      "slug": "joep_saike_stereo_bub_ii",
+      "pluginCode": "JMWI",
+      "entry": "plugins/JoepValier/Saike_Stereo_Bub_II/src/Saike Stereo Bub II.jsfx",
+      "upstreamPath": "Basics/Saike Stereo Bub II.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.06",
+      "tags": "comb stereoizer stereo",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "5211b039a68bf7517282766fd4c4eb5f4d24897548b0a775b0ffe4c5a596a9e3"
+    },
+    {
+      "key": "Saike_Stereo_Bub_III",
+      "name": "Saike Stereo Bub III Stereoizer",
+      "slug": "joep_saike_stereo_bub_iii",
+      "pluginCode": "JADU",
+      "entry": "plugins/JoepValier/Saike_Stereo_Bub_III/src/Saike Stereo Bub III.jsfx",
+      "upstreamPath": "Basics/Saike Stereo Bub III.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.08",
+      "tags": "comb stereoizer stereo",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "5da4779acef15ec4dae3a620ad1b7881426e8dc34eccc1d994b51ef52fd042e1"
+    },
+    {
+      "key": "Saike_SuperSpreaderClone",
+      "name": "Super Spreader",
+      "slug": "joep_saike_superspreaderclone",
+      "pluginCode": "JRVZ",
+      "entry": "plugins/JoepValier/Saike_SuperSpreaderClone/src/Saike SuperSpreaderClone.jsfx",
+      "upstreamPath": "Basics/Saike SuperSpreaderClone.jsfx",
+      "author": "Original code by lkjb, basic port by Saike (Joep Vanlier)",
+      "version": "0.09",
+      "tags": "chorus pitch shifting supersaw",
+      "license": "MIT (repository-level)",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "5577137a10e3c0e2ce954eee4a96fe50e11193acc9b5ca4f6873f31bfeb2347e"
+    },
+    {
+      "key": "Saike_Morph",
+      "name": "Saike Morphing Filter",
+      "slug": "joep_saike_morph",
+      "pluginCode": "JVLL",
+      "entry": "plugins/JoepValier/Saike_Morph/src/Saike_Morph.jsfx",
+      "upstreamPath": "Basics/Saike_Morph.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.18",
+      "tags": "filter non-linear",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "1bf59410f4b2dab4933fadef0f9bbea4bfd94a276823f4d20c018a9abbac0f29"
+    },
+    {
+      "key": "Saike_Pitch_Shift",
+      "name": "Saike Pitch Shifter",
+      "slug": "joep_saike_pitch_shift",
+      "pluginCode": "JEQH",
+      "entry": "plugins/JoepValier/Saike_Pitch_Shift/src/Saike_Pitch_Shift.jsfx",
+      "upstreamPath": "Basics/Saike_Pitch_Shift.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.04",
+      "tags": "Saike - Basic pitch shifter",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "325d4f3be303e8fd6e13a55eeed46f9c24f5179c8578f4709bff0bdebf1da5a2"
+    },
+    {
+      "key": "Saike_Routing_Utility",
+      "name": "Saike Monitor Routing Utility [ALPHA]",
+      "slug": "joep_saike_routing_utility",
+      "pluginCode": "JDHI",
+      "entry": "plugins/JoepValier/Saike_Routing_Utility/src/Saike_Routing_Utility.jsfx",
+      "upstreamPath": "Basics/Saike_Routing_Utility.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.07",
+      "tags": "Routing utility",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "68db1318710f30364bf63c7077b1d68da614b3eb04b0c8e42aa623c0f912dce4"
+    },
+    {
+      "key": "Tanh_Saturator_AA",
+      "name": "Saike Tanh Saturation with anti aliasing",
+      "slug": "joep_tanh_saturator_aa",
+      "pluginCode": "JRLW",
+      "entry": "plugins/JoepValier/Tanh_Saturator_AA/src/Tanh_Saturator_AA.jsfx",
+      "upstreamPath": "Basics/Tanh_Saturator_AA.jsfx",
+      "author": "Joep Vanlier, Erich M. Burg",
+      "version": "1.16",
+      "tags": "saturation distortion anti-aliased",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "35d7ed15e19a251e42e5c15d7673684c493a2710d7065a8114a975f7610ba42c"
+    },
+    {
+      "key": "Tight_Compressor",
+      "name": "Saike Tight Compressor",
+      "slug": "joep_tight_compressor",
+      "pluginCode": "JIET",
+      "entry": "plugins/JoepValier/Tight_Compressor/src/Tight_Compressor.jsfx",
+      "upstreamPath": "Basics/Tight_Compressor.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.23",
+      "tags": "Tight Compressor",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "c8e9264c6a634eb1bb81eab69f30fd32cc7e30eedcf933fbcbcf10181b2f3758"
+    },
+    {
+      "key": "ToneStacks",
+      "name": "Saike ToneStacks (BETA)",
+      "slug": "joep_tonestacks",
+      "pluginCode": "JRZU",
+      "entry": "plugins/JoepValier/ToneStacks/src/ToneStacks.jsfx",
+      "upstreamPath": "Basics/ToneStacks.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.07",
+      "tags": "parametric eq equalization tonestack tone guitar",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "0f91c6a3d908a5de97c6f748575d9e6a650758d2c8dfddacfe45eb20cd8beead"
+    },
+    {
+      "key": "Transience",
+      "name": "Saike Transience (transient shaper)",
+      "slug": "joep_transience",
+      "pluginCode": "JGQD",
+      "entry": "plugins/JoepValier/Transience/src/Transience.jsfx",
+      "upstreamPath": "Basics/Transience.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.03",
+      "tags": "Transient Shaper Saike",
+      "license": "MIT (repository-level)",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "83e258cf65f9599215852f2178d812d4ac2d67bffc2d897485bc3ddde2c87787"
+    },
+    {
+      "key": "saike_never_odd_or_even",
+      "name": "Saike Never Odd or Even (Distortion)",
+      "slug": "joep_saike_never_odd_or_even",
+      "pluginCode": "JHKH",
+      "entry": "plugins/JoepValier/saike_never_odd_or_even/src/saike_never_odd_or_even.jsfx",
+      "upstreamPath": "Basics/saike_never_odd_or_even.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.05",
+      "tags": "static waveshaper",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "c93b7678de39aeb1092052a7ef21f78c2a86cc00e672414e7250b41495d741e5"
+    },
+    {
+      "key": "saike_smooth",
+      "name": "Saike Smooth",
+      "slug": "joep_saike_smooth",
+      "pluginCode": "JYJB",
+      "entry": "plugins/JoepValier/saike_smooth/src/saike_smooth.jsfx",
+      "upstreamPath": "Basics/saike_smooth.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.05",
+      "tags": "Saturation with even and odd harmonics.",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "ab8a7194678770c3b73aa3e53feb78c7140c4bf43c2c5b25a30057ef6af1e816"
+    },
+    {
+      "key": "wahriffic",
+      "name": "Saike Wahriffic",
+      "slug": "joep_wahriffic",
+      "pluginCode": "JVQT",
+      "entry": "plugins/JoepValier/wahriffic/src/wahriffic.jsfx",
+      "upstreamPath": "Basics/wahriffic.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.04",
+      "tags": "filter non-linear wah",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "5d72ef84f1b46b5c861a204208d41528921ef246fdd2eae922330bc9db951612"
+    },
+    {
+      "key": "saike_duskverb",
+      "name": "Dusk Verb (Saike) (beta)",
+      "slug": "joep_saike_duskverb",
+      "pluginCode": "JDFA",
+      "entry": "plugins/JoepValier/saike_duskverb/src/saike_duskverb.jsfx",
+      "upstreamPath": "DuskVerb/saike_duskverb.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.17",
+      "tags": "effect, reverb, atmosphere, granular, long",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 9,
+      "imageBytes": 32646,
+      "sourceSha256": "2c441d8353b9f650278f69891f021920e93ec4bebccb45b3c9c74a739661bb60"
+    },
+    {
+      "key": "FM_Filter",
+      "name": "Saike FM Filter",
+      "slug": "joep_fm_filter",
+      "pluginCode": "JQML",
+      "entry": "plugins/JoepValier/FM_Filter/src/FM Filter.jsfx",
+      "upstreamPath": "FMFilter/FM Filter.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.21",
+      "tags": "audio-rate filters",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "c85427839fdc813625eaf5dc2d6ddfbe92a32ae6989214987fcf058e2ea58ef2"
+    },
+    {
+      "key": "Filther",
+      "name": "Filther (Saike)",
+      "slug": "joep_filther",
+      "pluginCode": "JSGH",
+      "entry": "plugins/JoepValier/Filther/src/Filther.jsfx",
+      "upstreamPath": "Filther/Filther.jsfx",
+      "author": "Joep Vanlier",
+      "version": "3.21",
+      "tags": "Filther",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "8a7b83f62c1e785dd83a22be72f8384d9d539455ff189fcdb03a798ff3e78173"
+    },
+    {
+      "key": "saike_final_boss",
+      "name": "Final Boss (Saike)",
+      "slug": "joep_saike_final_boss",
+      "pluginCode": "JEVQ",
+      "entry": "plugins/JoepValier/saike_final_boss/src/saike_final_boss.jsfx",
+      "upstreamPath": "FinalBoss/saike_final_boss.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.13",
+      "tags": "distortion, multi-effect, mangler, grunge",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 13,
+      "imageBytes": 604340,
+      "sourceSha256": "b526ed60e4392a117dde8c01e5bc71c4e4f1a7722c0b29772e6ca2879c623f9a"
+    },
+    {
+      "key": "modizer",
+      "name": "Mod-izer (Saike)",
+      "slug": "joep_modizer",
+      "pluginCode": "JKLU",
+      "entry": "plugins/JoepValier/modizer/src/modizer.jsfx",
+      "upstreamPath": "Modizer/modizer.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.06",
+      "tags": "lo-fi effect",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 1,
+      "imageBytes": 62627,
+      "sourceSha256": "a9b7e4e9a71190141d305de3c7637bceffa7a2edb607834914fd001632c2bb62"
+    },
+    {
+      "key": "nott",
+      "name": "Saike Not OTT (ALPHA)",
+      "slug": "joep_nott",
+      "pluginCode": "JMOD",
+      "entry": "plugins/JoepValier/nott/src/nott.jsfx",
+      "upstreamPath": "NOTT/nott.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.16",
+      "tags": "multiband compression",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "c588bfdae95df7482fdf55222e3b1d07a5a8b96d7cacbaf87e9447a273caec4a"
+    },
+    {
+      "key": "saike_nostalgizer",
+      "name": "Saike / Nostalgizer / Lo-Fi (BETA)",
+      "slug": "joep_saike_nostalgizer",
+      "pluginCode": "JVME",
+      "entry": "plugins/JoepValier/saike_nostalgizer/src/saike_nostalgizer.jsfx",
+      "upstreamPath": "Nostalgizer/saike_nostalgizer.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.15",
+      "tags": "detune / envelope muffler / chorus",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "dd52e653d2e1af84b3560db9037f2bee6036e16c6c6eeb16b0f86564aff8a88c"
+    },
+    {
+      "key": "saike_nuker",
+      "name": "Saike Nuker (EARLY ALPHA - DO NOT USE)",
+      "slug": "joep_saike_nuker",
+      "pluginCode": "JDGB",
+      "entry": "plugins/JoepValier/saike_nuker/src/saike_nuker.jsfx",
+      "upstreamPath": "Nuker/saike_nuker.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.04",
+      "tags": "Distortion tool",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "cd67fa9e251e11a5880fee160edd16c84344fbecb78f06f6f7ee7e3754779538"
+    },
+    {
+      "key": "saike_phase_mangler",
+      "name": "Saike Phase Mangler (BETA)",
+      "slug": "joep_saike_phase_mangler",
+      "pluginCode": "JXOZ",
+      "entry": "plugins/JoepValier/saike_phase_mangler/src/saike_phase_mangler.jsfx",
+      "upstreamPath": "PhaseMangler/saike_phase_mangler.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.05",
+      "tags": "phase shifting plugin",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "6f4d4c99e8a255f60f88bd30fe5967d296865b4cb40f1b73249db5297694028e"
+    },
+    {
+      "key": "poprocks",
+      "name": "Pop rocks (Saike)",
+      "slug": "joep_poprocks",
+      "pluginCode": "JLEE",
+      "entry": "plugins/JoepValier/poprocks/src/poprocks.jsfx",
+      "upstreamPath": "Poprocks/poprocks.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.02",
+      "tags": "noise generator",
+      "license": "MIT",
+      "clapFeatures": [
+        "instrument"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "f9389ae3c81c0950baf060c11a17e947b6fcd9b2a0e488fab6db9c7004a9ff24"
+    },
+    {
+      "key": "Ravager_MB",
+      "name": "Saike Multiband Ravager (BETA)",
+      "slug": "joep_ravager_mb",
+      "pluginCode": "JGCT",
+      "entry": "plugins/JoepValier/Ravager_MB/src/Ravager_MB.jsfx",
+      "upstreamPath": "Ravager/Ravager_MB.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.14",
+      "tags": "Ravager",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "3d40516f05a6dbb4f0156b57c7735dd71701f79788f6d17fca540395eaabade0"
+    },
+    {
+      "key": "ReaBee",
+      "name": "ReaBee",
+      "slug": "joep_reabee",
+      "pluginCode": "JCBQ",
+      "entry": "plugins/JoepValier/ReaBee/src/ReaBee.jsfx",
+      "upstreamPath": "ReaBee/ReaBee.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.02",
+      "tags": "unique effect",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "185e2c0c49b0bc5130c36dd23199dd6c7340bfe173d5bff2bfb9371d4cdaa54d"
+    },
+    {
+      "key": "Reflectosaurus",
+      "name": "Saike Reflectosaurus (beta)",
+      "slug": "joep_reflectosaurus",
+      "pluginCode": "JVCK",
+      "entry": "plugins/JoepValier/Reflectosaurus/src/Reflectosaurus.jsfx",
+      "upstreamPath": "Reflectosaurus/Reflectosaurus.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.106",
+      "tags": "multi-tap delay plugin",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 1,
+      "imageBytes": 15152,
+      "sourceSha256": "0e664d0eb1dbdb4bc3f54734ac3295c8cb55c9b4f8ecb57f8857294338378a9b"
+    },
+    {
+      "key": "ripple",
+      "name": "Ripple (Saike)",
+      "slug": "joep_ripple",
+      "pluginCode": "JTIB",
+      "entry": "plugins/JoepValier/ripple/src/ripple.jsfx",
+      "upstreamPath": "Ripple/ripple.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.05",
+      "tags": "Ripple (work in progress | not ready for use!)",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "d03c2b5942c7088cb4282542dce1935a3d2bcf6095aad4322de8cfb53c0f20c4"
+    },
+    {
+      "key": "SatanVerb",
+      "name": "Satan verb (Saike)",
+      "slug": "joep_satanverb",
+      "pluginCode": "JYLS",
+      "entry": "plugins/JoepValier/SatanVerb/src/SatanVerb.jsfx",
+      "upstreamPath": "SatanVerb/SatanVerb.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.12",
+      "tags": "Satan verb (work in progress)",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "c7dd2ac0882b391c915fc98d0b1f124e2f1d1963372e3539e78bbf0672babecd"
+    },
+    {
+      "key": "SequencedFX",
+      "name": "Saike SEQS (Sequenced FX) (beta)",
+      "slug": "joep_sequencedfx",
+      "pluginCode": "JMZK",
+      "entry": "plugins/JoepValier/SequencedFX/src/SequencedFX.jsfx",
+      "upstreamPath": "SequencedFX/SequencedFX.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.126",
+      "tags": "time-based effect",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "ad956b88941a132261ba41609c4e1bb4f8a711f11db46fde68f11e5e34e98a2d"
+    },
+    {
+      "key": "SaikeMultiSpectralAnalyzer",
+      "name": "Saike Spectral Analyzer (beta)",
+      "slug": "joep_saikemultispectralanalyzer",
+      "pluginCode": "JZRV",
+      "entry": "plugins/JoepValier/SaikeMultiSpectralAnalyzer/src/SaikeMultiSpectralAnalyzer.jsfx",
+      "upstreamPath": "SpectrumAnalyzer/SaikeMultiSpectralAnalyzer.jsfx",
+      "author": "Joep Vanlier, Trond-Viggo Melssen, Cockos, Feed The Cat",
+      "version": "5.0.42",
+      "tags": "analysis FFT meter spectrum",
+      "license": "LGPL - http://www.gnu.org/licensses/lgpl.html",
+      "clapFeatures": [
+        "analyzer",
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "df3c0be2d2f45f976a9ee15a5a84048ccc3d54bc40decdc2fff4dde27de3bcfc"
+    },
+    {
+      "key": "SaikeMultiSpectralAnalyzer_MK2",
+      "name": "Saike Spectral Analyzer (Alternative)",
+      "slug": "joep_saikemultispectralanalyzer_mk2",
+      "pluginCode": "JHGX",
+      "entry": "plugins/JoepValier/SaikeMultiSpectralAnalyzer_MK2/src/SaikeMultiSpectralAnalyzer_MK2.jsfx",
+      "upstreamPath": "SpectrumAnalyzer/SaikeMultiSpectralAnalyzer_MK2.jsfx",
+      "author": "Joep Vanlier, Trond-Viggo Melssen, Cockos",
+      "version": "2.0",
+      "tags": "analysis FFT meter spectrum",
+      "license": "LGPL - http://www.gnu.org/licensses/lgpl.html",
+      "clapFeatures": [
+        "analyzer",
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "17c000092be2b396750ca2ccfb8ee110921f4f52a1a0532e9dcf42eddd4ba0df"
+    },
+    {
+      "key": "SaikeMultiSpectralAnalyzer_old",
+      "name": "Saike Spectral Analyzer (Old)",
+      "slug": "joep_saikemultispectralanalyzer_old",
+      "pluginCode": "JMKC",
+      "entry": "plugins/JoepValier/SaikeMultiSpectralAnalyzer_old/src/SaikeMultiSpectralAnalyzer_old.jsfx",
+      "upstreamPath": "SpectrumAnalyzer/SaikeMultiSpectralAnalyzer_old.jsfx",
+      "author": "Joep Vanlier, Cockos",
+      "version": "1.52",
+      "tags": "analysis FFT meter spectrum",
+      "license": "LGPL - http://www.gnu.org/licenses/lgpl.html",
+      "clapFeatures": [
+        "analyzer",
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "b6ad87b2561df1904bd567a346cfe6f85ea3c5f35023a3a78f496650104f8bcf"
+    },
+    {
+      "key": "StereoManipulator",
+      "name": "Saike StereoManipulator",
+      "slug": "joep_stereomanipulator",
+      "pluginCode": "JQLM",
+      "entry": "plugins/JoepValier/StereoManipulator/src/StereoManipulator.jsfx",
+      "upstreamPath": "SpectrumAnalyzer/StereoManipulator.jsfx",
+      "author": "Sai'ke",
+      "version": "1.0",
+      "tags": "processing stereo",
+      "license": "LGPL - http://www.gnu.org/licenses/lgpl.html",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "7da5ed03cb645e2b62850e3a357d1df62cf8b9cb9beab67625273d0ef9e2fe8e"
+    },
+    {
+      "key": "StereoSpectrumSplit",
+      "name": "Saike SideSpectrum Meter",
+      "slug": "joep_stereospectrumsplit",
+      "pluginCode": "JMKI",
+      "entry": "plugins/JoepValier/StereoSpectrumSplit/src/StereoSpectrumSplit.jsfx",
+      "upstreamPath": "SpectrumAnalyzer/StereoSpectrumSplit.jsfx",
+      "author": "Cockos, Joep Vanlier",
+      "version": "1.0",
+      "tags": "analysis FFT meter spectrum",
+      "license": "LGPL - http://www.gnu.org/licenses/lgpl.html",
+      "clapFeatures": [
+        "analyzer",
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "fff3cd5ca23716f115cd99984047590b76fff3af1c6622f8ad722d3905c8097f"
+    },
+    {
+      "key": "Squashman",
+      "name": "Squashman (Saike)",
+      "slug": "joep_squashman",
+      "pluginCode": "JJWY",
+      "entry": "plugins/JoepValier/Squashman/src/Squashman.jsfx",
+      "upstreamPath": "Squashman/Squashman.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.86",
+      "tags": "multiband saturation plugin",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 4,
+      "imageBytes": 3661,
+      "sourceSha256": "3f405fc505d1eb2725f62cfe295ee71d7fb0ee2f0400f9aaceb2764701dcc6af"
+    },
+    {
+      "key": "Swellotron",
+      "name": "Saike Swellotron",
+      "slug": "joep_swellotron",
+      "pluginCode": "JAQG",
+      "entry": "plugins/JoepValier/Swellotron/src/Swellotron.jsfx",
+      "upstreamPath": "Swellotron/Swellotron.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.10",
+      "tags": "ambient, soundscape, long, reverb, convolution, stft",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "35838b6ff50bf2ba4d01faa57b62ad9c827ff83de62d9aa730597fb5290c4df0"
+    },
+    {
+      "key": "Saike_FMFilter2",
+      "name": "Saike FM Filter 2",
+      "slug": "joep_saike_fmfilter2",
+      "pluginCode": "JOZJ",
+      "entry": "plugins/JoepValier/Saike_FMFilter2/src/Saike_FMFilter2.jsfx",
+      "upstreamPath": "Yutani/Saike_FMFilter2.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.23",
+      "tags": "audio-rate filters",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "200472af45f966aabff5339aa019976f410b7bdcde7a3f54b3679e33cdeb3924"
+    },
+    {
+      "key": "Saike_Yutani",
+      "name": "Yutani Mono Bass Synth [Saike] (BETA)",
+      "slug": "joep_saike_yutani",
+      "pluginCode": "JABP",
+      "entry": "plugins/JoepValier/Saike_Yutani/src/Saike_Yutani.jsfx",
+      "upstreamPath": "Yutani/Saike_Yutani.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.103",
+      "tags": "synth bass, instrument",
+      "license": "MIT",
+      "clapFeatures": [
+        "instrument"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "63bbcd6d08f39af61c83eb3922c11dc89e183858fbde8f4e20147acf8355b6a3"
+    },
+    {
+      "key": "saike_bric_a_brac",
+      "name": "bric-a-brac (Saike)",
+      "slug": "joep_saike_bric_a_brac",
+      "pluginCode": "JJDA",
+      "entry": "plugins/JoepValier/saike_bric_a_brac/src/saike_bric_a_brac.jsfx",
+      "upstreamPath": "bric-a-brac/saike_bric_a_brac.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.48",
+      "tags": "texture adder",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "1d8d3b38aa92ef4bce7f390d84277bfc4947273c2f372ef031c46ce7435f7f0f"
+    },
+    {
+      "key": "saike_lava",
+      "name": "Lava Reverb (Saike) [ALPHA]",
+      "slug": "joep_saike_lava",
+      "pluginCode": "JRGR",
+      "entry": "plugins/JoepValier/saike_lava/src/saike_lava.jsfx",
+      "upstreamPath": "lavaverb/saike_lava.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.28",
+      "tags": "shimmer reverb",
+      "license": "MIT",
+      "clapFeatures": [
+        "audio-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "e295139b078a7f4e0ff09f135fb5a90757a066efcbd1fbc7a99cb98204d67294"
+    },
+    {
+      "key": "saike_partials",
+      "name": "Partials (Saike)",
+      "slug": "joep_saike_partials",
+      "pluginCode": "JROU",
+      "entry": "plugins/JoepValier/saike_partials/src/saike_partials.jsfx",
+      "upstreamPath": "partials/saike_partials.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.68",
+      "tags": "modal effect, instrument",
+      "license": "MIT",
+      "clapFeatures": [
+        "instrument"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "351a7fb73c1111f971416cb838d7bd85b1e41a75330b60b53154070f9f93f027"
+    },
+    {
+      "key": "saike_protosynth",
+      "name": "Saike Protosynth",
+      "slug": "joep_saike_protosynth",
+      "pluginCode": "JLJF",
+      "entry": "plugins/JoepValier/saike_protosynth/src/saike_protosynth.jsfx",
+      "upstreamPath": "protosynth/saike_protosynth.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.60",
+      "tags": "instrument, synth, generator, synthesizer",
+      "license": "MIT",
+      "clapFeatures": [
+        "instrument"
+      ],
+      "imagesMirrored": 7,
+      "imageBytes": 70639,
+      "sourceSha256": "51c39544fd06aeb64858bae6104e621a6db7ca95a48f22f455af18cb1de5ed32"
+    },
+    {
+      "key": "saike_midi_arp",
+      "name": "Saike MIDI ARP (beta)",
+      "slug": "joep_saike_midi_arp",
+      "pluginCode": "JHMN",
+      "entry": "plugins/JoepValier/saike_midi_arp/src/saike_midi_arp.jsfx",
+      "upstreamPath": "saike_midi_arp/saike_midi_arp.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.44",
+      "tags": "midi arpeggiator",
+      "license": "MIT",
+      "clapFeatures": [
+        "note-effect"
+      ],
+      "imagesMirrored": 0,
+      "imageBytes": 0,
+      "sourceSha256": "3f5eb43f8c9856ebea9b95c85d605fbe6e0a957aeb2ea4b67d3087885e82e1e9"
+    },
+    {
+      "key": "saikedrums",
+      "name": "Saike Dum Drums (DD-101)",
+      "slug": "joep_saikedrums",
+      "pluginCode": "JXOK",
+      "entry": "plugins/JoepValier/saikedrums/src/saikedrums.jsfx",
+      "upstreamPath": "saikedrums/saikedrums.jsfx",
+      "author": "Joep Vanlier",
+      "version": "0.18",
+      "tags": "drum, drum machine, drumkit, drums, drum synth, instrument",
+      "license": "MIT",
+      "clapFeatures": [
+        "instrument"
+      ],
+      "imagesMirrored": 1,
+      "imageBytes": 416,
+      "sourceSha256": "78dfacdb607029148be02591c01a6827da9f0bbeb680534d4d9d80cbd0f55e50"
+    }
+  ]
+}

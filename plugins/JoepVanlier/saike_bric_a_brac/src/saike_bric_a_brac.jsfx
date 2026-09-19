@@ -1,0 +1,1137 @@
+desc:bric-a-brac (Saike)
+tags: texture adder
+version: 0.48
+author: Joep Vanlier
+changelog: Fix LFO mapping issue.
+license: MIT
+provides:
+  bab_dependencies/*
+
+options:want_all_kb
+options:no_meter
+slider1:atk1=0<0,1,0.0000001>-Sample 1 Attack
+slider2:decay1=0.3<0,1,0.00000001>-Sample 1 Decay
+slider3:hold_percent1=100<0,100,0.000001>-Sample 1 Hold Level (%)
+slider4:hold_time1=0<0,1,0.000001>-Sample 1 Hold Time
+slider5:min1=-36<-48,3,0.0001>-Sample 1 Minimum / Threshold
+slider6:max1=3<-48,3,0.0001>-Sample 1 Maximum
+slider7:gain1=0<-48,3,0.0001>-Sample 1 Output gain
+slider8:pitch1=0<-24,24,0.0001>-Sample 1 Pitch
+slider9:hpf1=0<0,1,.000000001>-Sample 1 HPF
+slider10:lpf1=1<0,1,.000000001>-Sample 1 LPF
+slider11:lfo_amount1=1<0,1,.0000001>-LFO 1 Amount
+slider12:lfo_freq1=0.5<0,10,.0000001>-LFO 1 Frequency
+slider13:pan1=0<-1,1,0.000000001>-Pan 1
+
+slider14:dummy6=0<0,1,1>-Spacer 6
+slider15:dummy7=0<0,1,1>-Spacer 7
+
+slider16:atk2=0<0,1,0.0000001>-Sample 2 Attack
+slider17:decay2=0.3<0,1,0.00000001>-Sample 2 Decay
+slider18:hold_percent2=100<0,100,0.000001>-Sample 2 Hold Level (%)
+slider19:hold_time2=0<0,1,0.000001>-Sample 2 Hold Time
+slider20:min2=-36<-48,3,0.0001>-Sample 2 Minimum / Threshold
+slider21:max2=3<-48,3,0.0001>-Sample 2 Maximum
+slider22:gain2=0<-48,3,0.0001>-Sample 2 Output gain
+slider23:pitch2=0<-24,24,0.0001>-Sample 2 Pitch
+slider24:hpf2=0<0,1,.000000001>-Sample 2 HPF
+slider25:lpf2=1<0,1,.000000001>-Sample 2 LPF
+slider26:lfo_amount2=1<0,1,.0000001>-LFO 2 Amount
+slider27:lfo_freq2=0.5<0,10,.0000001>-LFO 2 Frequency
+slider28:pan2=0<-1,1,0.000000001>-Pan 2
+
+slider29:dummy13=0<0,1,1>-Spacer 13
+slider30:dummy14=0<0,1,1>-Spacer 14
+
+slider31:atk3=0<0,1,0.0000001>-Sample 3 Attack
+slider32:decay3=0.3<0,1,0.00000001>-Sample 3 Decay
+slider33:hold_percent3=100<0,100,0.000001>-Sample 3 Hold Level (%)
+slider34:hold_time3=0<0,1,0.000001>-Sample 3 Hold Time
+slider35:min3=-36<-48,3,0.0001>-Sample 3 Minimum / Threshold
+slider36:max3=3<-48,3,0.0001>-Sample 3 Maximum
+slider37:gain3=0<-48,3,0.0001>-Sample 3 Output gain
+slider38:pitch3=0<-24,24,0.0001>-Sample 3 Pitch
+slider39:hpf3=0<0,1,.000000001>-Sample 3 HPF
+slider40:lpf3=1<0,1,.000000001>-Sample 3 LPF
+slider41:lfo_amount3=1<0,1,.0000001>-LFO 3 Amount
+slider42:lfo_freq3=0.5<0,10,.0000001>-LFO 3 Frequency
+slider43:pan3=0<-1,1,0.000000001>-Pan 3
+
+slider44:dummy20=0<0,1,1>-Spacer 20
+slider45:dummy21=0<0,1,1>-Spacer 21
+
+slider46:atk4=0<0,1,0.0000001>-Sample 4 Attack
+slider47:decay4=0.3<0,1,0.00000001>-Sample 4 Decay
+slider48:hold_percent4=100<0,100,0.000001>-Sample 4 Hold Level (%)
+slider49:hold_time4=0<0,1,0.000001>-Sample 4 Hold Time
+slider50:min4=-36<-48,3,0.0001>-Sample 4 Minimum / Threshold
+slider51:max4=3<-48,3,0.0001>-Sample 4 Maximum
+slider52:gain4=0<-48,3,0.0001>-Sample 4 Output gain
+slider53:pitch4=0<-24,24,0.0001>-Sample 4 Pitch
+slider54:hpf4=0<0,1,.000000001>-Sample 4 HPF
+slider55:lpf4=1<0,1,.000000001>-Sample 4 LPF
+slider56:lfo_amount4=1<0,1,.0000001>-LFO 4 Amount
+slider57:lfo_freq4=0.5<0,10,.0000001>-LFO 4 Frequency
+slider58:pan4=0<-1,1,0.000000001>-Pan 4
+
+slider63:drywet=0<-1,1,.00001>-Dry/Wet
+slider64:c_palette=0<0,10,1>palette
+
+slider65:single_threshold=0<0,1,1{Off,On}>-Use only a single set of thresholds
+slider66:global_min=-36<-48,3,0.0001>-Global Minimum / Threshold 1
+slider67:global_max=3<-48,3,0.0001>-Global Maximum 1
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+out_pin:left output 2
+out_pin:right output 2
+out_pin:left output 3
+out_pin:right output 3
+out_pin:left output 4
+out_pin:right output 4
+
+import saike_bab_palettes.jsfx-inc
+import saike_bab_buffer_plotting.jsfx-inc
+import saike_bab_sample_editor.jsfx-inc
+import saike_bab_filters.jsfx-inc
+import saike_bab_playback.jsfx-inc
+import saike_bab_widgets.jsfx-inc
+import saike_bab_LFOs.jsfx-inc
+import saike_bab_settings.jsfx-inc
+
+@init
+CURRENT_VERSION = 3;
+last_selected_sample = -1;
+preview_channel.chan_default(0);
+chan1.chan_default(1);
+chan2.chan_default(2);
+chan3.chan_default(3);
+chan4.chan_default(4);
+
+settings1.init_strip(0);
+settings2.init_strip(1);
+settings3.init_strip(2);
+settings4.init_strip(3);
+
+log10d20_conversion  = 0.11512925464970228420089957273422;
+function update_target_gain()
+(
+  target_gain1 = exp(log10d20_conversion * gain1);
+  target_gain2 = exp(log10d20_conversion * gain2);
+  target_gain3 = exp(log10d20_conversion * gain3);
+  target_gain4 = exp(log10d20_conversion * gain4);
+  
+  chan1.set_pan((settings1.pan.curmod + 1.0) * 0.5);
+  chan2.set_pan((settings2.pan.curmod + 1.0) * 0.5);
+  chan3.set_pan((settings3.pan.curmod + 1.0) * 0.5);
+  chan4.set_pan((settings4.pan.curmod + 1.0) * 0.5);
+);
+
+function update_gains()
+(
+  gain_atk = exp(-1.0/(0.001 * 30 * srate));
+  update_target_gain();
+  chan1.vol = target_gain1;
+  chan2.vol = target_gain2;
+  chan3.vol = target_gain3;
+  chan4.vol = target_gain4;
+);
+update_gains();
+
+function update_time_offset()
+local(time_offset1, time_offset2, time_offset3, time_offset4, ms_to_sample)
+global(settings1.time_offset, settings2.time_offset, settings3.time_offset, settings4.time_offset,
+       envdelay1.set_offset, envdelay2.set_offset, envdelay3.set_offset, envdelay4.set_offset,
+       envdelayout.set_offset, envdelayout2.set_offset, audio_delay.set_offset,
+       minimum_offset, delay1, delay2, delay3, delay4,
+       srate, pdc_bot_ch, pdc_top_ch, pdc_delay)
+(
+  time_offset1 = settings1.time_offset;
+  time_offset2 = settings2.time_offset;
+  time_offset3 = settings3.time_offset;
+  time_offset4 = settings4.time_offset;
+  
+  ms_to_sample = 0.001 * srate;
+  
+  // Get the minimum delay so we know the amount of pdc we need.
+  minimum_offset = floor(ms_to_sample * (min(time_offset4, min(time_offset3, min(time_offset1, time_offset2)))));
+  
+  pdc_bot_ch = 0;
+  pdc_top_ch = 2;
+  pdc_delay = - minimum_offset;
+  
+  delay1 = floor(ms_to_sample * time_offset1) - minimum_offset;
+  delay2 = floor(ms_to_sample * time_offset2) - minimum_offset;
+  delay3 = floor(ms_to_sample * time_offset3) - minimum_offset;
+  delay4 = floor(ms_to_sample * time_offset4) - minimum_offset;
+  
+  envdelay1.set_offset(delay1);
+  envdelay2.set_offset(delay2);
+  envdelay3.set_offset(delay3);
+  envdelay4.set_offset(delay4);
+  envdelayout.set_offset(abs(minimum_offset));
+  envdelayout2.set_offset(abs(minimum_offset));
+  audio_delay.set_offset(2 * abs(minimum_offset));
+);
+
+init_sample_data_defaults();
+
+preview_channel.stop_sample();
+chan1.stop_sample();
+chan2.stop_sample();
+chan3.stop_sample();
+chan4.stop_sample(); 
+
+DRAG_THRESH_MIN = 20;
+DRAG_THRESH_MAX = 21;
+
+ATK_SLIDER = 1;
+DEC_SLIDER = 2;
+HOLD_PERCENT_SLIDER = 3;
+HOLD_TIME_SLIDER = 4;
+
+THRESH_SLIDER_MIN = 5;
+THRESH_SLIDER_MAX = 6;
+
+SLIDERS_PER_SAMPLE = 15;
+
+N_SAMPLES = 4;
+TOTAL_MEM = N_SAMPLES * SAMPLE_SIZE;
+
+ceilLevel = 3;
+floorLevel = -48;
+ceilLevel = 3;
+
+fontscaling = 0;
+
+function update_palette()
+(
+  c_color = 0;
+  bg_color_r = palette(c_palette, c_color, 0);
+  bg_color_g = palette(c_palette, c_color, 1);
+  bg_color_b = palette(c_palette, c_color, 2);
+  
+  c_color = 2;
+  solid_r = palette(c_palette, c_color, 0);
+  solid_g = palette(c_palette, c_color, 1);
+  solid_b = palette(c_palette, c_color, 2);
+  solid_a = 0.1;
+  
+  c_color = 2;
+  thresh_r = palette(c_palette, c_color, 0);
+  thresh_g = palette(c_palette, c_color, 1);
+  thresh_b = palette(c_palette, c_color, 2);
+  
+  c_color = 3;
+  thresh2_r = palette(c_palette, c_color, 0);
+  thresh2_g = palette(c_palette, c_color, 1);
+  thresh2_b = palette(c_palette, c_color, 2);
+  
+  c_color = 4;
+  waveform_r = palette(c_palette, c_color, 0);
+  waveform_g = palette(c_palette, c_color, 1);
+  waveform_b = palette(c_palette, c_color, 2);
+  waveform_a = 1.0;
+  
+  c_color = 3;
+  env_r = palette(c_palette, c_color, 0);
+  env_g = palette(c_palette, c_color, 1);
+  env_b = palette(c_palette, c_color, 2);
+  
+  c_color = 0;
+  line_r = palette(c_palette, c_color, 0);
+  line_g = palette(c_palette, c_color, 1);
+  line_b = palette(c_palette, c_color, 2);
+  line_a = 0.3;
+  
+  c_color = 0;
+  box_rect_color_r = palette(c_palette, c_color, 0) * 0.5;
+  box_rect_color_g = palette(c_palette, c_color, 1) * 0.5;
+  box_rect_color_b = palette(c_palette, c_color, 2) * 0.5;
+  
+  c_color = 1;
+  box_edge_color_r = palette(c_palette, c_color, 0);
+  box_edge_color_g = palette(c_palette, c_color, 1);
+  box_edge_color_b = palette(c_palette, c_color, 2);
+  
+  c_color = 1;
+  selection_color_r = palette(c_palette, c_color, 0);
+  selection_color_g = palette(c_palette, c_color, 1);
+  selection_color_b = palette(c_palette, c_color, 2);
+  selection_color_a = 0.2;
+  
+  c_color = 0;
+  selection_button_r = palette(c_palette, c_color, 0);
+  selection_button_g = palette(c_palette, c_color, 1);
+  selection_button_b = palette(c_palette, c_color, 2);
+  
+  c_color = 3;
+  knob_font_color_r = palette(c_palette, c_color, 0);
+  knob_font_color_g = palette(c_palette, c_color, 1);
+  knob_font_color_b = palette(c_palette, c_color, 2);
+  knob_font_color_a = 1.0;
+  
+  c_color = 3;
+  mod1_color_r = palette(c_palette, c_color, 0);
+  mod1_color_g = palette(c_palette, c_color, 1);
+  mod1_color_b = palette(c_palette, c_color, 2);
+  mod1_color_a = 1.0;
+  
+  c_color = 4;
+  mod2_color_r = palette(c_palette, c_color, 0);
+  mod2_color_g = palette(c_palette, c_color, 1);
+  mod2_color_b = palette(c_palette, c_color, 2);
+  mod2_color_a = 1.0;
+  
+  c_color = 3;
+  knob_font_color_r = palette(c_palette, c_color, 0); 
+  knob_font_color_g = palette(c_palette, c_color, 1);
+  knob_font_color_b = palette(c_palette, c_color, 2);
+  knob_font_color_a = 1.0;
+  
+  c_color = 2;
+  row_color_r = palette(c_palette, c_color, 0);
+  row_color_g = palette(c_palette, c_color, 1);
+  row_color_b = palette(c_palette, c_color, 2);
+);
+
+function init_follower_absolute(atk, release)
+local(tmp)
+instance(at, rt)
+global(srate)
+(
+  at = ( atk > 0 ) ? exp(-1/(.0005*atk*srate)) : 0;
+  rt = exp(-1/(.0005*release*srate));
+);
+
+function init_follower(mode, atk, release, hold_percent, hold_time, min1, max1)
+local(time_factor, inverse_rise_time)
+instance(env_mode, at, rt, hold_level, env_attack_samples, env_hold_samples, sustain, thresh_min, thresh_max, below_samples)
+global(srate)
+(
+  env_mode = mode;
+  time_factor = 2302.58509299 / srate;
+  
+  //inverse_rise_time = 0.33 * exp(-4.605170185988092*atk);  // Ranges between [1/3 and 1/300]
+  //at = time_factor * inverse_rise_time;
+  //rt = time_factor * 0.033 * exp(-4.605170185988092*release); // Ranges between [1/30 and 1/3000]
+  //env_attack_samples = .001 * srate / inverse_rise_time;
+  //sustain = sustain;
+  
+  // Attack: log(amax/amin) = log(100 / 1) = 4.605170185988092
+  // Decay: log(amax/min) = log(1000 / 10) = 4.605170185988092
+  atk = exp(4.605170185988092 * atk);
+  release = 10 * exp(4.605170185988092 * release);
+
+  env_attack_samples = 4 * 0.001 * atk * srate;
+  
+  hold_level = 0.0001 * hold_percent*hold_percent;
+  env_hold_samples = 0.001 * 10 * exp(4.605170185988092 * hold_time) * srate;
+  below_samples = 0.02 * srate;
+  
+  at = ( atk > 0 ) ? exp(-1.0/(.001*atk*srate)) : 0;
+  rt = exp(-1/(.0005*release*srate));
+  
+  thresh_min = 10^(min1/20);
+  thresh_max = 10^(max1/20);
+);
+
+function simple_follower(x)
+local()
+instance(at, rt, state)
+global()
+(
+  x > state ? (
+    state = at * state + ( 1.0 - at ) * x;
+  ) : (
+    state = rt * state + ( 1.0 - rt ) * x;
+  );
+  
+  state
+);
+
+function eval_trigger(x, delay)
+local()
+global()
+instance(time_to_planned_note, thresh_min, primed, below_samples)
+(
+  (time_to_planned_note > 0.01) ? (
+    time_to_planned_note -= 1;
+    (time_to_planned_note == 0) ? (
+      1
+    ) : 0
+  ) : (
+    (x > thresh_min) ? (
+      (primed > below_samples) ? (
+        time_to_planned_note = delay + 1;
+      );
+      primed = 0;
+    ) : (
+      primed += 1;
+    );
+    
+    0
+  );
+);
+
+function eval_follower(x, cEnv)
+local()
+instance(env_mode, state, at, rt, env_attack_samples, sustain, probability, high,
+         thresh_min, thresh_max, env_hold_samples, hold_level, ticks, below, above, below_samples, cEnv1)
+global()
+(
+  (env_mode == 0) ? (
+    x = x < thresh_min ? 0 : x;
+    x > state ? (
+      state = at * state + ( 1.0 - at ) * x;
+    ) : (
+      state = rt * state + ( 1.0 - rt ) * x;
+    );
+    min(state, thresh_max)
+  ) : (env_mode == 1) ? (
+    x > thresh_min ? (
+      state = at * state + ( 1.0 - at );
+    ) : (
+      state = rt * state;
+    );
+    state
+  ) : (env_mode == 2) ? (
+    (ticks < env_attack_samples) ? (
+      state = at * state + (1.0 - at) * high;
+    ) : (
+      (ticks < env_hold_samples) ? (
+        state = rt * state + (1.0 - rt) * hold_level * high;
+      ) : (
+        state = rt * state;
+        
+        ((cEnv > thresh_min)) ? (
+          // We've gone under the threshold for a while
+          (below > below_samples) ? (
+            // If we rise for a set number of samples, fire again!
+            (above > 15) ? (
+              (x > thresh_min) ? (
+                high = (probability + 1) > rand();
+                ticks = 0;
+                below = 0;
+                above = 0;
+              );
+            ) : (
+              (cEnv1 > cEnv) ? (
+                above += 1;
+              ) : (
+                above = 0;
+              );
+            );
+          );
+        ) : (
+          // We are below the threshold, start waiting for a new peak.
+          below += 1;
+          above = 0;
+        );
+      );
+    );
+  
+    ticks += 1;
+    cEnv1 = cEnv;
+    state
+  );
+);
+
+atk = 1;
+dec = 120;
+dec = 50;
+env_follower.init_follower_absolute(atk, dec);
+env_follower2.init_follower_absolute(atk, dec);
+
+// Followers for the filtered ones
+env_follower_f1.init_follower_absolute(atk, dec);
+env_follower_f2.init_follower_absolute(atk, dec);
+env_follower_f3.init_follower_absolute(atk, dec);
+env_follower_f4.init_follower_absolute(atk, dec);
+
+function update_followers()
+(
+  single_threshold ? (
+    env1_follower.init_follower(settings1.env, atk1, decay1, hold_percent1, hold_time1, global_min, global_max);
+    env2_follower.init_follower(settings2.env, atk2, decay2, hold_percent2, hold_time2, global_min, global_max);
+    env3_follower.init_follower(settings3.env, atk3, decay3, hold_percent3, hold_time3, global_min, global_max);
+    env4_follower.init_follower(settings4.env, atk4, decay4, hold_percent4, hold_time4, global_min, global_max);  
+  ) : (
+    env1_follower.init_follower(settings1.env, atk1, decay1, hold_percent1, hold_time1, min1, max1);
+    env2_follower.init_follower(settings2.env, atk2, decay2, hold_percent2, hold_time2, min2, max2);
+    env3_follower.init_follower(settings3.env, atk3, decay3, hold_percent3, hold_time3, min3, max3);
+    env4_follower.init_follower(settings4.env, atk4, decay4, hold_percent4, hold_time4, min4, max4);
+  );
+);
+
+// Memory layout
+freemem = 65536;
+BUFFER_SIZE = 65536;
+freemem = (input_buffer = freemem) + BUFFER_SIZE;
+input_buffer.init_buffer_no_reset(input_buffer, input_buffer + BUFFER_SIZE - 1);
+freemem = (env_buffer = freemem) + BUFFER_SIZE;
+envelope_buffer.init_buffer_no_reset(env_buffer, env_buffer + BUFFER_SIZE - 1);
+freemem = (current_env_buffer = freemem) + BUFFER_SIZE;
+current_envelope_buffer.init_buffer_no_reset(current_env_buffer, current_env_buffer + BUFFER_SIZE - 1);
+
+// Sample locations are recorded as [64 byte header (first is length), sampledata]
+freemem = (samplelocs = freemem) + 128;
+idx = 0;
+loop(N_SAMPLES,
+  freemem = (samplelocs[idx] = freemem) + SAMPLE_SIZE;
+  idx += 1;
+);
+
+freemem = (scratchloc = freemem) + SAMPLE_SIZE;
+freemem = (copyloc = freemem) + SAMPLE_SIZE;
+
+freemem = (delay_buffer = freemem) + BUFFER_SIZE;
+envdelay1.init_buffer_no_reset(delay_buffer, delay_buffer + BUFFER_SIZE - 1);
+freemem = (delay_buffer = freemem) + BUFFER_SIZE;
+envdelay2.init_buffer_no_reset(delay_buffer, delay_buffer + BUFFER_SIZE - 1);
+freemem = (delay_buffer = freemem) + BUFFER_SIZE;
+envdelay3.init_buffer_no_reset(delay_buffer, delay_buffer + BUFFER_SIZE - 1);
+freemem = (delay_buffer = freemem) + BUFFER_SIZE;
+envdelay4.init_buffer_no_reset(delay_buffer, delay_buffer + BUFFER_SIZE - 1);
+freemem = (delay_buffer = freemem) + BUFFER_SIZE;
+audio_delay.init_buffer_no_reset(delay_buffer, delay_buffer + BUFFER_SIZE - 1);
+freemem = (delay_buffer = freemem) + BUFFER_SIZE;
+envdelayout.init_buffer_no_reset(delay_buffer, delay_buffer + BUFFER_SIZE - 1);
+freemem = (delay_buffer = freemem) + BUFFER_SIZE;
+envdelayout2.init_buffer_no_reset(delay_buffer, delay_buffer + BUFFER_SIZE - 1);
+
+
+function start_samples()
+(
+  (!settings1.retrigger) ? chan1.start_sample(0, pitch1);
+  (!settings2.retrigger) ? chan2.start_sample(1, pitch2);
+  (!settings3.retrigger) ? chan3.start_sample(2, pitch3);
+  (!settings4.retrigger) ? chan4.start_sample(3, pitch4);
+);
+
+function toggle_trig(triggered, sample, pitch)
+instance(playing)
+(
+  triggered ? (
+    this.playing ? this.stop_sample();
+  ) : (
+    this.start_sample(sample, pitch);
+  );
+);
+
+update_time_offset();
+start_samples();
+
+@slider
+update_palette();
+update_followers();
+
+@serialize
+file_var(0, version);
+
+(version < 2) ? (
+  single_threshold = 0;
+  global_min = -36;
+  global_max = 3;
+);
+
+writing = file_avail(0) < 0;
+serialize_all_samples(writing);
+
+settings1.serialize_non_sliders();
+settings2.serialize_non_sliders();
+settings3.serialize_non_sliders();
+settings4.serialize_non_sliders();
+
+file_var(0, advanced);
+
+update_gains();
+update_time_offset();
+
+/* Set scales and such */
+settings1.set_button_properties();
+settings2.set_button_properties();
+settings3.set_button_properties();
+settings4.set_button_properties();
+drywet_knob.set_knob_properties_simple_par(drywet, 0, -1, 2);
+last_selected_sample = -1;
+
+!writing ? (
+  updated_loop = loaded_sample = 1;
+  chan1.playing = chan2.playing = chan3.playing = chan4.playing = 0;
+);
+
+(version < 3) ? (
+  multi_out = 0;
+) : (
+  file_var(0, multi_out);
+);
+
+version = CURRENT_VERSION;
+
+@block
+israte = 1.0 / srate;
+no_sample_loaded = (samplelocs[0][0] == 0) && (samplelocs[1][0] == 0) && (samplelocs[2][0] == 0) && (samplelocs[3][0] == 0);
+
+update_followers();
+
+/*((play_state != last_play_state) && (play_state != 0)) ? (
+  start_samples();
+);*/
+
+last_play_state = play_state;
+update_target_gain();
+
+loaded_sample ? (
+  start_samples();
+  loaded_sample = 0;
+);
+
+update_time_offset();
+
+input_filter1_active = (settings1.input_lpf != 0) || (settings1.input_hpf != 0);
+input_filter1_active ? input_filter1.init_linear_svf_lp_hp(1 + settings1.input_lpf, settings1.input_hpf);
+
+input_filter2_active = (settings2.input_lpf != 0) || (settings2.input_hpf != 0);
+input_filter2_active ? input_filter2.init_linear_svf_lp_hp(1 + settings2.input_lpf, settings2.input_hpf);
+
+input_filter3_active = (settings3.input_lpf != 0) || (settings3.input_hpf != 0);
+input_filter3_active ? input_filter3.init_linear_svf_lp_hp(1 + settings3.input_lpf, settings3.input_hpf);
+
+input_filter4_active = (settings4.input_lpf != 0) || (settings4.input_hpf != 0);
+input_filter4_active ? input_filter4.init_linear_svf_lp_hp(1 + settings4.input_lpf, settings4.input_hpf);
+
+env1_follower.probability = settings1.probability;
+env2_follower.probability = settings2.probability;
+env3_follower.probability = settings3.probability;
+env4_follower.probability = settings4.probability;
+
+@sample
+function clamp11(x)
+(
+  (x > 1) ? 1 : (x < -1) ? -1 : x;
+);
+
+function clamp01(x)
+(
+  (x > 1) ? 1 : (x < 0) ? 0 : x;
+);
+
+function clamp24(x)
+(
+  (x > 24) ? 24 : (x < -24) ? -24 : x;
+);
+
+csample += 1;
+bigtick = (csample % 8) == 0;
+
+chan1.vol = gain_atk * chan1.vol + (1.0 - gain_atk) * target_gain1;
+chan2.vol = gain_atk * chan2.vol + (1.0 - gain_atk) * target_gain2;
+chan3.vol = gain_atk * chan3.vol + (1.0 - gain_atk) * target_gain3;
+chan4.vol = gain_atk * chan4.vol + (1.0 - gain_atk) * target_gain4;
+
+m_signal1 = m_signal2 = m_signal3 = m_signal4 = m_signal = max(abs(spl0), abs(spl1));
+
+cEnv1 = cEnv;
+cEnv = env_follower.simple_follower(m_signal);
+
+env1 = input_filter1_active ? (
+  m_signal1 = input_filter1.eval_lp_hp_env(spl0, spl1);
+  current_env = env_follower_f1.simple_follower(m_signal1);
+  envdelay1.simple_delay(env1_follower.eval_follower(m_signal1, current_env));
+) : (
+  envdelay1.simple_delay(env1_follower.eval_follower(m_signal, cEnv));
+);
+
+env2 = input_filter2_active ? (
+  m_signal2 = input_filter2.eval_lp_hp_env(spl0, spl1);
+  current_env = env_follower_f2.simple_follower(m_signal2);
+  envdelay2.simple_delay(env2_follower.eval_follower(m_signal2, current_env));
+) : (
+  envdelay2.simple_delay(env2_follower.eval_follower(m_signal, cEnv));
+);
+
+env3 = input_filter3_active ? (
+  m_signal3 = input_filter3.eval_lp_hp_env(spl0, spl1);
+  current_env = env_follower_f3.simple_follower(m_signal3);
+  envdelay3.simple_delay(env3_follower.eval_follower(m_signal3, current_env));
+) : (
+  envdelay3.simple_delay(env3_follower.eval_follower(m_signal, cEnv));
+);
+
+env4 = input_filter4_active ? (
+  m_signal4 = input_filter4.eval_lp_hp_env(spl0, spl1);
+  current_env = env_follower_f4.simple_follower(m_signal4);
+  envdelay4.simple_delay(env4_follower.eval_follower(m_signal4, current_env));
+) : (
+  envdelay4.simple_delay(env4_follower.eval_follower(m_signal, cEnv));
+);
+
+spl0 = audio_delay.simple_delay(spl0);
+spl1 = audio_delay.simple_delay(spl1);
+
+settings1.retrigger ? env1_follower.eval_trigger(cEnv, delay1) ? chan1.start_sample(0, pitch1);
+settings2.retrigger ? env2_follower.eval_trigger(cEnv, delay2) ? chan2.start_sample(1, pitch2);
+settings3.retrigger ? env3_follower.eval_trigger(cEnv, delay3) ? chan3.start_sample(2, pitch3);
+settings4.retrigger ? env4_follower.eval_trigger(cEnv, delay4) ? chan4.start_sample(3, pitch4);
+
+input_buffer.update_buffer(envdelayout.simple_delay(20 * log10(cEnv)));
+
+selected_sample == 0 ? (
+  current_envelope_buffer.update_buffer(20 * log10(env1));
+  envelope_buffer.update_buffer(envdelayout2.simple_delay(20 * log10(env_follower2.simple_follower(m_signal1))));
+) : ( selected_sample == 1 ) ? (
+  current_envelope_buffer.update_buffer(20 * log10(env2));
+  envelope_buffer.update_buffer(envdelayout2.simple_delay(20 * log10(env_follower2.simple_follower(m_signal2))));
+) : ( selected_sample == 2 ) ? (
+  current_envelope_buffer.update_buffer(20 * log10(env3));
+  envelope_buffer.update_buffer(envdelayout2.simple_delay(20 * log10(env_follower2.simple_follower(m_signal3))));
+) : ( selected_sample == 3 ) ? (
+  current_envelope_buffer.update_buffer(20 * log10(env4));
+  envelope_buffer.update_buffer(envdelayout2.simple_delay(20 * log10(env_follower2.simple_follower(m_signal4))));
+);
+
+ssl = ssr = 0;
+
+e1 = 0.02083333333333333333333333333333 * (20 * log10(env1) + 48);
+e2 = 0.02083333333333333333333333333333 * (20 * log10(env2) + 48);
+e3 = 0.02083333333333333333333333333333 * (20 * log10(env3) + 48);
+e4 = 0.02083333333333333333333333333333 * (20 * log10(env4) + 48);
+
+e1 = e1 > 0 ? e1 : 0;
+e2 = e2 > 0 ? e2 : 0;
+e3 = e3 > 0 ? e3 : 0;
+e4 = e4 > 0 ? e4 : 0;
+
+lfo1 = settings1.lfo_enabled ? ( 
+  settings1.lfo_amount.curmod = 0.99 * settings1.lfo_amount.curmod + .01 * clamp01(settings1.lfo_amount.value + settings1.lfo_amount.mod1 * e1);
+  settings1.lfo_freq.curmod = 0.99 * settings1.lfo_freq.curmod + .01 * settings1.lfo_freq.scale * clamp01(settings1.lfo_freq.value + settings1.lfo_freq.mod1 * e1);
+  settings1.lfo_amount.curmod * lfo1.lfo_modulator(settings1.lfo_type, settings1.lfo_time += israte * settings1.lfo_freq.curmod);
+) : 0;
+
+lfo2 = settings2.lfo_enabled ? ( 
+  settings2.lfo_amount.curmod = 0.99 * settings2.lfo_amount.curmod + .01 * clamp01(settings2.lfo_amount.value + settings2.lfo_amount.mod1 * e2);
+  settings2.lfo_freq.curmod = 0.99 * settings2.lfo_freq.curmod + .01 * settings2.lfo_freq.scale * clamp01(settings2.lfo_freq.value + settings2.lfo_freq.mod1 * e2);
+  settings2.lfo_amount.curmod * lfo2.lfo_modulator(settings2.lfo_type, settings2.lfo_time += israte * settings2.lfo_freq.curmod);
+) : 0;
+
+lfo3 = settings3.lfo_enabled ? ( 
+  settings3.lfo_amount.curmod = 0.99 * settings3.lfo_amount.curmod + .01 * clamp01(settings3.lfo_amount.value + settings3.lfo_amount.mod1 * e3);
+  settings3.lfo_freq.curmod = 0.99 * settings3.lfo_freq.curmod + .01 * settings3.lfo_freq.scale * clamp01(settings3.lfo_freq.value + settings3.lfo_freq.mod1 * e3);
+  settings3.lfo_amount.curmod * lfo3.lfo_modulator(settings3.lfo_type, settings3.lfo_time += israte * settings3.lfo_freq.curmod);
+) : 0;
+
+lfo4 = settings4.lfo_enabled ? ( 
+  settings4.lfo_amount.curmod = 0.99 * settings4.lfo_amount.curmod + .01 * clamp01(settings4.lfo_amount.value + settings4.lfo_amount.mod1 * e4);
+  settings4.lfo_freq.curmod = 0.99 * settings4.lfo_freq.curmod + .01 * settings4.lfo_freq.scale * clamp01(settings4.lfo_freq.value + settings4.lfo_freq.mod1 * e4);
+  settings4.lfo_amount.curmod * lfo4.lfo_modulator(settings4.lfo_type, settings4.lfo_time += israte * settings4.lfo_freq.curmod);
+) : 0;
+
+settings1.pitch.curmod = clamp24(pitch1 + 48 * (settings1.pitch.mod1 * e1 + settings1.pitch.mod2 * lfo1));
+settings2.pitch.curmod = clamp24(pitch2 + 48 * (settings2.pitch.mod1 * e2 + settings2.pitch.mod2 * lfo2));
+settings3.pitch.curmod = clamp24(pitch3 + 48 * (settings3.pitch.mod1 * e3 + settings3.pitch.mod2 * lfo3));
+settings4.pitch.curmod = clamp24(pitch4 + 48 * (settings4.pitch.mod1 * e4 + settings4.pitch.mod2 * lfo4));
+
+chan1.update_pitch(settings1.pitch.curmod);
+chan2.update_pitch(settings2.pitch.curmod);
+chan3.update_pitch(settings3.pitch.curmod);
+chan4.update_pitch(settings4.pitch.curmod);
+
+settings1.hpf.curmod = clamp01(hpf1 + settings1.hpf.mod1 * e1 + settings1.hpf.mod2 * lfo1);
+settings2.hpf.curmod = clamp01(hpf2 + settings2.hpf.mod1 * e2 + settings2.hpf.mod2 * lfo2);
+settings3.hpf.curmod = clamp01(hpf3 + settings3.hpf.mod1 * e3 + settings3.hpf.mod2 * lfo3);
+settings4.hpf.curmod = clamp01(hpf4 + settings4.hpf.mod1 * e4 + settings4.hpf.mod2 * lfo4);
+
+settings1.lpf.curmod = clamp01(lpf1 + settings1.lpf.mod1 * e1 + settings1.lpf.mod2 * lfo1);
+settings2.lpf.curmod = clamp01(lpf2 + settings2.lpf.mod1 * e2 + settings2.lpf.mod2 * lfo2);
+settings3.lpf.curmod = clamp01(lpf3 + settings3.lpf.mod1 * e3 + settings3.lpf.mod2 * lfo3);
+settings4.lpf.curmod = clamp01(lpf4 + settings4.lpf.mod1 * e4 + settings4.lpf.mod2 * lfo4);
+
+cp1 = settings1.pan.mod1 * e1 + settings1.pan.mod2 * lfo1;
+settings1.pan.curmod = clamp11(pan1 + cp1 + cp1);
+cp2 = settings2.pan.mod1 * e2 + settings2.pan.mod2 * lfo2;
+settings2.pan.curmod = clamp11(pan2 + cp2 + cp2);
+cp3 = settings3.pan.mod1 * e3 + settings3.pan.mod2 * lfo3;
+settings3.pan.curmod = clamp11(pan3 + cp3 + cp3);
+cp4 = settings4.pan.mod1 * e4 + settings4.pan.mod2 * lfo4;
+settings4.pan.curmod = clamp11(pan4 + cp4 + cp4);
+
+dry = 0.999 * dry + 0.001 * ((drywet < 0) ? 1 : 1.0 - drywet);
+wet = 0.999 * wet + 0.001 * ((drywet > 0) ? 1 : 1.0 + drywet);
+multi_out ? (
+  chan1.playing ? chan1.play_channel(env1, settings1.lpf.curmod, settings1.hpf.curmod);
+  spl0 = ssl * wet + spl0 * dry;
+  spl1 = ssr * wet + spl1 * dry;
+  ssl = ssr = 0;
+  chan2.playing ? chan2.play_channel(env2, settings2.lpf.curmod, settings2.hpf.curmod);
+  spl2 = ssl * wet + spl2 * dry;
+  spl3 = ssr * wet + spl3 * dry;
+  ssl = ssr = 0;
+  chan3.playing ? chan3.play_channel(env3, settings3.lpf.curmod, settings3.hpf.curmod);
+  spl4 = ssl * wet + spl4 * dry;
+  spl5 = ssr * wet + spl5 * dry;
+  ssl = ssr = 0;
+  chan4.playing ? chan4.play_channel(env4, settings4.lpf.curmod, settings4.hpf.curmod);
+  spl6 = ssl * wet + spl6 * dry;
+  spl7 = ssr * wet + spl7 * dry;
+  ssl = ssr = 0;
+) : (
+  chan1.playing ? chan1.play_channel(env1, settings1.lpf.curmod, settings1.hpf.curmod);
+  chan2.playing ? chan2.play_channel(env2, settings2.lpf.curmod, settings2.hpf.curmod);
+  chan3.playing ? chan3.play_channel(env3, settings3.lpf.curmod, settings3.hpf.curmod);
+  chan4.playing ? chan4.play_channel(env4, settings4.lpf.curmod, settings4.hpf.curmod);
+  
+  spl0 = ssl * wet + spl0 * dry;
+  spl1 = ssr * wet + spl1 * dry;
+);
+
+@gfx 954 551
+handle_dropped_files();
+current_char = gfx_getchar();
+handle_gmem_imports();
+
+gfx_set(bg_color_r, bg_color_g, bg_color_b, 1);
+gfx_rect(0, 0, gfx_w, gfx_h);
+
+
+scaling = min(gfx_w / 954, gfx_h / 551) - 1;
+fontscaling = scaling;
+
+SAMPLE_FONT = 5;
+TINY_FONT = 6;
+gfx_setfont(TINY_FONT, "Arial", 12 * (1 + fontscaling));
+
+BIG_FONT = 7;
+gfx_setfont(BIG_FONT, "Arial", 18 * (1 + fontscaling));
+font_color_r = font_color_g = font_color_b = 0.8;
+font_color_a = 1.0;
+
+HINT_FONT = 8;
+gfx_setfont(HINT_FONT, "Arial", floor(13 * (1+fontscaling)));
+
+KNOB_FONT = 14;
+KNOB_FONT2 = 15;
+gfx_setfont(KNOB_FONT, "Arial", 12 * (1 + fontscaling));
+gfx_setfont(KNOB_FONT2, "Arial", 12 * (1 + fontscaling));
+
+SELECT_COLOR = 13;
+gfx_setfont(SELECT_COLOR, "Arial", 14 * (1 + fontscaling));
+
+function ui_vertical_thresh(x, w, ymin, ymax, slider_idx, smin, smax, drag_mode, thresh)
+local(yc, new, menu)
+global(thresh_r, thresh_g, thresh_b, 
+       thresh2_r, thresh2_g, thresh2_b,
+       qqt, scale, single_threshold,
+       gfx_mouse_r, gfx_x, gfx_y, gfx_a, mouse_x, mouse_y,
+       captured, DRAG_THRESH,
+       mouse_dy)
+(
+  yc = ymin + (ymax - ymin) * (slider(slider_idx) - smin) / (smax - smin);
+  
+  thresh ? gfx_set(thresh_r, thresh_g, thresh_b) : gfx_set(thresh2_r, thresh2_g, thresh2_b);
+  gfx_line(x, yc, x+w, yc);
+  gfx_line(x, yc + 1, x+w, yc + 1);
+  gfx_line(x, yc - 1, x+w, yc - 1);
+  
+  (captured == 0) ? (
+    mouse_over(x, yc - 6, w, 18 * (1 + scale)) ? (
+      gfx_a = .7;
+      gfx_line(x, yc + 2, x+w, yc + 2);
+      gfx_line(x, yc - 2, x+w, yc - 2);
+      gfx_a = .4;
+      gfx_line(x, yc + 3, x+w, yc + 3);
+      gfx_line(x, yc - 3, x+w, yc - 3);
+      
+      mouse_press(1) ? (
+        captured = drag_mode;
+      );
+      mouse_press(2) ? (
+        gfx_x = mouse_x;
+        gfx_y = mouse_y;
+        menu = gfx_showmenu(single_threshold ? "!Use global thresholds" : "Use global thresholds");
+        menu ? (
+          single_threshold = 1 - single_threshold;
+        );
+      );
+    );
+   ) : (
+    (captured == drag_mode) ? (
+      mouse_is_down(1) ? (
+        new = slider(slider_idx) + mouse_dy * (smax - smin) / (ymax - ymin);
+        new = max(smin, min(smax, new));
+        qqt = slider_idx;
+        slider(slider_idx) = new;
+        slider_automate(slider(slider_idx));
+      ) : (
+        captured = 0;
+      );
+    );
+  );
+);
+
+function quick_toggle(xs, ys, button_width, button_height, label, value, hint)
+local()
+global(TINY_FONT, captured, c_palette, hinter.updateHintTime)
+(
+  control_rect(xs - button_width - 1, ys + 1, button_width, button_height, palette(c_palette, value*2, 0), palette(c_palette, value*2, 1), palette(c_palette, value*2, 2), 1.0, TINY_FONT, label) ? (
+    hinter.updateHintTime(hint);
+    (mouse_press(1) && !captured) ? 1
+  );
+);
+
+function default_loop(sample_location, retrigger)
+local()
+global()
+(
+  retrigger ? (
+    sample_location[3] = -1;
+    sample_location[4] = 1;
+    sample_location[5] = 0;
+  ) : (
+    sample_location[3] = 1 - retrigger;
+    sample_location[4] = sample_location[] / 2;
+    sample_location[5] = 0;
+  );
+);
+
+function draw_ui()
+local(x_fraction, y_fraction,
+      dynamic_fraction, waveform_fraction, knob_fraction, sample_area_width_fraction,
+      num_samples, num_samples_x, num_samples_y,
+      sample_hs, sample_ws,
+      spacing_x, spacing_y,
+      xs, ys, ws, hs,
+      meter_space,
+      button_width, button_height,
+      y_buttons, h_buttons, toggle_advanced,
+      min_slider_idx, max_slider_idx,
+)
+global(samplelocs, loaded_sample, advanced,
+       gfx_x, gfx_y, gfx_w, gfx_h,
+       multi_out,
+       input_buffer.draw_buffer_db,
+       envelope_buffer.draw_buffer_db
+       current_envelope_buffer.draw_buffer_db,
+       draw_signal_window,
+       reset_zoom
+       close_up.draw_sample_big,
+       solid_r, solid_g, solid_b, solid_a,
+       waveform_r, waveform_g, waveform_b,
+       env_r, env_g, env_b,
+       selected_sample,
+       floorLevel,
+       ceilLevel,
+       DRAG_THRESH_MIN,
+       DRAG_THRESH_MAX,
+       THRESH_SLIDER_MIN
+       THRESH_SLIDER_MAX,
+       SLIDERS_PER_SAMPLE,
+       single_threshold,
+       settings1.draw_buttons,
+       settings2.draw_buttons,
+       settings3.draw_buttons,
+       settings4.draw_buttons,
+       settings1.retrigger,
+       settings2.retrigger,
+       settings3.retrigger,
+       settings4.retrigger,
+       pitch1, pitch2, pitch3, pitch4,
+       chan1.toggle_trig, chan2.toggle_trig, chan3.toggle_trig, chan4.toggle_trig,
+       quick_toggle,
+       c_palette,
+       drywet,
+       drywet_knob.label,
+       drywet_knob.draw_and_process_simple_par,
+       drywet_knob.set_knob_properties_simple_par,
+       trig_label,
+       no_sample_loaded,
+       fontscaling,
+       scaling,
+       captured,
+       currently_selected_env_mode, settings1.env, settings2.env, settings3.env, settings4.env
+)
+(
+  button_width = 36 * (1 + scaling);
+  button_height = 14 * (1 + scaling);
+
+  x_fraction = 0.01;
+  y_fraction = 0.025;
+  dynamic_fraction = 0.4;
+  waveform_fraction = 0.4;
+  knob_fraction = (1.0 - 4 * y_fraction - dynamic_fraction - waveform_fraction);
+  knob_fraction *= min(1.0, gfx_w / (knob_fraction * gfx_h * (16 + 7.5 * advanced)));
+  
+  num_samples = 4;
+  num_samples_x = 2;
+  num_samples_y = 2;
+  sample_area_width_fraction = 0.3;
+  
+  sample_hs = floor(waveform_fraction * gfx_h / num_samples_y);
+  sample_ws = floor(sample_area_width_fraction * gfx_w / num_samples_x);
+  
+  spacing_x = floor(x_fraction * gfx_w);
+  spacing_y = floor(y_fraction * gfx_h);
+  xs = spacing_x;
+  ys = spacing_y;
+  ws = (1.0 - 2 * x_fraction) * gfx_w;
+  hs = floor(dynamic_fraction * gfx_h);
+  
+  meter_space = 0;
+  draw_signal_window(xs, ys, ws, hs, meter_space, floorLevel, 1);
+  
+  gfx_set(solid_r, solid_g, solid_b, solid_a*.5);
+  input_buffer.draw_buffer_db(xs, ys, ws, hs, meter_space, floorLevel, 1);
+  
+  gfx_set(solid_r, solid_g, solid_b, solid_a*.5);
+  envelope_buffer.draw_buffer_db(xs, ys, ws, hs, meter_space, floorLevel, 1);
+  
+  /*
+  gfx_set(env_r, env_g, env_b, 1.0);
+  envelope_buffer.draw_buffer_db(xs, ys, ws, hs, meter_space, floorLevel, 0);
+  envelope_buffer.draw_buffer_db(xs+1, ys-1, ws, hs, meter_space, floorLevel, 0);
+  envelope_buffer.draw_buffer_db(xs, ys-2, ws, hs, meter_space, floorLevel, 0);
+  */
+
+  gfx_set(waveform_r, waveform_g, waveform_b, 1.0);
+  current_envelope_buffer.draw_buffer_db(xs, ys, ws, hs, meter_space, floorLevel, 0);
+  current_envelope_buffer.draw_buffer_db(xs+1, ys-1, ws, hs, meter_space, floorLevel, 0);
+  current_envelope_buffer.draw_buffer_db(xs, ys-2, ws, hs, meter_space, floorLevel, 0);
+  
+  toggle_advanced = quick_toggle(xs + ws - 1, ys + hs - 1.5 * button_height, 2 * button_width, button_height, "Advanced", advanced, "Show advanced options");
+  quick_toggle(xs + ws - 1, ys + hs - 2.5 * button_height, 2 * button_width, button_height, "Multi-out", multi_out, "Route each sample to its own output") ? multi_out = 1 - multi_out;
+  
+  single_threshold ? (
+    min_slider_idx = 66;
+    max_slider_idx = 67;
+  ) : (
+    min_slider_idx = SLIDERS_PER_SAMPLE * selected_sample + THRESH_SLIDER_MIN;
+    max_slider_idx = SLIDERS_PER_SAMPLE * selected_sample + THRESH_SLIDER_MAX;
+  );
+  
+  ui_vertical_thresh(xs, ws, ys + hs, ys, min_slider_idx, floorLevel, ceilLevel, DRAG_THRESH_MIN, 0);
+  
+  currently_selected_env_mode = (selected_sample == 0) ? (
+    settings1.env
+  ) : (selected_sample == 1) ? (
+    settings2.env
+  ) : (selected_sample == 2) ? (
+    settings3.env
+  ) : (selected_sample == 3) ? (
+    settings4.env
+  );
+  
+  (currently_selected_env_mode == 0) ? (
+    ui_vertical_thresh(xs, ws, ys + hs, ys, max_slider_idx, floorLevel, ceilLevel, DRAG_THRESH_MAX, 1); 
+  );
+  /* Make sure max stays above min */
+  
+  (captured == DRAG_THRESH_MAX) ? (
+    slider(max_slider_idx) < slider(min_slider_idx) ? (
+      slider(min_slider_idx) = slider(max_slider_idx);
+    );
+  ) : (
+    slider(max_slider_idx) < slider(min_slider_idx) ? (
+      slider(max_slider_idx) = slider(min_slider_idx);
+    );
+  );
+  
+  y_buttons = floor((dynamic_fraction + 2 * y_fraction - 0.2 * y_fraction) * gfx_h);
+  h_buttons = knob_fraction * gfx_h;
+  (selected_sample == 0) ? (
+    settings1.draw_buttons(xs + 0.2 * h_buttons, y_buttons, h_buttons);
+  ) : (selected_sample == 1) ? (
+    settings2.draw_buttons(xs + 0.2 * h_buttons, y_buttons, h_buttons);
+  ) : (selected_sample == 2) ? (
+    settings3.draw_buttons(xs + 0.2 * h_buttons, y_buttons, h_buttons);
+  ) : (selected_sample == 3) ? (
+    settings4.draw_buttons(xs + 0.2 * h_buttons, y_buttons, h_buttons);
+  );
+  
+  drywet_knob.set_knob_properties_simple_par(drywet, 0, -1, 2);
+  drywet_knob.label = sprintf(2, "%d:%d", 100 * ((drywet < 0) ? 1 : 1.0 - drywet), 100 * ((drywet > 0) ? 1 : 1.0 + drywet));
+  drywet = drywet_knob.draw_and_process_simple_par(gfx_w - spacing_x - 1.2 * h_buttons, y_buttons - 5, 0.5 * h_buttons, "Dry/Wet", "Dry wet");
+  xs += 1.25 * h_buttons;
+  
+  // Sample area
+  ys = floor((dynamic_fraction + 3 * y_fraction + knob_fraction) * gfx_h);
+  
+  xs = floor(x_fraction * gfx_w);
+  draw_wavebox(xs, ys, sample_ws, sample_hs, 0, samplelocs[0]);
+  process_pad(xs, ys, sample_ws, sample_hs, 0, samplelocs[0]);
+  loaded_sample ? default_loop(samplelocs[0], settings1.retrigger);
+  
+  trig_label = "Triggered mode\n\nWhen enabled, the sample will (re)start playback\nwhen crossing the lower threshold.\n\nWhen disabled, the sample will start playback\nwhen playback is initialized. Note that in untriggered\nmode it is important to set a loop region in the sample.";
+  quick_toggle(xs + sample_ws, ys + 1, button_width, button_height, "Trigger", settings1.retrigger, trig_label) ? ( settings1.retrigger = 1 - settings1.retrigger; chan1.toggle_trig(settings1.retrigger, 0, pitch1); );
+
+  no_sample_loaded ? (
+    gfx_setfont(9, "Arial", 14 * (1 + fontscaling));
+    gfx_x = xs + 5; gfx_y = ys + 8;
+    gfx_set(0, 0, 0, 1);
+    gfx_printf("Step 1.\n\nDrag sample from\nmedia explorer here.");
+    gfx_x = xs + 6; gfx_y = ys + 9;
+    gfx_set(env_r, env_g, env_b, 1);
+    gfx_printf("Step 1.\n\nDrag sample from\nmedia explorer here.");
+  );
+
+  xs += sample_ws;
+  draw_wavebox(xs, ys, sample_ws, sample_hs, 1, samplelocs[1]);
+  process_pad(xs, ys, sample_ws, sample_hs, 1, samplelocs[1]);
+  loaded_sample ? default_loop(samplelocs[1], settings2.retrigger);
+  quick_toggle(xs + sample_ws, ys + 1, button_width, button_height, "Trigger", settings2.retrigger, trig_label) ? ( settings2.retrigger = 1 - settings2.retrigger; chan2.toggle_trig(settings2.retrigger, 1, pitch2); );
+  
+  xs = floor(x_fraction * gfx_w);
+  ys += sample_hs;
+  draw_wavebox(xs, ys, sample_ws, sample_hs, 2, samplelocs[2]);
+  process_pad(xs, ys, sample_ws, sample_hs, 2, samplelocs[2]);
+  loaded_sample ? default_loop(samplelocs[2], settings3.retrigger);
+  quick_toggle(xs + sample_ws, ys + 1, button_width, button_height, "Trigger", settings3.retrigger, trig_label) ? ( settings3.retrigger = 1 - settings3.retrigger; chan3.toggle_trig(settings3.retrigger, 2, pitch3); );
+  
+  xs += sample_ws;  
+  draw_wavebox(xs, ys, sample_ws, sample_hs, 3, samplelocs[3]);
+  process_pad(xs, ys, sample_ws, sample_hs, 3, samplelocs[3]);
+  loaded_sample ? default_loop(samplelocs[3], settings4.retrigger);
+  quick_toggle(xs + sample_ws, ys + 1, button_width, button_height, "Trigger", settings4.retrigger, trig_label) ? ( settings4.retrigger = 1 - settings4.retrigger; chan4.toggle_trig(settings4.retrigger, 3, pitch4); );
+  
+  /* Big waveform area */
+  ys = floor((dynamic_fraction + 3 * y_fraction + knob_fraction) * gfx_h);
+  hs = floor(waveform_fraction * gfx_h);
+  
+  xs = (x_fraction * 2 + sample_area_width_fraction) * gfx_w;
+  close_up.draw_sample_big(floor(xs), ys, floor((1.0 - 3.0 * x_fraction - sample_area_width_fraction) * gfx_w), hs, reset_zoom);
+  
+  no_sample_loaded ? (
+    gfx_setfont(9, "Arial", 14 * (1 + fontscaling));
+    gfx_x = xs + 5; gfx_y = ys + 8;
+    gfx_set(0, 0, 0, 1);
+    gfx_printf("Step 2.\n\nSelect a region by dragging with LMB here.\nSet loop region with RMB menu.");
+    gfx_x = xs + 6; gfx_y = ys + 9;
+    gfx_set(env_r, env_g, env_b, 1);
+    gfx_printf("Step 2.\n\nSelect a region by dragging with LMB here.\nSet loop region with RMB menu.");
+  );
+  
+  toggle_advanced ? advanced = 1 - advanced;
+);
+
+draw_ui();
+
+updated_loop ? (
+  preview_channel.channel_update_loop();
+  chan1.channel_update_loop();
+  chan2.channel_update_loop();
+  chan3.channel_update_loop();
+  chan4.channel_update_loop();
+
+  (!settings1.retrigger && !chan1.playing) ? chan1.start_sample(0, pitch1);
+  (!settings2.retrigger && !chan2.playing) ? chan2.start_sample(1, pitch2);
+  (!settings3.retrigger && !chan3.playing) ? chan3.start_sample(2, pitch3);
+  (!settings4.retrigger && !chan4.playing) ? chan4.start_sample(3, pitch4);
+  updated_loop = 0;
+);
+
+handle_mouse_sample_handler();
+sample_data_gfx_finalize();
+
+hinter.drawHint_draw();
+

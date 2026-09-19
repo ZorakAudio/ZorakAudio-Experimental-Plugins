@@ -1,0 +1,22 @@
+@init
+
+function init_vowels(freemem)
+global(vowel, female_vowel)
+instance()
+local(vowel_handle)
+(
+  vowel = freemem;
+
+  vowel_handle = file_open("partials_dependencies/saike_vowel_data.dat");
+  file_mem(vowel_handle, vowel, 22050 * 8);
+  file_close(vowel_handle);
+  
+  female_vowel = freemem + 22050 * 8;
+  
+  vowel_handle = file_open("partials_dependencies/saike_female_vowel_data.dat");
+  file_mem(vowel_handle, female_vowel, 22050 * 8);
+  file_close(vowel_handle);
+  
+  freemem + 22050 * 16;
+);
+

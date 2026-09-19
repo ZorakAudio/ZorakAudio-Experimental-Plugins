@@ -1,0 +1,305 @@
+@init
+gfx_ext_retina = 1;
+
+function clamp(v, lb, ub)
+(
+  min(ub, max(v, lb))
+);
+
+function cl01(v)
+(
+  min(1, max(0, v))
+);
+
+function select_colormap(rows)
+local()
+global(colormap_scaling)
+(
+  colormap_scaling = 4 / rows;
+);
+
+function force_undo_point()
+(
+  slider_automate(22); // Force undo point
+  data_change = 1;
+);
+
+function release_drag()
+global(drag_mode, captured_by, dragging,
+       DRAG_BLOCK, DRAG_EFFECT, DRAG_EFFECT_2, DRAG_MODULATORS, DRAG_NUDGE, DRAG_NUDGE_ALL)
+local(changes_made)
+(
+  changes_made = (drag_mode == DRAG_BLOCK) || (drag_mode == DRAG_EFFECT) || (drag_mode == DRAG_MODULATORS) || (drag_mode == DRAG_EFFECT_2) || (drag_mode == DRAG_NUDGE) || (drag_mode == DRAG_NUDGE_ALL);
+  changes_made ? force_undo_point();
+
+  dragging = drag_mode = captured_by = 0;
+);
+
+function set_row_color(idx)
+local(n)
+global(colormap_scaling,
+       row_color_r, row_color_g, row_color_b
+       panel_label_r, panel_label_g, panel_label_b,
+       edge_r, edge_g, edge_b,
+       dial_position_color_r, dial_position_color_g, dial_position_color_b,
+       selection_button_r, selection_button_g, selection_button_b)
+(
+  n = colormap_scaling * idx;
+  row_color_r = min(max(min(n-1.5,-n+4.5),0),1) * 0.4 + 0.1;
+  row_color_g = min(max(min(n-0.5,-n+3.5),0),1) * 0.4 + 0.1;
+  row_color_b = min(max(min(n+0.5,-n+2.5),0),1) * 0.4 + 0.1;
+  
+  panel_label_r = row_color_r;
+  panel_label_g = row_color_g;
+  panel_label_b = row_color_b;
+  
+  selection_button_r = edge_r = 0.15 * row_color_r;
+  selection_button_g = edge_g = 0.15 * row_color_g;
+  selection_button_b = edge_b = 0.15 * row_color_b;
+
+  dial_position_color_r = 1.1 * row_color_r;
+  dial_position_color_g = 1.1 * row_color_g;
+  dial_position_color_b = 1.1 * row_color_b;
+);
+
+function nice_rect_color(x, y, w, h, label, base_r, base_g, base_b, edge_r, edge_g, edge_b)
+local(label, txt_w, txt_h)
+global(font_r, font_g, font_b, gfx_x, gfx_y)
+(
+  gfx_set(base_r, base_g, base_b, 1.0);
+  gfx_rect(x, y, w, h);
+  
+  gfx_set(edge_r, edge_g, edge_b, 1.0);
+  gfx_line(x, y, x + w - 1, y);
+  gfx_line(x, y, x, y + h - 1);
+  gfx_line(x, y + h - 1, x + w - 1, y + h - 1);
+  gfx_line(x + w - 1, y, x + w - 1, y + h - 1);
+  
+  label > 0 ? (
+    gfx_measurestr(label, txt_w, txt_h);
+    gfx_x = x - 0.5 * (txt_w - w);
+    gfx_y = y - 0.5 * (txt_h - h);
+    gfx_set(font_r, font_g, font_b, 1.0);
+    gfx_printf(label);
+  );
+);
+
+function connecting_rect(x, y, w, h, value, base_r, base_g, base_b)
+local(pv, rr, gg, bb, er, eg, eb, p2)
+global()
+(
+  rr = base_r;
+  gg = base_g;
+  bb = base_b;
+  gfx_set(rr, gg, bb, 1.0);
+  gfx_rect(x - 1, y, w, h, 2, 0);
+  
+  p2 = (1.5 + 0.25 * (value==0));
+  er = base_r * p2;
+  eg = base_g * p2;
+  eb = base_b * p2;
+  gfx_set(er, eg, eb, 1.0);
+  gfx_line(x, y-1, x+w, y-1);
+  gfx_line(x, y+h-1, x+w, y+h-1);
+);
+
+function nice_rect(x, y, w, h, value, base_r, base_g, base_b)
+global()
+local(label, txt_w, txt_h, power_intensity, rr, gg, bb, er, eg, eb, p2)
+(
+  p2 = (1.5 + 0.25 * (value==0));
+  er = base_r * p2;
+  eg = base_g * p2;
+  eb = base_b * p2;
+  rr = base_r;
+  gg = base_g;
+  bb = base_b;
+  this.nice_rect_color(x, y, w, h, value != 0 ? sprintf(1, "%d", value) : 0, rr, gg, bb, er, eg, eb);
+);
+
+/*-----------*/
+/* HINTS     */  
+/*-----------*/ 
+function updateHintTime(hint)
+  global(gfx_x, gfx_y, mouse_x, mouse_y)
+  local()
+  instance(lx, ly, hintTime, currentHint, delta_time)
+  (
+    ( ( abs(lx - mouse_x) + abs( ly - mouse_y ) ) > 0 ) ? (
+      hintTime = 0;
+    ) : (      
+      (hint != 0) ? (
+        currentHint = hint;
+        hintTime = hintTime + delta_time;
+        hintTime = min(1, hintTime)
+      ) : (
+        0
+      )
+    );
+    
+    lx = mouse_x;
+    ly = mouse_y;
+  );   
+  
+function drawHint_draw()
+  global(scaling, gfx_x, gfx_y, gfx_w, gfx_h, mouse_x, mouse_y, HINT_FONT)
+  local(w, h, globalTime)
+  instance(hintTime, currentHint, lastGlobalTime, delta_time)
+  (
+    globalTime = time_precise();
+    delta_time = globalTime - lastGlobalTime;
+    lastGlobalTime = globalTime;
+  
+    ( hintTime > .99 ) ? (
+      gfx_setfont(HINT_FONT);
+      gfx_measurestr(currentHint,w,h);
+      
+      gfx_x = mouse_x+15;
+      gfx_y = mouse_y+15;
+      ( gfx_x > 0.5*gfx_w ) ? gfx_x = mouse_x - w - 8;
+      ( gfx_y > 0.5*gfx_h ) ? gfx_y = mouse_y - h - 8;
+
+      gfx_set( 0.05, 0.05, 0.1, .8 );
+      gfx_rect(gfx_x-2, gfx_y-2, w+4, h+4);
+      gfx_set( .7, .7, .7, 1 );      
+      gfx_printf(currentHint);
+    );
+  );
+
+
+// Control strip
+function selection_button(me, cx, cy, width, height, label, br, bg, bb, hint)
+local()
+global(gfx_x, gfx_y, base_r, base_g, base_b, mouse_x, mouse_y, mouse_cap, last_cap,
+       hinter.updateHintTime)
+instance(value, over)
+(
+  value == (me >= 0 ? me : 1) ? (
+    br *= 2;
+    bg *= 2;
+    bb *= 2;
+  );
+  
+  over = (mouse_x > cx) && (mouse_x < (cx + width)) && (mouse_y > cy) && (mouse_y < (cy + height));
+  
+  hint > -1 && over ? (
+    hinter.updateHintTime(hint);
+  );
+  
+  nice_rect_color(cx, cy, width, height, label, br, bg, bb, 2 * br, 2 * bg, 2 * bb);
+  (last_cap & 1 == 0) && (mouse_cap & 1 == 1) && over ? 
+  (
+    value = me >= 0 ? me : 1 - value;
+  );
+  
+  cx += width + 2;
+);
+
+function drag_button_motion(me, cx, cy, width, height, label, hint, DRAG_SETTING)
+local(over, speed)
+global(gfx_x, gfx_y, base_r, base_g, base_b, mouse_x, mouse_y, mouse_cap, last_cap, drag_mode, selected_drag_button,
+       hinter.updateHintTime)
+instance(value, ly, change, _change)
+(
+  over = (mouse_x > cx) && (mouse_x < (cx + width)) && (mouse_y > cy) && (mouse_y < (cy + height));
+  hint > -1 && over ? (
+    hinter.updateHintTime(hint);
+  );
+  
+  (mouse_cap & 1 == 1) ? (
+    (last_cap & 1 == 0) ? (
+      over ? (
+        drag_mode = DRAG_SETTING;
+        selected_drag_button = me;
+        value = me;
+        ly = mouse_y;
+      );
+    ) : (
+      (drag_mode == DRAG_SETTING) && (selected_drag_button == me) ? (
+        value = me;
+        speed = 0.1;
+        (mouse_cap & 4 > 0) ? speed *= 0.5;
+        (mouse_cap & 8 > 0) ? speed *= 0.25;
+        _change += speed * (ly - mouse_y);
+        change = floor(_change);
+        _change -= change;
+        ly = mouse_y;
+      );
+    );
+  ) : (
+    (drag_mode == DRAG_SETTING) && (selected_drag_button == me) ? (
+      drag_mode = 0;
+      selected_drag_button = 0;
+    );
+  );
+);
+
+// Drag button
+function drag_button(me, cx, cy, width, height, label, br, bg, bb, hint, DRAG_SETTING)
+local()
+global()
+instance(value)
+(
+  value == (me >= 0 ? me : 1) ? (
+    br *= 2;
+    bg *= 2;
+    bb *= 2;
+  );
+  
+  this.drag_button_motion(me, cx, cy, width, height, label, hint, DRAG_SETTING);
+  nice_rect_color(cx, cy, width, height, label, br, bg, bb, 2 * br, 2 * bg, 2 * bb);
+
+  cx += width + 2;
+);
+
+
+function handle_drag_y_resize(me, x, drag_min, drag_max)
+global(mouse_cap, mouse_x, mouse_y, last_cap,
+       drag_mode, DRAG_MODSIZE, captured_by,
+       current_cursor)
+instance(reference_y)
+local(delta)
+(
+  delta = 0;
+  
+  // Handle resizing
+  ((drag_mode == DRAG_MODSIZE) && (captured_by == -me)) ? (
+    mouse_cap == 1 ? (
+      delta = mouse_y - reference_y;
+      reference_y = mouse_y;
+    ) : release_drag();
+  );
+  (mouse_x < x) && (mouse_y > drag_min) && (mouse_y < drag_max) ? (
+    current_cursor = 32645;
+    (mouse_cap == 1) && (last_cap == 0) ? (
+      drag_mode = DRAG_MODSIZE;
+      captured_by = -me;
+      reference_y = mouse_y;
+    );
+  );
+  
+  delta
+);
+
+function randomize_row_modulator(mem, n_segments)
+local(ptr, val, last_val, mode, idx)
+global()
+(
+  mode = rand();
+  idx = val = last_val = 0;
+  ptr = mem;
+  
+  loop(n_segments - 1,
+    last_val = val;
+    val = rand();
+    (mode < 0.25) ? (
+      val /= (1.0 + idx % 4);
+    ) : (mode < 0.5) ? (
+      val *= val;
+    );
+    
+    ptr[] = val;
+    ptr += 1;
+    idx += 1;
+  );
+);
