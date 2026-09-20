@@ -3,7 +3,8 @@
 Imports are libraries, not C #includes: imported @init sections execute in
 postorder; a main effect's other sections override imported fallback sections.
 Search is confined to explicitly supplied package roots, never the entire repo.
-This module does not implement the EEL <? ?> preprocessor.
+Each source unit is preprocessed with Cockos/WDL EEL2 before metadata/import
+parsing when it contains ``<? ... ?>`` blocks.
 """
 from __future__ import annotations
 
@@ -11,10 +12,65 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 import hashlib
 import re
+import shlex
 
 _SECTION = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b", re.I)
 _IMPORT = re.compile(r"^\s*import\b", re.I)
 _TOKEN = re.compile(r'''import\s+(?:"([^"]+)"|'([^']+)'|([^\s;]+))''', re.I)
+_CONFIG = re.compile(r"^\s*config:\s*(.*?)\s*$", re.I)
+_CONFIG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+
+
+def _config_number(path: Path, line: int, token: str) -> float:
+    t = token.strip()
+    try:
+        low = t.casefold()
+        if low.startswith("$x"):
+            return float(int(t[2:], 16))
+        if low.startswith("-$x"):
+            return -float(int(t[3:], 16))
+        if low.startswith("$~"):
+            bits = int(t[2:], 10)
+            if bits < 0 or bits > 53:
+                raise ValueError
+            return float((1 << bits) - 1)
+        if low.startswith("-$~"):
+            bits = int(t[3:], 10)
+            if bits < 0 or bits > 53:
+                raise ValueError
+            return -float((1 << bits) - 1)
+        if low.startswith(("0x", "+0x", "-0x")):
+            return float(int(t, 0))
+        return float(t)
+    except (ValueError, OverflowError) as exc:
+        raise SourceError(f"{path}:{line}: invalid config default {token!r}") from exc
+
+
+def _config_defaults(path: Path, text: str) -> dict[str, float]:
+    """Parse REAPER 7+ compile-time config defaults from the root preamble."""
+    out: dict[str, float] = {}
+    seen: set[str] = set()
+    for line, raw in enumerate(text.splitlines(), 1):
+        if _SECTION.match(raw):
+            break
+        m = _CONFIG.match(raw)
+        if not m:
+            continue
+        try:
+            # name, quoted description, default, then allowed numeric choices.
+            parts = shlex.split(m.group(1), posix=True)
+        except ValueError as exc:
+            raise SourceError(f"{path}:{line}: invalid config directive: {exc}") from exc
+        if len(parts) < 3 or not _CONFIG_NAME.match(parts[0]):
+            raise SourceError(f"{path}:{line}: invalid config directive: {raw.strip()}")
+        name = parts[0]
+        folded = name.casefold()
+        if folded in seen:
+            raise SourceError(f"{path}:{line}: duplicate config variable {name!r}")
+        seen.add(folded)
+        out[name] = _config_number(path, line, parts[2])
+    return out
+
 
 
 class SourceError(ValueError):
@@ -54,16 +110,77 @@ class ResolvedSource:
 
 
 def _code_lines(text: str):
-    """Yield line+same-width code mask, ignoring comments and multiline strings."""
+    """Yield line+same-width code mask, ignoring EEL comments/strings in code.
+
+    Everything before the first JSFX section is a REAPER header/directive
+    preamble, not EEL program text.  In particular, metadata such as::
+
+        provides:
+          dependencies/*
+
+    must never let the ``/*`` wildcard open an EEL block comment that hides
+    later ``import`` directives.  We therefore keep pre-section text visible
+    verbatim (so imports can be parsed) while still suppressing actual
+    comment-only lines/blocks.  Once a real @section starts, normal EEL
+    comment/string masking resumes.
+    """
     block = False
     quote = ""
     code_started = False
+    preamble_block = False
+    metadata_continuation = False
+
+    def blank(raw: str) -> str:
+        # Keep line width/newlines stable for diagnostics and token offsets.
+        return "".join("\n" if c == "\n" else "\r" if c == "\r" else " " for c in raw)
+
     for raw in text.splitlines(keepends=True):
-        # Header values are not EEL code: apostrophes in desc: and wildcard
-        # paths in provides: must not open strings or /* comments.
-        if not code_started and not block and not quote and re.match(r"^\s*[\w]+:", raw):
-            yield raw, raw
-            continue
+        if not code_started:
+            # REAPER's multiline metadata bodies are conventionally indented.
+            # Do not interpret comment/string-looking text inside them as EEL.
+            if metadata_continuation:
+                if not raw.strip() or raw[:1].isspace():
+                    yield raw, raw
+                    continue
+                metadata_continuation = False
+
+            stripped = raw.lstrip()
+
+            # Suppress genuine preamble block comments, but only when the
+            # comment itself begins the logical line.  This distinction is what
+            # keeps paths such as ``foo/*`` in provides: metadata harmless.
+            if preamble_block:
+                yield raw, blank(raw)
+                if "*/" in raw:
+                    preamble_block = False
+                continue
+            if stripped.startswith("/*"):
+                yield raw, blank(raw)
+                if "*/" not in stripped[2:]:
+                    preamble_block = True
+                continue
+            if stripped.startswith("//"):
+                yield raw, blank(raw)
+                continue
+
+            header = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*):", raw)
+            if header:
+                key = header.group(1).casefold()
+                # These REAPER metadata fields own subsequent indented lines.
+                if key in {"provides", "about"} and not raw[header.end():].strip():
+                    metadata_continuation = True
+                yield raw, raw
+                continue
+
+            if not _SECTION.match(raw):
+                # Unknown/free-form preamble text is metadata too.  Keeping it
+                # visible avoids apostrophes, URLs, and wildcard paths changing
+                # parser state before a later import directive.
+                yield raw, raw
+                continue
+
+            code_started = True
+
         mask = list(raw)
         i = 0
         while i < len(raw):
@@ -98,10 +215,7 @@ def _code_lines(text: str):
                 i += 1
             else:
                 i += 1
-        visible = "".join(mask)
-        if _SECTION.match(visible):
-            code_started = True
-        yield raw, visible
+        yield raw, "".join(mask)
 
 
 def _parse(path: Path, text: str) -> _Unit:
@@ -176,6 +290,9 @@ class SourceResolver:
         ordered: list[_Unit] = []
         visiting: list[Path] = []
 
+        entry_raw = text if text is not None else entry.read_text(encoding="utf-8-sig")
+        config_defaults = _config_defaults(entry, entry_raw)
+
         def visit(path: Path, supplied: str | None = None) -> _Unit:
             if path in visiting:
                 raise SourceError("Cyclic JSFX import: " + " -> ".join(map(str, [*visiting, path])))
@@ -185,7 +302,18 @@ class SourceResolver:
                 raise SourceError("JSFX import nesting exceeds 32: " + str(path))
             if not self._allowed(path):
                 raise SourceError(f"Source is outside the package search roots: {path}")
-            unit = _parse(path, supplied if supplied is not None else path.read_text(encoding="utf-8-sig"))
+            raw = supplied if supplied is not None else (entry_raw if path == entry else path.read_text(encoding="utf-8-sig"))
+            if "<?" in raw:
+                try:
+                    if __package__:
+                        from .jsfx_preprocessor import preprocess_text, PreprocessorError
+                    else:
+                        from jsfx_preprocessor import preprocess_text, PreprocessorError
+                    raw = preprocess_text(source_path=path, text=raw, include_roots=self.roots,
+                                          definitions=config_defaults)
+                except PreprocessorError as exc:
+                    raise SourceError(str(exc)) from exc
+            unit = _parse(path, raw)
             visiting.append(path)
             for line, token in unit.imports:
                 visit(self.find(token, path, line))
@@ -197,9 +325,9 @@ class SourceResolver:
             ordered.append(unit)
             return unit
 
-        main = visit(entry, text)
+        main = visit(entry, entry_raw)
         if not main.imports:
-            # Preserve no-import plugins byte-for-text; this is not a reformatter.
+            # Preserve no-import/non-preprocessed plugins byte-for-text; this is not a reformatter.
             return ResolvedSource(main.text, (entry,), {s: (entry,) for s in main.sections})
         output = list(main.preamble)
         if output and not output[-1].endswith("\n"):

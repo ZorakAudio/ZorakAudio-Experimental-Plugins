@@ -79,6 +79,7 @@ class Tok:
     span: Span
 
 _MULTI_OPS = [
+    "===","!==",
     "==","!=","<=",">=",
     "+=","-=","*=","/=","%=","^=","|=","&=","~=",
     "&&","||",
@@ -152,11 +153,12 @@ class Lexer:
 
             sp = self._span()
 
-            # multi-char operators
-            two = c + self._peek(1)
-            if two in _MULTI_OPS:
-                self._adv(2)
-                return Tok("op", two, sp)
+            # multi-char operators. Match longest-first so JSFX exact
+            # comparisons (=== / !==) are not split into == + = / != + =.
+            matched_op = next((op for op in _MULTI_OPS if self.src.startswith(op, self.i)), None)
+            if matched_op is not None:
+                self._adv(len(matched_op))
+                return Tok("op", matched_op, sp)
 
             # number
             if c.isdigit() or (c == "." and self._peek(1).isdigit()):
@@ -381,7 +383,7 @@ _PRECEDENCE: Dict[str, int] = {
     "?": 2,  # handled specially, but used as threshold
     "||": 3, "|": 3,
     "&&": 4,
-    "==": 5, "!=": 5,
+    "==": 5, "!=": 5, "===": 5, "!==": 5,
     "<": 6, "<=": 6, ">": 6, ">=": 6,
     "+": 7, "-": 7,
     "*": 8, "/": 8,
@@ -498,12 +500,69 @@ class Parser:
         return If(self._new_id(), kw.span, cond, then, els)
 
     def parse_while(self) -> Node:
+        """Parse WDL/EEL2's two special while() forms.
+
+        EEL2 does not treat while as a conventional language keyword in its
+        grammar.  It is a special one-argument function whose argument may be
+        a semicolon sequence:
+
+            while(
+              i += 1;
+              table[i] != value && i < 30
+            );
+
+        The complete argument is evaluated once per iteration and its final
+        value decides whether another iteration runs.  EEL2 also accepts the
+        familiar postfix-body spelling:
+
+            while(condition) (
+              body;
+            );
+
+        WDL rewrites the latter internally to a one-argument while expression.
+        Keep our existing While(cond, body) IR, but parse the first form as a
+        condition expression with a no-op body.
+        """
         kw = self._eat("kw", "while")
         self._eat("punc", "(")
-        cond = self.parse_expr(0)
-        self._eat("punc", ")")
         self._skip_seps()
-        body = self.parse_expr(0)
+
+        if self.cur.kind == "punc" and self.cur.text == ")":
+            raise SyntaxError(self._fmt_err("while() requires an expression"))
+
+        # Unlike an ordinary condition, the single argument to EEL2 while()
+        # may contain a semicolon-separated expression sequence.  The value of
+        # the final expression controls repetition, while all preceding
+        # expressions execute on every test.
+        items: List[Node] = [self.parse_stmt_or_expr_for_seq()]
+        while True:
+            if self.cur.kind == "punc" and self.cur.text == ")":
+                self._adv()
+                break
+            if self.cur.kind not in ("eol", "semi"):
+                raise SyntaxError(self._fmt_err("Expected separator or ')' in while() expression"))
+            self._skip_seps()
+            if self.cur.kind == "punc" and self.cur.text == ")":
+                self._adv()
+                break
+            items.append(self.parse_stmt_or_expr_for_seq())
+
+        cond: Node = items[0] if len(items) == 1 else Seq(self._new_id(), kw.span, items)
+
+        # WDL/EEL2's second form is IDENTIFIER '(' expression ')'
+        # '(' expression ')'.  Newlines are whitespace to EEL, so permit them
+        # between the two groups, but a semicolon terminates the one-argument
+        # form and must not be consumed here.
+        while self.cur.kind == "eol":
+            self._adv()
+
+        if self.cur.kind == "punc" and self.cur.text == "(":
+            body = self.parse_primary()
+            return While(self._new_id(), kw.span, cond, body)
+
+        # Direct while(expr); form: evaluating cond performs the loop work; a
+        # zero-valued body simply takes the back-edge when cond was truthy.
+        body = Num(self._new_id(), kw.span, 0.0)
         return While(self._new_id(), kw.span, cond, body)
     
     def parse_function_def(self) -> Node:
@@ -4324,9 +4383,31 @@ class LLVMModuleEmitter:
                 return builder.call(fdecl, [l, r])
 
 
-            if n.op in ("<", "<=", ">", ">=", "==", "!="):
-                opmap = {"<": "olt", "<=": "ole", ">": "ogt", ">=": "oge", "==": "oeq", "!=": "one"}
+            if n.op in ("<", "<=", ">", ">="):
+                opmap = {"<": "olt", "<=": "ole", ">": "ogt", ">=": "oge"}
                 c = builder.fcmp_ordered(opmap[n.op], l, r)
+                return builder.select(c, self._const_f64(1.0), self._const_f64(0.0))
+
+            # WDL/EEL2 deliberately gives == / != fuzzy numeric semantics,
+            # using NSEEL_CLOSEFACTOR (1e-5), while === / !== are exact
+            # floating-point comparisons. Keep that distinction here rather
+            # than treating all four operators as C-style equality.
+            if n.op in ("==", "!="):
+                diff = builder.fsub(l, r)
+                fabs_decl = self._declare_math("fabs")
+                absdiff = builder.call(fabs_decl, [diff])
+                if n.op == "==":
+                    c = builder.fcmp_ordered("<", absdiff, self._const_f64(1.0e-5))
+                else:
+                    c = builder.fcmp_ordered(">=", absdiff, self._const_f64(1.0e-5))
+                return builder.select(c, self._const_f64(1.0), self._const_f64(0.0))
+
+            if n.op in ("===", "!=="):
+                if n.op == "===":
+                    c = builder.fcmp_ordered("==", l, r)
+                else:
+                    # C/WDL exact != is true for unordered (NaN) comparisons.
+                    c = builder.fcmp_unordered("!=", l, r)
                 return builder.select(c, self._const_f64(1.0), self._const_f64(0.0))
 
             # bitwise / shifts (JSFX-style: int ops on truncated values, return double)
