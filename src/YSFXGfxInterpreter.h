@@ -98,6 +98,64 @@ extern "C" void NSEEL_HOSTSTUB_LeaveMutex() { g_eelGlobalMutex.unlock(); }
 
 namespace jsfx_gfx
 {
+#ifndef DSPJSFX_MAX_SLIDERS
+#define DSPJSFX_MAX_SLIDERS 256
+#endif
+#ifndef DSPJSFX_SLIDER_MASK_WORDS
+#define DSPJSFX_SLIDER_MASK_WORDS ((DSPJSFX_MAX_SLIDERS + 63) / 64)
+#endif
+
+static constexpr int kMaxJsfxSliders = DSPJSFX_MAX_SLIDERS;
+static constexpr int kSliderMaskWords = DSPJSFX_SLIDER_MASK_WORDS;
+
+struct SliderMask
+{
+  std::array<uint64_t, (size_t) kSliderMaskWords> words {{}};
+
+  void clear() noexcept { words.fill(0); }
+  bool any() const noexcept
+  {
+    for (auto w : words) if (w != 0) return true;
+    return false;
+  }
+  bool test(int index0) const noexcept
+  {
+    if (index0 < 0 || index0 >= kMaxJsfxSliders) return false;
+    return (words[(size_t) index0 >> 6] & (UINT64_C(1) << (index0 & 63))) != 0;
+  }
+  void set(int index0) noexcept
+  {
+    if (index0 < 0 || index0 >= kMaxJsfxSliders) return;
+    words[(size_t) index0 >> 6] |= UINT64_C(1) << (index0 & 63);
+  }
+  void reset(int index0) noexcept
+  {
+    if (index0 < 0 || index0 >= kMaxJsfxSliders) return;
+    words[(size_t) index0 >> 6] &= ~(UINT64_C(1) << (index0 & 63));
+  }
+  void merge(const SliderMask& other) noexcept
+  {
+    for (size_t i = 0; i < words.size(); ++i) words[i] |= other.words[i];
+  }
+  void toggle(const SliderMask& other) noexcept
+  {
+    for (size_t i = 0; i < words.size(); ++i) words[i] ^= other.words[i];
+  }
+  void remove(const SliderMask& other) noexcept
+  {
+    for (size_t i = 0; i < words.size(); ++i) words[i] &= ~other.words[i];
+  }
+  bool intersects(const SliderMask& other) const noexcept
+  {
+    for (size_t i = 0; i < words.size(); ++i) if ((words[i] & other.words[i]) != 0) return true;
+    return false;
+  }
+  bool operator==(const SliderMask& other) const noexcept { return words == other.words; }
+  bool operator!=(const SliderMask& other) const noexcept { return !(*this == other); }
+};
+
+static inline SliderMask operator|(SliderMask a, const SliderMask& b) noexcept { a.merge(b); return a; }
+
 // If the AOT header wasn't regenerated with the variable table yet,
 // provide a harmless fallback so this file still compiles.
 #ifndef DSPJSFX_VARS_COUNT
@@ -989,9 +1047,9 @@ public:
     pendingImageBytes = 0;
 
     // Clear per-frame host interaction events.
-    sliderChangeMask = 0;
-    sliderAutomateMask = 0;
-    sliderAutomateEndMask = 0;
+    sliderChangeMask.clear();
+    sliderAutomateMask.clear();
+    sliderAutomateEndMask.clear();
     undoPointRequested = false;
 
     frameW = w;
@@ -1016,9 +1074,9 @@ public:
     framebufferDirty = false;
     commands.clear();
     pendingImageBytes = 0;
-    sliderChangeMask = 0;
-    sliderAutomateMask = 0;
-    sliderAutomateEndMask = 0;
+    sliderChangeMask.clear();
+    sliderAutomateMask.clear();
+    sliderAutomateEndMask.clear();
     undoPointRequested = false;
   }
 
@@ -1061,9 +1119,9 @@ public:
   // -------------------------------------------------------------------
   // Host slider interaction events (sliderchange/slider_automate)
   // -------------------------------------------------------------------
-  uint64_t popSliderChangeMask()       { const auto m = sliderChangeMask;      sliderChangeMask = 0; return m; }
-  uint64_t popSliderAutomateMask()     { const auto m = sliderAutomateMask;    sliderAutomateMask = 0; return m; }
-  uint64_t popSliderAutomateEndMask()  { const auto m = sliderAutomateEndMask; sliderAutomateEndMask = 0; return m; }
+  SliderMask popSliderChangeMask()       { const auto m = sliderChangeMask;      sliderChangeMask.clear(); return m; }
+  SliderMask popSliderAutomateMask()     { const auto m = sliderAutomateMask;    sliderAutomateMask.clear(); return m; }
+  SliderMask popSliderAutomateEndMask()  { const auto m = sliderAutomateEndMask; sliderAutomateEndMask.clear(); return m; }
   bool popUndoPointRequested()         { const bool b = undoPointRequested;    undoPointRequested = false; return b; }
 
   void setTiming(double srate, double samplesblock)
@@ -1088,14 +1146,14 @@ public:
   // -------------------------------------------------------------------
   // Host sync helpers
   // -------------------------------------------------------------------
-  std::array<EEL_F*, 64> sliderPtrs {{}};
-  std::array<EEL_F*, 64> sliderAliasPtrs {{}};
-  std::array<double, 64> sliderFrameInput {{}};
-  std::array<uint8_t, 64> sliderFrameInputValid {{}};
+  std::array<EEL_F*, DSPJSFX_MAX_SLIDERS> sliderPtrs {{}};
+  std::array<EEL_F*, DSPJSFX_MAX_SLIDERS> sliderAliasPtrs {{}};
+  std::array<double, DSPJSFX_MAX_SLIDERS> sliderFrameInput {{}};
+  std::array<uint8_t, DSPJSFX_MAX_SLIDERS> sliderFrameInputValid {{}};
 
   void bindSliderPtrs()
   {
-    for (int i = 0; i < 64; ++i)
+    for (int i = 0; i < DSPJSFX_MAX_SLIDERS; ++i)
     {
       const std::string nm = std::string("slider") + std::to_string(i + 1);
       sliderPtrs[(size_t)i] = get_var(nm.c_str());
@@ -1104,7 +1162,7 @@ public:
 
   void bindSliderAlias(int index0, const char* name)
   {
-    if (index0 < 0 || index0 >= 64 || name == nullptr || *name == '\0' || *name == '#')
+    if (index0 < 0 || index0 >= DSPJSFX_MAX_SLIDERS || name == nullptr || *name == '\0' || *name == '#')
       return;
 
     sliderAliasPtrs[(size_t)index0] = get_var(name);
@@ -1112,7 +1170,7 @@ public:
 
   void syncSliderAliasesFromSliders()
   {
-    for (int i = 0; i < 64; ++i)
+    for (int i = 0; i < DSPJSFX_MAX_SLIDERS; ++i)
       if (sliderAliasPtrs[(size_t)i] != nullptr && sliderPtrs[(size_t)i] != nullptr)
         *sliderAliasPtrs[(size_t)i] = *sliderPtrs[(size_t)i];
   }
@@ -1163,7 +1221,7 @@ public:
     sliderFrameInputValid.fill(0u);
     if (!sliders) return;
 
-    const int n = std::max(0, std::min(count, 64));
+    const int n = std::max(0, std::min(count, DSPJSFX_MAX_SLIDERS));
     for (int i = 0; i < n; ++i)
     {
       const double value = std::isfinite(sliders[i]) ? sliders[i] : 0.0;
@@ -1177,7 +1235,7 @@ public:
   void readSliders(double* dst, int count) const
   {
     if (!dst) return;
-    const int n = std::max(0, std::min(count, 64));
+    const int n = std::max(0, std::min(count, DSPJSFX_MAX_SLIDERS));
 
     for (int i = 0; i < n; ++i)
     {
@@ -1742,17 +1800,19 @@ public:
     return 1;
   }
 
-  static uint64_t sliderMaskFromArg(GfxVm* self, EEL_F* argPtr, double argValue)
+  static SliderMask sliderMaskFromArg(GfxVm* self, EEL_F* argPtr, double argValue)
   {
+    SliderMask result;
     if (self)
     {
-      for (int i = 0; i < 64; ++i)
+      for (int i = 0; i < DSPJSFX_MAX_SLIDERS; ++i)
       {
         if (self->sliderPtrs[(size_t)i] == argPtr)
         {
           if (self->sliderAliasPtrs[(size_t)i] != nullptr && argPtr != nullptr)
             *self->sliderAliasPtrs[(size_t)i] = *argPtr;
-          return (uint64_t)1u << (uint64_t)i;
+          result.set(i);
+          return result;
         }
 
         if (self->sliderAliasPtrs[(size_t)i] == argPtr)
@@ -1762,20 +1822,22 @@ public:
           // by pointer and mirror the value back into sliderN immediately.
           if (self->sliderPtrs[(size_t)i] != nullptr && argPtr != nullptr)
             *self->sliderPtrs[(size_t)i] = *argPtr;
-          return (uint64_t)1u << (uint64_t)i;
+          result.set(i);
+          return result;
         }
       }
     }
 
-    // GFX retains negative-value undo requests; the DSP shadow uses full masks.
-    if (!std::isfinite(argValue)) return 0;
+    // Numeric masks are the legacy low-64-slider representation. Direct
+    // slider-variable arguments above are lossless for slider1..slider256.
+    if (!std::isfinite(argValue)) return result;
     const double rounded = std::round(argValue);
     if (rounded >= 0.0 && rounded < 18446744073709551616.0)
-      return (uint64_t)rounded;
-    if (self && self->allowsNegativeSliderMasks()
-        && rounded < 0.0 && rounded >= -9223372036854775808.0)
-      return (uint64_t)(int64_t)rounded;
-    return 0;
+      result.words[0] = (uint64_t)rounded;
+    else if (self && self->allowsNegativeSliderMasks()
+             && rounded < 0.0 && rounded >= -9223372036854775808.0)
+      result.words[0] = (uint64_t)(int64_t)rounded;
+    return result;
   }
 
   static EEL_F NSEEL_CGEN_CALL eel_gfx_set(void* opaque, INT_PTR np, EEL_F** parms)
@@ -2463,10 +2525,10 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     // When called as sliderchange(slider3), the argument value can be negative
     // (slider ranges are arbitrary). So we must resolve slider-vs-mask by *pointer*,
     // not by numeric value.
-    const uint64_t mask = sliderMaskFromArg(self, parms[0], v);
-    if (mask != 0)
+    const SliderMask mask = sliderMaskFromArg(self, parms[0], v);
+    if (mask.any())
     {
-      self->sliderChangeMask |= mask;
+      self->sliderChangeMask.merge(mask);
       return 0.0;
     }
 
@@ -2487,15 +2549,15 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     const double v = (double)*parms[0];
 
     // IMPORTANT: slider values may be negative; see comment in eel_sliderchange.
-    const uint64_t mask = sliderMaskFromArg(self, parms[0], v);
-    if (mask == 0)
+    const SliderMask mask = sliderMaskFromArg(self, parms[0], v);
+    if (!mask.any())
       return 0.0;
 
     const bool endTouch = (np >= 2 && *parms[1] != 0.0);
     if (endTouch)
-      self->sliderAutomateEndMask |= mask;
+      self->sliderAutomateEndMask.merge(mask);
     else
-      self->sliderAutomateMask |= mask;
+      self->sliderAutomateMask.merge(mask);
 
     return 0.0;
   }
@@ -2507,22 +2569,30 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
       return 0.0;
 
     const double v = (double) *parms[0];
-    const uint64_t mask = sliderMaskFromArg (self, parms[0], v);
-    if (mask == 0)
+    const SliderMask mask = sliderMaskFromArg (self, parms[0], v);
+    if (!mask.any())
       return 0.0;
 
     if (np >= 2)
     {
       const double show = (double) *parms[1];
       if (show == -1.0)
-        self->sliderVisibleMask ^= mask;
+        self->sliderVisibleMask.toggle(mask);
       else if (show <= 0.0)
-        self->sliderVisibleMask &= ~mask;
+        self->sliderVisibleMask.remove(mask);
       else
-        self->sliderVisibleMask |= mask;
+        self->sliderVisibleMask.merge(mask);
     }
 
-    return (EEL_F) (double) (self->sliderVisibleMask & mask);
+    // Numeric masks can only encode the legacy low 64 bits. For a direct
+    // slider65..slider256 query return boolean visibility, which is exact and
+    // avoids manufacturing an unrepresentable 2^N double bitmask.
+    bool hasHighWord = false;
+    for (size_t word = 1; word < mask.words.size(); ++word)
+      hasHighWord = hasHighWord || mask.words[word] != 0;
+    if (mask.words[0] != 0 && !hasHighWord)
+      return (EEL_F) (double) (self->sliderVisibleMask.words[0] & mask.words[0]);
+    return self->sliderVisibleMask.intersects(mask) ? 1.0 : 0.0;
   }
 
   // -------------------------------------------------------------------
@@ -2540,7 +2610,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
     if (!self || np < 1) return 0.0;
 
     const int idx = (int) jsfxTruncIndexLikeAot ((double) *parms[0]);
-    if (idx < 1 || idx > 64)
+    if (idx < 1 || idx > DSPJSFX_MAX_SLIDERS)
     {
       // Setter form still returns the value (mirrors assignment-as-expression).
       return (np >= 2) ? *parms[1] : 0.0;
@@ -2794,10 +2864,10 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   std::vector<DrawCmd> commands;
 
   // Host interaction event state
-  uint64_t sliderChangeMask = 0;
-  uint64_t sliderAutomateMask = 0;
-  uint64_t sliderAutomateEndMask = 0;
-  uint64_t sliderVisibleMask = ~UINT64_C (0);
+  SliderMask sliderChangeMask {};
+  SliderMask sliderAutomateMask {};
+  SliderMask sliderAutomateEndMask {};
+  SliderMask sliderVisibleMask = [] { SliderMask m; m.words.fill(~UINT64_C(0)); return m; }();
   bool undoPointRequested = false;
 
   // Keyboard input
@@ -2813,8 +2883,8 @@ class Interpreter
 public:
   struct Snapshot
   {
-    const double* sliders = nullptr; // [64]
-    int slidersCount = 64;
+    const double* sliders = nullptr; // [DSPJSFX_MAX_SLIDERS]
+    int slidersCount = DSPJSFX_MAX_SLIDERS;
 
     const double* vars = nullptr;
     int varsCount = 0;
@@ -2889,7 +2959,7 @@ public:
 
       char* tail = nullptr;
       const long sliderNumber = std::strtol(line.c_str() + 6, &tail, 10);
-      if (tail == line.c_str() + 6 || *tail != ':' || sliderNumber < 1 || sliderNumber > 64)
+      if (tail == line.c_str() + 6 || *tail != ':' || sliderNumber < 1 || sliderNumber > DSPJSFX_MAX_SLIDERS)
         continue;
 
       std::string rhs(tail + 1);
@@ -3022,9 +3092,9 @@ public:
     if (vm) vm->readMemRange(base, dst, count);
   }
 
-  uint64_t popSliderChangeMask()      { return vm ? vm->popSliderChangeMask()      : 0; }
-  uint64_t popSliderAutomateMask()    { return vm ? vm->popSliderAutomateMask()    : 0; }
-  uint64_t popSliderAutomateEndMask() { return vm ? vm->popSliderAutomateEndMask() : 0; }
+  SliderMask popSliderChangeMask()      { return vm ? vm->popSliderChangeMask()      : SliderMask{}; }
+  SliderMask popSliderAutomateMask()    { return vm ? vm->popSliderAutomateMask()    : SliderMask{}; }
+  SliderMask popSliderAutomateEndMask() { return vm ? vm->popSliderAutomateEndMask() : SliderMask{}; }
   bool popUndoPointRequested()        { return vm ? vm->popUndoPointRequested()    : false; }
 
   void setMenuPort(AsyncMenuPort* port)

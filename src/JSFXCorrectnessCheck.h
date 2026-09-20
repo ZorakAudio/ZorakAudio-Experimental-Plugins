@@ -113,9 +113,9 @@ class ShadowVm final : public jsfx_gfx::GfxVm
 public:
     struct PendingSliderMasks
     {
-        uint64_t change = 0;
-        uint64_t automate = 0;
-        uint64_t automateEnd = 0;
+        jsfx_gfx::SliderMask change {};
+        jsfx_gfx::SliderMask automate {};
+        jsfx_gfx::SliderMask automateEnd {};
     };
 
     explicit ShadowVm (JSFXJuceProcessor* ownerIn)
@@ -352,7 +352,7 @@ private:
 
         for (const auto& decl : decls)
         {
-            if (decl.index0 < 0 || decl.index0 >= 64 || decl.varName.isEmpty())
+            if (decl.index0 < 0 || decl.index0 >= DSPJSFX_MAX_SLIDERS || decl.varName.isEmpty())
                 continue;
 
             bindSliderAlias (decl.index0, decl.varName.toRawUTF8());
@@ -749,7 +749,7 @@ public:
         }
 
         shadow->ensureRamSize (juce::jmax<int64_t> ((int64_t) 65536, aotState.memN));
-        shadow->syncHostSlidersAndAliases (aotState.sliders, 64);
+        shadow->syncHostSlidersAndAliases (aotState.sliders, DSPJSFX_MAX_SLIDERS);
         shadow->setTiming (aotState.srate, 0.0);
         shadow->runInit();
         shadow->syncAliasVarsFromCurrentSliders();
@@ -882,9 +882,9 @@ public:
         if (! isReady() || (isFrozen() && mismatchLatched.load (std::memory_order_acquire)))
             return;
 
-        shadow->readSliders (shadowSliders.data(), 64);
-        scalarComparisons.fetch_add (64, std::memory_order_relaxed);
-        for (int i = 0; i < 64; ++i)
+        shadow->readSliders (shadowSliders.data(), DSPJSFX_MAX_SLIDERS);
+        scalarComparisons.fetch_add (DSPJSFX_MAX_SLIDERS, std::memory_order_relaxed);
+        for (int i = 0; i < DSPJSFX_MAX_SLIDERS; ++i)
         {
             if (! nearlyEqual (aotState.sliders[i], shadowSliders[(size_t) i], kScalarCompareEpsilon))
             {
@@ -928,30 +928,36 @@ public:
     {
         if (! isReady() || (isFrozen() && mismatchLatched.load (std::memory_order_acquire)))
             return;
-        const uint64_t compiledChange = (uint64_t) aotState.pendingSliderChangeMask;
-        const uint64_t compiledAuto = (uint64_t) aotState.pendingSliderAutomateMask;
-        const uint64_t compiledAutoEnd = (uint64_t) aotState.pendingSliderAutomateEndMask;
+        for (int word = 0; word < DSPJSFX_SLIDER_MASK_WORDS; ++word)
+        {
+            const uint64_t compiledChange = aotState.pendingSliderChangeMask[word];
+            const uint64_t compiledAuto = aotState.pendingSliderAutomateMask[word];
+            const uint64_t compiledAutoEnd = aotState.pendingSliderAutomateEndMask[word];
 
-        if (compiledChange != shadowMasks.change)
-        {
-            scalarMismatches.fetch_add (1, std::memory_order_relaxed);
-            latchMismatch (stage, blockIndex, -1, -1,
-                           (double) compiledChange, (double) shadowMasks.change,
-                           "pendingSliderChangeMask");
-        }
-        else if (compiledAuto != shadowMasks.automate)
-        {
-            scalarMismatches.fetch_add (1, std::memory_order_relaxed);
-            latchMismatch (stage, blockIndex, -1, -1,
-                           (double) compiledAuto, (double) shadowMasks.automate,
-                           "pendingSliderAutomateMask");
-        }
-        else if (compiledAutoEnd != shadowMasks.automateEnd)
-        {
-            scalarMismatches.fetch_add (1, std::memory_order_relaxed);
-            latchMismatch (stage, blockIndex, -1, -1,
-                           (double) compiledAutoEnd, (double) shadowMasks.automateEnd,
-                           "pendingSliderAutomateEndMask");
+            if (compiledChange != shadowMasks.change.words[(size_t) word])
+            {
+                scalarMismatches.fetch_add (1, std::memory_order_relaxed);
+                latchMismatch (stage, blockIndex, -1, word,
+                               (double) compiledChange, (double) shadowMasks.change.words[(size_t) word],
+                               "pendingSliderChangeMask[" + juce::String (word) + "]");
+                return;
+            }
+            if (compiledAuto != shadowMasks.automate.words[(size_t) word])
+            {
+                scalarMismatches.fetch_add (1, std::memory_order_relaxed);
+                latchMismatch (stage, blockIndex, -1, word,
+                               (double) compiledAuto, (double) shadowMasks.automate.words[(size_t) word],
+                               "pendingSliderAutomateMask[" + juce::String (word) + "]");
+                return;
+            }
+            if (compiledAutoEnd != shadowMasks.automateEnd.words[(size_t) word])
+            {
+                scalarMismatches.fetch_add (1, std::memory_order_relaxed);
+                latchMismatch (stage, blockIndex, -1, word,
+                               (double) compiledAutoEnd, (double) shadowMasks.automateEnd.words[(size_t) word],
+                               "pendingSliderAutomateEndMask[" + juce::String (word) + "]");
+                return;
+            }
         }
     }
 
@@ -1611,7 +1617,7 @@ private:
     double firstMismatchShadow = 0.0;
     double firstMismatchAbsDelta = 0.0;
 
-    std::array<double, 64> shadowSliders {};
+    std::array<double, DSPJSFX_MAX_SLIDERS> shadowSliders {};
     std::vector<double> shadowVars;
     std::vector<SourceWriteStage> varFirstWriteStage;
     mutable std::array<std::vector<float>, kRingChannels> ringCompiled;

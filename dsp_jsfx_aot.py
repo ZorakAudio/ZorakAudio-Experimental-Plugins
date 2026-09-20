@@ -10,7 +10,7 @@ Contract (DSP-JSFX):
 - Strings are accepted as lightweight handles with literal/dynamic runtime support for MIDI helpers.
 - MIDI builtins midirecv()/midisend() plus buf/str/sysEx variants are supported in @block and @sample.
 - Type: everything is double.
-- Variables: spl0..spl63, slider1..slider64, user vars (persistent), builtins:
+- Variables: spl0..spl63, slider1..slider256, user vars (persistent), builtins:
     - mem  (numeric base pointer index = 0.0)
     - srate (read/write state field)
     - samplesblock (read/write state field; host should set before @block)
@@ -943,6 +943,9 @@ def extract_sections(jsfx_text: str) -> Dict[str, Tuple[str, int]]:
 # Symbol table (stable var indices)
 # -----------------------------
 
+MAX_JSFX_SLIDERS = 256
+SLIDER_MASK_WORDS = MAX_JSFX_SLIDERS // 64
+
 BUILTIN_NAMES = {"mem", "gmem", "srate", "samplesblock", "midi_bus", "ext_midi_bus"}
 
 @dataclass(frozen=True)
@@ -970,7 +973,7 @@ class SymTable:
             if suf.isdigit():
                 n = int(suf)
                 idx = n - 1
-                if 0 <= idx < 64:
+                if 0 <= idx < MAX_JSFX_SLIDERS:
                     return SymRef("slider", idx)
                 raise ValueError(f"Invalid slider index: {name}")
             # NOT slider<number> => normal var like "sliderGainThing"
@@ -1013,7 +1016,7 @@ def collect_user_vars(programs: Dict[str, List[Node]], fn_defs: Dict[str, Functi
             if n.name.startswith("spl") and n.name[3:].isdigit():
                 return
 
-            # skip only real slider registers slider1..slider64
+            # skip only real slider registers slider1..slider256
             if n.name.startswith("slider") and n.name[6:].isdigit():
                 return
 
@@ -2407,7 +2410,7 @@ _PURE_HOIST_CALLS: Set[str] = {
     "__memtop",
 }
 
-_SLIDER_VAR_RE = re.compile(r"^slider([1-9][0-9]?)$")
+_SLIDER_VAR_RE = re.compile(r"^slider([1-9][0-9]{0,2})$")
 _JSFX_HEX_CONST_RE = re.compile(r"^\$x[0-9A-Fa-f]+$")
 
 
@@ -2438,7 +2441,7 @@ class _LoopMutationSummary:
 
 def _is_slider_var_name(name: str) -> bool:
     m = _SLIDER_VAR_RE.fullmatch(name)
-    return m is not None and 1 <= int(m.group(1)) <= 64
+    return m is not None and 1 <= int(m.group(1)) <= MAX_JSFX_SLIDERS
 
 
 def _is_spl_var_name(name: str) -> bool:
@@ -3319,7 +3322,7 @@ class LLVMModuleEmitter:
 
         # State layout:
         # 0: double spl[64]
-        # 1: double sliders[64]
+        # 1: double sliders[256]
         # 2: double vars[NUM]
         # 3: double* mem
         # 4: i64 memN
@@ -3336,12 +3339,12 @@ class LLVMModuleEmitter:
         # 15: double currentSampleRate
         # 16: i32 pendingNoteCleanup
         # 17..22: optional diagnostics counters
-        # 23: i64 pendingSliderChangeMask
-        # 24: i64 pendingSliderAutomateMask
-        # 25: i64 pendingSliderAutomateEndMask
+        # 23: uint64_t pendingSliderChangeMask[4]
+        # 24: uint64_t pendingSliderAutomateMask[4]
+        # 25: uint64_t pendingSliderAutomateEndMask[4]
         # 26: uint32_t randMT[624]
         # 27: uint32_t randIndex (0 means uninitialized; mirrors EEL2 __idx)
-        # 28: int64_t sliderVisibleMask (bitmask, 1=visible)
+        # 28: uint64_t sliderVisibleMask[4] (bitset, 1=visible)
         # 29: int32_t sliderVisibilityInit
         # 30: void* runtimeOpaque
         # 31: double midi_bus
@@ -3354,7 +3357,7 @@ class LLVMModuleEmitter:
 
         self.state_ty = ir.LiteralStructType([
             ir.ArrayType(self.double, 64),
-            ir.ArrayType(self.double, 64),
+            ir.ArrayType(self.double, MAX_JSFX_SLIDERS),
             ir.ArrayType(self.double, self.var_cap),
             self.double.as_pointer(),
             self.i64,
@@ -3376,12 +3379,12 @@ class LLVMModuleEmitter:
             self.i32,
             self.i32,
             self.i32,
-            self.i64,
-            self.i64,
-            self.i64,
+            ir.ArrayType(self.i64, SLIDER_MASK_WORDS),
+            ir.ArrayType(self.i64, SLIDER_MASK_WORDS),
+            ir.ArrayType(self.i64, SLIDER_MASK_WORDS),
             ir.ArrayType(self.i32, 624),
             self.i32,
-            self.i64,
+            ir.ArrayType(self.i64, SLIDER_MASK_WORDS),
             self.i32,
             self.i8.as_pointer(),
             self.double,
@@ -3658,13 +3661,18 @@ class LLVMModuleEmitter:
         )
         self.fn_sliderchange = ir.Function(
             self.module,
-            ir.FunctionType(self.i32, [self.state_ptr, self.double]),
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.i32]),
             name="jsfx_sliderchange"
         )
         self.fn_slider_automate = ir.Function(
             self.module,
-            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
+            ir.FunctionType(self.i32, [self.state_ptr, self.double, self.i32, self.double]),
             name="jsfx_slider_automate"
+        )
+        self.fn_slider_show = ir.Function(
+            self.module,
+            ir.FunctionType(self.double, [self.state_ptr, self.double, self.i32, self.double, self.i32]),
+            name="jsfx_slider_show"
         )
 
         self._intrinsics: Dict[str, ir.Function] = {}
@@ -3810,7 +3818,7 @@ class LLVMModuleEmitter:
         if which == "slider":
             # slider(1) -> slider1 -> index 0 in our array
             idx0_i64 = builder.sub(idx_i64, self._const_i64(1))
-            field = 1  # sliders[64]
+            field = 1  # sliders[256]
         elif which == "spl":
             # spl(0) -> spl0 -> index 0
             idx0_i64 = idx_i64
@@ -3819,21 +3827,22 @@ class LLVMModuleEmitter:
             raise ValueError(f"Unknown dynamic state array {which!r}")
 
         zero_i64 = self._const_i64(0)
-        sixty4_i64 = self._const_i64(64)
+        limit = MAX_JSFX_SLIDERS if which == "slider" else 64
+        limit_i64 = self._const_i64(limit)
 
         ge0 = builder.icmp_signed(">=", idx0_i64, zero_i64)
-        lt64 = builder.icmp_signed("<", idx0_i64, sixty4_i64)
-        in_range = builder.and_(ge0, lt64)
+        lt_limit = builder.icmp_signed("<", idx0_i64, limit_i64)
+        in_range = builder.and_(ge0, lt_limit)
 
-        # Clamp to [0, 63] so GEP is always in-bounds even when out-of-range;
-        # we still use 'in_range' to return 0 / ignore writes.
+        # Clamp so GEP is always in-bounds even when out-of-range; we still use
+        # 'in_range' to return 0 / ignore writes.
         idx_clamped = idx0_i64
         isneg = builder.icmp_signed("<", idx_clamped, zero_i64)
         idx_clamped = builder.select(isneg, zero_i64, idx_clamped)
 
-        max63_i64 = self._const_i64(63)
-        isgt = builder.icmp_signed(">", idx_clamped, max63_i64)
-        idx_clamped = builder.select(isgt, max63_i64, idx_clamped)
+        max_index_i64 = self._const_i64(limit - 1)
+        isgt = builder.icmp_signed(">", idx_clamped, max_index_i64)
+        idx_clamped = builder.select(isgt, max_index_i64, idx_clamped)
 
         idx_i32 = builder.trunc(idx_clamped, self.i32)
 
@@ -3863,25 +3872,6 @@ class LLVMModuleEmitter:
         zero = ir.Constant(self.i32, 0)
         fld = ir.Constant(self.i32, 27)
         return builder.gep(st, [zero, fld], inbounds=True)
-
-    def _get_slider_visible_mask_ptr(self, builder: ir.IRBuilder, st: ir.Value) -> ir.Value:
-        zero = ir.Constant(self.i32, 0)
-        fld = ir.Constant(self.i32, 28)
-        return builder.gep(st, [zero, fld], inbounds=True)
-
-    def _get_slider_visibility_init_ptr(self, builder: ir.IRBuilder, st: ir.Value) -> ir.Value:
-        zero = ir.Constant(self.i32, 0)
-        fld = ir.Constant(self.i32, 29)
-        return builder.gep(st, [zero, fld], inbounds=True)
-
-    def _ensure_slider_visibility_initialized(self, builder: ir.IRBuilder, st: ir.Value) -> None:
-        init_ptr = self._get_slider_visibility_init_ptr(builder, st)
-        init_v = builder.load(init_ptr)
-        needs_init = builder.icmp_signed("==", init_v, self._const_i32(0))
-        with builder.if_then(needs_init):
-            vis_ptr = self._get_slider_visible_mask_ptr(builder, st)
-            builder.store(ir.Constant(self.i64, -1), vis_ptr)
-            builder.store(self._const_i32(1), init_ptr)
 
     def _ensure_rand_gen32_fn(self) -> ir.Function:
         if self._rand_gen32_fn is not None:
@@ -4157,18 +4147,20 @@ class LLVMModuleEmitter:
     def _get_midirecv_lvalue_ptr(self, builder: ir.IRBuilder, st: ir.Value, node: Node) -> ir.Value:
         return self._get_out_lvalue_ptr(builder, st, node, "midirecv")
 
-    def _emit_slider_mask_arg(self, builder: ir.IRBuilder, st: ir.Value, arg: Node) -> ir.Value:
-        # JSFX sliderchange()/slider_automate() accept either a direct slider
-        # variable reference (slider1, slider2, ...) or an integer bitmask.
-        # In AOT we can resolve direct slider variables at compile time and pass
-        # numeric bitmask expressions through verbatim.
+    def _emit_slider_mask_selector(self, builder: ir.IRBuilder, st: ir.Value, arg: Node) -> Tuple[ir.Value, ir.Value]:
+        """Return (legacy_mask_f64, direct_slider_index_i32).
+
+        Numeric bitmasks remain the legacy low-64-slider form because an EEL
+        double cannot carry 256 independent bits. Direct sliderN references are
+        losslessly identified by index and therefore work for slider1..slider256.
+        """
         if isinstance(arg, Var):
-            m = re.fullmatch(r"slider([1-9][0-9]?)", arg.name)
+            m = re.fullmatch(r"slider([1-9][0-9]{0,2})", arg.name)
             if m is not None:
                 idx1 = int(m.group(1))
-                if 1 <= idx1 <= 64:
-                    return self._const_f64(float(1 << (idx1 - 1)))
-        return self.emit_expr(builder, st, arg)
+                if 1 <= idx1 <= MAX_JSFX_SLIDERS:
+                    return self._const_f64(0.0), self._const_i32(idx1 - 1)
+        return self.emit_expr(builder, st, arg), self._const_i32(-1)
 
     
     def declare_user_functions(self, fn_defs: Dict[str, FunctionDef]) -> None:
@@ -5345,8 +5337,8 @@ class LLVMModuleEmitter:
                 # re-run @slider and mirror the new value back to the host param.
                 if len(n.args) != 1:
                     raise ValueError("sliderchange expects 1 arg")
-                mask = self._emit_slider_mask_arg(builder, st, n.args[0])
-                ret = builder.call(self.fn_sliderchange, [st, mask])
+                mask, direct_idx = self._emit_slider_mask_selector(builder, st, n.args[0])
+                ret = builder.call(self.fn_sliderchange, [st, mask, direct_idx])
                 return self._to_f64(builder, ret)
 
             if fn == "slider_automate":
@@ -5356,9 +5348,9 @@ class LLVMModuleEmitter:
                 # changes so the runtime can begin/end touch gestures correctly.
                 if len(n.args) not in (1, 2):
                     raise ValueError("slider_automate expects 1 or 2 args")
-                mask = self._emit_slider_mask_arg(builder, st, n.args[0])
+                mask, direct_idx = self._emit_slider_mask_selector(builder, st, n.args[0])
                 end_touch = self.emit_expr(builder, st, n.args[1]) if len(n.args) == 2 else self._const_f64(0.0)
-                ret = builder.call(self.fn_slider_automate, [st, mask, end_touch])
+                ret = builder.call(self.fn_slider_automate, [st, mask, direct_idx, end_touch])
                 return self._to_f64(builder, ret)
 
 
@@ -5407,36 +5399,10 @@ class LLVMModuleEmitter:
                 if len(n.args) not in (1, 2):
                     raise ValueError("slider_show expects 1 or 2 args")
 
-                self._ensure_slider_visibility_initialized(builder, st)
-
-                mask_f = self._emit_slider_mask_arg(builder, st, n.args[0])
-                zero_f = self._const_f64(0.0)
-                mask_nonneg = builder.select(
-                    builder.fcmp_ordered("<", mask_f, zero_f),
-                    zero_f,
-                    mask_f,
-                )
-                mask_i64 = builder.fptoui(mask_nonneg, self.i64)
-
-                vis_ptr = self._get_slider_visible_mask_ptr(builder, st)
-                vis_i64 = builder.load(vis_ptr)
-
-                if len(n.args) == 2:
-                    mode_v = self.emit_expr(builder, st, n.args[1])
-                    is_toggle = builder.fcmp_ordered("==", mode_v, self._const_f64(-1.0))
-                    is_hide = builder.fcmp_ordered("==", mode_v, self._const_f64(0.0))
-
-                    all_ones = ir.Constant(self.i64, -1)
-                    hidden = builder.and_(vis_i64, builder.xor(mask_i64, all_ones))
-                    toggled = builder.xor(vis_i64, mask_i64)
-                    shown = builder.or_(vis_i64, mask_i64)
-
-                    vis_after_toggle_or_show = builder.select(is_toggle, toggled, shown)
-                    vis_i64 = builder.select(is_hide, hidden, vis_after_toggle_or_show)
-                    builder.store(vis_i64, vis_ptr)
-
-                requested_visible = builder.and_(vis_i64, mask_i64)
-                return builder.uitofp(requested_visible, self.double)
+                mask_f, direct_idx = self._emit_slider_mask_selector(builder, st, n.args[0])
+                mode_v = self.emit_expr(builder, st, n.args[1]) if len(n.args) == 2 else self._const_f64(0.0)
+                has_mode = self._const_i32(1 if len(n.args) == 2 else 0)
+                return builder.call(self.fn_slider_show, [st, mask_f, direct_idx, mode_v, has_mode])
 
             if fn == "memset":
                 # JSFX builtin: memset(dest, value, length)
@@ -5792,14 +5758,16 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     fld_sliderchg = ir.Constant(self.i32, 23)
     fld_sliderauto = ir.Constant(self.i32, 24)
     fld_sliderautoend = ir.Constant(self.i32, 25)
-    sliderchg_ptr = builder.gep(st, [z, fld_sliderchg], inbounds=True)
-    sliderauto_ptr = builder.gep(st, [z, fld_sliderauto], inbounds=True)
-    sliderautoend_ptr = builder.gep(st, [z, fld_sliderautoend], inbounds=True)
-    sliderchg_mask = builder.load(sliderchg_ptr)
-    sliderauto_mask = builder.load(sliderauto_ptr)
-    sliderautoend_mask = builder.load(sliderautoend_ptr)
-    any_sliderchg = builder.or_(sliderchg_mask, sliderauto_mask)
-    any_sliderchg = builder.or_(any_sliderchg, sliderautoend_mask)
+    sliderchg_arr = builder.gep(st, [z, fld_sliderchg], inbounds=True)
+    sliderauto_arr = builder.gep(st, [z, fld_sliderauto], inbounds=True)
+    sliderautoend_arr = builder.gep(st, [z, fld_sliderautoend], inbounds=True)
+    any_sliderchg = ir.Constant(self.i64, 0)
+    for word in range(SLIDER_MASK_WORDS):
+        wi = ir.Constant(self.i32, word)
+        chg = builder.load(builder.gep(sliderchg_arr, [z, wi], inbounds=True))
+        auto = builder.load(builder.gep(sliderauto_arr, [z, wi], inbounds=True))
+        autoend = builder.load(builder.gep(sliderautoend_arr, [z, wi], inbounds=True))
+        any_sliderchg = builder.or_(any_sliderchg, builder.or_(chg, builder.or_(auto, autoend)))
     have_sliderchg = builder.icmp_signed("!=", any_sliderchg, ir.Constant(self.i64, 0))
     with builder.if_then(have_sliderchg):
         builder.call(fn_slider, [st])
@@ -5989,10 +5957,12 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    int32_t msg3;")
     lines.append("} DSPJSFX_MidiEvent;")
     lines.append("")
-    lines.append("#define DSPJSFX_RUNTIME_STATE_ABI 2")
+    lines.append("#define DSPJSFX_RUNTIME_STATE_ABI 3")
+    lines.append("#define DSPJSFX_MAX_SLIDERS 256")
+    lines.append("#define DSPJSFX_SLIDER_MASK_WORDS 4")
     lines.append("typedef struct DSPJSFX_State {")
     lines.append("    double spl[64];")
-    lines.append("    double sliders[64];")
+    lines.append("    double sliders[DSPJSFX_MAX_SLIDERS];")
     lines.append(f"    double vars[{var_cap}];")
     lines.append("    double* mem;")
     lines.append("    int64_t memN;")
@@ -6014,12 +5984,12 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    int32_t midiOutCountLastBlock;")
     lines.append("    int32_t midiInPeak;")
     lines.append("    int32_t midiOutPeak;")
-    lines.append("    uint64_t pendingSliderChangeMask;")
-    lines.append("    uint64_t pendingSliderAutomateMask;")
-    lines.append("    uint64_t pendingSliderAutomateEndMask;")
+    lines.append("    uint64_t pendingSliderChangeMask[DSPJSFX_SLIDER_MASK_WORDS];")
+    lines.append("    uint64_t pendingSliderAutomateMask[DSPJSFX_SLIDER_MASK_WORDS];")
+    lines.append("    uint64_t pendingSliderAutomateEndMask[DSPJSFX_SLIDER_MASK_WORDS];")
     lines.append("    uint32_t randMT[624];")
     lines.append("    uint32_t randIndex;")
-    lines.append("    int64_t sliderVisibleMask;")
+    lines.append("    uint64_t sliderVisibleMask[DSPJSFX_SLIDER_MASK_WORDS];")
     lines.append("    int32_t sliderVisibilityInit;")
     lines.append("    void* runtimeOpaque;")
     lines.append("    double midi_bus;")
@@ -6120,8 +6090,9 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("int jsfx_midisyx(DSPJSFX_State* st, double offset, double msgptr, double len);")
     lines.append("int jsfx_strlen(DSPJSFX_State* st, double strHandle);")
     lines.append("int jsfx_str_getchar(DSPJSFX_State* st, double strHandle, double index);")
-    lines.append("int jsfx_sliderchange(DSPJSFX_State* st, double sliderMask);")
-    lines.append("int jsfx_slider_automate(DSPJSFX_State* st, double sliderMask, double endTouch);")
+    lines.append("int jsfx_sliderchange(DSPJSFX_State* st, double sliderMask, int directSliderIndex);")
+    lines.append("int jsfx_slider_automate(DSPJSFX_State* st, double sliderMask, int directSliderIndex, double endTouch);")
+    lines.append("double jsfx_slider_show(DSPJSFX_State* st, double sliderMask, int directSliderIndex, double mode, int hasMode);")
     lines.append("double jsfx_slider_next_chg(DSPJSFX_State* st, double sliderIndex, double* outValue);")
     lines.append("double jsfx_instance_id(DSPJSFX_State* st);")
     lines.append("int jsfx_instance_uid(DSPJSFX_State* st, double* outStr);")
@@ -6271,6 +6242,47 @@ def _aot_opt_and_emit(mod_ir: ir.Module,
 
 
 
+def validate_slider_declarations(src: str) -> None:
+    """Reject slider declarations outside REAPER's slider1..slider256 range.
+
+    Slider declarations live in the JSFX preamble.  Preamble metadata such as
+    ``provides: dependencies/*`` is *not* EEL code, so a wildcard there must not
+    start a block comment and hide declarations that follow it.  Only comments
+    whose first non-whitespace token is a comment delimiter are ignored here.
+
+    Alias-only use can otherwise degrade silently into a normal user variable,
+    so an invalid declaration is a compile-time error rather than a host-parser
+    warning.
+    """
+    in_block_comment = False
+    for lineno, raw in enumerate(src.splitlines(), 1):
+        stripped = raw.lstrip()
+        if stripped.startswith("@"):  # first executable section ends preamble
+            break
+
+        if in_block_comment:
+            if "*/" in stripped:
+                in_block_comment = False
+            continue
+
+        if stripped.startswith("//"):
+            continue
+        if stripped.startswith("/*"):
+            if "*/" not in stripped[2:]:
+                in_block_comment = True
+            continue
+
+        m = re.match(r"^slider(\d+)\s*:", stripped, flags=re.IGNORECASE)
+        if not m:
+            continue
+        index = int(m.group(1))
+        if index < 1 or index > MAX_JSFX_SLIDERS:
+            raise ValueError(
+                f"Invalid slider declaration slider{index} at line {lineno}: "
+                f"REAPER JSFX supports slider1..slider{MAX_JSFX_SLIDERS}"
+            )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="DSP-JSFX -> LLVM IR + AOT object + JUCE-callable entry point")
     ap.add_argument("input", help="Path to .jsfx file")
@@ -6295,6 +6307,7 @@ def main() -> int:
     input_path = Path(args.input).resolve()
     txt = input_path.read_text(encoding="utf-8", errors="replace")
     txt = preprocess_jsfx_imports(txt, input_path)
+    validate_slider_declarations(txt)
 
     enable_section_hoists = bool(args.enable_custom_opt or args.enable_section_hoist)
     enable_loop_hoists = bool(args.enable_custom_opt or args.enable_loop_hoist)
