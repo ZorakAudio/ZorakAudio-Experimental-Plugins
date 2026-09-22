@@ -9,6 +9,7 @@
 #include "juce_contract_stub.h"
 #endif
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -66,7 +67,31 @@ int main(int argc,char**argv)try{
  totalChanged+=changedParticles;
  }
 
- std::cout<<"PASS Abyss GFX: 48 frames, 2 sizes, 2 editor lifetimes; particle_updates="<<totalChanged<<" sampled_nonblack_pixels="<<nonBlack<<" max_commands="<<commands<<" max_surface_maps="<<maxMaps<<" memory_snapshot_bytes=0\n";
+ // Native JSFX drag/drop file path: the dropped pathname is written into an
+ // EEL string slot, file_open() resolves that string, and file_mem() publishes
+ // one contiguous dirty range instead of scalar writes. Keep this tiny/textual
+ // so the contract-double build exercises the bridge without pretending to be
+ // an audio decoder.
+ {
+   const auto filePath=std::filesystem::temp_directory_path()/"za_gfx_file_api_test.txt";
+   {std::ofstream out(filePath);out<<"1 2 3\n";}
+   const char* fileSource="@gfx 100 100\n"
+     "gfx_getdropfile(0,14) ? ( h=file_open(14); h>=0 ? ( n=file_mem(h,100,3); file_close(h); ); gfx_getdropfile(-1); );\n";
+   jsfx_gfx::Interpreter fileInterpreter(fileSource);
+   require(fileInterpreter.gfxCompiledOk(),"file API @gfx failed to compile");
+   fileInterpreter.addDroppedFile(juce::String::fromUTF8(filePath.string().c_str()));
+   jsfx_gfx::Interpreter::Snapshot fileSnap;fileSnap.logicalMemN=256;
+   fileInterpreter.renderFrame(100,100,fileSnap);
+   double loaded[3]{};fileInterpreter.readMemRange(100,loaded,3);
+   jsfx_gfx::MemRange forced[4]{};const int forcedN=fileInterpreter.copyForcedDirtyMemRanges(forced,4);
+   jsfx_gfx::MemRange persistent[4]{};const int persistentN=fileInterpreter.copyPersistentFileMemRanges(persistent,4);
+   std::error_code ec;std::filesystem::remove(filePath,ec);
+   require(loaded[0]==1.0&&loaded[1]==2.0&&loaded[2]==3.0,"gfx_getdropfile/file_open/file_mem did not load data");
+   require(forcedN==1&&persistentN==1&&forced[0].base==100&&forced[0].count==3,
+           "file_mem did not report one bulk dirty span");
+ }
+
+ std::cout<<"PASS Abyss GFX: 48 frames, 2 sizes, 2 editor lifetimes; particle_updates="<<totalChanged<<" sampled_nonblack_pixels="<<nonBlack<<" max_commands="<<commands<<" max_surface_maps="<<maxMaps<<" memory_snapshot_bytes=0; native_file_drop=PASS\n";
 #ifdef ZA_SHOWCASE_REAL_JUCE
  std::cout<<"Backend: real JUCE + supplied WDL/EEL + CPU LICE\n";
 #else

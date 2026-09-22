@@ -11,6 +11,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 namespace juce {
 using uint8 = uint8_t;
 template<class... T> void ignoreUnused(const T&...) {}
@@ -26,6 +29,14 @@ public:
  bool isNotEmpty()const{return !isEmpty();} char operator[](int i)const{return value[(size_t)i];}
  const char* toRawUTF8()const{return value.c_str();}
  String substring(int start,int end)const{return String(value.substr((size_t)start,(size_t)std::max(0,end-start)));}
+ String substring(int start)const{return start<=0?*this:(start>=length()?String():String(value.substr((size_t)start)));}
+ int indexOfChar(char c)const{auto p=value.find(c);return p==std::string::npos?-1:(int)p;}
+ int indexOfChar(int start,char c)const{auto p=value.find(c,(size_t)std::max(0,start));return p==std::string::npos?-1:(int)p;}
+ String trim()const{size_t a=0,b=value.size();while(a<b&&std::isspace((unsigned char)value[a]))++a;while(b>a&&std::isspace((unsigned char)value[b-1]))--b;return String(value.substr(a,b-a));}
+ bool startsWithChar(char c)const{return !value.empty()&&value.front()==c;}
+ bool startsWithIgnoreCase(const char* p)const{if(!p)return false;std::string x(p);if(x.size()>value.size())return false;for(size_t i=0;i<x.size();++i)if(std::tolower((unsigned char)value[i])!=std::tolower((unsigned char)x[i]))return false;return true;}
+ bool equalsIgnoreCase(const char* p)const{if(!p)return false;std::string x(p);if(x.size()!=value.size())return false;for(size_t i=0;i<x.size();++i)if(std::tolower((unsigned char)value[i])!=std::tolower((unsigned char)x[i]))return false;return true;}
+ String replaceCharacter(char from,char to)const{auto x=value;std::replace(x.begin(),x.end(),from,to);return String(std::move(x));}
  bool operator==(const String& o)const{return value==o.value;}
  friend String operator+(const String&a,const String&b){return String(a.value+b.value);}
 };
@@ -33,8 +44,37 @@ class StringArray {
  std::vector<String> items;
 public:
  void addLines(const String&s){size_t p=0;while(p<s.value.size()){auto e=s.value.find('\n',p);if(e==std::string::npos)e=s.value.size();items.emplace_back(s.value.substr(p,e-p));p=e+1;}}
+ void addTokens(const String&s,const char* breaks,const char*){const std::string delims=breaks?breaks:"";size_t p=0;while(p<s.value.size()){p=s.value.find_first_not_of(delims,p);if(p==std::string::npos)break;auto e=s.value.find_first_of(delims,p);items.emplace_back(s.value.substr(p,e==std::string::npos?std::string::npos:e-p));if(e==std::string::npos)break;p=e+1;}}
+ void removeEmptyStrings(){items.erase(std::remove_if(items.begin(),items.end(),[](const String&x){return x.isEmpty();}),items.end());}
  bool isEmpty()const{return items.empty();} int size()const{return (int)items.size();}
  String operator[](int i)const{return items[(size_t)i];}
+ auto begin(){return items.begin();}auto end(){return items.end();}auto begin()const{return items.begin();}auto end()const{return items.end();}
+};
+class File {
+ std::filesystem::path path;
+public:
+ File()=default;explicit File(const String&s):path(s.value){}explicit File(const char*s):path(s?s:""){}
+ bool existsAsFile()const{return std::filesystem::is_regular_file(path);}
+ int64_t getSize()const{std::error_code ec;auto n=std::filesystem::file_size(path,ec);return ec?0:(int64_t)n;}
+ String getFileExtension()const{return String(path.extension().string());}
+ String loadFileAsString()const{std::ifstream f(path,std::ios::binary);if(!f)return {};std::ostringstream ss;ss<<f.rdbuf();return String(ss.str());}
+};
+template<class T> class AudioBuffer {
+ std::vector<std::vector<T>> data;
+public:
+ void setSize(int channels,int samples,bool=false,bool=false,bool=false){data.assign((size_t)std::max(0,channels),std::vector<T>((size_t)std::max(0,samples)));}
+ void clear(){for(auto&c:data)std::fill(c.begin(),c.end(),T{});}
+ T getSample(int channel,int sample)const{return data[(size_t)channel][(size_t)sample];}
+};
+class AudioFormatReader {
+public:
+ virtual ~AudioFormatReader()=default; unsigned int numChannels=0;int64_t lengthInSamples=0;double sampleRate=0;
+ virtual bool read(AudioBuffer<float>*,int,int,int64_t,bool,bool){return false;}
+};
+class AudioFormatManager {
+public:
+ void registerBasicFormats(){}
+ AudioFormatReader* createReaderFor(const File&){return nullptr;}
 };
 class Font {
  float size=12;

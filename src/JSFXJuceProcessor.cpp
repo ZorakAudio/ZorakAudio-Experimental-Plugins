@@ -397,6 +397,12 @@ struct JsfxFileDecl
     juce::String description; // optional tooltip
     juce::String token;       // raw token after comma in filename:N,token
     juce::String defaultPath; // heuristic default path (may be empty)
+
+    // DSP-JSFX extension. A plain REAPER `filename:N,...` declaration remains
+    // a native JSFX resource declaration. Only an immediately preceding
+    // `// #FILE: ...` opts the slot into the enhanced ZA file-import UI and
+    // editor-level drag/drop handling.
+    bool enhancedImport = false;
 };
 
 static inline std::string trimAscii (std::string s)
@@ -810,6 +816,7 @@ static std::vector<JsfxFileDecl> parseJsfxFilenameDecls (const char* jsfxText)
 
     juce::String pendingName;
     juce::String pendingDesc;
+    bool pendingEnhancedImport = false;
 
     std::string text (jsfxText);
     size_t start = 0;
@@ -836,6 +843,10 @@ static std::vector<JsfxFileDecl> parseJsfxFilenameDecls (const char* jsfxText)
             std::smatch m;
             if (std::regex_match (line, m, reFileMeta))
             {
+                // The presence of #FILE itself is the opt-in. Keep that fact
+                // even when the author leaves the display label empty.
+                pendingEnhancedImport = true;
+
                 auto meta = juce::String::fromUTF8 (m[1].str().c_str()).trim();
                 if (! meta.isEmpty())
                 {
@@ -872,6 +883,7 @@ static std::vector<JsfxFileDecl> parseJsfxFilenameDecls (const char* jsfxText)
 
         JsfxFileDecl d;
         d.index0 = idx0;
+        d.enhancedImport = pendingEnhancedImport;
 
         const auto token = juce::String::fromUTF8 (m[2].str().c_str()).trim();
         d.token = token;
@@ -893,6 +905,7 @@ static std::vector<JsfxFileDecl> parseJsfxFilenameDecls (const char* jsfxText)
 
         pendingName.clear();
         pendingDesc.clear();
+        pendingEnhancedImport = false;
 
         out.push_back (d);
     }
@@ -2966,6 +2979,40 @@ public:
     void enqueueGfxVarWrite (int index, double value) noexcept { enqueueGfxStateWrite (GfxStateWrite::Kind::Var, index, value); }
     void enqueueGfxMemWrite (int index, double value) noexcept { enqueueGfxStateWrite (GfxStateWrite::Kind::Mem, index, value); }
 
+    // Bulk GFX->DSP memory lane. The producer is the dedicated GFX worker and
+    // the consumer is the audio thread. Ring-slot vector storage persists, so
+    // the audio thread performs only memcpy/validation and never allocates or
+    // destroys the transferred payload. force=true is reserved for host
+    // operations such as GFX file_mem(), which are legitimate JSFX memory
+    // writes even when the range was not known to the static mirror policy.
+    bool enqueueGfxMemSpanWrite (int64_t base, const double* values, int count, bool force = false) noexcept
+    {
+        if (base < 0 || values == nullptr || count <= 0)
+            return false;
+
+        const uint32_t head = gfxMemSpanHead.load (std::memory_order_relaxed);
+        const uint32_t next = (head + 1u) & gfxMemSpanQueueMask;
+        if (next == gfxMemSpanTail.load (std::memory_order_acquire))
+            return false;
+
+        auto& slot = gfxMemSpanQueue[head];
+        try
+        {
+            slot.data.resize ((size_t) count);
+        }
+        catch (...)
+        {
+            return false;
+        }
+
+        std::memcpy (slot.data.data(), values, (size_t) count * sizeof (double));
+        slot.base = base;
+        slot.count = count;
+        slot.force = force;
+        gfxMemSpanHead.store (next, std::memory_order_release);
+        return true;
+    }
+
     // Stage low-latency @gfx slider writes for the audio thread immediately.
     //
     // Host parameter notification still goes through applyGfxSliderChanges() on
@@ -3575,7 +3622,7 @@ public:
         }
 
         syncJsfxLatency();
-        const bool gfxWritesApplied = applyQueuedGfxStateWrites();
+        const bool gfxWritesApplied = applyQueuedGfxStateWrites() | applyQueuedGfxMemSpanWrites();
 
         st.currentBlockSize = processSamples;
         st.currentSampleRate = st.srate;
@@ -3991,6 +4038,71 @@ public:
     const std::vector<JsfxSliderDecl>& getJsfxSliderDecls() const noexcept { return sliderDecls; }
     const juce::String& getEmbeddedReadmeMarkdown() const noexcept { return embeddedReadmeMarkdown; }
     const std::vector<JsfxFileDecl>& getJsfxFileDecls() const noexcept { return fileDecls; }
+
+    // Resolve a native JSFX file_open() target for the dedicated @gfx worker.
+    // If a numeric filename slot has an enhanced user selection, expose those
+    // paths first. Otherwise resolve the declaration/string token using the
+    // same practical search roots as packaged GFX resources: source tree while
+    // developing, then module/Resources fallbacks for deployed plug-ins.
+    std::vector<juce::File> resolveGfxFileCandidates (int filenameIndex,
+                                                       const juce::String& token) const
+    {
+        std::vector<juce::File> out;
+
+        if (filenameIndex >= 0 && filenameIndex < (int) fileSlots.size())
+        {
+            std::lock_guard<std::mutex> lk (filePathMutex);
+            const auto& paths = fileSlots[(size_t) filenameIndex].currentPaths;
+            out.reserve (paths.size());
+            for (const auto& path : paths)
+                if (path.isNotEmpty())
+                    out.emplace_back (path);
+        }
+
+        if (! out.empty() || token.isEmpty())
+            return out;
+
+        if (juce::File::isAbsolutePath (token))
+        {
+            out.emplace_back (token);
+            return out;
+        }
+
+        std::vector<juce::File> candidates;
+        candidates.emplace_back (juce::File::getCurrentWorkingDirectory().getChildFile (token));
+
+        if (jsfx_gfx_resources::kSourceDir != nullptr && *jsfx_gfx_resources::kSourceDir != 0)
+        {
+            const juce::File sourceDir (juce::String::fromUTF8 (jsfx_gfx_resources::kSourceDir));
+            candidates.emplace_back (sourceDir.getChildFile (token));
+            candidates.emplace_back (sourceDir.getParentDirectory().getChildFile ("Data").getChildFile (token));
+            candidates.emplace_back (sourceDir.getParentDirectory().getChildFile ("Resources").getChildFile (
+                juce::File (token).getFileName()));
+        }
+
+        const auto moduleDir = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getParentDirectory();
+        candidates.emplace_back (moduleDir.getChildFile (token));
+        candidates.emplace_back (moduleDir.getChildFile ("Data").getChildFile (token));
+        candidates.emplace_back (moduleDir.getChildFile ("Resources").getChildFile (token));
+        candidates.emplace_back (moduleDir.getChildFile ("Resources").getChildFile ("Data").getChildFile (token));
+        candidates.emplace_back (moduleDir.getParentDirectory().getChildFile ("Resources").getChildFile (token));
+
+        for (const auto& candidate : candidates)
+        {
+            if (candidate.existsAsFile())
+            {
+                out.push_back (candidate);
+                return out;
+            }
+        }
+
+        // Preserve a deterministic failed candidate so file_open() can simply
+        // report -1 without having to duplicate the search policy.
+        if (! candidates.empty())
+            out.push_back (candidates.front());
+
+        return out;
+    }
 
     juce::AudioProcessorValueTreeState& getApvts() noexcept { return *apvts; }
     const juce::AudioProcessorValueTreeState& getApvts() const noexcept { return *apvts; }
@@ -9665,6 +9777,99 @@ private:
         return changed;
     }
 
+    struct GfxMemSpanWrite
+    {
+        int64_t base = 0;
+        int count = 0;
+        bool force = false;
+        std::vector<double> data;
+    };
+
+    static constexpr uint32_t gfxMemSpanQueueSize = 256u; // power of two
+    static constexpr uint32_t gfxMemSpanQueueMask = gfxMemSpanQueueSize - 1u;
+    static_assert ((gfxMemSpanQueueSize & (gfxMemSpanQueueSize - 1u)) == 0u,
+                   "gfxMemSpanQueueSize must be power of two");
+
+    std::array<GfxMemSpanWrite, gfxMemSpanQueueSize> gfxMemSpanQueue {};
+    std::atomic<uint32_t> gfxMemSpanHead { 0 }; // GFX worker producer
+    std::atomic<uint32_t> gfxMemSpanTail { 0 }; // audio thread consumer
+
+    // A native GFX file_mem() writes into the same JSFX mem[] namespace that
+    // @sample/@block use in REAPER. Once a host-forced GFX span reaches the
+    // DSP VM, keep that region bidirectionally mirrored on subsequent
+    // snapshots so later DSP edits are visible to @gfx as well. This list is
+    // owned exclusively by the audio thread (both mutation and snapshot use).
+    std::array<GfxMirrorRange, kMaxGfxMemSpans> gfxDynamicSharedMemRanges {};
+    int gfxDynamicSharedMemRangeCount = 0;
+
+    void noteDynamicGfxSharedMemRange (int64_t base, int64_t count) noexcept
+    {
+        if (base < 0 || count <= 0 || st.memN <= 0)
+            return;
+
+        int n = appendGfxMirrorRange (gfxDynamicSharedMemRanges,
+                                      gfxDynamicSharedMemRangeCount,
+                                      base, count, st.memN);
+        n = sortAndMergeGfxMirrorRanges (gfxDynamicSharedMemRanges, n);
+        gfxDynamicSharedMemRangeCount = n;
+    }
+
+    bool applyQueuedGfxMemSpanWrites() noexcept
+    {
+        uint32_t tail = gfxMemSpanTail.load (std::memory_order_relaxed);
+        const uint32_t head = gfxMemSpanHead.load (std::memory_order_acquire);
+        bool changed = false;
+
+        while (tail != head)
+        {
+            auto& w = gfxMemSpanQueue[tail];
+            if (w.base >= 0 && w.count > 0 && (int) w.data.size() >= w.count)
+            {
+                int64_t base = w.base;
+                int64_t count = w.count;
+                const int64_t maxEnd = std::numeric_limits<int64_t>::max() - base;
+                if (count > maxEnd) count = maxEnd;
+
+                if (w.force && count > 0 && base + count > st.memN)
+                    jsfx_ensure_mem (&st, base + count);
+
+                if (st.mem != nullptr && base < st.memN && count > 0)
+                {
+                    count = std::min<int64_t> (count, st.memN - base);
+                    bool writable = w.force;
+                    if (! writable && count > 0)
+                    {
+                        const int64_t logicalMemN = getGfxLogicalJsfxMemN (&st, jsfxDeclaredMaxMem);
+                        writable = isDirectionalGfxMemIndex (
+                            base, logicalMemN, st.memN, gfxSyncExplicitOnly, gfxSyncMemRanges, kGfxSyncFromGfx)
+                            && isDirectionalGfxMemIndex (
+                                base + count - 1, logicalMemN, st.memN, gfxSyncExplicitOnly, gfxSyncMemRanges, kGfxSyncFromGfx);
+                    }
+
+                    if (writable && count > 0)
+                    {
+                        std::memcpy (st.mem + base, w.data.data(), (size_t) count * sizeof (double));
+                        noteTrackedJsfxMemUsed (&st, base + count);
+                        if (w.force)
+                            noteDynamicGfxSharedMemRange (base, count);
+                        changed = true;
+
+                       #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+                        if (correctnessRuntime != nullptr)
+                            for (int64_t i = 0; i < count; ++i)
+                                correctnessRuntime->applyExternalMemWrite ((int) (base + i), w.data[(size_t) i]);
+                       #endif
+                    }
+                }
+            }
+
+            tail = (tail + 1u) & gfxMemSpanQueueMask;
+        }
+
+        gfxMemSpanTail.store (tail, std::memory_order_release);
+        return changed;
+    }
+
     static inline float clamp01f (float x) noexcept
     {
         return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
@@ -9927,12 +10132,31 @@ void updateGfxSnapshotIfNeeded (int numSamples)
                 b.logicalMemN = std::max<int64_t> (b.logicalMemN,
                     std::min<int64_t> (st.memN, gfxSafeEndExclusive (r.base, r.count)));
 
-        const int rangeCount = buildDirectionalGfxRanges (
+        int rangeCount = buildDirectionalGfxRanges (
             automaticLogicalMemN, st.memN, gfxSyncExplicitOnly,
             gfxSyncMemRanges, kGfxSyncToGfx, ranges);
         b.writableMemRangeCount = buildDirectionalGfxRanges (
             automaticLogicalMemN, st.memN, gfxSyncExplicitOnly,
             gfxSyncMemRanges, kGfxSyncFromGfx, b.writableMemRanges);
+
+        // Ranges introduced dynamically by native @gfx file_mem() have true
+        // shared-memory semantics too. Add them to both directions after the
+        // static policy is built; sort/merge prevents duplicate copies when a
+        // script also declared @za:gfx_sync_mem for the same buffer.
+        for (int i = 0; i < gfxDynamicSharedMemRangeCount; ++i)
+        {
+            const auto& r = gfxDynamicSharedMemRanges[(size_t) i];
+            rangeCount = appendGfxMirrorRange (ranges, rangeCount,
+                                               r.base, r.count, st.memN);
+            b.writableMemRangeCount = appendGfxMirrorRange (b.writableMemRanges,
+                                                            b.writableMemRangeCount,
+                                                            r.base, r.count, st.memN);
+            b.logicalMemN = std::max<int64_t> (b.logicalMemN,
+                std::min<int64_t> (st.memN, gfxSafeEndExclusive (r.base, r.count)));
+        }
+        rangeCount = sortAndMergeGfxMirrorRanges (ranges, rangeCount);
+        b.writableMemRangeCount = sortAndMergeGfxMirrorRanges (
+            b.writableMemRanges, b.writableMemRangeCount);
 
         for (int i = 0; i < rangeCount && b.memSpanCount < (int) b.memSpans.size(); ++i)
         {
@@ -10152,6 +10376,12 @@ public:
         // --- File slots (from JSFX `filename:` declarations) ---
         for (const auto& d : proc.getJsfxFileDecls())
         {
+            // Plain filename:N declarations are native JSFX resources. Only
+            // // #FILE: opted-in declarations get DSP-JSFX's enhanced
+            // importer UI and host-level drag/drop ownership.
+            if (! d.enhancedImport)
+                continue;
+
             Row row;
             row.isFile = true;
             row.fileIndex0 = d.index0;
@@ -12673,24 +12903,71 @@ public:
     }
 
     // ---- ZA_FILE_IMPORT_RECIPE_PATCH: drag/drop + clipboard ingress ----
+    //
+    // The editor is intentionally the only JUCE FileDragAndDropTarget. If GfxView
+    // is another target, JUCE changes targets when the cursor crosses into @gfx and
+    // sends fileDragExit() here. That dismissed Corpus' enhanced #FILE landing pad
+    // even though Corpus does not consume gfx_getdropfile().
     bool isInterestedInFileDrag (const juce::StringArray& files) override
     {
-        return getDefaultImportFileSlot() >= 0 && za::fileimport::containsSupportedFileExtension (files);
+        const bool enhancedImport = getDefaultImportFileSlot() >= 0
+                                 && za::fileimport::containsSupportedFileExtension (files);
+        return enhancedImport || gfxView.acceptsNativeFileDrop();
+    }
+
+    bool shouldRouteDropToNativeGfx (int x, int y) const noexcept
+    {
+        return gfxView.acceptsNativeFileDrop() && gfxView.getBounds().contains (x, y);
+    }
+
+    bool canUseEnhancedImportFor (const juce::StringArray& files) const
+    {
+        return getDefaultImportFileSlot() >= 0
+            && za::fileimport::containsSupportedFileExtension (files);
+    }
+
+    void updateFileDragRouting (const juce::StringArray& files, int x, int y)
+    {
+        // Native JSFX gfx_getdropfile() owns a drop only inside @gfx and only if
+        // the script actually consumes that API. Otherwise #FILE owns the whole
+        // editor, including the custom GFX area.
+        if (shouldRouteDropToNativeGfx (x, y))
+        {
+            if (importLandingPad.isVisible())
+            {
+                importLandingPad.setVisible (false);
+                repaint();
+            }
+            return;
+        }
+
+        if (! canUseEnhancedImportFor (files))
+        {
+            if (importLandingPad.isVisible())
+            {
+                importLandingPad.setVisible (false);
+                repaint();
+            }
+            return;
+        }
+
+        if (! importLandingPad.isVisible())
+        {
+            importLandingPad.setVisible (true);
+            importLandingPad.toFront (true);
+        }
+        importLandingPad.setHoverPoint ({ x, y });
+        repaint();
     }
 
     void fileDragEnter (const juce::StringArray& files, int x, int y) override
     {
-        juce::ignoreUnused (files);
-        importLandingPad.setVisible (true);
-        importLandingPad.setHoverPoint ({ x, y });
-        importLandingPad.toFront (true);
-        repaint();
+        updateFileDragRouting (files, x, y);
     }
 
     void fileDragMove (const juce::StringArray& files, int x, int y) override
     {
-        juce::ignoreUnused (files);
-        importLandingPad.setHoverPoint ({ x, y });
+        updateFileDragRouting (files, x, y);
     }
 
     void fileDragExit (const juce::StringArray& files) override
@@ -12702,6 +12979,21 @@ public:
 
     void filesDropped (const juce::StringArray& paths, int x, int y) override
     {
+        if (shouldRouteDropToNativeGfx (x, y))
+        {
+            importLandingPad.setVisible (false);
+            gfxView.enqueueNativeFileDrop (paths);
+            repaint();
+            return;
+        }
+
+        if (! canUseEnhancedImportFor (paths))
+        {
+            importLandingPad.setVisible (false);
+            repaint();
+            return;
+        }
+
         std::vector<juce::File> files;
         files.reserve ((size_t) paths.size());
         for (const auto& path : paths)
@@ -12814,7 +13106,11 @@ public:
     int getDefaultImportFileSlot() const noexcept
     {
         const auto& decls = processor.getJsfxFileDecls();
-        return decls.empty() ? -1 : decls.front().index0;
+        for (const auto& d : decls)
+            if (d.enhancedImport)
+                return d.index0;
+
+        return -1;
     }
 
     void startImportAction (std::vector<juce::File> files, za::fileimport::ImportAction action)
@@ -13901,7 +14197,6 @@ private:
 };
 
 class GfxView final : public juce::Component,
-                      public juce::FileDragAndDropTarget,
                       private juce::AsyncUpdater
 {
 public:
@@ -13942,7 +14237,14 @@ public:
         menuOverlay.setVisible (false);
 
         jsfx_gfx_compat::registerBuiltins();
-        interp = std::make_unique<jsfx_gfx::Interpreter> (kJsfxSourceText, jsfx_gfx_resources::loadImage);
+        nativeFileDropConsumer = sourceUsesNativeGfxGetDropFile (kJsfxSourceText);
+        interp = std::make_unique<jsfx_gfx::Interpreter> (
+            kJsfxSourceText,
+            jsfx_gfx_resources::loadImage,
+            [this] (int filenameIndex, const juce::String& token)
+            {
+                return processor.resolveGfxFileCandidates (filenameIndex, token);
+            });
 
         if (interp != nullptr)
         {
@@ -13995,6 +14297,10 @@ public:
     }
 
     bool hasGfx() const noexcept { return hasGfxFlag; }
+    bool acceptsNativeFileDrop() const noexcept
+    {
+        return hasGfxFlag && gfxCompiledOkFlag && nativeFileDropConsumer;
+    }
     int preferredHeight() const noexcept { return gfxPrefH; }
     int preferredWidth()  const noexcept { return gfxPrefW; }
     ResizePolicy resizePolicy() const noexcept { return gfxResizePolicy; }
@@ -14184,13 +14490,24 @@ public:
         notifyWorker();
     }
 
-    bool isInterestedInFileDrag (const juce::StringArray&) override { return hasGfxFlag && gfxCompiledOkFlag; }
-    void filesDropped (const juce::StringArray& files, int, int) override
+    // The parent editor routes OS drops here after deciding that native
+    // gfx_getdropfile(), rather than the enhanced #FILE importer, owns them.
+    void enqueueNativeFileDrop (const juce::StringArray& files)
     {
+        if (! acceptsNativeFileDrop())
+            return;
+
+        std::vector<juce::String> batch;
+        batch.reserve ((size_t) juce::jmin (files.size(), 1024));
+        for (const auto& path : files)
+            if (path.isNotEmpty() && batch.size() < 1024)
+                batch.push_back (path);
+
+        if (! batch.empty())
         {
             const std::lock_guard<std::mutex> lock (inputMutex);
-            for (const auto& path : files)
-                if (sharedInput.droppedFiles.size() < 1024) sharedInput.droppedFiles.push_back (path);
+            if (sharedInput.droppedFileBatches.size() < 64)
+                sharedInput.droppedFileBatches.push_back (std::move (batch));
             sharedInput.captureStateWrites = true;
         }
         notifyWorker();
@@ -14264,7 +14581,7 @@ private:
         bool captureStateWrites = false;
         bool clearKeys = false;
         std::deque<KeyEvent> keyEvents;
-        std::vector<juce::String> droppedFiles;
+        std::deque<std::vector<juce::String>> droppedFileBatches;
         std::deque<MouseStateFrame> mouseFrames;
     };
 
@@ -14540,6 +14857,97 @@ private:
         std::function<void()> quiesceInput;
         std::function<void()> workerWake;
     };
+
+    // A custom @gfx surface should claim file drops only when the script
+    // actually consumes gfx_getdropfile(). Merely having @gfx must not steal
+    // drops from an enhanced #FILE importer (Sample/Corpus are examples).
+    // Ignore comments/string literals and treat gfx_getdropfile(-1) as the
+    // reset/acknowledge form rather than evidence that the script consumes a
+    // pathname.
+    static bool sourceUsesNativeGfxGetDropFile (const char* jsfxText) noexcept
+    {
+        if (jsfxText == nullptr)
+            return false;
+
+        const std::string text (jsfxText);
+        enum class LexState { normal, lineComment, blockComment, stringLiteral };
+        LexState state = LexState::normal;
+        const std::string needle = "gfx_getdropfile";
+
+        const auto isIdent = [] (char c) noexcept
+        {
+            const unsigned char u = (unsigned char) c;
+            return std::isalnum (u) != 0 || c == '_';
+        };
+
+        for (size_t i = 0; i < text.size();)
+        {
+            const char c = text[i];
+            const char n = i + 1 < text.size() ? text[i + 1] : '\0';
+
+            if (state == LexState::lineComment)
+            {
+                if (c == '\n' || c == '\r') state = LexState::normal;
+                ++i;
+                continue;
+            }
+            if (state == LexState::blockComment)
+            {
+                if (c == '*' && n == '/') { state = LexState::normal; i += 2; }
+                else ++i;
+                continue;
+            }
+            if (state == LexState::stringLiteral)
+            {
+                if (c == '\\' && i + 1 < text.size()) { i += 2; continue; }
+                if (c == '"') state = LexState::normal;
+                ++i;
+                continue;
+            }
+
+            if (c == '/' && n == '/') { state = LexState::lineComment; i += 2; continue; }
+            if (c == '/' && n == '*') { state = LexState::blockComment; i += 2; continue; }
+            if (c == '"') { state = LexState::stringLiteral; ++i; continue; }
+
+            if (i + needle.size() <= text.size()
+                && text.compare (i, needle.size(), needle) == 0
+                && (i == 0 || ! isIdent (text[i - 1]))
+                && (i + needle.size() == text.size() || ! isIdent (text[i + needle.size()])))
+            {
+                size_t p = i + needle.size();
+                while (p < text.size() && std::isspace ((unsigned char) text[p]) != 0) ++p;
+                if (p >= text.size() || text[p] != '(') { i += needle.size(); continue; }
+                ++p;
+                while (p < text.size() && std::isspace ((unsigned char) text[p]) != 0) ++p;
+
+                // gfx_getdropfile(-1) only clears/acknowledges the pending drop.
+                // Any other first argument can request a pathname.
+                bool resetOnly = false;
+                size_t q = p;
+                if (q < text.size() && text[q] == '-')
+                {
+                    ++q;
+                    while (q < text.size() && std::isspace ((unsigned char) text[q]) != 0) ++q;
+                    if (q < text.size() && text[q] == '1')
+                    {
+                        ++q;
+                        while (q < text.size() && std::isspace ((unsigned char) text[q]) != 0) ++q;
+                        resetOnly = q < text.size() && (text[q] == ')' || text[q] == ',');
+                    }
+                }
+
+                if (! resetOnly)
+                    return true;
+
+                i += needle.size();
+                continue;
+            }
+
+            ++i;
+        }
+
+        return false;
+    }
 
     static std::string lowerAsciiLocal (std::string text)
     {
@@ -14983,7 +15391,7 @@ private:
             inputCopy.captureStateWrites = inputCopy.captureStateWrites || sharedInput.captureStateWrites;
             inputCopy.clearKeys = sharedInput.clearKeys;
             inputCopy.keyEvents.swap (sharedInput.keyEvents);
-            inputCopy.droppedFiles.swap (sharedInput.droppedFiles);
+            inputCopy.droppedFileBatches.swap (sharedInput.droppedFileBatches);
 
             sharedInput.pendingWheel = 0.0f;
             sharedInput.pendingHWheel = 0.0f;
@@ -15008,7 +15416,8 @@ private:
             }
         }
 
-        for (const auto& path : inputCopy.droppedFiles) interp->addDroppedFile (path);
+        for (auto& batch : inputCopy.droppedFileBatches)
+            interp->addDroppedFiles (std::move (batch));
         interp->setHostWindowState (windowFocused.load (std::memory_order_acquire),
                                    windowVisible.load (std::memory_order_acquire),
                                    displayScale.load (std::memory_order_acquire));
@@ -15103,8 +15512,17 @@ private:
             }
         }
 
-        const bool captureStateWrites = inputCopy.captureStateWrites
+        // Ordinary AUTO mirroring can cover many megabytes, so preserve the
+        // historical event-driven diff policy for those static ranges. Native
+        // file_mem() ranges are different: REAPER exposes them as genuinely
+        // shared mem[] and @gfx code may mutate them without a mouse event.
+        // Keep those dynamic ranges under continuous writeback observation.
+        std::array<jsfx_gfx::MemRange, 64> persistentFileRanges {};
+        const int persistentFileRangeCount = interp->copyPersistentFileMemRanges (
+            persistentFileRanges.data(), (int) persistentFileRanges.size());
+        const bool captureStaticStateWrites = inputCopy.captureStateWrites
             || (processor.usesExplicitGfxSync() && snap->writableMemRangeCount > 0);
+        const bool captureStateWrites = captureStaticStateWrites || persistentFileRangeCount > 0;
         bool wrotePersistentVmState = false;
         const bool profiling = processor.isGfxProfilingEnabled();
         interp->setProfilingEnabled (profiling);
@@ -15136,11 +15554,60 @@ private:
         memDiffSpanCount = 0;
         if (captureStateWrites)
         {
-            varsBefore.resize ((size_t) snap->varsCount);
-            if (! varsBefore.empty()) interp->readVars (varsBefore.data(), (int) varsBefore.size());
-            for (int i = 0; i < snap->writableMemRangeCount && i < (int) memDiffSpans.size(); ++i)
+            if (captureStaticStateWrites)
             {
-                const auto& range = snap->writableMemRanges[(size_t) i];
+                varsBefore.resize ((size_t) snap->varsCount);
+                if (! varsBefore.empty()) interp->readVars (varsBefore.data(), (int) varsBefore.size());
+            }
+            else
+            {
+                varsBefore.clear();
+                varsAfter.clear();
+            }
+
+            // Static FROM_GFX mirror ranges plus ranges populated by native
+            // GFX file_mem(). The latter are dynamic and cannot be known to the
+            // AOT metadata pass ahead of time. Merge overlap/adjacency before
+            // taking baselines so one large sample buffer remains one diff.
+            std::array<jsfx_gfx::MemRange, kMaxGfxMemSpans * 2> diffRanges {};
+            int diffRangeCount = 0;
+            const auto addDiffRange = [&] (int64_t base, int count)
+            {
+                if (base < 0 || count <= 0) return;
+                int64_t end = base + (int64_t) count;
+                if (end <= base) return;
+                for (int r = 0; r < diffRangeCount; ++r)
+                {
+                    auto& existing = diffRanges[(size_t) r];
+                    const int64_t existingEnd = existing.base + (int64_t) existing.count;
+                    if (end < existing.base || base > existingEnd) continue;
+                    const int64_t mergedBase = std::min (base, existing.base);
+                    const int64_t mergedEnd = std::max (end, existingEnd);
+                    existing.base = mergedBase;
+                    existing.count = (int) std::min<int64_t> (mergedEnd - mergedBase,
+                                                              std::numeric_limits<int>::max());
+                    return;
+                }
+                if (diffRangeCount < (int) diffRanges.size())
+                    diffRanges[(size_t) diffRangeCount++] = { base, count };
+            };
+
+            if (captureStaticStateWrites)
+            {
+                for (int i = 0; i < snap->writableMemRangeCount; ++i)
+                {
+                    const auto& range = snap->writableMemRanges[(size_t) i];
+                    addDiffRange (range.base, range.count);
+                }
+            }
+
+            for (int i = 0; i < persistentFileRangeCount; ++i)
+                addDiffRange (persistentFileRanges[(size_t) i].base,
+                              persistentFileRanges[(size_t) i].count);
+
+            for (int i = 0; i < diffRangeCount && memDiffSpanCount < (int) memDiffSpans.size(); ++i)
+            {
+                const auto& range = diffRanges[(size_t) i];
                 if (range.count <= 0) continue;
                 auto& diff = memDiffSpans[(size_t) memDiffSpanCount++];
                 diff.base = range.base;
@@ -15162,53 +15629,80 @@ private:
         }
         if (profiling) diffStart = juce::Time::getMillisecondCounterHiRes();
 
+        // file_mem() is a host-side bulk write into EEL RAM. Publish it even
+        // when no mouse/slider interaction requested ordinary state diffing
+        // (for example a resource loaded from @init).
+        std::array<jsfx_gfx::MemRange, 64> forcedRanges {};
+        const int forcedRangeCount = interp->copyForcedDirtyMemRanges (forcedRanges.data(),
+                                                                       (int) forcedRanges.size());
+        for (int ri = 0; ri < forcedRangeCount; ++ri)
+        {
+            const auto& range = forcedRanges[(size_t) ri];
+            if (range.base < 0 || range.count <= 0) continue;
+            forcedMemScratch.resize ((size_t) range.count);
+            interp->readMemRange (range.base, forcedMemScratch.data(), range.count);
+            if (processor.enqueueGfxMemSpanWrite (range.base, forcedMemScratch.data(), range.count, true))
+                wrotePersistentVmState = true;
+        }
+
         if (captureStateWrites)
         {
-            constexpr int kMaxWritesPerFrame = 2048;
-            int pushed = 0;
-
-            varsAfter = varsBefore;
-            if (! varsAfter.empty())
-                interp->readVars (varsAfter.data(), (int) varsAfter.size());
-
-            for (int i = 0; i < (int) varsAfter.size() && pushed < kMaxWritesPerFrame; ++i)
+            if (captureStaticStateWrites)
             {
-                if ((getJsfxGfxVarFlags (i) & DSPJSFX_GFX_VAR_FLAG_FROM_GFX) == 0u) continue;
-                const double a = varsBefore[(size_t) i];
-                const double b = varsAfter[(size_t) i];
+                varsAfter = varsBefore;
+                if (! varsAfter.empty())
+                    interp->readVars (varsAfter.data(), (int) varsAfter.size());
 
-                if (a == b) continue;
-                if (std::isnan (a) && std::isnan (b)) continue;
-
-                wrotePersistentVmState = true;
-                processor.enqueueGfxVarWrite (i, b);
-                ++pushed;
+                // Variables are few compared with sample RAM; retain the scalar
+                // queue for them but remove the old shared 2048-write budget that
+                // caused large memory edits to be silently truncated.
+                for (int i = 0; i < (int) varsAfter.size(); ++i)
+                {
+                    if ((getJsfxGfxVarFlags (i) & DSPJSFX_GFX_VAR_FLAG_FROM_GFX) == 0u) continue;
+                    const double a = varsBefore[(size_t) i];
+                    const double b = varsAfter[(size_t) i];
+                    if (a == b || (std::isnan (a) && std::isnan (b)) || ! std::isfinite (b)) continue;
+                    wrotePersistentVmState = true;
+                    processor.enqueueGfxVarWrite (i, b);
+                }
             }
 
-            for (int si = 0; si < memDiffSpanCount && pushed < kMaxWritesPerFrame; ++si)
+            // Coalesce adjacent changed memory cells into span transactions. A
+            // 500k-sample crop/reset/load therefore becomes one/few queue items
+            // instead of hundreds of thousands of scalar writes.
+            for (int si = 0; si < memDiffSpanCount; ++si)
             {
                 auto& diff = memDiffSpans[(size_t) si];
                 if ((int) diff.after.size() != (int) diff.before.size())
                     diff.after.resize (diff.before.size());
+                if (diff.after.empty()) continue;
 
-                if (! diff.after.empty())
-                    interp->readMemRange (diff.base, diff.after.data(), (int) diff.after.size());
-
-                for (int i = 0; i < (int) diff.after.size() && pushed < kMaxWritesPerFrame; ++i)
+                interp->readMemRange (diff.base, diff.after.data(), (int) diff.after.size());
+                int runStart = -1;
+                const int n = (int) diff.after.size();
+                for (int i = 0; i <= n; ++i)
                 {
-                    const double a = diff.before[(size_t) i];
-                    const double b = diff.after[(size_t) i];
+                    bool changed = false;
+                    if (i < n)
+                    {
+                        const double a = diff.before[(size_t) i];
+                        const double b = diff.after[(size_t) i];
+                        changed = std::isfinite (b) && a != b && !(std::isnan (a) && std::isnan (b));
+                    }
 
-                    if (a == b) continue;
-                    if (std::isnan (a) && std::isnan (b)) continue;
-
-                    const int64_t absoluteIndex = diff.base + (int64_t) i;
-                    if (absoluteIndex < 0 || absoluteIndex > (int64_t) std::numeric_limits<int>::max())
-                        continue;
-
-                    wrotePersistentVmState = true;
-                    processor.enqueueGfxMemWrite ((int) absoluteIndex, b);
-                    ++pushed;
+                    if (changed && runStart < 0)
+                        runStart = i;
+                    else if (! changed && runStart >= 0)
+                    {
+                        const int runCount = i - runStart;
+                        if (runCount > 0
+                            && processor.enqueueGfxMemSpanWrite (diff.base + runStart,
+                                                                 diff.after.data() + runStart,
+                                                                 runCount,
+                                                                 false))
+                            wrotePersistentVmState = true;
+                        runStart = -1;
+                    }
                 }
             }
         }
@@ -15518,6 +16012,7 @@ private:
     std::unique_ptr<jsfx_gfx::Interpreter> interp;
     bool hasGfxFlag = false;
     bool gfxCompiledOkFlag = false;
+    bool nativeFileDropConsumer = false;
     juce::String gfxLastError;
     int gfxPrefW = 0;
     int gfxPrefH = 0;
@@ -15556,8 +16051,9 @@ private:
     uint64_t profileSurfaceMaps = 0, profileTextMisses = 0, profileReadbacks = 0;
     std::vector<double> varsBefore;
     std::vector<double> varsAfter;
-    std::array<MemDiffSpan, kMaxGfxMemSpans> memDiffSpans {};
+    std::array<MemDiffSpan, kMaxGfxMemSpans * 2> memDiffSpans {};
     int memDiffSpanCount = 0;
+    std::vector<double> forcedMemScratch;
 
     std::array<double, DSPJSFX_MAX_SLIDERS> vmSliders {};
     std::array<double, DSPJSFX_MAX_SLIDERS> effectiveSliders {};
