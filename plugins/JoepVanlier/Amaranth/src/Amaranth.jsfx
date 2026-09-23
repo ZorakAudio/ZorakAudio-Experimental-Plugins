@@ -7,6 +7,11 @@ changelog: Fix logo filename capitalization.
 provides: Amaranth_Dependencies/*
 license: MIT
 
+// DSP-JSFX: Amaranth renders and edits these circular audio buffers in @gfx.
+// Keep the live DSP buffers visible to GFX, and publish GFX crop/reset edits back to DSP.
+// @za:gfx_sync_mem 524288 524285 BIDIR
+// @za:gfx_sync_mem 5242880 524285 BIDIR
+
 slider1:LoopStart=0<0,1,.0000001>-Start point
 slider2:LoopEnd=1<0,1,.0000001>-End point
 slider3:Position=0<0,1,.0000001>-Position
@@ -18,16 +23,16 @@ slider8:Speed=1<.125,2,.0001>-Speed
 slider9:spdSpread=.001<0,1,.000001>-Speed Spread
 slider10:PitchFollow=1<0,1,1>-Follow MIDI pitch
 slider11:RefNote=0<-48,48,1>-Reference semitone
-slider12:pitchMode=0<0,1,1{Normal,RandomPitch}>
+slider12:pitchMode=0<0,1,1{Normal,RandomPitch}>-Pitch Mode
 slider13:octaveMin=0<-4,4,1>-Octave Min
 slider14:octaveMax=0<-4,4,1>-Octave Max
-slider15:reverseProb=0<0,1,1>-Reverse Probability
-slider16:feedbackLevel=0<0,1,1>-Feedback
+slider15:reverseProb=0<0,1,.000001>-Reverse Probability
+slider16:feedbackLevel=0<0,1,.000001>-Feedback
 slider17:pitchTimeInvariance=0<0,1,1>-Invariance
-slider18:F1_type=0<0,1,6>-F1 Type
+slider18:F1_type=0<0,11,1>-F1 Type
 slider19:F1_freq=0<0,1,.0000000000000001>-F1 Freq
 slider20:F1_res=0<0,1,.0000000000000001>-F1 Resonance
-slider21:F2_type=0<0,1,6>-F2 Type
+slider21:F2_type=0<0,11,1>-F2 Type
 slider22:F2_freq=0<0,1,.0000000000000001>-F2 Freq
 slider23:F2_res=0<0,1,.0000000000000001>-F2 Resonance
 slider24:amp_atk=0.1<0,1,0.000001>-Amp Attack
@@ -41,7 +46,7 @@ slider63:updateBuffer=1<0,1,1>-Update Buffer
 slider61:preGain=0<-32,32,.00001>-preGain
 slider64:postGain=0<-32,32,.00001>-postGain
 slider65:max_grain=0<0,3,1{15,30,45,60}>-maximum grains
-slider66:grain_type=0<0,5,{Flat-Top,Peaky,Spaced,Rise,Decay}>-window type
+slider66:grain_type=0<0,5,.000001>-window type
 slider67:stochasticity=0<0,1,0.000001>-stochasticity
 
 import Amaranth_widgets.jsfx-inc
@@ -53,14 +58,14 @@ import Amaranth_mouse.jsfx-inc
 // Filters
 // 0 - OFF
 // 1 - Linear LPF
-// 2 - Linear HPF
-// 3 - Linear BPF
+// 2 - Linear BPF
+// 3 - Linear HPF
 // 4 - Non-linear LPF
-// 5 - Non-linear HPF
-// 6 - Non-linear BPF
+// 5 - Non-linear BPF
+// 6 - Non-linear HPF
 // 7 - 303 LP
-// 8 - Vowel
-// 9 - Voodoo
+// 8 - Voodoo
+// 9 - Modulatrix
 // 10 - Vowel
 // 11 - Monstro
 

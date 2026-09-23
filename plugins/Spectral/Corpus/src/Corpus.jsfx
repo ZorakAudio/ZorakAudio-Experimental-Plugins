@@ -1,4 +1,4 @@
-desc:Corpus v1.7.1 - EC Focus audition / axis selector repair / local Essence + PCA refinement
+desc:Corpus v1.8.0 - Transient Diffusion / v1.7.1 stable structural base
 tags:instrument sampler granular synthesis ui
 // #GFX_RESIZE: responsive
 // #FILE: Corpus sources {Slot 0: use Open Multiple, as in Sample v71. A single long file is valid.}
@@ -23,6 +23,7 @@ options:maxmem=25165824 gfx_hz=30
 // v0.9.3: decoupled analysis/audio clocks, active-run playback spans, audible-hole diagnostics.
 // v1.7.0: optional EC Focus adds class-local Essence + PC1/PC2/PC3 refinement without changing broad class discovery.
 // v1.7.1: explicit axis buttons, audible dot scrubbing, preview-vs-apply focus ranges, and immediate focused audition.
+// v1.8.0: reverts the experimental structural-interpretation branch and adds bounded transient diffusion only.
 // v1.5.1: child walkers own independent Micro lineages; newer controls support right-click reset.
 // v1.5.0: performance-first Explore and bounded 0..12 child cloud with gap-fill action.
 // v1.4.0: unified 51-axis descriptor registry, corpus-derived axes, variable Auto Micro segmentation, and Structure re-synthesis audition.
@@ -40,6 +41,7 @@ options:maxmem=25165824 gfx_hz=30
 // #HELP: Child walkers share the structural trajectory but own independent Micro lineages; Follow is not a grain-for-grain clone.
 // #HELP: Trajectory Solver adds up to 12 synchronized one-dimensional descriptor lanes (Target / Maximum / Minimum) over event progress. Curves are painted freehand with the mouse; there are no editable control points.
 // #HELP: Descriptor lanes use cached 51-axis evidence and bounded successor lookahead; no FFT or corpus analysis runs from playback.
+// #HELP: Transient Diffusion is a separate post-selection renderer. Zero is exact bypass. Nonzero uses a stereo-linked bounded all-pass cascade plus a dry-derived crest guard; it does not change corpus selection.
 // #HELP: Amplitude can use conventional ADSR or a custom smooth freehand MSEG curve. Fixed one-shots traverse the whole curve; Gated/Natural hold at the sustain marker then traverse the release segment.
 // #HELP: Right-click resets both ordinary and newer cloud/coherence controls to their documented defaults.
 // #HELP: Explore is the performance surface: child cloud, lifecycle, ADSR, overlap/coherence and descriptor map are reachable without changing pages.
@@ -135,6 +137,34 @@ function cp_clamp(x a b) ( min(b,max(a,x)); );
 function cp_01(x) ( cp_clamp(x,0,1); );
 function cp_db(x) (20*log(max(0.000000000001,x))/log(10););
 function cp_amp(x) (exp(x*log(10)/20););
+// ---------- v1.8 Transient Diffusion ----------
+// Constant-cost render stage only. No corpus analysis is performed here and no
+// computation is moved to @gfx. Three stereo-linked Schroeder all-pass sections
+// smear transient timing; a dry-derived crest guard prevents new short-term peak
+// overshoot and supplies bounded fallback attenuation when diffusion alone is not
+// enough. td_amount==0 is an exact signal bypass.
+function td_stage(l r stage n g) local(p off dl dr yl yr) (
+  p=floor(td_pos_base[stage]);p>=n ? p=0;
+  off=stage*1024+p;dl=td_buf_l[off];dr=td_buf_r[off];
+  yl=-g*l+dl;yr=-g*r+dr;
+  td_buf_l[off]=l+g*yl;td_buf_r[off]=r+g*yr;
+  p+=1;p>=n ? p=0;td_pos_base[stage]=p;
+  td_work_l=yl;td_work_r=yr;
+);
+function td_prepare() local(n) (
+  n=cp_clamp(floor(srate*0.00031+0.5),1,1023);(n%2)==0 ? n+=1;td_len0=min(1023,n);
+  n=cp_clamp(floor(srate*0.00073+0.5),1,1023);(n%2)==0 ? n+=1;td_len1=min(1023,n);
+  n=cp_clamp(floor(srate*0.00167+0.5),1,1023);(n%2)==0 ? n+=1;td_len2=min(1023,n);
+  td_fast_rel=exp(-1/max(1,srate*0.0012));
+  td_slow_a=1-exp(-1/max(1,srate*0.018));
+  td_peak_rel=exp(-1/max(1,srate*0.015));
+  td_srate=srate;
+);
+function td_clear() (
+  memset(td_buf_l,0,6144);memset(td_pos_base,0,3);
+  td_fast=0;td_slow=0;td_dry_peak=0;td_mix=0;td_transient=0;td_guard_gain=1;
+  td_block_trans=0;td_block_mix=0;td_block_guard=0;td_block_inpeak=0;td_block_outpeak=0;
+);
 function cp_frames(x) (x<0 ? x+4294967296 : x;);
 function cp_rng() local(hi lo nx) (
   hi=floor(rng_state/127773); lo=rng_state-hi*127773;
@@ -3262,6 +3292,7 @@ function h_action(arg) local(sub id level cls p c lo n list member) (
       xc_param_id=floor((id-1024)/256);xc_params[xc_param_id]=((id-1024)%256)/255;
       xc_param_id==7 ? xc_map_ready=0;
     );
+    id>=6000 && id<6256 ? (td_amount=(id-6000)/255;td_amount<0.000001 ? td_amount=0;);
   );
   sub==8 ? (h_select(0,id);h_resynth(0,id););
   sub==9 ? (h_select(1,id);h_resynth(1,id););
@@ -3422,6 +3453,7 @@ function xc_publish() local(h i j id p q z n a b k level c total link)
   h[35]=xc_last_map_cost;h[36]=xc_last_map_supported;h[37]=xc_runtime_transfer;h[38]=xc_built_ceiling;h[39]=xc_fft_size;h[40]=xc_grammar_ready;
   h[41]=xc_grammar_overflow;h[42]=xc_mapping_misses;h[43]=xc_epoch;h[44]=xc_memory_end;h[45]=cp_hold_count()>0 && (xc_phase>0 || xc_map_phase>0 || xc_post_phase>0);
   memcpy(h+48,xc_params,16);memcpy(h+64,xc_weights,8);
+  h[82]=td_amount;h[83]=td_last_mix;h[84]=td_last_trans;h[85]=td_last_guard;h[86]=td_last_inpeak;h[87]=td_last_outpeak;
   h[79]=traj_schema;h[80]=traj_epoch;memcpy(h+2304,traj_base,480);memcpy(h+2784,amp_curve_base,40);
   memcpy(h+2824,traj_runtime_base,64);
   // Last 32 primary selections: normalized event progress + achieved values for 12 lanes.
@@ -3575,6 +3607,8 @@ traj_history_base=18330584;amp_event_base=18331416;record_amp_curve=18331736;tra
 // v1.7 EC Focus metadata: Meso episode descriptor summaries, local axes and project settings.
 focus_ep_vec=18400000;focus_ep_conf=18820000;focus_coords=19240000;focus_class=19280000;focus_cfg=19292000;
 focus_global=19292300;focus_tmp_mean=19292600;focus_tmp_weight=19292664;focus_tmp_u=19292728;focus_tmp_v=19292792;focus_tmp_y=19292856;focus_tmp_used=19292920;focus_memory_end=19293000;
+// v1.8 bounded transient-diffusion delay arena. DSP-owned; never exposed to GFX.
+td_buf_l=19300000;td_buf_r=19303072;td_pos_base=19306144;td_memory_end=19306160;
 xc_config_schema!=1500 ? (
   memset(xc_params,0,16);xc_params[0]=1;xc_params[1]=0.8;xc_params[2]=0.65;xc_params[3]=0.65;
   xc_params[4]=1;xc_params[5]=1;xc_params[6]=1;xc_params[7]=0.65;xc_params[8]=0.75;xc_params[9]=0.7;
@@ -3583,6 +3617,8 @@ xc_config_schema!=1500 ? (
 );
 traj_schema!=1610 ? (memset(traj_runtime_base,0,64);memset(traj_history_base,0,832);tr_clear_all();amp_defaults();traj_runtime_base[0]=1;traj_epoch=0;traj_schema=1610;);tr_brush_active=0;tr_brush_lane=-1;tr_brush_pair=0;
 fc_schema!=1700 ? (fc_cfg_defaults();fc_cfg_key=0;fc_schema=1700;);fc_ready=0;fc_phase=0;fc_epoch=-1;fc_built_key=-1;
+td_schema!=1800 ? (td_amount=0;td_schema=1800;);td_srate=-1;td_enabled=0;td_prepare();td_clear();td_idle_cleared=1;
+td_last_mix=0;td_last_trans=0;td_last_guard=0;td_last_inpeak=0;td_last_outpeak=0;
 
 // GFX-only scratch is deliberately OUTSIDE the explicit DSP snapshot range.
 ui_queue=40000;ui_scroll=40400;ui_local_path=40600;ui_scope=41000;ui_pending=44100;ui_auto=57184;
@@ -4161,6 +4197,24 @@ function ui_mode_name(n) (
   n==0 ? strcpy(#ui_mode,"MICRO") : (n==1 ? strcpy(#ui_mode,"INSPECT") : (n==2 ? strcpy(#ui_mode,"MESO") : (n==3 ? strcpy(#ui_mode,"HIERARCHICAL") : (n==4 ? strcpy(#ui_mode,"RECONSTRUCT") : (n==5 ? strcpy(#ui_mode,"AUTO") : strcpy(#ui_mode,"TRANSFER"))))));
 );
 // ---------- Snapshot-only coherence/structure/transfer controls ----------
+function ui_td_set(value) (
+  ui_enqueue(0,7*8192+6000+cp_clamp(floor(value*255+0.5),0,255));
+);
+function ui_td_control(x y w) local(value hot) (
+  value=cp_01(ui_x[82]);hot=ui_hit(x,y,w,70);ui_td_drag ? value=ui_td_value;
+  ui_box(x,y,w,70,0.078,0.10,0.132);ui_text(x+10,y+5,w-16,14,"TRANSIENT DIFFUSION",0.64,0.73,0.81);
+  sprintf(#ui_val,"%.0f %%",value*100);ui_text(x+10,y+25,w-16,21,#ui_val,0.90,0.95,0.96);
+  ui_box(x+10,y+59,w-20,3,0.14,0.20,0.25);ui_box(x+10,y+59,(w-20)*value,3,0.31,0.73,0.65);
+  hot && ui_lpress ? (ui_td_drag=1;ui_td_start=value;ui_td_value=value;ui_td_mouse=mouse_x-mouse_y;);
+  ui_down && ui_td_drag ? ui_td_value=cp_01(ui_td_start+((mouse_x-mouse_y)-ui_td_mouse)/240*((mouse_cap&8)>0 ? 0.12 : 1));
+  hot && ui_rpress ? (ui_td_set(0);ui_td_drag=0;);
+  hot ? ui_tip("Post-selection transient softening. Zero is exact bypass. Nonzero uses three stable stereo-linked all-pass sections only when transient evidence is present, then a dry-derived crest guard prevents new short-term peak overshoot. It never changes which corpus region was selected.");
+);
+function ui_td_status(x y w) local(applied detector guard) (
+  applied=cp_01(ui_x[83]);detector=cp_01(ui_x[84]);guard=cp_01(ui_x[85]);
+  sprintf(#ui_txt,"Applied %.0f%%   transient evidence %.0f%%   crest guard %.0f%%",applied*100,detector*100,guard*100);
+  ui_text(x,y,w,14,#ui_txt,0.68,0.83,0.86);
+);
 function ui_xset(id value) (
   ui_enqueue(0,7*8192+1024+id*256+cp_clamp(floor(value*255+0.5),0,255));
 );
@@ -4542,6 +4596,9 @@ function ui_explore(w include_inspector) local(x y bw mh c3 c2 i p active count 
     ui_curve_editor(12,1,x,y,bw,170);y+=180;ui_amp_sustain(x,y,c3);ui_btn(x+c3+8,y,c3,58,"RESET SHAPE",0,"Reset the amplitude MSEG to its default smooth envelope. You can immediately redraw it freehand.") ? ui_amp_meta(4);ui_amp_interp_choice(x+2*(c3+8),y,c3);y+=68;
   );
 
+  ui_text(x,y,bw,16,"TRANSIENT RENDERING",0.64,0.82,0.84);y+=24;
+  ui_td_control(x,y,bw);y+=76;ui_td_status(x,y,bw);y+=30;
+
   ui_text(x,y,bw,16,"TRAJECTORY SOLVER",0.64,0.82,0.84);y+=24;
   ui_btn(x,y,112,32,"+ ADD LANE",0,"Add a descriptor trajectory lane using the current X descriptor. Up to 12 synchronized lanes are supported.") ? (
     lane=-1;i=0;while(i<12 && lane<0)(p=ui_traj+i*40;p[0]<0.5 ? lane=i;i+=1;);lane>=0 ? (ui_traj_meta(lane,16+floor(slider40));ui_traj_meta(lane,1);ui_traj_selected=lane;);
@@ -4771,7 +4828,7 @@ function ui_help_view(w) local(x y bw) (
   ui_heading(x,y,bw,"HELP","");ui_btn(x+bw-40,y,40,29,"X",0,"Close contextual help.") ? ui_help=0;y+=44;
   ui_page==4 ? strcpy(#ui_help_text,"Load recordings in slot 0. Corpus scouts each source, infers grain windows and low-salience thresholds, and builds Micro > Meso > Macro automatically. Auto selects a supported hierarchy for each new note. Low-salience Micro material stays playable; Meso models sparsity/density without muting. Only high-confidence Macro REST regions schedule silence. Gold-star unique classes stay in the normal population and can be filtered with UNIQUE. EC Focus optionally refines a selected Meso class along Essence or local PC1/PC2/PC3 without changing the broad class itself. Its four axis buttons are explicit; click/drag the member dots to audition originals, Shift-click a dot to re-synthesize, drag the lower strip to preview a retained interval, and use FOCUS ON only when that interval should constrain generation. Generation pins are explicit; clicking to audition never silently pins a class.") : (
     ui_page==0 ? strcpy(#ui_help_text,"Explore plots actual grains on two acoustic descriptors. Click-drag across points to hear overlapping source grains; Shift-click sets an identity anchor. Ctrl-drag moves a focus. Turn Draw on, drag a path, then release. The blue path commits atomically and guides subsequent choices. Amber is the actual primary walk. Use Path Axes to return to a saved paths coordinates. A held note traverses the full path forward and back; a one-shot fits it to the declared duration. Corpus cannot follow into material it does not contain. Explicit locks remain stronger than the path.") : (
-      ui_page==2 ? strcpy(#ui_help_text,"Drag controls; Shift gives fine adjustment. Right-click restores that controls new default. Plain wheel scrolls the pane; Alt-wheel edits a hovered control. The existing performance sliders support Last Touched automation. Additional Coherence/Grammar settings are serialized controls, not new host automation slots. Output defaults to 0 dB. Match active uses one bounded source gain, preserving dynamics within that recording. Low-salience detection biases selection without deleting quiet material; only Macro REST schedules intentional silence. Rebuilds are automatic and wait for active model users to finish.") : strcpy(#ui_help_text,"Inspector opens only the evidence you request. Selected Grain shows exact source region and excludes or locks. Live Walk exposes real emitted slices and path error. Selected Class shows member distributions, comparisons and observed successors. Analysis explains inferred grain resolution and quiet thresholds. System contains actual failures, limits and protocol/replay states. A low distance is acoustic similarity, not proof of semantic equivalence.");
+      ui_page==2 ? strcpy(#ui_help_text,"Drag controls; Shift gives fine adjustment. Right-click restores that controls new default. Plain wheel scrolls the pane; Alt-wheel edits a hovered control. The existing performance sliders support Last Touched automation. Additional Coherence/Grammar settings and Transient Diffusion are serialized controls, not new host automation slots. Transient Diffusion is constant-cost DSP, never GFX-side analysis. Output defaults to 0 dB. Match active uses one bounded source gain, preserving dynamics within that recording. Low-salience detection biases selection without deleting quiet material; only Macro REST schedules intentional silence. Rebuilds are automatic and wait for active model users to finish.") : strcpy(#ui_help_text,"Inspector opens only the evidence you request. Selected Grain shows exact source region and excludes or locks. Live Walk exposes real emitted slices and path error. Selected Class shows member distributions, comparisons and observed successors. Analysis explains inferred grain resolution and quiet thresholds. System contains actual failures, limits and protocol/replay states. A low distance is acoustic similarity, not proof of semantic equivalence.");
     );
   );y+=ui_wrap(x,y,bw,#ui_help_text,24)+28;
   ui_wrap(x,y,bw,"Evidence is a closed-by-default side drawer. Descriptor names and member counts remain fixed while auditioning. Choose Core, Spectral, Temporal, Tonal, Spatial, Context or Learned axes; tonal/pulse evidence is confidence-gated. Right-click a descriptor bin to apply a browser filter. The underlying source audio is never deleted.",10);
@@ -4798,6 +4855,7 @@ file_var(0,path_axis_x);file_var(0,path_axis_y);file_mem(0,7100,path_count*2);
 file_var(0,xc_config_schema);file_mem(0,18153472,16);
 file_var(0,traj_schema);file_var(0,traj_epoch);file_mem(0,18330000,520);
 file_var(0,fc_schema);file_var(0,fc_cfg_key);file_mem(0,19292000,192);
+file_var(0,td_schema);file_var(0,td_amount);
 
 @slider
 output_target=cp_amp(slider7);
@@ -4809,9 +4867,14 @@ slider11!=last_seed ? (rng_state=max(1,floor(slider11));last_seed=slider11;);
 // fields once, and keep the old Morphology slider as a temporary fallback.
 xc_config_schema<1500 ? (xc_params[12]=0;xc_params[13]=0;xc_params[14]=0.60;xc_params[15]=0.20;xc_config_schema=1500;);
 traj_schema<1600 ? (tr_clear_all();amp_defaults();traj_epoch=0;traj_schema=1610;) : (traj_schema<1610 ? (tr_migrate_freehand();traj_schema=1610;););
+td_schema<1800 ? (td_amount=0;td_schema=1800;);td_srate!=srate ? (td_prepare();td_clear(););
+td_amount>0.000001 ? (!td_enabled ? (td_clear();td_enabled=1;);) : (td_enabled=0;td_mix=0;);
+td_last_mix=td_block_mix;td_last_trans=td_block_trans;td_last_guard=td_block_guard;td_last_inpeak=td_block_inpeak;td_last_outpeak=td_block_outpeak;
+td_block_mix=0;td_block_trans=0;td_block_guard=0;td_block_inpeak=0;td_block_outpeak=0;
 last_block_rms=meter_n>0 ? sqrt(meter_sum/max(1,meter_n)) : 0;last_block_peak=meter_peak_block;last_block_rest=meter_n>0 ? meter_rest_sum/meter_n : 0;last_block_gap=meter_n>0 ? meter_gap_sum/meter_n : 0;last_block_lowsal=meter_n>0 ? meter_lowsal_sum/meter_n : 0;last_block_voices=meter_n>0 ? meter_voice_sum/meter_n : 0;last_block_hole=meter_n>0 ? meter_hole_sum/meter_n : 0;last_block_sourcehole=meter_n>0 ? meter_sourcehole_sum/meter_n : 0;last_block_coverage=meter_n>0 ? meter_coverage_sum/meter_n : 0;meter_sum=0;meter_peak_block=0;meter_n=0;meter_rest_sum=0;meter_gap_sum=0;meter_lowsal_sum=0;meter_voice_sum=0;meter_hole_sum=0;meter_sourcehole_sum=0;meter_coverage_sum=0;
 block_start_clock=clock;steps_this_block=0;output_target=cp_amp(slider7);
 cp_collect();
+voice_list_n<=0 && cp_hold_count()==0 && td_mix<=0.0001 ? (!td_idle_cleared ? (td_clear();td_idle_cleared=1;);) : td_idle_cleared=0;
 env_i=0;loop(8,env_e=cp_e(env_i);env_e[33]=clock;env_e[34]=0;env_i+=1;);
 slider24!=cmd_seen ? (cmd_seen=slider24;cp_action(floor(slider24+0.5)););
 playing=(play_state&1)>0;
@@ -4877,7 +4940,7 @@ block_all_rest=event_count>0;block_any_model=0;block_expected=0;bi09=0;loop(8,be
 block_gap=0;block_lowsal=0;
 ui_snapshot_base[0]=cmd_seen;ui_left-=samplesblock;
 ui_left<=0 ? (cp_ui_publish();ui_left=max(64,floor(srate/20)););
-za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || pool_state==1 || pool_state==2;
+za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || td_mix>0.0001 || pool_state==1 || pool_state==2;
 
 @sample
 out_l=0;out_r=0;sample_coverage=0;sample_lowvoices=0;sample_startedvoices=0;vi=0;
@@ -4906,6 +4969,33 @@ while(vi<voice_list_n) (
     );vi+=1;
   ) : (vv[0]=0;voice_list_n-=1;voice_list[vi]=voice_list[voice_list_n];);
 );
+// Transient Diffusion is deliberately post-selection. The selected source
+// regions and envelopes remain unchanged; only the mixed transient rendering is
+// softened. At zero the branch is not evaluated and out_l/out_r are untouched.
+td_enabled && td_amount>0.000001 ? (
+  td_dry_l=out_l;td_dry_r=out_r;td_abs=max(abs(td_dry_l),abs(td_dry_r));
+  td_fast=max(td_abs,td_fast*td_fast_rel);td_slow+=(td_abs-td_slow)*td_slow_a;
+  td_gate=cp_01((td_fast-0.00002)/0.0015);
+  td_transient=cp_01((td_fast-td_slow*1.12)/max(0.000001,td_fast*0.82))*td_gate;
+  td_target_mix=td_amount*td_transient;
+  td_target_mix>td_mix ? td_mix+=(td_target_mix-td_mix)*0.45 : td_mix+=(td_target_mix-td_mix)*0.015;
+  td_dry_peak=max(td_abs,td_dry_peak*td_peak_rel);
+  td_g=0.30+0.30*td_amount;
+  td_stage(td_dry_l,td_dry_r,0,td_len0,td_g);td_wet_l=td_work_l;td_wet_r=td_work_r;
+  td_stage(td_wet_l,td_wet_r,1,td_len1,min(0.64,td_g+0.04));td_wet_l=td_work_l;td_wet_r=td_work_r;
+  td_stage(td_wet_l,td_wet_r,2,td_len2,max(0.20,td_g-0.03));td_wet_l=td_work_l;td_wet_r=td_work_r;
+  td_mix_now=cp_01(td_mix);td_proc_l=td_dry_l*(1-td_mix_now)+td_wet_l*td_mix_now;td_proc_r=td_dry_r*(1-td_mix_now)+td_wet_r*td_mix_now;
+  td_proc_peak=max(abs(td_proc_l),abs(td_proc_r));td_guard_gain=1;
+  td_ceiling=max(0.000000001,td_dry_peak*1.001);
+  td_proc_peak>td_ceiling ? td_guard_gain=min(td_guard_gain,td_ceiling/td_proc_peak);
+  td_transient>0.15 ? (
+    td_goal=max(0.000000001,td_dry_peak*(1-0.28*td_amount*td_transient));
+    td_proc_peak>td_goal ? td_guard_gain=min(td_guard_gain,td_goal/td_proc_peak);
+  );
+  td_guard_gain=cp_clamp(td_guard_gain,0,1);out_l=td_proc_l*td_guard_gain;out_r=td_proc_r*td_guard_gain;
+  td_block_trans=max(td_block_trans,td_transient);td_block_mix=max(td_block_mix,td_mix_now);td_block_guard=max(td_block_guard,1-td_guard_gain);
+  td_block_inpeak=max(td_block_inpeak,td_abs);td_block_outpeak=max(td_block_outpeak,max(abs(out_l),abs(out_r)));
+);
 output_smooth+=(output_target-output_smooth)*0.002;
 out_l*=output_smooth;out_r*=output_smooth;output_peak=max(abs(out_l),abs(out_r));
 slider20>=0.5 && output_peak>0.98 ? (catch_gain=0.98/output_peak;out_l*=catch_gain;out_r*=catch_gain;limited_samples+=1;);
@@ -4923,14 +5013,14 @@ hole_now=audible_hole_run>=max(8,floor(srate*0.020));
 sched_gap_now=hole_now && !sample_coverage;source_hole_now=hole_now && sample_coverage;
 low_now=sample_startedvoices>0 ? sample_lowvoices/sample_startedvoices : 0;
 peak_meter=max(output_peak,peak_meter*0.9995);meter_sum+=(out_l*out_l+out_r*out_r)*0.5;meter_peak_block=max(meter_peak_block,output_peak);meter_n+=1;meter_rest_sum+=block_all_rest;meter_gap_sum+=sched_gap_now;meter_lowsal_sum+=low_now;meter_voice_sum+=voice_list_n;meter_hole_sum+=hole_now;meter_sourcehole_sum+=source_hole_now;meter_coverage_sum+=sample_coverage;spl0=out_l;spl1=out_r;clock+=1;
-za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || pool_state==1 || pool_state==2;
+za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || td_mix>0.0001 || pool_state==1 || pool_state==2;
 
 @gfx 1120 780
 ui_scope=41000;ui_pending=44100;ui_queue=40000;ui_scroll=40400;ui_local_path=40600;ui_curve_paint=44600;ui_auto=57184;
 ui_now=time_precise();ui_key=gfx_getchar();ui_h=ui_snapshot_base;ui_x=57344;ui_traj=59648;ui_amp=60128;ui_trun=60168;ui_thist=60232;
 ui_down=mouse_cap&1;ui_right=mouse_cap&2;ui_lpress=ui_down && !ui_prev_down;ui_rpress=ui_right && !ui_prev_right;
 ui_wheel=mouse_wheel;mouse_wheel=0;ui_page=floor(slider55);ui_page==3 ? ui_page=1;
-!ui_initialized ? (ui_initialized=1;ui_feature_desc=0;ui_traj_selected=0;ui_curve_draw_active=0;ui_curve_draw_lane=-1;ui_curve_draw_prev=-1;ui_curve_draw_prev_y=0;ui_traj_strength_drag=0;ui_desc_popup=0;ui_desc_popup_scroll=0;ui_desc_popup_drag=0;ui_desc_popup_just=0;ui_folds=0;ui_xdrag=0;ui_brush_capture=0;ui_brush_last=-1;ui_brush_time=-10;ui_structure_h=600;ui_controls_h=2400;ui_explore_h=1250;ui_evidence_h=2100;ui_inspector_h=560;ui_help_h=850;ui_class_filter=0;ui_pending_n=0;ui_scope_n=0;ui_scope_head=0;ui_scope_clock=-1;ui_focus_aud_last=-1;ui_focus_aud_time=-10;ui_focus_cycle=0;ui_focus_drag=0;ui_focus_drag_cls=-1;ui_focus_drag_a=0;ui_focus_drag_b=1;);
+!ui_initialized ? (ui_initialized=1;ui_feature_desc=0;ui_traj_selected=0;ui_curve_draw_active=0;ui_curve_draw_lane=-1;ui_curve_draw_prev=-1;ui_curve_draw_prev_y=0;ui_traj_strength_drag=0;ui_td_drag=0;ui_td_value=0;ui_desc_popup=0;ui_desc_popup_scroll=0;ui_desc_popup_drag=0;ui_desc_popup_just=0;ui_folds=0;ui_xdrag=0;ui_brush_capture=0;ui_brush_last=-1;ui_brush_time=-10;ui_structure_h=600;ui_controls_h=2400;ui_explore_h=1250;ui_evidence_h=2100;ui_inspector_h=560;ui_help_h=850;ui_class_filter=0;ui_pending_n=0;ui_scope_n=0;ui_scope_head=0;ui_scope_clock=-1;ui_focus_aud_last=-1;ui_focus_aud_time=-10;ui_focus_cycle=0;ui_focus_drag=0;ui_focus_drag_cls=-1;ui_focus_drag_a=0;ui_focus_drag_b=1;);
 ui_path_pending && ui_snapshot_base[41]!=ui_path_before && !ui_wait && ui_qn==0 ? ui_path_pending=0;
 !ui_down ? (
   ui_prev_down && ui_curve_draw_active ? ui_curve_draw_commit();
@@ -4938,6 +5028,7 @@ ui_path_pending && ui_snapshot_base[41]!=ui_path_before && !ui_wait && ui_qn==0 
   ui_prev_down && ui_drawing ? ui_path_commit();
   ui_prev_down && ui_focus_drag ? (ui_enqueue(14,ui_focus_arg_low(ui_focus_drag_cls,min(ui_focus_drag_a,ui_focus_drag_b)));ui_enqueue(14,ui_focus_arg_high(ui_focus_drag_cls,max(ui_focus_drag_a,ui_focus_drag_b)));ui_focus_drag=0;);
   ui_prev_down && ui_xdrag>0 ? (ui_xset(ui_xdrag-1,ui_xvalue);ui_xdrag=0;);
+  ui_prev_down && ui_td_drag ? (ui_td_set(ui_td_value);ui_td_drag=0;);
   ui_brush_capture=0;ui_brush_last=-1;ui_desc_popup_drag=0;
   ui_prev_down && ui_drag>0 ? slider_automate(pow(2,ui_drag-1),1);
   ui_drag=0;ui_scroll_drag=0;
