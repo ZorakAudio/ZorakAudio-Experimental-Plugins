@@ -1,4 +1,4 @@
-desc:Corpus v1.8.0 - Transient Diffusion / v1.7.1 stable structural base
+desc:Corpus v1.9.1 - Load Progress / Contextual PE / Pruning
 tags:instrument sampler granular synthesis ui
 // #GFX_RESIZE: responsive
 // #FILE: Corpus sources {Slot 0: use Open Multiple, as in Sample v71. A single long file is valid.}
@@ -21,9 +21,11 @@ options:maxmem=25165824 gfx_hz=30
 // The map is a user-selected two-descriptor projection, not a neural embedding.
 // Existing slider slots are preserved; role filtering is now fuzzy eligibility.
 // v0.9.3: decoupled analysis/audio clocks, active-run playback spans, audible-hole diagnostics.
+// v1.9.1: stage-specific load progress, prompt loader polling and snapshot-stall status.
 // v1.7.0: optional EC Focus adds class-local Essence + PC1/PC2/PC3 refinement without changing broad class discovery.
 // v1.7.1: explicit axis buttons, audible dot scrubbing, preview-vs-apply focus ranges, and immediate focused audition.
 // v1.8.0: reverts the experimental structural-interpretation branch and adds bounded transient diffusion only.
+// v1.8.1: Transient Diffusion is host-backed/automatable on slider45; map stratum paging moved to private UI state.
 // v1.5.1: child walkers own independent Micro lineages; newer controls support right-click reset.
 // v1.5.0: performance-first Explore and bounded 0..12 child cloud with gap-fill action.
 // v1.4.0: unified 51-axis descriptor registry, corpus-derived axes, variable Auto Micro segmentation, and Structure re-synthesis audition.
@@ -40,8 +42,8 @@ options:maxmem=25165824 gfx_hz=30
 // #HELP: EC Focus is an optional second-stage Meso refinement. Essence measures class-defining direction vs corpus background; PC1/PC2/PC3 measure within-class variation. Click/drag member dots to audition originals, Shift-click a dot to re-synthesize it, and drag the lower range strip to preview/retain a slice. FOCUS ON applies that slice to generation; broad EC membership is never destroyed.
 // #HELP: Child walkers share the structural trajectory but own independent Micro lineages; Follow is not a grain-for-grain clone.
 // #HELP: Trajectory Solver adds up to 12 synchronized one-dimensional descriptor lanes (Target / Maximum / Minimum) over event progress. Curves are painted freehand with the mouse; there are no editable control points.
-// #HELP: Descriptor lanes use cached 51-axis evidence and bounded successor lookahead; no FFT or corpus analysis runs from playback.
-// #HELP: Transient Diffusion is a separate post-selection renderer. Zero is exact bypass. Nonzero uses a stereo-linked bounded all-pass cascade plus a dry-derived crest guard; it does not change corpus selection.
+// #HELP: Descriptor lanes use cached 53-axis evidence and bounded successor lookahead; no FFT or corpus analysis runs from playback.
+// #HELP: Transient Diffusion is a separate post-selection renderer and a real host parameter (slider45), so copy/paste, presets and automation use normal JSFX parameter state. Zero is exact bypass. Nonzero uses a stereo-linked bounded all-pass cascade plus a dry-derived crest guard; it does not change corpus selection.
 // #HELP: Amplitude can use conventional ADSR or a custom smooth freehand MSEG curve. Fixed one-shots traverse the whole curve; Gated/Natural hold at the sustain marker then traverse the release segment.
 // #HELP: Right-click resets both ordinary and newer cloud/coherence controls to their documented defaults.
 // #HELP: Explore is the performance surface: child cloud, lifecycle, ADSR, overlap/coherence and descriptor map are reachable without changing pages.
@@ -73,7 +75,7 @@ slider12:0<0,1,1{Evolve,Fixed}>--Seed mode
 slider13:0<0,65536,256>--Pool RAM budget (MB; 0=resident)
 slider14:0<0,65536,1>--Source scope (0=all)
 slider15:0<0,65536,1>--Identity anchor (0=none)
-slider16:0<0,153,1>--Descriptor filter (0=all; encoded descriptor/bin)
+slider16:0<0,159,1>--Descriptor filter (0=all; encoded descriptor/bin)
 slider17:0<0,4,1{All,Attack,Body,Detail,Tail}>--Role eligibility filter
 slider18:0<0,3276,1>--Grain browser page
 slider19:0<0,99,1>--Traversal history offset
@@ -97,12 +99,12 @@ slider36:0<0,3,1{Linear,Resonance,Debris,Layered}>--Branch morphology
 slider37:0.25<0,1,0.001>--Branch level
 slider38:0.85<0,1,0.001>--Branch identity inheritance
 slider39:1<0,1,0.001>--Drawn path influence
-slider40:1<0,50,1>--Map X descriptor
-slider41:2<0,50,1>--Map Y descriptor
+slider40:1<0,52,1>--Map X descriptor
+slider41:2<0,52,1>--Map Y descriptor
 slider42:0.5<0,1,0.001>--Map focus X
 slider43:0.5<0,1,0.001>--Map focus Y
 slider44:0<0,1,0.001>--Map focus influence
-slider45:0<0,255,1>--Map stratum page
+slider45:0<0,1,0.001>--Transient Diffusion
 slider46:0.75<0,1,0.001>--Envelope trajectory influence
 slider47:2<0.2,20,0.01>--Gated path cycle (seconds)
 slider48:0.35<0,1,0.001>--Role browser threshold
@@ -112,7 +114,7 @@ slider51:0.95<0,1,0.001>--Identity lock strength
 slider52:1200<80,1500,1>--Adaptive playback ceiling (ms)
 slider53:0.3<0,1,0.001>--Branch stereo spread
 slider54:0<0,1,1{Navigate,Draw}>--Map mouse mode
-slider55:4<0,4,1{Explore,Inspector,Controls,Inspector legacy,Structure}>--Interface page
+slider55:4<0,5,1{Explore,Inspector,Controls,Inspector legacy,Structure,Prune}>--Interface page
 
 // v0.8.0: source-local chronology, soft behavioural ECs, explicit durations,
 // ordered member scaffolds, optional hierarchical rendering and Structure view.
@@ -131,6 +133,9 @@ slider62:1<0.25,4,0.01>--Learned duration scale
 slider63:0.5<0,1,0.001>--EC detail (hierarchy rebuild)
 slider64:1<1,65536,1>--Structure / reconstruction source
 
+// v1.9.0: PE is fitted once during loading, with generation gated until ready.
+// Region and EC errors have independent support. Pruning uses cached evidence.
+// No prediction, PCM analysis, FFT, or hierarchy fitting is performed by playback.
 @init
 
 function cp_clamp(x a b) ( min(b,max(a,x)); );
@@ -142,7 +147,9 @@ function cp_amp(x) (exp(x*log(10)/20););
 // computation is moved to @gfx. Three stereo-linked Schroeder all-pass sections
 // smear transient timing; a dry-derived crest guard prevents new short-term peak
 // overshoot and supplies bounded fallback attenuation when diffusion alone is not
-// enough. td_amount==0 is an exact signal bypass.
+// enough. slider45==0 is an exact signal bypass. slider45 is host-owned so
+// REAPER copy/paste, presets and automation do not depend on custom @serialize.
+// Nonzero automation is glided over ~4 ms before changing the all-pass coefficients.
 function td_stage(l r stage n g) local(p off dl dr yl yr) (
   p=floor(td_pos_base[stage]);p>=n ? p=0;
   off=stage*1024+p;dl=td_buf_l[off];dr=td_buf_r[off];
@@ -158,11 +165,12 @@ function td_prepare() local(n) (
   td_fast_rel=exp(-1/max(1,srate*0.0012));
   td_slow_a=1-exp(-1/max(1,srate*0.018));
   td_peak_rel=exp(-1/max(1,srate*0.015));
+  td_param_a=1-exp(-1/max(1,srate*0.004)); // automation-safe coefficient glide
   td_srate=srate;
 );
 function td_clear() (
   memset(td_buf_l,0,6144);memset(td_pos_base,0,3);
-  td_fast=0;td_slow=0;td_dry_peak=0;td_mix=0;td_transient=0;td_guard_gain=1;
+  td_fast=0;td_slow=0;td_dry_peak=0;td_mix=0;td_transient=0;td_guard_gain=1;td_amount_rt=0;
   td_block_trans=0;td_block_mix=0;td_block_guard=0;td_block_inpeak=0;td_block_outpeak=0;
 );
 function cp_frames(x) (x<0 ? x+4294967296 : x;);
@@ -176,6 +184,52 @@ function cp_s(id) (source_base+id*8;);
 function cp_e(id) (event_base+id*64;);
 function cp_w(id) (walker_base+id*64;);
 function cp_v(id) (voice_base+id*32;);
+// v1.9: load-time, grain-bounded contextual prediction. No playback learning.
+function pe_p(id) (pe_stats+id*16;);
+function pe_v(id) (pe_vectors+id*16;);
+function pe_conf(id d) (pe_ready && id>=0 && id<grain_count ? pe_p(id)[2+d] : 0;);
+function pe_value(id d) (
+  pe_ready && id>=0 && id<grain_count ? (pe_span_use && id==pe_span_id ? pe_span_value[d] : pe_p(id)[d]) : 0.5;
+);
+function pg_get(base id) local(k f) (k=floor(id/8);f=pow(4,id%8);floor(base[k]/f)%4;);
+function pg_put(base id value) local(k f old) (k=floor(id/8);f=pow(4,id%8);old=floor(base[k]/f)%4;base[k]+=(value-old)*f;);
+function pg_allowed(id) local(a g) (
+  id>=0 && id<grain_count ? (
+    g=grain_base+id*64;a=!pg_ready ? 0 : (pg_preview ? pg_draft[id] : (pg_bypass ? 0 : pg_active[id]));
+    g[6]>0.00001 && (a==0 ? g[9]<0.5 : a==1);
+  ) : 0;
+);
+function pg_member_ok(id) (pg_preview ? pg_meso_stage[id]>0 : (pg_bypass || !pg_changed || !pg_ready ? 1 : pg_meso_count[id]>0););
+function pe_active_request() local(i p active) (
+  active=slider40>=51 && (slider44>0 || (path_count>1 && slider39>0)) || slider41>=51 && (slider44>0 || (path_count>1 && slider39>0)) || pe_locks>0;
+  i=0;loop(12,p=traj_base+i*40;p[0]>0.5 && p[1]>=51 ? active=1;i+=1;);active;
+);
+function pe_at(src frame) local(s lo hi mid g) (
+  s=cp_s(src);lo=s[5];hi=lo+s[6];while(lo<hi)(mid=floor((lo+hi)/2);g=cp_g(mid);g[2]+g[3]<=frame ? lo=mid+1 : hi=mid;);min(s[5]+s[6]-1,lo);
+);
+function pg_limit_span(id start frames) local(g a b li ri n) (
+  pg_span_start=start;pg_span_frames=frames;
+  pg_ready && (pg_preview || !pg_bypass && pg_changed) ? (
+    g=cp_g(id);a=max(start,pg_preview ? pg_dleft[id] : pg_left[id]);b=min(start+frames,pg_preview ? pg_dright[id] : pg_right[id]);
+    pg_span_start=a;pg_span_frames=max(0,b-a);
+    !pg_allowed(id) || pg_span_frames<min(g[3],max(1,floor(g[4]*0.005))) ? pg_span_frames=0;
+  );
+);
+function pe_excerpt(id start frames) local(g first last d p a b den total gs ge fr conf z) (
+  g=cp_g(id);first=pe_at(g[1],start);last=pe_at(g[1],max(start,start+frames-1));d=0;
+  loop(2,
+    a=pe_prefix+first*4;b=pe_prefix+last*4;total=b[d*2]-a[d*2];den=b[d*2+1]-a[d*2+1];
+    // Prefix is inclusive; replace endpoint contributions with actual overlap.
+    p=cp_g(first);z=pe_p(first);fr=max(0,min(start+frames,p[2]+p[3])-max(start,p[2]));
+    first==last ? (total=z[d]*z[d+2]*fr;den=z[d+2]*fr;) : (
+      total+=z[d]*z[d+2]*fr;den+=z[d+2]*fr;
+      p=cp_g(last);z=pe_p(last);fr=max(0,min(start+frames,p[2]+p[3])-max(start,p[2]));
+      total-=z[d]*z[d+2]*(p[3]-fr);den-=z[d+2]*(p[3]-fr);
+    );
+    pe_span_value[d]=den>0 ? total/den : 0.5;pe_span_value[2+d]=cp_01(den/max(1,frames));d+=1;
+  );pe_span_id=id;
+);
+
 // v1.5 bounded multi-child performance layer. The old 0..3 Morphology slider is
 // retained only as a project-compatibility fallback until the new child count is
 // explicitly touched. New events snapshot their child plan at trigger time.
@@ -198,7 +252,7 @@ function cp_source_cells(id) local(s) (s=cp_s(id);s[6];);
 function cp_valid(id) local(g ok) (
   // Low-salience is NOT silence. Keep it playable and let scoring de-prioritize it.
   // Only explicit exclusion or the hard numerical floor removes a Micro grain.
-  ok=0; id>=0 && id<grain_count ? (g=cp_g(id);ok=g[9]<0.5 && g[6]>0.00001;);ok;
+  ok=0; id>=0 && id<grain_count ? (g=cp_g(id);ok=pg_allowed(id););ok;
 );
 function cp_feat(id d) local(g) (g=cp_g(id); d<5 ? g[16+d] : g[51+d-5];);
 function cp_member(id vertex) local(d b g) (
@@ -286,7 +340,7 @@ function h_meso_floor(src) local(a base) (
 );
 // Cheap two-axis retrieval reservoirs; at most 64 actual eligible grains per bin.
 function cp_path_index(id) local(d b k n slot) (
-  cp_valid(id) ? (d=0;loop(8,
+  (id>=0 && id<grain_count && cp_g(id)[9]<0.5 && cp_g(id)[6]>0.00001) ? (d=0;loop(8,
     b=min(15,floor(cp_feat(id,d)*16));k=d*16+b;n=path_res_counts[k];path_res_counts[k]=n+1;
     slot=n<64 ? n : ((id*127+k*8191)%max(1,n+1));
     slot<64 ? path_reservoir[k*64+slot]=id;d+=1;
@@ -437,14 +491,14 @@ function xc_allowed(id src transfer guide) local(g yes) (
 // IDs 0..50 are the single user-facing topology. The old eight remain CORE;
 // rich cached observations, contextual evidence and four corpus-derived axes
 // are addressed through the same cp_desc()/cp_desc_conf() interface.
-function cp_desc_count() (51;);
+function cp_desc_count() (53;);
 function cp_desc_rate(period) local(hz) (
   period>0 ? (hz=1/period;cp_01(log(max(0.25,min(12,hz))/0.25)/log(48))) : 0.5;
 );
 function cp_desc(id d) local(g p q c i v sum) (
-  d=cp_clamp(floor(d),0,50);g=cp_g(id);v=0.5;
+  d=cp_clamp(floor(d),0,52);g=cp_g(id);v=0.5;
   d<8 ? v=cp_feat(id,d);
-  d>=8 && xc_ok(id) ? (
+  d>=8 && d<51 && xc_ok(id) ? (
     p=xc_g(id);
     d>=8 && d<16 ? v=sqrt(cp_01(p[d-8]));
     d==16 ? v=cp_01(p[8]);
@@ -474,12 +528,13 @@ function cp_desc(id d) local(g p q c i v sum) (
     d==46 ? (q=xc_n(id);v=q[8]>=0 ? cp_01(1/(1+max(0,q[12]))) : 0.5;);
     d>=47 ? v=cp_01(p[96+d-47]);
   );
+  d>=51 ? v=pe_value(id,d-51);
   cp_01(v);
 );
 function cp_desc_conf(id d) local(p c v) (
-  d=cp_clamp(floor(d),0,50);v=0;
+  d=cp_clamp(floor(d),0,52);v=0;
   d<8 || d==20 || d==27 ? v=1;
-  d>=8 && xc_ok(id) ? (
+  d>=8 && d<51 && xc_ok(id) ? (
     p=xc_g(id);
     d>=8 && d<20 ? v=p[106];
     d==21 ? v=cp_01(p[30]);
@@ -492,12 +547,13 @@ function cp_desc_conf(id d) local(p c v) (
     d==45 || d==46 ? v=1;
     d>=47 ? v=(xd_eval[d-47]>0.0000001 ? 1 : 0);
   );
+  d>=51 ? v=(pe_span_use && id==pe_span_id ? pe_span_value[2+d-51] : pe_conf(id,d-51));
   cp_01(v);
 );
 // ---------- v1.6 Constraint Trajectory Solver ----------
 // Twelve arbitrary descriptor lanes share normalized event time. They are
 // retrieval constraints, not DSP filters. Candidate search remains bounded and
-// all descriptor values are read from the precomputed 51-axis registry.
+// all descriptor values are read from the precomputed 53-axis registry.
 function tr_lane(i) (traj_base+cp_clamp(floor(i),0,11)*40;);
 function tr_progress(e t) local(den) (
   e[12]>0 ? cp_01((t-e[5])/max(1,e[10]-e[5])) : cp_01((t-e[5])/max(1,e[50]));
@@ -512,24 +568,24 @@ function tr_penalty(id u) local(i p mode strength target value conf err total wt
     // Maximum/Minimum are constraint-like: small compliance errors are cheap;
     // violations become progressively more authoritative at high strength.
     err=mode==0 ? err : err*(1.15+1.85*err);
-    total+=err*strength*max(0.12,conf);wt+=strength*max(0.12,conf);active+=1;
+    p[1]>=51 ? (err=conf*err+(1-conf)*0.75;total+=err*strength;wt+=strength;) : (total+=err*strength*max(0.12,conf);wt+=strength*max(0.12,conf););active+=1;
   );i+=1;);tr_active_eval=active;wt>0 ? total/wt : 0;
 );
 function tr_future_penalty(id u du) local(n i j q cand c best1 bestid best2 q2) (
   best1=100;bestid=-1;best2=100;
   xc_ok(id) ? (
-    n=xc_n(id);i=0;loop(4,cand=n[i];cp_valid(cand) ? (c=tr_penalty(cand,min(1,u+du));c<best1 ? (best1=c;bestid=cand;););i+=1;);
-    q=xc_next(id);cp_valid(q) ? (c=tr_penalty(q,min(1,u+du));c<best1 ? (best1=c;bestid=q;););
+    n=xc_n(id);i=0;loop(4,cand=n[i];(pe_active_request() ? xc_allowed(cand,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(cand)) ? (c=tr_penalty(cand,min(1,u+du));c<best1 ? (best1=c;bestid=cand;););i+=1;);
+    q=xc_next(id);(pe_active_request() ? xc_allowed(q,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(q)) ? (c=tr_penalty(q,min(1,u+du));c<best1 ? (best1=c;bestid=q;););
     bestid>=0 ? (
-      q2=xc_n(bestid);j=0;loop(4,cand=q2[j];cp_valid(cand) ? (c=tr_penalty(cand,min(1,u+du*2));best2=min(best2,c););j+=1;);
-      q=xc_next(bestid);cp_valid(q) ? best2=min(best2,tr_penalty(q,min(1,u+du*2)));
+      q2=xc_n(bestid);j=0;loop(4,cand=q2[j];(pe_active_request() ? xc_allowed(cand,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(cand)) ? (c=tr_penalty(cand,min(1,u+du*2));best2=min(best2,c););j+=1;);
+      q=xc_next(bestid);(pe_active_request() ? xc_allowed(q,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(q)) ? best2=min(best2,tr_penalty(q,min(1,u+du*2)));
     );
   );
   best1>=100 ? best1=tr_penalty(id,min(1,u+du));best2>=100 ? best2=best1;
   0.70*best1+0.30*best2;
 );
 function tr_reset_lane(i desc enable) local(p j) (
-  p=tr_lane(i);memset(p,0,40);p[0]=enable;p[1]=cp_clamp(floor(desc),0,50);p[2]=0;p[3]=0.85;p[5]=32;p[6]=0;
+  p=tr_lane(i);memset(p,0,40);p[0]=enable;p[1]=cp_clamp(floor(desc),0,52);p[2]=0;p[3]=0.85;p[5]=32;p[6]=0;
   j=0;loop(32,p[8+j]=0.5;j+=1;);
 );
 function tr_set_linear(i desc mode y0 y1 strength) local(p) (
@@ -572,7 +628,7 @@ function tr_meta(id) local(lane code p q) (
       code==0 ? p[0]=0;
       code==1 ? p[0]=1;
       code==2 ? tr_reset_lane(lane,p[1],1);
-      code>=16 && code<=66 ? (p[1]=code-16;p[0]=1;);
+      code>=16 && code<=68 ? (p[1]=code-16;p[0]=1;);
       code>=80 && code<=82 ? p[2]=code-80;
       code>=96 && code<=98 ? p[6]=code-96;
       code>=128 && code<=383 ? p[3]=(code-128)/255;
@@ -603,6 +659,7 @@ function amp_meta(code) local(a) (
   traj_epoch+=1;
 );
 function tr_capture(id e t) local(r i p req got err conf strength total wt rec head) (
+  pe_excerpt(id,cp_w(floor((e-event_base)/64)*walker_per_event)[41],cp_w(floor((e-event_base)/64)*walker_per_event)[42]);pe_span_use=1;
   r=traj_runtime_base;r[2]=tr_progress(e,t);total=0;wt=0;r[1]=0;i=0;
   loop(12,p=tr_lane(i);p[0]>0.5 ? (
     req=tr_curve_eval(p,5,6,r[2]);got=cp_desc(id,p[1]);conf=cp_desc_conf(id,p[1]);
@@ -610,7 +667,7 @@ function tr_capture(id e t) local(r i p req got err conf strength total wt rec h
     strength=cp_01(p[3]);r[8+i*4]=req;r[9+i*4]=got;r[10+i*4]=err;r[11+i*4]=conf;total+=err*strength;wt+=strength;r[1]+=1;
   ) : (r[8+i*4]=0;r[9+i*4]=0;r[10+i*4]=0;r[11+i*4]=0;);i+=1;);
   r[0]=wt>0 ? cp_01(1-total/wt) : 1;
-  head=floor(r[4]);rec=traj_history_base+head*13;rec[0]=r[2];i=0;loop(12,rec[1+i]=r[9+i*4];i+=1;);r[4]=(head+1)%64;r[3]=min(64,r[3]+1);
+  head=floor(r[4]);rec=traj_history_base+head*13;rec[0]=r[2];i=0;loop(12,rec[1+i]=r[9+i*4];i+=1;);r[4]=(head+1)%64;r[3]=min(64,r[3]+1);pe_span_use=0;
 );
 // Body spectral cost: occupancy and timbre; not interchangeable with join cost.
 function xc_distance(a b tone) local(i p q z v harm conf tot) (
@@ -667,7 +724,7 @@ function xc_begin() local(i) (
   xc_coarse_n=0;xc_matrix_cursor=0;xc_coverage_limited=0;xc_sparse_sources=0;xc_mapping_misses=0;xc_recurrences=0;
   xc_built_ceiling=slider52;xc_quality=quality_request;xc_fft_size=quality_request<1 ? 512 : (quality_request>1 ? 4096 : 2048);
   memset(xc_stats,0,256);i=0;loop(8,xc_weights[i]=1;i+=1;);
-  memset(xc_res_counts,0,128);memset(xc_states,0,512);memset(desc_cursor,0,153);
+  memset(xc_res_counts,0,128);memset(xc_states,0,512);memset(desc_cursor,0,159);
   xc_schema=1400;xc_request_hierarchy=1;
 );
 function xc_frame_setup() local(g s p length offset) (
@@ -1264,6 +1321,7 @@ function h_meso_add(id) local(g p prev d b v dt delta) (
   hm_grainmap[id]=hm_n;h_mend=id+1;
 );
 function h_begin() local(i p) (
+  pe_ready=0;pe_phase=0;pe_epoch=-1;
   xc_grammar_ready=0;xc_grammar_epoch=-1;xc_post_phase=0;xc_map_ready=0;xc_map_phase=0;fc_ready=0;fc_phase=0;h_ready=0;h_phase=0;h_epoch=-1;h_status=0;hm_n=0;hx_n=0;hm_k=0;hx_k=0;
   hm_transitions=0;hx_transitions=0;h_merges=0;h_cluster_cap=0;h_link_sources=0;h_coarsened=0;
   h_excluded=0;h_empty_classes=0;h_macro_singletons=0;h_coverage_lost=0;h_macro_lost=0;h_macro_gap_n=0;h_micro_only_short=0;h_mopen=0;h_msource=-1;h_cursor=0;h_rest_seconds=0;
@@ -1518,10 +1576,10 @@ function fc_member_in_range(cls id) local(p c a x) (
   ) : 1;
 );
 function fc_member_allowed(cls id) (
-  !fc_focus_enabled(cls) ? 1 : fc_member_in_range(cls,id);
+  pg_member_ok(id) && (!fc_focus_enabled(cls) ? 1 : fc_member_in_range(cls,id));
 );
 function fc_class_available(level cls src) local(n lo list i found) (
-  level>=1 || !fc_focus_enabled(cls) ? h_class_range(level,cls,src)>0 : (
+  level>=1 || (!fc_focus_enabled(cls) && (!pg_changed || pg_bypass) && !pg_preview) ? h_class_range(level,cls,src)>0 : (
     n=h_class_range(0,cls,src);lo=h_range_lo;list=hm_list;i=0;found=0;
     while(i<n && !found)(fc_member_allowed(cls,list[lo+i]) ? found=1;i+=1;);found;
   );
@@ -1646,7 +1704,7 @@ function h_pick_member(level cls src q freedom avoid) local(c list n lo j i id p
   chosen=-1;n=h_class_range(level,cls,src);lo=h_range_lo;list=h_list(level);
   n>0 ? (
     c=h_cl(level,cls);bestcost=100;best=-1;sum=0;j=0;h_probe_seed=h_rnd(q);
-    level<1 && fc_focus_enabled(cls) ? (
+    level<1 && (fc_focus_enabled(cls) || (pg_changed && !pg_bypass) || pg_preview) ? (
       // Focused selection is still bounded in expensive distance work. A cheap
       // first pass counts retained members, then <=64 evenly spread retained
       // members receive the ordinary acoustic/member score.
@@ -1973,10 +2031,10 @@ function tr_candidates(src) local(pass l best bests usedmask p d mode target b0 
   loop(4,
     best=-1;bests=-1;l=0;loop(12,p=tr_lane(l);p[0]>0.5 && p[3]>0.05 && (floor(usedmask/pow(2,l))%2)==0 ? (p[3]>bests ? (bests=p[3];best=l;););l+=1;);
     best>=0 ? (
-      usedmask+=pow(2,best);p=tr_lane(best);d=cp_clamp(floor(p[1]),0,50);mode=cp_clamp(floor(p[2]),0,2);target=tr_curve_eval(p,5,6,traj_u);b0=min(15,floor(target*16));b1=b0;
+      usedmask+=pow(2,best);p=tr_lane(best);d=cp_clamp(floor(p[1]),0,52);mode=cp_clamp(floor(p[2]),0,2);target=tr_curve_eval(p,5,6,traj_u);b0=min(15,floor(target*16));b1=b0;
       mode==1 ? b0=max(0,b0-2);mode==2 ? b1=min(15,b1+2);
       b=max(0,b0-1);while(b<=min(15,b1+1) && candidate_n<64)(
-        xc_ready ? (key=d*16+b;n=min(32,desc_res_counts[key]);j=0;loop(min(4,n),ix=min(n-1,floor((j+0.5)*n/max(1,min(4,n))));id=desc_reservoir[key*32+ix];h_add_candidate(id,-5,src);j+=1;);) : (
+        xc_ready ? (key=d*16+b;n=min(32,(pg_preview ? pg_res_counts : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_counts : desc_res_counts))[key]);j=0;loop(min(4,n),ix=min(n-1,floor((j+0.5)*n/max(1,min(4,n))));id=(pg_preview ? pg_reservoir : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_res : desc_reservoir))[key*32+ix];h_add_candidate(id,-5,src);j+=1;);) : (
           d<8 ? (key=d*16+b;n=min(64,path_res_counts[key]);j=0;loop(min(4,n),ix=min(n-1,floor((j+0.5)*n/max(1,min(4,n))));id=path_reservoir[key*64+ix];h_add_candidate(id,-5,src);j+=1;););
         );b+=1;
       );
@@ -2005,6 +2063,196 @@ function h_note_selected(id) local(q i b p value n) (
   );
 );
 
+// Contextual PE preprocessing is advanced only while no event/voice is active.
+function pe_sorted_median(n) local(i j z) (
+  i=1;while(i<n)(z=pe_sort[i];j=i-1;while(j>=0 && pe_sort[j]>z)(pe_sort[j+1]=pe_sort[j];j-=1;);pe_sort[j+1]=z;i+=1;);
+  n>0 ? (pe_sort[floor((n-1)/2)]+pe_sort[floor(n/2)])*0.5 : 0;
+);
+function pe_ref_add(id t weight context) local(i at j g q duplicate sa sb ha hb) (
+  id>=0 && id<grain_count && weight>0 && pe_p(id)[14]>=0.999999999 ? (
+    duplicate=0;i=0;loop(pe_nr,pe_refs[i*4]==id ? duplicate=1;
+      pe_ref_mode==1 ? (sa=cp_g(id)[1];sb=cp_g(pe_refs[i*4])[1];ha=pe_source_hash+sa*4;hb=pe_source_hash+sb*4;
+        sa!=sb && ha[0]==hb[0] && ha[1]==hb[1] && ha[2]==hb[2] && ha[3]==hb[3] ? duplicate=1;
+      );i+=1;
+    );
+    !duplicate ? (
+      at=0;while(at<pe_nr && pe_refs[at*4+3]<=context)(at+=1;);
+      at<32 ? (j=min(31,pe_nr);while(j>at)(memcpy(pe_refs+j*4,pe_refs+(j-1)*4,4);j-=1;);
+        q=pe_refs+at*4;q[0]=id;q[1]=t;q[2]=weight;q[3]=context;pe_nr=min(32,pe_nr+1);
+      );
+    );
+  );
+);
+function pe_region_refs(id) local(g mi m a b j q t guard) (
+  pe_nr=0;pe_ref_mode=0;g=cp_g(id);mi=hm_grainmap[id];
+  mi>=0 && mi<hm_n ? (
+    m=h_m(mi);a=max(m[1],id-40);b=min(m[1]+m[2],id+41);j=a;guard=max(1,g[4]*0.002);
+    while(j<b)(q=cp_g(j);
+      j!=id && (q[2]+q[3]+guard<=g[2] || q[2]>=g[2]+g[3]+guard) ? (
+        t=((q[2]+q[3]*0.5)-(g[2]+g[3]*0.5))/max(1,g[4]*m[4]);
+        pe_ref_add(j,t,1,abs(t));
+      );j+=1;
+    );
+  );
+);
+function pe_context_cost(a b) local(ga gb pa pb na nb d cost n) (
+  ga=cp_g(a);gb=cp_g(b);pa=xc_prev(a);pb=xc_prev(b);na=xc_next(a);nb=xc_next(b);cost=0;n=0;
+  // Conditioning uses surrounding grains, never the target feature vector.
+  pa>=0 && pb>=0 ? (d=0;loop(16,cost+=abs(pe_v(pa)[d]-pe_v(pb)[d])*(d<8 ? 0.125 : 1);d+=1;);n+=9;);
+  na>=0 && nb>=0 ? (d=0;loop(16,cost+=abs(pe_v(na)[d]-pe_v(nb)[d])*(d<8 ? 0.125 : 1);d+=1;);n+=9;);
+  n>0 ? cost/n : 0.5;
+);
+function pe_ec_refs(id) local(g mi m u k cls wt c lo n j ep p gid time ctx sourcea sourceb dup i q same) (
+  pe_nr=0;pe_ref_mode=1;g=cp_g(id);mi=hm_grainmap[id];
+  mi>=0 && mi<hm_n ? (
+    m=h_m(mi);u=cp_01(((g[2]+g[3]*0.5)/g[4]-m[3])/max(0.000001,m[4]));k=0;
+    loop(3,cls=m[6+k];wt=m[9+k];
+      cls>=0 && wt>0.01 ? (
+        n=h_class_range(0,cls,0);lo=h_range_lo;j=0;
+        loop(min(40,n),ep=hm_list[lo+min(n-1,floor((j+0.5)*n/max(1,min(40,n))))];
+          ep!=mi ? (
+            p=h_m(ep);time=(p[3]+u*p[4]);gid=pe_at(p[0],floor(time*cp_s(p[0])[3]));
+            gid>=p[1] && gid<p[1]+p[2] ? (
+              sourcea=pe_source_hash+g[1]*4;sourceb=pe_source_hash+p[0]*4;
+              dup=p[0]!=g[1] && sourcea[0]==sourceb[0] && sourcea[1]==sourceb[1] && sourcea[2]==sourceb[2];
+              !dup ? (ctx=pe_context_cost(id,gid)+0.05*abs(log(max(0.01,p[4])/max(0.01,m[4])));pe_ref_add(gid,0,wt,ctx););
+            );
+          );j+=1;
+        );
+      );k+=1;
+    );
+    // Balance repeated observations from one source, retain independent regions.
+    i=0;loop(pe_nr,q=pe_refs+i*4;same=0;j=0;loop(pe_nr,cp_g(pe_refs[j*4])[1]==cp_g(q[0])[1] ? same+=1;j+=1;);
+      q[2]/=sqrt(max(1,same));q[2]*=exp(-q[3]*8);i+=1;
+    );
+  );
+);
+function pe_fit(id which) local(d i j q x y w sw sx sxx sy sxy den a b r scale h raw total weights fw z target confidence best bestd eff sw2 pass p ctx dispersion) (
+  p=pe_p(id);p[which]=0.5;p[2+which]=0;p[4+which]=0;p[6+which]=pe_nr;
+  pe_nr>=3 && p[14]>=0.999999999 ? (
+    total=0;weights=0;best=-1;bestd=-1;eff=0;sw=0;sw2=0;ctx=0;i=0;
+    loop(pe_nr,q=pe_refs+i*4;sw+=q[2];sw2+=q[2]*q[2];ctx+=q[2]*q[3];i+=1;);
+    eff=sw*sw/max(0.000000000001,sw2);confidence=cp_01((eff-2)/10);which==1 ? confidence*=exp(-ctx/max(0.000001,sw)*2);
+    d=0;loop(16,
+      i=0;loop(pe_nr,pe_fit_weights[i]=pe_refs[i*4+2];i+=1;);pass=0;scale=0.025;
+      loop(2,
+        sw=0;sx=0;sxx=0;sy=0;sxy=0;i=0;
+        loop(pe_nr,q=pe_refs+i*4;x=q[1];y=pe_v(q[0])[d];w=pe_fit_weights[i];sw+=w;sx+=w*x;sxx+=w*x*x;sy+=w*y;sxy+=w*x*y;i+=1;);
+        den=sw*sxx-sx*sx;b=which==0 && den>0.00000001 ? (sw*sxy-sx*sy)/den : 0;a=(sy-b*sx)/max(0.000001,sw);
+        i=0;loop(pe_nr,q=pe_refs+i*4;r=pe_v(q[0])[d]-a-b*q[1];pe_sort[i]=abs(r);i+=1;);scale=max(0.025,pe_sorted_median(pe_nr)*1.4826);
+        i=0;loop(pe_nr,q=pe_refs+i*4;r=abs(pe_v(q[0])[d]-a-b*q[1]);pe_fit_weights[i]=q[2]*min(1,1.5*scale/max(0.000001,r));i+=1;);pass+=1;
+      );
+      // PRESS residuals penalize an overfitted temporal trend. Target stays held out.
+      i=0;loop(pe_nr,q=pe_refs+i*4;x=q[1];w=pe_fit_weights[i];h=w/max(0.000001,sw);
+        which==0 && den>0.00000001 ? h+=w*sw*(x-sx/max(0.000001,sw))^2/den;
+        pe_sort[i]=abs(pe_v(q[0])[d]-a-b*x)/max(0.15,1-h);i+=1;
+      );
+      scale=max(0.025,pe_sorted_median(pe_nr)*1.4826)*sqrt(1+1/max(1,eff-2));
+      z=abs(pe_v(id)[d]-a)/scale;raw=z<=1.5 ? z*z*0.5 : 1.5*(z-0.75);
+      fw=d<8 ? 0.125 : 1;total+=raw*fw;weights+=fw;raw*fw>best ? (best=raw*fw;bestd=d;);d+=1;
+    );
+    raw=sqrt(2*total/max(0.000001,weights));p[which]=raw/(2+raw);p[2+which]=confidence;p[4+which]=raw;p[6+which]=eff;p[9+which]=bestd;p[11+which]=best;
+  );
+);
+// Up to three reference-only modes avoid treating the average of unlike EC
+// members as an expected sound. The held-out target never fits a mode or prior.
+function pe_ec_fit(id) local(n k i j d c best dist far seed iter q v center weight total count good mode raw conf eff likelihood mass prior bestpost bestd besterr p entropy) (
+  n=pe_nr;p=pe_p(id);p[15]=1;
+  n<8 ? pe_fit(id,1) : (
+    memcpy(pe_ref_copy,pe_refs,128);k=min(3,floor(n/4));memset(pe_centers,0,48);
+    memcpy(pe_centers,pe_v(pe_refs[0]),16);c=1;
+    loop(k-1,far=-1;seed=0;i=0;
+      loop(n,v=pe_v(pe_refs[i*4]);best=1000000;j=0;
+        loop(c,dist=0;d=0;loop(16,dist+=(v[d]-pe_centers[j*16+d])^2*(d<8 ? 0.125 : 1);d+=1;);best=min(best,dist);j+=1;);
+        best>far ? (far=best;seed=i;);i+=1;
+      );memcpy(pe_centers+c*16,pe_v(pe_refs[seed*4]),16);c+=1;
+    );
+    iter=0;loop(4,
+      memset(pe_center_sums,0,48);memset(pe_cluster_mass,0,8);i=0;
+      loop(n,q=pe_ref_copy+i*4;v=pe_v(q[0]);best=1000000;mode=0;c=0;
+        loop(k,dist=0;d=0;loop(16,dist+=(v[d]-pe_centers[c*16+d])^2*(d<8 ? 0.125 : 1);d+=1;);dist<best ? (best=dist;mode=c;);c+=1;);
+        pe_cluster_id[i]=mode;pe_cluster_mass[mode]+=q[2];pe_cluster_mass[4+mode]+=1;d=0;
+        loop(16,pe_center_sums[mode*16+d]+=q[2]*v[d];d+=1;);i+=1;
+      );c=0;loop(k,pe_cluster_mass[c]>0 ? (d=0;loop(16,pe_centers[c*16+d]=pe_center_sums[c*16+d]/pe_cluster_mass[c];d+=1;););c+=1;);iter+=1;
+    );
+    good=0;c=0;total=0;loop(k,pe_cluster_mass[4+c]>=3 ? good+=1;total+=pe_cluster_mass[c];c+=1;);
+    good<2 ? (memcpy(pe_refs,pe_ref_copy,128);pe_nr=n;pe_fit(id,1);) : (
+      c=0;likelihood=0;conf=0;eff=0;mass=0;entropy=0;bestpost=-1;bestd=-1;besterr=0;
+      loop(k,pe_cluster_mass[4+c]>=3 ? (
+        pe_nr=0;i=0;loop(n,pe_cluster_id[i]==c ? (memcpy(pe_refs+pe_nr*4,pe_ref_copy+i*4,4);pe_nr+=1;);i+=1;);
+        pe_fit(id,1);prior=pe_cluster_mass[c]/max(0.000000001,total);raw=p[5];entropy-=prior*log(max(0.000000001,prior));
+        p[3]>0 ? (weight=prior*exp(-min(700,raw*raw*0.5));likelihood+=weight;mass+=prior;conf+=prior*p[3];eff+=p[7];
+          weight>bestpost ? (bestpost=weight;bestd=p[10];besterr=p[12];);
+        );
+      );c+=1;);
+      raw=mass>0 ? sqrt(max(0,-2*log(max(0.000000000001,likelihood/mass)))) : 0;
+      p[1]=mass>0 ? raw/(2+raw) : 0.5;p[3]=conf*(1-0.35*cp_01(entropy/max(0.000001,log(good))));p[5]=raw;p[7]=eff;p[10]=bestd;p[12]=besterr;p[15]=good;
+      memcpy(pe_refs,pe_ref_copy,128);pe_nr=n;
+    );
+  );
+);
+function pe_begin() local(i p) (
+  pe_ready=0;pe_phase=1;pe_cursor=0;pe_offset=0;pe_frames=0;pe_reads=0;pe_read_errors=0;pe_ffts=0;pe_fits=0;pe_epoch=index_epoch;
+  pe_nfft=quality_request<1 ? 512 : (quality_request>1 ? 2048 : 1024);
+  memset(pe_vectors,0,grain_count*16);memset(pe_stats,0,grain_count*16);memset(pe_source_hash,0,source_count*4);
+  i=0;loop(source_count,p=pe_source_hash+i*4;p[0]=104729;p[1]=130363;p[2]=cp_s(i)[2];p[3]=cp_s(i)[3];i+=1;);
+  pe_frame_read=0;pe_subphase=0;pg_ready=0;
+);
+function pe_frame_begin() local(g n) (
+  g=cp_g(pe_cursor);pe_count=min(pe_nfft,g[3]-pe_offset);pe_frame_read=0;
+  memset(pe_fft_l,0,pe_nfft*2);memset(pe_fft_r,0,pe_nfft*2);memset(pe_tmp,0,32);
+  pe_lpow=0;pe_rpow=0;pe_cross=0;pe_peak=0;pe_diff=0;pe_last_l=0;pe_last_r=0;pe_subphase=1;
+);
+function pe_frame_end() local(g v p i k power freq total sum second flat peak band win n value prior) (
+  g=cp_g(pe_cursor);v=pe_v(pe_cursor);p=pe_p(pe_cursor);
+  fft(pe_fft_l,pe_nfft);fft_permute(pe_fft_l,pe_nfft);fft(pe_fft_r,pe_nfft);fft_permute(pe_fft_r,pe_nfft);pe_ffts+=2;
+  i=1;total=0;sum=0;second=0;flat=0;
+  while(i<pe_nfft/2)(power=pe_fft_l[i*2]^2+pe_fft_l[i*2+1]^2+pe_fft_r[i*2]^2+pe_fft_r[i*2+1]^2;freq=i*g[4]/pe_nfft;
+    band=freq<125 ? 0 : (freq<250 ? 1 : (freq<500 ? 2 : (freq<1000 ? 3 : (freq<2000 ? 4 : (freq<4000 ? 5 : (freq<8000 ? 6 : 7))))));
+    pe_tmp[band]+=power;total+=power;sum+=power*freq;second+=power*freq*freq;flat+=log(max(0.000000000000000001,power));i+=1;
+  );i=0;loop(8,pe_tmp[i]=sqrt(pe_tmp[i]/max(0.000000000000000001,total));i+=1;);
+  value=sqrt((pe_lpow+pe_rpow)/max(1,pe_count*2));
+  pe_tmp[8]=cp_01((cp_db(value)+100)/100);pe_tmp[9]=cp_01(cp_db(pe_peak/max(0.000000000001,value))/36);
+  pe_tmp[10]=total>0.000000000000000001 ? cp_01(exp(flat/max(1,pe_nfft/2-1))/(total/max(1,pe_nfft/2-1))) : 0;
+  pe_tmp[11]=cp_01(sum/max(0.000000000000000001,total)/max(1,g[4]*0.5));
+  pe_tmp[12]=cp_01(sqrt(max(0,second/max(0.000000000000000001,total)-(sum/max(0.000000000000000001,total))^2))/max(1,g[4]*0.5));
+  pe_tmp[13]=0.5+0.5*pe_cross/sqrt(max(0.000000000000000001,pe_lpow*pe_rpow));
+  pe_tmp[14]=0.5+0.5*(pe_rpow-pe_lpow)/max(0.000000000000000001,pe_rpow+pe_lpow);
+  pe_tmp[15]=cp_01(sqrt(pe_diff/max(0.000000000000000001,pe_lpow+pe_rpow))*0.5);
+  i=0;loop(16,v[i]+=cp_01(pe_tmp[i])*pe_count;i+=1;);p[13]+=1;
+  pe_offset+=pe_count;pe_frames+=1;pe_subphase=0;
+  pe_offset>=g[3] ? (i=0;loop(16,v[i]/=max(1,g[3]);i+=1;);p[8]=hm_grainmap[pe_cursor];p[14]/=max(1,g[3]);pe_offset=0;pe_cursor+=1;);
+);
+function pe_build(work) local(g p l r x win take i z hash key d prev q) (
+  pe_phase==1 ? (
+    pe_cursor<grain_count ? (
+      !pe_subphase ? pe_frame_begin();g=cp_g(pe_cursor);hash=pe_source_hash+g[1]*4;take=min(work,pe_count-pe_frame_read);
+      loop(take,
+        sample_read2(bank_pool,g[0],g[2]+pe_offset+pe_frame_read,l,r) && l==l && r==r && abs(l)<=1000000 && abs(r)<=1000000 ? pe_p(pe_cursor)[14]+=1 : (l=0;r=0;pe_read_errors+=1;);
+        win=pe_count>1 ? 0.5-0.5*cos(2*$pi*pe_frame_read/(pe_count-1)) : 1;
+        pe_fft_l[pe_frame_read*2]=l*win;pe_fft_r[pe_frame_read*2]=r*win;
+        pe_lpow+=l*l;pe_rpow+=r*r;pe_cross+=l*r;pe_peak=max(pe_peak,max(abs(l),abs(r)));
+        pe_frame_read>0 ? pe_diff+=(l-pe_last_l)^2+(r-pe_last_r)^2;pe_last_l=l;pe_last_r=r;
+        x=floor(cp_clamp(l,-8,8)*1048576)+8388608;z=floor(cp_clamp(r,-8,8)*1048576)+8388608;
+        // EEL's % coerces to signed integers; use exact-double modular arithmetic
+        // so the rolling hash cannot wrap negative before taking the modulus.
+        key=hash[0]*131+x*17+z;hash[0]=key-floor(key/16777213)*16777213;
+        key=hash[1]*137+x+z*19;hash[1]=key-floor(key/16777199)*16777199;
+        pe_frame_read+=1;pe_reads+=1;
+      );pe_frame_read>=pe_count ? pe_frame_end();
+    );pe_cursor>=grain_count ? (pe_phase=2;pe_cursor=0;);
+  ) : pe_phase==2 ? (
+    pe_cursor<grain_count ? (pe_region_refs(pe_cursor);pe_fit(pe_cursor,0);pe_ec_refs(pe_cursor);pe_ec_fit(pe_cursor);pe_fits+=2;pe_cursor+=1;);
+    pe_cursor>=grain_count ? (pe_phase=3;pe_cursor=0;memset(pe_sum,0,4);memset(desc_res_counts+816,0,32););
+  ) : pe_phase==3 ? (
+    i=0;while(i<256 && pe_cursor<grain_count)(g=cp_g(pe_cursor);p=pe_p(pe_cursor);q=pe_prefix+pe_cursor*4;d=0;
+      loop(2,pe_sum[d*2]+=p[d]*p[d+2]*g[3];pe_sum[d*2+1]+=p[d+2]*g[3];q[d*2]=pe_sum[d*2];q[d*2+1]=pe_sum[d*2+1];
+        p[d+2]>0.05 ? (key=(51+d)*16+min(15,floor(p[d]*16));z=desc_res_counts[key];desc_res_counts[key]+=1;hash=z<32 ? z : ((pe_cursor*127+key*8191)%max(1,z+1));hash<32 ? desc_reservoir[key*32+hash]=pe_cursor;);d+=1;
+      );pe_cursor+=1;i+=1;
+    );pe_cursor>=grain_count ? (pe_phase=0;pe_ready=1;pe_model_key=corpus_key;pg_load_pending=1;);
+  );
+);
+
 // ---------- Playback consumes immutable descriptors/edges, never training ----------
 function xc_runtime_begin(w e when) local(st index d anchor)
 (
@@ -2012,7 +2260,7 @@ function xc_runtime_begin(w e when) local(st index d anchor)
   st[0]!=e[1] ? (
     memset(st,0,64);st[0]=e[1];st[1]=floor(slider56);st[2]=xc_ready && xc_epoch==index_epoch && xc_params[0]>0.5;
     st[3]=cp_clamp(floor(slider64)-1,0,max(0,source_count-1));st[4]=index_epoch;st[10]=-1;st[11]=-1;
-    anchor=w[5];d=0;loop(51,st[12+d]=anchor>=0 && cp_valid(anchor) ? cp_desc(anchor,d) : 0.5;d+=1;);
+    anchor=w[5];d=0;loop(2,pe_event_locks[index*4+d]=anchor>=0 ? pe_value(anchor,d) : 0.5;pe_event_locks[index*4+2+d]=anchor>=0 ? pe_conf(anchor,d) : 0;d+=1;);d=0;loop(51,st[12+d]=anchor>=0 && cp_valid(anchor) ? cp_desc(anchor,d) : 0.5;d+=1;);
   );
   xc_lock_state=st;
   xc_run=st[2]>0 && st[4]==index_epoch && xc_ready && xc_params[0]>0.5;
@@ -2119,7 +2367,7 @@ function cp_target(w e t) local(d x pressure m lockv f basev px py axisx axisy b
   );
   // Map/path guidance is registry-wide. Rich axes use the previous audible
   // grain as their neutral baseline; focus/path then move that target explicitly.
-  axisx=cp_clamp(floor(slider40),0,50);axisy=cp_clamp(floor(slider41),0,50);
+  axisx=cp_clamp(floor(slider40),0,52);axisy=cp_clamp(floor(slider41),0,52);
   bx=axisx<8 ? target_base[axisx] : (w[5]>=0 && cp_valid(w[5]) ? cp_desc(w[5],axisx) : 0.5);
   by=axisy<8 ? target_base[axisy] : (w[5]>=0 && cp_valid(w[5]) ? cp_desc(w[5],axisy) : 0.5);
   map_target_x=bx*(1-slider44)+slider42*slider44;map_target_y=by*(1-slider44)+slider43*slider44;
@@ -2183,7 +2431,14 @@ function cp_child_diversity(id w) local(i base sib sid g p dist pen) (
   );pen;
 );
 function cp_score(id w bridge) local(d g prev p cost ident seam hist same fit n delta rel axisx axisy dx dy conf lockv tnow tfuture) (
-  g=cp_g(id);cost=0;ident=0;d=0;
+  g=cp_g(id);pe_span_use=0;
+  pe_ready && pe_active_request() ? (
+    xc_run && xc_ok(id) ? (pe_plan_start=xc_g(id)[88];pe_plan_frames=xc_g(id)[89];) : (cp_play_region(id,w[4]==2 ? 2 : (phase_stage==0 ? 0 : 1));pe_plan_start=play_srcpos;pe_plan_frames=play_frames;);
+    pe_plan_event=cp_e(w[1]);pe_plan_kind=w[4]==2 ? 2 : (phase_stage==0 ? 0 : 1);
+    pe_plan_event[12]>0 ? (pe_plan_sec=max(0.001,(pe_plan_event[10]-pe_plan_event[5])/srate);pe_plan_cap=max(pe_plan_kind==0 || pe_plan_kind==2 ? 0.050 : 0.075,min(slider52/1000,pe_plan_sec*(pe_plan_kind==0 ? 0.32 : 0.55)));pe_plan_frames=min(pe_plan_frames,max(1,floor(pe_plan_cap*g[4])));) : (path_count>1 ? pe_plan_frames=min(pe_plan_frames,max(1,floor(max(0.075,min(slider52/1000,slider47/10))*g[4]))););
+    pg_limit_span(id,pe_plan_start,pe_plan_frames);pe_plan_start=pg_span_start;pe_plan_frames=pg_span_frames;
+    pe_excerpt(id,pe_plan_start,pe_plan_frames);pe_span_use=1;
+  );cost=0;ident=0;d=0;
   loop(8,
     delta=abs(cp_feat(id,d)-target_base[d]);
     cost+=delta*(d==1 || d==2 || d==3 ? 1 : 0.45);
@@ -2201,12 +2456,14 @@ function cp_score(id w bridge) local(d g prev p cost ident seam hist same fit n 
   w[4]>0 ? cost+=2.40*cp_child_diversity(id,w);
   bridge>=0 ? cost+=0.08*(1-cp_member(id,bridge));
   h_active ? cost+=0.35*h_effect*(1-h_fit(id));
-  axisx=cp_clamp(floor(slider40),0,50);axisy=cp_clamp(floor(slider41),0,50);
+  axisx=cp_clamp(floor(slider40),0,52);axisy=cp_clamp(floor(slider41),0,52);
   dx=abs(cp_desc(id,axisx)-map_target_x)*cp_desc_conf(id,axisx);dy=abs(cp_desc(id,axisy)-map_target_y)*cp_desc_conf(id,axisy);
+  axisx>=51 ? dx+=(1-cp_desc_conf(id,axisx))*0.75;axisy>=51 ? dy+=(1-cp_desc_conf(id,axisy))*0.75;
   slider44>0 ? cost+=1.8*slider44*(dx+dy)*0.5;
   path_count>1 && slider39>0 ? (score_path=(dx+dy)*0.5;cost+=3.5*slider39*score_path;) : score_path=0;
   tnow=tr_penalty(id,traj_u);tr_active_eval>0 ? (tfuture=tr_future_penalty(id,traj_u,traj_du);cost+=2.75*tnow+0.85*tfuture;);
-  cost+=xc_runtime_cost(id,w);1/(1+max(0,cost));
+  pe_locks>0 && xc_lock_state>0 ? (d=0;loop(2,(floor(pe_locks/pow(2,d))%2)>0 && pe_event_locks[floor((xc_lock_state-xc_states)/64)*4+2+d]>0.05 ? cost+=0.55*slider51*(cp_desc_conf(id,51+d)*abs(cp_desc(id,51+d)-pe_event_locks[floor((xc_lock_state-xc_states)/64)*4+d])+(1-cp_desc_conf(id,51+d))*0.75);d+=1;););
+  cost+=xc_runtime_cost(id,w);pe_span_use=0;pe_plan_id=id;1/(1+max(0,cost));
 );
 // Up to three shared feature posting lists + an explicit all-corpus safety route.
 // No exclusive role lists; 64 bounded candidates, de-duplicated before scoring.
@@ -2214,13 +2471,13 @@ function cp_path_candidates(src) local(axis pass b bin k n i ix id g dist j at t
   path_candidates_n=0;
   path_count>1 && slider39>0 ? (
     memset(path_best,-1,32);total=0;pass=0;
-    loop(2,axis=pass==0 ? cp_clamp(floor(slider40),0,50) : cp_clamp(floor(slider41),0,50);b=min(15,floor((pass==0 ? map_target_x : map_target_y)*16));bin=max(0,b-1);
+    loop(2,axis=pass==0 ? cp_clamp(floor(slider40),0,52) : cp_clamp(floor(slider41),0,52);b=min(15,floor((pass==0 ? map_target_x : map_target_y)*16));bin=max(0,b-1);
       while(bin<=min(15,b+1))(
         use_rich=xc_ready; k=axis*16+bin;
-        n=use_rich ? min(32,desc_res_counts[k]) : (axis<8 ? min(64,path_res_counts[axis*16+bin]) : 0);i=0;
-        loop(min(16,n),ix=min(n-1,floor((i+0.5)*n/max(1,min(16,n))));id=use_rich ? desc_reservoir[k*32+ix] : path_reservoir[(axis*16+bin)*64+ix];
+        n=use_rich ? min(32,(pg_preview ? pg_res_counts : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_counts : desc_res_counts))[k]) : (axis<8 ? min(64,path_res_counts[axis*16+bin]) : 0);i=0;
+        loop(min(16,n),ix=min(n-1,floor((i+0.5)*n/max(1,min(16,n))));id=use_rich ? (pg_preview ? pg_reservoir : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_res : desc_reservoir))[k*32+ix] : path_reservoir[(axis*16+bin)*64+ix];
           cp_valid(id) ? (g=cp_g(id);src<=0 || g[1]==src-1 ? (
-            dist=abs(cp_desc(id,cp_clamp(floor(slider40),0,50))-map_target_x)+abs(cp_desc(id,cp_clamp(floor(slider41),0,50))-map_target_y);
+            dist=abs(cp_desc(id,cp_clamp(floor(slider40),0,52))-map_target_x)+abs(cp_desc(id,cp_clamp(floor(slider41),0,52))-map_target_y);
             at=0;while(at<total && path_best[at*2]!=id)(at+=1;);
             at==total ? (at=0;while(at<total && path_best[at*2+1]<=dist)(at+=1;);at<12 ? (j=min(11,total);while(j>at)(path_best[j*2]=path_best[(j-1)*2];path_best[j*2+1]=path_best[(j-1)*2+1];j-=1;);path_best[at*2]=id;path_best[at*2+1]=dist;total=min(12,total+1);););
           ););i+=1;
@@ -2229,10 +2486,33 @@ function cp_path_candidates(src) local(axis pass b bin k n i ix id g dist j at t
     );i=0;loop(total,h_add_candidate(path_best[i*2],-3,src);i+=1;);path_candidates_n=total;
   );
 );
+// Reserve retrieval opportunities for requested PE dimensions before the
+// acoustic graph fills the 64-slot candidate budget. Never scan all grains.
+function pe_candidates(src) local(d lane p target strength best key bin lo hi n j id counts entries) (
+  counts=pg_preview ? pg_res_counts : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_counts : desc_res_counts);
+  entries=pg_preview ? pg_reservoir : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_res : desc_reservoir);
+  d=51;loop(2,best=-1;target=0.5;
+    slider40==d && (slider44>0 || path_count>1 && slider39>0) ? (target=map_target_x;best=max(slider44,slider39));
+    slider41==d && (slider44>0 || path_count>1 && slider39>0) ? (target=map_target_y;best=max(slider44,slider39));
+    lane=0;loop(12,p=tr_lane(lane);p[0]>0.5 && p[1]==d && p[3]>best ? (target=tr_lane_value(lane,traj_u);best=p[3];);lane+=1;);
+    best>=0 ? (bin=min(15,floor(cp_01(target)*16));lo=max(0,bin-1);hi=min(15,bin+1);
+      while(lo<=hi)(key=d*16+lo;n=min(32,counts[key]);j=0;
+        loop(min(4,n),id=entries[key*32+min(n-1,floor((j+0.5)*n/max(1,min(4,n))))];h_add_candidate(id,-7,src);j+=1;);lo+=1;
+      );
+    );d+=1;
+  );
+);
+
 function cp_pick(w e t) local(d b v weight total src pass n lo hi j id k found sc value sum best bestsc pooln eligible cutoff bridge cursor seedpick)
 (
   cp_target(w,e,t);pick_id=-1;pick_bridge=-1;pick_relax=0;pick_score=0;pick_checked=0;
-  src=floor(slider14);candidate_n=0;pass=0;total=0;xc_candidates(w,src);cp_path_candidates(src);tr_candidates(src);
+  src=floor(slider14);candidate_n=0;pass=0;total=0;pg_available_n=-1;
+  (pg_changed && !pg_bypass || pg_preview) && pg_ready ? (
+    pg_search_pool=pg_preview ? pg_pool : pg_live_pool;pg_available_n=pg_preview ? pg_pool_n : pg_live_n;pg_search_lo=0;
+    src>0 ? (lo=0;hi=pg_available_n;while(lo<hi)(k=floor((lo+hi)/2);cp_g(pg_search_pool[k])[1]<src-1 ? lo=k+1 : hi=k;);pg_search_lo=lo;hi=pg_available_n;while(lo<hi)(k=floor((lo+hi)/2);cp_g(pg_search_pool[k])[1]<=src-1 ? lo=k+1 : hi=k;);pg_available_n=lo-pg_search_lo;);
+    j=0;n=min(16,pg_available_n);loop(n,id=pg_search_pool[pg_search_lo+min(pg_available_n-1,floor((j+0.5)*pg_available_n/max(1,n)))];h_add_candidate(id,-6,src);j+=1;);
+  );
+  pe_active_request() ? pe_candidates(src);xc_candidates(w,src);cp_path_candidates(src);tr_candidates(src);
   h_active ? h_candidates(src);
   loop(24,bridge_weights[pass]=0;pass+=1;);pass=0;
   loop(3,
@@ -2384,6 +2664,7 @@ function cp_scout_step(work) local(s a lo hi start frame l r power diff n val b 
 function cp_begin() local(n cap avail)
 (
   // Must only be called at a block boundary with no current/pending voices.
+  pe_ready=0;pe_phase=0;pe_epoch=-1;pg_ready=0;pg_stage=0;pg_apply=0;pg_preview=0;pg_preview_pending=0;
   loaded_count=max(0,floor(sample_pool_loaded(bank_pool)));
   avail=max(65536,min(__memtop(),hm_episodes)-source_base-1024);
   h_ready=0;h_phase=0;h_status=0;xc_ready=0;xc_phase=0;xc_post_phase=0;xc_grammar_ready=0;xc_map_ready=0;xc_map_phase=0;
@@ -2586,12 +2867,12 @@ function cp_count_grain(id apply_edits) local(g d raw norm e v) (
     );
   );
   cp_roles(id);cp_path_index(id);
-  cp_valid(id) ? (v=0;loop(29,
+  (id>=0 && id<grain_count && cp_g(id)[9]<0.5 && cp_g(id)[6]>0.00001) ? (v=0;loop(29,
     cp_member(id,v)>0.00001 ? (counts[v]+=1;vertex_counts[v]+=1;);v+=1;
   ););
 );
 function cp_fill_grain(id) local(g v pos) (
-  g=cp_g(id);cp_valid(id) ? (v=0;loop(29,
+  g=cp_g(id);(id>=0 && id<grain_count && cp_g(id)[9]<0.5 && cp_g(id)[6]>0.00001) ? (v=0;loop(29,
     cp_member(id,v)>0.00001 ? (
       pos=offsets[v]+fill_cursor[v];postings[pos]=id;fill_cursor[v]+=1;
     );v+=1;
@@ -2693,9 +2974,16 @@ function cp_build(work) local(s id frames sr nch cells i b w pos l r energy diff
       playable_grains=vertex_counts[28];
       ready && playable_grains>0 && selected_id<0 ? selected_id=postings[offsets[28]];
       memset(vertex_cursor,0,29);browse_dirty=1;ui_left=0;
-      xc_begin();h_ready=0;h_phase=0;h_rebuild_requested=0;freembuf(max(postings+posting_count+64,xc_memory_end));
+      xc_begin();h_ready=0;h_phase=0;h_rebuild_requested=0;freembuf(max(postings+posting_count+64,pe_memory_end));
     );
   );
+);
+// Four constant-time status reads detect a loader transition on the first
+// available callback, even if the periodic poll has not expired. No PCM access.
+function cp_pool_changed() local(state gen selected failed) (
+  state=sample_pool_state(bank_pool);gen=sample_pool_generation(bank_pool);
+  selected=sample_pool_selected(bank_pool);failed=sample_pool_failed(bank_pool);
+  state!=pool_watch_state || gen!=pool_watch_generation || selected!=pool_watch_selected || failed!=pool_watch_failed || slider13!=pool_watch_budget;
 );
 function cp_poll() local(gen state adopted signature)
 (
@@ -2710,11 +2998,15 @@ function cp_poll() local(gen state adopted signature)
   pending_adoption && cp_busy()==0 && cp_hold_count()==0 && pool_state!=1 && pool_state!=2 ? (
     adopted=sample_pool_adopt(bank_pool);
     adopted>=0 ? (
-      generation=sample_pool_generation(bank_pool); have_generation=1;
-      loaded_signature=generation+sample_pool_loaded(bank_pool)*8191+sample_pool_failed(bank_pool)*131+sample_pool_state(bank_pool)*17+sample_pool_selected(bank_pool)*32771;
-      pending_adoption=0; rebuild_request=0; cp_begin();
+      generation=sample_pool_generation(bank_pool);gen=generation;have_generation=1;
+      // Refresh after adoption: loaded() previously referred to the old bank.
+      pool_state=sample_pool_state(bank_pool);pool_selected=sample_pool_selected(bank_pool);
+      pool_loaded=sample_pool_loaded(bank_pool);pool_failed=sample_pool_failed(bank_pool);pool_ram=sample_pool_ram_mb(bank_pool);
+      loaded_signature=generation+pool_loaded*8191+pool_failed*131+pool_state*17+pool_selected*32771;
+      pending_adoption=0;rebuild_request=0;cp_begin();ui_left=0;
     );
   );
+  pool_watch_state=pool_state;pool_watch_generation=gen;pool_watch_selected=pool_selected;pool_watch_failed=pool_failed;pool_watch_budget=slider13;
 );
 
 // ---------------- Event-owned, bounded linear + child walkers ----------------
@@ -2782,7 +3074,8 @@ function cp_trace(id prev bridge t dur score relax rolefit phase kind serial src
 );
 function cp_voice(id role t gain pitch ei kind srcpos frames pan serial) local(i found v g s rate dur e endtime shortx) (
   found=-1;i=0;while(i<64 && found<0)(voice_base[i*32]<=0 ? found=i;i+=1;);
-  id>=0 && id<grain_count && found>=0 && voice_list_n<64 ? (
+  ei>=0 && id>=0 && id<grain_count ? (pg_limit_span(id,srcpos,frames);srcpos=pg_span_start;frames=pg_span_frames;);
+  id>=0 && id<grain_count && frames>0 && found>=0 && voice_list_n<64 ? (
     g=cp_g(id);s=cp_s(g[1]);v=cp_v(found);memset(v,0,32);
     srcpos=cp_clamp(floor(srcpos),0,max(0,s[2]-1));frames=cp_clamp(floor(frames),1,max(1,s[2]-srcpos));
     rate=g[4]/max(8000,srate)*pow(2,pitch/12);dur=max(1,ceil(frames/max(0.000001,rate)));t=floor(t+0.5);
@@ -2885,6 +3178,8 @@ function cp_emit(wi when) local(w e id g prev role dur rate frames srcpos gain v
       g=cp_g(id);rate=g[4]/max(8000,srate)*pow(2,slider8/12);
       playkind=kind==2 ? 2 : (stage==0 ? 0 : 1);xc_run && xc_ok(id) ? (play_srcpos=xc_g(id)[88];play_frames=xc_g(id)[89];play_run_limited=0;) : cp_play_region(id,playkind);frames=play_frames;srcpos=play_srcpos;
       e[12]>0 ? (eventsec=max(0.001,(e[10]-e[5])/srate);eventcap=max(playkind==0 || playkind==2 ? 0.050 : 0.075,min(slider52/1000,eventsec*(playkind==0 ? 0.32 : 0.55)));frames=min(frames,max(1,floor(eventcap*g[4])));) : (path_count>1 ? (eventcap=max(0.075,min(slider52/1000,slider47/10));frames=min(frames,max(1,floor(eventcap*g[4])));););
+      pe_ready && pe_active_request() && pe_plan_id==id ? (srcpos=pe_plan_start;frames=min(frames,pe_plan_frames););
+      pg_limit_span(id,srcpos,frames);srcpos=pg_span_start;frames=pg_span_frames;
       // Hierarchy boundaries retarget the next selection. They do NOT truncate
       // this sounding region. Event/source bounds remain authoritative.
       dur=max(1,ceil(frames/max(0.000001,rate)));
@@ -2941,7 +3236,7 @@ function cp_emit(wi when) local(w e id g prev role dur rate frames srcpos gain v
       h_active ? w[3]=max(when+1,min(w[3],h_schedule_until));
       play_run_limited ? source_run_limited+=1;
       dur<srate*0.050 ? short_hops+=1;
-    ) : (w[3]=when+max(16,floor(srate*0.005));missing_candidates+=1;);
+    ) : ((pg_changed && !pg_bypass || pg_preview) && pg_available_n==0 ? w[0]=0 : w[3]=when+max(16,floor(srate*0.005));missing_candidates+=1;);
     w[7]+=1;w[6]=rng_state;
     ); // active acoustic episode; hard REST is Macro-owned only
     e[40]>0 && e[18]>0 ? w[3]=min(w[3],e[41]);
@@ -2950,7 +3245,7 @@ function cp_emit(wi when) local(w e id g prev role dur rate frames srcpos gain v
 function cp_start(velocity note chan when duration ext attackpct releasepct seedadd) local(i ei e w old a de r total scale mode anchor d g seed) (
   cp_hold_count()==0 ? (audible_ref_ready=0;audible_ref=0;audible_hole_run=0;);
   ei=-1;
-  ready && playable_grains>0 ? (
+  ready && pe_ready && pg_ready && !pg_initializing && (!pg_changed || pg_bypass || pg_live_n>0 || pg_preview) && playable_grains>0 ? (
     old=cp_event_find(note,chan,ext);old>=0 ? cp_stop_event(old,when,max(8,srate*0.004));
     i=0;while(i<8 && ei<0)(event_base[i*64]<=0 ? ei=i;i+=1;);
     ei>=0 ? (
@@ -3057,7 +3352,7 @@ function cp_preview_vertex(v) local(n pos id steps found saved) (
 );
 function cp_desc_member(id d b) (cp_desc_conf(id,d)*max(0,1-abs(2*cp_desc(id,d)-b)););
 function cp_preview_desc(code) local(d b pos steps id g saved src role) (
-  code=cp_clamp(floor(code),0,152);d=floor(code/3);b=code-d*3;pos=desc_cursor[code]%max(1,grain_count);steps=0;id=-1;src=floor(slider14);role=floor(slider17)-1;
+  code=cp_clamp(floor(code),0,158);d=floor(code/3);b=code-d*3;pos=desc_cursor[code]%max(1,grain_count);steps=0;id=-1;src=floor(slider14);role=floor(slider17)-1;
   while(steps<grain_count && id<0)(g=cp_g(pos);cp_valid(pos) && (src<=0 || g[1]==src-1) && (role<0 || g[41+role]>=slider48) && cp_desc_member(pos,d,b)>0.12 ? id=pos;pos=(pos+1)%max(1,grain_count);steps+=1;);
   desc_cursor[code]=pos;id>=0 ? (saved=selected_id;cp_preview(id);selected_id=saved;) : empty_auditions+=1;
 );
@@ -3192,18 +3487,13 @@ function cp_pending_stage(code) local(i found) (
   code>0 && code<65534 ? (found=0;i=0;loop(pending_excl_n,pending_excl[i]==code ? found=1;i+=1;);!found && pending_excl_n<64 ? (pending_excl[pending_excl_n]=code;pending_excl_n+=1;););
 );
 function cp_pending_commit() local(i code level id p m j k) (
-  h_ready && pending_excl_n>0 ? (
-    i=0;loop(pending_excl_n,code=pending_excl[i];
-      code<=8192 ? (level=0;id=code-1;) : (level=1;id=code-8193;);
-      level<1 && id>=0 && id<hm_n ? (p=h_m(id);j=p[1];loop(p[2],cp_edit_mark_excluded(j);j+=1;););
-      level>=1 && id>=0 && id<hx_n ? (p=h_x(id);j=p[1];loop(p[2],m=h_m(j);k=m[1];loop(m[2],cp_edit_mark_excluded(k);k+=1;);j+=1;););
-      i+=1;
-    );
-    edit_key=corpus_key;edits_match=1;edits_inactive=0;pending_excl_n=0;
-    memset(counts,0,29);memset(vertex_counts,0,29);memset(role_stats,0,16);
-    build_phase=4;norm_cursor=0;apply_saved_edits=0;ready=0;h_ready=0;h_phase=0;index_epoch+=1;record_done=0;browse_dirty=1;
+  pg_ready && !pg_apply && !pg_preview && !pg_preview_pending && pending_excl_n>0 ? (
+    memset(pg_brush,0,grain_count);i=0;loop(pending_excl_n,code=pending_excl[i];
+      code<=8192 ? (id=code-1;id<hm_n ? (p=h_m(id);j=p[1];loop(p[2],pg_brush[j]=2;j+=1;););) : (id=code-8193;id<hx_n ? (p=h_x(id);j=p[1];loop(p[2],m=h_m(j);k=m[1];loop(m[2],pg_brush[k]=2;k+=1;);j+=1;);););i+=1;
+    );pending_excl_n=0;pg_scope_kind=0;pg_rules[0]=0;pg_rules[5]=0;pg_rules[10]=0;pg_scan=0;pg_scope_list_n=0;pg_scope_count=0;pg_match_count=0;pg_unknown_count=0;pg_kept_count=0;pg_seconds=0;pg_stage=1;pg_draft_ready=0;pg_apply=1;
   );
 );
+
 function cp_edit(id op) local(i j e found g tmp) (
   ready && id>=0 && id<grain_count ? (
     cp_stop_all(clock,max(8,srate*0.003),-1);g=cp_g(id);edit_key!=corpus_key ? edit_count=0;
@@ -3223,6 +3513,220 @@ function cp_edit(id op) local(i j e found g tmp) (
     ) : edit_overflow+=1;
   );
 );
+// Descriptor-general pruning. Cached-data edits only; no analysis/model calls.
+function pg_scope_has(id) local(g m p) (
+  g=cp_g(id);
+  pg_scope_kind==0 ? 1 : (pg_scope_kind==1 ? g[1]==pg_scope_src : (pg_scope_kind==3 ? (
+    m=hm_grainmap[id];m>=0 && pg_scope_cls>=0 ? (p=h_m(m);p[6]==pg_scope_cls && p[9]>0 || p[7]==pg_scope_cls && p[10]>0 || p[8]==pg_scope_cls && p[11]>0) : 0;
+  ) : g[1]==pg_scope_src && g[2]/g[4]<pg_scope_end && (g[2]+g[3])/g[4]>pg_scope_start));
+);
+function pg_resolved(id) local(v i code) (
+  v=0;i=0;loop(pg_layer_count,pg_meta[i*64]>0.5 ? (code=pg_get(pg_layers+i*8192,id);code>0 ? v=code;);i+=1;);v;
+);
+function pg_request() (
+  pg_ready && pe_ready && !pg_apply && !pg_preview && !pg_preview_pending ? (pg_scan=0;pg_scope_list_n=0;pg_stage=1;pg_draft_ready=0;pg_match_count=0;pg_scope_count=0;pg_unknown_count=0;pg_kept_count=0;pg_seconds=0;memset(pg_histogram,0,192);pg_request_serial+=1;pg_error=0;);
+);
+function pg_predicate(id) local(j p value conf m yes any unknown protect active) (
+  yes=1;any=0;protect=0;active=0;unknown=0;j=0;
+  loop(3,p=pg_rules+j*5;p[0]>0.5 ? (
+    active+=1;value=cp_desc(id,p[1]);conf=cp_desc_conf(id,p[1]);
+    conf<pg_min_conf ? (unknown=1;p[4]==0 ? protect=1;m=p[4]==2;) : m=p[4]==2 ? 0 : value>=p[2] && value<=p[3];
+    yes*=m;any=max(any,m);j==0 && conf>=pg_min_conf ? pg_histogram[min(63,floor(value*64))]+=1;
+  );j+=1;);
+  pg_pred_active=active;pg_pred_unknown=unknown;pg_protect_unknown=protect;active<=0 ? 1 : (pg_logic>0 ? any : yes);
+);
+function pg_history_push() local(i bits p) (
+  pg_history_pos<pg_history_n-1 ? pg_history_n=pg_history_pos+1;
+  pg_history_n>=32 ? (memcpy(pg_history,pg_history+2,62);pg_history_n=31;pg_history_pos=30;);
+  bits=0;i=0;loop(pg_layer_count,pg_meta[i*64]>0.5 ? bits+=pow(2,i);i+=1;);
+  p=pg_history+pg_history_n*2;p[0]=pg_layer_count;p[1]=bits;pg_history_n+=1;pg_history_pos=pg_history_n-1;
+);
+function pg_history_move(direction) local(p i) (
+  !pg_stage && !pg_apply && !pg_preview && !pg_preview_pending ? (
+    pg_history_pos=cp_clamp(pg_history_pos+direction,0,max(0,pg_history_n-1));p=pg_history+pg_history_pos*2;pg_layer_count=p[0];
+    i=0;loop(8,pg_meta[i*64]=i<pg_layer_count && (floor(p[1]/pow(2,i))%2)>0;i+=1;);
+    pg_recompose=1;pg_request();pg_apply=2;
+  );
+);
+function pg_manifest() local(i g p s) (
+  pg_saved_n=grain_count;pg_saved_sources=source_count;pg_saved_seg=slider5+floor(slider6)*2048+floor(slider21)*16384;
+  memcpy(pg_saved_layers,pg_layers,65536);memcpy(pg_saved_meta,pg_meta,512);pg_saved_layer_count=pg_layer_count;
+  i=0;loop(source_count,p=pg_saved_sources_base+i*8;s=cp_s(i);memcpy(p,pe_source_hash+i*4,4);p[4]=s[5];p[5]=s[6];p[6]=s[2];p[7]=s[3];i+=1;);
+  i=0;loop(grain_count,g=cp_g(i);pg_saved_intervals[i*2]=g[2];pg_saved_intervals[i*2+1]=g[3];i+=1;);pg_saved_valid=1;
+);
+function pg_load_begin() local(i p key probes slot) (
+  pg_load_pending=0;pg_ready=0;pg_scan=0;pg_scope_list_n=0;pg_stage=10;pg_unresolved=0;pg_restore_ok=1;
+  memset(pg_layers,0,65536);memset(pg_meta,0,512);memset(pg_source_table,-1,131072);memset(pg_source_counts,0,65536);
+  pg_saved_valid && pg_saved_layer_count>0 ? (
+    pg_saved_seg!=slider5+floor(slider6)*2048+floor(slider21)*16384 ? pg_restore_ok=0;
+    i=0;loop(pg_saved_sources,p=pg_saved_sources_base+i*8;key=(p[0]+p[1]*17)%131072;probes=0;
+      while(pg_source_table[key]>=0 && probes<131072)(key=(key+1)%131072;probes+=1;);
+      probes<131072 ? pg_source_table[key]=i; i+=1;
+    );
+  );
+);
+function pg_load_grain(id) local(g h key k p probes found lo hi mid j old matches) (
+  g=cp_g(id);h=pe_source_hash+g[1]*4;key=(h[0]+h[1]*17)%131072;probes=0;found=-1;
+  matches=0;while(probes<128 && pg_source_table[key]>=0)(k=pg_source_table[key];p=pg_saved_sources_base+k*8;
+    p[0]==h[0] && p[1]==h[1] && p[2]==h[2] && p[3]==h[3] ? (found=k;matches+=1;);
+    key=(key+1)%131072;probes+=1;
+  );
+  found>=0 && matches==1 && probes<128 && (pg_source_counts[found]==0 || pg_source_counts[found]==g[1]+1) ? (
+    pg_source_counts[found]=g[1]+1;
+    p=pg_saved_sources_base+found*8;lo=p[4];hi=lo+p[5];while(lo<hi)(mid=floor((lo+hi)/2);pg_saved_intervals[mid*2]<g[2] ? lo=mid+1 : hi=mid;);
+    lo<p[4]+p[5] && pg_saved_intervals[lo*2]==g[2] && pg_saved_intervals[lo*2+1]==g[3] ? (
+      j=0;loop(pg_saved_layer_count,pg_put(pg_layers+j*8192,id,pg_get(pg_saved_layers+j*8192,lo));j+=1;);
+    ) : pg_unresolved+=1;
+  ) : pg_unresolved+=1;
+);
+function pg_start_pool() (
+  pg_stage=3;pg_scan=0;pg_pool_n=0;memset(pg_res_counts,0,848);memset(pg_meso_stage,0,8192);memset(pg_source_counts,0,source_count*2);
+);
+function pg_build() local(i g m match code value p d key n slot run other s a enabled result j hist) (
+  pg_stage==10 ? (
+    i=0;while(i<1024 && pg_scan<grain_count)(pg_saved_valid && pg_saved_layer_count>0 && pg_restore_ok ? pg_load_grain(pg_scan);pg_scan+=1;i+=1;);
+    pg_scan>=grain_count ? (
+      pg_unresolved>0 || !pg_restore_ok ? (memset(pg_layers,0,65536);pg_layer_count=0;pg_error=3;) : (pg_layer_count=pg_saved_layer_count;memcpy(pg_meta,pg_saved_meta,512););
+      pg_scan=0;pg_stage=1;pg_ready=1;pg_recompose=1;pg_apply=2;pg_initializing=1;
+    );
+  ) : pg_stage==1 ? (
+    i=0;while(i<8192 && pg_scan<grain_count)(
+      g=cp_g(pg_scan);value=pg_resolved(pg_scan);pg_delta[pg_scan]=0;pg_scope_flags[pg_scan]=pg_scope_has(pg_scan);pg_scope_flags[pg_scan] ? (pg_scope_pool[pg_scope_list_n]=pg_scan;pg_scope_list_n+=1;);
+      !pg_recompose && pg_scope_flags[pg_scan] ? (
+        pg_scope_count+=1;match=pg_predicate(pg_scan);pg_unknown_count+=pg_pred_unknown;pg_match_count+=match;
+        (pg_protect_unknown || pg_pred_active==0) ? code=0 : code=pg_operation==0 ? (match ? 1 : 2) : (match ? 2 : 0);
+        pg_brush[pg_scan]>0 ? code=pg_brush[pg_scan];pg_delta[pg_scan]=code;code>0 ? value=code;
+      );pg_draft[pg_scan]=value;
+      enabled=g[6]>0.00001 && (value==0 ? g[9]<0.5 : value==1);
+      enabled ? (pg_kept_count+=1;pg_seconds+=g[3]/g[4];);
+      pg_scan==0 || cp_g(pg_scan-1)[1]!=g[1] || pg_dright[pg_scan-1]<=0 ? pg_run_start=g[2];
+      pg_dleft[pg_scan]=pg_run_start;pg_dright[pg_scan]=enabled ? 1 : 0;
+      !enabled ? pg_run_start=g[2]+g[3];pg_scan+=1;i+=1;
+    );pg_scan>=grain_count ? (pg_stage=2;pg_scan=grain_count-1;);
+  ) : pg_stage==2 ? (
+    i=0;while(i<8192 && pg_scan>=0)(g=cp_g(pg_scan);enabled=pg_dright[pg_scan]>0;
+      pg_scan==grain_count-1 || cp_g(pg_scan+1)[1]!=g[1] ? pg_run_end=g[2]+g[3];
+      pg_dright[pg_scan]=enabled ? pg_run_end : g[2];!enabled ? pg_run_end=g[2];pg_scan-=1;i+=1;
+    );pg_scan<0 ? (pg_stage=0;pg_draft_ready=1;pg_recompose=0;pg_apply>0 ? pg_start_pool(););
+  ) : pg_stage==3 ? (
+    i=0;while(i<1024 && pg_scan<grain_count)(g=cp_g(pg_scan);value=pg_draft[pg_scan];enabled=g[6]>0.00001 && (value==0 ? g[9]<0.5 : value==1);
+      enabled ? (
+        pg_pool[pg_pool_n]=pg_scan;pg_pool_n+=1;pg_source_counts[g[1]*2+1]+=1;m=hm_grainmap[pg_scan];m>=0 ? pg_meso_stage[m]+=1;
+        d=0;loop(53,cp_desc_conf(pg_scan,d)>0.05 ? (
+          key=d*16+min(15,floor(cp_desc(pg_scan,d)*16));n=pg_res_counts[key];pg_res_counts[key]+=1;
+          slot=n<32 ? n : ((pg_scan*127+key*8191)%max(1,n+1));slot<32 ? pg_reservoir[key*32+slot]=pg_scan;
+        );d+=1;);
+      );pg_scan+=1;i+=1;
+    );pg_scan>=grain_count ? (n=0;i=0;loop(source_count,pg_source_counts[i*2]=n;n+=pg_source_counts[i*2+1];i+=1;);pg_stage=4;);
+  ) : pg_stage==4 ? (
+    // Atomic adoption after the new lookup tables have been prepared.
+    pg_apply==3 ? (pg_stage=0;pg_apply=0;pg_preview_pending=1;cp_stop_all(clock,max(8,srate*0.003),-1);) : !pg_preview && !pg_preview_pending ? (
+      pg_apply==1 ? (
+        pg_layer_count<8 ? (
+          p=pg_meta+pg_layer_count*64;memset(p,0,64);p[0]=1;p[1]=pg_scope_kind;p[2]=pg_scope_src;p[3]=pg_scope_start;p[4]=pg_scope_end;p[5]=pg_scope_cls;p[6]=pg_operation;p[7]=pg_logic;memcpy(p+8,pg_rules,15);
+          i=0;loop(grain_count,pg_put(pg_layers+pg_layer_count*8192,i,pg_delta[i]);i+=1;);pg_layer_count+=1;pg_history_push();
+        ) : pg_error=1;
+      );
+      pg_error!=1 ? (
+        memcpy(pg_active,pg_draft,grain_count);memcpy(pg_left,pg_dleft,grain_count);memcpy(pg_right,pg_dright,grain_count);memcpy(pg_meso_count,pg_meso_stage,8192);
+        memcpy(pg_live_pool,pg_pool,pg_pool_n);pg_live_n=pg_pool_n;memcpy(pg_live_res,pg_reservoir,27136);memcpy(pg_live_counts,pg_res_counts,848);
+        n=0;i=0;loop(source_count,pg_source_counts[i*2]=n;n+=pg_source_counts[i*2+1];i+=1;);
+        pg_changed=pg_layer_count>0;pg_epoch+=1;record_done=0;record_n=0;browse_dirty=1;pg_ready=1;
+        !pg_initializing || pg_unresolved==0 && pg_restore_ok ? pg_manifest();
+      );
+      pg_initializing ? (pg_history_n=0;pg_history_pos=-1;pg_history_push(););pg_initializing=0;pg_stage=0;pg_apply=0;pg_draft_ready=0;memset(pg_brush,0,grain_count);pg_committed=1;
+    );
+  );
+);
+function pg_apply_draft() (
+  pg_draft_ready && !pg_stage && !pg_preview && pg_layer_count<8 ? (pg_apply=1;pg_start_pool();) : pg_layer_count>=8 ? pg_error=1;
+);
+function pg_select_scope(kind) local(g p m) (
+  pg_scope_kind=kind;pg_scope_src=cp_clamp(floor(slider64)-1,0,max(0,source_count-1));
+  selected_id>=0 ? pg_scope_src=cp_g(selected_id)[1];pg_scope_start=0;pg_scope_end=cp_s(pg_scope_src)[2]/max(1,cp_s(pg_scope_src)[3]);pg_scope_cls=-1;
+  kind==2 || kind==3 ? (
+    h_ui_level<1 && h_ui_m>=0 && h_ui_m<hm_n ? m=h_ui_m : (m=selected_id>=0 ? hm_grainmap[selected_id] : -1;);
+    m>=0 ? (p=h_m(m);pg_scope_src=p[0];pg_scope_start=p[3];pg_scope_end=p[3]+p[4];pg_scope_cls=p[6];) : (pg_error=4;pg_scope_end=pg_scope_start;);
+    kind==2 && h_ui_level>=1 && h_ui_x>=0 && h_ui_x<hx_n ? (p=h_x(h_ui_x);pg_scope_src=p[0];pg_scope_start=p[3];pg_scope_end=p[3]+p[4];pg_error=0;);
+    kind==3 && h_ui_level<1 && h_ui_class>=0 && h_ui_class<hm_k ? (pg_scope_cls=h_ui_class;pg_error=0;);
+  );
+  kind==4 && selected_id>=0 ? (g=cp_g(selected_id);pg_scope_start=g[2]/g[4];pg_scope_end=(g[2]+g[3])/g[4];);
+  memset(pg_brush,0,grain_count);pg_request();
+);
+function pg_single(id) (
+  pg_ready && id>=0 && id<grain_count && !pg_apply && !pg_preview && !pg_preview_pending ? (pg_brush[id]=pg_brush_mode>0 ? pg_brush_mode : (pg_allowed(id) ? 2 : 1);pg_brush_mode=0;pg_request(););
+);
+function pg_preview_save() local(i) (
+  pg_saved_rng=rng_state;pg_saved_serial=selection_serial;pg_saved_recent_write=recent_write;pg_saved_selected=selected_id;pg_saved_event_serial=event_serial;
+  memcpy(pg_recent_save,recent_base,64);i=0;loop(grain_count,pg_recent_grains[i]=cp_g(i)[61];i+=1;);
+);
+function pg_preview_restore() local(i) (
+  rng_state=pg_saved_rng;selection_serial=pg_saved_serial;recent_write=pg_saved_recent_write;selected_id=pg_saved_selected;event_serial=pg_saved_event_serial;
+  memcpy(recent_base,pg_recent_save,64);i=0;loop(grain_count,cp_g(i)[61]=pg_recent_grains[i];i+=1;);
+  i=0;loop(8,xc_states[i*64]=0;h_state[i*96]=0;i+=1;);
+  pg_preview=0;pg_preview_running=0;record_done=0;record_n=0;
+);
+function pg_audition(which) local(i id found val g saved) (
+  found=-1;i=0;
+  while(i<grain_count && found<0)(id=(pg_aud_cursor+i)%max(1,grain_count);g=cp_g(id);
+    pg_scope_has(id) ? (
+      val=pg_draft_ready ? pg_draft[id] : pg_active[id];val=val==0 ? g[9]<0.5 : val==1;
+      (which==0 && val || which==1 && !val || which==2 && cp_desc_conf(id,pg_rules[1])<pg_min_conf) ? found=id;
+    );i+=1;
+  );found>=0 ? (pg_aud_cursor=(found+1)%max(1,grain_count);cp_preview(found);) : empty_auditions+=1;
+);
+function pg_command(arg) local(row code p value i g) (
+  pg_apply>0 || pg_preview || pg_preview_pending ? pg_error=5 : (
+  arg>=59000 && arg<62000 ? (
+    row=floor((arg-59000)/1000);code=(arg-59000)%1000;p=pg_rules+row*5;
+    code<53 ? (p[1]=code;p[0]=1;);
+    code>=64 && code<=319 ? p[2]=min(p[3],(code-64)/255);
+    code>=384 && code<=639 ? p[3]=max(p[2],(code-384)/255);
+    code>=704 && code<=706 ? p[4]=code-704;
+    code==720 ? p[0]=1-p[0];pg_request();
+  ) : (
+    arg>=63000 && arg<=63004 ? pg_select_scope(arg-63000);
+    arg==63010 ? (pg_operation=1-pg_operation;pg_request(););
+    arg==63011 ? (pg_logic=1-pg_logic;pg_request(););
+    arg==63012 ? pg_apply_draft();
+    arg==63013 ? (pg_stage=0;pg_apply=0;pg_draft_ready=0;memset(pg_brush,0,grain_count););
+    arg==63014 ? pg_history_move(-1);arg==63015 ? pg_history_move(1);
+    arg==63016 ? (pg_bypass=1-pg_bypass;record_done=0;browse_dirty=1;);
+    arg>=63020 && arg<=63022 ? pg_audition(arg-63020);
+    arg==63023 && pg_draft_ready && !pg_stage ? (pg_apply=3;pg_start_pool(););
+    arg==63030 ? pg_brush_mode=1;arg==63031 ? pg_brush_mode=2;
+    arg==63024 ? (pg_min_conf=pg_min_conf>=0.49 ? 0.05 : pg_min_conf+0.15;pg_request(););
+    arg>=63040 && arg<63048 && !pg_stage ? (i=arg-63040;i<pg_layer_count ? (pg_meta[i*64]=1-pg_meta[i*64];pg_history_push();pg_recompose=1;pg_request();pg_apply=2;););
+    arg==63050 && !pg_stage && !pg_preview ? (
+      // Explicit consolidation frees layer slots. Resolved membership is preserved.
+      memset(pg_layers,0,65536);memset(pg_meta,0,512);pg_meta[0]=1;pg_layer_count=1;i=0;loop(grain_count,pg_put(pg_layers,i,pg_active[i]);i+=1;);
+      pg_history_n=0;pg_history_pos=-1;pg_history_push();pg_manifest();pg_error=0;
+    );
+    arg>=63200 && arg<=64223 ? (pg_scope_kind=4;pg_scope_start=(arg-63200)/1023*cp_s(pg_scope_src)[2]/cp_s(pg_scope_src)[3];pg_scope_start=min(pg_scope_start,pg_scope_end);pg_request(););
+    arg>=64400 && arg<=65423 ? (pg_scope_kind=4;pg_scope_end=(arg-64400)/1023*cp_s(pg_scope_src)[2]/cp_s(pg_scope_src)[3];pg_scope_end=max(pg_scope_start,pg_scope_end);pg_request(););
+    arg==63060 ? (pe_locks=floor(pe_locks/2)*2+(1-pe_locks%2));
+    arg==63061 ? (pe_locks=(pe_locks%2)+2*(1-floor(pe_locks/2)));
+  );
+);
+);
+
+function pg_publish() local(z i j n id g p q v kept confidence d total src lo cells shown ordinal idx bins) (
+  z=61216;memset(z,0,3136);z[0]=pe_ready;z[1]=pe_phase;z[2]=pe_cursor;z[3]=grain_count;z[4]=pg_ready;z[5]=pg_stage;z[6]=pg_draft_ready;z[7]=pg_epoch;
+  z[8]=pg_scope_kind;z[9]=pg_scope_src;z[10]=pg_scope_start;z[11]=pg_scope_end;z[12]=pg_scope_cls;z[13]=pg_operation;z[14]=pg_logic;z[15]=pg_min_conf;
+  z[16]=pg_kept_count;z[17]=pg_scope_count;z[18]=pg_unknown_count;z[19]=pg_seconds;z[20]=pg_layer_count;z[21]=pg_bypass;z[22]=pg_error;z[23]=pg_unresolved;
+  z[24]=pg_live_n;z[25]=pg_history_pos;z[26]=pg_history_n;z[27]=pg_preview;z[28]=pe_reads;z[29]=pe_ffts;z[30]=pe_fits;z[31]=pe_locks;
+  memcpy(z+32,pg_rules,15);memcpy(z+48,pg_histogram,64);i=0;loop(8,z[112+i]=pg_meta[i*64];i+=1;);
+  selected_id>=0 ? (memcpy(z+128,pe_p(selected_id),16);g=cp_g(selected_id);z[144]=g[3]/g[4];z[145]=selected_id;);
+  src=pg_scope_src;src>=0 && src<source_count ? (p=cp_s(src);z[120]=p[2]/p[3];) : z[120]=0;
+  // Bounded displayed stratum of the complete scoped population, never an all-grain UI scan.
+  lo=0;cells=grain_count;pg_scope_kind!=0 && pg_scope_kind!=3 ? (p=cp_s(pg_scope_src);lo=p[5];cells=p[6];);
+  n=pg_stage==1 || pg_stage==2 ? 0 : min(192,pg_scope_list_n);z[121]=n;i=0;
+  loop(n,id=pg_scope_pool[min(pg_scope_list_n-1,floor((i+0.5)*pg_scope_list_n/max(1,n)))];g=cp_g(id);q=z+160+i*12;q[0]=id;q[1]=g[1];q[2]=g[2]/g[4];q[3]=g[3]/g[4];q[4]=pg_scope_has(id);
+    v=pg_draft_ready ? pg_draft[id] : pg_active[id];q[5]=v==0 ? g[9]<0.5 : v==1;q[6]=pe_value(id,0);q[7]=pe_conf(id,0);q[8]=pe_value(id,1);q[9]=pe_conf(id,1);
+    q[10]=cp_desc(id,pg_rules[1]);q[11]=cp_desc_conf(id,pg_rules[1]);i+=1;
+  );
+);
+
 // ---------------- Source-region audition and bounded Structure snapshot ----------------
 function h_preview(level id) local(p g s vi v fade start frames duration) (
   h_ready && id>=0 && id<h_n(level) ? (
@@ -3292,7 +3796,9 @@ function h_action(arg) local(sub id level cls p c lo n list member) (
       xc_param_id=floor((id-1024)/256);xc_params[xc_param_id]=((id-1024)%256)/255;
       xc_param_id==7 ? xc_map_ready=0;
     );
-    id>=6000 && id<6256 ? (td_amount=(id-6000)/255;td_amount<0.000001 ? td_amount=0;);
+    // Backward compatibility for a pending v1.8.0 UI packet. New UI edits slider45 directly.
+    id>=6000 && id<6256 ? (slider45=(id-6000)/255;slider45<0.000001 ? slider45=0;sliderchange(pow(2,44)););
+    id>=6500 && id<6756 ? map_stratum_page=id-6500;
   );
   sub==8 ? (h_select(0,id);h_resynth(0,id););
   sub==9 ? (h_select(1,id);h_resynth(1,id););
@@ -3313,7 +3819,7 @@ function h_publish() local(h i j k p c s src first n lo hi z gid g a b d level s
   h[26]=h_ui_compare;h[27]=h_ui_compare_level;h[28]=h_ui_pin;h[29]=h_auditions;h[30]=h_last_aud_level;h[31]=h_last_aud_id;
   h[32]=slider60!=h_sensitive || slider61!=h_rest_db || slider63!=h_detail;
   h[56]=h_coverage_lost;h[57]=h_macro_lost;h[58]=h_macro_gap_n;h[59]=h_micro_only_short;h[60]=pending_excl_n;
-  h[33]=h_rebuild_requested;h[34]=h_phase>0 && cp_hold_count()>0;h[35]=h_min_meso;h[36]=h_min_macro;
+  h[33]=h_rebuild_requested;h[34]=h_phase>0 && h_live_model()>0;h[35]=h_min_meso;h[36]=h_min_macro;
   i=0;loop(8,q=h_state+i*96;p=cp_e(i);z=56720+i*16;memset(z,0,16);
     p[0]>0 && q[0]==p[1] ? (
       z[0]=p[1];z[1]=q[1];z[2]=q[2];z[3]=q[3];z[4]=q[14];z[5]=q[6];z[6]=q[15];z[7]=q[20];
@@ -3386,7 +3892,7 @@ function cp_action(packet) local(op arg x y) (
   op==4 ? cp_replay(clock);
   op==5 ? cp_stop_all(clock,max(8,srate*0.003),-1);
   op==6 ? (rebuild_request=1;cp_stop_all(clock,max(8,srate*0.003),-1);poll_left=0;);
-  (op==7 || op==8) ? cp_edit(arg,op);
+  op==7 ? pg_single(arg);op==8 ? cp_edit(arg,op);
   op==9 ? selected_id=cp_clamp(arg,0,max(0,grain_count-1));
   op==10 ? (edit_count=0;edit_key=0;rebuild_request=1;cp_stop_all(clock,max(8,srate*0.003),-1);poll_left=0;);
   op==11 ? (
@@ -3408,6 +3914,7 @@ function cp_action(packet) local(op arg x y) (
   );
   op==13 ? (arg>=60000 && arg<=60012 ? tr_brush_begin(arg-60000) : (arg==59999 ? tr_brush_commit() : cp_preview_transition(arg%100)));
   op==14 ? (
+    arg>=59000 && arg<=65423 ? pg_command(arg) : (
     arg>=32000 && arg<58288 ? fc_command(arg) : (
     arg>=30000 && arg<30016 ? (arg==30000 ? tr_clear_all() : tr_preset(arg-30000);traj_epoch+=1;) : (
       arg>=24576 && arg<25088 ? amp_meta(arg-24576) : (
@@ -3417,6 +3924,7 @@ function cp_action(packet) local(op arg x y) (
       )
     )
     )
+  );
   );
   op==15 ? (tr_brush_active ? tr_brush_data(arg) : cp_preview_excerpt(arg%100));
   ui_left=0;
@@ -3451,9 +3959,9 @@ function xc_publish() local(h i j id p q z n a b k level c total link)
   h[25]=xc_audition_count;h[26]=xc_preview_steals;h[27]=xc_map_source;h[28]=xc_map_target;
   h[29]=xc_cost_join;h[30]=xc_cost_match;h[31]=xc_cost_context;h[32]=xc_cost_prior;h[33]=xc_reference;h[34]=xc_future;
   h[35]=xc_last_map_cost;h[36]=xc_last_map_supported;h[37]=xc_runtime_transfer;h[38]=xc_built_ceiling;h[39]=xc_fft_size;h[40]=xc_grammar_ready;
-  h[41]=xc_grammar_overflow;h[42]=xc_mapping_misses;h[43]=xc_epoch;h[44]=xc_memory_end;h[45]=cp_hold_count()>0 && (xc_phase>0 || xc_map_phase>0 || xc_post_phase>0);
+  h[41]=xc_grammar_overflow;h[42]=xc_mapping_misses;h[43]=xc_epoch;h[44]=xc_memory_end;h[45]=(cp_hold_count()>0 || cp_busy()>0) && (xc_phase>0 || xc_map_phase>0 || xc_post_phase>0);
   memcpy(h+48,xc_params,16);memcpy(h+64,xc_weights,8);
-  h[82]=td_amount;h[83]=td_last_mix;h[84]=td_last_trans;h[85]=td_last_guard;h[86]=td_last_inpeak;h[87]=td_last_outpeak;
+  h[82]=slider45;h[83]=td_last_mix;h[84]=td_last_trans;h[85]=td_last_guard;h[86]=td_last_inpeak;h[87]=td_last_outpeak;
   h[79]=traj_schema;h[80]=traj_epoch;memcpy(h+2304,traj_base,480);memcpy(h+2784,amp_curve_base,40);
   memcpy(h+2824,traj_runtime_base,64);
   // Last 32 primary selections: normalized event progress + achieved values for 12 lanes.
@@ -3480,6 +3988,71 @@ function xc_publish() local(h i j id p q z n a b k level c total link)
   );h[76]=n;h[77]=level;h[78]=c;
 );
 
+// v1.9.1: bounded, DSP-owned progress metadata in previously unused snapshot cells.
+// 0 group, 1 raw phase, 2 displayed step, 3 steps, 4 completed, 5 total,
+// 6 unit, 7 waiting for audio, 8 heartbeat, 9 terminal status, 10 hierarchy status.
+// Counts are stage work units, never estimates of elapsed/remaining time.
+function cp_progress_set(p group phase step steps done total unit waiting) (
+  p[0]=group;p[1]=phase;p[2]=step;p[3]=steps;
+  p[4]=max(0,done);p[5]=total;p[6]=unit;p[7]=waiting;
+);
+function cp_load_publish() local(p busy phase step n done total unit) (
+  p=ui_snapshot_base+112;memset(p,0,13);p[5]=-1;p[8]=load_block_serial;p[10]=h_status;
+  busy=cp_hold_count()>0 || cp_busy()>0;
+  pool_state==1 || pool_state==2 ? (
+    // With deferred adoption, loaded() still describes the old bank. Do not
+    // misrepresent that count as decoder progress for its replacement.
+    cp_progress_set(p,1,pool_state,0,0,0,-1,1,0);
+  ) : pending_adoption ? cp_progress_set(p,10,0,0,0,0,-1,0,busy) : build_phase>0 ? (
+    phase=build_phase;step=phase;done=0;total=source_count;unit=1;
+    phase==1 ? (step=1;done=meta_cursor;total=source_capacity;);
+    phase==6 ? (step=2;done=scout_source;);
+    phase==2 ? (step=3;done=layout_cursor;);
+    phase==3 ? (step=4;done=grain_count;total=tile_total;unit=8;);
+    phase==7 ? (step=5;done=merge_source;);
+    phase==8 ? (step=6;total=-1;unit=0;);
+    phase==4 ? (step=7;done=norm_cursor;total=grain_count;unit=2;);
+    phase==5 ? (step=8;done=fill_grain;total=grain_count;unit=2;);
+    cp_progress_set(p,2,phase,step,8,done,total,unit,0);
+  ) : xc_phase>0 ? (
+    phase=xc_phase;step=phase;total=grain_count;unit=2;
+    phase>=7 && phase<=9 ? step=phase-4;
+    phase==3 ? (step=6;total=source_count;unit=1;);
+    phase==4 ? (step=7;total=xc_coarse_n*xc_coarse_n;unit=3;);
+    phase==5 ? (step=8;total=xc_coarse_n;unit=4;);
+    phase==6 ? step=9;
+    cp_progress_set(p,3,phase,step,10,xc_cursor,total,unit,busy);
+  ) : h_phase>0 ? (
+    phase=h_phase;step=phase>=9 ? phase-1 : phase;done=h_cursor;
+    n=phase>=9 ? hx_n : hm_n;total=n;unit=5;
+    phase<=2 ? (total=grain_count;unit=2;);
+    phase==3 || phase==9 ? (total=min(512,n*max(1,n-1));unit=3;);
+    phase==5 || phase==11 ? (done=h_refine_pass*n+h_cursor;total=2*n;);
+    phase==6 || phase==12 ? (done=h_finalize_stage*n+h_cursor;total=2*n;);
+    cp_progress_set(p,4,phase,step,11,done,total,unit,h_live_model()>0);
+  ) : ready && xc_ready && h_rebuild_requested ? cp_progress_set(p,12,0,0,0,0,-1,0,busy) : xc_post_phase>0 ? (
+    cp_progress_set(p,5,xc_post_phase,xc_post_phase,2,xc_post_cursor,xc_post_phase==1 ? hm_n : hx_n,5,busy);
+  ) : xc_map_phase>0 ? cp_progress_set(p,6,1,0,0,xc_map_cursor,hm_n,5,busy) : fc_phase>0 ? (
+    // Class-local phases repeat for each EC. Report completed ECs instead of
+    // implying that the raw inner phase is a one-way seven-stage process.
+    cp_progress_set(p,7,fc_phase,0,0,fc_phase==1 ? fc_cursor : fc_class_cursor,fc_phase==1 ? hm_n : hm_k,fc_phase==1 ? 5 : 6,busy);
+  ) : pe_phase>0 ? cp_progress_set(p,8,pe_phase,pe_phase,3,pe_cursor,grain_count,2,busy) : pg_stage>0 ? (
+    phase=pg_stage;done=phase==2 ? grain_count-1-pg_scan : pg_scan;
+    cp_progress_set(p,9,phase,0,0,done,phase==4 ? -1 : grain_count,2,phase==4 && (pg_preview || pg_preview_pending));
+  ) : auto_settings_pending || auto_hier_pending ? cp_progress_set(p,11,0,0,0,0,-1,0,busy) : (
+    !have_generation ? cp_progress_set(p,10,0,0,0,0,-1,0,0) : (
+      source_count<=0 || grain_count<=0 ? p[9]=pool_failed>0 ? 5 : 0 : (
+        !h_ready && h_status>0 ? p[9]=3 : (
+          ready && xc_ready && h_ready && xc_grammar_ready && xc_map_ready && fc_ready && pe_ready && pg_ready && !pg_initializing && !pg_load_pending ? (
+            p[9]=playable_grains>0 ? 2 : 4;
+          ) : cp_progress_set(p,12,1,0,0,0,-1,0,busy);
+        );
+      );
+    );
+  );
+  p[0]>0 ? p[9]=1;
+);
+
 function cp_ui_publish() local(h i j g s id rec n page lm w e ei count lo total stride pos b axisx axisy) (
   h=ui_snapshot_base;memset(h,0,128);h[0]=cmd_seen;h[1]=ready;h[2]=source_count;h[3]=grain_count;
   h[4]=build_phase;h[5]=tile_total;h[6]=pool_selected;h[7]=pool_loaded;h[8]=pool_failed;h[9]=pool_ram;
@@ -3493,7 +4066,7 @@ function cp_ui_publish() local(h i j g s id rec n page lm w e ei count lo total 
   h[43]=packet_accepted;h[44]=packet_rejected;h[45]=packet_unsupported;h[46]=packet_last_action;
   h[47]=packet_last_id;h[48]=packet_last_seconds;h[49]=packet_last_reason;h[50]=midi_overflow;
   h[51]=unindexed_sources+invalid_sources;h[52]=analysis_points;h[53]=edit_overflow;
-  h[54]=selection_serial;h[55]=empty_auditions;h[56]=replay_missing;h[57]=generation;
+  h[54]=selection_serial;h[55]=empty_auditions;h[56]=replay_missing;h[57]=generation;cp_load_publish();
   i=0;loop(29,ui_snapshot_base[128+i]=vertex_counts[i];ui_snapshot_base[160+i]=0;i+=1;);
   i=0;loop(4,
     h[64+i]=role_stats[i];h[68+i]=role_stats[i]*role_stats[i]/max(0.000001,role_stats[4+i]);
@@ -3505,9 +4078,9 @@ function cp_ui_publish() local(h i j g s id rec n page lm w e ei count lo total 
     loop(28,ui_snapshot_base[160+i]=cp_member(selected_id,i);i+=1;);
     s=cp_s(g[1]);h[76]=s[1]+1;cp_live(selected_id);h[77]=live;h[78]=live_progress;
   );
-  axisx=cp_clamp(floor(slider40),0,50);axisy=cp_clamp(floor(slider41),0,50);
+  axisx=cp_clamp(floor(slider40),0,52);axisy=cp_clamp(floor(slider41),0,52);
   h[105]=selected_id>=0 ? cp_desc(selected_id,axisx) : 0.5;h[106]=selected_id>=0 ? cp_desc(selected_id,axisy) : 0.5;
-  h[107]=selected_id>=0 ? cp_desc_conf(selected_id,axisx) : 0;h[108]=selected_id>=0 ? cp_desc_conf(selected_id,axisy) : 0;h[109]=51;h[110]=effective_window;
+  h[107]=selected_id>=0 ? cp_desc_conf(selected_id,axisx) : 0;h[108]=selected_id>=0 ? cp_desc_conf(selected_id,axisy) : 0;h[109]=53;h[110]=effective_window;
   h[80]=browse_count;h[81]=browse_done;page=cp_clamp(floor(slider18),0,max(0,ceil(browse_count/20)-1));
   h[82]=page;h[83]=max(1,ceil(browse_count/20));i=0;
   loop(20,
@@ -3521,12 +4094,12 @@ function cp_ui_publish() local(h i j g s id rec n page lm w e ei count lo total 
   // cycles through members, so the display never pretends to draw all 65k nodes.
   lo=0;total=grain_count;
   slider14>0 ? (slider14<=source_count ? (s=cp_s(floor(slider14)-1);lo=s[5];total=s[6];) : total=0;);
-  n=min(256,total);h[84]=n;h[85]=total;stride=max(1,ceil(total/max(1,n)));h[86]=stride;
+  n=min(256,total);h[84]=n;h[85]=total;stride=max(1,ceil(total/max(1,n)));h[86]=stride;h[111]=map_stratum_page;
   i=0;loop(256,
     rec=ui_map+i*10;rec[0]=-1;
     i<n ? (
       b=floor(i*total/n);count=max(1,floor((i+1)*total/n)-b);
-      id=lo+b+(floor(slider45)%count);rec[0]=id;g=cp_g(id);
+      id=lo+b+(floor(map_stratum_page)%count);rec[0]=id;g=cp_g(id);
       rec[1]=cp_desc(id,axisx);rec[2]=cp_desc(id,axisy);rec[3]=cp_feat(id,0);rec[4]=cp_desc_conf(id,axisx);rec[5]=cp_desc_conf(id,axisy);rec[9]=max(g[9],g[60]);
     );i+=1;
   );
@@ -3549,7 +4122,7 @@ function cp_ui_publish() local(h i j g s id rec n page lm w e ei count lo total 
   );
   memcpy(ui_path,path_base,64);
   h[90]=record_event;h[91]=record_start;h[92]=memory_schema;h[93]=last_block_rms;h[94]=last_block_peak;h[95]=last_block_rest;h[96]=last_block_gap;h[97]=last_block_lowsal;h[98]=last_block_voices;h[99]=continuity_gap_samples/max(1,srate);
-  h[100]=last_block_hole;h[101]=last_block_sourcehole;h[102]=last_block_coverage;h[103]=audible_floor;h[104]=source_run_limited;h_publish();xc_publish();
+  h[100]=last_block_hole;h[101]=last_block_sourcehole;h[102]=last_block_coverage;h[103]=audible_floor;h[104]=source_run_limited;h_publish();xc_publish();pg_publish();
   a09=57184;memset(a09,0,128);
   a09[0]=auto_quiet_n;a09[1]=auto_window_min<1000000 ? auto_window_min : 0;a09[2]=auto_window_max;
   a09[3]=auto_budget_coarsened;a09[4]=auto_scout_sparse;a09[5]=scout_source;a09[6]=scout_reads;
@@ -3617,12 +4190,76 @@ xc_config_schema!=1500 ? (
 );
 traj_schema!=1610 ? (memset(traj_runtime_base,0,64);memset(traj_history_base,0,832);tr_clear_all();amp_defaults();traj_runtime_base[0]=1;traj_epoch=0;traj_schema=1610;);tr_brush_active=0;tr_brush_lane=-1;tr_brush_pair=0;
 fc_schema!=1700 ? (fc_cfg_defaults();fc_cfg_key=0;fc_schema=1700;);fc_ready=0;fc_phase=0;fc_epoch=-1;fc_built_key=-1;
-td_schema!=1800 ? (td_amount=0;td_schema=1800;);td_srate=-1;td_enabled=0;td_prepare();td_clear();td_idle_cleared=1;
+map_stratum_page=0;state_schema==703 ? (map_stratum_page=cp_clamp(floor(slider45),0,255);slider45=td_schema==1800 ? cp_01(td_amount) : 0;sliderchange(pow(2,44));state_schema=704;td_amount=0;);td_schema=1810;td_srate=-1;td_enabled=0;td_prepare();td_clear();td_idle_cleared=1;
 td_last_mix=0;td_last_trans=0;td_last_guard=0;td_last_inpeak=0;td_last_outpeak=0;
+
+
+// v1.9 dedicated metadata arenas; original descriptor/Focus storage is untouched.
+pe_vectors=19310016; // 1048576 cells
+pe_stats=20358592; // 1048576 cells
+pe_prefix=21407168; // 262144 cells
+pe_source_hash=21669312; // 262144 cells
+pe_fft_l=21931456; // 4096 cells
+pe_fft_r=21935552; // 4096 cells
+pe_tmp=21939648; // 64 cells
+pe_refs=21939712; // 128 cells
+pe_ref_copy=21939840; // 128 cells
+pe_centers=21939968; // 48 cells
+pe_center_sums=21940032; // 48 cells
+pe_cluster_id=21940096; // 32 cells
+pe_cluster_mass=21940160; // 8 cells
+pe_sort=21940224; // 32 cells
+pe_fit_weights=21940288; // 32 cells
+pe_sum=21940352; // 8 cells
+pe_span_value=21940416; // 8 cells
+pe_event_locks=21940480; // 32 cells
+pg_active=21940544; // 65536 cells
+pg_draft=22006080; // 65536 cells
+pg_delta=22071616; // 65536 cells
+pg_left=22137152; // 65536 cells
+pg_right=22202688; // 65536 cells
+pg_dleft=22268224; // 65536 cells
+pg_dright=22333760; // 65536 cells
+pg_scope_flags=22399296; // 65536 cells
+pg_scope_pool=22464832; // 65536 cells
+pg_brush=22530368; // 65536 cells
+pg_layers=22595904; // 65536 cells
+pg_saved_layers=22661440; // 65536 cells
+pg_meta=22726976; // 512 cells
+pg_saved_meta=22727488; // 512 cells
+pg_rules=22728000; // 16 cells
+pg_history=22728064; // 64 cells
+pg_histogram=22728128; // 192 cells
+pg_meso_count=22728320; // 8192 cells
+pg_meso_stage=22736512; // 8192 cells
+pg_pool=22744704; // 65536 cells
+pg_live_pool=22810240; // 65536 cells
+pg_source_counts=22875776; // 131072 cells
+pg_reservoir=23006848; // 27136 cells
+pg_res_counts=23033984; // 848 cells
+pg_live_res=23034880; // 27136 cells
+pg_live_counts=23062016; // 848 cells
+pg_saved_sources_base=23062912; // 524288 cells
+pg_source_table=23587200; // 131072 cells
+pg_saved_intervals=23718272; // 131072 cells
+pg_recent_grains=23849344; // 65536 cells
+pg_recent_save=23914880; // 64 cells
+desc_reservoir_new=23914944; // 27136 cells
+desc_res_counts_new=23942080; // 848 cells
+desc_cursor_new=23942976; // 159 cells
+desc_reservoir=desc_reservoir_new;desc_res_counts=desc_res_counts_new;desc_cursor=desc_cursor_new;
+pe_memory_end=23943135;
+pe_schema!=1900 ? (
+  pe_schema=1900;pe_ready=0;pe_phase=0;pe_epoch=-1;pe_locks=0;pg_ready=0;pg_layer_count=0;pg_saved_valid=0;pg_saved_layer_count=0;pg_saved_n=0;pg_saved_sources=0;
+  memset(pg_layers,0,65536);memset(pg_meta,0,512);memset(pg_rules,0,16);pg_rules[1]=51;pg_rules[3]=1;pg_rules[6]=52;pg_rules[8]=1;pg_rules[11]=1;pg_rules[13]=1;
+  pg_scope_kind=0;pg_scope_src=0;pg_scope_start=0;pg_scope_end=0;pg_scope_cls=-1;pg_min_conf=0.05;pg_stage=0;pg_apply=0;pg_epoch=0;pg_bypass=0;pg_history_n=0;pg_history_pos=-1;
+);
+pg_preview_running ? pg_preview_restore();pg_preview=0;pg_preview_running=0;pg_preview_pending=0;pe_span_use=0;pe_plan_id=-1;
 
 // GFX-only scratch is deliberately OUTSIDE the explicit DSP snapshot range.
 ui_queue=40000;ui_scroll=40400;ui_local_path=40600;ui_scope=41000;ui_pending=44100;ui_auto=57184;
 cp_clear_voices();cp_clear_events();memset(amp_event_base,0,320);memset(packet_base,0,512);memset(pedal_base,0,16);
+load_block_serial=0;pool_watch_state=-1;pool_watch_generation=-1;pool_watch_selected=-1;pool_watch_failed=-1;pool_watch_budget=-1;
 clock=0;output_smooth=cp_amp(slider7);last_playing=0;cmd_seen=slider24;ui_left=0;poll_left=0;
 memset(ui_snapshot_base,0,8192);ui_snapshot_base[19]=-1;
 memory_schema!=1400 ? (
@@ -3636,7 +4273,7 @@ memory_schema!=1400 ? (
 );
 // Normal transport init resets timestamp-based performance history, not the index.
 trace_n=0;trace_head=-1;record_done=0;record_n=0;record_event=-1;replaying=0;replay_ei=-1;
-state_schema!=703 ? (state_schema=703;edit_count=0;edit_key=0;path_count=0;path_axis_x=1;path_axis_y=2;);
+state_schema!=703 && state_schema!=704 ? (state_schema=704;edit_count=0;edit_key=0;path_count=0;path_axis_x=1;path_axis_y=2;);
 bank_pool=sample_pool_from_slot(0,"main");sample_pool_set_deferred(bank_pool,1);
 sample_pool_set_mode(bank_pool,slider13>0 ? 1 : 0);sample_pool_set_budget_mb(bank_pool,max(0,slider13));sample_pool_commit(bank_pool);
 last_seed=slider11;za_keep_awake=1;pdc_delay=0;
@@ -3777,7 +4414,7 @@ function ui_slider_tip(id) (
  id==42 ? strcpy(#ui_tip_body,"Horizontal focus target in the current map axes. Ctrl-drag moves the focus and auditions nearby source grains.");
  id==43 ? strcpy(#ui_tip_body,"Vertical focus target in the current map axes. Focus is a source-selection bias, not a panner.");
  id==44 ? strcpy(#ui_tip_body,"How much the map focus changes retrieval targets. A committed drawn path takes precedence on its axes.");
- id==45 ? strcpy(#ui_tip_body,"Display another stratum of actual source grains. This only changes the view, not the corpus or generated audio.");
+ id==45 ? strcpy(#ui_tip_body,"Post-selection transient softening. This is a real host-backed parameter: copy/paste, presets, Last Touched and automation use slider45 directly. Zero is exact bypass.");
  id==46 ? strcpy(#ui_tip_body,"How strongly ADSR phase biases acoustic targets and fuzzy roles. Amplitude ADSR continues to work at zero.");
  id==47 ? strcpy(#ui_tip_body,"Nominal progress time for open Gated/Natural descriptor trajectories and the legacy two-axis path cycle. Multi-lane trajectories advance 0->100% then hold at the endpoint; fixed one-shots use their exact duration.");
  id==48 ? strcpy(#ui_tip_body,"Minimum fuzzy role eligibility displayed in the Evidence role filter. Not a classifier confidence or generation threshold.");
@@ -3840,7 +4477,7 @@ function ui_choice(id x y w label options) local(n i c selected hot) (
   hot ? ui_slider_tip(id);
 );
 function ui_desc_name(d) (
-  d=cp_clamp(floor(d),0,50);strcpy(#ui_dim,"Descriptor");
+  d=cp_clamp(floor(d),0,52);strcpy(#ui_dim,"Descriptor");
   d==0 ? strcpy(#ui_dim,"Energy");
   d==1 ? strcpy(#ui_dim,"Brightness");
   d==2 ? strcpy(#ui_dim,"LF weight");
@@ -3892,6 +4529,8 @@ function ui_desc_name(d) (
   d==48 ? strcpy(#ui_dim,"Corpus Axis 2");
   d==49 ? strcpy(#ui_dim,"Corpus Axis 3");
   d==50 ? strcpy(#ui_dim,"Corpus Axis 4");
+  d==51 ? strcpy(#ui_dim,"Region PE");
+  d==52 ? strcpy(#ui_dim,"EC PE");
 );
 function ui_dim(d) (ui_desc_name(d););
 function ui_desc_from_menu(n) local(d) (
@@ -3902,11 +4541,11 @@ function ui_desc_from_menu(n) local(d) (
   n>=33 && n<=45 ? d=28+n-33;
   n>=47 && n<=49 ? d=41+n-47;
   n>=51 && n<=53 ? d=44+n-51;
-  n>=55 && n<=58 ? d=47+n-55;d;
+  n>=55 && n<=58 ? d=47+n-55;n>=60 && n<=61 ? d=51+n-60;d;
 );
 function ui_desc_menu() local(n) (
   gfx_x=mouse_x;gfx_y=mouse_y;
-  n=gfx_showmenu("#CORE|Energy|Brightness|LF weight|Motion|Onset|Crest|Decay|Width|#SPECTRAL|Sub 125 Hz|125-250 Hz|250-500 Hz|500 Hz-1 kHz|1-2 kHz|2-4 kHz|4-8 kHz|8 kHz+|Spectral centroid|Spectral spread|Spectral flatness|Spectral tilt|#TEMPORAL|Local stability|Periodicity|Pulse confidence|Pulse rate|Spectral evolution|Energy direction|Centroid direction|Boundary activity|#TONAL|Harmonicity|Chroma C|Chroma C#|Chroma D|Chroma D#|Chroma E|Chroma F|Chroma F#|Chroma G|Chroma G#|Chroma A|Chroma A#|Chroma B|#SPATIAL|Stereo correlation|L/R balance|Spatial evolution|#CONTEXT|Recurrence|Adjacency confidence|Replaceability|#LEARNED FROM THIS CORPUS|Corpus Axis 1|Corpus Axis 2|Corpus Axis 3|Corpus Axis 4");
+  n=gfx_showmenu("#CORE|Energy|Brightness|LF weight|Motion|Onset|Crest|Decay|Width|#SPECTRAL|Sub 125 Hz|125-250 Hz|250-500 Hz|500 Hz-1 kHz|1-2 kHz|2-4 kHz|4-8 kHz|8 kHz+|Spectral centroid|Spectral spread|Spectral flatness|Spectral tilt|#TEMPORAL|Local stability|Periodicity|Pulse confidence|Pulse rate|Spectral evolution|Energy direction|Centroid direction|Boundary activity|#TONAL|Harmonicity|Chroma C|Chroma C#|Chroma D|Chroma D#|Chroma E|Chroma F|Chroma F#|Chroma G|Chroma G#|Chroma A|Chroma A#|Chroma B|#SPATIAL|Stereo correlation|L/R balance|Spatial evolution|#CONTEXT|Recurrence|Adjacency confidence|Replaceability|#LEARNED FROM THIS CORPUS|Corpus Axis 1|Corpus Axis 2|Corpus Axis 3|Corpus Axis 4|#PREDICTION ERROR|Region PE|EC PE");
   ui_desc_from_menu(n);
 );
 function ui_desc_row_id(row) local(d) (
@@ -3918,6 +4557,7 @@ function ui_desc_row_id(row) local(d) (
   row>=46 && row<=48 ? d=41+row-46;
   row>=50 && row<=52 ? d=44+row-50;
   row>=54 && row<=57 ? d=47+row-54;
+  row>=59 && row<=60 ? d=51+row-59;
   d;
 );
 function ui_desc_row_category(row) (
@@ -3928,18 +4568,19 @@ function ui_desc_row_category(row) (
   row==45 ? strcpy(#ui_desc_cat,"SPATIAL");
   row==49 ? strcpy(#ui_desc_cat,"CONTEXT");
   row==53 ? strcpy(#ui_desc_cat,"LEARNED FROM THIS CORPUS");
+  row==58 ? strcpy(#ui_desc_cat,"PREDICTION ERROR");
 );
 function ui_desc_id_row(d) local(row) (
-  d=cp_clamp(floor(d),0,50);row=d+1;
-  d>=8 ? row+=1;d>=20 ? row+=1;d>=28 ? row+=1;d>=41 ? row+=1;d>=44 ? row+=1;d>=47 ? row+=1;row;
+  d=cp_clamp(floor(d),0,52);row=d+1;
+  d>=8 ? row+=1;d>=20 ? row+=1;d>=28 ? row+=1;d>=41 ? row+=1;d>=44 ? row+=1;d>=47 ? row+=1;d>=51 ? row+=1;row;
 );
 function ui_desc_popup_open(id) local(d lane p) (
   ui_desc_popup=id;ui_desc_popup_x=mouse_x;ui_desc_popup_y=mouse_y;
-  id>=100 && id<112 ? (lane=id-100;p=ui_traj+lane*40;d=floor(p[1]);) : d=floor(slider(id));
+  id>=100 && id<112 ? (lane=id-100;p=ui_traj+lane*40;d=floor(p[1]);) : (id>=200 && id<203 ? d=61216[32+(id-200)*5+1] : d=floor(slider(id)));
   ui_desc_popup_scroll=max(0,ui_desc_id_row(d)-4);ui_desc_popup_drag=0;ui_desc_popup_just=1;
 );
 function ui_desc_choice(id x y w label) local(d) (
-  d=cp_clamp(floor(slider(id)),0,50);ui_desc_name(d);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
+  d=cp_clamp(floor(slider(id)),0,52);ui_desc_name(d);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
   ui_button(x,y,w,34,#ui_choice_label,ui_desc_popup==id) ? ui_desc_popup_open(id);
   ui_hit(x,y,w,34) ? ui_tip("Unified Corpus descriptor registry. Click for the scrollable categorized picker; mouse wheel or drag its scrollbar. Spectral/spatial evidence is universal; tonal/pulse axes are confidence-gated; Corpus Axes are learned from this load during preprocessing.");
 );
@@ -3949,7 +4590,7 @@ function ui_desc_popup_draw() local(px py pw ph headh rowh total vis maxscroll f
     pw=max(190,min(360,gfx_w-16));ph=max(190,min(590,gfx_h-16));
     px=cp_clamp(ui_desc_popup_x-pw*0.18,8,max(8,gfx_w-pw-8));
     py=cp_clamp(ui_desc_popup_y-36,8,max(8,gfx_h-ph-8));
-    headh=42;rowh=28;total=58;vis=max(3,floor((ph-headh-10)/rowh));maxscroll=max(0,total-vis);
+    headh=42;rowh=28;total=61;vis=max(3,floor((ph-headh-10)/rowh));maxscroll=max(0,total-vis);
     inside=mouse_x>=px && mouse_x<px+pw && mouse_y>=py && mouse_y<py+ph;
     inside && ui_wheel!=0 ? (ui_desc_popup_scroll-=ui_wheel/120*3;ui_wheel=0;);
     ui_desc_popup_scroll=cp_clamp(ui_desc_popup_scroll,0,maxscroll);
@@ -3967,14 +4608,14 @@ function ui_desc_popup_draw() local(px py pw ph headh rowh total vis maxscroll f
           ui_desc_row_category(row);ui_box(px+7,ry+2,pw-26,rowh-4,0.055,0.082,0.100);
           ui_text(px+14,ry+7,pw-42,14,#ui_desc_cat,0.48,0.75,0.78);
         ) : (
-          ui_desc_popup>=100 && ui_desc_popup<112 ? (ui_dp=ui_traj+(ui_desc_popup-100)*40;current=floor(ui_dp[1]);) : current=floor(slider(ui_desc_popup));
+          ui_desc_popup>=100 && ui_desc_popup<112 ? (ui_dp=ui_traj+(ui_desc_popup-100)*40;current=floor(ui_dp[1]);) : (ui_desc_popup>=200 && ui_desc_popup<203 ? current=61216[32+(ui_desc_popup-200)*5+1] : current=floor(slider(ui_desc_popup)));
           d==current ? ui_box(px+7,ry+2,pw-26,rowh-4,0.105,0.255,0.255) : (
             mouse_x>=px+7 && mouse_x<px+pw-24 && mouse_y>=ry+2 && mouse_y<ry+rowh-2 ? ui_box(px+7,ry+2,pw-26,rowh-4,0.075,0.125,0.145);
           );
           ui_desc_name(d);ui_text(px+15,ry+7,pw-48,14,#ui_dim,d==current ? 0.91 : 0.77,d==current ? 0.98 : 0.88,d==current ? 0.96 : 0.91);
           d==current ? ui_text(px+pw-49,ry+7,24,14,"*",0.55,0.90,0.78);
           !ui_desc_popup_just && ui_lpress && mouse_x>=px+7 && mouse_x<px+pw-24 && mouse_y>=ry+2 && mouse_y<ry+rowh-2 ? (
-            ui_desc_popup>=100 && ui_desc_popup<112 ? ui_traj_meta(ui_desc_popup-100,16+d) : ui_notify(ui_desc_popup,d,1);ui_desc_popup=0;ui_desc_popup_drag=0;
+            ui_desc_popup>=100 && ui_desc_popup<112 ? ui_traj_meta(ui_desc_popup-100,16+d) : (ui_desc_popup>=200 && ui_desc_popup<203 ? ui_enqueue(14,59000+(ui_desc_popup-200)*1000+d) : ui_notify(ui_desc_popup,d,1));ui_desc_popup=0;ui_desc_popup_drag=0;
           );
         );i+=1;
       );
@@ -3992,7 +4633,7 @@ function ui_desc_popup_draw() local(px py pw ph headh rowh total vis maxscroll f
   );
 );
 function ui_desc_pick(x y w label current) local(nd) (
-  current=cp_clamp(floor(current),0,50);ui_desc_name(current);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
+  current=cp_clamp(floor(current),0,52);ui_desc_name(current);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
   ui_button(x,y,w,34,#ui_choice_label,0) ? (nd=ui_desc_menu();nd>=0 ? current=nd;);
   ui_hit(x,y,w,34) ? ui_tip("Choose from Core, Spectral, Temporal, Tonal, Spatial, Context, or corpus-derived Learned axes.");current;
 );
@@ -4198,16 +4839,17 @@ function ui_mode_name(n) (
 );
 // ---------- Snapshot-only coherence/structure/transfer controls ----------
 function ui_td_set(value) (
-  ui_enqueue(0,7*8192+6000+cp_clamp(floor(value*255+0.5),0,255));
+  ui_notify(45,cp_01(value),1);
 );
 function ui_td_control(x y w) local(value hot) (
-  value=cp_01(ui_x[82]);hot=ui_hit(x,y,w,70);ui_td_drag ? value=ui_td_value;
+  value=cp_01(slider45);hot=ui_hit(x,y,w,70);ui_td_drag ? value=ui_td_value;
   ui_box(x,y,w,70,0.078,0.10,0.132);ui_text(x+10,y+5,w-16,14,"TRANSIENT DIFFUSION",0.64,0.73,0.81);
   sprintf(#ui_val,"%.0f %%",value*100);ui_text(x+10,y+25,w-16,21,#ui_val,0.90,0.95,0.96);
   ui_box(x+10,y+59,w-20,3,0.14,0.20,0.25);ui_box(x+10,y+59,(w-20)*value,3,0.31,0.73,0.65);
   hot && ui_lpress ? (ui_td_drag=1;ui_td_start=value;ui_td_value=value;ui_td_mouse=mouse_x-mouse_y;);
-  ui_down && ui_td_drag ? ui_td_value=cp_01(ui_td_start+((mouse_x-mouse_y)-ui_td_mouse)/240*((mouse_cap&8)>0 ? 0.12 : 1));
-  hot && ui_rpress ? (ui_td_set(0);ui_td_drag=0;);
+  ui_down && ui_td_drag ? (ui_td_value=cp_01(ui_td_start+((mouse_x-mouse_y)-ui_td_mouse)/240*((mouse_cap&8)>0 ? 0.12 : 1));ui_td_set(ui_td_value););
+  hot && ui_rpress ? (ui_td_set(0);slider_automate(pow(2,44),1);ui_td_drag=0;);
+  hot && ui_wheel!=0 && (mouse_cap&16) ? (ui_td_set(cp_01(value+ui_wheel/120*((mouse_cap&8)>0 ? 0.001 : 0.01)));slider_automate(pow(2,44),1);ui_wheel=0;);
   hot ? ui_tip("Post-selection transient softening. Zero is exact bypass. Nonzero uses three stable stereo-linked all-pass sections only when transient evidence is present, then a dry-derived crest guard prevents new short-term peak overshoot. It never changes which corpus region was selected.");
 );
 function ui_td_status(x y w) local(applied detector guard) (
@@ -4265,14 +4907,90 @@ function ui_x_controls(x y w) local(start cols cw i) (
     ui_btn(x,y,min(270,w),31,"RELOAD ANALYSIS",0,"Rebuild rich descriptors, boundaries, recurrence and mappings when audio is idle. Source PCM is unchanged.") ? ui_enqueue(6,0);y+=42;
   ) : y+=42;y-start;
 );
+// GFX formats only the published loading metadata; it never advances analysis.
+function ui_load_text() local(p group phase) (
+  p=ui_snapshot_base+112;group=p[0];phase=p[1];
+  strcpy(#ui_load_label,"Preparing analysis");strcpy(#ui_load_count,"");strcpy(#ui_load_step,"");
+  group==1 ? sprintf(#ui_load_label,"LOADING %d files",ui_snapshot_base[6]);
+  group==2 ? (
+    phase==1 ? strcpy(#ui_load_label,"INDEX / Source metadata");
+    phase==6 ? strcpy(#ui_load_label,"INDEX / Scout recordings");
+    phase==2 ? strcpy(#ui_load_label,"INDEX / Grain layout");
+    phase==3 ? strcpy(#ui_load_label,"INDEX / Probe audio");
+    phase==7 ? strcpy(#ui_load_label,"INDEX / Assemble grains");
+    phase==8 ? strcpy(#ui_load_label,"INDEX / Calibrate features");
+    phase==4 ? strcpy(#ui_load_label,"INDEX / Normalize grains");
+    phase==5 ? strcpy(#ui_load_label,"INDEX / Retrieval tables");
+  );
+  group==3 ? (
+    phase==1 ? strcpy(#ui_load_label,"FEATURES / Spectral frames");
+    phase==2 ? strcpy(#ui_load_label,"FEATURES / Pulse evidence");
+    phase==7 ? strcpy(#ui_load_label,"FEATURES / PCA covariance");
+    phase==8 ? strcpy(#ui_load_label,"FEATURES / PCA projection");
+    phase==9 ? strcpy(#ui_load_label,"FEATURES / PCA normalization");
+    phase==3 ? strcpy(#ui_load_label,"FEATURES / Coarse regions");
+    phase==4 ? strcpy(#ui_load_label,"FEATURES / Recurrence pairs");
+    phase==5 ? strcpy(#ui_load_label,"FEATURES / Recurrence rows");
+    phase==6 ? strcpy(#ui_load_label,"FEATURES / Grain neighbours");
+    phase==10 ? strcpy(#ui_load_label,"FEATURES / Retrieval tables");
+  );
+  group==4 ? (
+    phase==1 ? strcpy(#ui_load_label,"STRUCTURE / Change scores");
+    phase==2 ? strcpy(#ui_load_label,"STRUCTURE / Meso regions");
+    phase==3 ? strcpy(#ui_load_label,"STRUCTURE / Meso calibration");
+    phase==4 ? strcpy(#ui_load_label,"STRUCTURE / Meso classes");
+    phase==5 ? strcpy(#ui_load_label,"STRUCTURE / Meso refinement");
+    phase==6 ? strcpy(#ui_load_label,"STRUCTURE / Meso finalization");
+    phase==7 ? strcpy(#ui_load_label,"STRUCTURE / Macro regions");
+    phase==9 ? strcpy(#ui_load_label,"STRUCTURE / Macro calibration");
+    phase==10 ? strcpy(#ui_load_label,"STRUCTURE / Macro classes");
+    phase==11 ? strcpy(#ui_load_label,"STRUCTURE / Macro refinement");
+    phase==12 ? strcpy(#ui_load_label,"STRUCTURE / Macro finalization");
+  );
+  group==5 ? strcpy(#ui_load_label,phase==1 ? "GRAMMAR / Meso transitions" : "GRAMMAR / Macro transitions");
+  group==6 ? strcpy(#ui_load_label,"MAPPING / Guide episodes");
+  group==7 ? strcpy(#ui_load_label,phase==1 ? "FOCUS / Episode features" : "FOCUS / Local EC axes");
+  group==8 ? strcpy(#ui_load_label,phase==1 ? "PE / Read grain audio" : (phase==2 ? "PE / Region and EC prediction" : "PE / Retrieval tables"));
+  group==9 ? strcpy(#ui_load_label,phase==10 ? "PRUNING / Restore edits" : (phase==1 ? "PRUNING / Eligibility" : (phase==2 ? "PRUNING / Retained spans" : (phase==3 ? "PRUNING / Retrieval tables" : "PRUNING / Apply cache"))));
+  group==10 ? strcpy(#ui_load_label,"Adopt loaded sources");
+  group==11 ? strcpy(#ui_load_label,"Apply analysis settings");
+  group==12 && phase==0 ? strcpy(#ui_load_label,"Prepare structure");
+  strcpy(#ui_load_unit,p[6]==1 ? "files" : (p[6]==2 ? "grains" : (p[6]==3 ? "pairs" : (p[6]==4 ? "regions" : (p[6]==5 ? "episodes" : (p[6]==6 ? "ECs" : "probes"))))));
+  p[3]>0 ? sprintf(#ui_load_step," %d/%d",p[2],p[3]);
+  p[5]>=0 ? sprintf(#ui_load_count,"  %d / %d %s",p[4],p[5],#ui_load_unit);
+  sprintf(#ui_loading,"%s%s%s",#ui_load_label,#ui_load_step,#ui_load_count);
+  group==0 ? (
+    strcpy(#ui_load_label,ui_wait || ui_qn>0 ? "Queued action" : "Source status");
+    p[9]==2 ? sprintf(#ui_loading,"READY  %d grains / %d ECs / %d Macro",ui_snapshot_base[18],54656[4],54656[6]) : (
+      p[9]==3 ? strcpy(#ui_loading,"STRUCTURE UNAVAILABLE / see status help") : (
+        p[9]==4 ? strcpy(#ui_loading,"ANALYSIS COMPLETE / no playable grains") : (
+          p[9]==5 ? sprintf(#ui_loading,"NO VALID AUDIO / %d failed files",ui_snapshot_base[8]) : strcpy(#ui_loading,"LOAD FILES IN SLOT 0")
+        )
+      )
+    );
+  );
+  p[7]>0 ? sprintf(#ui_loading,"WAIT FOR AUDIO TO FINISH / %s",#ui_load_label);
+  ui_load_stale ? sprintf(#ui_loading,"WAITING FOR PROCESSING / %s",#ui_load_label);
+);
+function ui_load_tip() local(p) (
+  p=ui_snapshot_base+112;
+  ui_load_stale ? (
+    sprintf(#ui_load_help,"No new processing snapshot for %.1f seconds. Last task: %s%s%s. The host may have suspended audio processing; resume it to continue. Corpus cannot run loading analysis without processing callbacks.",ui_now-ui_load_seen_time,#ui_load_label,#ui_load_step,#ui_load_count);
+  ) : p[7]>0 ? (
+    sprintf(#ui_load_help,"%s%s%s is waiting for active notes, voices or a preview to finish. Release notes or press Corpus STOP to let preparation continue.",#ui_load_label,#ui_load_step,#ui_load_count);
+  ) : p[9]==3 ? (
+    strcpy(#ui_load_help,p[10]==3 ? "Structure cannot be built for more than 8192 sources. Reduce the source set; contextual PE and generation require a completed structure." : "Structure coverage was exhausted. Reduce the source set or use coarser analysis settings. Contextual PE and generation are not ready.");
+  ) : (
+    sprintf(#ui_load_help,"%s. Counts and the bar describe this stage only, not total time remaining. Recurrence compares N x N coarse-region pairs. Refinement and finalization count both passes. Optional stages can be skipped. PE is computed during preparation and cached for playback; no analysis runs in the interface.",#ui_loading);
+  );ui_tip(#ui_load_help);
+);
+
 function ui_xstatus(x y w) local(h) (
   h=ui_x;
-  h[1]>0 ? sprintf(#ui_txt,"LEARNING %d/6   %d / %d   %s",h[1],h[2],h[3],h[45]>0 ? "PAUSED DURING AUDIO" : "") : (
-    h[14]>0 || h[15]>0 ? sprintf(#ui_txt,"LEARNING GRAMMAR / MAPPING   %d guide episodes",h[17]) : (
-      h[0]>0 ? sprintf(#ui_txt,"CACHED COHERENCE   tonal evidence %.0f%%   pulse %.0f%%",h[8]*100,h[9]*100) : strcpy(#ui_txt,"Micro index / waiting for descriptor analysis")
-    );
+  ui_snapshot_base[112]>0 || ui_load_stale ? (ui_load_text();strcpy(#ui_txt,#ui_loading);) : (
+    h[0]>0 ? sprintf(#ui_txt,"CACHED COHERENCE   tonal evidence %.0f%%   pulse %.0f%%",h[8]*100,h[9]*100) : strcpy(#ui_txt,"Waiting for source and feature analysis")
   );ui_text(x,y,w,14,#ui_txt,0.63,0.83,0.87);
-  ui_hit(x,y,w,25) ? ui_tip("Rich spectral extraction, context joins, recurrence and cross-corpus mapping are built while loading. Tonal/pulse percentages are heuristic evidence weights, not recognition accuracy. Playback only reads cached data.");
+  ui_hit(x,y,w,25) ? (ui_load_text();ui_load_tip(););
 );
 function ui_x_structure(x y w) local(start n size row col a b sim cell px py z) (
   start=y;ui_xstatus(x,y,w);y+=31;
@@ -4378,7 +5096,7 @@ function ui_focus_arg_high(cls v) (46000+cls*256+cp_clamp(floor(v*255+0.5),0,255
 function ui_ec_focus(x y w cls) local(z enabled axis lo hi total kept sources keepsources axes h gx gy gw gh dots_h range_y range_h i p px py nearest nd dx dy d choice lowdraw hidraw load id signv bw axx supported count found idx code) (
   z=60700;h=0;ui_box(x,y,w,258,0.050,0.071,0.092);ui_border(x,y,w,258,0.18,0.31,0.34);ui_text(x+10,y+8,w-20,16,"EC FOCUS  · optional local refinement",0.83,0.93,0.94);
   z[0]<=0 ? (
-    sprintf(#ui_txt,"Learning local Essence / PCA axes... phase %d",z[1]);ui_text(x+10,y+37,w-20,15,#ui_txt,0.66,0.80,0.86);ui_text(x+10,y+64,w-20,14,"Broad EC discovery is already usable; Focus activates only after this upfront pass.",0.59,0.73,0.79);258;
+    ui_load_text();strcpy(#ui_txt,#ui_loading);ui_text(x+10,y+37,w-20,15,#ui_txt,0.66,0.80,0.86);ui_text(x+10,y+64,w-20,14,"Broad EC discovery is already usable; Focus activates only after this upfront pass.",0.59,0.73,0.79);258;
   ) : z[2]!=cls || cls<0 ? (ui_text(x+10,y+42,w-20,15,"Select a Meso EC to inspect its local subspace.",0.65,0.79,0.84);258;) : (
     enabled=z[3]>=0.5;axis=cp_clamp(floor(z[4]),0,max(0,floor(z[11])-1));lo=z[5];hi=z[6];total=z[7];kept=z[8];sources=z[9];keepsources=z[10];axes=max(1,floor(z[11]));count=floor(z[20]);
     // Focus is generation authority; the selected range remains visible/auditionable while OFF.
@@ -4442,12 +5160,14 @@ function ui_structure(w) local(h x y bw n i k p c xx yy cols cw row state level 
   ui_heading(x,y,bw,"STRUCTURE",#ui_txt);
   ui_choice(56,x,y+39,bw,"Engine","Micro only|Inspect only|Meso|Hierarchical|Reconstruct|Auto|Transfer / guide to other sources");
   h[0]<=0 ? (
-    h[1]>0 ? sprintf(#ui_txt,"Learning %d/12   %d episodes",h[1],h[3]) : (ui_x[0]>0 ? strcpy(#ui_txt,ui_snapshot_base[18]>0 ? "Micro ready / insufficient higher-level evidence" : "No playable material in this corpus") : strcpy(#ui_txt,"Preparing sources and hierarchy..."));
-    ui_text(x,y+93,bw,19,#ui_txt,0.71,0.83,0.88);ui_xstatus(x,y+132,bw);ui_structure_h=260;
+    ui_load_text();strcpy(#ui_txt,#ui_loading);
+    ui_text(x,y+93,bw,16,#ui_txt,0.71,0.83,0.88);
+    ui_text(x,y+132,bw,14,"Source, feature, structure and PE preparation are shown above.",0.63,0.83,0.87);
+    ui_hit(x,y+90,bw,66) ? ui_load_tip();ui_structure_h=260;
   ) : (
     y+=102;ui_chronology(x,y,bw);y+=218;y+=ui_live_compact(x,y,bw);
     ui_pending_n>0 ? (
-      sprintf(#ui_txt,"APPLY EXCLUSIONS (%d)",ui_pending_n);ui_btn(x,y,190,32,#ui_txt,1,"Commit every amber pending Structure exclusion, then rebuild the corpus once.") ? ui_pending_apply();
+      sprintf(#ui_txt,"APPLY EXCLUSIONS (%d)",ui_pending_n);ui_btn(x,y,190,32,#ui_txt,1,"Commit pending exclusions as one cached pruning layer; the reference stays fixed.") ? ui_pending_apply();
       ui_btn(x+198,y,130,32,"CLEAR PENDING",0,"Clear pending exclusions without changing the corpus.") ? ui_pending_clear();y+=44;
     );
     navw=max(66,(bw-40)/6);
@@ -4478,6 +5198,7 @@ function ui_structure(w) local(h x y bw n i k p c xx yy cols cw row state level 
       ui_btn(x+274,y,110,32,"PIN MESO",h[28]>=0,"Pin selected Meso EC for deliberate generation.") && h[25]<1 ? (ui_hier_action(4,256+p[6]);ui_notify(56,2,1););
       ui_btn(x+392,y,110,32,"CLEAR PIN",0,"Clear the Meso class pin.") ? ui_hier_action(4,512);y+=48;
       h[25]<1 ? (y+=ui_ec_focus(x,y,bw,p[6])+12;);
+      ui_btn(x,y,150,31,"PRUNE REGION",0,"Open staged descriptor pruning for this region.") ? (ui_enqueue(14,63002);ui_notify(55,5,0););ui_btn(x+158,y,140,31,"PRUNE EC",0,"Open staged pruning over this EC across sources.") ? (ui_enqueue(14,63003);ui_notify(55,5,0););y+=42;
     );y+=ui_x_structure(x,y,bw);ui_structure_h=y+16;
   );
 );
@@ -4539,7 +5260,7 @@ function ui_curve_editor(lane amplitude x y w h) local(base interpidx i steps u 
   hot ? ui_tip(amplitude ? "FREEHAND AMPLITUDE: hold left mouse and draw the whole envelope directly. Release commits the painted shape. Right-click resets. Gold line is the Gated/Natural sustain marker; amplitude endpoints remain safely at zero." : "FREEHAND TRAJECTORY: hold left mouse and paint the requested descriptor shape directly. Release commits the smooth 32-sample curve. Blue = request; amber = achieved primary selections. Right-click resets this lane.");h;
 );
 function ui_traj_desc_choice(lane x y w label) local(p d) (
-  p=ui_traj+lane*40;d=cp_clamp(floor(p[1]),0,50);ui_desc_name(d);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
+  p=ui_traj+lane*40;d=cp_clamp(floor(p[1]),0,52);ui_desc_name(d);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
   ui_button(x,y,w,34,#ui_choice_label,ui_desc_popup==100+lane) ? (ui_desc_popup=100+lane;ui_desc_popup_x=mouse_x;ui_desc_popup_y=mouse_y;ui_desc_popup_scroll=max(0,ui_desc_id_row(d)-4);ui_desc_popup_drag=0;ui_desc_popup_just=1;);
   ui_hit(x,y,w,34) ? ui_tip("Choose any Core, Spectral, Temporal, Tonal, Spatial, Context, or corpus-derived Learned axis for this trajectory lane.");
 );
@@ -4626,7 +5347,7 @@ function ui_explore(w include_inspector) local(x y bw mh c3 c2 i p active count 
   mh=max(280,min(430,gfx_h*0.40));ui_graph(x,y,bw,mh);y+=mh+17;
   ui_btn(x,y,96,32,slider54>0.5 ? "DRAW ON" : "DRAW",slider54>0.5,"Drag on the map, then release to commit the legacy two-axis gesture. Multi-lane trajectories above can constrain any registry axes simultaneously.") ? ui_notify(54,1-slider54,1);
   ui_btn(x+104,y,98,32,"CLEAR",0,"Clear the committed two-axis map path. Constraint Trajectory lanes are separate.") ? ui_enqueue(11,0);
-  ui_btn(x+210,y,116,32,"MORE POINTS",0,"Show another stratum of actual grains. This changes visualization only.") ? ui_notify(45,(floor(slider45)+1)%max(1,ui_snapshot_base[86]),0);
+  ui_btn(x+210,y,116,32,"MORE POINTS",0,"Show another stratum of actual grains. This changes visualization only and is not a host parameter.") ? ui_enqueue(0,7*8192+6500+((floor(ui_snapshot_base[111])+1)%max(1,ui_snapshot_base[86])));
   ui_btn(x+334,y,118,32,"PATH AXES",0,"Return the map to the descriptor axes used by the saved two-axis path.") ? (ui_notify(40,ui_snapshot_base[39],1);ui_notify(41,ui_snapshot_base[40],1););
   y+=43;
   ui_path_pending ? strcpy(#ui_txt,"PATH: committing...") : (ui_snapshot_base[38]>1 ? sprintf(#ui_txt,"PATH ACTIVE  %d knots   error %.2f",ui_snapshot_base[38],ui_auto[12]) : strcpy(#ui_txt,"No two-axis map path"));ui_text(x,y,bw,15,#ui_txt,0.61,0.82,0.86);y+=34;
@@ -4672,7 +5393,7 @@ function ui_evidence(w) local(x y bw i p yy id n v state b code fd fb active) (
       ui_btn(x,y,bw,36,#ui_bin,active,"Audition the next actual grain with membership in this descriptor band. Right-click applies this descriptor/bin as the Grain filter.") ? ui_enqueue(2,code);
       ui_hit(x,y,bw,36) && ui_rpress ? (ui_notify(16,active ? 0 : code+1,1);ui_notify(18,0,0););y+=43;b+=1;
     );
-    y+=9;ui_text(x,y,bw,15,"51 axes: 8 Core / 12 Spectral / 8 Temporal / 13 Tonal / 3 Spatial / 3 Context / 4 Learned",0.62,0.79,0.84);y+=31;
+    y+=9;ui_text(x,y,bw,15,"53 axes: 51 acoustic/context/learned + Region PE / EC PE",0.62,0.79,0.84);y+=31;
     ui_text(x,y,bw,15,"Corpus Axis 1-4 are deterministic PCA projections learned from the current load during preprocessing.",0.62,0.79,0.84);y+=31;
   );ui_evidence_h=y+12;
 );
@@ -4739,10 +5460,11 @@ function ui_inspector(x y w) local(h p z i j k yy n d val cw id lev mask state s
       sprintf(#ui_txt,"G%05d  /  F%d  /  %.3f - %.3f s",id+1,p[1]+1,p[2]/p[4],(p[2]+p[3])/p[4]);ui_text(x,y,cw,16,#ui_txt,0.83,0.91,0.95);y+=30;
       ui_wave(p,x,y,cw,60);y+=70;
       sprintf(#ui_txt,"%.1f dBFS   source trim %+.1f dB   %s",cp_db(p[6]),slider23>0 ? cp_db(ui_auto[29]) : 0,p[60]>0 ? "LOW-SALIENCE" : (p[9]>0 ? "EXCLUDED" : "AUDIBLE"));ui_text(x,y,cw,15,#ui_txt,0.64,0.82,0.84);y+=30;
+      ui_btn(x+440,y,88,32,"PRUNE",0,"Open a pruning scope around this selected grain.") ? (ui_enqueue(14,63004);ui_notify(55,5,0););
       ui_btn(x,y,102,32,"AUDITION",0,"Hear this original region through Source level and Output, without generated pitch or the event envelope.") ? ui_enqueue(1,id);
       ui_btn(x+110,y,100,32,"ANCHOR",slider15==id+1,"Use this grain as the initial perceptual identity for new notes.") ? ui_notify(15,id+1,1);
       ui_btn(x+218,y,100,32,"UNPIN",0,"Clear the Micro identity anchor. A Meso class pin is independent.") ? ui_notify(15,0,1);
-      ui_btn(x+326,y,104,32,p[9]>0 ? "INCLUDE" : "EXCLUDE",p[9]>0,"Toggle manual generation eligibility, then rebuild safely. Quiet detection still applies; the audio itself is never deleted.") ? ui_enqueue(7,id);y+=44;
+      ui_btn(x+326,y,104,32,p[9]>0 ? "INCLUDE" : "EXCLUDE",p[9]>0,"Stage an eligibility change in Prune, then Apply. The audio itself is never deleted.") ? ui_enqueue(7,id);y+=44;
       ui_btn(x,y,160,32,"CYCLE ROLE BIAS",0,"Boost the next role eligibility without removing eligibility for any other role. Cycles through Auto / Attack / Body / Detail / Tail.") ? ui_enqueue(8,id);
       ui_btn(x+170,y,156,32,"LOCATE",0,"Select this grains Meso episode and source chronology.") ? (ui_hier_action(7,6);ui_notify(55,4,0););y+=45;
       i=0;loop(8,ui_dim(i);val=ui_record_feat(p,i);yy=y+i*30;ui_text(x,yy,116,14,#ui_dim,0.69,0.82,0.89);
@@ -4750,11 +5472,11 @@ function ui_inspector(x y w) local(h p z i j k yy n d val cw id lev mask state s
         sprintf(#ui_txt,"%.2f",val);ui_text(x+cw-107,yy,49,14,#ui_txt,0.75,0.86,0.90);
         mask=pow(2,i);ui_btn(x+cw-55,yy-3,55,25,(floor(slider50/mask)%2)>0 ? "LOCK" : "free",(floor(slider50/mask)%2)>0,"Toggle this identity lock. Locked descriptors can override path and hierarchy requests; strength is in Controls.") ? ui_notify(50,(floor(slider50/mask)%2)>0 ? slider50-mask : slider50+mask,1);i+=1;
       );y+=254;
-      axisx=cp_clamp(floor(slider40),0,50);axisy=cp_clamp(floor(slider41),0,50);
+      axisx=cp_clamp(floor(slider40),0,52);axisy=cp_clamp(floor(slider41),0,52);
       ui_desc_name(axisx);sprintf(#ui_txt,"MAP X  %s   %.3f   confidence %.2f",#ui_dim,h[105],h[107]);ui_text(x,y,cw-72,15,#ui_txt,0.75,0.89,0.91);
-      bit=pow(2,axisx);locked=(floor(slider50/bit)%2)>0;ui_btn(x+cw-68,y-6,68,27,locked ? "LOCK" : "free",locked,"Registry-wide identity lock for the current X descriptor.") ? ui_notify(50,locked ? slider50-bit : slider50+bit,1);y+=31;
+      bit=pow(2,axisx);locked=axisx>=51 ? (floor(61216[31]/pow(2,axisx-51))%2)>0 : (floor(slider50/bit)%2)>0;ui_btn(x+cw-68,y-6,68,27,locked ? "LOCK" : "free",locked,"Registry-wide identity lock for the current X descriptor.") ? (axisx>=51 ? ui_enqueue(14,63060+axisx-51) : ui_notify(50,locked ? slider50-bit : slider50+bit,1));y+=31;
       ui_desc_name(axisy);sprintf(#ui_txt,"MAP Y  %s   %.3f   confidence %.2f",#ui_dim,h[106],h[108]);ui_text(x,y,cw-72,15,#ui_txt,0.75,0.89,0.91);
-      bit=pow(2,axisy);locked=(floor(slider50/bit)%2)>0;ui_btn(x+cw-68,y-6,68,27,locked ? "LOCK" : "free",locked,"Registry-wide identity lock for the current Y descriptor.") ? ui_notify(50,locked ? slider50-bit : slider50+bit,1);y+=36;
+      bit=pow(2,axisy);locked=axisy>=51 ? (floor(61216[31]/pow(2,axisy-51))%2)>0 : (floor(slider50/bit)%2)>0;ui_btn(x+cw-68,y-6,68,27,locked ? "LOCK" : "free",locked,"Registry-wide identity lock for the current Y descriptor.") ? (axisy>=51 ? ui_enqueue(14,63060+axisy-51) : ui_notify(50,locked ? slider50-bit : slider50+bit,1));y+=36;
       ui_text(x,y,cw,14,"Rich map axes share the same registry used by descriptor filtering, path guidance and cached coherence scoring.",0.60,0.78,0.83);y+=30;
     ) : (ui_text(x,y,cw,15,"Select an audible region in Structure or Evidence.",0.64,0.79,0.84);y+=35;);
   ) : y+=42;
@@ -4823,12 +5545,100 @@ function ui_inspector(x y w) local(h p z i j k yy n d val cw id lev mask state s
     ui_wrap(x,y,cw,"Replay uses recorded choices. Its master Output and peak catch remain live. Source changes, changed eligibility and unfinished/overflowed plans invalidate replay rather than approximating it.",4);y+=88;
   ) : y+=42;y+=ui_x_inspector(x,y,cw);ui_inspector_h=y+16;
 );
+function ui_prune(w) local(z x y bw row p d px ww a b hot nv op i q color label src scope gx gy gw gh mx idx item n) (
+  z=61216;x=14;y=12;bw=w-28;
+  ui_heading(x,y,bw,"PRUNE","");
+  ui_btn(x+bw-300,y-3,92,30,"APPLY",z[6]>0,"Commit the staged layer using cached measurements.") ? ui_enqueue(14,63012);
+  ui_btn(x+bw-200,y-3,92,30,"CANCEL",0,"Discard pending edits.") ? ui_enqueue(14,63013);
+  ui_btn(x+bw-100,y-3,100,30,"PREVIEW",z[27]>0,"Generate from the staged mask without applying it.") ? ui_enqueue(14,63023);y+=42;
+  !z[0] || !z[4] ? (ui_load_text();ui_text(x,y,bw,15,#ui_loading,0.95,0.77,0.40);ui_hit(x,y,bw,26) ? ui_load_tip();y+=32;);
+  z[22]>0 ? (
+    z[22]==1 ? strcpy(#ui_txt,"Eight layers are in use. Consolidate applied layers to free slots.");
+    z[22]==3 ? strcpy(#ui_txt,"Saved source/segmentation mismatch: layers are inactive. Original saved data is retained.");
+    z[22]==4 ? strcpy(#ui_txt,"Select a supported Meso region or EC first.");
+    z[22]==5 ? strcpy(#ui_txt,"Finish the current commit or generated preview before changing the draft.");
+    ui_wrap(x,y,bw,#ui_txt,2);y+=46;
+  );
+  ui_btn(x,y,104,30,"ALL",z[8]==0,"Scope all loaded sources.") ? ui_enqueue(14,63000);
+  ui_btn(x+112,y,104,30,"SOURCE",z[8]==1,"Use the selected grain's source, or Structure source.") ? ui_enqueue(14,63001);
+  ui_btn(x+224,y,104,30,"REGION",z[8]==2,"Use the selected Meso or Macro source interval. The PE reference does not change.") ? ui_enqueue(14,63002);
+  ui_btn(x+336,y,104,30,"EC",z[8]==3,"Use grains in regions with membership in the selected Meso EC, across sources.") ? ui_enqueue(14,63003);
+  ui_btn(x+448,y,104,30,"INTERVAL",z[8]==4,"Start with the selected grain; adjust source-time handles below.") ? ui_enqueue(14,63004);y+=40;
+  sprintf(#ui_txt,"Source %d   %.3f - %.3f s   EC %d",z[9]+1,z[10],z[11],z[12]+1);ui_text(x,y,bw,14,#ui_txt,0.68,0.81,0.83);y+=27;
+  z[8]!=0 && z[8]!=3 && z[120]>0 ? (
+    gx=x+8;gw=bw-16;gy=y;ui_box(gx,gy,gw,24,0.075,0.105,0.13);
+    a=cp_01(z[10]/z[120]);b=cp_01(z[11]/z[120]);ui_box(gx+a*gw,gy,max(2,(b-a)*gw),24,0.15,0.38,0.39);
+    ui_line(gx+a*gw,gy-3,gx+a*gw,gy+27,0.70,0.96,0.78,2);ui_line(gx+b*gw,gy-3,gx+b*gw,gy+27,0.70,0.96,0.78,2);
+    ui_hit(gx,gy-5,gw,34) ? ui_tip("Drag either source-time boundary. Grain intervals intersecting this scope are edited; the timeline shows the indexed resolution.");
+    ui_lpress && ui_hit(gx,gy-5,gw,34) ? (ui_pg_time_drag=abs((ui_mx-gx)/gw-a)<abs((ui_mx-gx)/gw-b) ? 1 : 2;);
+    ui_down && ui_pg_time_drag>0 ? (
+      nv=cp_clamp(floor(cp_01((ui_mx-gx)/gw)*1023+0.5),0,1023);
+      ui_now-ui_pg_send>0.06 && nv!=ui_pg_last ? (ui_enqueue(14,(ui_pg_time_drag==1 ? 63200 : 64400)+nv);ui_pg_send=ui_now;ui_pg_last=nv;);
+    );!ui_down ? ui_pg_time_drag=0;y+=42;
+  );
+  ui_btn(x,y,180,31,z[13]==0 ? "KEEP MATCHING" : "EXCLUDE MATCHING",1,"Keep Matching retains only matching grains inside the scope. Exclude Matching removes matches. Outside scope is unchanged.") ? ui_enqueue(14,63010);
+  ui_btn(x+188,y,104,31,z[14]==0 ? "ALL rows" : "ANY row",0,"Combine enabled descriptor rows explicitly.") ? ui_enqueue(14,63011);
+  sprintf(#ui_txt,"Support >= %.0f%%",z[15]*100);ui_btn(x+300,y,150,31,#ui_txt,0,"Minimum confidence: cycles 5, 20, 35, 50 percent. Unsupported observations follow each row's Unknown policy.") ? ui_enqueue(14,63024);y+=43;
+  row=0;loop(3,p=z+32+row*5;
+    ui_btn(x,y,54,31,p[0]>0.5 ? "ON" : "OFF",p[0]>0.5,"Enable or disable this predicate row. With all rows Off, only explicit brushes affect material.") ? ui_enqueue(14,59000+row*1000+720);
+    ui_desc_name(p[1]);ui_btn(x+62,y,max(170,bw-270),31,#ui_dim,0,"Choose any descriptor, including Region PE or EC PE.") ? ui_desc_popup_open(200+row);
+    p[4]==0 ? strcpy(#ui_txt,"Unknown: keep") : (p[4]==1 ? strcpy(#ui_txt,"Unknown: fail") : strcpy(#ui_txt,"Only unknown"));
+    ui_btn(x+bw-198,y,198,31,#ui_txt,0,"Keep leaves unknown observations unchanged. Fail treats missing evidence as a failed match. Only unknown matches unsupported observations exclusively.") ? ui_enqueue(14,59000+row*1000+704+((p[4]+1)%3));
+    y+=39;gx=x+12;gw=bw-24;gy=y;ui_box(gx,gy,gw,25,0.070,0.095,0.12);
+    ui_pg_drag==row+1 ? (a=min(ui_pg_a,ui_pg_b);b=max(ui_pg_a,ui_pg_b);) : (a=p[2];b=p[3];);
+    ui_box(gx+a*gw,gy,max(2,(b-a)*gw),25,p[0]>0.5 ? 0.17 : 0.10,p[0]>0.5 ? 0.42 : 0.20,0.34);
+    ui_line(gx+a*gw,gy-3,gx+a*gw,gy+28,0.75,0.96,0.80,2);ui_line(gx+b*gw,gy-3,gx+b*gw,gy+28,0.75,0.96,0.80,2);
+    ui_lpress && ui_hit(gx,gy-4,gw,33) ? (ui_pg_drag=row+1;ui_pg_a=p[2];ui_pg_b=p[3];ui_pg_handle=abs((ui_mx-gx)/gw-a)<abs((ui_mx-gx)/gw-b) ? 0 : 1;);
+    ui_down && ui_pg_drag==row+1 ? (
+      nv=cp_01((ui_mx-gx)/gw);ui_pg_handle==0 ? ui_pg_a=min(nv,ui_pg_b) : ui_pg_b=max(nv,ui_pg_a);
+      ui_now-ui_pg_send>0.08 ? (ui_enqueue(14,59000+row*1000+(ui_pg_handle==0 ? 64+floor(ui_pg_a*255) : 384+floor(ui_pg_b*255)));ui_pg_send=ui_now;);
+    );
+    !ui_down && ui_pg_drag==row+1 ? (ui_enqueue(14,59000+row*1000+64+floor(ui_pg_a*255));ui_enqueue(14,59000+row*1000+384+floor(ui_pg_b*255));ui_pg_drag=0;);
+    sprintf(#ui_txt,"%.1f%% - %.1f%%",a*100,b*100);ui_text(gx,y+33,gw,14,#ui_txt,0.71,0.84,0.84);y+=62;row+=1;
+  );
+  // The first row's distribution, independent of whether an observation is kept.
+  ui_text(x,y,bw,14,"First descriptor distribution in scope",0.64,0.79,0.83);y+=23;mx=1;i=0;loop(64,mx=max(mx,z[48+i]);i+=1;);
+  i=0;loop(64,ui_box(x+i*bw/64,y+45-z[48+i]/mx*45,max(1,bw/64-1),z[48+i]/mx*45,0.25,0.54,0.57);i+=1;);y+=56;
+  z[5]>0 ? (ui_load_text();strcpy(#ui_txt,#ui_loading);) : (z[6]>0 ? sprintf(#ui_txt,"PENDING: %d kept globally / %.2f s; scope %d; unknown %d",z[16],z[19],z[17],z[18]) : sprintf(#ui_txt,"APPLIED: %d eligible grains; %d layers",z[24],z[20]));
+  ui_text(x,y,bw,15,#ui_txt,z[6]>0 ? 0.95 : 0.67,z[6]>0 ? 0.78 : 0.87,0.60);y+=33;
+  ui_btn(x,y,126,32,"HEAR KEPT",0,"Original source audio from the staged retained set. Does not apply edits.") ? ui_enqueue(14,63020);
+  ui_btn(x+134,y,138,32,"HEAR EXCLUDED",0,"Original excluded audio is deliberately auditionable.") ? ui_enqueue(14,63021);
+  ui_btn(x+280,y,132,32,"HEAR UNKNOWN",0,"Hear observations without sufficient support for the first descriptor.") ? ui_enqueue(14,63022);
+  ui_btn(x+420,y,132,32,"PREVIEW",z[27]>0,"Generate with the staged mask. Production randomness/history is restored when the preview finishes.") ? ui_enqueue(14,63023);y+=42;
+  ui_btn(x,y,94,33,"APPLY",z[6]>0,"Commit the whole staged layer after preparing eligible lookup tables. Existing voices finish; future selections obey the new mask.") ? ui_enqueue(14,63012);
+  ui_btn(x+102,y,94,33,"CANCEL",0,"Discard pending filters/brushes without changing applied layers.") ? ui_enqueue(14,63013);
+  ui_btn(x+204,y,78,33,"UNDO",z[25]>0,"Restore the previous applied layer configuration.") ? ui_enqueue(14,63014);
+  ui_btn(x+290,y,78,33,"REDO",z[25]<z[26]-1,"Restore the next applied layer configuration.") ? ui_enqueue(14,63015);
+  ui_btn(x+376,y,176,33,z[21]>0 ? "PRUNING BYPASSED" : "BYPASS PRUNING",z[21]>0,"Temporarily bypass new pruning layers. Imported legacy exclusions still apply.") ? ui_enqueue(14,63016);y+=48;
+  ui_text(x,y,bw,14,"Indexed grain stratum: click auditions; Shift keeps; Ctrl excludes. Green = kept, amber = excluded.",0.67,0.81,0.83);y+=26;
+  n=z[121];i=0;loop(n,q=z+160+i*12;px=x+(i%32)*bw/32;gy=y+floor(i/32)*29;
+    q[4]>0 ? (q[5]>0 ? ui_box(px,gy,bw/32-2,25,0.12,0.40,0.32) : ui_box(px,gy,bw/32-2,25,0.47,0.28,0.10)) : ui_box(px,gy,bw/32-2,25,0.07,0.10,0.13);
+    ui_hit(px,gy,bw/32-2,25) ? (
+      sprintf(#ui_txt,"G%d / F%d / %.3f-%.3f s | Region %.2f support %.0f%% | EC %.2f support %.0f%%",q[0]+1,q[1]+1,q[2],q[2]+q[3],q[6],q[7]*100,q[8],q[9]*100);ui_tip(#ui_txt);
+      ui_down && q[4]>0 && (ui_lpress || ui_pg_brush_last!=q[0]) ? (
+        mouse_cap&8 ? (ui_enqueue(14,63030);ui_enqueue(7,q[0]);) : (mouse_cap&4 ? (ui_enqueue(14,63031);ui_enqueue(7,q[0]);) : ui_enqueue(1,q[0]));ui_pg_brush_last=q[0];
+      );
+    );i+=1;
+  );!ui_down ? ui_pg_brush_last=-1;y+=ceil(n/32)*29+16;
+  ui_text(x,y,bw,14,"Applied layers (click to bypass/re-enable individually)",0.67,0.81,0.83);y+=26;i=0;
+  loop(z[20],sprintf(#ui_txt,"Layer %d: %s",i+1,z[112+i]>0 ? "ON" : "OFF");ui_btn(x+(i%4)*bw/4,y+floor(i/4)*38,bw/4-8,30,#ui_txt,z[112+i]>0,"Toggle this resolved layer. The loaded prediction reference stays fixed.") ? ui_enqueue(14,63040+i);i+=1;);y+=ceil(z[20]/4)*38;
+  z[20]>0 ? (ui_btn(x,y,220,30,"CONSOLIDATE LAYERS",0,"Merge applied results into one layer and clear layer undo history. Grain eligibility is preserved.") ? ui_enqueue(14,63050);y+=43;);
+  ui_heading(x,y,bw,"SELECTED GRAIN PE","loaded reference");y+=37;
+  z[130]>0.05 ? sprintf(#ui_pe_region,"%.3f",z[128]) : strcpy(#ui_pe_region,"Unknown");z[131]>0.05 ? sprintf(#ui_pe_ec,"%.3f",z[129]) : strcpy(#ui_pe_ec,"Unknown");
+  sprintf(#ui_txt,"G%d: Region %s / support %.0f%% / %.1f refs | EC %s / support %.0f%% / %.1f refs",z[145]+1,#ui_pe_region,z[130]*100,z[134],#ui_pe_ec,z[131]*100,z[135]);ui_text(x,y,bw,14,#ui_txt,0.73,0.87,0.86);y+=28;
+  sprintf(#ui_txt,"Raw residuals %.3f / %.3f; leading acoustic channels %d / %d; %d measured frames",z[132],z[133],z[137]+1,z[138]+1,z[141]);ui_text(x,y,bw,14,#ui_txt,0.63,0.78,0.80);y+=28;
+  ui_btn(x,y,174,30,"LOCK REGION PE",(z[31]%2)>0,"Hold Region PE near the event anchor, using cached confidence.") ? ui_enqueue(14,63060);
+  ui_btn(x+182,y,174,30,"LOCK EC PE",floor(z[31]/2)>0,"Hold EC PE near the event anchor, using cached confidence.") ? ui_enqueue(14,63061);y+=42;
+  ui_wrap(x,y,bw,"PE is contextual deviation, not a noise or quality label. Low support is Unknown. Pruning never refits these measurements. Values remain fixed until sources or analysis settings reload.",3);y+=70;
+  ui_prune_h=y+14;
+);
+
 function ui_help_view(w) local(x y bw) (
   x=14;y=12;bw=w-28;
   ui_heading(x,y,bw,"HELP","");ui_btn(x+bw-40,y,40,29,"X",0,"Close contextual help.") ? ui_help=0;y+=44;
   ui_page==4 ? strcpy(#ui_help_text,"Load recordings in slot 0. Corpus scouts each source, infers grain windows and low-salience thresholds, and builds Micro > Meso > Macro automatically. Auto selects a supported hierarchy for each new note. Low-salience Micro material stays playable; Meso models sparsity/density without muting. Only high-confidence Macro REST regions schedule silence. Gold-star unique classes stay in the normal population and can be filtered with UNIQUE. EC Focus optionally refines a selected Meso class along Essence or local PC1/PC2/PC3 without changing the broad class itself. Its four axis buttons are explicit; click/drag the member dots to audition originals, Shift-click a dot to re-synthesize, drag the lower strip to preview a retained interval, and use FOCUS ON only when that interval should constrain generation. Generation pins are explicit; clicking to audition never silently pins a class.") : (
     ui_page==0 ? strcpy(#ui_help_text,"Explore plots actual grains on two acoustic descriptors. Click-drag across points to hear overlapping source grains; Shift-click sets an identity anchor. Ctrl-drag moves a focus. Turn Draw on, drag a path, then release. The blue path commits atomically and guides subsequent choices. Amber is the actual primary walk. Use Path Axes to return to a saved paths coordinates. A held note traverses the full path forward and back; a one-shot fits it to the declared duration. Corpus cannot follow into material it does not contain. Explicit locks remain stronger than the path.") : (
-      ui_page==2 ? strcpy(#ui_help_text,"Drag controls; Shift gives fine adjustment. Right-click restores that controls new default. Plain wheel scrolls the pane; Alt-wheel edits a hovered control. The existing performance sliders support Last Touched automation. Additional Coherence/Grammar settings and Transient Diffusion are serialized controls, not new host automation slots. Transient Diffusion is constant-cost DSP, never GFX-side analysis. Output defaults to 0 dB. Match active uses one bounded source gain, preserving dynamics within that recording. Low-salience detection biases selection without deleting quiet material; only Macro REST schedules intentional silence. Rebuilds are automatic and wait for active model users to finish.") : strcpy(#ui_help_text,"Inspector opens only the evidence you request. Selected Grain shows exact source region and excludes or locks. Live Walk exposes real emitted slices and path error. Selected Class shows member distributions, comparisons and observed successors. Analysis explains inferred grain resolution and quiet thresholds. System contains actual failures, limits and protocol/replay states. A low distance is acoustic similarity, not proof of semantic equivalence.");
+      ui_page==2 ? strcpy(#ui_help_text,"Drag controls; Shift gives fine adjustment. Right-click restores that controls new default. Plain wheel scrolls the pane; Alt-wheel edits a hovered control. The existing performance sliders support Last Touched automation. Additional Coherence/Grammar settings remain serialized controls. Transient Diffusion is now a real host-backed slider and can be automated/Last-Touched normally. Its renderer is constant-cost DSP, never GFX-side analysis. Output defaults to 0 dB. Match active uses one bounded source gain, preserving dynamics within that recording. Low-salience detection biases selection without deleting quiet material; only Macro REST schedules intentional silence. Rebuilds are automatic and wait for active model users to finish.") : strcpy(#ui_help_text,"Inspector opens only the evidence you request. Selected Grain shows exact source region and excludes or locks. Live Walk exposes real emitted slices and path error. Selected Class shows member distributions, comparisons and observed successors. Analysis explains inferred grain resolution and quiet thresholds. System contains actual failures, limits and protocol/replay states. A low distance is acoustic similarity, not proof of semantic equivalence.");
     );
   );y+=ui_wrap(x,y,bw,#ui_help_text,24)+28;
   ui_wrap(x,y,bw,"Evidence is a closed-by-default side drawer. Descriptor names and member counts remain fixed while auditioning. Choose Core, Spectral, Temporal, Tonal, Spatial, Context or Learned axes; tonal/pulse evidence is confidence-gated. Right-click a descriptor bin to apply a browser filter. The underlying source audio is never deleted.",10);
@@ -4848,27 +5658,51 @@ function ui_tooltip_draw() local(w h x y saved n) (
 );
 
 @serialize
-file_var(0,state_schema);file_var(0,edit_key);file_var(0,edit_count);
+file_var(0,state_schema);
+legacy_state_schema=state_schema<704;legacy_map_stratum=legacy_state_schema ? cp_clamp(floor(slider45),0,255) : map_stratum_page;
+file_var(0,edit_key);file_var(0,edit_count);
 edit_count=cp_clamp(floor(edit_count),0,512);file_mem(0,12288,edit_count*3);
 file_var(0,path_count);path_count=cp_clamp(floor(path_count),0,32);
 file_var(0,path_axis_x);file_var(0,path_axis_y);file_mem(0,7100,path_count*2);
 file_var(0,xc_config_schema);file_mem(0,18153472,16);
 file_var(0,traj_schema);file_var(0,traj_epoch);file_mem(0,18330000,520);
 file_var(0,fc_schema);file_var(0,fc_cfg_key);file_mem(0,19292000,192);
-file_var(0,td_schema);file_var(0,td_amount);
+// v1.8.0 stored diffusion privately after td_schema. Consume that legacy tail
+// once so existing v1.8.0 projects migrate into the host slider. v1.7.1 and
+// earlier have no tail, leaving td_schema at 0 and therefore migrate to 0%.
+legacy_state_schema ? (td_schema=0;td_legacy_amount=0;) : (td_schema=1810;td_legacy_amount=slider45;);
+file_var(0,td_schema);file_var(0,td_legacy_amount);
+legacy_state_schema ? (
+  map_stratum_page=legacy_map_stratum;
+  slider45=td_schema==1800 ? cp_01(td_legacy_amount) : 0;
+  sliderchange(pow(2,44));state_schema=704;td_schema=1810;
+) : file_var(0,map_stratum_page);
+
+// v1.9 appended pruning state. No host slider is repurposed.
+pe_io_read=file_avail(0)>=0;pe_io_tag=pe_io_read ? 0 : 1900;
+!pe_io_read || file_avail(0)>0 ? file_var(0,pe_io_tag);
+pe_io_tag==1900 ? (
+  file_var(0,pe_locks);file_var(0,pg_bypass);file_var(0,pg_saved_valid);file_var(0,pg_saved_seg);
+  file_var(0,pg_saved_layer_count);file_var(0,pg_saved_n);file_var(0,pg_saved_sources);
+  pg_saved_layer_count=cp_clamp(floor(pg_saved_layer_count),0,8);pg_saved_n=cp_clamp(floor(pg_saved_n),0,65536);pg_saved_sources=cp_clamp(floor(pg_saved_sources),0,65536);
+  file_mem(0,pg_saved_meta,512);file_mem(0,pg_saved_layers,pg_saved_layer_count*8192);file_mem(0,pg_saved_sources_base,pg_saved_sources*8);file_mem(0,pg_saved_intervals,pg_saved_n*2);
+  file_mem(0,pg_rules,15);file_var(0,pg_scope_kind);file_var(0,pg_scope_src);file_var(0,pg_scope_start);file_var(0,pg_scope_end);file_var(0,pg_scope_cls);file_var(0,pg_operation);file_var(0,pg_logic);file_var(0,pg_min_conf);  pe_io_end=pe_io_read ? 0 : 190019;!pe_io_read || file_avail(0)>0 ? file_var(0,pe_io_end);
+  pe_io_read && pe_io_end!=190019 ? (pg_saved_valid=0;pg_saved_layer_count=0;pe_locks=0;pg_bypass=0;pg_error=3;);
+) : pe_io_read ? (pg_saved_valid=0;pg_saved_layer_count=0;pe_locks=0;pg_bypass=0;);
 
 @slider
 output_target=cp_amp(slider7);
 slider11!=last_seed ? (rng_state=max(1,floor(slider11));last_seed=slider11;);
 
 @block
+load_block_serial+=1;
 // v1.5 migration: v1.4 serialized 16 coherence cells but did not assign the
 // final four. Preserve its first 12 values, initialize the new performance
 // fields once, and keep the old Morphology slider as a temporary fallback.
 xc_config_schema<1500 ? (xc_params[12]=0;xc_params[13]=0;xc_params[14]=0.60;xc_params[15]=0.20;xc_config_schema=1500;);
 traj_schema<1600 ? (tr_clear_all();amp_defaults();traj_epoch=0;traj_schema=1610;) : (traj_schema<1610 ? (tr_migrate_freehand();traj_schema=1610;););
-td_schema<1800 ? (td_amount=0;td_schema=1800;);td_srate!=srate ? (td_prepare();td_clear(););
-td_amount>0.000001 ? (!td_enabled ? (td_clear();td_enabled=1;);) : (td_enabled=0;td_mix=0;);
+td_schema<1810 ? td_schema=1810;td_srate!=srate ? (td_prepare();td_clear(););
+slider45>0.000001 ? (!td_enabled ? (td_clear();td_enabled=1;);) : (td_enabled=0;td_mix=0;);
 td_last_mix=td_block_mix;td_last_trans=td_block_trans;td_last_guard=td_block_guard;td_last_inpeak=td_block_inpeak;td_last_outpeak=td_block_outpeak;
 td_block_mix=0;td_block_trans=0;td_block_guard=0;td_block_inpeak=0;td_block_outpeak=0;
 last_block_rms=meter_n>0 ? sqrt(meter_sum/max(1,meter_n)) : 0;last_block_peak=meter_peak_block;last_block_rest=meter_n>0 ? meter_rest_sum/meter_n : 0;last_block_gap=meter_n>0 ? meter_gap_sum/meter_n : 0;last_block_lowsal=meter_n>0 ? meter_lowsal_sum/meter_n : 0;last_block_voices=meter_n>0 ? meter_voice_sum/meter_n : 0;last_block_hole=meter_n>0 ? meter_hole_sum/meter_n : 0;last_block_sourcehole=meter_n>0 ? meter_sourcehole_sum/meter_n : 0;last_block_coverage=meter_n>0 ? meter_coverage_sum/meter_n : 0;meter_sum=0;meter_peak_block=0;meter_n=0;meter_rest_sum=0;meter_gap_sum=0;meter_lowsal_sum=0;meter_voice_sum=0;meter_hole_sum=0;meter_sourcehole_sum=0;meter_coverage_sum=0;
@@ -4889,6 +5723,8 @@ clock-auto_change_clock>=srate*0.15 ? (
   auto_settings_pending && build_phase==0 ? (rebuild_request=1;poll_left=0;);
   auto_hier_pending ? h_rebuild_requested=1;
 );
+cp_pool_changed() ? (poll_left=0;ui_left=0;);
+pending_adoption && cp_busy()==0 && cp_hold_count()==0 ? poll_left=0;
 poll_left-=samplesblock;poll_left<=0 ? (cp_poll();poll_left=max(64,floor(srate*0.20)););
 build_phase>0 ? cp_build(min(4096,max(256,samplesblock*8)));
 cp_browse_update();
@@ -4911,6 +5747,19 @@ xc_ready && h_ready && h_phase==0 && cp_hold_count()==0 && cp_busy()==0 ? (
   (fc_built_key!=fc_key() || fc_epoch!=h_epoch) && fc_phase==0 ? fc_begin();
   fc_phase>0 ? fc_step();
 );
+
+// Complete PE once during loading. Source/settings changes enter loading again.
+ready && xc_ready && h_ready && h_phase==0 && fc_ready && xc_grammar_ready && cp_hold_count()==0 && cp_busy()==0 ? (
+  !pe_ready && pe_phase==0 && pe_epoch!=index_epoch ? pe_begin();
+  pe_phase>0 ? pe_build(min(4096,max(256,samplesblock*8)));
+);
+pg_load_pending ? pg_load_begin();
+pg_stage>0 ? pg_build();
+pg_preview_pending && cp_hold_count()==0 && cp_busy()==0 ? (
+  pg_preview_save();pg_preview=1;pg_preview_pending=0;pg_preview_running=1;cp_start(0.5,-1,-1,clock,slider25/1000,0,127,127,0);
+);
+pg_preview_running && cp_hold_count()==0 && cp_busy()==0 ? pg_preview_restore();
+
 block_midi_count=0;block_note_count=0;walk_clock=block_start_clock;
 while(midirecv(moff,m1,m23)) (
   mstatus=m1&240;mchan=m1&15;mnote=m23&127;mvel=(m23>>8)&127;
@@ -4940,7 +5789,7 @@ block_all_rest=event_count>0;block_any_model=0;block_expected=0;bi09=0;loop(8,be
 block_gap=0;block_lowsal=0;
 ui_snapshot_base[0]=cmd_seen;ui_left-=samplesblock;
 ui_left<=0 ? (cp_ui_publish();ui_left=max(64,floor(srate/20)););
-za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || td_mix>0.0001 || pool_state==1 || pool_state==2;
+za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || pe_phase>0 || pg_stage>0 || pg_load_pending || pg_preview_pending || td_mix>0.0001 || pool_state==1 || pool_state==2;
 
 @sample
 out_l=0;out_r=0;sample_coverage=0;sample_lowvoices=0;sample_startedvoices=0;vi=0;
@@ -4972,15 +5821,16 @@ while(vi<voice_list_n) (
 // Transient Diffusion is deliberately post-selection. The selected source
 // regions and envelopes remain unchanged; only the mixed transient rendering is
 // softened. At zero the branch is not evaluated and out_l/out_r are untouched.
-td_enabled && td_amount>0.000001 ? (
+td_enabled && slider45>0.000001 ? (
+  td_amount_rt+=(slider45-td_amount_rt)*td_param_a;td_amt=cp_01(td_amount_rt);
   td_dry_l=out_l;td_dry_r=out_r;td_abs=max(abs(td_dry_l),abs(td_dry_r));
   td_fast=max(td_abs,td_fast*td_fast_rel);td_slow+=(td_abs-td_slow)*td_slow_a;
   td_gate=cp_01((td_fast-0.00002)/0.0015);
   td_transient=cp_01((td_fast-td_slow*1.12)/max(0.000001,td_fast*0.82))*td_gate;
-  td_target_mix=td_amount*td_transient;
+  td_target_mix=td_amt*td_transient;
   td_target_mix>td_mix ? td_mix+=(td_target_mix-td_mix)*0.45 : td_mix+=(td_target_mix-td_mix)*0.015;
   td_dry_peak=max(td_abs,td_dry_peak*td_peak_rel);
-  td_g=0.30+0.30*td_amount;
+  td_g=0.30+0.30*td_amt;
   td_stage(td_dry_l,td_dry_r,0,td_len0,td_g);td_wet_l=td_work_l;td_wet_r=td_work_r;
   td_stage(td_wet_l,td_wet_r,1,td_len1,min(0.64,td_g+0.04));td_wet_l=td_work_l;td_wet_r=td_work_r;
   td_stage(td_wet_l,td_wet_r,2,td_len2,max(0.20,td_g-0.03));td_wet_l=td_work_l;td_wet_r=td_work_r;
@@ -4989,7 +5839,7 @@ td_enabled && td_amount>0.000001 ? (
   td_ceiling=max(0.000000001,td_dry_peak*1.001);
   td_proc_peak>td_ceiling ? td_guard_gain=min(td_guard_gain,td_ceiling/td_proc_peak);
   td_transient>0.15 ? (
-    td_goal=max(0.000000001,td_dry_peak*(1-0.28*td_amount*td_transient));
+    td_goal=max(0.000000001,td_dry_peak*(1-0.28*td_amt*td_transient));
     td_proc_peak>td_goal ? td_guard_gain=min(td_guard_gain,td_goal/td_proc_peak);
   );
   td_guard_gain=cp_clamp(td_guard_gain,0,1);out_l=td_proc_l*td_guard_gain;out_r=td_proc_r*td_guard_gain;
@@ -5013,7 +5863,7 @@ hole_now=audible_hole_run>=max(8,floor(srate*0.020));
 sched_gap_now=hole_now && !sample_coverage;source_hole_now=hole_now && sample_coverage;
 low_now=sample_startedvoices>0 ? sample_lowvoices/sample_startedvoices : 0;
 peak_meter=max(output_peak,peak_meter*0.9995);meter_sum+=(out_l*out_l+out_r*out_r)*0.5;meter_peak_block=max(meter_peak_block,output_peak);meter_n+=1;meter_rest_sum+=block_all_rest;meter_gap_sum+=sched_gap_now;meter_lowsal_sum+=low_now;meter_voice_sum+=voice_list_n;meter_hole_sum+=hole_now;meter_sourcehole_sum+=source_hole_now;meter_coverage_sum+=sample_coverage;spl0=out_l;spl1=out_r;clock+=1;
-za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || td_mix>0.0001 || pool_state==1 || pool_state==2;
+za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || pe_phase>0 || pg_stage>0 || pg_load_pending || pg_preview_pending || td_mix>0.0001 || pool_state==1 || pool_state==2;
 
 @gfx 1120 780
 ui_scope=41000;ui_pending=44100;ui_queue=40000;ui_scroll=40400;ui_local_path=40600;ui_curve_paint=44600;ui_auto=57184;
@@ -5021,6 +5871,10 @@ ui_now=time_precise();ui_key=gfx_getchar();ui_h=ui_snapshot_base;ui_x=57344;ui_t
 ui_down=mouse_cap&1;ui_right=mouse_cap&2;ui_lpress=ui_down && !ui_prev_down;ui_rpress=ui_right && !ui_prev_right;
 ui_wheel=mouse_wheel;mouse_wheel=0;ui_page=floor(slider55);ui_page==3 ? ui_page=1;
 !ui_initialized ? (ui_initialized=1;ui_feature_desc=0;ui_traj_selected=0;ui_curve_draw_active=0;ui_curve_draw_lane=-1;ui_curve_draw_prev=-1;ui_curve_draw_prev_y=0;ui_traj_strength_drag=0;ui_td_drag=0;ui_td_value=0;ui_desc_popup=0;ui_desc_popup_scroll=0;ui_desc_popup_drag=0;ui_desc_popup_just=0;ui_folds=0;ui_xdrag=0;ui_brush_capture=0;ui_brush_last=-1;ui_brush_time=-10;ui_structure_h=600;ui_controls_h=2400;ui_explore_h=1250;ui_evidence_h=2100;ui_inspector_h=560;ui_help_h=850;ui_class_filter=0;ui_pending_n=0;ui_scope_n=0;ui_scope_head=0;ui_scope_clock=-1;ui_focus_aud_last=-1;ui_focus_aud_time=-10;ui_focus_cycle=0;ui_focus_drag=0;ui_focus_drag_cls=-1;ui_focus_drag_a=0;ui_focus_drag_b=1;);
+// A GUI clock detects stale snapshots without touching DSP state or guessing
+// whether the DAW, runtime idle policy or a long callback caused the pause.
+!ui_load_seen_init || ui_load_seen_serial!=ui_h[120] ? (ui_load_seen_init=1;ui_load_seen_serial=ui_h[120];ui_load_seen_time=ui_now;);
+ui_load_stale=(ui_h[112]>0 || ui_h[120]<=0 || ui_wait || ui_qn>0) && ui_now-ui_load_seen_time>2;
 ui_path_pending && ui_snapshot_base[41]!=ui_path_before && !ui_wait && ui_qn==0 ? ui_path_pending=0;
 !ui_down ? (
   ui_prev_down && ui_curve_draw_active ? ui_curve_draw_commit();
@@ -5028,13 +5882,13 @@ ui_path_pending && ui_snapshot_base[41]!=ui_path_before && !ui_wait && ui_qn==0 
   ui_prev_down && ui_drawing ? ui_path_commit();
   ui_prev_down && ui_focus_drag ? (ui_enqueue(14,ui_focus_arg_low(ui_focus_drag_cls,min(ui_focus_drag_a,ui_focus_drag_b)));ui_enqueue(14,ui_focus_arg_high(ui_focus_drag_cls,max(ui_focus_drag_a,ui_focus_drag_b)));ui_focus_drag=0;);
   ui_prev_down && ui_xdrag>0 ? (ui_xset(ui_xdrag-1,ui_xvalue);ui_xdrag=0;);
-  ui_prev_down && ui_td_drag ? (ui_td_set(ui_td_value);ui_td_drag=0;);
+  ui_prev_down && ui_td_drag ? (slider_automate(pow(2,44),1);ui_td_drag=0;);
   ui_brush_capture=0;ui_brush_last=-1;ui_desc_popup_drag=0;
   ui_prev_down && ui_drag>0 ? slider_automate(pow(2,ui_drag-1),1);
   ui_drag=0;ui_scroll_drag=0;
 );
 ui_flush();strcpy(#ui_tooltip,"");ui_scope_update();
-floor(slider40)==floor(slider41) ? ui_notify(41,(floor(slider40)+1)%51,1);
+floor(slider40)==floor(slider41) ? ui_notify(41,(floor(slider40)+1)%53,1);
 ui_key==32 && !ui_help ? ui_enqueue(3,0);
 ui_key==27 ? (
   ui_desc_popup>0 ? ui_desc_popup=0 : (
@@ -5049,13 +5903,12 @@ ui_text(12,9,130,25,"CORPUS",0.90,0.97,0.96);
 ui_btn(gfx_w-47,8,35,29,"?",ui_help,"Open contextual help for the current workspace. Controls also show hover help.") ? ui_help=1-ui_help;
 ui_btn(gfx_w-161,8,106,29,"EVIDENCE",ui_drawer,"Open or close the source-grain and unified-descriptor drawer. Closed by default; no generation settings are changed.") ? (ui_drawer=1-ui_drawer;ui_help=0;);
 gfx_w>570 ? (
-  ui_h[22]>0 ? strcpy(#ui_status,"BANK PENDING") : (
-    ui_h[4]>0 ? (ui_h[4]==6 ? sprintf(#ui_status,"SCOUT %d / %d",ui_auto[5]+1,ui_h[2]) : sprintf(#ui_status,"INDEX %d",ui_h[4])) : (
-      54656[1]>0 ? sprintf(#ui_status,"LEARNING %d / 12",54656[1]) : (
-        54656[0]>0 ? sprintf(#ui_status,"READY   %d G / %d E / %d M",ui_h[18],54656[4],54656[6]) : strcpy(#ui_status,"LOAD FILES IN SLOT 0");
-      );
-    );
-  );ui_auto[19]>0 && ui_h[4]==0 ? strcpy(#ui_status,"SETTINGS PENDING");ui_text(154,16,gfx_w-326,14,#ui_status,0.54,0.77,0.77);
+  ui_load_text();ui_text(154,16,gfx_w-326,14,#ui_loading,0.54,0.77,0.77);
+  ui_h[112]>0 && ui_h[117]>0 ? (
+    ui_box(154,35,gfx_w-326,2,0.12,0.19,0.22);
+    ui_box(154,35,(gfx_w-326)*cp_01(ui_h[116]/ui_h[117]),2,0.31,0.73,0.65);
+  );
+  ui_hit(154,8,gfx_w-326,31) ? ui_load_tip();
 );
 ui_btn(12,47,96,31,"GENERATE",0,"Generate with the current controls. Natural runs to a learned ending or its cap; otherwise this button creates a one-shot. MIDI also supports Gated playback.") ? ui_enqueue(3,0);
 ui_btn(116,47,76,31,"REPEAT",ui_h[31]>0.5 && ui_h[32]==0,"Replay the completed recorded event exactly. Output and peak catch remain live. Incomplete or invalid plans cannot be replayed.") ? ui_enqueue(4,0);
@@ -5070,18 +5923,20 @@ gfx_w>=630 ? (
   ui_btn(148,87,116,31,"EXPLORE",ui_page==0,"Acoustic descriptor map, point audition and drawn trajectories.") ? ui_notify(55,0,0);
   ui_btn(272,87,122,31,"CONTROLS",ui_page==2,"Envelope, material, variation and advanced settings with hover explanations.") ? ui_notify(55,2,0);
   ui_btn(402,87,124,31,"INSPECTOR",ui_page==1,"Contextual details, actual walk, evidence and failures. Sections stay collapsed until requested.") ? ui_notify(55,1,0);
+  ui_btn(534,87,84,31,"PRUNE",ui_page==5,"Edit cached grain eligibility without changing prediction references.") ? ui_notify(55,5,0);
 ) : (
-  ui_page==4 ? strcpy(#ui_nav_label,"STRUCTURE") : (ui_page==0 ? strcpy(#ui_nav_label,"EXPLORE") : (ui_page==2 ? strcpy(#ui_nav_label,"CONTROLS") : strcpy(#ui_nav_label,"INSPECTOR")));
+  ui_page==5 ? strcpy(#ui_nav_label,"PRUNE") : ui_page==4 ? strcpy(#ui_nav_label,"STRUCTURE") : (ui_page==0 ? strcpy(#ui_nav_label,"EXPLORE") : (ui_page==2 ? strcpy(#ui_nav_label,"CONTROLS") : strcpy(#ui_nav_label,"INSPECTOR")));
   sprintf(#ui_txt,"%s  /  switch workspace",#ui_nav_label);
   ui_btn(12,87,max(100,gfx_w-24),31,#ui_txt,0,"Choose Structure, Explore, Controls or Inspector. All panes remain scrollable at this window size.") ? (
-    gfx_x=mouse_x;gfx_y=mouse_y;ui_nav=gfx_showmenu("Structure|Explore|Controls|Inspector");
-    ui_nav>0 ? ui_notify(55,ui_nav==1 ? 4 : (ui_nav==2 ? 0 : (ui_nav==3 ? 2 : 1)),0);
+    gfx_x=mouse_x;gfx_y=mouse_y;ui_nav=gfx_showmenu("Structure|Explore|Controls|Inspector|Prune");
+    ui_nav>0 ? ui_notify(55,ui_nav==1 ? 4 : (ui_nav==2 ? 0 : (ui_nav==3 ? 2 : (ui_nav==5 ? 5 : 1))),0);
   );
 );
 ui_body_y=126;ui_body_h=max(28,gfx_h-ui_body_y-32);
 ui_main_w=max(40,gfx_w-20);ui_drawer_w=min(374,max(264,gfx_w-20));ui_drawer_x=gfx_w-ui_drawer_w-10;
 ui_drawer && gfx_w>=1040 ? ui_main_w=max(40,gfx_w-ui_drawer_w-32);
 ui_input_blocked=ui_help || ui_desc_popup>0 || (ui_drawer && mouse_x>=ui_drawer_x && mouse_y>=ui_body_y);
+ui_page==5 ? (ui_pane_begin(1,10,ui_body_y,ui_main_w,ui_body_h,max(580,ui_main_w-14),max(1200,ui_prune_h));ui_prune(ui_cw);ui_pane_end(););
 ui_page==4 ? (
   ui_pane_begin(5,10,ui_body_y,ui_main_w,ui_body_h,max(560,ui_main_w-14),ui_structure_h);
   ui_structure(ui_cw);ui_pane_end();
@@ -5111,5 +5966,9 @@ ui_help ? (
 );
 ui_ox=0;ui_oy=0;ui_vh=gfx_h;ui_mouse_in=1;ui_mx=mouse_x;ui_my=mouse_y;gfx_dest=-1;ui_input_blocked=0;
 ui_box(0,gfx_h-25,gfx_w,25,0.062,0.085,0.11);
-strlen(#ui_tooltip)>0 ? ui_text(10,gfx_h-21,gfx_w-18,14,#ui_tooltip,0.68,0.81,0.86);
+strlen(#ui_tooltip)>0 ? ui_text(10,gfx_h-21,gfx_w-18,14,#ui_tooltip,0.68,0.81,0.86) : (
+  // Keep preparation visible in narrow windows where the header has no room.
+  ui_load_text();ui_text(10,gfx_h-21,gfx_w-18,14,#ui_loading,0.68,0.81,0.86);
+  ui_hit(0,gfx_h-25,gfx_w,25) ? ui_load_tip();
+);
 ui_desc_popup_draw();ui_tooltip_draw();ui_flush();ui_prev_down=ui_down;ui_prev_right=ui_right;

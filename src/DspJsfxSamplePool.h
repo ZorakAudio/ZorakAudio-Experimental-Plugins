@@ -19,7 +19,6 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_core/juce_core.h>
-
 #ifdef min
 #undef min
 #endif
@@ -47,7 +46,6 @@ enum DspJsfxSamplePoolMode : int
     kSamplePoolModeLazy = 2,
     kSamplePoolModeStream = 3,
 };
-
 struct DspJsfxSamplePreviewBin
 {
     float minValue = 0.0f;
@@ -68,7 +66,6 @@ struct DspJsfxSamplePoolEntry
     float peak = 0.0f;
     float rms = 0.0f;
 };
-
 struct DspJsfxSamplePoolGeneration
 {
     std::uint64_t sourceGeneration = 0;
@@ -81,7 +78,6 @@ struct DspJsfxSamplePoolGeneration
     int failedCount = 0;
     std::uint64_t decodedBytes = 0;
 };
-
 struct DspJsfxSamplePoolMemorySource
 {
     std::string name;
@@ -99,7 +95,6 @@ public:
 
     DspJsfxSamplePool();
     ~DspJsfxSamplePool();
-
     DspJsfxSamplePool(const DspJsfxSamplePool&) = delete;
     DspJsfxSamplePool& operator=(const DspJsfxSamplePool&) = delete;
 
@@ -107,20 +102,18 @@ public:
     // Metadata, interpolation taps and stereo reads reuse its immutable pins.
     using Storage = SamplePoolStorage<DspJsfxSamplePoolGeneration>;
     using ReadBatch = Storage::ReadBatch;
-
     void setMode(int mode) noexcept;
     // Opt-in: publication announces readiness, but playback stays on the old bank
     // until the audio client reaches a voice-free boundary and adopts it.
     void setDeferred(bool deferred) noexcept;
     int adoptPending() noexcept; // 1 adopted, 0 none, -1 retry (never waits)
+    bool hasPendingAdoption() const noexcept { return storage_.hasPending(); }
     void setBudgetMB(double mb) noexcept;
     void setTargetSampleRate(double sampleRate) noexcept;
     void setCompletionCallback(CompletionCallback callback);
-
     int mode() const noexcept { return mode_.load(std::memory_order_acquire); }
     double budgetMB() const noexcept { return static_cast<double>(budgetBytes_.load(std::memory_order_acquire)) / (1024.0 * 1024.0); }
     double targetSampleRate() const noexcept { return targetSampleRate_.load(std::memory_order_acquire); }
-
     // Schedules a background scan/decode if paths or settings changed.
     // The completed generation is immutable and atomically published.
     bool commitFromPaths(const std::vector<juce::String>& paths, std::uint64_t sourceGeneration);
@@ -129,14 +122,12 @@ public:
     // without writing temporary files to disk.
     bool commitFromMemory(std::shared_ptr<const DspJsfxSamplePoolMemorySourceList> sources,
                           std::uint64_t sourceGeneration);
-
     int state() const noexcept { return state_.load(std::memory_order_acquire); }
     int selected() const noexcept { return selected_.load(std::memory_order_acquire); }
     int loaded() const noexcept;
     int failed() const noexcept { return failed_.load(std::memory_order_acquire); }
     double ramMB() const noexcept;
     std::uint64_t generation() const noexcept;
-
     std::uint64_t sampleIdAt(int index) const noexcept;
     int length(std::uint64_t sampleId) const noexcept;
     int channels(std::uint64_t sampleId) const noexcept;
@@ -144,14 +135,12 @@ public:
     double peak(std::uint64_t sampleId) const noexcept;
     double rms(std::uint64_t sampleId) const noexcept;
     bool name(std::uint64_t sampleId, std::string& out) const;
-
     double read(std::uint64_t sampleId, int channel, double frame) const noexcept;
     double readInterp(std::uint64_t sampleId, int channel, double phase) const noexcept;
     bool read2(std::uint64_t sampleId, double phase, double* outL, double* outR, bool interp) const noexcept;
 
     int previewBins(std::uint64_t sampleId) const noexcept;
     bool previewRead(std::uint64_t sampleId, int bin, double* minValue, double* maxValue, double* rmsValue) const noexcept;
-
 private:
     struct Request
     {
@@ -163,7 +152,6 @@ private:
         double targetSampleRate = 0.0; // <= 0 keeps native source rates
         std::uint64_t requestId = 0;
     };
-
     static std::shared_ptr<DspJsfxSamplePoolGeneration> buildGeneration(const Request& request);
     void ensureWorker();
     void workerMain();
@@ -173,7 +161,6 @@ private:
     double readFrom(const DspJsfxSamplePoolGeneration* gen, const DspJsfxSamplePoolEntry* entry, int channel, double frame) const noexcept;
     double interpFrom(const DspJsfxSamplePoolGeneration* gen, const DspJsfxSamplePoolEntry* entry, int channel, double phase) const noexcept;
     const DspJsfxSamplePoolEntry* entryFor(const DspJsfxSamplePoolGeneration* gen, std::uint64_t sampleId) const noexcept;
-
     std::atomic<int> mode_ { kSamplePoolModeResident };
     std::atomic<std::uint64_t> budgetBytes_ { 0 }; // 0 = unlimited in resident mode
     std::atomic<double> targetSampleRate_ { 0.0 };
@@ -187,7 +174,6 @@ private:
     std::atomic<int> lastCommittedMode_ { -1 };
     std::atomic<int> lastCommittedSourceKind_ { -1 }; // 0 = paths, 1 = in-memory
     std::atomic<double> lastCommittedTargetSampleRate_ { -1.0 };
-
     mutable std::mutex callbackMutex_;
     CompletionCallback completionCallback_;
 

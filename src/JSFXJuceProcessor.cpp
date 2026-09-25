@@ -3234,6 +3234,9 @@ public:
 
     void requestExternalWakeEvent (bool mayTriggerAsyncUi = true)
     {
+        // This wakes DSP-JSFX's own Smart Idle lifecycle. It does not ask the
+        // CLAP host to start/continue processing and therefore cannot defeat
+        // host-level CPU idling for otherwise inactive plug-ins.
         pendingExternalWakeEvent.store (true, std::memory_order_release);
         pendingEventWakeCount.fetch_add (1u, std::memory_order_acq_rel);
         gfxSnapshotForcePublish.store (true, std::memory_order_release);
@@ -3764,9 +3767,11 @@ public:
 
         const bool keepAwakeBefore = getSmartIdleKeepAwakeFlag();
         const bool externalWakeEvent = pendingExternalWakeEvent.exchange (false, std::memory_order_acq_rel);
+        const bool deferredSamplePoolAdoptionPending = hasDeferredSamplePoolAdoptionPending();
         const bool preProcessWakeEvent = hostTransportDiscontinuity
                                       || fileLoadsPromoted
                                       || externalWakeEvent
+                                      || deferredSamplePoolAdoptionPending
                                       || parameterWakeEvent
                                       || explicitWakeEvent
                                       || slidersChanged
@@ -6267,9 +6272,9 @@ public:
     {
         recommitSamplePoolsForSlot (slotIndex0);
 
-        // Force any running @gfx view and host wrapper to repaint/refetch state. This is
-        // required in stopped/sleeping hosts where a new file selection would otherwise
-        // remain invisible until transport playback causes another processBlock().
+        // Wake DSP-JSFX's own Smart Idle lifecycle and refresh @gfx/UI state.
+        // Host-level CLAP processing is deliberately left alone: our Smart Idle
+        // still receives processBlock() and decides whether jsfx_process_block() runs.
         requestExternalWakeEvent (true);
     }
 
@@ -9114,11 +9119,42 @@ private:
         requestUiWakeAsync();
     }
 
+    bool hasDeferredSamplePoolAdoptionPending() noexcept
+    {
+       #if DSPJSFX_USES_SAMPLE_POOL
+        // Fast idle path: do not touch the pool registry unless a worker has
+        // completed a publication since the last scan. Deferred generations
+        // need JSFX @block to reach the script-owned sample_pool_adopt() safe
+        // boundary, so Smart Idle must not suppress those blocks.
+        if (! pendingDeferredSamplePoolAdoption.load (std::memory_order_acquire))
+            return false;
+
+        // Never wait on a loader/UI thread from the audio callback. Contention
+        // means conservatively remain awake and recheck on the next block.
+        std::unique_lock<std::mutex> lock (samplePoolMutex, std::try_to_lock);
+        if (! lock.owns_lock())
+            return true;
+
+        for (const auto& handle : samplePools)
+            if (handle != nullptr && handle->pool != nullptr && handle->pool->hasPendingAdoption())
+                return true;
+
+        pendingDeferredSamplePoolAdoption.store (false, std::memory_order_release);
+       #endif
+        return false;
+    }
+
     void configureSamplePoolForCurrentEngineRate (za::jsfx::DspJsfxSamplePool& pool)
     {
         pool.setTargetSampleRate (getCurrentFileCacheTargetSampleRate());
         pool.setCompletionCallback ([this] (std::uint64_t, int)
         {
+           #if DSPJSFX_USES_SAMPLE_POOL
+            // The worker has published either an immediately-active generation
+            // or a deferred generation awaiting sample_pool_adopt(). Mark the
+            // aggregate dirty; the audio callback performs the cheap exact scan.
+            pendingDeferredSamplePoolAdoption.store (true, std::memory_order_release);
+           #endif
             requestExternalWakeEvent (true);
         });
     }
@@ -10289,6 +10325,10 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     std::mutex samplePoolMutex;
     std::vector<std::unique_ptr<SamplePoolHandle>> samplePools;
     std::unordered_map<std::string, int> samplePoolByKey;
+    // Worker-set aggregate hint. False costs one atomic load per audio block
+    // only in builds that actually use sample_pool_*; true triggers a try-lock
+    // scan until every deferred generation has been explicitly adopted.
+    std::atomic<bool> pendingDeferredSamplePoolAdoption { false };
 
     mutable std::mutex filePathMutex;
     juce::String lastFileDialogDirectory;

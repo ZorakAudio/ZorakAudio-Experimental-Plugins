@@ -1,5 +1,4 @@
 #pragma once
-
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -8,7 +7,6 @@
 #include <memory>
 #include <mutex>
 #include <vector>
-
 namespace za::jsfx
 {
 // Immutable-generation ownership, independent of decoding/JUCE. Generation must
@@ -76,7 +74,6 @@ public:
         std::size_t count_ = 0;
         Pin* last_ = nullptr;
     };
-
     class ReaderScope
     {
     public:
@@ -100,18 +97,17 @@ public:
         const SamplePoolStorage& store_;
         bool individual_ = false;
     };
-
     SamplePoolStorage() = default;
     SamplePoolStorage(const SamplePoolStorage&) = delete;
     SamplePoolStorage& operator=(const SamplePoolStorage&) = delete;
     // Owner must join its worker and finish all readers before destruction.
-
     void requestStarted(std::uint64_t id) noexcept
     {
         auto previous = requestedId_.load(std::memory_order_acquire);
         while (id > previous && !requestedId_.compare_exchange_weak(previous, id, std::memory_order_acq_rel)) {}
     }
     bool deferred() const noexcept { return deferred_.load(); }
+    bool hasPending() const noexcept { return pending_.load(std::memory_order_acquire) != nullptr; }
     void setDeferred(bool value) noexcept
     {
         deferred_.store(value);
