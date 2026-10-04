@@ -1,0 +1,11 @@
+desc:String slider selects the IPC bus
+slider1:#bus_name="string-slider-test"<string>Bus name
+@init
+instance_set_name("string-slider-sender");
+msg_advertise(#bus_name, 1);
+msg_subscribe(#bus_name);
+gmem_attach_size(#bus_name, 64);
+@block
+counter += 1;
+msg_send(#bus_name, 1001, instance_id(), counter, samplesblock, 0);
+gmem[0] = counter;

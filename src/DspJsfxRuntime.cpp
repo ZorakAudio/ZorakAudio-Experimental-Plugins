@@ -142,6 +142,9 @@ void DspJsfxRuntime::detachFromState()
 
 DspJsfxRuntime* DspJsfxRuntime::findForState(DSPJSFX_State* st) noexcept
 {
+#if DSPJSFX_NATIVE_GFX_LEGACY
+    if (st && st->sharedState) st = static_cast<DSPJSFX_State*>(st->sharedState);
+#endif
     std::lock_guard<std::mutex> lock(gRuntimeRegistryMutex);
     const auto it = gRuntimeRegistry.find(st);
     return it != gRuntimeRegistry.end() ? it->second : nullptr;
@@ -374,7 +377,8 @@ bool DspJsfxRuntime::queueBuffer(std::uint64_t channelHash, double tag, const do
     msg.channelHash = channelHash;
     msg.sourceId = instanceId_;
     msg.tag = tag;
-    msg.buffer.assign(src, src + len);
+    msg.buffer.resize((size_t)len);
+    for (int i = 0; i < len; ++i) msg.buffer[(size_t)i] = jsfxCellLoad(src + i);
     return enqueueMessage(std::move(msg));
 }
 
@@ -389,7 +393,8 @@ bool DspJsfxRuntime::queueBufferTo(std::uint64_t targetId, std::uint64_t channel
     msg.targetId = targetId;
     msg.direct = true;
     msg.tag = tag;
-    msg.buffer.assign(src, src + len);
+    msg.buffer.resize((size_t)len);
+    for (int i = 0; i < len; ++i) msg.buffer[(size_t)i] = jsfxCellLoad(src + i);
     return enqueueMessage(std::move(msg));
 }
 
@@ -429,12 +434,12 @@ int DspJsfxRuntime::recvScalar(std::uint64_t channelHash, double* src, double* t
         return 0;
     const auto msg = std::move(q->front());
     q->pop_front();
-    if (src != nullptr) *src = static_cast<double> (msg.sourceId);
-    if (tag != nullptr) *tag = msg.tag;
-    if (a != nullptr) *a = msg.a;
-    if (b != nullptr) *b = msg.b;
-    if (c != nullptr) *c = msg.c;
-    if (d != nullptr) *d = msg.d;
+    if (src != nullptr) jsfxCellStore(src, static_cast<double> (msg.sourceId));
+    if (tag != nullptr) jsfxCellStore(tag, msg.tag);
+    if (a != nullptr) jsfxCellStore(a, msg.a);
+    if (b != nullptr) jsfxCellStore(b, msg.b);
+    if (c != nullptr) jsfxCellStore(c, msg.c);
+    if (d != nullptr) jsfxCellStore(d, msg.d);
     lastMessageLength_ = 0;
     return 1;
 }
@@ -447,13 +452,13 @@ int DspJsfxRuntime::recvBuffer(std::uint64_t channelHash, double* src, double* t
         return 0;
     auto msg = std::move(q->front());
     q->pop_front();
-    if (src != nullptr) *src = static_cast<double> (msg.sourceId);
-    if (tag != nullptr) *tag = msg.tag;
+    if (src != nullptr) jsfxCellStore(src, static_cast<double> (msg.sourceId));
+    if (tag != nullptr) jsfxCellStore(tag, msg.tag);
     if (dst != nullptr && maxLen > 0)
     {
         const int copyLen = std::min<int> (maxLen, static_cast<int> (msg.buffer.size()));
         for (int i = 0; i < copyLen; ++i)
-            dst[i] = msg.buffer[static_cast<std::size_t> (i)];
+            jsfxCellStore(dst + i, msg.buffer[static_cast<std::size_t> (i)]);
     }
     lastMessageLength_ = static_cast<int> (msg.buffer.size());
     if (maxLen >= static_cast<int> (msg.buffer.size()))

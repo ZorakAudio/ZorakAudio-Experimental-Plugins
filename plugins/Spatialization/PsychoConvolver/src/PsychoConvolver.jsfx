@@ -208,7 +208,7 @@ local(keep thr early_ms early_samps early_gain late_gain total_e early_e late_e 
     memset(base_hl, 0, SPEC_BANK_ITEMS);
     memset(base_hr, 0, SPEC_BANK_ITEMS);
 
-    thr = max(1e-12, ir_peak * db2amp(-78));
+    thr = max(0.000000000001, ir_peak * db2amp(-78));
     keep = ir_frames;
     while (keep > 1 && max(abs(raw_l[keep - 1]), abs(raw_r[keep - 1])) < thr) (
       keep -= 1;
@@ -246,13 +246,13 @@ local(keep thr early_ms early_samps early_gain late_gain total_e early_e late_e 
       i += 1;
     );
 
-    rms = sqrt(max(total_e / max(1, ir_used_frames * 2), 1e-18));
+    rms = sqrt(max(total_e / max(1, ir_used_frames * 2), 0.000000000000000001));
 
-    ir_norm = min(8, 0.35 / max(rms, 1e-6));
-    ir_norm = min(ir_norm, 0.95 / max(ir_peak, 1e-6));
+    ir_norm = min(8, 0.35 / max(rms, 0.000001));
+    ir_norm = min(ir_norm, 0.95 / max(ir_peak, 0.000001));
     ir_norm = max(ir_norm, 0.05);
 
-    ir_er_db = log((early_e + 1e-18) / (late_e + 1e-18)) / log(10) * 10;
+    ir_er_db = log((early_e + 0.000000000000000001) / (late_e + 0.000000000000000001)) / log(10) * 10;
     ir_tail_sec = ir_used_frames / max(srate, 1);
 
     part = 0;
@@ -512,18 +512,18 @@ local(bit dx dy over range step nv)
   );
 
   over && (mouse_cap & 2) && !ui_prev_rmb ? (
-    abs(v - defv) > 1e-12 ? (
+    abs(v - defv) > 0.000000000001 ? (
       v = defv;
       ui_change_mask |= bit;
     );
   );
 
   over && abs(ui_wheel) >= 1 ? (
-    range = max(vmax - vmin, 1e-9);
+    range = max(vmax - vmin, 0.000000001);
     step = range * 0.02;
     mouse_cap & 8 ? step *= 0.25;
     nv = clamp(v + (ui_wheel / 120) * step, vmin, vmax);
-    abs(nv - v) > 1e-12 ? (
+    abs(nv - v) > 0.000000000001 ? (
       v = nv;
       ui_change_mask |= bit;
     );
@@ -531,11 +531,11 @@ local(bit dx dy over range step nv)
   );
 
   (ui_drag_id == id) && (mouse_cap & 1) ? (
-    range = max(vmax - vmin, 1e-9);
+    range = max(vmax - vmin, 0.000000001);
     step = range / 180;
     mouse_cap & 8 ? step *= 0.25;
     nv = clamp(ui_drag_start - (mouse_y - ui_drag_sy) * step, vmin, vmax);
-    abs(nv - v) > 1e-12 ? (
+    abs(nv - v) > 0.000000000001 ? (
       v = nv;
       ui_change_mask |= bit;
     );
@@ -547,7 +547,7 @@ local(bit dx dy over range step nv)
 function ui_draw_knob(id x y r v vmin vmax)
 local(t a0 a1 ang px py active)
 (
-  t = clamp((v - vmin) / max(vmax - vmin, 1e-9), 0, 1);
+  t = clamp((v - vmin) / max(vmax - vmin, 0.000000001), 0, 1);
   a0 = 0.75 * $pi;
   a1 = 2.25 * $pi;
   ang = a0 + (a1 - a0) * t;
@@ -610,7 +610,7 @@ local(iw mid half gx px s0 s1 i p amp peak splitx trimx)
   gfx_line(x + 5, mid, x + iw - 5, mid, 1);
 
   raw_loaded && ir_frames > 0 ? (
-    peak = max(ir_peak, 1e-9);
+    peak = max(ir_peak, 0.000000001);
     px = 0;
     while (px < iw) (
       s0 = floor(px * ir_frames / iw);
@@ -873,7 +873,7 @@ ir_ready ? (
   spl1 = in_r * out_gain;
 );
 
-@gfx 520 390
+@gfx 520 520
 
 gfx_getchar(65537);
 

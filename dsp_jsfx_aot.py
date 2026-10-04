@@ -29,7 +29,7 @@ Language subset:
 - Expressions: numbers, identifiers, unary + - !, binary + - * /,
   comparisons, short-circuit && ||, ternary ?:, assignments (=, +=, -=, *=, /=, %=, ^=, |=, &=, ~=),
   parentheses, sequence blocks: ( a; b; c; ) returning last expr value.
-- loop(count, body) expression: repeats body count times, returns last value (or 0).
+- loop(count, body) expression: repeats up to 1048576 times and returns 1.
 
 Output:
 - LLVM IR module with:
@@ -45,13 +45,15 @@ Usage:
 
 from __future__ import annotations
 
+import sys
 import argparse
+import contextlib
 from collections import Counter
 import json
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 import shutil
@@ -115,6 +117,9 @@ class Lexer:
     def _span(self) -> Span:
         return Span(self.line, self.col)
 
+    def _fmt_err(self, message: str) -> str:
+        return f"{message} at {self.line}:{self.col}"
+
     def next(self) -> Tok:
         while True:
             if self.i >= len(self.src):
@@ -152,6 +157,20 @@ class Lexer:
                 continue
 
             sp = self._span()
+
+            # EEL's bit mask and historical character spellings are numeric.
+            mask = re.match(r"\$~([0-9]+)", self.src[self.i:])
+            if mask:
+                self._adv(len(mask.group(0)))
+                return Tok("num", str((1 << min(53, int(mask.group(1)))) - 1), sp)
+            if c == "$" and self._peek(1) == "'" and self._peek(3) == "'":
+                value = ord(self._peek(2))
+                self._adv(4)
+                return Tok("num", str(value), sp)
+            hexadecimal = re.match(r"(?:0[xX]|\$[xX])([0-9a-fA-F]+)", self.src[self.i:])
+            if hexadecimal:
+                self._adv(len(hexadecimal.group(0)))
+                return Tok("num", str(int(hexadecimal.group(1), 16)), sp)
 
             # multi-char operators. Match longest-first so JSFX exact
             # comparisons (=== / !==) are not split into == + = / != + =.
@@ -202,8 +221,6 @@ class Lexer:
                     ch = self._peek()
                     if ch == "\0":
                         raise SyntaxError(self._fmt_err("Unterminated string literal"))
-                    if ch in ("\n", "\r"):
-                        raise SyntaxError(self._fmt_err("Newline in string literal"))
                     if ch == quote:
                         self._adv()  # closing quote
                         break
@@ -242,7 +259,13 @@ class Lexer:
                     out.append(ch)
                     self._adv()
 
-                return Tok("str", "".join(out), sp)
+                text = "".join(out)
+                if quote == "'":
+                    data = text.encode("utf-8")
+                    if len(data) > 4:
+                        raise SyntaxError(self._fmt_err("Packed character literal exceeds four bytes"))
+                    return Tok("num", str(int.from_bytes(data, "big")), sp)
+                return Tok("str", text, sp)
 
 
             # single char tokens/operators
@@ -324,6 +347,7 @@ class Call(Node):
     span: Span
     fn: str
     args: List[Node]
+    cell_args: List[Var] = field(default_factory=list)
 
 @dataclass
 class Loop(Node):
@@ -370,6 +394,7 @@ class FunctionDef(Node):
     locals: List[str]
     instances: List[str]
     body: Node
+    cell_params: List[str] = field(default_factory=list)
 
 
 
@@ -378,25 +403,21 @@ class FunctionDef(Node):
 # -----------------------------
 
 # Higher number = tighter binding.
+# Match WDL/eel2/eel2.y. EEL binds an assignment's *left* side tightly,
+# but its right side consumes a complete conditional expression. Thus
+# a+b+=2 means a+(b+=2), while x=a+b still means x=(a+b).
 _PRECEDENCE: Dict[str, int] = {
-    "=": 1, "+=": 1, "-=": 1, "*=": 1, "/=": 1, "%=": 1, "^=": 1, "|=": 1, "&=": 1, "~=": 1,
-    "?": 2,  # handled specially, but used as threshold
-    "||": 3, "|": 3,
-    "&&": 4,
-    "==": 5, "!=": 5, "===": 5, "!==": 5,
-    "<": 6, "<=": 6, ">": 6, ">=": 6,
-    "+": 7, "-": 7,
-    "*": 8, "/": 8,
-    "^": 9,
+    "=": 11, "+=": 11, "-=": 11, "*=": 11, "/=": 11, "%=": 11,
+    "^=": 11, "|=": 11, "&=": 11, "~=": 11,
+    "?": 1, "||": 2, "&&": 2,
+    "==": 3, "!=": 3, "===": 3, "!==": 3,
+    "<": 3, "<=": 3, ">": 3, ">=": 3,
+    "|": 4, "&": 4, "~": 4,
+    "+": 5, "-": 6, "*": 7, "/": 8,
+    "%": 9, "<<": 9, ">>": 9, "^": 10,
 }
-_PRECEDENCE.update({
-    "|": 3,
-    "&": 5,
-    "<<": 6, ">>": 6,
-    "%": 8,
-})
 
-_TERNARY_PREC = 2
+_TERNARY_PREC = 1
 _RIGHT_ASSOC = {"=", "+=", "-=", "*=", "/=", "%=", "^=", "|=", "&=", "~="}
 
 
@@ -591,6 +612,9 @@ class Parser:
                     if self.cur.kind == "punc" and self.cur.text == ")":
                         break
 
+                    if self.cur.kind == "punc" and self.cur.text == ",":
+                        self._adv()
+                        continue
                     if self.cur.kind != "ident":
                         raise SyntaxError(self._fmt_err(f"Expected {kind_label} name"))
                     out.append(self._eat("ident").text)
@@ -616,7 +640,7 @@ class Parser:
         instances: List[str] = []
         self._skip_seps()
 
-        while self.cur.kind == "ident" and self.cur.text in ("local", "instance", "global"):
+        while self.cur.kind == "ident" and self.cur.text in ("local", "instance", "global", "globals"):
             qual = self.cur.text
             self._adv()
             names = parse_name_list(f"{qual} variable", allow_whitespace=True)
@@ -708,12 +732,15 @@ class Parser:
 
             assoc_right = (op in _RIGHT_ASSOC)
             self._adv()
-            rhs = self.parse_expr(prec + (0 if assoc_right else 1))
+            rhs = self.parse_expr(0 if assoc_right else prec + 1)
 
             if op in _RIGHT_ASSOC:
                 if not self._is_assign_target(lhs):
                     raise SyntaxError(self._fmt_err("Assignment target must be a variable, index, or slider()/spl() reference"))
-                lhs = Assign(self._new_id(), lhs.span, op, lhs, rhs)
+                if isinstance(lhs, Var) and lhs.name.startswith("#") and op in ("=", "+="):
+                    lhs = Call(self._new_id(), lhs.span, "strcpy" if op == "=" else "strcat", [lhs, rhs])
+                else:
+                    lhs = Assign(self._new_id(), lhs.span, op, lhs, rhs)
             else:
                 lhs = Binary(self._new_id(), lhs.span, op, lhs, rhs)
 
@@ -729,8 +756,13 @@ class Parser:
             self._adv()  # consume '?'
             self._skip_seps()
 
-            then = self.parse_expr(0)
-            self._skip_seps()
+            then = (Num(self._new_id(), q.span, 0.0) if self.cur.kind == "op" and self.cur.text == ":"
+                    else self.parse_expr(0))
+            # A semicolon terminates an implicit-else conditional. Consuming
+            # it here loses a statement separator inside while(expr; ...).
+            while self.cur.kind == "eol" and (self.nxt.kind == "eol" or
+                    self.nxt.kind == "op" and self.nxt.text == ":"):
+                self._adv()
 
             if self.cur.kind == "op" and self.cur.text == ":":
                 self._adv()
@@ -752,7 +784,7 @@ class Parser:
         if self.cur.kind == "op" and self.cur.text in ("+", "-", "!"):
             t = self.cur
             self._adv()
-            a = self.parse_prefix()
+            a = self.parse_expr(11)
             return Unary(self._new_id(), t.span, t.text, a)
         return self.parse_postfix()
 
@@ -843,6 +875,8 @@ class Parser:
         return node
 
     def parse_primary(self) -> Node:
+        if self.cur.kind == "kw" and self.cur.text == "while":
+            return self.parse_while()
         if self.cur.kind == "num":
             t = self._eat("num")
             return Num(self._new_id(), t.span, float(t.text))
@@ -956,8 +990,14 @@ class SymRef:
 class SymTable:
     def __init__(self, user_vars: Dict[str, int]):
         self.vars = dict(user_vars)  # stable mapping
+        self.slider_aliases: Dict[str, int] = {}
 
     def resolve(self, name: str) -> SymRef:
+        if name in self.slider_aliases:
+            index = self.slider_aliases[name]
+            if not 0 <= index < MAX_JSFX_SLIDERS:
+                raise ValueError(f"Invalid slider alias index: {name}")
+            return SymRef("slider", index)
         if name.startswith("spl"):
             suf = name[3:]
             if suf.isdigit():
@@ -979,7 +1019,7 @@ class SymTable:
             # NOT slider<number> => normal var like "sliderGainThing"
 
 
-        if name == "mem":
+        if name == "mem" and name not in self.vars:
             # numeric base index of heap is always 0.0
             return SymRef("builtin", 0)
 
@@ -1037,6 +1077,7 @@ def collect_user_vars(programs: Dict[str, List[Node]], fn_defs: Dict[str, Functi
             rec(n.target, locals); rec(n.value, locals); return
         if isinstance(n, Call):
             for a in n.args: rec(a, locals)
+            for a in n.cell_args: rec(a, locals)
             return
         if isinstance(n, Loop):
             rec(n.count, locals); rec(n.body, locals); return
@@ -1061,7 +1102,7 @@ def collect_user_vars(programs: Dict[str, List[Node]], fn_defs: Dict[str, Functi
 
     # function bodies (exclude params+locals)
     for f in fn_defs.values():
-        localset = set(f.params) | set(f.locals)
+        localset = set(f.params) | set(f.locals) | set(f.cell_params)
         rec(f.body, localset)
 
     return {name: i for i, name in enumerate(sorted(names))}
@@ -1225,8 +1266,18 @@ def analyze_gfx_var_sync(jsfx_text: str, user_vars: Dict[str, int]) -> Dict[str,
                 walk_assign(node)
                 return
             if isinstance(node, Call):
-                for a in node.args:
-                    walk_read(a)
+                for index, a in enumerate(node.args):
+                    if node.fn == "gfx_measurestr" and index in (1, 2):
+                        # These are output lvalues, including helper locals.
+                        if isinstance(a, Var):
+                            if _is_trackable_user_var_name(a.name, locals_):
+                                out.writes.add(a.name)
+                        elif isinstance(a, Index):
+                            walk_read(a.base)
+                            walk_read(a.index)
+                            out.writes_mem = True
+                    else:
+                        walk_read(a)
                 if node.fn in fn_defs:
                     out.merge(summarize_function(node.fn))
                 return
@@ -1400,6 +1451,9 @@ def detect_comm_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, Functi
             rec(n.target); rec(n.value); return
         if isinstance(n, Call):
             fn = n.fn
+
+
+
             if fn in COMM_SEND_FUNCTIONS or fn in COMM_RECV_FUNCTIONS or fn in COMM_DISCOVERY_FUNCTIONS or fn in {"msg_subscribe", "msg_unsubscribe", "msg_advertise", "msg_avail", "msg_kind", "msg_length", "msg_dropped", "msg_clear", "instance_id", "instance_uid", "instance_get_name", "instance_set_name", "comm_join"} or fn in HOST_TRACK_FUNCTIONS:
                 uses_msg = True
             if fn in {"msg_send_buf", "msg_sendto_buf", "msg_recv_buf"}:
@@ -1772,15 +1826,51 @@ def infer_spl_io(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef
 def extract_function_defs(programs: Dict[str, List[Node]]) -> Tuple[Dict[str, FunctionDef], Dict[str, List[Node]]]:
     fns: Dict[str, FunctionDef] = {}
     out: Dict[str, List[Node]] = {}
+    counts = Counter(n.name for prog in programs.values() for n in prog if isinstance(n, FunctionDef))
+    duplicated = {name for name, count in counts.items() if count > 1}
+    latest: Dict[Tuple[str, int], str] = {}
+    versions: Counter = Counter()
+
+    def bind_name(name: str, argc: Optional[int] = None) -> str:
+        if argc is None:
+            return name
+        if (name, argc) in latest:
+            return latest[name, argc]
+        prefix, dot, base = name.rpartition(".")
+        return prefix + dot + latest[base, argc] if (base, argc) in latest else name
+
+    def bind(node: Node) -> Node:
+        changes = {}
+        for field, value in vars(node).items():
+            if isinstance(value, Node):
+                changes[field] = bind(value)
+            elif isinstance(value, list):
+                changes[field] = [bind(v) if isinstance(v, Node) else v for v in value]
+        if isinstance(node, Call):
+            # EEL spells a missing single argument as an implicit zero.
+            argc = max(1, len(node.args))
+            changes["fn"] = bind_name(node.fn, argc)
+        return replace(node, **changes) if changes else node
 
     for sec, prog in programs.items():
         new_prog: List[Node] = []
         for n in prog:
             if isinstance(n, FunctionDef):
-                # last one wins (matches JSFX “redefine” behavior loosely; good enough for now)
-                fns[n.name] = n
+                # WDL binds calls while compiling each definition. A wrapper
+                # can deliberately reuse its own name and call the previous
+                # definition on a child receiver (Filther's spline helpers).
+                name = n.name
+                body = bind(n.body)
+                instances = [bind_name(v) for v in n.instances]
+                if name in duplicated:
+                    version = f"__eel_def_{versions[name]}_{name}"
+                    versions[name] += 1
+                    latest[name, max(1, len(n.params))] = version
+                else:
+                    version = name
+                fns[version] = replace(n, name=version, body=body, instances=instances)
             else:
-                new_prog.append(n)
+                new_prog.append(bind(n))
         out[sec] = new_prog
 
     return fns, out
@@ -1870,7 +1960,7 @@ def _resolve_relative_namespace(prefix: str, current_namespace: Optional[str]) -
     return prefix
 
 
-def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Tuple[Dict[str, List[Node]], Dict[str, FunctionDef]]:
+def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef], *, compact_receiver_math: bool = False) -> Tuple[Dict[str, List[Node]], Dict[str, FunctionDef]]:
     """Lower JSFX user-function local()/instance() namespace semantics.
 
     Strategy:
@@ -1892,6 +1982,39 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
         name: bool(fdef.instances) or _node_uses_relative_namespace(fdef.body)
         for name, fdef in fn_defs.items()
     }
+
+    # Large synths call the same coefficient math for thousands of objects.
+    # Share only scalar arithmetic leaf helpers, with receiver cells passed by
+    # address. Persistent locals stay in their original per-section slots.
+    # Exclude strings, heap writes, host callbacks and nested user calls;
+    # Keep small helpers specialized so their existing inlining is preserved.
+    receiver_cell_fields: Dict[str, List[str]] = {}
+    arithmetic_calls = {"min", "max", "abs", "floor", "ceil", "sin", "cos", "tan",
+                        "atan", "atan2", "exp", "log", "log10", "sqrt", "pow",
+                        "sqr", "sign", "asin", "acos"}
+    def scalar_leaf(node: Node) -> bool:
+        if isinstance(node, Num): return True
+        # A receiver cell pointer represents one scalar, not its namespace.
+        # Rewriting instance(band) plus band.left to cell.left would otherwise
+        # create an unrelated global variable shared by every receiver.
+        if isinstance(node, Var): return "." not in node.name and not node.name.startswith("#") and node.name != "this"
+        if isinstance(node, Index):
+            return not (isinstance(node.base, Var) and node.base.name == "gmem") and scalar_leaf(node.base) and scalar_leaf(node.index)
+        if isinstance(node, Assign) and not isinstance(node.target, Var): return False
+        if isinstance(node, (Unary, Binary, Assign, Ternary, Seq)):
+            return all(scalar_leaf(child) for value in vars(node).values()
+                       for child in (value if isinstance(value, list) else [value]) if isinstance(child, Node))
+        if isinstance(node, Call):
+            return node.fn in arithmetic_calls and node.fn not in fn_defs and all(scalar_leaf(a) for a in node.args)
+        return False
+    def node_count(node):
+        return 1 + sum(node_count(child) for value in vars(node).values()
+                       for child in (value if isinstance(value, list) else [value]) if isinstance(child, Node))
+    if compact_receiver_math:
+        for name, definition in fn_defs.items():
+            if (definition.instances and all(re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", n) for n in definition.instances)
+                    and scalar_leaf(definition.body) and node_count(definition.body) >= 64):
+                receiver_cell_fields[name] = [n for n in definition.instances if n not in definition.params and n not in definition.locals]
 
     specialized_defs: Dict[str, FunctionDef] = {}
     specialized_name_cache: Dict[Tuple[str, str, Optional[str]], str] = {}
@@ -1923,7 +2046,12 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
 
     def resolve_user_call(fn_name: str, current_namespace: Optional[str], params: Set[str], local_map: Dict[str, str], instance_map: Dict[str, str]) -> Tuple[Optional[str], Optional[str]]:
         if fn_name in fn_defs:
-            return fn_name, None
+            declared_name = re.sub(r"^__eel_def_[0-9]+_", "", fn_name)
+            prefix, dot, _ = declared_name.rpartition(".")
+            # A dotted declaration fixes its receiver: scope.drawGrid()
+            # shares scope.w with scope.drawSignal(), rather than owning a
+            # separate scope.drawGrid.w pseudo-object.
+            return fn_name, rewrite_var_name(prefix, params, local_map, instance_map, current_namespace) if dot else None
 
         parts = fn_name.split(".")
         if len(parts) >= 2 and parts[-1] in fn_defs:
@@ -1957,8 +2085,9 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
             return base_fn
 
         orig = fn_defs[base_fn]
-        namespace_key = call_namespace if fn_needs_namespace.get(base_fn, False) else None
-        if fn_needs_namespace.get(base_fn, False) and not namespace_key:
+        cell_fields = receiver_cell_fields.get(base_fn, [])
+        namespace_key = call_namespace if fn_needs_namespace.get(base_fn, False) and not cell_fields else None
+        if fn_needs_namespace.get(base_fn, False) and not namespace_key and not cell_fields:
             namespace_key = base_fn
 
         key = (section, base_fn, namespace_key)
@@ -1973,7 +2102,8 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
         in_progress.add(key)
 
         local_map = {name: _make_persistent_local_name(section, base_fn, name) for name in orig.locals}
-        instance_map = {name: _make_instance_var_name(namespace_key, name) for name in orig.instances} if namespace_key else {}
+        cell_params = [f"__receiver_cell_{i}" for i in range(len(cell_fields))]
+        instance_map = dict(zip(cell_fields, cell_params)) if cell_fields else {name: _make_instance_var_name(namespace_key, name) for name in orig.instances} if namespace_key else {}
         params = set(orig.params)
 
         body = rewrite_node(orig.body, section, namespace_key, params, local_map, instance_map)
@@ -1986,6 +2116,7 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
             [],
             [],
             body,
+            cell_params,
         )
 
         in_progress.remove(key)
@@ -2016,9 +2147,12 @@ def lower_user_functions(programs: Dict[str, List[Node]], fn_defs: Dict[str, Fun
         if isinstance(n, Call):
             new_fn = rewrite_call_name(n.fn, section, current_namespace, params, local_map, instance_map)
             new_args = [rewrite_node(a, section, current_namespace, params, local_map, instance_map) for a in n.args]
+            base_fn, receiver = resolve_user_call(n.fn, current_namespace, params, local_map, instance_map)
+            fields = receiver_cell_fields.get(base_fn, [])
+            cells = [Var(n.id, n.span, _make_instance_var_name(receiver or base_fn, field)) for field in fields]
             if new_fn == n.fn and len(new_args) == len(n.args) and all(a1 is a2 for a1, a2 in zip(new_args, n.args)):
                 return n
-            return Call(n.id, n.span, new_fn, new_args)
+            return Call(n.id, n.span, new_fn, new_args, cells)
         if isinstance(n, Loop):
             return Loop(n.id, n.span, rewrite_node(n.count, section, current_namespace, params, local_map, instance_map), rewrite_node(n.body, section, current_namespace, params, local_map, instance_map))
         if isinstance(n, Ternary):
@@ -2269,13 +2403,18 @@ def _ensure_dir(path: str) -> Path:
 
 def prepare_jsfx_pipeline(jsfx_text: str,
                           *,
+                          include_gfx: bool = False,
+                          native_gfx_legacy: bool = False,
                           enable_section_hoists: bool = False,
                           enable_loop_hoists: bool = False,
                           collect_opt_report: bool = False) -> Dict[str, Any]:
+    if native_gfx_legacy and (enable_section_hoists or enable_loop_hoists):
+        raise ValueError("Native legacy shared state is incompatible with custom scalar hoisting")
+    include_gfx = include_gfx or native_gfx_legacy
     sections = extract_sections(jsfx_text)
 
     programs: Dict[str, List[Node]] = {}
-    for sec in _OPT_DEBUG_SECTION_ORDER:
+    for sec in _OPT_DEBUG_SECTION_ORDER + (("gfx",) if include_gfx else ()):
         if sec in sections:
             code, start_line = sections[sec]
             parser = Parser(code, base_line=start_line)
@@ -2284,7 +2423,7 @@ def prepare_jsfx_pipeline(jsfx_text: str,
             programs[sec] = []
 
     fn_defs, programs = extract_function_defs(programs)
-    programs, fn_defs = lower_user_functions(programs, fn_defs)
+    programs, fn_defs = lower_user_functions(programs, fn_defs, compact_receiver_math=native_gfx_legacy)
     validate_builtin_sections(programs)
     lowered_programs = {sec: list(nodes) for sec, nodes in programs.items()}
 
@@ -2309,14 +2448,235 @@ def prepare_jsfx_pipeline(jsfx_text: str,
     }
 
 
-def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir.Module, Dict[str, Any]]:
+def parse_native_gfx_contract(text: str, user_vars: Dict[str, int]) -> Dict[str, Any]:
+    """Explicit ownership/publication contract; ordinary display builds stay strict."""
+    declarations = re.findall(r"(?m)^\s*//\s*za_native_gfx:\s*(\{.*\})\s*$", text)
+    if not declarations:
+        return {}
+    if len(declarations) != 1:
+        raise ValueError("Exactly one za_native_gfx contract is allowed")
+    contract = json.loads(declarations[0])
+    if set(contract) - {"interactive", "locals", "commands", "views", "persist"}:
+        raise ValueError("Unknown native graphics contract field")
+    if not isinstance(contract.get("interactive", False), bool):
+        raise ValueError("Native interactive must be boolean")
+    for key in ("locals", "commands", "persist"):
+        names = contract.get(key, [])
+        if not isinstance(names, list) or any(not isinstance(n, str) or n not in user_vars for n in names):
+            raise ValueError(f"Unknown variable in native graphics {key}")
+    for key in ("locals", "commands", "persist"):
+        if any(n.startswith(("#", "gfx_", "mouse_")) or n in BUILTIN_NAMES or re.fullmatch(r"(?:slider|spl)\d+", n) for n in contract.get(key, [])):
+            raise ValueError("Native ownership declarations require ordinary scalar variables")
+    if set(contract.get("persist", [])) & set(contract.get("commands", [])):
+        raise ValueError("Native commands cannot be persisted")
+    if set(contract.get("locals", [])) & set(contract.get("commands", [])):
+        raise ValueError("Native commands cannot also be local previews")
+    views = contract.get("views", [])
+    if len(views) > 16:
+        raise ValueError("Native graphics supports at most 16 publications")
+    for view in views:
+        if set(view) - {"base", "count", "stride", "fields", "max", "generation"}:
+            raise ValueError("Unknown native publication field")
+        for key in ("base", "count", "stride", "generation"):
+            value = view.get(key, 1 if key == "stride" else 0)
+            if not (isinstance(value, int) and 0 <= value <= 16777216 or isinstance(value, str) and value in user_vars):
+                raise ValueError(f"Invalid native publication {key}")
+        fields = view.get("fields", [0])
+        maximum = view.get("max", 0)
+        if not isinstance(maximum, int) or isinstance(maximum, bool) or not 1 <= maximum <= 65536 or not fields or len(fields) > 16 or any(not isinstance(f, int) or not 0 <= f < 65536 for f in fields) or len(set(fields)) != len(fields):
+            raise ValueError("Invalid native publication bounds/fields")
+        stride = view.get("stride", 1)
+        if isinstance(stride, int) and (stride < 1 or max(fields) >= stride):
+            raise ValueError("Native publication fields must fit the record stride")
+    if sum(v["max"] * len(v.get("fields", [0])) for v in views) > 262144:
+        raise ValueError("Native publication capacity exceeds 262144 cells")
+    return contract
+
+
+# Order is emitted into the generated header and used by the C++ dispatcher.
+NATIVE_GFX_APIS = {
+    "gfx_set": (1, 7), "gfx_rect": (4, 5), "gfx_rectto": (2, 2),
+    "gfx_line": (4, 5), "gfx_lineto": (2, 3), "gfx_circle": (3, 5),
+    "gfx_roundrect": (5, 6), "gfx_arc": (5, 6), "gfx_triangle": (6, 1024),
+    "gfx_setimgdim": (3, 3), "gfx_getimgdim": (3, 3), "gfx_loadimg": (2, 2),
+    "gfx_blit": (3, 13), "gfx_blitext": (3, 3), "gfx_deltablit": (9, 16),
+    "gfx_transformblit": (8, 8), "gfx_setpixel": (3, 3), "gfx_getpixel": (3, 3),
+    "gfx_gradrect": (8, 16), "gfx_muladdrect": (7, 12), "gfx_blurto": (2, 2),
+    "gfx_drawstr": (1, 4), "gfx_printf": (1, 128), "gfx_measurestr": (1, 3),
+    "gfx_drawchar": (1, 1), "gfx_drawnumber": (2, 2), "gfx_measurechar": (3, 3),
+    "gfx_setfont": (1, 4), "gfx_getfont": (0, 1), "gfx_setcursor": (1, 2),
+    "gfx_getdropfile": (1, 2),
+}
+# The vendored VM's vararg registrations check a minimum argument count;
+# drawing functions ignore extra arguments after evaluating them.
+NATIVE_GFX_APIS = {name: (minimum, 1024) for name, (minimum, _) in NATIVE_GFX_APIS.items()}
+NATIVE_STRING_APIS = {
+    "strcpy": (2,2), "strcat": (2,2), "strncpy": (3,3), "strncat": (3,3),
+    "strlen": (1,1), "strcmp": (2,2), "stricmp": (2,2), "strncmp": (3,3),
+    "strnicmp": (3,3), "str_getchar": (2,3), "str_setchar": (3,4),
+    "str_setlen": (2,2), "strcpy_substr": (3,4), "strcpy_from": (3,3),
+    "str_insert": (3,3), "str_delsub": (3,3), "sprintf": (2,1024),
+}
+NATIVE_FILE_APIS = {"file_open": (1,2), "file_open_multi": (1,2),
+    "file_close": (1,1), "file_rewind": (1,1), "file_seek": (2,2),
+    "file_avail": (1,1), "file_text": (1,1), "file_riff": (3,3),
+    "file_var": (2,2), "file_mem": (3,3), "file_string": (2,2),
+    "file_multi_count": (1,1), "file_multi_select": (2,2)}
+# GFX file calls use the immediate worker backend. Audio keeps its existing
+# host file bridge, whose I/O is prepared off the audio thread.
+NATIVE_GFX_APIS.update(NATIVE_FILE_APIS)
+NATIVE_GFX_APIS.update({"match": (2,1024), "matchi": (2,1024)})
+
+def validate_native_gfx_prototype(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef], contract: Optional[Dict[str, Any]] = None, *, legacy: bool = False) -> Set[str]:
+    """Validate the entire reachable graphics graph, including helper bodies."""
+    contract = contract or {}
+    interactive = legacy or bool(contract.get("interactive"))
+    supported = {"gfx_set": (1, 4), "gfx_rect": (4, 5), "gfx_circle": (3, 5),
+                 "gfx_line": (4, 5), "gfx_measurestr": (1, 3),
+                 "gfx_setfont": (1, 4), "gfx_drawstr": (1, 1),
+                 "min": (2, 2), "max": (2, 2), "abs": (1, 1),
+                 "floor": (1, 1), "ceil": (1, 1), "sin": (1, 1),
+                 "cos": (1, 1), "exp": (1, 1), "log": (1, 1),
+                 "sqrt": (1, 1), "pow": (2, 2)}
+    if interactive:
+        supported.update({"gfx_getchar": (0, 1), "gfx_showmenu": (1, 1),
+                          "strcpy": (2, 2), "strcat": (2, 2), "strncpy": (3, 3),
+                          "strlen": (1, 1), "time_precise": (0, 1),
+                          "sliderchange": (1, 1), "slider_automate": (1, 2)})
+    if legacy:
+        supported.update(NATIVE_GFX_APIS)
+        supported.update(NATIVE_STRING_APIS)
+        supported.update({"memcpy": (3, 3), "memset": (3, 3), "freembuf": (1, 1),
+                          "__memtop": (0, 0), "fft": (2, 2), "ifft": (2, 2),
+                          "fft_real": (2, 2), "ifft_real": (2, 2),
+                          "fft_permute": (2, 2), "fft_ipermute": (2, 2),
+                          "convolve_c": (3, 3), "slider": (1, 1), "spl": (1, 1),
+                          "rand": (0, 1), "atomic_get": (1, 1), "atomic_set": (2, 2),
+                          "atomic_add": (2, 2), "atomic_exch": (2, 2),
+                          "atomic_setifequal": (3, 3), "sqr": (1, 1),
+                          "sign": (1, 1), "tan": (1, 1), "atan": (1, 1),
+                          "atan2": (2, 2), "log10": (1, 1),
+                          "asin": (1, 1), "acos": (1, 1)})
+    if not legacy and not programs.get("gfx"):
+        raise ValueError("Native GFX prototype requires a nonempty @gfx section")
+    reachable: Set[str] = set()
+
+    def visit(value: Any) -> None:
+        if not legacy and isinstance(value, Var) and ((value.name.startswith("mouse_") and not interactive) or value.name.startswith("gfx_ext_") or value.name in ("gfx_clear", "gfx_mode", "gfx_dest")):
+            raise ValueError(f"Native display prototype does not support {value.name}")
+        if isinstance(value, Call):
+            if value.fn in fn_defs:
+                if value.fn not in reachable:
+                    reachable.add(value.fn)
+                    visit(fn_defs[value.fn].body)
+            elif value.fn == "sprintf":
+                if legacy:
+                    if len(value.args) < 2:
+                        raise ValueError("sprintf requires destination and format")
+                    for arg in value.args:
+                        visit(arg)
+                    return
+                if (len(value.args) < 2 or not isinstance(value.args[0], Var)
+                        or not value.args[0].name.startswith("#") or not isinstance(value.args[1], StrLit)):
+                    raise ValueError("Native sprintf requires a named string destination and literal format")
+                fmt = value.args[1].value
+                fields = re.findall(r"%(?:%|[-+ 0#]*\d*(?:\.\d+)?[sfeEgGdiuxXc])", fmt)
+                if re.sub(r"%(?:%|[-+ 0#]*\d*(?:\.\d+)?[sfeEgGdiuxXc])", "", fmt).find("%") >= 0:
+                    raise ValueError("Unsupported native sprintf format")
+                if len([f for f in fields if f != "%%"]) != len(value.args) - 2:
+                    raise ValueError("Native sprintf format/argument count mismatch")
+                if any(int(n) > 512 for f in fields for n in re.findall(r"\d+", f)):
+                    raise ValueError("Native sprintf field width/precision exceeds 512")
+            elif value.fn not in supported or not supported[value.fn][0] <= len(value.args) <= supported[value.fn][1]:
+                raise ValueError(f"Native GFX prototype does not support {value.fn}({len(value.args)} args) at {value.span.line}:{value.span.col}")
+            if not legacy and value.fn in ("strcpy", "strcat", "strncpy"):
+                if not isinstance(value.args[0], Var) or not value.args[0].name.startswith("#"):
+                    raise ValueError("Native string operations require a named string destination")
+            if value.fn == "gfx_measurestr":
+                for output in value.args[1:]:
+                    if not legacy and (not isinstance(output, Var) or output.name.startswith("#")
+                            or output.name in BUILTIN_NAMES
+                            or re.fullmatch(r"(?:slider|spl)\d+", output.name)):
+                        raise ValueError("Native gfx_measurestr outputs require graphics-owned scalar variables")
+        if not legacy and isinstance(value, Index) and (not contract.get("views") or isinstance(value.base, Var) and value.base.name == "gmem"):
+            raise ValueError(f"Native GFX prototype does not yet support indexed memory at {value.span.line}:{value.span.col}")
+        if isinstance(value, Assign):
+            if legacy and (isinstance(value.target, Index) or isinstance(value.target, Call)
+                           and value.target.fn in ("slider", "spl")):
+                pass
+            elif not isinstance(value.target, Var) or value.target.name.startswith("#"):
+                raise ValueError("Native GFX prototype requires scalar assignment targets")
+            elif not legacy and (value.target.name in BUILTIN_NAMES or re.fullmatch(r"spl\d+", value.target.name) or re.fullmatch(r"slider\d+", value.target.name) and not interactive):
+                raise ValueError(f"Native GFX prototype does not support writing {value.target.name}")
+        if isinstance(value, Node):
+            for child in vars(value).values():
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    visit(programs["gfx"])
+    checked_audio: Set[str] = set()
+    def check_init(value: Any) -> None:
+        if isinstance(value, Call) and value.fn in fn_defs and value.fn not in checked_audio:
+            checked_audio.add(value.fn)
+            check_init(fn_defs[value.fn].body)
+        if isinstance(value, Call) and value.fn.startswith("gfx_") and not (legacy and section == "init" and value.fn in NATIVE_GFX_APIS):
+            raise ValueError(f"Native GFX prototype does not support graphics calls from audio sections at {value.span.line}:{value.span.col}")
+        if not legacy and ((isinstance(value, Var) and value.name.startswith("#")) or (isinstance(value, Call) and value.fn in (
+                "sprintf", "printf", "strcpy", "strcat", "strncpy", "str_setchar",
+                "str_insert", "str_delete", "str_mid", "file_string",
+                "instance_uid", "instance_get_name", "track_name", "host_track_name",
+                "msg_peer_name", "msg_peer_uid"))):
+            raise ValueError("Native display prototype does not support mutable strings in audio sections")
+        if not legacy and isinstance(value, Assign) and isinstance(value.target, Var) and value.target.name.startswith("gfx_"):
+            raise ValueError("Native GFX prototype does not support graphics initialization in audio sections")
+        if isinstance(value, Node):
+            for child in vars(value).values():
+                check_init(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                check_init(child)
+    for section in _OPT_DEBUG_SECTION_ORDER:
+        check_init(programs[section])
+    return reachable
+
+
+def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
+                           *, native_gfx_prototype: bool = False, native_gfx_legacy: bool = False, stream_functions: bool = False) -> Tuple[ir.Module, Dict[str, Any]]:
+    native_gfx_prototype = native_gfx_prototype or native_gfx_legacy
+    if native_gfx_legacy and pipeline["opt_report"]["settings"].get("section_hoists_enabled"):
+        raise ValueError("Native legacy shared state is incompatible with custom scalar hoisting")
+    if native_gfx_legacy and pipeline["loop_hoists"]:
+        raise ValueError("Native legacy shared state is incompatible with custom scalar hoisting")
     programs: Dict[str, List[Node]] = dict(pipeline["programs"])
     fn_defs: Dict[str, FunctionDef] = dict(pipeline["fn_defs"])
     loop_hoists: Dict[int, List[Node]] = dict(pipeline["loop_hoists"])
 
     user_vars = collect_user_vars(programs, fn_defs)
+    if native_gfx_legacy:
+        # 'mem' is an ordinary EEL variable, often an allocator cursor.
+        # The older DSP dialect reserved it as a zero-valued heap base.
+        user_vars.setdefault("mem", len(user_vars))
+    if native_gfx_prototype:
+        # Graphics globals have defaults even when only written by host calls.
+        for name in ("gfx_r", "gfx_g", "gfx_b", "gfx_a", "gfx_a2", "gfx_x", "gfx_y",
+                     "gfx_w", "gfx_h", "gfx_dest", "gfx_mode", "gfx_texth",
+                     "gfx_clear", "gfx_ext_retina", "gfx_ext_flags", "gfx_frame"):
+            if name not in user_vars:
+                user_vars[name] = len(user_vars)
 
     options = parse_jsfx_options(jsfx_text)
+    if native_gfx_legacy:
+        if re.search(r"(?m)^\s*options\s*:[^\n]*\bgfx_idle(?:_only)?\b", jsfx_text):
+            raise ValueError("Native legacy does not yet support gfx_idle/gfx_idle_only without an editor")
+        if "maxmem" in options:
+            try:
+                maximum = int(float(options["maxmem"]))
+            except (ValueError, OverflowError):
+                raise ValueError("Native legacy maxmem must be a positive number of cells")
+            if not 1 <= maximum <= 268435456:
+                raise ValueError("Native legacy maxmem must be between 1 and 268435456 cells (2 GiB)")
     gfx_var_sync_mode = str(options.get("ownership", "legacy") or "legacy").strip().lower()
     if gfx_var_sync_mode in ("auto", "hybrid"):
         try:
@@ -2336,6 +2696,35 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
         gfx_var_flags = {name: (GFX_VAR_FLAG_TO_GFX | GFX_VAR_FLAG_FROM_GFX) for name in user_vars.keys()}
         gfx_mem_shared = True
 
+    native_functions: Set[str] = set()
+    native_contract = {"interactive": True} if native_gfx_legacy else parse_native_gfx_contract(jsfx_text, user_vars) if native_gfx_prototype else {}
+    if native_gfx_legacy:
+        native_functions = validate_native_gfx_prototype(programs, fn_defs, native_contract, legacy=True)
+        gfx_var_flags = {name: 0 for name in user_vars}
+        gfx_var_sync_mode = "native-legacy-shared"
+        gfx_mem_shared = True
+    elif native_gfx_prototype:
+        native_functions = validate_native_gfx_prototype(programs, fn_defs, native_contract)
+        usage = analyze_gfx_var_sync(jsfx_text, user_vars)
+        conflicts = usage["gfx_writes"] & (usage["audio_reads"] | usage["audio_writes"])
+        conflicts -= set(native_contract.get("locals", [])) | set(native_contract.get("commands", []))
+        if conflicts:
+            raise ValueError("Native display prototype rejects UI writes to DSP variables: " + ", ".join(sorted(conflicts)))
+        gfx_var_flags = {name: GFX_VAR_FLAG_TO_GFX if name in usage["gfx_reads"]
+                         and name not in usage["gfx_writes"] and not name.startswith(("gfx_", "#")) else 0
+                         for name in user_vars}
+        for name in native_contract.get("commands", []):
+            gfx_var_flags[name] = GFX_VAR_FLAG_FROM_GFX
+        for view in native_contract.get("views", []):
+            for key in ("base", "count", "stride", "generation"):
+                name = view.get(key)
+                if isinstance(name, str):
+                    if name in usage["gfx_writes"]:
+                        raise ValueError("Publication layout variables must be audio owned: " + name)
+                    gfx_var_flags[name] = GFX_VAR_FLAG_TO_GFX
+        gfx_var_sync_mode = "native-interactive" if native_contract.get("interactive") else "native-display"
+        gfx_mem_shared = False
+
     pin_hints = parse_pin_hints(jsfx_text)
     io_channels = infer_spl_io(programs, fn_defs, pin_hints=pin_hints)
     midi_caps = detect_midi_usage(programs, fn_defs)
@@ -2343,8 +2732,13 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
     sample_pool_caps = detect_sample_pool_usage(programs, fn_defs)
 
     sym = SymTable(user_vars)
+    if native_gfx_legacy:
+        sym.slider_aliases = {name.lower(): int(index) - 1 for index, name in re.findall(
+            r"(?m)^\s*slider([0-9]+)\s*:\s*([A-Za-z_][A-Za-z_0-9]*)\s*=", jsfx_text)}
 
-    emitter = LLVMModuleEmitter(sym)
+    emitter = LLVMModuleEmitter(sym, native_gfx_legacy=native_gfx_legacy, stream_functions=stream_functions)
+    emitter.native_gfx_prototype = native_gfx_prototype
+    emitter.native_gfx_functions = native_functions
     emitter.jsfx_memtop_slots = resolve_jsfx_memtop_slots(options)
     # EEL2 assignments normally pass through WDL's denormal_filter_double2,
     # which maps subnormals, NaN, and +/-infinity to +0. This is observable
@@ -2359,6 +2753,9 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
     fn_slider = emitter.emit_section_fn("jsfx_slider", programs["slider"])
     fn_block = emitter.emit_section_fn("jsfx_block", programs["block"])
     fn_sample = emitter.emit_section_fn("jsfx_sample", programs["sample"])
+
+    if native_gfx_prototype:
+        emitter.emit_section_fn("jsfx_gfx_aot", programs["gfx"])
 
     emitter.emit_user_functions()
 
@@ -2387,11 +2784,18 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any]) -> Tuple[ir
         "sample_pool": sample_pool_caps,
         "plugin_kind": plugin_kind,
         "string_literals": emitter.get_string_literals_meta(),
+        "named_strings": dict(emitter._named_gfx_strings),
         "has_sample_section": has_sample_work,
         "gfx_var_sync_mode": gfx_var_sync_mode,
         "gfx_var_flags": gfx_var_flags,
         "gfx_mem_shared": gfx_mem_shared,
         "numeric_semantics": "eel2-stores" if emitter.eel2_store_filter else "native",
+        "native_gfx_prototype": native_gfx_prototype,
+        "native_gfx_legacy": native_gfx_legacy,
+        "memtop_slots": emitter.jsfx_memtop_slots,
+        "slider_aliases": sym.slider_aliases,
+        "native_gfx_contract": native_contract,
+        "native_gfx_size": list(map(int, re.search(r"(?m)^\s*@gfx\s+(\d+)\s+(\d+)", jsfx_text).groups())) if native_gfx_prototype and re.search(r"(?m)^\s*@gfx\s+(\d+)\s+(\d+)", jsfx_text) else [640, 400],
     }
     return emitter.module, meta
 
@@ -3309,8 +3713,31 @@ def hoist_section_invariants(programs: Dict[str, List[Node]],
 # LLVM IR emission (llvmlite)
 # -----------------------------
 
+class _CompactFunction(ir.Function):
+    """Avoid quadratic label growth from nested llvmlite if_then blocks."""
+    def append_basic_block(self, name=''):
+        # if_then derives its next label from the current label. Repeated
+        # bounds/store guards otherwise build names thousands of bytes long.
+        label = 'entry' if not self.blocks else f'b{len(self.blocks)}'
+        return super().append_basic_block(label)
+
+
+class _SerializedFunctionModule(ir.Module):
+    """CLI-only IR container: retain emitted text instead of instruction graphs."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.serialized_functions = {}
+
+    def _get_body_lines(self):
+        lines = [it.get_declaration() for it in self.get_identified_types().values()]
+        lines.extend(self.serialized_functions[v.name] if v.name in self.serialized_functions
+                     else str(v) for v in self.globals.values())
+        return lines
+
+
 class LLVMModuleEmitter:
-    def __init__(self, sym: SymTable):
+    def __init__(self, sym: SymTable, *, native_gfx_legacy: bool = False, stream_functions: bool = False):
+        self.native_gfx_legacy = native_gfx_legacy
         self.sym = sym
 
         self.double = ir.DoubleType()
@@ -3394,282 +3821,294 @@ class LLVMModuleEmitter:
             self.i32,
         ])
         self.state_ptr = self.state_ty.as_pointer()
+        if native_gfx_legacy:
+            self.state_ty = ir.LiteralStructType(list(self.state_ty.elements) +
+                                                [self.i8.as_pointer(), self.i8.as_pointer(), self.i8.as_pointer()])
+            self.state_ptr = self.state_ty.as_pointer()
 
-        self.module = ir.Module(name="dsp_jsfx_module")
+        self.module = (_SerializedFunctionModule if stream_functions else ir.Module)(name="dsp_jsfx_module", context=ir.Context())
+        if native_gfx_legacy:
+            # Keep the ABI identical while naming the large aggregate once.
+            # Repeating its literal body on every reference inflated the IR
+            # of complex instruments by hundreds of megabytes.
+            fields = tuple(self.state_ty.elements)
+            self.state_ty = self.module.context.get_identified_type("DSPJSFX_State")
+            self.state_ty.set_body(*fields)
+            self.state_ptr = self.state_ty.as_pointer()
 
         # extern ensure
-        self.fn_ensure = ir.Function(
+        self.fn_ensure = self._function(
             self.module,
             ir.FunctionType(ir.VoidType(), [self.state_ptr, self.i64]),
             name="jsfx_ensure_mem"
         )
 
-        self.fn_midirecv = ir.Function(
+        self.fn_midirecv = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer()]),
             name="jsfx_midirecv"
         )
-        self.fn_midirecv_msg23 = ir.Function(
+        self.fn_midirecv_msg23 = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer()]),
             name="jsfx_midirecv_msg23"
         )
-        self.fn_midirecv_buf = ir.Function(
+        self.fn_midirecv_buf = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer(), self.double, self.double]),
             name="jsfx_midirecv_buf"
         )
-        self.fn_midirecv_str = ir.Function(
+        self.fn_midirecv_str = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer(), self.double.as_pointer()]),
             name="jsfx_midirecv_str"
         )
-        self.fn_midisend = ir.Function(
+        self.fn_midisend = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double]),
             name="jsfx_midisend"
         )
-        self.fn_midisend_msg23 = ir.Function(
+        self.fn_midisend_msg23 = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
             name="jsfx_midisend_msg23"
         )
-        self.fn_midisend_buf = ir.Function(
+        self.fn_midisend_buf = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
             name="jsfx_midisend_buf"
         )
-        self.fn_midisend_str = ir.Function(
+        self.fn_midisend_str = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
             name="jsfx_midisend_str"
         )
-        self.fn_midisyx = ir.Function(
+        self.fn_midisyx = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
             name="jsfx_midisyx"
         )
-        self.fn_instance_id = ir.Function(
+        self.fn_instance_id = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr]),
             name="jsfx_instance_id"
         )
-        self.fn_instance_uid = ir.Function(
+        self.fn_instance_uid = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer()]),
             name="jsfx_instance_uid"
         )
-        self.fn_instance_set_name = ir.Function(
+        self.fn_instance_set_name = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double]),
             name="jsfx_instance_set_name"
         )
-        self.fn_instance_get_name = ir.Function(
+        self.fn_instance_get_name = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer()]),
             name="jsfx_instance_get_name"
         )
-        self.fn_track_name = ir.Function(
+        self.fn_track_name = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double.as_pointer()]),
             name="jsfx_track_name"
         )
-        self.fn_track_name_available = ir.Function(
+        self.fn_track_name_available = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr]),
             name="jsfx_track_name_available"
         )
-        self.fn_track_name_seq = ir.Function(
+        self.fn_track_name_seq = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr]),
             name="jsfx_track_name_seq"
         )
-        self.fn_comm_join = ir.Function(
+        self.fn_comm_join = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double]),
             name="jsfx_comm_join"
         )
-        self.fn_gmem_attach = ir.Function(
+        self.fn_gmem_attach = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double]),
             name="jsfx_gmem_attach"
         )
-        self.fn_gmem_attach_size = ir.Function(
+        self.fn_gmem_attach_size = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
             name="jsfx_gmem_attach_size"
         )
-        self.fn_gmem_size = ir.Function(
+        self.fn_gmem_size = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr]),
             name="jsfx_gmem_size"
         )
-        self.fn_gmem_load = ir.Function(
+        self.fn_gmem_load = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double]),
             name="jsfx_gmem_load"
         )
-        self.fn_gmem_store = ir.Function(
+        self.fn_gmem_store = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double, self.double]),
             name="jsfx_gmem_store"
         )
-        self.fn_gmem_get = ir.Function(
+        self.fn_gmem_get = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
             name="jsfx_gmem_get"
         )
-        self.fn_gmem_put = ir.Function(
+        self.fn_gmem_put = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
             name="jsfx_gmem_put"
         )
-        self.fn_gmem_fill = ir.Function(
+        self.fn_gmem_fill = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
             name="jsfx_gmem_fill"
         )
-        self.fn_gmem_zero = ir.Function(
+        self.fn_gmem_zero = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
             name="jsfx_gmem_zero"
         )
-        self.fn_gmem_copy = ir.Function(
+        self.fn_gmem_copy = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double]),
             name="jsfx_gmem_copy"
         )
-        self.fn_gmem_seq = ir.Function(
+        self.fn_gmem_seq = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double]),
             name="jsfx_gmem_seq"
         )
-        self.fn_gmem_page = ir.Function(
+        self.fn_gmem_page = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double]),
             name="jsfx_gmem_page"
         )
-        self.fn_msg_subscribe = ir.Function(
+        self.fn_msg_subscribe = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double]),
             name="jsfx_msg_subscribe"
         )
-        self.fn_msg_unsubscribe = ir.Function(
+        self.fn_msg_unsubscribe = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double]),
             name="jsfx_msg_unsubscribe"
         )
-        self.fn_msg_advertise = ir.Function(
+        self.fn_msg_advertise = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
             name="jsfx_msg_advertise"
         )
-        self.fn_msg_send = ir.Function(
+        self.fn_msg_send = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double, self.double, self.double]),
             name="jsfx_msg_send"
         )
-        self.fn_msg_sendto = ir.Function(
+        self.fn_msg_sendto = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double, self.double, self.double, self.double]),
             name="jsfx_msg_sendto"
         )
-        self.fn_msg_avail = ir.Function(
+        self.fn_msg_avail = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double]),
             name="jsfx_msg_avail"
         )
-        self.fn_msg_kind = ir.Function(
+        self.fn_msg_kind = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double]),
             name="jsfx_msg_kind"
         )
-        self.fn_msg_recv = ir.Function(
+        self.fn_msg_recv = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer()]),
             name="jsfx_msg_recv"
         )
-        self.fn_msg_send_buf = ir.Function(
+        self.fn_msg_send_buf = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double]),
             name="jsfx_msg_send_buf"
         )
-        self.fn_msg_sendto_buf = ir.Function(
+        self.fn_msg_sendto_buf = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double, self.double, self.double, self.double]),
             name="jsfx_msg_sendto_buf"
         )
-        self.fn_msg_recv_buf = ir.Function(
+        self.fn_msg_recv_buf = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double.as_pointer(), self.double.as_pointer(), self.double, self.double]),
             name="jsfx_msg_recv_buf"
         )
-        self.fn_msg_length = ir.Function(
+        self.fn_msg_length = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr]),
             name="jsfx_msg_length"
         )
-        self.fn_msg_dropped = ir.Function(
+        self.fn_msg_dropped = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double]),
             name="jsfx_msg_dropped"
         )
-        self.fn_msg_clear = ir.Function(
+        self.fn_msg_clear = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double]),
             name="jsfx_msg_clear"
         )
-        self.fn_msg_peer_count = ir.Function(
+        self.fn_msg_peer_count = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double, self.double]),
             name="jsfx_msg_peer_count"
         )
-        self.fn_msg_peer_id = ir.Function(
+        self.fn_msg_peer_id = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double]),
             name="jsfx_msg_peer_id"
         )
-        self.fn_msg_peer_name = ir.Function(
+        self.fn_msg_peer_name = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double.as_pointer()]),
             name="jsfx_msg_peer_name"
         )
-        self.fn_msg_peer_uid = ir.Function(
+        self.fn_msg_peer_uid = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double.as_pointer()]),
             name="jsfx_msg_peer_uid"
         )
-        self.fn_msg_peer_caps = ir.Function(
+        self.fn_msg_peer_caps = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double]),
             name="jsfx_msg_peer_caps"
         )
-        self.fn_msg_peer_alive = ir.Function(
+        self.fn_msg_peer_alive = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double]),
             name="jsfx_msg_peer_alive"
         )
-        self.fn_strlen = ir.Function(
+        self.fn_strlen = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double]),
             name="jsfx_strlen"
         )
-        self.fn_str_getchar = ir.Function(
+        self.fn_str_getchar = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.double]),
             name="jsfx_str_getchar"
         )
-        self.fn_sliderchange = ir.Function(
+        self.fn_sliderchange = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.i32]),
             name="jsfx_sliderchange"
         )
-        self.fn_slider_automate = ir.Function(
+        self.fn_slider_automate = self._function(
             self.module,
             ir.FunctionType(self.i32, [self.state_ptr, self.double, self.i32, self.double]),
             name="jsfx_slider_automate"
         )
-        self.fn_slider_show = ir.Function(
+        self.fn_slider_show = self._function(
             self.module,
             ir.FunctionType(self.double, [self.state_ptr, self.double, self.i32, self.double, self.i32]),
             name="jsfx_slider_show"
@@ -3686,6 +4125,12 @@ class LLVMModuleEmitter:
 
 
         self._buildins: Dict[str, ir.Function] = {}
+        self.native_gfx_prototype = False
+        self.native_gfx_functions: Set[str] = set()
+        self._named_gfx_strings: Dict[str, int] = {}
+        self._emitting_gfx = False
+        self._state_address_cache = {}
+        self._script_state_cache = {}
 
         # String literal pool (DSP-only):
         # We represent string literals as opaque numeric handles (doubles).
@@ -3730,6 +4175,10 @@ class LLVMModuleEmitter:
                 return cached
         return None
 
+    def _function(self, module, function_type, **kwargs):
+        constructor = _CompactFunction if self.native_gfx_legacy else ir.Function
+        return constructor(module, function_type, **kwargs)
+
     def _compute_loop_hoisted_values(self, builder: ir.IRBuilder, st: ir.Value, loop_id: int) -> Dict[int, ir.Value]:
         out: Dict[int, ir.Value] = {}
         for node in self.loop_hoists.get(loop_id, []):
@@ -3737,7 +4186,8 @@ class LLVMModuleEmitter:
         return out
 
     def _truthy(self, x: ir.Value, builder: ir.IRBuilder) -> ir.Value:
-        return builder.fcmp_ordered("!=", x, self._const_f64(0.0))
+        magnitude = builder.call(self._declare_math("fabs"), [x])
+        return builder.fcmp_ordered(">=", magnitude, self._const_f64(1.0e-5))
 
     def _declare_math(self, fn: str) -> ir.Function:
         if fn in self._intrinsics:
@@ -3753,17 +4203,17 @@ class LLVMModuleEmitter:
                 "ceil": "llvm.ceil.f64",
             }[fn]
 
-            f = ir.Function(self.module, ir.FunctionType(self.double, [self.double]), name=name)
+            f = self._function(self.module, ir.FunctionType(self.double, [self.double]), name=name)
             self._intrinsics[fn] = f
             return f
 
         if fn in ("asin", "acos", "atan", "exp", "log", "tan", "log10"):
-            f = ir.Function(self.module, ir.FunctionType(self.double, [self.double]), name=fn)
+            f = self._function(self.module, ir.FunctionType(self.double, [self.double]), name=fn)
             self._intrinsics[fn] = f
             return f
 
         if fn in ("pow", "atan2"):
-            f = ir.Function(self.module, ir.FunctionType(self.double, [self.double, self.double]), name=fn)
+            f = self._function(self.module, ir.FunctionType(self.double, [self.double, self.double]), name=fn)
             self._intrinsics[fn] = f
             return f
 
@@ -3775,6 +4225,23 @@ class LLVMModuleEmitter:
             loc = self._local_slots_stack[-1].get(name)
             if loc is not None:
                 return loc
+
+        if self.native_gfx_legacy:
+            key = (builder.function, st, name)
+            cached = self._state_address_cache.get(key)
+            if cached is not None:
+                return cached
+            # Fixed LEGACY state addresses cannot change during a guest call.
+            # Reuse addresses, never values: every read/write remains atomic.
+            # This bounds frontend IR growth for thousands of receiver helpers.
+            with self._at_function_entry(builder):
+                pointer = self._state_slot_address(builder, st, name)
+            self._state_address_cache[key] = pointer
+            return pointer
+        return self._state_slot_address(builder, st, name)
+
+    def _state_slot_address(self, builder, st, name):
+        st = self._script_state(builder, st)
 
         ref = self.sym.resolve(name)
         zero = ir.Constant(self.i32, 0)
@@ -3798,6 +4265,26 @@ class LLVMModuleEmitter:
         fld = ir.Constant(self.i32, field)
         idx = ir.Constant(self.i32, ref.index)
         return builder.gep(st, [zero, fld, idx], inbounds=True)
+
+    def _script_state(self, builder, st):
+        if not self.native_gfx_legacy or not self._emitting_gfx:
+            return st
+        key = (builder.function, st)
+        cached = self._script_state_cache.get(key)
+        if cached is not None:
+            return cached
+        with self._at_function_entry(builder):
+            raw = builder.load(builder.gep(st, [self._const_i32(0), self._const_i32(36)]))
+            owner = builder.bitcast(raw, self.state_ptr)
+            root = builder.select(builder.icmp_unsigned("==", raw, ir.Constant(self.i8.as_pointer(), None)), st, owner)
+        self._script_state_cache[key] = root
+        return root
+
+    def _load_cell(self, builder, ptr):
+        return builder.load_atomic(ptr, "monotonic", 8) if self.native_gfx_legacy and not isinstance(ptr, ir.AllocaInstr) else builder.load(ptr)
+
+    def _store_cell(self, builder, value, ptr):
+        return builder.store_atomic(value, ptr, "monotonic", 8) if self.native_gfx_legacy and not isinstance(ptr, ir.AllocaInstr) else builder.store(value, ptr)
 
 
     def _dyn_state_array_ptr(self, builder: ir.IRBuilder, st: ir.Value, which: str, idx_expr: Node) -> Tuple[ir.Value, ir.Value]:
@@ -3848,7 +4335,7 @@ class LLVMModuleEmitter:
 
         z = ir.Constant(self.i32, 0)
         fld = ir.Constant(self.i32, field)
-        ptr = builder.gep(st, [z, fld, idx_i32], inbounds=True)
+        ptr = builder.gep(self._script_state(builder, st), [z, fld, idx_i32], inbounds=True)
         return ptr, in_range
 
     def _get_mem_ptr(self, builder: ir.IRBuilder, st: ir.Value) -> ir.Value:
@@ -3883,7 +4370,7 @@ class LLVMModuleEmitter:
         UPPER_MASK = 0x80000000
         LOWER_MASK = 0x7FFFFFFF
 
-        fn = ir.Function(self.module, ir.FunctionType(self.i32, [self.state_ptr]), name="jsfx_rand_genrand_int32")
+        fn = self._function(self.module, ir.FunctionType(self.i32, [self.state_ptr]), name="jsfx_rand_genrand_int32")
         fn.linkage = "internal"
         self._rand_gen32_fn = fn
 
@@ -4096,20 +4583,57 @@ class LLVMModuleEmitter:
         self._ensure_mem_end(builder, st_ptr, builder.add(addr, self._const_i64(1)))
         return builder.gep(self._get_mem_ptr(builder, st_ptr), [addr], inbounds=False)
 
+    @contextlib.contextmanager
+    def _at_function_entry(self, builder):
+        # Nested insertion must preserve the position before an existing
+        # terminator. llvmlite.goto_block restores *after* the terminator.
+        old = builder.block
+        entry = builder.function.entry_basic_block
+        if entry.terminator is None:
+            builder.position_at_end(entry)
+        else:
+            builder.position_before(entry.terminator)
+        try:
+            yield
+        finally:
+            if old.terminator is None:
+                builder.position_at_end(old)
+            else:
+                builder.position_before(old.terminator)
+
+    def _entry_alloca(self, builder, typ, **kwargs):
+        # Host argument references escape to C++ callbacks. Allocate their
+        # fixed storage once per invocation, not once per loop iteration.
+        # Otherwise large drawing loops grow the stack until they overflow.
+        with self._at_function_entry(builder):
+            return builder.alloca(typ, **kwargs)
+
     def _call_with_outputs(self, builder, st, args, callee, outputs, api_name,
-                           allow_null=False):
+                           allow_null=False, input_refs=frozenset()):
         # Evaluate each lvalue address exactly once, left-to-right. Do not retain
         # a heap pointer while evaluating later operands (which may realloc).
         values = []
         for index, node in enumerate(args):
-            if index not in outputs:
+            if index not in outputs and index not in input_refs:
                 values.append((False, self.emit_expr(builder, st, node)))
-            elif isinstance(node, Var) and node.name not in ("mem", "gmem"):
+            elif isinstance(node, Var) and node.name != "gmem" and (node.name != "mem" or self.native_gfx_legacy) and not node.name.startswith(("$", "#")):
                 values.append((False, self._get_slot_ptr(builder, st, node.name)))
             elif isinstance(node, Index) and not self._is_gmem_index(node):
                 addr = self._mem_address(builder, st, node.base, node.index)
                 self._ensure_mem_end(builder, st, builder.add(addr, self._const_i64(1)))
                 values.append((True, addr))
+            elif isinstance(node, Call) and node.fn in ("slider", "spl") and len(node.args) == 1:
+                ptr, valid = self._dyn_state_array_ptr(builder, st, node.fn, node.args[0])
+                # An invalid reference must not alias a clamped real slider.
+                # It gets a private zero cell whose writes are discarded.
+                dummy = self._entry_alloca(builder, self.double); dummy.align = 8
+                builder.store(self._const_f64(0), dummy)
+                values.append((False, builder.select(valid, ptr, dummy)))
+            elif index in input_refs:
+                value = self.emit_expr(builder, st, node)
+                temporary = self._entry_alloca(builder, self.double); temporary.align = 8
+                builder.store(value, temporary)
+                values.append((False, temporary))
             elif allow_null:
                 self.emit_expr(builder, st, node)
                 values.append((False, ir.Constant(self.double.as_pointer(), None)))
@@ -4135,7 +4659,7 @@ class LLVMModuleEmitter:
 
     def _get_out_lvalue_ptr(self, builder: ir.IRBuilder, st: ir.Value, node: Node, api_name: str) -> ir.Value:
         if isinstance(node, Var):
-            if node.name in ("mem", "gmem"):
+            if node.name == "gmem" or node.name == "mem" and not self.native_gfx_legacy:
                 raise ValueError(f"{api_name} output arguments must be assignable variables or mem[] slots")
             return self._get_slot_ptr(builder, st, node.name)
         if isinstance(node, Index):
@@ -4154,25 +4678,41 @@ class LLVMModuleEmitter:
         double cannot carry 256 independent bits. Direct sliderN references are
         losslessly identified by index and therefore work for slider1..slider256.
         """
-        if isinstance(arg, Var):
-            m = re.fullmatch(r"slider([1-9][0-9]{0,2})", arg.name)
+        target = arg
+        while isinstance(target, Seq) and target.items:
+            target = target.items[-1]
+        value = None
+        if isinstance(arg, (Seq, Assign)):
+            value = self.emit_expr(builder, st, arg)
+        if isinstance(target, Assign):
+            target = target.target
+        if isinstance(target, Var):
+            if target.name in self.sym.slider_aliases:
+                return self._const_f64(0.0), self._const_i32(self.sym.slider_aliases[target.name])
+            m = re.fullmatch(r"slider([1-9][0-9]{0,2})", target.name)
             if m is not None:
                 idx1 = int(m.group(1))
                 if 1 <= idx1 <= MAX_JSFX_SLIDERS:
                     return self._const_f64(0.0), self._const_i32(idx1 - 1)
-        return self.emit_expr(builder, st, arg), self._const_i32(-1)
+        return value if value is not None else self.emit_expr(builder, st, arg), self._const_i32(-1)
 
     
     def declare_user_functions(self, fn_defs: Dict[str, FunctionDef]) -> None:
         self.user_fn_defs = dict(fn_defs)
         # Signature: double fn(DSPJSFX_State* st, double a0, double a1, ...)
         for name, fdef in self.user_fn_defs.items():
-            arg_types = [self.state_ptr] + [self.double] * len(fdef.params)
+            arg_types = [self.state_ptr] + [self.double] * len(fdef.params) + [self.double.as_pointer()] * len(fdef.cell_params)
             fnty = ir.FunctionType(self.double, arg_types)
-            self.user_fn_ir[name] = ir.Function(self.module, fnty, name=f"jsfx_fn_{name}")
+            self.user_fn_ir[name] = self._function(self.module, fnty, name=f"jsfx_fn_{name}")
+            if fdef.cell_params or self.native_gfx_legacy and name in self.native_gfx_functions:
+                # Keep shared large math bodies shared. UI helpers retain
+                # their existing no-inline policy; other audio helpers remain
+                # eligible for normal inlining.
+                self.user_fn_ir[name].attributes.add("noinline")
 
     def emit_user_functions(self) -> None:
         for name, fdef in self.user_fn_defs.items():
+            self._emitting_gfx = name in self.native_gfx_functions
             fn = self.user_fn_ir[name]
             entry = fn.append_basic_block("entry")
             b = ir.IRBuilder(entry)
@@ -4188,6 +4728,8 @@ class LLVMModuleEmitter:
                 slot = b.alloca(self.double, name=f"p_{p}")
                 b.store(fn.args[i + 1], slot)
                 locals_map[p] = slot
+            for i, cell_name in enumerate(fdef.cell_params):
+                locals_map[cell_name] = fn.args[1 + len(fdef.params) + i]
 
             # locals
             for l in fdef.locals:
@@ -4202,16 +4744,33 @@ class LLVMModuleEmitter:
             self._local_slots_stack.pop()
 
             b.ret(retv)
+            if isinstance(self.module, _SerializedFunctionModule):
+                self.module.serialized_functions[fn.name] = str(fn)
+                fn.blocks.clear()
+                fn._clear_string_cache()
+                self._state_address_cache = {key: value for key, value in self._state_address_cache.items() if key[0] is not fn}
+                self._script_state_cache = {key: value for key, value in self._script_state_cache.items() if key[0] is not fn}
+                # llvmlite instructions form parent/operand cycles. Collect
+                # periodically instead of retaining every receiver graph.
+                if len(self.module.serialized_functions) % 128 == 0:
+                    import gc
+                    gc.collect()
+        self._emitting_gfx = False
 
 
     def emit_section_fn(self, name: str, prog: List[Node]) -> ir.Function:
-        fn = ir.Function(self.module, ir.FunctionType(ir.VoidType(), [self.state_ptr]), name=name)
+        fn = self._function(self.module, ir.FunctionType(ir.VoidType(), [self.state_ptr]), name=name)
         entry = fn.append_basic_block("entry")
         builder = ir.IRBuilder(entry)
         st = fn.args[0]
 
-        for st_node in prog:
-            self.emit_stmt(builder, st, st_node)
+        previous_gfx = self._emitting_gfx
+        self._emitting_gfx = name == "jsfx_gfx_aot" and self.native_gfx_prototype
+        try:
+            for st_node in prog:
+                self.emit_stmt(builder, st, st_node)
+        finally:
+            self._emitting_gfx = previous_gfx
 
         if not builder.block.is_terminated:
             builder.ret_void()
@@ -4253,7 +4812,7 @@ class LLVMModuleEmitter:
 
         builder.position_at_end(merge_bb)
 
-    def emit_while(self, builder: ir.IRBuilder, st: ir.Value, n: While) -> None:
+    def emit_while(self, builder: ir.IRBuilder, st: ir.Value, n: While) -> ir.Value:
         hoisted = self._compute_loop_hoisted_values(builder, st, n.id)
         self._hoisted_value_stack.append(hoisted)
         try:
@@ -4262,20 +4821,30 @@ class LLVMModuleEmitter:
             cond_bb = fn.append_basic_block(f"while_cond_{n.id}")
             body_bb = fn.append_basic_block(f"while_body_{n.id}")
             after_bb = fn.append_basic_block(f"while_after_{n.id}")
-
             builder.branch(cond_bb)
-
             builder.position_at_end(cond_bb)
+            counter = builder.phi(self.i32, name="while_iterations")
+            counter.add_incoming(self._const_i32(0), pre_bb)
             condv = self.emit_expr(builder, st, n.cond)
             cond = self._truthy(condv, builder)
+            cond_end = builder.block
             builder.cbranch(cond, body_bb, after_bb)
-
             builder.position_at_end(body_bb)
             self.emit_stmt(builder, st, n.body)
-            if not builder.block.is_terminated:
-                builder.branch(cond_bb)
-
+            latch = builder.block
+            has_latch = not latch.is_terminated
+            if has_latch:
+                next_count = builder.add(counter, self._const_i32(1))
+                counter.add_incoming(next_count, latch)
+                # WDL's per-loop budget is independent for nested loops. The
+                # final condition is not evaluated an extra time at the cap.
+                builder.cbranch(builder.icmp_unsigned("<", next_count, self._const_i32(1048576)), cond_bb, after_bb)
             builder.position_at_end(after_bb)
+            result = builder.phi(self.double)
+            result.add_incoming(condv, cond_end)
+            if has_latch:
+                result.add_incoming(condv, latch)
+            return result
         finally:
             self._hoisted_value_stack.pop()
 
@@ -4303,7 +4872,11 @@ class LLVMModuleEmitter:
 
         # variable
         if isinstance(n, Var):
-            if n.name == "mem":
+            if (self._emitting_gfx or self.native_gfx_legacy) and n.name.startswith("#"):
+                name = n.name if n.name != "#" else f"#anonymous_{len(self._named_gfx_strings)}"
+                handle = self._named_gfx_strings.setdefault(name, (1 << 39) + len(self._named_gfx_strings))
+                return self._const_f64(handle)
+            if n.name == "mem" and not self.native_gfx_legacy:
                 return self._const_f64(0.0)
             if n.name == "gmem":
                 raise ValueError("gmem may only be used as gmem[index]")
@@ -4322,17 +4895,25 @@ class LLVMModuleEmitter:
                     pass
 
             ptr = self._get_slot_ptr(builder, st, n.name)  # handles locals + globals + srate/samplesblock
-            return builder.load(ptr)
+            return self._load_cell(builder, ptr)
 
 
         # indexing
         if isinstance(n, Index):
+            if self._emitting_gfx and not self.native_gfx_legacy:
+                addr = self._mem_address(builder, st, n.base, n.index)
+                symbol = "jsfx_native_read_mem"
+                fdecl = self._buildins.get(symbol)
+                if fdecl is None:
+                    fdecl = self._function(self.module, ir.FunctionType(self.double, [self.state_ptr, self.i64]), name=symbol)
+                    self._buildins[symbol] = fdecl
+                return builder.call(fdecl, [st, addr])
             if self._is_gmem_index(n):
                 idx = self.emit_expr(builder, st, n.index)
                 return builder.call(self.fn_gmem_load, [st, idx])
             # a[b] == mem[(int)a + (int)b]; mem itself is base 0.
             ptr = self._mem_elem_ptr(builder, st, n.base, n.index)
-            return builder.load(ptr)
+            return self._load_cell(builder, ptr)
 
         # unary
         if isinstance(n, Unary):
@@ -4342,7 +4923,7 @@ class LLVMModuleEmitter:
             if n.op == "-":
                 return builder.fsub(self._const_f64(0.0), a)
             if n.op == "!":
-                isz = builder.fcmp_ordered("==", a, self._const_f64(0.0))
+                isz = builder.not_(self._truthy(a, builder))
                 return builder.select(isz, self._const_f64(1.0), self._const_f64(0.0))
             raise ValueError(f"Unsupported unary op {n.op}")
 
@@ -4441,7 +5022,7 @@ class LLVMModuleEmitter:
 
             # resolve target pointer (and, for dynamic refs, an in-range mask)
             if isinstance(n.target, Var):
-                if n.target.name == "mem":
+                if n.target.name == "mem" and not self.native_gfx_legacy:
                     raise ValueError("Cannot assign to mem")
                 ptr = self._get_slot_ptr(builder, st, n.target.name)  # works for locals too
                 in_range = ir.Constant(self.i1, 1)
@@ -4496,12 +5077,12 @@ class LLVMModuleEmitter:
                 rhs = self._filter_assignment(builder, rhs)
                 if guarded:
                     with builder.if_then(in_range):
-                        builder.store(rhs, ptr)
+                        self._store_cell(builder, rhs, ptr)
                 else:
-                    builder.store(rhs, ptr)
+                    self._store_cell(builder, rhs, ptr)
                 return rhs
 
-            cur = builder.load(ptr)
+            cur = self._load_cell(builder, ptr)
             if guarded:
                 # JSFX behavior: out-of-range reads as 0
                 cur = builder.select(in_range, cur, self._const_f64(0.0))
@@ -4538,22 +5119,56 @@ class LLVMModuleEmitter:
             if guarded:
                 # JSFX behavior: out-of-range writes are ignored
                 with builder.if_then(in_range):
-                    builder.store(out, ptr)
+                    self._store_cell(builder, out, ptr)
             else:
-                builder.store(out, ptr)
+                self._store_cell(builder, out, ptr)
 
             return out
 
 # call
         if isinstance(n, Call):
             fn = n.fn
+            if self.native_gfx_legacy and fn in NATIVE_STRING_APIS:
+                minimum, maximum = NATIVE_STRING_APIS[fn]
+                if not minimum <= len(n.args) <= maximum:
+                    raise ValueError(f"{fn} expects {minimum}..{maximum} arguments")
+                count = len(n.args)
+                args = self._entry_alloca(builder, self.double, size=self._const_i32(count))
+                args.align = 8
+                for i, arg in enumerate(n.args):
+                    builder.store(self.emit_expr(builder, st, arg), builder.gep(args, [self._const_i32(i)]))
+                symbol = "jsfx_native_string_dispatch"
+                callee = self._buildins.get(symbol)
+                if callee is None:
+                    callee = self._function(self.module, ir.FunctionType(self.double,
+                        [self.state_ptr, self.i32, self.double.as_pointer(), self.i32]), name=symbol)
+                    self._buildins[symbol] = callee
+                return builder.call(callee, [st, self._const_i32(list(NATIVE_STRING_APIS).index(fn)), args, self._const_i32(count)])
+
+            if self.native_gfx_legacy and fn in ("atomic_get", "atomic_set", "atomic_add", "atomic_exch", "atomic_setifequal"):
+                expected = {"atomic_get": 1, "atomic_set": 2, "atomic_add": 2,
+                            "atomic_exch": 2, "atomic_setifequal": 3}[fn]
+                if len(n.args) != expected:
+                    raise ValueError(f"{fn} expects {expected} args")
+                # WDL atomic helpers receive references for their operands.
+                # Simple variable addends/comparands are read inside the same
+                # critical section, including atomic_add(x, x).
+                types = [self.state_ptr] + [self.double.as_pointer()] * expected
+                symbol = "jsfx_" + fn
+                callee = self._buildins.get(symbol)
+                if callee is None:
+                    callee = self._function(self.module, ir.FunctionType(self.double, types), name=symbol)
+                    self._buildins[symbol] = callee
+                return self._call_with_outputs(builder, st, n.args, callee,
+                                               {0, 1} if fn == "atomic_exch" else {0}, fn,
+                                               input_refs=set(range(1, expected)) if fn != "atomic_exch" else set())
 
             # Dynamic slider/spl access (JSFX idiom)
             if fn in ("slider", "spl"):
                 if len(n.args) != 1:
                     raise ValueError(f"{fn} expects 1 arg")
                 ptr, in_range = self._dyn_state_array_ptr(builder, st, fn, n.args[0])
-                val = builder.load(ptr)
+                val = self._load_cell(builder, ptr)
                 return builder.select(in_range, val, self._const_f64(0.0))
 
             if fn == "instance_id":
@@ -4879,6 +5494,46 @@ class LLVMModuleEmitter:
                 ret = builder.call(self.fn_midisyx, [st, a0, a1, a2])
                 return self._to_f64(builder, ret)
 
+            if (self._emitting_gfx or self.native_gfx_legacy) and fn == "time_precise":
+                symbol = "jsfx_native_time_precise"
+                fdecl = self._buildins.get(symbol)
+                if fdecl is None:
+                    fdecl = self._function(self.module, ir.FunctionType(self.double, [self.state_ptr]), name=symbol)
+                    self._buildins[symbol] = fdecl
+                if len(n.args)>1:
+                    raise ValueError("time_precise expects 0 or 1 args")
+                output = None
+                if n.args:
+                    arg = n.args[0]
+                    if isinstance(arg, Var) and not arg.name.startswith(("#", "$")) or isinstance(arg, Index) and not self._is_gmem_index(arg):
+                        output = self._get_out_lvalue_ptr(builder, st, arg, fn)
+                    else:
+                        self.emit_expr(builder, st, arg)
+                value = builder.call(fdecl, [st])
+                if output is not None:
+                    self._store_cell(builder, value, output)
+                return value
+
+            if self._emitting_gfx and fn in ("strcpy", "strcat", "strncpy", "strlen", "gfx_getchar", "gfx_showmenu"):
+                values = [self.emit_expr(builder, st, arg) for arg in n.args]
+                if fn == "gfx_getchar" and not values:
+                    values = [self._const_f64(0)]
+                symbol = "jsfx_native_" + fn
+                fdecl = self._buildins.get(symbol)
+                if fdecl is None:
+                    fdecl = self._function(self.module, ir.FunctionType(self.double, [self.state_ptr] + [self.double] * len(values)), name=symbol)
+                    self._buildins[symbol] = fdecl
+                return builder.call(fdecl, [st] + values)
+            if self._emitting_gfx and fn in ("sliderchange", "slider_automate"):
+                mask, direct_idx = self._emit_slider_mask_selector(builder, st, n.args[0])
+                end = self.emit_expr(builder, st, n.args[1]) if len(n.args) > 1 else self._const_f64(0)
+                symbol = "jsfx_native_slider_event"
+                fdecl = self._buildins.get(symbol)
+                if fdecl is None:
+                    fdecl = self._function(self.module, ir.FunctionType(self.double, [self.state_ptr, self.double, self.i32, self.i32, self.double]), name=symbol)
+                    self._buildins[symbol] = fdecl
+                return builder.call(fdecl, [st, mask, direct_idx, self._const_i32(1 if fn == "slider_automate" else 0), end])
+
             if fn == "strlen":
                 if len(n.args) != 1:
                     raise ValueError("strlen expects 1 arg")
@@ -4907,7 +5562,7 @@ class LLVMModuleEmitter:
                     fdecl = self._buildins.get(name)
                     if fdecl is None:
                         fnty = ir.FunctionType(self.double, [self.state_ptr] + [self.double] * arg_count)
-                        fdecl = ir.Function(self.module, fnty, name=name)
+                        fdecl = self._function(self.module, fnty, name=name)
                         self._buildins[name] = fdecl
                     return fdecl
 
@@ -4958,7 +5613,7 @@ class LLVMModuleEmitter:
                     fdecl = self._buildins.get(rt_name)
                     if fdecl is None:
                         fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double, self.double.as_pointer(), self.double.as_pointer()])
-                        fdecl = ir.Function(self.module, fnty, name=rt_name)
+                        fdecl = self._function(self.module, fnty, name=rt_name)
                         self._buildins[rt_name] = fdecl
                     return self._call_with_outputs(builder, st, n.args, fdecl, {3, 4}, fn)
 
@@ -4969,7 +5624,7 @@ class LLVMModuleEmitter:
                     fdecl = self._buildins.get(rt_name)
                     if fdecl is None:
                         fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double.as_pointer()])
-                        fdecl = ir.Function(self.module, fnty, name=rt_name)
+                        fdecl = self._function(self.module, fnty, name=rt_name)
                         self._buildins[rt_name] = fdecl
                     return builder.call(fdecl, [st, self.emit_expr(builder, st, n.args[0]), self.emit_expr(builder, st, n.args[1]), self._get_out_lvalue_ptr(builder, st, n.args[2], fn)])
 
@@ -4980,7 +5635,7 @@ class LLVMModuleEmitter:
                     fdecl = self._buildins.get(rt_name)
                     if fdecl is None:
                         fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double, self.double.as_pointer(), self.double.as_pointer(), self.double.as_pointer()])
-                        fdecl = ir.Function(self.module, fnty, name=rt_name)
+                        fdecl = self._function(self.module, fnty, name=rt_name)
                         self._buildins[rt_name] = fdecl
                     return self._call_with_outputs(builder, st, n.args, fdecl, {3, 4, 5}, fn)
 
@@ -4990,6 +5645,35 @@ class LLVMModuleEmitter:
                     rt_name = "jsfx_" + fn
                     fdecl = get_decl(rt_name, 5)
                     return builder.call(fdecl, [st] + [self.emit_expr(builder, st, a) for a in n.args])
+
+            if self.native_gfx_legacy and fn in NATIVE_GFX_APIS and (self._emitting_gfx or fn not in NATIVE_FILE_APIS):
+                # EEL builtins receive references, including aliased outputs.
+                # Capture addresses in argument order. Only computed values
+                # use private temporaries; guest references retain identity.
+                count = len(n.args)
+                argv = self._entry_alloca(builder, self.double.as_pointer(), size=self._const_i32(max(1, count)))
+                for i, arg in enumerate(n.args):
+                    if isinstance(arg, Var) and not arg.name.startswith(("#", "$")) and arg.name not in ("mem", "gmem"):
+                        ptr = self._get_slot_ptr(builder, st, arg.name)
+                    elif isinstance(arg, Index) and not self._is_gmem_index(arg):
+                        ptr = self._mem_elem_ptr(builder, st, arg.base, arg.index)
+                    elif isinstance(arg, Call) and arg.fn in ("slider", "spl") and len(arg.args) == 1:
+                        target, valid = self._dyn_state_array_ptr(builder, st, arg.fn, arg.args[0])
+                        dummy = self._entry_alloca(builder, self.double); dummy.align = 8
+                        builder.store(self._const_f64(0), dummy)
+                        ptr = builder.select(valid, target, dummy)
+                    else:
+                        value = self.emit_expr(builder, st, arg)
+                        ptr = self._entry_alloca(builder, self.double); ptr.align = 8
+                        builder.store(value, ptr)
+                    builder.store(ptr, builder.gep(argv, [self._const_i32(i)]))
+                symbol = "jsfx_native_gfx_dispatch"
+                fdecl = self._buildins.get(symbol)
+                if fdecl is None:
+                    fdecl = self._function(self.module, ir.FunctionType(self.double,
+                        [self.state_ptr, self.i32, self.double.as_pointer().as_pointer(), self.i32]), name=symbol)
+                    self._buildins[symbol] = fdecl
+                return builder.call(fdecl, [st, self._const_i32(list(NATIVE_GFX_APIS).index(fn)), argv, self._const_i32(count)])
 
             # ------------------------------------------------------------
             # File I/O (DSP-JSFX runtime)
@@ -5017,7 +5701,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, a0, a1])
 
@@ -5031,7 +5715,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, a0, a1])
 
@@ -5043,7 +5727,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, a0])
 
@@ -5055,7 +5739,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, a0])
 
@@ -5068,7 +5752,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, a0, a1])
 
@@ -5080,7 +5764,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, a0])
 
@@ -5092,7 +5776,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, a0])
 
@@ -5106,7 +5790,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, a0, a1, a2])
 
@@ -5118,7 +5802,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, a0])
 
@@ -5131,7 +5815,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, a0, a1])
 
@@ -5158,7 +5842,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double.as_pointer()])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
 
                 return builder.call(fdecl, [st, h, dst_ptr])
@@ -5171,10 +5855,72 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double.as_pointer(), self.double.as_pointer()])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
 
                 return self._call_with_outputs(builder, st, n.args, fdecl, {1, 2}, fn, allow_null=True)
+
+
+            if self._emitting_gfx and fn == "sprintf":
+                dest = self.emit_expr(builder, st, n.args[0])
+                fmt = self.emit_expr(builder, st, n.args[1])
+                count = len(n.args) - 2
+                args = self._entry_alloca(builder, self.double, size=self._const_i32(max(1, count)))
+                for i, arg in enumerate(n.args[2:]):
+                    builder.store(self.emit_expr(builder, st, arg), builder.gep(args, [self._const_i32(i)]))
+                symbol = "jsfx_native_sprintf"
+                fdecl = self._buildins.get(symbol)
+                if fdecl is None:
+                    fdecl = self._function(self.module, ir.FunctionType(self.double,
+                                        [self.state_ptr, self.double, self.double, self.double.as_pointer(), self.i32]), name=symbol)
+                    self._buildins[symbol] = fdecl
+                return builder.call(fdecl, [st, dest, fmt, args, self._const_i32(count)])
+
+            if self._emitting_gfx and fn == "gfx_measurestr":
+                symbol = "jsfx_native_gfx_measurestr"
+                fdecl = self._buildins.get(symbol)
+                if fdecl is None:
+                    fdecl = self._function(self.module, ir.FunctionType(self.double,
+                                        [self.state_ptr, self.double, self.double.as_pointer(), self.double.as_pointer()]), name=symbol)
+                    self._buildins[symbol] = fdecl
+                text = self.emit_expr(builder, st, n.args[0])
+                outputs = [self._get_out_lvalue_ptr(builder, st, a, fn) for a in n.args[1:]]
+                outputs += [ir.Constant(self.double.as_pointer(), None)] * (2 - len(outputs))
+                return builder.call(fdecl, [st, text] + outputs)
+
+            if self._emitting_gfx and fn in ("gfx_set", "gfx_rect", "gfx_circle", "gfx_line", "gfx_setfont", "gfx_drawstr"):
+                values = [self.emit_expr(builder, st, arg) for arg in n.args]
+                if fn == "gfx_set":
+                    # 1..4 argument form: grey, optional green/blue, alpha.
+                    grey = values[0]
+                    packed = [grey, values[1] if len(values) > 1 else grey,
+                              values[2] if len(values) > 2 else grey,
+                              values[3] if len(values) > 3 else self._const_f64(1.0)]
+                    symbol = "jsfx_native_gfx_set"
+                elif fn == "gfx_rect":
+                    packed = values[:4] + [values[4] if len(values) > 4 else self._const_f64(1.0)]
+                    symbol = "jsfx_native_gfx_rect"
+                elif fn == "gfx_circle":
+                    packed = values[:3] + [values[3] if len(values) > 3 else self._const_f64(0.0),
+                                          values[4] if len(values) > 4 else self._const_f64(1.0)]
+                    symbol = "jsfx_native_gfx_circle"
+                elif fn == "gfx_line":
+                    packed = values[:4] + [values[4] if len(values) > 4 else self._const_f64(1.0)]
+                    symbol = "jsfx_native_gfx_line"
+                elif fn == "gfx_setfont":
+                    packed = values + [self._const_f64(0.0)] * (4 - len(values))
+                    packed.append(self._const_f64(float(len(values))))
+                    symbol = "jsfx_native_gfx_setfont"
+                else:
+                    packed = values
+                    symbol = "jsfx_native_gfx_drawstr"
+                fdecl = self._buildins.get(symbol)
+                if fdecl is None:
+                    fdecl = self._function(self.module,
+                                        ir.FunctionType(self.double, [self.state_ptr] + [self.double] * len(packed)),
+                                        name=symbol)
+                    self._buildins[symbol] = fdecl
+                return builder.call(fdecl, [st] + packed)
 
 
             # ------------------------------------------------------------
@@ -5210,7 +5956,17 @@ class LLVMModuleEmitter:
             # User-defined function call
             if n.fn in self.user_fn_ir:
                 callee = self.user_fn_ir[n.fn]
-                argv = [st] + [self.emit_expr(builder, st, a) for a in n.args]
+                values = [self.emit_expr(builder, st, a) for a in n.args]
+                expected = len(self.user_fn_defs[n.fn].params)
+                if expected == 1 and not values:
+                    values = [self._const_f64(0)]
+                elif expected == 0 and len(values) == 1:
+                    # WDL zero-parameter functions occupy the one-argument
+                    # overload and evaluate/discard an explicit operand.
+                    values = []
+                if len(values) != expected:
+                    raise ValueError(f"{n.fn} expects {expected} args, got {len(values)} at {n.span.line}:{n.span.col}")
+                argv = [st] + values + [self._get_slot_ptr(builder, st, a.name) for a in n.cell_args]
                 return builder.call(callee, argv)
 
 
@@ -5245,6 +6001,10 @@ class LLVMModuleEmitter:
                     raise ValueError(f"{fn} expects 1 arg")
                 fdecl = self._declare_math(fn)
                 a0 = self.emit_expr(builder, st, n.args[0])
+                if fn == "sqrt":
+                    # WDL/JSFX defines sqrt(x) as sqrt(abs(x)), including
+                    # runtime inputs (not just constant-folded expressions).
+                    a0 = builder.call(self._declare_math("fabs"), [a0])
                 return builder.call(fdecl, [a0])
 
             if fn == "invsqrt":
@@ -5380,7 +6140,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double.as_pointer()])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
                 return builder.call(fdecl, [st, slider_idx, out_ptr])
 
@@ -5452,7 +6212,7 @@ class LLVMModuleEmitter:
                 mem_base = self._get_mem_ptr(builder, st)
                 idx_i64 = builder.add(dest_i64, i_phi)
                 ptr = builder.gep(mem_base, [idx_i64], inbounds=False)
-                builder.store(value_v, ptr)
+                self._store_cell(builder, value_v, ptr)
                 i_next = builder.add(i_phi, self._const_i64(1))
                 body_end = builder.block
                 builder.branch(cond_bb)
@@ -5476,7 +6236,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
 
                 return builder.call(fdecl, [st, a0, a1, a2])
@@ -5506,7 +6266,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
 
                 return builder.call(fdecl, [st, a0, a1])
@@ -5525,7 +6285,7 @@ class LLVMModuleEmitter:
                 fdecl = self._buildins.get(rt_name)
                 if fdecl is None:
                     fnty = ir.FunctionType(self.double, [self.state_ptr, self.double, self.double, self.double])
-                    fdecl = ir.Function(self.module, fnty, name=rt_name)
+                    fdecl = self._function(self.module, fnty, name=rt_name)
                     self._buildins[rt_name] = fdecl
 
                 return builder.call(fdecl, [st, a0, a1, a2])
@@ -5540,8 +6300,7 @@ class LLVMModuleEmitter:
                     self.emit_if(builder, st, item)
                     last = self._const_f64(0.0)
                 elif isinstance(item, While):
-                    self.emit_while(builder, st, item)
-                    last = self._const_f64(0.0)
+                    last = self.emit_while(builder, st, item)
                 else:
                     last = self.emit_expr(builder, st, item)
             return last
@@ -5551,8 +6310,7 @@ class LLVMModuleEmitter:
             self.emit_if(builder, st, n)
             return self._const_f64(0.0)
         if isinstance(n, While):
-            self.emit_while(builder, st, n)
-            return self._const_f64(0.0)
+            return self.emit_while(builder, st, n)
 
         raise ValueError(f"Unhandled node type: {type(n).__name__}")
 
@@ -5634,10 +6392,12 @@ class LLVMModuleEmitter:
         fn = builder.function
 
         count_v = self.emit_expr(builder, st, n.count)
-        count_i = builder.fptosi(count_v, self.i64)
-        # clamp >=0
-        is_neg = builder.icmp_signed("<", count_i, self._const_i64(0))
-        n_i = builder.select(is_neg, self._const_i64(0), count_i)
+        # WDL converts to a signed 32-bit count, then caps at 2^20.
+        valid = builder.and_(builder.fcmp_ordered(">=", count_v, self._const_f64(0)),
+                             builder.fcmp_ordered("<", count_v, self._const_f64(2147483648.)))
+        safe = builder.select(valid, count_v, self._const_f64(0))
+        bounded = builder.select(builder.fcmp_ordered(">", safe, self._const_f64(1048576)), self._const_f64(1048576), safe)
+        n_i = builder.fptosi(bounded, self.i64)
 
         hoisted = self._compute_loop_hoisted_values(builder, st, n.id)
         self._hoisted_value_stack.append(hoisted)
@@ -5670,8 +6430,9 @@ class LLVMModuleEmitter:
             phi_last.add_incoming(v, latch_bb)
 
             builder.position_at_end(after_bb)
-            # cond_bb dominates after_bb, so phi_last is valid here
-            return phi_last
+            # WDL's loop() is an execution primitive, whose numeric result is
+            # always one, including when the count skips the body.
+            return self._const_f64(1.0)
         finally:
             self._hoisted_value_stack.pop()
 
@@ -5700,7 +6461,7 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     f32p = f32.as_pointer()
     f32pp = f32p.as_pointer()
 
-    fn = ir.Function(
+    fn = self._function(
         self.module,
         ir.FunctionType(ir.VoidType(), [self.state_ptr, f32pp, f32pp, self.i32, self.i32]),
         name="jsfx_process_block"
@@ -5736,7 +6497,7 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     sb_ptr = builder.gep(st, [z, fld_samplesblock], inbounds=True)
     nSamp64 = builder.sext(nSamp, self.i64)
     sb_val = builder.sitofp(nSamp64, self.double)
-    builder.store(sb_val, sb_ptr)
+    self._store_cell(builder, sb_val, sb_ptr)
 
     # mirror block metadata for runtime helpers
     fld_blocksize = ir.Constant(self.i32, 14)
@@ -5747,7 +6508,7 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     currate_ptr = builder.gep(st, [z, fld_currate], inbounds=True)
     fld_srate = ir.Constant(self.i32, 5)
     srate_ptr = builder.gep(st, [z, fld_srate], inbounds=True)
-    builder.store(builder.load(srate_ptr), currate_ptr)
+    builder.store(self._load_cell(builder, srate_ptr), currate_ptr)
 
     # Call block 
     builder.call(fn_block, [st])
@@ -5772,10 +6533,32 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     with builder.if_then(have_sliderchg):
         builder.call(fn_slider, [st])
 
-    # Fast path: if the script has no top-level @sample work, stop after @block.
-    # This matters a lot for MIDI-only/controller JSFX where the generic runtime
-    # would otherwise pay a per-sample loop cost for no useful work.
+    # An empty @sample preserves input audio. Copy whole channel buffers so the
+    # out-of-place API has the same behavior as the production in-place host,
+    # without a per-sample guest-state loop for MIDI/controller effects.
     if not has_sample_work:
+        copy_cond = fn.append_basic_block("copy_cond")
+        copy_body = fn.append_basic_block("copy_body")
+        copy_end = fn.append_basic_block("copy_end")
+        copy_pre = builder.block
+        builder.cbranch(builder.icmp_signed(">", nSamp, zero_i32), copy_cond, copy_end)
+        builder.position_at_end(copy_cond)
+        channel = builder.phi(self.i32, name="copy_channel")
+        channel.add_incoming(zero_i32, copy_pre)
+        builder.cbranch(builder.icmp_signed("<", channel, chLim), copy_body, copy_end)
+        builder.position_at_end(copy_body)
+        source = builder.load(builder.gep(inputs, [channel]))
+        target = builder.load(builder.gep(outputs, [channel]))
+        with builder.if_then(builder.icmp_unsigned("!=", source, target)):
+            byte_ptr = ir.IntType(8).as_pointer()
+            move = self.module.declare_intrinsic("llvm.memmove", [byte_ptr, byte_ptr, self.i64])
+            size = builder.mul(builder.sext(nSamp, self.i64), ir.Constant(self.i64, 4))
+            builder.call(move, [builder.bitcast(target, byte_ptr), builder.bitcast(source, byte_ptr),
+                                size, ir.Constant(ir.IntType(1), 0)])
+        next_channel = builder.add(channel, ir.Constant(self.i32, 1))
+        channel.add_incoming(next_channel, builder.block)
+        builder.branch(copy_cond)
+        builder.position_at_end(copy_end)
         builder.ret_void()
         return fn
 
@@ -5820,7 +6603,7 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     # store to st.spl[ch]
     fld_spl = ir.Constant(self.i32, 0)
     spl_ptr = builder.gep(st, [z, fld_spl, ch_phi], inbounds=True)
-    builder.store(in_d, spl_ptr)
+    self._store_cell(builder, in_d, spl_ptr)
 
     ch_next = builder.add(ch_phi, ir.Constant(self.i32, 1))
     ch_phi.add_incoming(ch_next, builder.block)
@@ -5847,7 +6630,7 @@ def emit_process_block_fn(self, fn_init: ir.Function, fn_slider: ir.Function, fn
     builder.position_at_end(ch_out_body)
     # load st.spl[ch2]
     spl2_ptr = builder.gep(st, [z, fld_spl, ch2_phi], inbounds=True)
-    out_d = builder.load(spl2_ptr)
+    out_d = self._load_cell(builder, spl2_ptr)
     out_f = builder.fptrunc(out_d, f32)
 
     # outputs[ch2][i] = out_f
@@ -5878,15 +6661,21 @@ def compile_jsfx_to_ir(jsfx_text: str,
                        *,
                        enable_section_hoists: bool = False,
                        enable_loop_hoists: bool = False,
+                       native_gfx_prototype: bool = False,
+                       native_gfx_legacy: bool = False,
+                       stream_functions: bool = False,
                        pipeline: Optional[Dict[str, Any]] = None) -> Tuple[ir.Module, Dict[str, Any]]:
     if pipeline is None:
         pipeline = prepare_jsfx_pipeline(
             jsfx_text,
+            include_gfx=native_gfx_prototype,
+            native_gfx_legacy=native_gfx_legacy,
             enable_section_hoists=enable_section_hoists,
             enable_loop_hoists=enable_loop_hoists,
             collect_opt_report=False,
         )
-    return compile_pipeline_to_ir(jsfx_text, pipeline)
+    return compile_pipeline_to_ir(jsfx_text, pipeline, native_gfx_prototype=native_gfx_prototype,
+                                  native_gfx_legacy=native_gfx_legacy, stream_functions=stream_functions)
 
 
 
@@ -5924,6 +6713,13 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines = []
     lines.append("#pragma once")
     lines.append("#include <stdint.h>")
+    lines.append(f"#define DSPJSFX_NATIVE_GFX_LEGACY {1 if meta.get('native_gfx_legacy') else 0}")
+    lines.append(f"#define DSPJSFX_MAX_MEM_CELLS {int(meta.get('memtop_slots', JSFX_DEFAULT_MEMTOP_SLOTS))}LL")
+    lines.append('#if defined(__cplusplus) && DSPJSFX_NATIVE_GFX_LEGACY')
+    lines.append('#include "JsfxSharedCells.h"')
+    lines.append('#else')
+    lines.append('typedef double DSPJSFX_Cell;')
+    lines.append('#endif')
 
     lines.append("")
     lines.append("/* Inferred minimum I/O channel counts (from splN usage / pin declarations) */")
@@ -5957,17 +6753,17 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    int32_t msg3;")
     lines.append("} DSPJSFX_MidiEvent;")
     lines.append("")
-    lines.append("#define DSPJSFX_RUNTIME_STATE_ABI 3")
+    lines.append(f"#define DSPJSFX_RUNTIME_STATE_ABI {5 if meta.get('native_gfx_legacy') else 3}")
     lines.append("#define DSPJSFX_MAX_SLIDERS 256")
     lines.append("#define DSPJSFX_SLIDER_MASK_WORDS 4")
     lines.append("typedef struct DSPJSFX_State {")
-    lines.append("    double spl[64];")
-    lines.append("    double sliders[DSPJSFX_MAX_SLIDERS];")
-    lines.append(f"    double vars[{var_cap}];")
-    lines.append("    double* mem;")
+    lines.append("    DSPJSFX_Cell spl[64];")
+    lines.append("    DSPJSFX_Cell sliders[DSPJSFX_MAX_SLIDERS];")
+    lines.append(f"    DSPJSFX_Cell vars[{var_cap}];")
+    lines.append("    DSPJSFX_Cell* mem;")
     lines.append("    int64_t memN;")
-    lines.append("    double srate;")
-    lines.append("    double samplesblock;")
+    lines.append("    DSPJSFX_Cell srate;")
+    lines.append("    DSPJSFX_Cell samplesblock;")
     lines.append("    DSPJSFX_MidiEvent* midiIn;")
     lines.append("    int32_t midiInCount;")
     lines.append("    int32_t midiInReadIndex;")
@@ -5992,11 +6788,15 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    uint64_t sliderVisibleMask[DSPJSFX_SLIDER_MASK_WORDS];")
     lines.append("    int32_t sliderVisibilityInit;")
     lines.append("    void* runtimeOpaque;")
-    lines.append("    double midi_bus;")
-    lines.append("    double ext_midi_bus;")
+    lines.append("    DSPJSFX_Cell midi_bus;")
+    lines.append("    DSPJSFX_Cell ext_midi_bus;")
     lines.append("    void* hostOwner;")
     lines.append("    int64_t memUsed;")
     lines.append("    int32_t memoryFault;")
+    if meta.get('native_gfx_legacy'):
+        lines.append("    void* sharedState; /* null for DSP; GFX points at the DSP state */")
+        lines.append("    void* atomicContext; /* instance mutex for explicit atomic_* calls */")
+        lines.append("    void* nativeStrings; /* instance-owned native string context */")
     lines.append("} DSPJSFX_State;")
     lines.append("")
 
@@ -6020,6 +6820,26 @@ def _emit_header(meta: Dict[str, Any]) -> str:
             lines.append(f'    {{"{_c_escape(str(name))}", {int(idx)}}},')
     lines.append("};")
     lines.append("")
+
+    if meta.get('native_gfx_legacy'):
+        for opcode, name in enumerate(NATIVE_GFX_APIS):
+            lines.append(f"#define DSPJSFX_{name.upper()} {opcode}")
+        for opcode, name in enumerate(NATIVE_STRING_APIS):
+            lines.append(f"#define DSPJSFX_STRING_{name.upper()} {opcode}")
+        lines.append("#ifdef __cplusplus\nextern \"C\"\n#endif\ndouble jsfx_native_string_dispatch(DSPJSFX_State*, int32_t, const double*, int32_t);")
+        lines.append("#ifdef __cplusplus\nextern \"C\"\n#endif\ndouble jsfx_native_gfx_dispatch(DSPJSFX_State* st, int32_t opcode, double** args, int32_t count);")
+        names = meta.get("named_strings", {})
+        lines.append("typedef struct DSPJSFX_NamedStringDesc { const char* name; int64_t handle; } DSPJSFX_NamedStringDesc;")
+        lines.append(f"#define DSPJSFX_NAMED_STRINGS_COUNT {len(names)}")
+        lines.append(f"static const DSPJSFX_NamedStringDesc DSPJSFX_NAMED_STRINGS[{max(1,len(names))}] = {{")
+        for name, handle in names.items():
+            lines.append(f'    {{"{_c_escape(name)}", {handle}LL}},')
+        if not names:
+            lines.append('    {"", -1LL},')
+        lines.append("};")
+        aliases = meta.get('slider_aliases', {})
+        lines.append(f"static const int DSPJSFX_LEGACY_SLIDER_ALIASES[{arr_size}] = {{" +
+                     ",".join(str(aliases.get(name, -1)) for name, _ in items_by_index or [("", 0)]) + "};")
 
     lines.append("/* @gfx user-var sync flags (vars[] index).")
     lines.append("   bit0: sync audio-owned updates into the @gfx VM (audio -> gfx)")
@@ -6050,13 +6870,13 @@ def _emit_header(meta: Dict[str, Any]) -> str:
         lines.append("};")
     else:
         for i, item in enumerate(string_literals_meta):
-            raw = bytes((ord(ch) & 0xff) for ch in str(item.get("text", "")))
+            raw = str(item.get("text", "")).encode("utf-8")
             raw_size = len(raw) if len(raw) > 0 else 1
             byte_list = ", ".join(f"0x{b:02x}" for b in raw) if raw else "0"
             lines.append(f"static const uint8_t DSPJSFX_STRING_LITERAL_BYTES_{i}[{raw_size}] = {{ {byte_list} }};")
         lines.append(f"static const DSPJSFX_StringLiteralDesc DSPJSFX_STRING_LITERALS[{literal_count}] = {{")
         for i, item in enumerate(string_literals_meta):
-            raw = bytes((ord(ch) & 0xff) for ch in str(item.get("text", "")))
+            raw = str(item.get("text", "")).encode("utf-8")
             handle = int(item.get("handle", 0))
             lines.append(f"    {{ {handle}LL, {len(raw)}, DSPJSFX_STRING_LITERAL_BYTES_{i} }},")
         lines.append("};")
@@ -6067,6 +6887,44 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("void jsfx_slider(DSPJSFX_State* st);")
     lines.append("void jsfx_block(DSPJSFX_State* st);")
     lines.append("void jsfx_sample(DSPJSFX_State* st);")
+    lines.append(f"#define DSPJSFX_HAS_NATIVE_GFX {1 if meta.get('native_gfx_prototype') else 0}")
+    lines.append(f"#define DSPJSFX_NATIVE_GFX_PRESENT {1 if meta.get('sections_present', {}).get('gfx') else 0}")
+    if meta.get("native_gfx_prototype"):
+        size = meta["native_gfx_size"]
+        lines.append(f"#define DSPJSFX_NATIVE_GFX_WIDTH {size[0]}")
+        lines.append(f"#define DSPJSFX_NATIVE_GFX_HEIGHT {size[1]}")
+        contract = meta.get("native_gfx_contract", {})
+        lines.append(f"#define DSPJSFX_NATIVE_GFX_INTERACTIVE {1 if contract.get('interactive') else 0}")
+        views = contract.get("views", [])
+        lines.append(f"#define DSPJSFX_NATIVE_GFX_VIEW_COUNT {len(views)}")
+        lines.append("typedef struct { int baseVar, countVar, strideVar, generationVar; int64_t base, count, stride, generation; int maxRecords, fieldCount; int fields[16]; } DSPJSFX_NativeView;")
+        lines.append("static const DSPJSFX_NativeView DSPJSFX_NATIVE_VIEWS[] = {")
+        for v in views:
+            refs = [v.get(k, 1 if k == "stride" else 0) for k in ("base", "count", "stride", "generation")]
+            indices = [meta["vars"][r] if isinstance(r, str) else -1 for r in refs]
+            values = [r if isinstance(r, int) else 0 for r in refs]
+            fields = v.get("fields", [0])
+            lines.append("  {" + ",".join(map(str, indices + values + [v["max"], len(fields)])) + ",{" + ",".join(map(str, fields)) + "}},")
+        if not views:
+            lines.append("  {-1,-1,-1,-1,0,0,1,0,0,0,{0}},")
+        lines.append("};")
+        for label, key in (("COMMAND", "commands"), ("PERSIST", "persist")):
+            ids = [meta["vars"][n] for n in contract.get(key, [])]
+            lines.append(f"#define DSPJSFX_NATIVE_GFX_{label}_COUNT {len(ids)}")
+            lines.append(f"static const int DSPJSFX_NATIVE_GFX_{label}_INDICES[] = {{" + ",".join(map(str, ids or [-1])) + "};")
+        lines.append("double jsfx_native_read_mem(DSPJSFX_State*, int64_t);")
+        for fn, argc in (("strcpy", 2), ("strcat", 2), ("strncpy", 3), ("strlen", 1), ("gfx_getchar", 1), ("gfx_showmenu", 1), ("time_precise", 0)):
+            lines.append("double jsfx_native_" + fn + "(DSPJSFX_State*" + ", double" * argc + ");")
+        lines.append("double jsfx_native_slider_event(DSPJSFX_State*, double, int32_t, int32_t, double);")
+        lines.append("void jsfx_gfx_aot(DSPJSFX_State* st);")
+        lines.append("double jsfx_native_gfx_set(DSPJSFX_State* st, double r, double g, double b, double a);")
+        lines.append("double jsfx_native_gfx_rect(DSPJSFX_State* st, double x, double y, double w, double h, double fill);")
+        lines.append("double jsfx_native_gfx_circle(DSPJSFX_State* st, double x, double y, double radius, double fill, double aa);")
+        lines.append("double jsfx_native_gfx_line(DSPJSFX_State* st, double x, double y, double x2, double y2, double aa);")
+        lines.append("double jsfx_native_gfx_measurestr(DSPJSFX_State* st, double text, double* width, double* height);")
+        lines.append("double jsfx_native_gfx_setfont(DSPJSFX_State* st, double id, double name, double size, double flags, double argc);")
+        lines.append("double jsfx_native_gfx_drawstr(DSPJSFX_State* st, double text);")
+        lines.append("double jsfx_native_sprintf(DSPJSFX_State* st, double dest, double format, const double* args, int32_t count);")
     lines.append("")
     lines.append("/* Entry point intended to be called from JUCE processBlock().")
     lines.append("   inputs/outputs are arrays of channel pointers (non-interleaved). */")
@@ -6174,7 +7032,9 @@ def _aot_opt_and_emit(mod_ir: ir.Module,
                      emit_asm: Optional[str],
                      target_triple: Optional[str] = None,
                      out_ll_unopt: Optional[str] = None,
-                     out_ll_opt: Optional[str] = None) -> str:
+                     out_ll_opt: Optional[str] = None,
+                     position_independent: bool = False,
+                     native_gfx_legacy: bool = False) -> str:
     """Return optimized LLVM IR text. Optionally emits object/asm and pre/post-opt IR."""
     triple = target_triple or llvm.get_default_triple()
     default_triple = llvm.get_default_triple()
@@ -6187,26 +7047,39 @@ def _aot_opt_and_emit(mod_ir: ir.Module,
         llvm.initialize_native_asmprinter()
 
     target = llvm.Target.from_triple(triple)
-    tm = target.create_target_machine(opt=opt_level)
+    tm = target.create_target_machine(opt=opt_level, reloc="pic" if position_independent else "default")
 
-    mod_ir.triple = triple
-    mod_ir.data_layout = str(tm.target_data)
-
-    llvm_mod = llvm.parse_assembly(str(mod_ir))
+    if isinstance(mod_ir, ir.Module):
+        mod_ir.triple = triple
+        mod_ir.data_layout = str(tm.target_data)
+    serialized_ir = str(mod_ir)
+    if os.environ.get("JSFX_AOT_TRACE_PHASES"):
+        print(f"AOT: LLVM parse ({len(serialized_ir)} source bytes)", file=sys.stderr, flush=True)
+    llvm_mod = llvm.parse_assembly(serialized_ir)
+    llvm_mod.triple = triple
+    llvm_mod.data_layout = str(tm.target_data)
     llvm_mod.verify()
 
-    pre_opt_ir = str(llvm_mod)
     if out_ll_unopt:
-        Path(out_ll_unopt).write_text(pre_opt_ir, encoding="utf-8")
+        Path(out_ll_unopt).write_text(str(llvm_mod), encoding="utf-8")
 
     if opt_level > 0:
         # Use the default (no size optimization). Newer llvmlite versions no
         # longer accept size_level, while speed_level remains supported.
         pto = llvm.PipelineTuningOptions(speed_level=int(opt_level))
+        if native_gfx_legacy and len(serialized_ir) > 8 * 1024 * 1024:
+            # Receiver specialization already expands large instruments. A
+            # bounded inliner avoids multiplying those graphs again. Keep the
+            # full requested optimization level and normal small DSP inlining.
+            pto.inlining_threshold = 32
+        if os.environ.get("JSFX_AOT_TRACE_PHASES"):
+            print(f"AOT: LLVM optimize O{opt_level}, inliner={pto.inlining_threshold}", file=sys.stderr, flush=True)
         pb = llvm.create_pass_builder(tm, pto)
         pm = pb.getModulePassManager()
         pm.run(llvm_mod, pb)
 
+    if os.environ.get("JSFX_AOT_TRACE_PHASES"):
+        print("AOT: optimization complete", file=sys.stderr, flush=True)
     post_opt_ir = str(llvm_mod)
     if out_ll_opt:
         Path(out_ll_opt).write_text(post_opt_ir, encoding="utf-8")
@@ -6302,7 +7175,12 @@ def main() -> int:
     ap.add_argument("--meta", default="", help="Optional JSON metadata output")
     ap.add_argument("--opt", type=int, default=2, help="Optimization level for AOT (0-3). Default 2.")
     ap.add_argument("--target", default="", help="LLVM target triple for AOT object/asm (e.g. x86_64-pc-windows-msvc)")
+    ap.add_argument("--native-gfx-prototype", action="store_true", help="Compile validated native @gfx with explicit interactive/publication contracts")
+    ap.add_argument("--native-gfx-legacy", action="store_true", help="Compile native @gfx with live shared variables/RAM and a fixed maxmem heap (requires C++20)")
     args = ap.parse_args()
+    if args.native_gfx_prototype and args.native_gfx_legacy:
+        ap.error("Choose either --native-gfx-prototype or --native-gfx-legacy")
+    args.native_gfx_prototype = args.native_gfx_prototype or args.native_gfx_legacy
 
     input_path = Path(args.input).resolve()
     txt = input_path.read_text(encoding="utf-8", errors="replace")
@@ -6319,6 +7197,8 @@ def main() -> int:
 
     pipeline = prepare_jsfx_pipeline(
         txt,
+        include_gfx=args.native_gfx_prototype,
+        native_gfx_legacy=args.native_gfx_legacy,
         enable_section_hoists=enable_section_hoists,
         enable_loop_hoists=enable_loop_hoists,
         collect_opt_report=want_opt_report,
@@ -6328,6 +7208,9 @@ def main() -> int:
         enable_section_hoists=enable_section_hoists,
         enable_loop_hoists=enable_loop_hoists,
         pipeline=pipeline,
+        native_gfx_prototype=args.native_gfx_prototype,
+        native_gfx_legacy=args.native_gfx_legacy,
+        stream_functions=args.native_gfx_legacy,
     )
 
     dump_dir: Optional[Path] = None
@@ -6353,6 +7236,8 @@ def main() -> int:
 
         raw_pipeline = prepare_jsfx_pipeline(
             txt,
+            include_gfx=args.native_gfx_prototype,
+            native_gfx_legacy=args.native_gfx_legacy,
             enable_section_hoists=False,
             enable_loop_hoists=False,
             collect_opt_report=False,
@@ -6362,6 +7247,9 @@ def main() -> int:
             enable_section_hoists=False,
             enable_loop_hoists=False,
             pipeline=raw_pipeline,
+            native_gfx_prototype=args.native_gfx_prototype,
+            native_gfx_legacy=args.native_gfx_legacy,
+            stream_functions=args.native_gfx_legacy,
         )
         _aot_opt_and_emit(
             mod_ir=raw_mod,
@@ -6378,16 +7266,28 @@ def main() -> int:
         if not dump_opt_path:
             dump_opt_path = str(dump_dir / "40_ir_after_llvm_opt.ll")
 
+    opt_report_data = pipeline.get("opt_report")
     want_llvm_opt_output = bool(args.out_obj or args.out_asm or dump_unopt_path or dump_opt_path)
     if want_llvm_opt_output:
+        # Large native GFX modules must not retain the Python instruction graph
+        # and all AST specialization snapshots during LLVM optimization.
+        serialized_mod = str(mod)
+        del mod, pipeline
+        if dump_dir:
+            del raw_mod, raw_pipeline
+        import gc
+        gc.collect()
+        meta["aot_inlining"] = "bounded-32" if args.native_gfx_legacy and len(serialized_mod) > 8*1024*1024 else "default"
         ir_text = _aot_opt_and_emit(
-            mod_ir=mod,
+            mod_ir=serialized_mod,
             opt_level=max(0, min(3, int(args.opt))),
             emit_obj=args.out_obj or None,
             emit_asm=args.out_asm or None,
             target_triple=(args.target or None),
             out_ll_unopt=dump_unopt_path,
             out_ll_opt=dump_opt_path,
+            position_independent=args.native_gfx_prototype,
+            native_gfx_legacy=args.native_gfx_legacy,
         )
     else:
         ir_text = str(mod)
@@ -6398,7 +7298,7 @@ def main() -> int:
         print(ir_text)
 
     if args.opt_report:
-        _write_opt_report(args.opt_report, pipeline["opt_report"])
+        _write_opt_report(args.opt_report, opt_report_data)
 
     if args.out_h:
         Path(args.out_h).write_text(_emit_header(meta), encoding="utf-8")

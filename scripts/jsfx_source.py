@@ -172,14 +172,15 @@ def _code_lines(text: str):
                 yield raw, raw
                 continue
 
-            if not _SECTION.match(raw):
+            if not _SECTION.match(raw) and not _IMPORT.match(raw):
                 # Unknown/free-form preamble text is metadata too.  Keeping it
                 # visible avoids apostrophes, URLs, and wildcard paths changing
                 # parser state before a later import directive.
                 yield raw, raw
                 continue
 
-            code_started = True
+            if _SECTION.match(raw):
+                code_started = True
 
         mask = list(raw)
         i = 0
@@ -235,6 +236,11 @@ def _parse(path: Path, text: str) -> _Unit:
         elif sec:
             current = sec.group(1).lower()
             if current in unit.sections:
+                # Import libraries in the Joep snapshot repeat @init, including
+                # empty markers. Preserve all initialization code in order.
+                if current == "init":
+                    unit.sections[current].append("\n")
+                    continue
                 raise SourceError(f"{path}:{line}: duplicate @{current} section")
             unit.headers[current] = raw if raw.endswith("\n") else raw + "\n"
             unit.sections[current] = []
@@ -337,7 +343,12 @@ class SourceResolver:
         if init_units:
             output.append("@init\n")
             owners["init"] = tuple(u.path for u in init_units)
-            for u in init_units:
+            for index, u in enumerate(init_units):
+                if index:
+                    # REAPER compiles each import unit separately. A library
+                    # can end at ')' without ';'; terminate it before the next
+                    # unit so the combined source is valid for WDL too.
+                    output.append("\n;\n")
                 output.extend(u.sections["init"])
                 output.append("\n")
         # Root takes priority even if its section body is empty. For an absent

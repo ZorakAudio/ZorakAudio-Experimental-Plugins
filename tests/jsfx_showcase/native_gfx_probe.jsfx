@@ -1,0 +1,14 @@
+desc:Native GFX Prototype Probe
+
+@init
+band_x = 13;
+
+@gfx 320 160
+gfx_set(0.04, 0.05, 0.08, 1);
+gfx_rect(0, 0, gfx_w, gfx_h, 1);
+gfx_set(0.74, 0.15, 0.67, 1);
+gfx_rect(band_x, 20, gfx_w - 2 * band_x, 35, 1);
+gfx_set(0.14, 0.66, 0.92, 0.83);
+gfx_rect(band_x, 67, (gfx_w - 2 * band_x) * 0.63, 46, 1);
+gfx_set(0.92, 0.75, 0.2, 1);
+gfx_rect(gfx_w - 42, gfx_h - 34, 22, 17, 1);

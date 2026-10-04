@@ -67,6 +67,32 @@ Release artifacts are packaged by category so the output mirrors the repository 
 
 ## Correctness and validation
 
+Native shared-state JSFX graphics is available as an opt-in prototype:
+
+```bash
+python scripts/build.py --only Sample --native-gfx-legacy --config Release
+```
+
+This mode compiles `@gfx` and DSP against one preallocated `options:maxmem` heap.
+See [Native GFX legacy mode](docs/Native-GFX-Legacy.md) for concurrency semantics,
+performance measurements, supported APIs, and qualification limits.
+The existing EEL graphics and bounded-publication native modes remain available.
+
+The JoepVanlier catalog always builds in native Legacy mode, including when no
+GFX flag is supplied or `--native-gfx-prototype` is requested:
+
+```bash
+python scripts/build.py --only JoepVanlier --config Release
+```
+
+Other JSFX retain EEL graphics by default; their native modes remain opt-in.
+Faust plugins do not use either JSFX mode. Automatic Legacy is also applied by
+the `build_jsfx_aot()` helper for sources under `plugins/JoepVanlier/`.
+The shadow EEL correctness monitor rejects selections containing Joep plugins
+before build or staging directories are changed.
+See [native package coverage and qualification](docs/JoepVanlier-Native-Compatibility.md).
+See [non-Joep catalog regression coverage](docs/Plugin-Catalog-Regression.md).
+
 The scalable JSFX validation path is the built-in **WDL/EEL2 shadow runtime** enabled with `--correctness-check`:
 
 ```bash

@@ -709,6 +709,18 @@ struct GfxImageBank
 
 };
 
+// JUCE may return a null typeface for a requested family that is absent on this
+// platform (e.g. Arial on Linux). Both graphics backends need a visible fallback.
+static inline juce::Font makeGfxFont(const juce::String& name, float size, int flags)
+{
+  juce::Font font(name, size, flags);
+ #ifdef JUCE_MAJOR_VERSION
+  if (font.getTypefacePtr() == nullptr)
+    font = juce::Font(juce::Font::getDefaultSansSerifFontName(), size, flags);
+ #endif
+  return font;
+}
+
 struct DrawCmd
 {
   enum class Type { Rect, Line, Text, Circle, RoundRect, Arc, Triangle,
@@ -3313,7 +3325,7 @@ static EEL_F NSEEL_CGEN_CALL eel_gfx_measurestr(void* opaque, INT_PTR np, EEL_F*
   {
     for (const auto& e : fontCache)
       if (e.size == size && e.flags == flags && e.name == name) { if (identity) *identity=e.identity; return e.font; }
-    juce::Font font(name, size, flags);
+    juce::Font font = makeGfxFont(name, size, flags);
     FontCacheEntry entry { name, size, flags, font, nextFontSerial++ };
     if (identity) *identity=entry.identity;
     constexpr size_t capacity = 64;

@@ -69,7 +69,7 @@ struct RelocatableOutput
     }
     double* resolve(DSPJSFX_State& st) const noexcept
     {
-        return heapIndex >= 0 ? (st.mem != nullptr && heapIndex < st.memN ? st.mem + heapIndex : nullptr)
+        return heapIndex >= 0 ? (st.mem != nullptr && heapIndex < st.memN ? reinterpret_cast<double*>(st.mem + heapIndex) : nullptr)
                               : original;
     }
 };
@@ -86,7 +86,7 @@ static double* memPtrForReceive(DSPJSFX_State* st, double dstBase, int count) no
         jsfx_ensure_mem(st, need);
     if (st->mem == nullptr || need > st->memN)
         return nullptr;
-    return st->mem + dst;
+    return reinterpret_cast<double*>(st->mem + dst);
 }
 } // namespace
 
@@ -119,7 +119,7 @@ extern "C" int jsfx_instance_get_name(DSPJSFX_State* st, double* outStr)
         return 0;
     if (auto* rt = runtimeFor(st); rt != nullptr)
     {
-        *outStr = static_cast<double> (rt->instanceNameHandle());
+        jsfxCellStore(outStr, static_cast<double> (rt->instanceNameHandle()));
         return 1;
     }
     return 0;
@@ -321,7 +321,7 @@ extern "C" int jsfx_msg_send_buf(DSPJSFX_State* st, double chanHandle, double ta
     if (base < 0 || n <= 0 || static_cast<int64_t> (base) + static_cast<int64_t> (n) > st->memN)
         return 0;
     if (auto* rt = runtimeFor(st); rt != nullptr)
-        return rt->queueBuffer(hashedStringHandle(st, chanHandle), tag, st->mem + base, n) ? 1 : 0;
+        return rt->queueBuffer(hashedStringHandle(st, chanHandle), tag, reinterpret_cast<const double*>(st->mem + base), n) ? 1 : 0;
     return 0;
 }
 
@@ -334,7 +334,7 @@ extern "C" int jsfx_msg_sendto_buf(DSPJSFX_State* st, double targetId, double ch
     if (base < 0 || n <= 0 || static_cast<int64_t> (base) + static_cast<int64_t> (n) > st->memN)
         return 0;
     if (auto* rt = runtimeFor(st); rt != nullptr)
-        return rt->queueBufferTo(toU64(targetId), hashedStringHandle(st, chanHandle), tag, st->mem + base, n) ? 1 : 0;
+        return rt->queueBufferTo(toU64(targetId), hashedStringHandle(st, chanHandle), tag, reinterpret_cast<const double*>(st->mem + base), n) ? 1 : 0;
     return 0;
 }
 
@@ -358,7 +358,7 @@ extern "C" int jsfx_msg_recv_buf(DSPJSFX_State* st, double chanHandle, double* s
             jsfx_ensure_mem(st, need);
             if (st->mem == nullptr || need > st->memN)
                 return 0;
-            dst = st->mem + base;
+            dst = reinterpret_cast<double*>(st->mem + base);
         }
         return rt->recvBuffer(hashedStringHandle(st, chanHandle), sourceOut.resolve(*st), tagOut.resolve(*st), dst, capacity, *st);
     }
@@ -409,7 +409,7 @@ extern "C" int jsfx_msg_peer_name(DSPJSFX_State* st, double peerId, double* outS
         std::int64_t handle = 0;
         if (! rt->peerNameHandle(toU64(peerId), &handle))
             return 0;
-        *outStr = static_cast<double> (handle);
+        jsfxCellStore(outStr, static_cast<double> (handle));
         return 1;
     }
     return 0;

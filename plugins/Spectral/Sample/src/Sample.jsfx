@@ -1,3 +1,4 @@
+// za_native_gfx: {"interactive":true,"locals":["auto_release_amt","clean_decrust_amt","color_pivot_hz","color_tilt_db","color_tilt_norm","dynamics_expand_amt","edge_melt_amt","focus_peak_amt","formant_shift_semi","i","output_harmonics_amt","pitch_parallel_mix","posteq_b1_char","posteq_b1_drive","posteq_b2_char","posteq_b2_drive","posteq_b3_char","posteq_b3_drive","posteq_char_active","posteq_gfx_heartbeat","posteq_hpf_char","posteq_hpf_drive","posteq_lpf_char","posteq_lpf_drive","sm","space_room_amt","space_room_char","sumw","v71_profile","v71_thrill"],"commands":["posteq_solo_target"],"persist":["hub_ui_open","hub_ui_anchor"],"views":[{"base":"sample_meta_base","count":"sample_count","stride":"sm_stride","fields":[11,15,8,14],"max":16384,"generation":"slot_signature_loaded"},{"base":"voice_base","count":"max_voices","stride":"vc_stride","fields":[0],"max":16},{"base":"posteq_spec_env_base","count":96,"max":96},{"base":"posteq_post_env_base","count":96,"max":96},{"base":"hub_log_base","count":1200,"max":1200}]}
 desc:Load-and-Go Psycho MultiSampler (tape + hybrid + granular v71-integrated-engines)
 tags:instrument sampler ui
 // #GFX_RESIZE: responsive
@@ -11052,37 +11053,92 @@ function release_audio_trigger_voices(hard) local(i v)
   );
 );
 
-function flush_hidden_state_sliders()
+// The editor owns interaction state. Do not run DSP @init on the graphics worker.
+function ui_graphics_init()
 (
-  // Hidden alt-mode controls are real host sliders under the hood. JSFX @init can
-  // run again during sample-rate/render-engine changes; sliders survive that,
-  // plain internal variables do not. Keep these mirrors current whenever the
-  // custom UI edits a hidden control.
-  slider47 = clamp(formant_shift_semi, -12, 12);
-  slider48 = clamp01(auto_release_amt);
-  slider49 = clamp(focus_peak_amt, -1, 1);
-  slider50 = clamp01(dynamics_expand_amt);
-  slider51 = clamp01(edge_melt_amt);
-  slider52 = clamp01(clean_decrust_amt);
-  slider53 = clamp01(space_room_amt);
-  slider54 = clamp01(space_room_char);
-  slider55 = clamp01(output_harmonics_amt);
-  slider60 = abs(color_pivot_hz) < 1 ? 1000 : clamp(color_pivot_hz, -20000, 20000);
-  slider61 = clamp01(pitch_parallel_mix);
+ui_active = -1;
+ui_down_y = 0;
+ui_down_val = 0;
+ui_prev_down = 0;
+ui_prev_rdown = 0;
+ui_value_changed = 0;
+hidden_state_dirty = 0;
+ui_hover_id = -1;
+ui_wheel = 0;
+ui_wheel_used = 0;
+ui_now = 0;
+ui_last_click_id = -1;
+ui_last_click_t = -10;
+ui_dblclick_time = 0.32;
+pitch_alt_active = 0;
+pitch_mix_alt_active = 0;
+color_pivot_alt_active = 0;
+color_auto_alt_active = 0;
+focus_peak_alt_active = 0;
+dyn_expand_alt_active = 0;
+grain_input_alt_active = 0;
+  ui_bank_signature = -999999; ui_rescan_flash = 0;
+  ui_graphics_initialized = 1;
+);
 
-  // Use individual sliderchange calls instead of a giant summed mask. Powers
-  // above 2^53 are exact, but sums can lose precision in double-based EEL2.
-  sliderchange(MASK_S47);
-  sliderchange(MASK_S48);
-  sliderchange(MASK_S49);
-  sliderchange(MASK_S50);
-  sliderchange(MASK_S51);
-  sliderchange(MASK_S52);
-  sliderchange(MASK_S53);
-  sliderchange(MASK_S54);
-  sliderchange(MASK_S55);
-  sliderchange(MASK_S60);
-  sliderchange(MASK_S61);
+// Decode mirrors from the current sliders, including unacknowledged UI previews.
+// DSP coefficients and histories remain audio-owned.
+function ui_refresh_controls() local(pack)
+(
+  formant_shift_semi = clamp(slider47, -12, 12);
+  auto_release_amt = clamp01(slider48);
+  focus_peak_amt = clamp(slider49, -1, 1);
+  dynamics_expand_amt = clamp01(slider50);
+  edge_melt_amt = clamp01(slider51);
+  clean_decrust_amt = clamp01(slider52);
+  space_room_amt = clamp01(slider53);
+  space_room_char = clamp01(slider54);
+  output_harmonics_amt = clamp01(slider55);
+  color_pivot_hz = abs(slider60) < 1 ? 1000 : slider60;
+  color_tilt_db = clamp(slider6, -18, 18);
+  color_tilt_norm = color_tilt_db / 18;
+  pitch_parallel_mix = clamp01(slider61);
+  pack = clamp(floor(slider62 + 0.5), 0, 242);
+  posteq_hpf_char = pack_get_base(pack, 0, 3);
+  posteq_b1_char = pack_get_base(pack, 1, 3);
+  posteq_b2_char = pack_get_base(pack, 2, 3);
+  posteq_b3_char = pack_get_base(pack, 3, 3);
+  posteq_lpf_char = pack_get_base(pack, 4, 3);
+  posteq_hpf_drive = pack_get_base(slider31, 0, 49) * 0.5;
+  posteq_b1_drive = pack_get_base(slider31, 1, 49) * 0.5;
+  posteq_b2_drive = pack_get_base(slider31, 2, 49) * 0.5;
+  posteq_b3_drive = pack_get_base(slider58, 0, 49) * 0.5;
+  posteq_lpf_drive = pack_get_base(slider58, 1, 49) * 0.5;
+  posteq_update_char_active();
+);
+
+function flush_hidden_state_sliders() local(value)
+(
+  // Commit only fields edited in this frame. Republishing every hidden control
+  // can overwrite unrelated host automation arriving after the UI snapshot.
+  // Individual masks keep high slider bits exact; never sum these masks.
+  value = clamp(formant_shift_semi, -12, 12);
+  slider47 !== value ? (slider47 = value; sliderchange(MASK_S47););
+  value = clamp01(auto_release_amt);
+  slider48 !== value ? (slider48 = value; sliderchange(MASK_S48););
+  value = clamp(focus_peak_amt, -1, 1);
+  slider49 !== value ? (slider49 = value; sliderchange(MASK_S49););
+  value = clamp01(dynamics_expand_amt);
+  slider50 !== value ? (slider50 = value; sliderchange(MASK_S50););
+  value = clamp01(edge_melt_amt);
+  slider51 !== value ? (slider51 = value; sliderchange(MASK_S51););
+  value = clamp01(clean_decrust_amt);
+  slider52 !== value ? (slider52 = value; sliderchange(MASK_S52););
+  value = clamp01(space_room_amt);
+  slider53 !== value ? (slider53 = value; sliderchange(MASK_S53););
+  value = clamp01(space_room_char);
+  slider54 !== value ? (slider54 = value; sliderchange(MASK_S54););
+  value = clamp01(output_harmonics_amt);
+  slider55 !== value ? (slider55 = value; sliderchange(MASK_S55););
+  value = abs(color_pivot_hz) < 1 ? 1000 : clamp(color_pivot_hz, -20000, 20000);
+  slider60 !== value ? (slider60 = value; sliderchange(MASK_S60););
+  value = clamp01(pitch_parallel_mix);
+  slider61 !== value ? (slider61 = value; sliderchange(MASK_S61););
   hidden_state_dirty = 0;
 );
 
@@ -13231,27 +13287,7 @@ rescan_flash = 0;
 last_note = -1;
 last_sid = -1;
 
-ui_active = -1;
-ui_down_y = 0;
-ui_down_val = 0;
-ui_prev_down = 0;
-ui_prev_rdown = 0;
-ui_value_changed = 0;
-hidden_state_dirty = 0;
-ui_hover_id = -1;
-ui_wheel = 0;
-ui_wheel_used = 0;
-ui_now = 0;
-ui_last_click_id = -1;
-ui_last_click_t = -10;
-ui_dblclick_time = 0.32;
-pitch_alt_active = 0;
-pitch_mix_alt_active = 0;
-color_pivot_alt_active = 0;
-color_auto_alt_active = 0;
-focus_peak_alt_active = 0;
-dyn_expand_alt_active = 0;
-grain_input_alt_active = 0;
+ui_graphics_init();
 last_start_voice_idx = -1;
 input_trig_fast = 0;
 input_trig_slow = 0;
@@ -15153,6 +15189,11 @@ v71_total_delay > 0 ? (
 za_keep_awake = (dc_switch_gain < 1 || dc_switch_target < 1 || dc_output_warm_left > 0 || sc_running || sa_running || st_running || v71_profile_gain != v71_profile_target);
 
 @gfx 1380 760
+// Color/Harmonics coefficients are updated by @slider/@block after slider edits.
+
+!ui_graphics_initialized ? ui_graphics_init();
+ui_refresh_controls();
+slot_signature_loaded != ui_bank_signature ? (ui_bank_signature = slot_signature_loaded; ui_rescan_flash = 1;);
 posteq_gfx_heartbeat = (posteq_gfx_heartbeat + 1) % 1000000;
 gfx_getchar();
 mouse_down = mouse_cap & 1;
@@ -15691,7 +15732,7 @@ color_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) 
     ui_active = 336;
     ui_value_changed = 1;
     hidden_state_dirty = 1;
-    abs(color_tilt_db) > 0.0001 ? color_tilt_recalc_gains();
+
   );
 );
 (mouse_rpressed && color_hot && ui_shift && !ui_alt) ? (
@@ -15700,7 +15741,7 @@ color_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) 
   color_auto_alt_active = 0;
   ui_value_changed = 1;
   hidden_state_dirty = 1;
-  abs(color_tilt_db) > 0.0001 ? color_tilt_recalc_gains();
+
 );
 (!mouse_down && ui_active == 336) ? (
   ui_active = -1;
@@ -15719,7 +15760,7 @@ color_pivot_alt_use ? (
     color_pivot_hz = color_pivot_norm_to_hz(nv);
     ui_value_changed = 1;
     hidden_state_dirty = 1;
-    abs(color_tilt_db) > 0.0001 ? color_tilt_recalc_gains();
+
   );
   color_hot && ui_alt && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     color_pivot_norm = clamp01(color_pivot_norm + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
@@ -15727,7 +15768,7 @@ color_pivot_alt_use ? (
     ui_wheel_used = 1;
     ui_value_changed = 1;
     hidden_state_dirty = 1;
-    abs(color_tilt_db) > 0.0001 ? color_tilt_recalc_gains();
+
   );
 ) : color_auto_alt_use ? (
   color_hot ? ui_hover_id = 336;
@@ -15738,7 +15779,7 @@ color_pivot_alt_use ? (
     color_tilt_db = slider6;
     color_tilt_norm = clamp(color_tilt_db / 18, -1, 1);
     gfx_slider_mask |= MASK_S6;
-    abs(color_tilt_db) > 0.0001 ? color_tilt_recalc_gains();
+
   );
 );
 gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
@@ -16003,13 +16044,13 @@ output_harm_alt_use ? (
   nv = ui_knob(333, kc, ky, kb_r, output_harmonics_amt, 0, 1, 0, 0.018);
   abs(nv - output_harmonics_amt) > 0.0000001 ? (
     output_harmonics_amt = clamp01(nv);
-    output_harmonics_amt > 0.0001 ? harm_update_coeffs();
+
     ui_value_changed = 1;
     hidden_state_dirty = 1;
   );
   out_hot && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1 ? (
     output_harmonics_amt = clamp01(output_harmonics_amt + (ui_wheel > 0 ? 0.025 : -0.025) * max(1, floor(abs(ui_wheel) / 120 + 0.5)));
-    output_harmonics_amt > 0.0001 ? harm_update_coeffs();
+
     ui_wheel_used = 1;
     ui_value_changed = 1;
     hidden_state_dirty = 1;
@@ -16481,11 +16522,11 @@ proc_char_h > 58 ? (
 
 
 ) : hub_log_draw();
-rescan_flash > 0 ? rescan_flash = max(0, rescan_flash - 0.035);
-rescan_flash > 0 ? (
-  gfx_r = 0.35; gfx_g = 0.74; gfx_b = 0.98; gfx_a = rescan_flash * 0.65;
-  gfx_circle(lamp_x, lamp_y + 12, 11 + rescan_flash * 10, 0);
-  gfx_a = rescan_flash * 0.22;
+ui_rescan_flash > 0 ? ui_rescan_flash = max(0, ui_rescan_flash - 0.035);
+ui_rescan_flash > 0 ? (
+  gfx_r = 0.35; gfx_g = 0.74; gfx_b = 0.98; gfx_a = ui_rescan_flash * 0.65;
+  gfx_circle(lamp_x, lamp_y + 12, 11 + ui_rescan_flash * 10, 0);
+  gfx_a = ui_rescan_flash * 0.22;
   gfx_rect(x0, y0, gfx_w - 36, header_h, 0);
 );
 

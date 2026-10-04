@@ -12,6 +12,11 @@ out_pin:Left Output
 out_pin:Right Output
 options:gfx_hz=60 maxmem=32000000 ownership=hybrid
 
+// The UI owns gesture arrays; DSP owns the waveform summary.
+// @za:gfx_sync_policy EXPLICIT
+// @za:gfx_sync_mem 0 3072 FROM_GFX
+// @za:gfx_sync_mem 7168 2400 DSP_TO_GFX
+
 slider1:0<-24,24,0.1>-Pitch (st)
 slider2:85<20,320,1>-Grain (ms)
 slider3:1.00<0.10,4,0.01:log!>-Travel

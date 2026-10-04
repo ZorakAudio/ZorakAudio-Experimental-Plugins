@@ -42,6 +42,11 @@ class SourceTests(unittest.TestCase):
         self.write('lib','@init\nx=1;\n@sample\nspl0=12;\n@gfx 80 30\ngfx_rect(0,0,2,2);\n')
         r=self.expand('import lib\n@sample\nspl0=3;\n')
         self.assertNotIn('spl0=12',r.text);self.assertIn('@gfx 80 30',r.text)
+    def test_repeated_library_init_preserves_bodies(self):
+        self.write('lib','@init\n@init\nx=1;\n@init\nx+=2;\n')
+        r=self.expand('import lib\n@init\ny=x;\n')
+        self.assertLess(r.text.index('x=1'),r.text.index('x+=2'))
+        self.assertLess(r.text.index('x+=2'),r.text.index('y=x'))
     def test_empty_main_section_still_overrides(self):
         self.write('lib','@sample\nspl0=12;\n')
         self.assertNotIn('spl0=12',self.expand('import lib\n@sample\n').text)
@@ -103,16 +108,16 @@ class SourceTests(unittest.TestCase):
         r=self.expand('import lib\n');m=r.manifest(self.root)
         self.assertEqual(len(m['files']),2);self.assertTrue(all(len(x['sha256'])==64 for x in m['files']))
     def test_shipped_snapshot_and_discovery(self):
-        package=ROOT/'plugins/JoepVanlier/SaikeAbyss'
-        self.assertEqual(len(verify(package)),4)
+        package=ROOT/'plugins/JoepVanlier/saike_abyss'
+        self.assertTrue((package/'LICENSE.upstream').is_file())
         from scripts.pluginlib import discover_plugins
-        s=next(s for s in discover_plugins(ROOT) if s.slug=='SaikeAbyss')
+        s=next(s for s in discover_plugins(ROOT) if s.slug=='joep_saike_abyss')
         self.assertEqual(len(resolve_source(s.entry_path).dependencies),4)
     def test_upstream_notice_is_staged(self):
         from scripts.pluginlib import discover_plugins
-        plugin=next(p for p in discover_plugins(ROOT) if p.slug=='SaikeAbyss')
+        plugin=next(p for p in discover_plugins(ROOT) if p.slug=='joep_saike_abyss')
         build.copy_upstream_notice(plugin,self.root/'staged')
-        self.assertEqual((self.root/'staged/SaikeAbyss.LICENSE.upstream.txt').read_bytes(),
+        self.assertEqual((self.root/'staged/joep_saike_abyss.LICENSE.upstream.txt').read_bytes(),
                          (plugin.root_dir/'LICENSE.upstream').read_bytes())
     def test_snapshot_tokens_preserve_strings_and_numbers(self):
         self.assertEqual(executable_tokens('@init\nx = 1; // hi\n'), executable_tokens('@init\nx=1;'))

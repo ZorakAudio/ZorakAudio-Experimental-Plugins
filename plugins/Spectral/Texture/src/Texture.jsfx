@@ -6,6 +6,10 @@ filename:0,Texture
 
 options:gfx_hz=30 maxmem=32000000 ownership=hybrid ownership=hybrid
 
+// Publish display summaries even when file scratch moves the automatic suffix.
+// Metadata includes candidates, voices, CC mappings, and UI browser scratch.
+// @za:gfx_sync_mem 31500000 500000 BIDIR
+
 slider1:0.75<0,1,0.001>-Mix
 slider2:0<-24,24,0.1>-Texture Gain (dB)
 slider3:1.25<0.1,8,0.001>-Sensitivity

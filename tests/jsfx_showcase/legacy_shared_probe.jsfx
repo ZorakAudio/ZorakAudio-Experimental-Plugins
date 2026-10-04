@@ -1,0 +1,65 @@
+desc:Native legacy shared-state qualification
+options:maxmem=65536
+slider2:Alias=3<0,20>Alias
+@init
+function tick() local(n) (n += 1; n;);
+function bump() instance(v) (v += 1; v;);
+init_local = tick();
+negative_sqrt_input = -9;
+sqrt_literal = sqrt(-4);
+sqrt_dynamic = sqrt(negative_sqrt_input);
+sqrt_expression = sqrt(-4) + 1;
+shared_gain = 2;
+phase = 0;
+counter = 0;
+producer = 0;
+bad = 0;
+atomic_set(0[1], 4);
+set_result = atomic_set(0[1], 9);
+add_result = atomic_add(0[1], 3);
+cas_old = atomic_setifequal(0[1], 12.000001, 20);
+cas_failed = atomic_setifequal(0[1], 12, 99);
+exch_other = 30;
+exch_result = atomic_exch(0[1], exch_other);
+get_result = atomic_get(0[1]);
+memset(32, 3, 16);
+memcpy(34, 32, 10);
+0[65535] = 17;
+@sample
+phase == 0 ? (
+  alias_seen = alias + slider2;
+  audio_value = shared_gain + 0[20];
+  block_local = tick();
+  audio_instance = obj.bump();
+);
+phase == 1 ? atomic_add(counter, 1);
+phase == 2 ? (
+  producer += 1;
+  0[2] = producer;
+  atomic_set(0[3], producer);
+);
+phase == 3 ? (
+  audio_value = 0[100];
+  audio_value !== 0 && audio_value !== 7 && audio_value !== 8 ? audio_bad += 1;
+);
+phase == 5 ? atomic_add(doubled, doubled);
+@gfx 64 64
+phase == 0 ? (
+  alias = 9;
+  shared_gain = slider1;
+  0[20] = 10;
+  gfx_local = tick();
+  gfx_instance = obj.bump();
+);
+phase == 1 ? atomic_add(counter, 1);
+phase == 2 ? (
+  observed = atomic_get(0[3]);
+  0[2] < observed ? bad += 1;
+);
+phase == 3 ? (
+  memset(100, 7, 64);
+  memcpy(101, 100, 32);
+  0[100] = 8;
+);
+phase == 4 ? 0[65536] = 1;
+phase == 5 ? atomic_add(doubled, doubled);

@@ -3,6 +3,7 @@
 #include "DspJsfxGmem.h"
 #include "DspJsfxMessageBus.h"
 #include "JSFXDSP.h"
+#include "JsfxSharedCells.h"
 
 #include <atomic>
 #include <cstdint>

@@ -213,7 +213,17 @@ def write_plugin_readme_header(cmake_build: Path, readme_path: Path) -> Path:
     )
 
 
-def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Path, compatibility: dict | None = None) -> tuple[Path, Path, Path, Path]:
+def native_gfx_modes_for_plugin(spec: PluginSpec, *, prototype: bool = False,
+                                legacy: bool = False) -> tuple[bool, bool]:
+    """Return the effective compiler/host modes for a configured plugin."""
+    if spec.plugin_type != "jsfx":
+        return False, False
+    if spec.category == "JoepVanlier":
+        return False, True
+    return prototype, legacy
+
+
+def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Path, compatibility: dict | None = None, *, native_gfx_prototype: bool = False, native_gfx_legacy: bool = False) -> tuple[Path, Path, Path, Path]:
     """
     Produces:
       - JSFXDSP.o / JSFXDSP.obj
@@ -222,6 +232,10 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
       - JSFXDSP.ll
     inside the per-plugin build dir.
     """
+    # Cover direct callers of this helper as well as main().
+    if jsfx_path.resolve().is_relative_to((repo_root / "plugins" / "JoepVanlier").resolve()):
+        native_gfx_prototype, native_gfx_legacy = False, True
+
     def env_truthy(name: str) -> bool:
         v = os.environ.get(name, "").strip().lower()
         return v not in ("", "0", "false", "no", "off")
@@ -280,6 +294,11 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
         "--meta", str(out_meta),
         "--opt", opt_level,
     ]
+
+    if native_gfx_legacy:
+        cmd += ["--native-gfx-legacy"]
+    elif native_gfx_prototype:
+        cmd += ["--native-gfx-prototype"]
 
     if opt_dump_root:
         cmd += ["--opt-dump-dir", str(Path(opt_dump_root) / slug)]
@@ -443,8 +462,14 @@ def main() -> None:
     ap.add_argument("--clean", action="store_true", help="Delete build directory for current platform before building")
     ap.add_argument("--clean-only", action="store_true", help="Delete build directory for current platform and exit")
     ap.add_argument("--correctness-check", action="store_true", help="Enable JSFX shadow EEL2 correctness monitor/instrumentation")
+    ap.add_argument("--native-gfx-prototype", action="store_true", help="Opt other JSFX into native @gfx publication contracts; JoepVanlier always uses LEGACY")
+    ap.add_argument("--native-gfx-legacy", action="store_true", help="Opt other JSFX into native shared state (C++20); automatic for JoepVanlier")
     ap.add_argument("--list", action="store_true", help="List discovered plugins and exit")
     args = ap.parse_args()
+    if args.native_gfx_prototype and args.native_gfx_legacy:
+        ap.error("Choose one native GFX mode")
+    if args.native_gfx_legacy and args.correctness_check:
+        ap.error("The shadow EEL correctness monitor cannot compare concurrently shared legacy state; build the monitor separately")
 
     repo_root = Path(__file__).resolve().parents[1]
     try:
@@ -459,6 +484,11 @@ def main() -> None:
     selected = filter_plugins(plugins, args.only)
     if args.only and not selected:
         die(f"No plugins matched --only={args.only!r}")
+
+    if args.correctness_check and any(native_gfx_modes_for_plugin(
+            spec, prototype=args.native_gfx_prototype, legacy=args.native_gfx_legacy)[1]
+            for spec in selected):
+        ap.error("JoepVanlier always uses LEGACY, which cannot use the shadow EEL monitor; select a non-Joep plugin for --correctness-check")
 
     os_id = host_os()
     out_dir = repo_root / args.out / args.tag / os_id
@@ -485,6 +515,12 @@ def main() -> None:
         slug = spec.slug
         print(f"\n=== Building {spec.name} ({slug}) ===")
 
+        native_gfx_prototype, native_gfx_legacy = native_gfx_modes_for_plugin(
+            spec, prototype=args.native_gfx_prototype, legacy=args.native_gfx_legacy)
+        if spec.plugin_type == "jsfx":
+            print("    GFX mode:", "LEGACY" if native_gfx_legacy else
+                  "native publication" if native_gfx_prototype else "EEL/publication")
+
         cmake_build = build_root / slug
         cmake_build.mkdir(parents=True, exist_ok=True)
         write_plugin_readme_header(cmake_build, spec.readme_path)
@@ -502,7 +538,7 @@ def main() -> None:
         if spec.plugin_type == "faust":
             dsp = spec.entry_path
         else:
-            jsfx_obj, _, jsfx_meta_path, _ = build_jsfx_aot(repo_root, cmake_build, slug, spec.entry_path, spec.raw.get("jsfxCompatibility"))
+            jsfx_obj, _, jsfx_meta_path, _ = build_jsfx_aot(repo_root, cmake_build, slug, spec.entry_path, spec.raw.get("jsfxCompatibility"), native_gfx_prototype=native_gfx_prototype, native_gfx_legacy=native_gfx_legacy)
             jsfx_meta = json.loads(jsfx_meta_path.read_text(encoding="utf-8")) if jsfx_meta_path.exists() else {}
             jsfx_caps = derive_jsfx_plugin_capabilities(jsfx_meta)
             comm_meta = dict(jsfx_meta.get("comm") or {})
@@ -534,6 +570,7 @@ def main() -> None:
             f"-DPLUGIN_NEEDS_MIDI_OUTPUT={jsfx_caps['PLUGIN_NEEDS_MIDI_OUTPUT']}",
             f"-DPLUGIN_IS_MIDI_EFFECT={jsfx_caps['PLUGIN_IS_MIDI_EFFECT']}",
             f"-DZA_JSFX_CORRECTNESS_CHECK={'ON' if args.correctness_check else 'OFF'}",
+            f"-DZA_NATIVE_GFX_LEGACY={'ON' if native_gfx_legacy else 'OFF'}",
         ]
 
         fft_legacy_env = os.environ.get("ZA_JSFX_FFT_LEGACY_IN_ORDER")
