@@ -141,3 +141,7 @@ This documentation pass is focused on:
 - cleaning up category indexes so they match the actual tree
 - removing the outdated DSP-JSFX REAPER null-test workflow from CI
 - drafting a release note for the next catalog refresh
+
+Embedded `@faust` sections are supported in the JSFX AOT path. See [the mixed-section interface](docs/JSFX-Faust-Sections.md) and [EasyExpander Faust](plugins/Dynamics/EasyExpanderFaust/README.md) for the motivating example and profiling workflow.
+
+Plugin sleep now requires an explicit per-block grant: see [Cooperative Sleep](docs/Cooperative-Sleep.md).

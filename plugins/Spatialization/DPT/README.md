@@ -42,3 +42,8 @@ Automation is smoothed in the current source so sweeps across center stay clean.
 
 ## In one sentence
 DPT is the clean, simple natural-feel panner in the catalog for either speaker or headphone use.
+
+
+## Cooperative idle
+
+The native host may sleep after 8192 consecutive silent mono samples, settled pan/naturalness controls, and exact zero-input fixed points of the active headphone filters. Both modes are covered. The host also requires exact silent output and no pending activity. New audio, controls, or host events wake processing. Offline rendering always processes. Stock REAPER continues processing normally; the readiness variable is a native-host hint.

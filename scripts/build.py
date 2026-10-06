@@ -299,6 +299,9 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
         "--opt", opt_level,
     ]
 
+    if re.search(r"(?mi)^\s*@faust\b",jsfx_text):
+        cmd += ["--faust-include",str(jsfx_path.parent.resolve())]
+
     if native_gfx_legacy:
         cmd += ["--native-gfx-legacy"]
     elif native_gfx_prototype:
@@ -602,9 +605,31 @@ def main() -> None:
                 if vs_path and not inst:
                     inst = vs_path
 
-            cmake_args += ["-G", gen, "-A", "x64"]
-            if inst:
-                cmake_args += [f"-DCMAKE_GENERATOR_INSTANCE={inst}"]
+                available = {g["name"] for g in json.loads(subprocess.check_output(
+                    ["cmake", "-E", "capabilities"], text=True))["generators"]}
+                if gen not in available:
+                    print(f"    Installed CMake does not support {gen}; using Ninja with Clang")
+                    gen = "Ninja"
+                    inst = None
+
+            cmake_args += ["-G", gen]
+            if gen.startswith("Visual Studio"):
+                cmake_args += ["-A", "x64"]
+                if inst:
+                    cmake_args += [f"-DCMAKE_GENERATOR_INSTANCE={inst}"]
+            else:
+                cmake_args += [f"-DCMAKE_BUILD_TYPE={args.config}"]
+                if gen == "Ninja":
+                    ninja = shutil.which("ninja")
+                    if not ninja:
+                        vs_path = find_vs_installation_path()
+                        candidate = Path(vs_path) / "Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe" if vs_path else None
+                        if candidate and candidate.exists():
+                            ninja = str(candidate)
+                    if ninja:
+                        cmake_args += [f"-DCMAKE_MAKE_PROGRAM={ninja}"]
+                    if not os.environ.get("CC") and not os.environ.get("CXX"):
+                        cmake_args += ["-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
         else:
             cmake_args += ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release"]
 

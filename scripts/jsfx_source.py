@@ -222,10 +222,12 @@ def _code_lines(text: str):
 def _parse(path: Path, text: str) -> _Unit:
     unit = _Unit(path, text)
     current = None
+    mixed = bool(re.search(r"(?mi)^\s*@faust\b", text))
+    repeated = {}
     for line, (raw, mask) in enumerate(_code_lines(text), 1):
         imp = _IMPORT.match(mask)
         sec = _SECTION.match(mask)
-        if imp:
+        if imp and not (current and current.startswith("faust")):
             start = mask.lower().index("import")
             token = _TOKEN.match(raw[start:])
             if token is None or mask[start + token.end():].strip(" \t\r\n;"):
@@ -235,6 +237,9 @@ def _parse(path: Path, text: str) -> _Unit:
             (unit.preamble if current is None else unit.sections[current]).append("\n")
         elif sec:
             current = sec.group(1).lower()
+            if mixed and current in ('faust','block','sample'):
+                ordinal=repeated.get(current,0);repeated[current]=ordinal+1
+                if ordinal:current+='_'+str(ordinal)
             if current in unit.sections:
                 # Import libraries in the Joep snapshot repeat @init, including
                 # empty markers. Preserve all initialization code in order.

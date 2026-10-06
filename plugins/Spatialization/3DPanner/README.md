@@ -1,9 +1,11 @@
 # 3DPanner
 
+> Current implementation: Hyperreal V7.1.2 with the qualified Hyperreal Fast fixed-offset optimizations. Artistic and fitted-KEMAR Physical algorithms are preserved. The native build uses the same Legacy canvas backend as Fast, under the existing 3DPanner identity. Current controls are local-only; historical V6.5 manager-link instructions below do not describe this revision. See [the Fast promotion audit](../../../docs/Hyperreal-Fast-Promotion.md).
+
 ## What it is
 3DPanner is a **headphone-focused, mouse-first perceptual 3D panner**.
 
-The current build is **Hyperreal 3D Panner V6.5 — UI-Only Perceptual Position + Side Drawer Manager IPC**. It is built around direct object placement instead of raw degree dialing, with optional subscription to **3DPannerManager** for shared camera rotation.
+The historical V6.5 build was **Hyperreal 3D Panner V6.5 — UI-Only Perceptual Position + Side Drawer Manager IPC**. It is built around direct object placement instead of raw degree dialing, with optional subscription to **3DPannerManager** for shared camera rotation.
 
 The source combines several perceptual cues:
 
@@ -266,3 +268,21 @@ Advanced Cue Curve / Smooth / Room Size lanes
 ```
 
 Text input is intentionally simple ASCII for stable bus and instance names.
+
+
+## Native idle and parameter gestures
+
+Native builds automatically suspend audio DSP after output stays below -140 dB
+for one second. Paused playback and empty tracks therefore avoid running the
+full renderer continuously. Any nonzero input, including very quiet audio,
+parameters and other host wake events resume processing. Audible tails must
+settle before suspension. The canvas continues drawing independently.
+
+Right-click the native sleep badge to choose Default/Auto, Never sleep, Silence,
+Events, or Free-running. The selection persists in project state. Offline renders
+always run DSP. Automatic silence sleep freezes very quiet state and is not a
+universal bit-exact realtime recovery guarantee; use Never sleep when needed.
+
+Custom canvas buttons now report only parameters that actually changed. Native
+CLAP UI changes use live gestures and a global parameter target, allowing the
+host to identify the touched parameter correctly.

@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import sys
 from scripts import jsfx_tasks_compiler as tasks_compiler
+from scripts import jsfx_faust_compiler as faust_compiler
 import argparse
 import contextlib
 from collections import Counter
@@ -2422,7 +2423,10 @@ def prepare_jsfx_pipeline(jsfx_text: str,
     if native_gfx_legacy and (enable_section_hoists or enable_loop_hoists):
         raise ValueError("Native legacy shared state is incompatible with custom scalar hoisting")
     include_gfx = include_gfx or native_gfx_legacy
-    sections = extract_sections(jsfx_text)
+    faust_plan = faust_compiler.split(jsfx_text)
+    if faust_plan and (enable_section_hoists or enable_loop_hoists):
+        raise ValueError("Mixed Faust sections do not support custom section/loop hoisting")
+    sections = extract_sections(faust_plan["text"] if faust_plan else jsfx_text)
 
     programs: Dict[str, List[Node]] = {}
     for sec in _OPT_DEBUG_SECTION_ORDER + (("gfx",) if include_gfx else ()):
@@ -2451,6 +2455,7 @@ def prepare_jsfx_pipeline(jsfx_text: str,
 
     return {
         "sections": sections,
+        "faust_plan": faust_plan,
         "fn_defs": fn_defs,
         "lowered_programs": lowered_programs,
         "programs": work_programs,
@@ -2673,6 +2678,10 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
     fn_defs: Dict[str, FunctionDef] = dict(pipeline["fn_defs"])
     loop_hoists: Dict[int, List[Node]] = dict(pipeline["loop_hoists"])
 
+    faust_plan = pipeline.get('faust_plan')
+    faust_nodes = faust_compiler.stage_nodes(sys.modules[__name__], {'programs':programs}, faust_plan) if faust_plan else {}
+    faust_aliases = {name.lower():int(index)-1 for index,name in re.findall(
+        r"(?m)^\s*slider([0-9]+)\s*:\s*([A-Za-z_][A-Za-z_0-9]*)\s*=",jsfx_text)}
     slider_aliases = {name.lower() for _, name in re.findall(
         r"(?m)^\s*slider([0-9]+)\s*:\s*([A-Za-z_][A-Za-z_0-9]*)\s*=", jsfx_text)}
     has_tasks = tasks_compiler.validate(sys.modules[__name__], programs, fn_defs, slider_aliases)
@@ -2770,11 +2779,11 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
     sample_pool_caps = detect_sample_pool_usage(programs, fn_defs)
 
     sym = SymTable(user_vars)
-    if native_gfx_legacy:
+    if native_gfx_legacy or faust_plan:
         sym.slider_aliases = {name.lower(): int(index) - 1 for index, name in re.findall(
             r"(?m)^\s*slider([0-9]+)\s*:\s*([A-Za-z_][A-Za-z_0-9]*)\s*=", jsfx_text)}
 
-    emitter = LLVMModuleEmitter(sym, native_gfx_legacy=native_gfx_legacy, stream_functions=stream_functions, has_tasks=has_tasks)
+    emitter = LLVMModuleEmitter(sym, native_gfx_legacy=native_gfx_legacy, stream_functions=stream_functions, has_tasks=has_tasks, has_faust=bool(faust_plan))
     emitter.native_gfx_prototype = native_gfx_prototype
     emitter.native_gfx_functions = native_functions
     emitter.jsfx_memtop_slots = resolve_jsfx_memtop_slots(options)
@@ -2795,10 +2804,25 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
     if native_gfx_prototype:
         emitter.emit_section_fn("jsfx_gfx_aot", programs["gfx"])
 
+    faust_stages, faust_modules, faust_islands = faust_compiler.attach(sys.modules[__name__],emitter,faust_plan,faust_nodes,user_vars,faust_aliases,fn_defs) if faust_plan else ([],[],[])
+    if faust_plan and native_gfx_prototype and not native_gfx_legacy:
+        extra=set().union(*(set(stage.get('imports',[]))|set(stage.get('exports',[])) for stage in faust_stages))
+        conflicts=usage['gfx_writes'] & {name.lower() for name in extra}
+        conflicts-=set(native_contract.get('locals',[]))|set(native_contract.get('commands',[]))
+        if conflicts:raise ValueError('Native display prototype rejects UI writes to Faust DSP variables: '+', '.join(sorted(conflicts)))
     emitter.emit_user_functions()
 
-    has_sample_work = len(programs["sample"]) > 0
-    emit_process_block_fn(emitter, fn_init, fn_slider, fn_block, fn_sample, has_sample_work)
+    has_sample_work = len(programs["sample"]) > 0 or bool(faust_plan)
+    if faust_plan:
+        faust_compiler.emit_process(sys.modules[__name__],emitter)
+        for stage in faust_stages:
+            if stage['kind']=='faust':
+                named=max([int(n[3:])+1 for n in stage['signals'] if re.fullmatch(r'spl\d+',n.lower())]+[0])
+                io_channels['inputs']=max(io_channels['inputs'],named,stage['inputs']-len(stage['signals']))
+                io_channels['outputs']=max(io_channels['outputs'],stage['audio_outputs'])
+        io_channels['process']=max(io_channels['inputs'],io_channels['outputs'],io_channels.get('process',0))
+    else:
+        emit_process_block_fn(emitter, fn_init, fn_slider, fn_block, fn_sample, has_sample_work)
 
     plugin_kind = "audio_effect"
     if midi_caps["uses_midi"]:
@@ -2811,8 +2835,17 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
         else:
             plugin_kind = "midi_effect"
 
+    faust_quantum = int(options.get('za_faust_quantum', '0'))
+    if faust_quantum and (not faust_plan or not 2 <= faust_quantum <= 4096 or
+                          not faust_stages or faust_stages[0]['kind'] != 'block' or
+                          any(stage['fused'] for stage in faust_stages)):
+        raise ValueError('za_faust_quantum requires an unfused Faust pipeline beginning with @block and a size from 2 to 4096')
     meta = {
         "has_tasks": has_tasks,
+        "has_faust": bool(faust_plan),
+        "faust_stages": faust_stages,
+        "faust_islands": faust_islands,
+        "faust_quantum": faust_quantum,
         "vars": user_vars,
         "var_cap": emitter.var_cap,
         "sections_present": {k: bool(v) for k, v in programs.items()},
@@ -2836,7 +2869,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
         "native_gfx_contract": native_contract,
         "native_gfx_size": list(map(int, re.search(r"(?m)^\s*@gfx\s+(\d+)\s+(\d+)", jsfx_text).groups())) if native_gfx_prototype and re.search(r"(?m)^\s*@gfx\s+(\d+)\s+(\d+)", jsfx_text) else [640, 400],
     }
-    return emitter.module, meta
+    return faust_compiler.merge(emitter.module,faust_modules) if faust_modules else emitter.module, meta
 
 
 
@@ -3775,7 +3808,7 @@ class _SerializedFunctionModule(ir.Module):
 
 
 class LLVMModuleEmitter:
-    def __init__(self, sym: SymTable, *, native_gfx_legacy: bool = False, stream_functions: bool = False, has_tasks: bool = False):
+    def __init__(self, sym: SymTable, *, native_gfx_legacy: bool = False, stream_functions: bool = False, has_tasks: bool = False, has_faust: bool = False):
         self.has_tasks = has_tasks
         self.native_gfx_legacy = native_gfx_legacy
         self.sym = sym
@@ -3867,6 +3900,10 @@ class LLVMModuleEmitter:
             self.state_ptr = self.state_ty.as_pointer()
 
         if has_tasks:
+            self.state_ty = ir.LiteralStructType(list(self.state_ty.elements) + [self.i8.as_pointer()])
+            self.state_ptr = self.state_ty.as_pointer()
+
+        if has_faust:
             self.state_ty = ir.LiteralStructType(list(self.state_ty.elements) + [self.i8.as_pointer()])
             self.state_ptr = self.state_ty.as_pointer()
 
@@ -6771,6 +6808,8 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines = []
     lines.append("#pragma once")
     lines.append(f"#define DSPJSFX_HAS_TASKS {1 if meta.get('has_tasks') else 0}")
+    lines.append(f"#define DSPJSFX_HAS_FAUST {1 if meta.get('has_faust') else 0}")
+    lines.append(f"#define DSPJSFX_EEL2_STORES {0 if meta.get('numeric_semantics')=='native' else 1}")
     lines.append("#include <stdint.h>")
     lines.append(f"#define DSPJSFX_NATIVE_GFX_LEGACY {1 if meta.get('native_gfx_legacy') else 0}")
     lines.append(f"#define DSPJSFX_MAX_MEM_CELLS {int(meta.get('memtop_slots', JSFX_DEFAULT_MEMTOP_SLOTS))}LL")
@@ -6812,7 +6851,9 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    int32_t msg3;")
     lines.append("} DSPJSFX_MidiEvent;")
     lines.append("")
-    lines.append(f"#define DSPJSFX_RUNTIME_STATE_ABI {(6 if meta.get('native_gfx_legacy') else 4) if meta.get('has_tasks') else (5 if meta.get('native_gfx_legacy') else 3)}")
+    state_abi=(6 if meta.get('native_gfx_legacy') else 4) if meta.get('has_tasks') else (5 if meta.get('native_gfx_legacy') else 3)
+    if meta.get('has_faust'): state_abi+=10
+    lines.append(f"#define DSPJSFX_RUNTIME_STATE_ABI {state_abi}")
     lines.append("#define DSPJSFX_MAX_SLIDERS 256")
     lines.append("#define DSPJSFX_SLIDER_MASK_WORDS 4")
     lines.append("typedef struct DSPJSFX_State {")
@@ -6858,6 +6899,8 @@ def _emit_header(meta: Dict[str, Any]) -> str:
         lines.append("    void* nativeStrings; /* instance-owned native string context */")
     if meta.get('has_tasks'):
         lines.append("    void* taskContext; /* instance-owned structured task runtime */")
+    if meta.get("has_faust"):
+        lines.append("    void* faustContext; /* instance-owned mixed Faust pipeline */")
     lines.append("} DSPJSFX_State;")
     lines.append("")
 
@@ -7085,6 +7128,7 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("}")
     lines.append("#endif")
     lines.append("")
+    lines.append(faust_compiler.header(meta))
     return "\n".join(lines)
 
 def _aot_opt_and_emit(mod_ir: ir.Module,
@@ -7236,6 +7280,7 @@ def main() -> int:
     ap.add_argument("--meta", default="", help="Optional JSON metadata output")
     ap.add_argument("--opt", type=int, default=2, help="Optimization level for AOT (0-3). Default 2.")
     ap.add_argument("--target", default="", help="LLVM target triple for AOT object/asm (e.g. x86_64-pc-windows-msvc)")
+    ap.add_argument("--faust-include", action="append", default=[], help="Faust library include directory (repeatable)")
     ap.add_argument("--native-gfx-prototype", action="store_true", help="Compile validated native @gfx with explicit interactive/publication contracts")
     ap.add_argument("--native-gfx-legacy", action="store_true", help="Compile native @gfx with live shared variables/RAM and a fixed maxmem heap (requires C++20)")
     args = ap.parse_args()
@@ -7264,6 +7309,8 @@ def main() -> int:
         enable_loop_hoists=enable_loop_hoists,
         collect_opt_report=want_opt_report,
     )
+    if pipeline.get('faust_plan'):
+        pipeline['faust_plan']['include_paths']=[str(input_path.parent),*args.faust_include]
     mod, meta = compile_jsfx_to_ir(
         txt,
         enable_section_hoists=enable_section_hoists,
@@ -7303,6 +7350,8 @@ def main() -> int:
             enable_loop_hoists=False,
             collect_opt_report=False,
         )
+        if raw_pipeline.get('faust_plan'):
+            raw_pipeline['faust_plan']['include_paths']=[str(input_path.parent),*args.faust_include]
         raw_mod, _ = compile_jsfx_to_ir(
             txt,
             enable_section_hoists=False,

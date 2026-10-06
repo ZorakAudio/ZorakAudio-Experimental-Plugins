@@ -22,7 +22,7 @@ desc:Hyperreal 3D Panner V7.1.2 (Legacy Distance Preservation)
 // #TOOLTIP: Headphone-focused perceptual object panner with local position and room controls.
 
 options:gfx_hz=60
-options:idle=always
+options:idle=input idle_hold_ms=1000 idle_out_db=-140
 options:ownership=auto
 
 in_pin:left input
@@ -143,8 +143,7 @@ slider45:1.6<0.4,2.2,0.01>-Ear Height (m)
 //   POV Canvas Range          = UI-only drag cone for fast near-center placement.
 
 @init
-za_idle_mode = 4;
-za_keep_awake = 1;
+// Automatic idle is controlled by the host options above.
 
 
 
@@ -300,7 +299,13 @@ function p7_peak(st,fc,q,gain,reset) local(A w cs sn alpha b0 b1 b2 a0 a1 a2 i a
 );
 
 function p7_filter(st,x) local(i y) (
-  p7_filter_count>0 ? (i=0;loop(5,st[5+i]+=(st[i]-st[5+i])*p7_coeff_k;i+=1;););
+  p7_filter_count>0 ? (
+    st[5]+=(st[0]-st[5])*p7_coeff_k;
+    st[6]+=(st[1]-st[6])*p7_coeff_k;
+    st[7]+=(st[2]-st[7])*p7_coeff_k;
+    st[8]+=(st[3]-st[8])*p7_coeff_k;
+    st[9]+=(st[4]-st[9])*p7_coeff_k;
+  );
   y=st[5]*x+st[10];
   st[10]=st[6]*x-st[8]*y+st[11];
   st[11]=st[7]*x-st[9]*y;
@@ -385,7 +390,13 @@ function p7_path_tick(st,buf,pos) local(x low mid high y b occ) (
   y=low*st[6]+mid*st[8]+high*st[10];
   st[15]=(1-sm_occ_a)*y+sm_occ_a*st[15];
   y=y*(1-st[14])+st[15]*st[14];
-  b=0;loop(6,y=p7_filter(st+32+b*12,y);b+=1;);
+  y=p7_filter(st+32,y);
+  y=p7_filter(st+44,y);
+  y=p7_filter(st+56,y);
+  y=p7_filter(st+68,y);
+  y=p7_filter(st+80,y);
+  y=p7_filter(st+92,y);
+
   y*st[4];
 );
 
@@ -4912,19 +4923,48 @@ p7_emit_r=.5*(input_mid-input_side*p7_width);
 p7_buf_l[p7_wpos]=p7_emit_l;p7_buf_r[p7_wpos]=p7_emit_r;
 p7_out_l=0;p7_out_r=0;p7_direct_l=0;p7_direct_r=0;p7_er_l=0;p7_er_r=0;
 p7_running ? (
-  p7_actor=0;
-  loop(2,
-    p7_buf=p7_actor==0 ? p7_buf_l : p7_buf_r;
-    p7_kind=0;
-    loop(7,
-      p7_st=p7_states+(p7_actor*14+p7_kind*2)*128;
-      p7_yl=p7_path_tick(p7_st,p7_buf,p7_wpos);
-      p7_yr=p7_path_tick(p7_st+128,p7_buf,p7_wpos);
-      p7_kind==0 ? (p7_direct_l+=p7_yl;p7_direct_r+=p7_yr;) : (p7_er_l+=p7_yl;p7_er_r+=p7_yr;);
-      p7_kind+=1;
-    );
-    p7_actor+=1;
-  );
+  p7_yl=p7_path_tick(p7_states+0,p7_buf_l,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+128,p7_buf_l,p7_wpos);
+  p7_direct_l+=p7_yl;p7_direct_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+256,p7_buf_l,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+384,p7_buf_l,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+512,p7_buf_l,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+640,p7_buf_l,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+768,p7_buf_l,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+896,p7_buf_l,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+1024,p7_buf_l,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+1152,p7_buf_l,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+1280,p7_buf_l,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+1408,p7_buf_l,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+1536,p7_buf_l,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+1664,p7_buf_l,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+1792,p7_buf_r,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+1920,p7_buf_r,p7_wpos);
+  p7_direct_l+=p7_yl;p7_direct_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+2048,p7_buf_r,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+2176,p7_buf_r,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+2304,p7_buf_r,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+2432,p7_buf_r,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+2560,p7_buf_r,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+2688,p7_buf_r,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+2816,p7_buf_r,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+2944,p7_buf_r,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+3072,p7_buf_r,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+3200,p7_buf_r,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
+  p7_yl=p7_path_tick(p7_states+3328,p7_buf_r,p7_wpos);
+  p7_yr=p7_path_tick(p7_states+3456,p7_buf_r,p7_wpos);
+  p7_er_l+=p7_yl;p7_er_r+=p7_yr;
   p7_out_l=p7_direct_l+p7_er_l;p7_out_r=p7_direct_r+p7_er_r;
   p7_anchor=1-mode_w2*(1-sm_bed_anchor);
   p7_out_l=p7_out_l*p7_anchor+in_l*(1-p7_anchor);

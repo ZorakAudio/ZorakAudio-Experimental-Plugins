@@ -21,6 +21,8 @@ slider3:1<0,1,1{Speakers,Headphones}>Mode
 slider4:0<-12,12,0.1>Output (dB)
 
 @init
+  za_sleep_ready = 0;
+  za_dpt_zero_run = 0;
   EPS = 0.00000000000000001;
 
   BUF_LEN  = 8192;
@@ -63,6 +65,20 @@ slider4:0<-12,12,0.1>Output (dB)
   // ~20ms automation smoothing
   slew_g = 1 - exp(-1/(0.02*srate));
 
+@block
+// Flush the ENTIRE ring, not merely the current audible tap. Slews must be
+// exact floating-point fixed points. In Headphones mode, also certify that
+// both active-ear filter updates with zero input leave their state unchanged.
+// The opposite ear is already frozen by normal processing and remains intact.
+za_dpt_settled = (pan_s + (pan_t-pan_s)*slew_g) === pan_s &&
+  (nat_s + (nat_t-nat_s)*slew_g) === nat_s;
+za_dpt_sh = pan_s >= 0 ? mem[st_shL] : mem[st_shR];
+za_dpt_df = pan_s >= 0 ? mem[st_dfL] : mem[st_dfR];
+za_dpt_filters_settled = (za_dpt_sh + gsh*(0-za_dpt_sh)) === za_dpt_sh &&
+  (za_dpt_df + gdf*(0-za_dpt_df)) === za_dpt_df;
+za_sleep_ready = za_dpt_zero_run >= BUF_LEN && za_dpt_settled &&
+  (mode === 0 || za_dpt_filters_settled);
+
 @sample
   // smooth controls (automation-safe)
   pan_s += (pan_t - pan_s) * slew_g;
@@ -70,6 +86,7 @@ slider4:0<-12,12,0.1>Output (dB)
 
   // mono panning source (predictable)
   x = 0.5*(spl0 + spl1);
+  x === 0 ? za_dpt_zero_run = min(BUF_LEN, za_dpt_zero_run+1) : za_dpt_zero_run = 0;
 
   // write into mono delay buffer
   mem[bX + (wofs & BUF_MASK)] = x;

@@ -173,6 +173,12 @@ slider62:0<0,242,1>--Hidden EQ Character Pack
 slider63:0<0,812990017200,1>--Legacy EQ Drive Import (retained)
 slider64:6<0,60,0.1>--Hidden Source Expand Depth (dB)
 @init
+za_char_drive0=-1;
+za_char_drive1=-1;
+za_char_drive2=-1;
+za_char_drive3=-1;
+za_char_drive4=-1;
+za_harm_amount=-1;
 // Sample v71 embedded Anti-Salience MX; source: Anti-Salience MX v1.1.0 supplied 2026-09-16.
 // 20 profiles: 1 + source_profile*4 + preset. Index 0 Legacy is owned by Sample.
 // Source-only integration: no external reference detector, standalone UI diagnostics, or trim.
@@ -7934,6 +7940,27 @@ function posteq_update_char_active()
     || (posteq_lpf_char > 0 && posteq_lpf_drive > 0.0001)) ? 1 : 0;
 );
 
+// Cache control-only character math. Key on the live value so GUI and slider
+// changes take effect immediately, including edits within a processing buffer.
+function posteq_cached_character(slot drive) (
+  slot==0 ? (
+  drive!=za_char_drive0 ? (za_char_drive0=drive;za_char_amp0=db2amp(drive);za_char_inv0=1/max(za_char_amp0,0.000001);za_char_wet0=clamp01((drive/24)^0.72););
+  posteq_cached_amp=za_char_amp0;posteq_cached_inv=za_char_inv0;posteq_cached_wet=za_char_wet0;
+ ) : slot==1 ? (
+  drive!=za_char_drive1 ? (za_char_drive1=drive;za_char_amp1=db2amp(drive);za_char_inv1=1/max(za_char_amp1,0.000001);za_char_wet1=clamp01((drive/24)^0.72););
+  posteq_cached_amp=za_char_amp1;posteq_cached_inv=za_char_inv1;posteq_cached_wet=za_char_wet1;
+ ) : slot==2 ? (
+  drive!=za_char_drive2 ? (za_char_drive2=drive;za_char_amp2=db2amp(drive);za_char_inv2=1/max(za_char_amp2,0.000001);za_char_wet2=clamp01((drive/24)^0.72););
+  posteq_cached_amp=za_char_amp2;posteq_cached_inv=za_char_inv2;posteq_cached_wet=za_char_wet2;
+ ) : slot==3 ? (
+  drive!=za_char_drive3 ? (za_char_drive3=drive;za_char_amp3=db2amp(drive);za_char_inv3=1/max(za_char_amp3,0.000001);za_char_wet3=clamp01((drive/24)^0.72););
+  posteq_cached_amp=za_char_amp3;posteq_cached_inv=za_char_inv3;posteq_cached_wet=za_char_wet3;
+ ) : slot==4 ? (
+  drive!=za_char_drive4 ? (za_char_drive4=drive;za_char_amp4=db2amp(drive);za_char_inv4=1/max(za_char_amp4,0.000001);za_char_wet4=clamp01((drive/24)^0.72););
+  posteq_cached_amp=za_char_amp4;posteq_cached_inv=za_char_inv4;posteq_cached_wet=za_char_wet4;
+ );
+);
+
 function posteq_apply_character_band(slot l r) local(topo drive driveamp invdrive wet bpL bpR shL shR resL resR air_guard)
 (
   topo = posteq_char_mode(slot);
@@ -7941,9 +7968,8 @@ function posteq_apply_character_band(slot l r) local(topo drive driveamp invdriv
   (topo > 0 && drive > 0.0001) ? (
     bpL = posteq_char_bq_process_l(slot, l + denorm_guard);
     bpR = posteq_char_bq_process_r(slot, r - denorm_guard);
-    driveamp = db2amp(drive);
-    invdrive = 1 / max(driveamp, 0.000001);
-    wet = clamp01((drive / 24) ^ 0.72);
+    posteq_cached_character(slot,drive);
+    driveamp=posteq_cached_amp;invdrive=posteq_cached_inv;wet=posteq_cached_wet;
 
     shL = posteq_topology_shape(bpL * driveamp, topo) * invdrive;
     shR = posteq_topology_shape(bpR * driveamp, topo) * invdrive;
@@ -8879,11 +8905,16 @@ function apply_output_harmonics() local(
     inL = outL;
     inR = outR;
 
-    h2 = 0.30 * (a ^ 0.92);
-    h3 = 0.22 * (a ^ 1.14);
-    h4 = 0.13 * harm_smoothstep(0.30, 0.88, a);
-    h5 = 0.12 * harm_smoothstep(0.44, 0.96, a);
-    h7 = 0.075 * harm_smoothstep(0.70, 1.00, a);
+    // These powers depend only on Amount, not band, audio or sample rate.
+    a != za_harm_amount ? (
+      za_harm_amount=a;
+      za_harm_h2=0.30*(a^0.92);za_harm_h3=0.22*(a^1.14);
+      za_harm_h4=0.13*harm_smoothstep(0.30,0.88,a);
+      za_harm_h5=0.12*harm_smoothstep(0.44,0.96,a);
+      za_harm_h7=0.075*harm_smoothstep(0.70,1.00,a);
+      za_harm_mix=0.22+0.78*(a^1.22);za_harm_wet=clamp01(0.20+0.88*(a^1.18));
+    );
+    h2=za_harm_h2;h3=za_harm_h3;h4=za_harm_h4;h5=za_harm_h5;h7=za_harm_h7;
 
     prevL = 0;
     prevR = 0;
@@ -8962,14 +8993,14 @@ function apply_output_harmonics() local(
 
       // The generated layer follows the original band envelope. This keeps the
       // effect in the realm of enrichment rather than crunchy full-band drive.
-      mix_gain = env * (0.22 + 0.78 * (a ^ 1.22)) * trans_guard * bright_guard;
+      mix_gain = env * za_harm_mix * trans_guard * bright_guard;
       harmL += (evenL + oddL) * mix_gain;
       harmR += (evenR + oddR) * mix_gain;
 
       i += 1;
     );
 
-    wet = clamp01(0.20 + 0.88 * (a ^ 1.18));
+    wet = za_harm_wet;
     busL = harm_safe(harmL * wet);
     busR = harm_safe(harmR * wet);
 

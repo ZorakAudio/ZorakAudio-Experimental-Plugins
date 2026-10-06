@@ -46,6 +46,27 @@ slider4:60<0,100,1:sqr>Preserve (%)
 slider5:0<-12,12,0.1>Output Trim (dB)
 
 @init
+za_sleep_ready=0;za_scalar_valid=0;za_scalar_zero=0;
+za_prev_m_lp15=0;
+za_prev_m_lp32=0;
+za_prev_m_lp55=0;
+za_prev_s_lp15=0;
+za_prev_s_lp32=0;
+za_prev_s_lp55=0;
+za_prev_k_lp15=0;
+za_prev_k_lp55=0;
+za_prev_a_bodye=0;
+za_prev_a_forme=0;
+za_prev_a_edgee=0;
+za_prev_a_aire=0;
+za_prev_a_srce=0;
+za_prev_m_hie=0;
+za_prev_s_hie=0;
+za_prev_a_click_faste=0;
+za_prev_a_click_slowe=0;
+za_prev_k_e=0;
+za_prev_common_db=0;
+za_prev_side_db=0;
 eps = 0.00000000000000000001;
 ilog10 = 1/log(10);
 
@@ -96,6 +117,8 @@ edgeW = 0;
 airW = 0;
 
 @slider
+// New controls require a new zero-input fixed-point certificate.
+za_scalar_valid=0;
 profile = slider1|0;
 push = slider2/100;
 tame = slider3/100;
@@ -251,7 +274,56 @@ broadW = min(max((0.05 + 0.08*push) * (1 - 0.35*presv) * pf_broad, 0), 0.20);
 K_gate   = -60;
 K_gate_w = 12;
 
+@block
+// Under fixed controls and zero input these scalar one-poles are monotone.
+// Equality over the entire preceding silent block certifies a fixed point.
+// This includes every persistent sample recurrence, not just audible output.
+za_sleep_ready = za_scalar_valid && za_scalar_zero &&
+  m_lp15 === za_prev_m_lp15 &&
+  m_lp32 === za_prev_m_lp32 &&
+  m_lp55 === za_prev_m_lp55 &&
+  s_lp15 === za_prev_s_lp15 &&
+  s_lp32 === za_prev_s_lp32 &&
+  s_lp55 === za_prev_s_lp55 &&
+  k_lp15 === za_prev_k_lp15 &&
+  k_lp55 === za_prev_k_lp55 &&
+  a_bodye === za_prev_a_bodye &&
+  a_forme === za_prev_a_forme &&
+  a_edgee === za_prev_a_edgee &&
+  a_aire === za_prev_a_aire &&
+  a_srce === za_prev_a_srce &&
+  m_hie === za_prev_m_hie &&
+  s_hie === za_prev_s_hie &&
+  a_click_faste === za_prev_a_click_faste &&
+  a_click_slowe === za_prev_a_click_slowe &&
+  k_e === za_prev_k_e &&
+  common_db === za_prev_common_db &&
+  side_db === za_prev_side_db;
+za_prev_m_lp15=m_lp15;
+za_prev_m_lp32=m_lp32;
+za_prev_m_lp55=m_lp55;
+za_prev_s_lp15=s_lp15;
+za_prev_s_lp32=s_lp32;
+za_prev_s_lp55=s_lp55;
+za_prev_k_lp15=k_lp15;
+za_prev_k_lp55=k_lp55;
+za_prev_a_bodye=a_bodye;
+za_prev_a_forme=a_forme;
+za_prev_a_edgee=a_edgee;
+za_prev_a_aire=a_aire;
+za_prev_a_srce=a_srce;
+za_prev_m_hie=m_hie;
+za_prev_s_hie=s_hie;
+za_prev_a_click_faste=a_click_faste;
+za_prev_a_click_slowe=a_click_slowe;
+za_prev_k_e=k_e;
+za_prev_common_db=common_db;
+za_prev_side_db=side_db;
+za_scalar_zero=1;za_scalar_valid=1;
+
 @sample
+// Observe original source AND key channels before sample code overwrites them.
+za_scalar_zero = za_scalar_zero && spl0 === 0 && spl1 === 0 && spl2 === 0 && spl3 === 0;
 L0 = spl0;
 R0 = spl1;
 K0 = (spl2 + spl3) * 0.5; // optional reference / dialogue / lead

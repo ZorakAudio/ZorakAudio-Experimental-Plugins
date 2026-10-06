@@ -83,3 +83,8 @@ ADS is not the right tool when you want obvious pumping, rhythmic keying, or big
 
 ## In one sentence
 ADS keeps ambience supportive, wide, and under control without letting it steal the spotlight.
+
+
+## Cooperative idle
+
+The native host may sleep only after a fully silent source/key block leaves every persistent detector and gain state exactly unchanged. Slider changes invalidate the certificate. The host also requires exact silent output and no pending activity. New audio, controls, or host events wake processing. Offline rendering always processes. Stock REAPER continues processing normally; the readiness variable is a native-host hint.

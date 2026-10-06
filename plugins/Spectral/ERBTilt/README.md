@@ -42,3 +42,11 @@ Upper-band anti-harshness protection.
 
 ## In one sentence
 ERB Tilt gives you a brighter/darker macro that stays more perceptual, more level-aware, and less nasty than a crude tilt filter.
+
+## Native FAUST filter-bank implementation
+
+The compiled plugin now uses `@faust` for its sample filter bank, while EEL keeps control calculations and the existing display. FAUST with its LLVM backend is needed at build time; it is not a runtime dependency.
+
+Stock REAPER JSFX does not support `@faust`. Its original source remains available as `src/ERB Tilt.jsfx`; use that file directly in REAPER. The native build entry is `src/ERB Tilt Faust.jsfx`.
+
+Detector state still evolves during silence, so this plugin does not grant cooperative sleep.

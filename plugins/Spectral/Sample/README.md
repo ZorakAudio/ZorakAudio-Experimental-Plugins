@@ -94,3 +94,7 @@ Use a traditional multisampler when you need exact key zones, velocity-layer aut
 
 ## In one sentence
 Sample turns a loose bank of audio files into a playable, variable instrument with almost no setup.
+
+## Optional FAUST character build
+
+[Sample Faust](../SampleFaust/README.md) provides a separately identified native build with block-processed character bands. The cached Sample remains the default: the benefit depends on active processing and buffer size, and character-disabled operation has a small measured overhead. See the [integration audit](../../../docs/Sample-Faust-Character-Integration.md) for complete-plugin timing and correctness evidence.

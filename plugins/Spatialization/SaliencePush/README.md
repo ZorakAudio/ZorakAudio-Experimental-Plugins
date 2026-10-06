@@ -58,3 +58,8 @@ Without a reference, the plugin falls back to self-salience. With a reference, i
 
 ## In one sentence
 SaliencePush makes a source sit back by reducing attention capture, not by simply turning the whole thing down.
+
+
+## Cooperative idle
+
+The native host may sleep only after a fully silent source/key block leaves every persistent detector and gain state exactly unchanged. Slider changes invalidate the certificate. The host also requires exact silent output and no pending activity. New audio, controls, or host events wake processing. Offline rendering always processes. Stock REAPER continues processing normally; the readiness variable is a native-host hint.

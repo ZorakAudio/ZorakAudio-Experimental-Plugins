@@ -114,10 +114,17 @@ static void heapSwapChecks(DSPJSFX_State& s) {
 }
 int main() {
   auto runtime = std::make_unique<jsfx_tasks::Runtime>();
+  assert(!runtime->hasOutstandingWorkForIdle());
   DSPJSFX_State state{};
   state.taskContext = runtime.get();
   state.srate = 48000;
   arenaChecks(state);
+  // A finished but unreleased result is still a polling obligation.
+  double idleJob=0;while(idleJob<=0)idleJob=jsfx_task_submit(&state,leaf,nullptr,0,0,1,0,0);
+  assert(runtime->hasOutstandingWorkForIdle());wait(state,idleJob);
+  assert(runtime->hasOutstandingWorkForIdle());
+  while(api(state,4,idleJob)==-2){};
+  assert(!runtime->hasOutstandingWorkForIdle());
   heapSwapChecks(state);
   jsfx_init(&state);
   wait(state, value(state, "joined"));

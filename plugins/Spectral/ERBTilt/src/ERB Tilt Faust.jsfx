@@ -1,0 +1,1146 @@
+desc:ERB Tilt EQ (Perceptual) - tilt + loudness comp + roughness guard
+
+// Controls (4 knobs)
+// #HELP: ERB tilt EQ: applies a smooth bright↔dark tilt using an ERB-spaced filterbank so the change feels consistent across the spectrum.
+// #HELP: Pivot sets the “hinge” frequency; Tilt pushes lows and highs in opposite directions around that hinge (with a built-in safety clamp).
+// #HELP: Comp keeps loudness steady by matching A-weighted energy before vs after the tilt (smoothed to avoid pumping).
+// #HELP: Roughness Guard reduces harsh “fizz / grit” caused by high-band amplitude modulation by dynamically saturating only when roughness is detected.
+
+// #TOOLTIP: Perceptual tilt in ERB space. Positive = brighter, negative = darker. Uses per-band gain with safety clamp to prevent extreme curves.
+slider1:0<-18,18,0.1:log>Tilt (dB)
+// #TOOLTIP: Frequency that stays “anchored” while tilting. Bands below pivot move opposite of bands above pivot (in ERB distance, not linear Hz).
+slider2:1000<20,20000,1:log>Pivot (Hz)
+// #TOOLTIP: Global loudness compensation based on A-weighted ERB-band energy (pre vs post). 0% = no comp, 100% = fully match perceived loudness across tilts.
+slider3:100<0,100,1:sqr>Comp (Loudness) %
+// #TOOLTIP: Anti-harshness guard for upper bands (≈2 kHz+): detects fast-vs-slow envelope divergence (AM roughness proxy) and applies modulation-driven soft saturation to reduce rough AM salience without killing brightness.
+slider4:50<0,100,1:sqr>Roughness Guard %
+
+@init
+et_gain0=0;
+et_freq0=0;
+et_a0=0;
+et_pre0=0;
+et_post0=0;
+et_fast0=0;
+et_slow0=0;
+et_gain1=0;
+et_freq1=0;
+et_a1=0;
+et_pre1=0;
+et_post1=0;
+et_fast1=0;
+et_slow1=0;
+et_gain2=0;
+et_freq2=0;
+et_a2=0;
+et_pre2=0;
+et_post2=0;
+et_fast2=0;
+et_slow2=0;
+et_gain3=0;
+et_freq3=0;
+et_a3=0;
+et_pre3=0;
+et_post3=0;
+et_fast3=0;
+et_slow3=0;
+et_gain4=0;
+et_freq4=0;
+et_a4=0;
+et_pre4=0;
+et_post4=0;
+et_fast4=0;
+et_slow4=0;
+et_gain5=0;
+et_freq5=0;
+et_a5=0;
+et_pre5=0;
+et_post5=0;
+et_fast5=0;
+et_slow5=0;
+et_gain6=0;
+et_freq6=0;
+et_a6=0;
+et_pre6=0;
+et_post6=0;
+et_fast6=0;
+et_slow6=0;
+et_gain7=0;
+et_freq7=0;
+et_a7=0;
+et_pre7=0;
+et_post7=0;
+et_fast7=0;
+et_slow7=0;
+et_gain8=0;
+et_freq8=0;
+et_a8=0;
+et_pre8=0;
+et_post8=0;
+et_fast8=0;
+et_slow8=0;
+et_gain9=0;
+et_freq9=0;
+et_a9=0;
+et_pre9=0;
+et_post9=0;
+et_fast9=0;
+et_slow9=0;
+et_gain10=0;
+et_freq10=0;
+et_a10=0;
+et_pre10=0;
+et_post10=0;
+et_fast10=0;
+et_slow10=0;
+et_gain11=0;
+et_freq11=0;
+et_a11=0;
+et_pre11=0;
+et_post11=0;
+et_fast11=0;
+et_slow11=0;
+et_gain12=0;
+et_freq12=0;
+et_a12=0;
+et_pre12=0;
+et_post12=0;
+et_fast12=0;
+et_slow12=0;
+et_gain13=0;
+et_freq13=0;
+et_a13=0;
+et_pre13=0;
+et_post13=0;
+et_fast13=0;
+et_slow13=0;
+et_gain14=0;
+et_freq14=0;
+et_a14=0;
+et_pre14=0;
+et_post14=0;
+et_fast14=0;
+et_slow14=0;
+et_gain15=0;
+et_freq15=0;
+et_pre15=0;
+et_post15=0;
+et_fast15=0;
+et_slow15=0;
+// ---------- constants ----------
+pi = 3.141592653589793;
+ln10 = 2.302585092994046;
+inv_ln10 = 0.4342944819032518;
+db2lin = 0.11512925464970229; // ln(10)/20
+
+// ---------- filterbank config ----------
+NB = 16;
+NBm1 = 15;
+rough_start_hz = 2000;
+
+// ---------- memory layout ----------
+mempos = 0;
+
+lpL   = mempos; mempos += NBm1;
+lpR   = mempos; mempos += NBm1;
+lpA   = mempos; mempos += NBm1;
+
+preE  = mempos; mempos += NB;
+postE = mempos; mempos += NB;
+
+envF  = mempos; mempos += NB;
+envS  = mempos; mempos += NB;
+
+gBand = mempos; mempos += NB;
+wBand = mempos; mempos += NB;
+fcBand = mempos; mempos += NB;
+erbBand = mempos; mempos += NB;
+
+memset(0, 0, mempos);
+
+// ---------- state ----------
+last_srate = 0;
+global_gain = 1;
+
+// ---------- functions ----------
+function clamp(x, lo, hi)
+(
+  x < lo ? lo : (x > hi ? hi : x);
+);
+
+function erb_from_hz(f)
+(
+  // ERB number: 21.4 * log10(0.00437*f + 1)
+  21.4 * log(0.00437*f + 1) * inv_ln10;
+);
+
+function hz_from_erb(e)
+(
+  // f = (10^(e/21.4) - 1) / 0.00437
+  (exp((e/21.4) * ln10) - 1) / 0.00437;
+);
+
+function a_weight_amp(f)
+(
+  // A-weight amplitude ratio (not dB), derived from standard A-weighting:
+  // A(f) = 20*log10(RA) + 2
+  // amp = 10^(A/20) = 10^(0.1) * RA = 1.2589254117941673 * RA
+  f2 = f*f;
+  num = (12200*12200) * (f2*f2);
+  den1 = f2 + (20.6*20.6);
+  den2 = sqrt( (f2 + (107.7*107.7)) * (f2 + (737.9*737.9)) );
+  den3 = f2 + (12200*12200);
+  ra = num / (den1 * den2 * den3);
+  ra * 1.2589254117941673;
+);
+
+
+function recalc_gains()
+(
+  tilt_db = slider1;
+  pivot_hz = clamp(slider2, 20, fmax);
+  erb_pivot = erb_from_hz(pivot_hz);
+
+  // dB per ERB so that with pivot centered, edges land near +/- tilt_db
+  slope = (2*tilt_db) / (erb_range + 0.000001);
+
+  i = 0;
+  while(i < NB)
+  (
+    gdB = slope * (erbBand[i] - erb_pivot);
+
+    // SAFE clamp (prevents extreme pivot + tilt from going feral)
+    gdB = clamp(gdB, -24, 24);
+
+    gBand[i] = exp(gdB * db2lin);
+
+    i += 1;
+  );
+);
+function build_filterbank()
+(
+  work_srate = srate;
+  work_srate < 1000 ? work_srate = last_good_srate;
+  work_srate < 1000 ? work_srate = 48000;
+
+  nyq = work_srate * 0.5;
+  fmax = 20000;
+  fmax > nyq*0.98 ? fmax = nyq*0.98;
+  fmax < 40 ? fmax = 40;
+
+  erb_min = erb_from_hz(20);
+  erb_max = erb_from_hz(fmax);
+  erb_range = erb_max - erb_min;
+  erb_step = erb_range / NB;
+
+  // per-band centers + weights
+  i = 0;
+  while(i < NB)
+  (
+    erb_c = erb_min + (i + 0.5) * erb_step;
+    erbBand[i] = erb_c;
+
+    fc = hz_from_erb(erb_c);
+    fc > fmax ? fc = fmax;
+    fcBand[i] = fc;
+
+    aw = a_weight_amp(fc);
+    wBand[i] = aw * aw;
+
+    i += 1;
+  );
+
+  // crossover boundaries
+  i = 0;
+  while(i < NBm1)
+  (
+    erb_b = erb_min + (i + 1) * erb_step;
+    f = hz_from_erb(erb_b);
+    f > nyq*0.98 ? f = nyq*0.98;
+    f < 10 ? f = 10;
+
+    a = exp(-2*pi*f/work_srate);
+    lpA[i] = a;
+
+    i += 1;
+  );
+
+  tauE = 0.300;
+  energy_smooth = 1 - exp(-1/(tauE*work_srate));
+
+  tauF = 0.008;
+  rough_fast = 1 - exp(-1/(tauF*work_srate));
+
+  tauS = 0.080;
+  rough_slow = 1 - exp(-1/(tauS*work_srate));
+
+  gain_tau = 0.120;
+);
+// ---------- build once ----------
+srate >= 1000 ? last_good_srate = srate;
+build_filterbank();
+recalc_gains();
+last_srate = srate;
+
+// GFX: ERB Tilt Visualizer (SAFE)
+// ==============================
+//
+// What it shows (perceptual, not FFT):
+//  - 16 ERB band centers on a log-frequency X axis
+//  - 0 dB baseline
+//  - Tilt curve (per-band gain in dB) as a polyline
+//  - Global loudness compensation as a vertical offset (dB) + readout
+//  - Pivot marker line
+//  - Roughness Guard activity bars on high bands (uses envF/envS -> mod proxy)
+//  - Optional faint pre/post energy bars (ERB energies), smoothed in UI
+//
+// ---------- state ----------
+last_srate = 0;
+last_good_srate = 48000;
+global_gain = 1;
+ext_noinit = 1;
+
+// ---------- GFX state ----------
+ui_bank = 0;
+
+// gfx-private smoothing state
+ui_pre  = mempos; mempos += NB;
+ui_post = mempos; mempos += NB;
+ui_mod  = mempos; mempos += NB;
+ui_gdb  = mempos; mempos += NB;
+ui_ggdb = mempos; mempos += 1;
+
+// double-buffered snapshots (written in @block, read in @gfx)
+snap_curve0 = mempos; mempos += NB;
+snap_curve1 = mempos; mempos += NB;
+
+snap_pre0   = mempos; mempos += NB;
+snap_pre1   = mempos; mempos += NB;
+
+snap_post0  = mempos; mempos += NB;
+snap_post1  = mempos; mempos += NB;
+
+snap_mod0   = mempos; mempos += NB;
+snap_mod1   = mempos; mempos += NB;
+
+snap_ggdb0  = mempos; mempos += 1;
+snap_ggdb1  = mempos; mempos += 1;
+
+// final clear AFTER all allocations
+memset(0, 0, mempos);
+
+// ---------- UI helper functions ----------
+function log10_(x) ( log(x) * inv_ln10; );
+
+function lin2db_(x)
+(
+  x <= 0.0000000001 ? -240 : (20 * log10_(x));
+);
+
+function sane_(x, fb)
+(
+  (x == x) && (abs(x) < 1000000000) ? x : fb;
+);
+
+function log10_(x)
+(
+  log(x) * inv_ln10;
+);
+
+function lin2db_(x)
+(
+  x <= 0.0000000001 ? -240 : (20 * log10_(x));
+);
+
+
+function hz_to_x_(f, x0, x1) local(f_hi l0 l1 t)
+(
+  f_hi = fmax;
+  f_hi < 40 ? f_hi = 20000;
+
+  f < 20 ? f = 20;
+  f > f_hi ? f = f_hi;
+
+  l0 = log(20);
+  l1 = log(f_hi);
+  t = (log(f) - l0) / (l1 - l0 + 0.000001);
+  x0 + t * (x1 - x0);
+);
+
+function db_to_y_(db, y0, y1, db_range) local(mid scale)
+(
+  db = sane_(db, 0);
+  mid = 0.5 * (y0 + y1);
+  scale = (y1 - y0) / (2*db_range + 0.000001);
+  mid - db * scale;
+);
+function draw_text_(x,y, str)
+(
+  gfx_x = x; gfx_y = y;
+  gfx_drawstr(str);
+);
+
+function draw_line_(x1,y1,x2,y2)
+(
+  gfx_line(x1,y1,x2,y2,1);
+);
+
+function draw_rect_fill_(x,y,w,h)
+(
+  gfx_rect(x,y,w,h,1);
+);
+
+// tiny number formatter (no sprintf in JSFX)
+function fmt_db_(v)
+(
+  // returns gfx_str by using gfx_printf if available; fallback: draw sign + integer-ish
+  // Most JSFX support gfx_printf.
+  gfx_printf("%.1f", v);
+);
+
+function draw_freq_tick_(f, label, x0, x1, y1)
+(
+  xx = hz_to_x_(f, x0, x1);
+  gfx_r = 0.22; gfx_g = 0.22; gfx_b = 0.24; gfx_a = 1;
+  gfx_line(xx, y1, xx, y1 + 4, 1);
+  gfx_r = 0.65; gfx_g = 0.65; gfx_b = 0.68; gfx_a = 1;
+  gfx_x = xx - 10; gfx_y = y1 + 8;
+  gfx_drawstr(label);
+);
+
+@slider
+comp_mix = slider3 / 100;
+guard = slider4 / 100;
+recalc_gains();
+
+@block
+// Publish previous block energy/follower state before compensation.
+preE[0]=et_pre0;
+postE[0]=et_post0;
+envF[0]=et_fast0;
+envS[0]=et_slow0;
+preE[1]=et_pre1;
+postE[1]=et_post1;
+envF[1]=et_fast1;
+envS[1]=et_slow1;
+preE[2]=et_pre2;
+postE[2]=et_post2;
+envF[2]=et_fast2;
+envS[2]=et_slow2;
+preE[3]=et_pre3;
+postE[3]=et_post3;
+envF[3]=et_fast3;
+envS[3]=et_slow3;
+preE[4]=et_pre4;
+postE[4]=et_post4;
+envF[4]=et_fast4;
+envS[4]=et_slow4;
+preE[5]=et_pre5;
+postE[5]=et_post5;
+envF[5]=et_fast5;
+envS[5]=et_slow5;
+preE[6]=et_pre6;
+postE[6]=et_post6;
+envF[6]=et_fast6;
+envS[6]=et_slow6;
+preE[7]=et_pre7;
+postE[7]=et_post7;
+envF[7]=et_fast7;
+envS[7]=et_slow7;
+preE[8]=et_pre8;
+postE[8]=et_post8;
+envF[8]=et_fast8;
+envS[8]=et_slow8;
+preE[9]=et_pre9;
+postE[9]=et_post9;
+envF[9]=et_fast9;
+envS[9]=et_slow9;
+preE[10]=et_pre10;
+postE[10]=et_post10;
+envF[10]=et_fast10;
+envS[10]=et_slow10;
+preE[11]=et_pre11;
+postE[11]=et_post11;
+envF[11]=et_fast11;
+envS[11]=et_slow11;
+preE[12]=et_pre12;
+postE[12]=et_post12;
+envF[12]=et_fast12;
+envS[12]=et_slow12;
+preE[13]=et_pre13;
+postE[13]=et_post13;
+envF[13]=et_fast13;
+envS[13]=et_slow13;
+preE[14]=et_pre14;
+postE[14]=et_post14;
+envF[14]=et_fast14;
+envS[14]=et_slow14;
+preE[15]=et_pre15;
+postE[15]=et_post15;
+envF[15]=et_fast15;
+envS[15]=et_slow15;
+srate >= 1000 ? last_good_srate = srate;
+
+// rebuild if sample rate changes
+srate != last_srate ?
+(
+  memset(0, 0, mempos);
+  build_filterbank();
+  recalc_gains();
+  last_srate = srate;
+);
+
+// loudness comp target (ERB-band energies, A-weighted)
+Lpre = 0;
+Lpost = 0;
+
+i = 0;
+while(i < NB)
+(
+  Lpre += wBand[i] * preE[i];
+  Lpost += wBand[i] * postE[i];
+  i += 1;
+);
+
+eps = 0.0000000001;
+target = sqrt( (Lpre + eps) / (Lpost + eps) );
+target = clamp(target, 0.25, 4);
+
+blend = 1 + comp_mix * (target - 1);
+
+// smooth global gain per block
+alpha = exp( -samplesblock / (gain_tau*srate + 0.000001) );
+global_gain = global_gain*alpha + blend*(1 - alpha);
+// ---------- snapshot UI data into inactive bank ----------
+u.next_bank = 1 - ui_bank;
+
+u.next_bank ? (
+  u.snap_curve = snap_curve1;
+  u.snap_pre   = snap_pre1;
+  u.snap_post  = snap_post1;
+  u.snap_mod   = snap_mod1;
+  u.snap_ggdb  = snap_ggdb1;
+) : (
+  u.snap_curve = snap_curve0;
+  u.snap_pre   = snap_pre0;
+  u.snap_post  = snap_post0;
+  u.snap_mod   = snap_mod0;
+  u.snap_ggdb  = snap_ggdb0;
+);
+
+u.gg_db = clamp(sane_(lin2db_(global_gain), 0), -24, 24);
+u.snap_ggdb[0] = u.gg_db;
+
+u.i = 0;
+while(u.i < NB)
+(
+  u.bdB = clamp(sane_(lin2db_(gBand[u.i]) + u.gg_db, 0), -36, 36);
+  u.snap_curve[u.i] = u.bdB;
+
+  u.snap_pre[u.i]  = sane_(log(preE[u.i]  + 0.000000001), -20);
+  u.snap_post[u.i] = sane_(log(postE[u.i] + 0.000000001), -20);
+
+  u.m = 0;
+  fcBand[u.i] > rough_start_hz ? (
+    u.m = (envF[u.i] - envS[u.i]) / (envS[u.i] + 0.000001);
+    u.m < 0 ? u.m = 0;
+    u.sat = guard * u.m * 6;
+    u.m = u.sat / (u.sat + 1);
+  );
+  u.snap_mod[u.i] = clamp(sane_(u.m, 0), 0, 1);
+
+  u.i += 1;
+);
+
+ui_bank = u.next_bank;
+
+et_gain0=gBand[0];
+et_freq0=fcBand[0];
+et_a0=lpA[0];
+et_gain1=gBand[1];
+et_freq1=fcBand[1];
+et_a1=lpA[1];
+et_gain2=gBand[2];
+et_freq2=fcBand[2];
+et_a2=lpA[2];
+et_gain3=gBand[3];
+et_freq3=fcBand[3];
+et_a3=lpA[3];
+et_gain4=gBand[4];
+et_freq4=fcBand[4];
+et_a4=lpA[4];
+et_gain5=gBand[5];
+et_freq5=fcBand[5];
+et_a5=lpA[5];
+et_gain6=gBand[6];
+et_freq6=fcBand[6];
+et_a6=lpA[6];
+et_gain7=gBand[7];
+et_freq7=fcBand[7];
+et_a7=lpA[7];
+et_gain8=gBand[8];
+et_freq8=fcBand[8];
+et_a8=lpA[8];
+et_gain9=gBand[9];
+et_freq9=fcBand[9];
+et_a9=lpA[9];
+et_gain10=gBand[10];
+et_freq10=fcBand[10];
+et_a10=lpA[10];
+et_gain11=gBand[11];
+et_freq11=fcBand[11];
+et_a11=lpA[11];
+et_gain12=gBand[12];
+et_freq12=fcBand[12];
+et_a12=lpA[12];
+et_gain13=gBand[13];
+et_freq13=fcBand[13];
+et_a13=lpA[13];
+et_gain14=gBand[14];
+et_freq14=fcBand[14];
+et_a14=lpA[14];
+et_gain15=gBand[15];
+et_freq15=fcBand[15];
+
+@faust
+// Whole fixed ERB bank; EEL retains coefficient setup, compensation and UI.
+et_lp(a,x)=x:(step~_):(!,_) with {
+    step(previous,value)=next,next with { next=(1-a)*value+a*previous; };
+};
+et_pole(c,x)=x:(step~_):(!,_) with {
+    step(previous,value)=next,next with { next=previous+(value-previous)*c; };
+};
+et_guarded(c,on,x)=x:(step~_):(!,_) with {
+    step(previous,value)=next,next with { next=previous+select2(on,0,(value-previous)*c); };
+};
+et_lp_l0=et_lp(et_a0,spl0);
+et_lp_l1=et_lp(et_a1,spl0);
+et_lp_l2=et_lp(et_a2,spl0);
+et_lp_l3=et_lp(et_a3,spl0);
+et_lp_l4=et_lp(et_a4,spl0);
+et_lp_l5=et_lp(et_a5,spl0);
+et_lp_l6=et_lp(et_a6,spl0);
+et_lp_l7=et_lp(et_a7,spl0);
+et_lp_l8=et_lp(et_a8,spl0);
+et_lp_l9=et_lp(et_a9,spl0);
+et_lp_l10=et_lp(et_a10,spl0);
+et_lp_l11=et_lp(et_a11,spl0);
+et_lp_l12=et_lp(et_a12,spl0);
+et_lp_l13=et_lp(et_a13,spl0);
+et_lp_l14=et_lp(et_a14,spl0);
+et_band_l0=et_lp_l0;
+et_band_l1=et_lp_l1-et_lp_l0;
+et_band_l2=et_lp_l2-et_lp_l1;
+et_band_l3=et_lp_l3-et_lp_l2;
+et_band_l4=et_lp_l4-et_lp_l3;
+et_band_l5=et_lp_l5-et_lp_l4;
+et_band_l6=et_lp_l6-et_lp_l5;
+et_band_l7=et_lp_l7-et_lp_l6;
+et_band_l8=et_lp_l8-et_lp_l7;
+et_band_l9=et_lp_l9-et_lp_l8;
+et_band_l10=et_lp_l10-et_lp_l9;
+et_band_l11=et_lp_l11-et_lp_l10;
+et_band_l12=et_lp_l12-et_lp_l11;
+et_band_l13=et_lp_l13-et_lp_l12;
+et_band_l14=et_lp_l14-et_lp_l13;
+et_band_l15=spl0-et_lp_l14;
+et_lp_r0=et_lp(et_a0,spl1);
+et_lp_r1=et_lp(et_a1,spl1);
+et_lp_r2=et_lp(et_a2,spl1);
+et_lp_r3=et_lp(et_a3,spl1);
+et_lp_r4=et_lp(et_a4,spl1);
+et_lp_r5=et_lp(et_a5,spl1);
+et_lp_r6=et_lp(et_a6,spl1);
+et_lp_r7=et_lp(et_a7,spl1);
+et_lp_r8=et_lp(et_a8,spl1);
+et_lp_r9=et_lp(et_a9,spl1);
+et_lp_r10=et_lp(et_a10,spl1);
+et_lp_r11=et_lp(et_a11,spl1);
+et_lp_r12=et_lp(et_a12,spl1);
+et_lp_r13=et_lp(et_a13,spl1);
+et_lp_r14=et_lp(et_a14,spl1);
+et_band_r0=et_lp_r0;
+et_band_r1=et_lp_r1-et_lp_r0;
+et_band_r2=et_lp_r2-et_lp_r1;
+et_band_r3=et_lp_r3-et_lp_r2;
+et_band_r4=et_lp_r4-et_lp_r3;
+et_band_r5=et_lp_r5-et_lp_r4;
+et_band_r6=et_lp_r6-et_lp_r5;
+et_band_r7=et_lp_r7-et_lp_r6;
+et_band_r8=et_lp_r8-et_lp_r7;
+et_band_r9=et_lp_r9-et_lp_r8;
+et_band_r10=et_lp_r10-et_lp_r9;
+et_band_r11=et_lp_r11-et_lp_r10;
+et_band_r12=et_lp_r12-et_lp_r11;
+et_band_r13=et_lp_r13-et_lp_r12;
+et_band_r14=et_lp_r14-et_lp_r13;
+et_band_r15=spl1-et_lp_r14;
+et_pre0=et_pole(energy_smooth,0.5*(et_band_l0*et_band_l0+et_band_r0*et_band_r0));
+et_y_l0=et_band_l0*et_gain0;
+et_y_r0=et_band_r0*et_gain0;
+et_amp0=0.5*(abs(et_y_l0)+abs(et_y_r0));
+et_fast0=et_guarded(rough_fast,et_freq0>rough_start_hz,et_amp0);
+et_slow0=et_guarded(rough_slow,et_freq0>rough_start_hz,et_amp0);
+et_sat0=guard*max(0,(et_fast0-et_slow0)/(et_slow0+0.000001))*6;
+et_out_l0=select2(et_freq0>rough_start_hz,et_y_l0,et_y_l0/(1+et_sat0*abs(et_y_l0)));
+et_out_r0=select2(et_freq0>rough_start_hz,et_y_r0,et_y_r0/(1+et_sat0*abs(et_y_r0)));
+et_post0=et_pole(energy_smooth,0.5*(et_out_l0*et_out_l0+et_out_r0*et_out_r0));
+et_pre1=et_pole(energy_smooth,0.5*(et_band_l1*et_band_l1+et_band_r1*et_band_r1));
+et_y_l1=et_band_l1*et_gain1;
+et_y_r1=et_band_r1*et_gain1;
+et_amp1=0.5*(abs(et_y_l1)+abs(et_y_r1));
+et_fast1=et_guarded(rough_fast,et_freq1>rough_start_hz,et_amp1);
+et_slow1=et_guarded(rough_slow,et_freq1>rough_start_hz,et_amp1);
+et_sat1=guard*max(0,(et_fast1-et_slow1)/(et_slow1+0.000001))*6;
+et_out_l1=select2(et_freq1>rough_start_hz,et_y_l1,et_y_l1/(1+et_sat1*abs(et_y_l1)));
+et_out_r1=select2(et_freq1>rough_start_hz,et_y_r1,et_y_r1/(1+et_sat1*abs(et_y_r1)));
+et_post1=et_pole(energy_smooth,0.5*(et_out_l1*et_out_l1+et_out_r1*et_out_r1));
+et_pre2=et_pole(energy_smooth,0.5*(et_band_l2*et_band_l2+et_band_r2*et_band_r2));
+et_y_l2=et_band_l2*et_gain2;
+et_y_r2=et_band_r2*et_gain2;
+et_amp2=0.5*(abs(et_y_l2)+abs(et_y_r2));
+et_fast2=et_guarded(rough_fast,et_freq2>rough_start_hz,et_amp2);
+et_slow2=et_guarded(rough_slow,et_freq2>rough_start_hz,et_amp2);
+et_sat2=guard*max(0,(et_fast2-et_slow2)/(et_slow2+0.000001))*6;
+et_out_l2=select2(et_freq2>rough_start_hz,et_y_l2,et_y_l2/(1+et_sat2*abs(et_y_l2)));
+et_out_r2=select2(et_freq2>rough_start_hz,et_y_r2,et_y_r2/(1+et_sat2*abs(et_y_r2)));
+et_post2=et_pole(energy_smooth,0.5*(et_out_l2*et_out_l2+et_out_r2*et_out_r2));
+et_pre3=et_pole(energy_smooth,0.5*(et_band_l3*et_band_l3+et_band_r3*et_band_r3));
+et_y_l3=et_band_l3*et_gain3;
+et_y_r3=et_band_r3*et_gain3;
+et_amp3=0.5*(abs(et_y_l3)+abs(et_y_r3));
+et_fast3=et_guarded(rough_fast,et_freq3>rough_start_hz,et_amp3);
+et_slow3=et_guarded(rough_slow,et_freq3>rough_start_hz,et_amp3);
+et_sat3=guard*max(0,(et_fast3-et_slow3)/(et_slow3+0.000001))*6;
+et_out_l3=select2(et_freq3>rough_start_hz,et_y_l3,et_y_l3/(1+et_sat3*abs(et_y_l3)));
+et_out_r3=select2(et_freq3>rough_start_hz,et_y_r3,et_y_r3/(1+et_sat3*abs(et_y_r3)));
+et_post3=et_pole(energy_smooth,0.5*(et_out_l3*et_out_l3+et_out_r3*et_out_r3));
+et_pre4=et_pole(energy_smooth,0.5*(et_band_l4*et_band_l4+et_band_r4*et_band_r4));
+et_y_l4=et_band_l4*et_gain4;
+et_y_r4=et_band_r4*et_gain4;
+et_amp4=0.5*(abs(et_y_l4)+abs(et_y_r4));
+et_fast4=et_guarded(rough_fast,et_freq4>rough_start_hz,et_amp4);
+et_slow4=et_guarded(rough_slow,et_freq4>rough_start_hz,et_amp4);
+et_sat4=guard*max(0,(et_fast4-et_slow4)/(et_slow4+0.000001))*6;
+et_out_l4=select2(et_freq4>rough_start_hz,et_y_l4,et_y_l4/(1+et_sat4*abs(et_y_l4)));
+et_out_r4=select2(et_freq4>rough_start_hz,et_y_r4,et_y_r4/(1+et_sat4*abs(et_y_r4)));
+et_post4=et_pole(energy_smooth,0.5*(et_out_l4*et_out_l4+et_out_r4*et_out_r4));
+et_pre5=et_pole(energy_smooth,0.5*(et_band_l5*et_band_l5+et_band_r5*et_band_r5));
+et_y_l5=et_band_l5*et_gain5;
+et_y_r5=et_band_r5*et_gain5;
+et_amp5=0.5*(abs(et_y_l5)+abs(et_y_r5));
+et_fast5=et_guarded(rough_fast,et_freq5>rough_start_hz,et_amp5);
+et_slow5=et_guarded(rough_slow,et_freq5>rough_start_hz,et_amp5);
+et_sat5=guard*max(0,(et_fast5-et_slow5)/(et_slow5+0.000001))*6;
+et_out_l5=select2(et_freq5>rough_start_hz,et_y_l5,et_y_l5/(1+et_sat5*abs(et_y_l5)));
+et_out_r5=select2(et_freq5>rough_start_hz,et_y_r5,et_y_r5/(1+et_sat5*abs(et_y_r5)));
+et_post5=et_pole(energy_smooth,0.5*(et_out_l5*et_out_l5+et_out_r5*et_out_r5));
+et_pre6=et_pole(energy_smooth,0.5*(et_band_l6*et_band_l6+et_band_r6*et_band_r6));
+et_y_l6=et_band_l6*et_gain6;
+et_y_r6=et_band_r6*et_gain6;
+et_amp6=0.5*(abs(et_y_l6)+abs(et_y_r6));
+et_fast6=et_guarded(rough_fast,et_freq6>rough_start_hz,et_amp6);
+et_slow6=et_guarded(rough_slow,et_freq6>rough_start_hz,et_amp6);
+et_sat6=guard*max(0,(et_fast6-et_slow6)/(et_slow6+0.000001))*6;
+et_out_l6=select2(et_freq6>rough_start_hz,et_y_l6,et_y_l6/(1+et_sat6*abs(et_y_l6)));
+et_out_r6=select2(et_freq6>rough_start_hz,et_y_r6,et_y_r6/(1+et_sat6*abs(et_y_r6)));
+et_post6=et_pole(energy_smooth,0.5*(et_out_l6*et_out_l6+et_out_r6*et_out_r6));
+et_pre7=et_pole(energy_smooth,0.5*(et_band_l7*et_band_l7+et_band_r7*et_band_r7));
+et_y_l7=et_band_l7*et_gain7;
+et_y_r7=et_band_r7*et_gain7;
+et_amp7=0.5*(abs(et_y_l7)+abs(et_y_r7));
+et_fast7=et_guarded(rough_fast,et_freq7>rough_start_hz,et_amp7);
+et_slow7=et_guarded(rough_slow,et_freq7>rough_start_hz,et_amp7);
+et_sat7=guard*max(0,(et_fast7-et_slow7)/(et_slow7+0.000001))*6;
+et_out_l7=select2(et_freq7>rough_start_hz,et_y_l7,et_y_l7/(1+et_sat7*abs(et_y_l7)));
+et_out_r7=select2(et_freq7>rough_start_hz,et_y_r7,et_y_r7/(1+et_sat7*abs(et_y_r7)));
+et_post7=et_pole(energy_smooth,0.5*(et_out_l7*et_out_l7+et_out_r7*et_out_r7));
+et_pre8=et_pole(energy_smooth,0.5*(et_band_l8*et_band_l8+et_band_r8*et_band_r8));
+et_y_l8=et_band_l8*et_gain8;
+et_y_r8=et_band_r8*et_gain8;
+et_amp8=0.5*(abs(et_y_l8)+abs(et_y_r8));
+et_fast8=et_guarded(rough_fast,et_freq8>rough_start_hz,et_amp8);
+et_slow8=et_guarded(rough_slow,et_freq8>rough_start_hz,et_amp8);
+et_sat8=guard*max(0,(et_fast8-et_slow8)/(et_slow8+0.000001))*6;
+et_out_l8=select2(et_freq8>rough_start_hz,et_y_l8,et_y_l8/(1+et_sat8*abs(et_y_l8)));
+et_out_r8=select2(et_freq8>rough_start_hz,et_y_r8,et_y_r8/(1+et_sat8*abs(et_y_r8)));
+et_post8=et_pole(energy_smooth,0.5*(et_out_l8*et_out_l8+et_out_r8*et_out_r8));
+et_pre9=et_pole(energy_smooth,0.5*(et_band_l9*et_band_l9+et_band_r9*et_band_r9));
+et_y_l9=et_band_l9*et_gain9;
+et_y_r9=et_band_r9*et_gain9;
+et_amp9=0.5*(abs(et_y_l9)+abs(et_y_r9));
+et_fast9=et_guarded(rough_fast,et_freq9>rough_start_hz,et_amp9);
+et_slow9=et_guarded(rough_slow,et_freq9>rough_start_hz,et_amp9);
+et_sat9=guard*max(0,(et_fast9-et_slow9)/(et_slow9+0.000001))*6;
+et_out_l9=select2(et_freq9>rough_start_hz,et_y_l9,et_y_l9/(1+et_sat9*abs(et_y_l9)));
+et_out_r9=select2(et_freq9>rough_start_hz,et_y_r9,et_y_r9/(1+et_sat9*abs(et_y_r9)));
+et_post9=et_pole(energy_smooth,0.5*(et_out_l9*et_out_l9+et_out_r9*et_out_r9));
+et_pre10=et_pole(energy_smooth,0.5*(et_band_l10*et_band_l10+et_band_r10*et_band_r10));
+et_y_l10=et_band_l10*et_gain10;
+et_y_r10=et_band_r10*et_gain10;
+et_amp10=0.5*(abs(et_y_l10)+abs(et_y_r10));
+et_fast10=et_guarded(rough_fast,et_freq10>rough_start_hz,et_amp10);
+et_slow10=et_guarded(rough_slow,et_freq10>rough_start_hz,et_amp10);
+et_sat10=guard*max(0,(et_fast10-et_slow10)/(et_slow10+0.000001))*6;
+et_out_l10=select2(et_freq10>rough_start_hz,et_y_l10,et_y_l10/(1+et_sat10*abs(et_y_l10)));
+et_out_r10=select2(et_freq10>rough_start_hz,et_y_r10,et_y_r10/(1+et_sat10*abs(et_y_r10)));
+et_post10=et_pole(energy_smooth,0.5*(et_out_l10*et_out_l10+et_out_r10*et_out_r10));
+et_pre11=et_pole(energy_smooth,0.5*(et_band_l11*et_band_l11+et_band_r11*et_band_r11));
+et_y_l11=et_band_l11*et_gain11;
+et_y_r11=et_band_r11*et_gain11;
+et_amp11=0.5*(abs(et_y_l11)+abs(et_y_r11));
+et_fast11=et_guarded(rough_fast,et_freq11>rough_start_hz,et_amp11);
+et_slow11=et_guarded(rough_slow,et_freq11>rough_start_hz,et_amp11);
+et_sat11=guard*max(0,(et_fast11-et_slow11)/(et_slow11+0.000001))*6;
+et_out_l11=select2(et_freq11>rough_start_hz,et_y_l11,et_y_l11/(1+et_sat11*abs(et_y_l11)));
+et_out_r11=select2(et_freq11>rough_start_hz,et_y_r11,et_y_r11/(1+et_sat11*abs(et_y_r11)));
+et_post11=et_pole(energy_smooth,0.5*(et_out_l11*et_out_l11+et_out_r11*et_out_r11));
+et_pre12=et_pole(energy_smooth,0.5*(et_band_l12*et_band_l12+et_band_r12*et_band_r12));
+et_y_l12=et_band_l12*et_gain12;
+et_y_r12=et_band_r12*et_gain12;
+et_amp12=0.5*(abs(et_y_l12)+abs(et_y_r12));
+et_fast12=et_guarded(rough_fast,et_freq12>rough_start_hz,et_amp12);
+et_slow12=et_guarded(rough_slow,et_freq12>rough_start_hz,et_amp12);
+et_sat12=guard*max(0,(et_fast12-et_slow12)/(et_slow12+0.000001))*6;
+et_out_l12=select2(et_freq12>rough_start_hz,et_y_l12,et_y_l12/(1+et_sat12*abs(et_y_l12)));
+et_out_r12=select2(et_freq12>rough_start_hz,et_y_r12,et_y_r12/(1+et_sat12*abs(et_y_r12)));
+et_post12=et_pole(energy_smooth,0.5*(et_out_l12*et_out_l12+et_out_r12*et_out_r12));
+et_pre13=et_pole(energy_smooth,0.5*(et_band_l13*et_band_l13+et_band_r13*et_band_r13));
+et_y_l13=et_band_l13*et_gain13;
+et_y_r13=et_band_r13*et_gain13;
+et_amp13=0.5*(abs(et_y_l13)+abs(et_y_r13));
+et_fast13=et_guarded(rough_fast,et_freq13>rough_start_hz,et_amp13);
+et_slow13=et_guarded(rough_slow,et_freq13>rough_start_hz,et_amp13);
+et_sat13=guard*max(0,(et_fast13-et_slow13)/(et_slow13+0.000001))*6;
+et_out_l13=select2(et_freq13>rough_start_hz,et_y_l13,et_y_l13/(1+et_sat13*abs(et_y_l13)));
+et_out_r13=select2(et_freq13>rough_start_hz,et_y_r13,et_y_r13/(1+et_sat13*abs(et_y_r13)));
+et_post13=et_pole(energy_smooth,0.5*(et_out_l13*et_out_l13+et_out_r13*et_out_r13));
+et_pre14=et_pole(energy_smooth,0.5*(et_band_l14*et_band_l14+et_band_r14*et_band_r14));
+et_y_l14=et_band_l14*et_gain14;
+et_y_r14=et_band_r14*et_gain14;
+et_amp14=0.5*(abs(et_y_l14)+abs(et_y_r14));
+et_fast14=et_guarded(rough_fast,et_freq14>rough_start_hz,et_amp14);
+et_slow14=et_guarded(rough_slow,et_freq14>rough_start_hz,et_amp14);
+et_sat14=guard*max(0,(et_fast14-et_slow14)/(et_slow14+0.000001))*6;
+et_out_l14=select2(et_freq14>rough_start_hz,et_y_l14,et_y_l14/(1+et_sat14*abs(et_y_l14)));
+et_out_r14=select2(et_freq14>rough_start_hz,et_y_r14,et_y_r14/(1+et_sat14*abs(et_y_r14)));
+et_post14=et_pole(energy_smooth,0.5*(et_out_l14*et_out_l14+et_out_r14*et_out_r14));
+et_pre15=et_pole(energy_smooth,0.5*(et_band_l15*et_band_l15+et_band_r15*et_band_r15));
+et_y_l15=et_band_l15*et_gain15;
+et_y_r15=et_band_r15*et_gain15;
+et_amp15=0.5*(abs(et_y_l15)+abs(et_y_r15));
+et_fast15=et_guarded(rough_fast,et_freq15>rough_start_hz,et_amp15);
+et_slow15=et_guarded(rough_slow,et_freq15>rough_start_hz,et_amp15);
+et_sat15=guard*max(0,(et_fast15-et_slow15)/(et_slow15+0.000001))*6;
+et_out_l15=select2(et_freq15>rough_start_hz,et_y_l15,et_y_l15/(1+et_sat15*abs(et_y_l15)));
+et_out_r15=select2(et_freq15>rough_start_hz,et_y_r15,et_y_r15/(1+et_sat15*abs(et_y_r15)));
+et_post15=et_pole(energy_smooth,0.5*(et_out_l15*et_out_l15+et_out_r15*et_out_r15));
+process=((((((((((((((((0.0+et_out_l0)+et_out_l1)+et_out_l2)+et_out_l3)+et_out_l4)+et_out_l5)+et_out_l6)+et_out_l7)+et_out_l8)+et_out_l9)+et_out_l10)+et_out_l11)+et_out_l12)+et_out_l13)+et_out_l14)+et_out_l15)*global_gain,((((((((((((((((0.0+et_out_r0)+et_out_r1)+et_out_r2)+et_out_r3)+et_out_r4)+et_out_r5)+et_out_r6)+et_out_r7)+et_out_r8)+et_out_r9)+et_out_r10)+et_out_r11)+et_out_r12)+et_out_r13)+et_out_r14)+et_out_r15)*global_gain;
+
+@block
+// Publish current block detector values for the existing display.
+preE[0]=et_pre0;
+postE[0]=et_post0;
+envF[0]=et_fast0;
+envS[0]=et_slow0;
+preE[1]=et_pre1;
+postE[1]=et_post1;
+envF[1]=et_fast1;
+envS[1]=et_slow1;
+preE[2]=et_pre2;
+postE[2]=et_post2;
+envF[2]=et_fast2;
+envS[2]=et_slow2;
+preE[3]=et_pre3;
+postE[3]=et_post3;
+envF[3]=et_fast3;
+envS[3]=et_slow3;
+preE[4]=et_pre4;
+postE[4]=et_post4;
+envF[4]=et_fast4;
+envS[4]=et_slow4;
+preE[5]=et_pre5;
+postE[5]=et_post5;
+envF[5]=et_fast5;
+envS[5]=et_slow5;
+preE[6]=et_pre6;
+postE[6]=et_post6;
+envF[6]=et_fast6;
+envS[6]=et_slow6;
+preE[7]=et_pre7;
+postE[7]=et_post7;
+envF[7]=et_fast7;
+envS[7]=et_slow7;
+preE[8]=et_pre8;
+postE[8]=et_post8;
+envF[8]=et_fast8;
+envS[8]=et_slow8;
+preE[9]=et_pre9;
+postE[9]=et_post9;
+envF[9]=et_fast9;
+envS[9]=et_slow9;
+preE[10]=et_pre10;
+postE[10]=et_post10;
+envF[10]=et_fast10;
+envS[10]=et_slow10;
+preE[11]=et_pre11;
+postE[11]=et_post11;
+envF[11]=et_fast11;
+envS[11]=et_slow11;
+preE[12]=et_pre12;
+postE[12]=et_post12;
+envF[12]=et_fast12;
+envS[12]=et_slow12;
+preE[13]=et_pre13;
+postE[13]=et_post13;
+envF[13]=et_fast13;
+envS[13]=et_slow13;
+preE[14]=et_pre14;
+postE[14]=et_post14;
+envF[14]=et_fast14;
+envS[14]=et_slow14;
+preE[15]=et_pre15;
+postE[15]=et_post15;
+envF[15]=et_fast15;
+envS[15]=et_slow15;
+
+@gfx 420 240
+g.w = gfx_w; 
+g.h = gfx_h;
+g.w < 120 ? g.w = 420;
+g.h < 120 ? g.h = 240;
+
+g.padL = 44;
+g.padR = 14;
+g.padT = 14;
+g.padB = 32;
+
+g.x0 = g.padL;
+g.x1 = g.w - g.padR;
+g.y0 = g.padT;
+g.y1 = g.h - g.padB;
+
+g.plot_w = g.x1 - g.x0;
+g.plot_h = g.y1 - g.y0;
+g.y_mid = 0.5 * (g.y0 + g.y1);
+g.db_range = 18;
+
+// background
+gfx_a = 1;
+gfx_r = 0.06; gfx_g = 0.06; gfx_b = 0.065;
+gfx_rect(0, 0, g.w, g.h, 1);
+
+gfx_r = 0.10; gfx_g = 0.10; gfx_b = 0.11;
+gfx_rect(g.x0, g.y0, g.plot_w, g.plot_h, 1);
+
+// choose completed snapshot bank
+g.bank = ui_bank;
+g.bank ? (
+  g.snap_curve = snap_curve1;
+  g.snap_pre   = snap_pre1;
+  g.snap_post  = snap_post1;
+  g.snap_mod   = snap_mod1;
+  g.snap_ggdb  = snap_ggdb1;
+) : (
+  g.snap_curve = snap_curve0;
+  g.snap_pre   = snap_pre0;
+  g.snap_post  = snap_post0;
+  g.snap_mod   = snap_mod0;
+  g.snap_ggdb  = snap_ggdb0;
+);
+
+// smooth snapshot into gfx-private state
+g.ui_alpha = 0.18;
+ui_ggdb[0] += (g.snap_ggdb[0] - ui_ggdb[0]) * 0.18;
+g.gg_db_s = clamp(sane_(ui_ggdb[0], 0), -24, 24);
+
+g.emin = 1000000;
+g.emax = -1000000;
+
+g.i = 0;
+while(g.i < NB)
+(
+  ui_pre[g.i]  += (g.snap_pre[g.i]  - ui_pre[g.i])  * g.ui_alpha;
+  ui_post[g.i] += (g.snap_post[g.i] - ui_post[g.i]) * g.ui_alpha;
+  ui_mod[g.i]  += (g.snap_mod[g.i]  - ui_mod[g.i])  * g.ui_alpha;
+
+  g.a = ui_pre[g.i];
+  g.b = ui_post[g.i];
+
+  g.a < g.emin ? g.emin = g.a;
+  g.b < g.emin ? g.emin = g.b;
+  g.a > g.emax ? g.emax = g.a;
+  g.b > g.emax ? g.emax = g.b;
+
+  g.i += 1;
+);
+
+g.er = g.emax - g.emin;
+g.er < 0.5 ? g.er = 0.5;
+
+// baseline + grid
+gfx_r = 0.35; gfx_g = 0.35; gfx_b = 0.38;
+gfx_line(g.x0, g.y_mid, g.x1, g.y_mid, 1);
+
+g.i = -3;
+while(g.i <= 3)
+(
+  g.i != 0 ? (
+    g.yy = db_to_y_(g.i * 6, g.y0, g.y1, g.db_range);
+    gfx_r = 0.18; gfx_g = 0.18; gfx_b = 0.20;
+    gfx_line(g.x0, g.yy, g.x1, g.yy, 1);
+  );
+  g.i += 1;
+);
+
+// pivot marker
+g.pivot_hz = clamp(slider2, 20, fmax);
+g.x_piv = hz_to_x_(g.pivot_hz, g.x0, g.x1);
+g.x_piv < g.x0 ? g.x_piv = g.x0;
+g.x_piv > g.x1 ? g.x_piv = g.x1;
+gfx_r = 0.22; gfx_g = 0.30; gfx_b = 0.46;
+gfx_line(g.x_piv, g.y0, g.x_piv, g.y1, 1);
+
+// guard zone marker
+g.x_rg = hz_to_x_(rough_start_hz, g.x0, g.x1);
+g.x_rg < g.x0 ? g.x_rg = g.x0;
+g.x_rg > g.x1 ? g.x_rg = g.x1;
+gfx_r = 0.20; gfx_g = 0.16; gfx_b = 0.16;
+gfx_line(g.x_rg, g.y0, g.x_rg, g.y1, 1);
+
+g.bar_base = g.y1;
+g.bar_top  = g.y1 - 0.30 * g.plot_h;
+g.rg_top   = g.y0 + 0.06 * g.plot_h;
+g.rg_bot   = g.y0 + 0.16 * g.plot_h;
+
+// band separators + bars
+g.i = 0;
+while(g.i < NB)
+(
+  g.xc = hz_to_x_(fcBand[g.i], g.x0, g.x1);
+  g.xc < g.x0 ? g.xc = g.x0;
+  g.xc > g.x1 ? g.xc = g.x1;
+
+  g.i == 0 ? (
+    g.xnext = hz_to_x_(fcBand[g.i+1], g.x0, g.x1);
+    g.xnext < g.x0 ? g.xnext = g.x0;
+    g.xnext > g.x1 ? g.xnext = g.x1;
+    g.xprev = g.xc - (g.xnext - g.xc);
+  ) : (
+    g.i == NB - 1 ? (
+      g.xprev = hz_to_x_(fcBand[g.i-1], g.x0, g.x1);
+      g.xprev < g.x0 ? g.xprev = g.x0;
+      g.xprev > g.x1 ? g.xprev = g.x1;
+      g.xnext = g.xc + (g.xc - g.xprev);
+    ) : (
+      g.xprev = hz_to_x_(fcBand[g.i-1], g.x0, g.x1);
+      g.xnext = hz_to_x_(fcBand[g.i+1], g.x0, g.x1);
+      g.xprev < g.x0 ? g.xprev = g.x0;
+      g.xprev > g.x1 ? g.xprev = g.x1;
+      g.xnext < g.x0 ? g.xnext = g.x0;
+      g.xnext > g.x1 ? g.xnext = g.x1;
+    );
+  );
+
+  g.bw = 0.6 * min(g.xnext - g.xc, g.xc - g.xprev);
+  g.bw < 2 ? g.bw = 2;
+  g.bx = g.xc - 0.5 * g.bw;
+  g.bx < g.x0 ? g.bx = g.x0;
+  g.bx + g.bw > g.x1 ? g.bw = g.x1 - g.bx;
+
+  gfx_r = 0.13; gfx_g = 0.13; gfx_b = 0.14;
+  gfx_line(g.xc, g.y0, g.xc, g.y1, 1);
+
+  g.hp = (ui_pre[g.i]  - g.emin) / (g.er + 0.000001);
+  g.hq = (ui_post[g.i] - g.emin) / (g.er + 0.000001);
+  g.hp = clamp(g.hp, 0, 1);
+  g.hq = clamp(g.hq, 0, 1);
+
+  g.hpre  = g.hp * (g.bar_base - g.bar_top);
+  g.hpost = g.hq * (g.bar_base - g.bar_top);
+
+  gfx_r = 0.20; gfx_g = 0.20; gfx_b = 0.22;
+  gfx_rect(g.bx, g.bar_base - g.hpre, g.bw, g.hpre, 1);
+
+  gfx_r = 0.28; gfx_g = 0.28; gfx_b = 0.32;
+  gfx_rect(g.bx + 0.15 * g.bw, g.bar_base - g.hpost, 0.70 * g.bw, g.hpost, 1);
+
+  g.rh = clamp(ui_mod[g.i], 0, 1) * (g.rg_bot - g.rg_top);
+  fcBand[g.i] > rough_start_hz ? (
+    gfx_r = 0.55; gfx_g = 0.20; gfx_b = 0.18;
+    gfx_rect(g.bx, g.rg_bot - g.rh, g.bw, g.rh, 1);
+  );
+
+  g.i += 1;
+);
+
+// curve
+gfx_r = 0.86; gfx_g = 0.86; gfx_b = 0.90;
+g.prev_valid = 0;
+
+g.i = 0;
+while(g.i < NB)
+(
+  g.bdB = clamp(sane_(g.snap_curve[g.i], 0), -36, 36);
+  ui_gdb[g.i] += (g.bdB - ui_gdb[g.i]) * 0.20;
+  g.bdB_s = clamp(sane_(ui_gdb[g.i], 0), -g.db_range, g.db_range);
+
+  g.xc = hz_to_x_(fcBand[g.i], g.x0, g.x1);
+  g.xc < g.x0 ? g.xc = g.x0;
+  g.xc > g.x1 ? g.xc = g.x1;
+
+  g.yy = db_to_y_(g.bdB_s, g.y0, g.y1, g.db_range);
+  g.yy < g.y0 ? g.yy = g.y0;
+  g.yy > g.y1 ? g.yy = g.y1;
+
+  g.prev_valid ? gfx_line(g.prevx, g.prevy, g.xc, g.yy, 1);
+  g.prevx = g.xc;
+  g.prevy = g.yy;
+  g.prev_valid = 1;
+
+  gfx_r = 0.95; gfx_g = 0.95; gfx_b = 0.98;
+  gfx_rect(g.xc - 1, g.yy - 1, 3, 3, 1);
+
+  g.i += 1;
+);
+
+// title
+gfx_r = 0.90; gfx_g = 0.90; gfx_b = 0.92;
+gfx_setfont(1, "Arial", 14);
+gfx_x = 8; gfx_y = 8;
+gfx_drawstr("ERB Tilt EQ (Perceptual)");
+
+// scale labels
+gfx_r = 0.70; gfx_g = 0.70; gfx_b = 0.74;
+gfx_setfont(1, "Arial", 12);
+gfx_x = 8; gfx_y = g.y_mid - 6; gfx_drawstr("0 dB");
+gfx_x = 8; gfx_y = db_to_y_(18, g.y0, g.y1, g.db_range) - 6; gfx_drawstr("+18");
+gfx_x = 8; gfx_y = db_to_y_(-18, g.y0, g.y1, g.db_range) - 6; gfx_drawstr("-18");
+
+// bottom freq labels
+gfx_r = 0.65; gfx_g = 0.65; gfx_b = 0.68;
+gfx_setfont(1, "Arial", 11);
+
+g.xx = hz_to_x_(50, g.x0, g.x1);    gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("50");
+g.xx = hz_to_x_(100, g.x0, g.x1);   gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("100");
+g.xx = hz_to_x_(200, g.x0, g.x1);   gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("200");
+g.xx = hz_to_x_(500, g.x0, g.x1);   gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("500");
+g.xx = hz_to_x_(1000, g.x0, g.x1);  gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("1k");
+g.xx = hz_to_x_(2000, g.x0, g.x1);  gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("2k");
+g.xx = hz_to_x_(5000, g.x0, g.x1);  gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 10; gfx_y = g.y1 + 8; gfx_drawstr("5k");
+g.xx = hz_to_x_(10000, g.x0, g.x1); gfx_line(g.xx, g.y1, g.xx, g.y1 + 4, 1); gfx_x = g.xx - 12; gfx_y = g.y1 + 8; gfx_drawstr("10k");
+
+// readouts
+gfx_r = 0.88; gfx_g = 0.88; gfx_b = 0.92;
+gfx_setfont(1, "Arial", 12);
+gfx_x = g.x1 - 190; gfx_y = 6;  gfx_printf("Tilt: %.1f dB", slider1);
+gfx_x = g.x1 - 190; gfx_y = 22; gfx_printf("Pivot: %.0f Hz", g.pivot_hz);
+gfx_x = g.x1 - 190; gfx_y = 38; gfx_printf("Comp: %.0f %%", slider3);
+gfx_x = g.x1 - 190; gfx_y = 54; gfx_printf("Guard: %.0f %%", slider4);
+gfx_x = g.x1 - 190; gfx_y = 70; gfx_printf("Global: %.1f dB", g.gg_db_s);
+
+// footer
+gfx_r = 0.62; gfx_g = 0.62; gfx_b = 0.66;
+gfx_setfont(1, "Arial", 11);
+gfx_x = g.x0; gfx_y = g.h - 18;
+gfx_drawstr("Bars: pre/post ERB energy. Red: roughness guard activity. Line: band gain + global comp.");

@@ -39,3 +39,11 @@ If the result starts feeling “held,” smeared, or pumped, back Depth down bef
 
 ## In one sentence
 Spectral Stabilizer calms tonal swing by shaving off excess energy instead of boosting missing bands.
+
+## Native FAUST filter-bank implementation
+
+The compiled plugin now uses `@faust` for its sample filter bank, while EEL keeps control calculations and the existing display. FAUST with its LLVM backend is needed at build time; it is not a runtime dependency.
+
+Stock REAPER JSFX does not support `@faust`. Its original source remains available as `src/Spectral Stabilizer.jsfx`; use that file directly in REAPER. The native build entry is `src/Spectral Stabilizer Faust.jsfx`.
+
+Detector state still evolves during silence, so this plugin does not grant cooperative sleep.

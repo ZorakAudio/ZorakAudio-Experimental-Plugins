@@ -52,8 +52,11 @@
 #include "JsfxSharedCells.h"
 #include "JsfxLegacyAtomics.h"
 #include "JsfxTasks.h"
-#if !defined(DSPJSFX_RUNTIME_STATE_ABI) || (DSPJSFX_RUNTIME_STATE_ABI < 3 || DSPJSFX_RUNTIME_STATE_ABI > 6)
- #error "Regenerate JSFXDSP.h and its AOT object with the patched dsp_jsfx_aot.py (runtime state ABI 3 through 6)."
+#define JSFX_FAUST_IMPLEMENTATION
+#include "JsfxFaust.h"
+#undef JSFX_FAUST_IMPLEMENTATION
+#if !defined(DSPJSFX_RUNTIME_STATE_ABI) || !((DSPJSFX_RUNTIME_STATE_ABI >= 3 && DSPJSFX_RUNTIME_STATE_ABI <= 6) || (DSPJSFX_RUNTIME_STATE_ABI >= 13 && DSPJSFX_RUNTIME_STATE_ABI <= 16))
+ #error "Regenerate JSFXDSP.h and its AOT object with the patched dsp_jsfx_aot.py (runtime state ABI 3 through 6, or mixed Faust ABI 13 through 16)."
 #endif
 #include "PluginMarkdownHelp.h"
 #include "ZAUnicodeText.h"
@@ -3491,6 +3494,10 @@ public:
         (void) pushParamsToStateSliders();
         (void) applyStringSlidersToState (true);
 
+#if DSPJSFX_HAS_FAUST
+        st.faustContext=faustEngine.get();
+        faustEngine->prepare(double(st.srate),safeOversampledBlockSize(samplesPerBlockExpected,8),sampleRate);
+#endif
         jsfx_init (&st);
 
         // Re-apply slider aliases after init (scripts sometimes touch vars in @init).
@@ -3903,20 +3910,23 @@ public:
 
         const SmartIdleMode preIdleMode = resolveSmartIdleModeForCurrentState();
         smartIdleRuntime.lastEffectiveMode = preIdleMode;
+        const bool blockSizeChanged = smartIdleRuntime.lastHostBlockSize != numSamples;
+        smartIdleRuntime.lastHostBlockSize = numSamples;
 
         float inputPeak = 0.0f;
-        const bool inputActive = (preIdleMode == SmartIdleMode::InputDriven)
+        const bool inputActive = isSmartIdleSleepEligible(preIdleMode)
                                    && channelPointersExceedThreshold (numCh > 0 ? hostInPtrs.data() : nullptr,
                                                                       activityInputChannels,
                                                                       numSamples,
-                                                                      smartIdleConfig.inputThreshold,
+                                                                      0.0f,
                                                                       inputPeak);
         smartIdleRuntime.lastInputPeak = inputPeak;
 
-        const bool keepAwakeBefore = getSmartIdleKeepAwakeFlag();
+        const bool keepAwakeBefore = getSmartIdleKeepAwakeFlag() || (preIdleMode==SmartIdleMode::Cooperative && !getSmartIdleSleepReadyFlag());
         const bool externalWakeEvent = pendingExternalWakeEvent.exchange (false, std::memory_order_acq_rel);
         const bool deferredSamplePoolAdoptionPending = hasDeferredSamplePoolAdoptionPending();
         const bool preProcessWakeEvent = hostTransportDiscontinuity
+                                      || blockSizeChanged
                                       || fileLoadsPromoted
                                       || externalWakeEvent
                                       || deferredSamplePoolAdoptionPending
@@ -3956,6 +3966,7 @@ public:
             return;
         }
 
+        clearSmartIdleSleepReadyFlag();
         jsfx_process_block (&st, numCh > 0 ? inPtrs.data() : nullptr, numCh > 0 ? outPtrs.data() : nullptr, numCh, processSamples);
         syncJsfxLatency();
 
@@ -3971,17 +3982,18 @@ public:
                                     || anySliderMaskWords (st.pendingSliderAutomateEndMask);
         consumeDspSliderChanges();
 
+        const SmartIdleMode postIdleMode = resolveSmartIdleModeForCurrentState();
         float outputPeak = 0.0f;
         const bool outputActive = channelPointersExceedThreshold (numCh > 0 ? hostOutPtrs.data() : nullptr,
                                                                   activityOutputChannels,
                                                                   numSamples,
-                                                                  smartIdleConfig.outputThreshold,
+                                                                  postIdleMode==SmartIdleMode::Cooperative ? 0.0f : smartIdleConfig.outputThreshold,
                                                                   outputPeak);
         smartIdleRuntime.lastOutputPeak = outputPeak;
 
         const bool hadOutgoingMidi = flushMidiFromState (midiMessages, oversamplingFactor, numSamples);
-        const SmartIdleMode postIdleMode = resolveSmartIdleModeForCurrentState();
-        const bool keepAwakeAfter = getSmartIdleKeepAwakeFlag();
+        const bool keepAwakeAfter = getSmartIdleKeepAwakeFlag()
+                                  || (postIdleMode==SmartIdleMode::Cooperative && !getSmartIdleSleepReadyFlag());
         noteSmartIdlePostBlock (postIdleMode,
                                 preProcessWakeEvent,
                                 outputActive,
@@ -4495,6 +4507,8 @@ public:
         smartIdleUiUserOverrideMode.store ((int) mode, std::memory_order_release);
         requestExternalWakeEvent (true);
     }
+
+    bool isSmartIdleSleepingForTest() const noexcept { return smartIdleUiSleeping.load(std::memory_order_relaxed); }
 
     static juce::String summariseSelectedFilePaths (const std::vector<juce::String>& paths,
                                                     FileLoadMode loadMode = FileLoadMode::SeparateEntries)
@@ -5974,6 +5988,23 @@ public:
         return std::abs (a - b) <= tol;
     }
 
+    SliderMask actualGfxSliderChanges(const SliderMask& requested, const double* before, const double* after) const {
+        SliderMask result;
+        for(int i=0;i<DSPJSFX_MAX_SLIDERS;++i)
+            if(requested.test(i) && sliderParamUsed[(size_t)i]
+               && !sliderValuesEquivalent(sliderParamInfo[(size_t)i],before[i],after[i]))result.set(i);
+        return result;
+    }
+#if ZA_NATIVE_GFX_TEST_RUNNER
+    void testGfxButtonChange(int index,double value) {
+        std::array<double,DSPJSFX_MAX_SLIDERS> before{},after{};SliderMask all;
+        for(int i=0;i<DSPJSFX_MAX_SLIDERS;++i){before[i]=after[i]=hostParameterToJsfxSliderValue((size_t)i);all.set(i);}
+        after[(size_t)index]=value;
+        const auto changed=actualGfxSliderChanges(all,before.data(),after.data());
+        applyGfxSliderChanges(after.data(),DSPJSFX_MAX_SLIDERS,changed,changed,changed);
+    }
+#endif
+
     void applyGfxSliderChanges (const double* newSliders, int count,
                                 const SliderMask& changeMask,
                                 const SliderMask& automateMask,
@@ -6618,6 +6649,7 @@ private:
         EventDriven  = 2,
         FreeRunning  = 3,
         AlwaysAwake  = 4,
+        Cooperative  = 5,
     };
 
     struct SmartIdleConfig
@@ -6632,10 +6664,12 @@ private:
         int64_t tailSamples = 0;
         int keepAwakeVarIndex = -1;
         int modeVarIndex = -1;
+        int sleepReadyVarIndex = -1;
     };
 
     struct SmartIdleRuntimeState
     {
+        int lastHostBlockSize = 0;
         bool sleeping = false;
         int64_t quietSamples = 0;
         float lastInputPeak = 0.0f;
@@ -6778,6 +6812,7 @@ private:
             case 2:  return SmartIdleMode::EventDriven;
             case 3:  return SmartIdleMode::FreeRunning;
             case 4:  return SmartIdleMode::AlwaysAwake;
+            case 5:  return SmartIdleMode::Cooperative;
             default: return SmartIdleMode::Auto;
         }
     }
@@ -6791,6 +6826,7 @@ private:
             case 2:  return SmartIdleMode::EventDriven;
             case 3:  return SmartIdleMode::FreeRunning;
             case 4:  return SmartIdleMode::AlwaysAwake;
+            case 5:  return SmartIdleMode::Cooperative;
             default: return SmartIdleMode::Auto;
         }
     }
@@ -6799,6 +6835,7 @@ private:
     {
         switch (mode)
         {
+            case SmartIdleMode::Cooperative: return "Plugin signal";
             case SmartIdleMode::InputDriven: return "Input-driven";
             case SmartIdleMode::EventDriven: return "Event-driven";
             case SmartIdleMode::FreeRunning: return "Free-running";
@@ -6812,6 +6849,7 @@ private:
     {
         switch (mode)
         {
+            case SmartIdleMode::Cooperative: return "PLUGIN";
             case SmartIdleMode::InputDriven: return "INPUT";
             case SmartIdleMode::EventDriven: return "EVENT";
             case SmartIdleMode::FreeRunning: return "FREE";
@@ -6835,7 +6873,7 @@ private:
 
     static bool isSmartIdleSleepEligible (SmartIdleMode mode) noexcept
     {
-        return mode == SmartIdleMode::InputDriven || mode == SmartIdleMode::EventDriven;
+        return mode == SmartIdleMode::InputDriven || mode == SmartIdleMode::EventDriven || mode == SmartIdleMode::Cooperative;
     }
 
     SmartIdleMode inferSmartIdleModeFromTopology() const noexcept
@@ -6918,6 +6956,7 @@ private:
         smartIdleConfig.inferredMode = inferSmartIdleModeFromTopology();
         smartIdleConfig.keepAwakeVarIndex = findGeneratedStateVarIndexIgnoreCase ("za_keep_awake");
         smartIdleConfig.modeVarIndex = findGeneratedStateVarIndexIgnoreCase ("za_idle_mode");
+        smartIdleConfig.sleepReadyVarIndex = findGeneratedStateVarIndexIgnoreCase ("za_sleep_ready");
 
         const auto opts = parseRuntimeJsfxOptions (kJsfxSourceText);
 
@@ -6967,7 +7006,8 @@ private:
 
     SmartIdleMode resolveSmartIdleModeForCurrentState() const noexcept
     {
-        SmartIdleMode resolved = getConfiguredSmartIdleMode();
+        if (isNonRealtime()) return SmartIdleMode::AlwaysAwake;
+        SmartIdleMode resolved = smartIdleConfig.sleepReadyVarIndex >= 0 ? SmartIdleMode::Cooperative : getConfiguredSmartIdleMode();
 
         const int modeVarIndex = smartIdleConfig.modeVarIndex;
         const int varsCap = (int) (sizeof (st.vars) / sizeof (st.vars[0]));
@@ -6987,6 +7027,9 @@ private:
 
     bool getSmartIdleKeepAwakeFlag() const noexcept
     {
+#if DSPJSFX_HAS_TASKS
+        if (taskRuntime && taskRuntime->hasOutstandingWorkForIdle())return true;
+#endif
         const int keepAwakeVarIndex = smartIdleConfig.keepAwakeVarIndex;
         const int varsCap = (int) (sizeof (st.vars) / sizeof (st.vars[0]));
         if (keepAwakeVarIndex < 0 || keepAwakeVarIndex >= varsCap)
@@ -6996,9 +7039,15 @@ private:
         return std::isfinite (raw) && std::abs (raw) > 0.5;
     }
 
-    int64_t getSmartIdleRequiredQuietSamples() const noexcept
-    {
-        return juce::jmax ((int64_t) 0, juce::jmax (smartIdleConfig.holdSamples, smartIdleConfig.tailSamples));
+    bool getSmartIdleSleepReadyFlag() const noexcept {
+        const int index=smartIdleConfig.sleepReadyVarIndex;
+        if(index<0 || index>=DSPJSFX_VARS_COUNT)return false;
+        const double value=double(st.vars[index]);
+        return std::isfinite(value) && value==1.0;
+    }
+    void clearSmartIdleSleepReadyFlag() noexcept {
+        const int index=smartIdleConfig.sleepReadyVarIndex;
+        if(index>=0 && index<DSPJSFX_VARS_COUNT)st.vars[index]=0.0;
     }
 
     template <typename SampleType>
@@ -7023,6 +7072,7 @@ private:
             for (int i = 0; i < numSamples; ++i)
             {
                 const float mag = std::abs ((float) src[i]);
+                if (!std::isfinite(mag))return true;
                 if (mag > outPeak)
                     outPeak = mag;
                 if (mag > useThreshold)
@@ -7070,9 +7120,13 @@ private:
             return;
         }
 
-        const int64_t add = juce::jmax ((int64_t) 0, (int64_t) numSamples);
-        smartIdleRuntime.quietSamples = juce::jmax ((int64_t) 0, smartIdleRuntime.quietSamples + add);
-        smartIdleRuntime.sleeping = smartIdleRuntime.quietSamples >= getSmartIdleRequiredQuietSamples();
+        if (mode==SmartIdleMode::Cooperative) {
+            smartIdleRuntime.quietSamples=0;
+            smartIdleRuntime.sleeping=true;
+        } else {
+            smartIdleRuntime.quietSamples += std::max<int64_t>(0,numSamples);
+            smartIdleRuntime.sleeping = smartIdleRuntime.quietSamples >= std::max(smartIdleConfig.holdSamples,smartIdleConfig.tailSamples);
+        }
     }
 
     static bool stringEqualsIgnoreCase (const juce::String& a, const juce::String& b)
@@ -9297,6 +9351,10 @@ private:
         (void) pushParamsToStateSliders();
         (void) applyStringSlidersToState (true);
 
+#if DSPJSFX_HAS_FAUST
+        st.faustContext=faustEngine.get();
+        faustEngine->reset(double(st.srate));
+#endif
         jsfx_init (&st);
 
         const int varsCap = (int) (sizeof (st.vars) / sizeof (st.vars[0]));
@@ -9534,6 +9592,9 @@ private:
         int64_t memNKeep = st.memN;
 
         std::memset (&st, 0, sizeof (st));
+#if DSPJSFX_HAS_FAUST
+        st.faustContext=faustEngine.get();
+#endif
 #if DSPJSFX_HAS_TASKS
         st.taskContext = taskRuntime.get();
 #endif
@@ -10342,6 +10403,9 @@ private:
         return clamp01f (std::log (std::abs (inside)) / logBase);
     }
     DSPJSFX_State st {};
+#if DSPJSFX_HAS_FAUST
+    std::unique_ptr<jsfx_faust::Engine> faustEngine { std::make_unique<jsfx_faust::Engine>() };
+#endif
 #if DSPJSFX_HAS_TASKS
     std::unique_ptr<jsfx_tasks::Runtime> taskRuntime { std::make_unique<jsfx_tasks::Runtime>() };
 #endif
@@ -15985,7 +16049,7 @@ private:
             return;
         }
         jsfxCopyCells (vmSliders.data(), nativeFrame->scriptState().sliders, DSPJSFX_MAX_SLIDERS);
-        SliderMask changes = nativeFrame->changeMask;
+        SliderMask changes = processor.actualGfxSliderChanges(nativeFrame->changeMask,effectiveSliders.data(),vmSliders.data());
 #if !DSPJSFX_NATIVE_GFX_LEGACY
         for (int i = 0; i < DSPJSFX_MAX_SLIDERS; ++i)
             if (std::abs (vmSliders[(size_t) i] - effectiveSliders[(size_t) i]) > 1e-12)
@@ -16888,6 +16952,12 @@ extern "C" bool za_native_gfx_snapshot (juce::AudioProcessor* base, const char* 
     return true;
 #endif
 }
+extern "C" void za_smart_idle_mode(juce::AudioProcessor* base,int mode) {
+    static_cast<JSFXJuceProcessor*>(base)->setSmartIdleUserOverrideModeForUi(mode);
+}
+extern "C" bool za_smart_idle_sleeping(juce::AudioProcessor* base) {
+    return static_cast<JSFXJuceProcessor*>(base)->isSmartIdleSleepingForTest();
+}
 extern "C" void za_native_gfx_faults(juce::AudioProcessor* base,uint32_t* dsp,uint32_t* gfx) {
 #if DSPJSFX_NATIVE_GFX_LEGACY
     auto& p=*static_cast<JSFXJuceProcessor*>(base);
@@ -16897,6 +16967,15 @@ extern "C" void za_native_gfx_faults(juce::AudioProcessor* base,uint32_t* dsp,ui
     *gfx=frame?(frame->state.memoryFault || frame->memoryFault):0;
 #else
     *dsp=0;*gfx=0;
+#endif
+}
+extern "C" void za_native_faust_calls(juce::AudioProcessor* base,uint64_t* blocks,uint64_t* scalars,uint64_t* frames) {
+    *blocks=0;*scalars=0;*frames=0;
+#if DSPJSFX_HAS_FAUST && DSPJSFX_NATIVE_GFX_LEGACY
+    auto& p=*static_cast<JSFXJuceProcessor*>(base);
+    const std::lock_guard<std::mutex> lock(p.legacyGfxMutex());
+    const auto* engine=static_cast<jsfx_faust::Engine*>(p.legacyScriptState().faustContext);
+    if(engine){*blocks=engine->blockCalls;*scalars=engine->scalarCalls;*frames=engine->processedFrames;}
 #endif
 }
 extern "C" void za_native_gfx_files(juce::AudioProcessor* base,uint64_t* opens,uint64_t* values) {
@@ -17386,7 +17465,16 @@ extern "C" double jsfx_sample_export_mem2 (DSPJSFX_State* state, double pool, do
     return 0.0;
 }
 
+#if ZA_NATIVE_GFX_TEST_RUNNER
+static juce::AudioProcessor* za_latest_test_processor=nullptr;
+extern "C" juce::AudioProcessor* za_test_latest_processor(){return za_latest_test_processor;}
+extern "C" void za_test_gfx_button(juce::AudioProcessor* p,int slider,double value){static_cast<JSFXJuceProcessor*>(p)->testGfxButtonChange(slider-1,value);}
+#endif
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
-    return new JSFXJuceProcessor();
+    auto* processor = new JSFXJuceProcessor();
+#if ZA_NATIVE_GFX_TEST_RUNNER
+    za_latest_test_processor=processor;
+#endif
+    return processor;
 }

@@ -59,3 +59,8 @@ Scale of the reflection time geometry.
 
 ## In one sentence
 DDT makes a source feel nearer or farther by changing the perceptual ratio of direct sound to room behavior.
+
+
+## Cooperative idle
+
+The native host may sleep after 16384 consecutive stereo-silent samples and exact zero-input fixed points of all six recursive filter states. The host also requires exact silent output and no pending activity. New audio, controls, or host events wake processing. Offline rendering always processes. Stock REAPER continues processing normally; the readiness variable is a native-host hint.

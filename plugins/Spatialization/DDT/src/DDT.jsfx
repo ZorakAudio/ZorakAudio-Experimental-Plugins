@@ -25,6 +25,8 @@ slider8:0<0,3,1{Normal,Direct,Diffuse,Bypass}>Monitor
 slider9:50<0,100,1:sqr>Room Size
 
 @init
+  za_sleep_ready=0;
+  za_ddt_zero_run=0;
   EPS = 0.0000000000000000001;
 
   BUF_LEN = 16384;
@@ -437,7 +439,14 @@ slider9:50<0,100,1:sqr>Room Size
 @slider
   rebuild_taps();
 
+@block
+// The entire stereo history must be zero, including taps selected by future
+// Quality/Room changes. Each recursive audio state must be an EXACT fixed
+// point of its zero-input update. No threshold or guessed tail duration.
+za_sleep_ready = za_ddt_zero_run >= BUF_LEN && (a_dir*dirZL) === dirZL && (a_dir*dirZR) === dirZR && (a_early*eZL) === eZL && (a_early*eZR) === eZR && (a_late*lZL) === lZL && (a_late*lZR) === lZR;
+
 @sample
+  (spl0 === 0 && spl1 === 0) ? za_ddt_zero_run=min(BUF_LEN,za_ddt_zero_run+1) : za_ddt_zero_run=0;
   m[bL + (wofs & BUF_MASK)] = spl0;
   m[bR + (wofs & BUF_MASK)] = spl1;
 

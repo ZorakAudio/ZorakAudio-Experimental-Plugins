@@ -1,0 +1,442 @@
+
+desc:Salience Push
+
+in_pin:Source L
+in_pin:Source R
+in_pin:Ref/Key L
+in_pin:Ref/Key R
+out_pin:Out L
+out_pin:Out R
+
+// INPUTS:
+//   ch 1/2 = source to push back
+//   ch 3/4 = optional reference/key (dialogue / lead / foreground)
+// 
+// DESIGN:
+//   - attenuation-only
+//   - slow, capped moves
+//   - optional reference-aware behavior
+//   - no exposed thresholds / crossovers / side settings
+//   - same 3 behavior knobs across all profiles
+//
+// CONTROLS:
+//   Profile  = hidden policy bias for source class
+//   Push     = how far back the source should sit
+//   Tame     = how strongly clicky / pokey transients are restrained
+//   Preserve = how much gloss / naturalness / stereo life is protected
+
+// #HELP: Salience Push is a perceptual "sit back" tool. It reduces attention capture rather than doing plain broadband ducking.
+// #HELP: It mainly trims upper-presence / air and reins in wide high-band energy. The source body stays largely intact.
+// #HELP: Optional ch3/4 reference makes the source stay below a foreground element by a controlled margin.
+// #HELP: Without a reference, the detector falls back to self-salience (bright / clicky / splashy relative to its own body).
+// #HELP: Vocals mode is the most natural. BG is the most width/air-disciplined. SFX is the most assertive.
+// #HELP: Quick start: Neutral, Push 35-55, Tame 20-50, Preserve 50-75, then Output.
+// #HELP: Drips / clicky wet layers usually want SFX with higher Preserve and medium-high Tame.
+// #HELP: Vocals you want farther back usually want Vocals with medium Push, low-medium Tame, high Preserve.
+
+// #TOOLTIP: Hidden policy for source type. Same knobs, different internal weighting and protection.
+slider1:0<0,4,1{Neutral,Vocals,SFX,Foley,BG}>Profile
+// #TOOLTIP: Main depth / backwardness control. Higher = more presence/air restraint and more foreground margin when a reference is present.
+slider2:45<0,100,1:sqr>Push (%)
+// #TOOLTIP: Click / poke suppression. Higher = stronger control of sharp upper-band spikes.
+slider3:35<0,100,1:sqr>Tame (%)
+// #TOOLTIP: Protects character. Higher = more gloss, stereo life, and vocal naturalness preserved while still pushing back.
+slider4:60<0,100,1:sqr>Preserve (%)
+// #TOOLTIP: Output trim after processing.
+slider5:0<-12,12,0.1>Output Trim (dB)
+
+@init
+eps = 0.00000000000000000001;
+ilog10 = 1/log(10);
+
+// --- split states (M) ---
+M_lp15 = 0;
+M_lp32 = 0;
+M_lp55 = 0;
+
+// --- split states (S) ---
+S_lp15 = 0;
+S_lp32 = 0;
+S_lp55 = 0;
+
+// --- reference split states ---
+K_lp15 = 0;
+K_lp55 = 0;
+K_E    = 0;
+
+// --- slow energies ---
+A_bodyE = 0;
+A_formE = 0;
+A_edgeE = 0;
+A_airE  = 0;
+A_srcE  = 0;
+
+M_hiE = 0;
+S_hiE = 0;
+
+// --- transient followers (upper bands) ---
+A_click_fastE = 0;
+A_click_slowE = 0;
+
+// --- smoothed cuts (dB) ---
+common_dB = 0;
+side_dB   = 0;
+
+// --- meters / debug state ---
+A_ref_dB = -150;
+A_hot_dB = -150;
+A_src_dB = -150;
+K_dB = -150;
+delta_click_dB = 0;
+side_hi_rel_dB = -150;
+src_w = 0;
+K_w = 0;
+formW = 0;
+edgeW = 0;
+airW = 0;
+
+@slider
+profile = slider1|0;
+push = slider2/100;
+tame = slider3/100;
+presv = slider4/100;
+
+out_gain = pow(10, slider5/20);
+
+// fixed crossovers (kept hidden on purpose)
+nyq  = srate*0.49;
+fc15 = min(1500, nyq);
+fc32 = min(3200, nyq);
+fc55 = min(5500, nyq);
+
+// one-pole lowpass coeffs
+g15 = 1 - exp(-2*$pi*fc15/srate);
+g32 = 1 - exp(-2*$pi*fc32/srate);
+g55 = 1 - exp(-2*$pi*fc55/srate);
+
+// energy followers
+aLev  = 1 - exp(-1/(0.10*srate));   // 100 ms
+aSrc  = 1 - exp(-1/(0.15*srate));   // 150 ms
+aK    = 1 - exp(-1/(0.05*srate));   // 50 ms
+aFast = 1 - exp(-1/(0.020*srate));  // 20 ms
+aSlow = 1 - exp(-1/(0.50*srate));   // 500 ms
+
+// defaults = Neutral
+pf_formW      = 0.95;
+pf_edgeW      = 1.00;
+pf_airW       = 1.00;
+pf_tameBias   = 1.00;
+pf_sideBias   = 1.00;
+pf_selfOff    = 0.0;
+pf_marginOff  = 0.0;
+pf_transOff   = 0.0;
+pf_sideOff    = 0.0;
+pf_commonCap  = 1.00;
+pf_sideCap    = 1.00;
+pf_broad      = 1.00;
+base_atk      = 0.22;
+base_rel      = 6.0;
+base_satk     = 0.35;
+base_srel     = 8.0;
+
+profile == 1 ? ( // Vocals
+  pf_formW      = 0.70;
+  pf_edgeW      = 0.88;
+  pf_airW       = 0.90;
+  pf_tameBias   = 0.80;
+  pf_sideBias   = 0.50;
+  pf_selfOff    = 2.5;
+  pf_marginOff  = -1.5;
+  pf_transOff   = 1.2;
+  pf_sideOff    = 1.5;
+  pf_commonCap  = 0.78;
+  pf_sideCap    = 0.50;
+  pf_broad      = 0.75;
+  base_atk      = 0.28;
+  base_rel      = 7.5;
+  base_satk     = 0.45;
+  base_srel     = 9.5;
+);
+
+profile == 2 ? ( // SFX
+  pf_formW      = 0.95;
+  pf_edgeW      = 1.10;
+  pf_airW       = 1.05;
+  pf_tameBias   = 1.25;
+  pf_sideBias   = 1.10;
+  pf_selfOff    = -1.0;
+  pf_marginOff  = 0.0;
+  pf_transOff   = -0.8;
+  pf_sideOff    = -0.5;
+  pf_commonCap  = 1.20;
+  pf_sideCap    = 1.10;
+  pf_broad      = 1.00;
+  base_atk      = 0.15;
+  base_rel      = 4.5;
+  base_satk     = 0.22;
+  base_srel     = 6.0;
+);
+
+profile == 3 ? ( // Foley
+  pf_formW      = 0.82;
+  pf_edgeW      = 0.95;
+  pf_airW       = 0.92;
+  pf_tameBias   = 1.00;
+  pf_sideBias   = 0.70;
+  pf_selfOff    = 0.5;
+  pf_marginOff  = -0.5;
+  pf_transOff   = 0.4;
+  pf_sideOff    = 0.8;
+  pf_commonCap  = 0.92;
+  pf_sideCap    = 0.70;
+  pf_broad      = 0.85;
+  base_atk      = 0.20;
+  base_rel      = 6.2;
+  base_satk     = 0.30;
+  base_srel     = 7.5;
+);
+
+profile == 4 ? ( // BG
+  pf_formW      = 1.00;
+  pf_edgeW      = 1.00;
+  pf_airW       = 1.12;
+  pf_tameBias   = 0.75;
+  pf_sideBias   = 1.35;
+  pf_selfOff    = -1.5;
+  pf_marginOff  = 1.0;
+  pf_transOff   = 0.8;
+  pf_sideOff    = -2.0;
+  pf_commonCap  = 1.10;
+  pf_sideCap    = 1.35;
+  pf_broad      = 1.10;
+  base_atk      = 0.34;
+  base_rel      = 8.5;
+  base_satk     = 0.45;
+  base_srel     = 10.0;
+);
+
+// smoothing
+atkC = max(0.10, base_atk - 0.08*tame);
+relC = base_rel + 1.5*push;
+
+atkS = base_satk;
+relS = base_srel + 1.5*push;
+
+c_ca = exp(-1/(atkC*srate));
+c_cr = exp(-1/(relC*srate));
+c_sa = exp(-1/(atkS*srate));
+c_sr = exp(-1/(relS*srate));
+
+// hidden policy from Push / Tame / Preserve
+rel_margin  = min(max(5 + 9*push - 2*presv + pf_marginOff, 3), 18);
+self_allow  = -6 - 5*push + 4*presv + pf_selfOff;
+trans_allow = min(max(5.5 - 2.5*push + 2.0*presv + pf_transOff, 1.0), 10.0);
+side_allow  = min(max(2.5 - 1.5*push + 3.0*presv + pf_sideOff, -2.0), 8.0);
+
+max_common = min(max((2.5 + 8.5*push)*pf_commonCap, 0), 14);
+max_side   = min(max((1.5 + 5.0*push)*pf_sideCap*(1 - 0.35*presv), 0), 10);
+
+trans_w = (0.10 + 1.20*tame) * pf_tameBias;
+side_w  = (0.55 + 0.70*push) * (1 - 0.50*presv) * pf_sideBias;
+
+// how common cut is distributed across bands
+formW = min(max((0.55 - 0.25*presv) * pf_formW, 0.12), 0.85);
+edgeW = min(max((0.95 - 0.10*presv) * pf_edgeW, 0.65), 1.15);
+airW  = min(max((1.10 - 0.35*presv) * pf_airW,  0.45), 1.30);
+
+// tiny broadband component to help "sit back" universally without obvious pumping
+broadW = min(max((0.05 + 0.08*push) * (1 - 0.35*presv) * pf_broad, 0), 0.20);
+
+// reference/key gate
+K_gate   = -60;
+K_gate_w = 12;
+
+@sample
+L0 = spl0;
+R0 = spl1;
+K0 = (spl2 + spl3) * 0.5; // optional reference / dialogue / lead
+
+// --- M/S ---
+M = (L0 + R0) * 0.5;
+S = (L0 - R0) * 0.5;
+
+// --- split source ---
+M_lp15 += g15*(M - M_lp15);
+M_lp32 += g32*(M - M_lp32);
+M_lp55 += g55*(M - M_lp55);
+
+S_lp15 += g15*(S - S_lp15);
+S_lp32 += g32*(S - S_lp32);
+S_lp55 += g55*(S - S_lp55);
+
+M_body = M_lp15;
+M_form = M_lp32 - M_lp15;
+M_edge = M_lp55 - M_lp32;
+M_air  = M - M_lp55;
+
+S_body = S_lp15;
+S_form = S_lp32 - S_lp15;
+S_edge = S_lp55 - S_lp32;
+S_air  = S - S_lp55;
+
+// --- split reference ---
+K_lp15 += g15*(K0 - K_lp15);
+K_lp55 += g55*(K0 - K_lp55);
+K_ref = K_lp55 - K_lp15; // ~1.5 kHz .. 5.5 kHz
+
+// --- instantaneous energies ---
+body_inst = M_body*M_body + S_body*S_body;
+form_inst = M_form*M_form + S_form*S_form;
+edge_inst = M_edge*M_edge + S_edge*S_edge;
+air_inst  = M_air*M_air   + S_air*S_air;
+
+src_inst = (L0*L0 + R0*R0) * 0.5;
+
+M_hi = M_edge + M_air;
+S_hi = S_edge + S_air;
+M_hi_inst = M_hi*M_hi;
+S_hi_inst = S_hi*S_hi;
+
+click_inst = edge_inst + 0.60*air_inst;
+
+// --- followers ---
+A_bodyE += aLev*(body_inst - A_bodyE);
+A_formE += aLev*(form_inst - A_formE);
+A_edgeE += aLev*(edge_inst - A_edgeE);
+A_airE  += aLev*(air_inst  - A_airE);
+A_srcE  += aSrc*(src_inst  - A_srcE);
+
+M_hiE += aLev*(M_hi_inst - M_hiE);
+S_hiE += aLev*(S_hi_inst - S_hiE);
+
+A_click_fastE += aFast*(click_inst - A_click_fastE);
+A_click_slowE += aSlow*(click_inst - A_click_slowE);
+
+K_E += aK*(K_ref*K_ref - K_E);
+
+// --- metrics ---
+A_ref_dB = 10*log(A_formE + A_edgeE + eps)*ilog10;
+A_hot_dB = 10*log((0.35*A_formE + 1.00*A_edgeE + 1.10*A_airE + eps) / (A_bodyE + 0.55*A_formE + eps))*ilog10;
+A_src_dB = 10*log(A_srcE + eps)*ilog10;
+
+K_dB = 10*log(K_E + eps)*ilog10;
+delta_click_dB = 10*log((A_click_fastE + eps)/(A_click_slowE + eps))*ilog10;
+side_hi_rel_dB = 10*log((S_hiE + eps)/(M_hiE + eps))*ilog10;
+
+// gates
+src_w = (A_src_dB + 70) / 18;
+src_w = min(max(src_w, 0), 1);
+
+K_w = (K_dB - K_gate) / K_gate_w;
+K_w = min(max(K_w, 0), 1);
+
+// excess
+ex_self = A_hot_dB - self_allow;         ex_self = ex_self > 0 ? ex_self : 0;
+ex_margin = A_ref_dB - K_dB + rel_margin; ex_margin = ex_margin > 0 ? ex_margin : 0;
+ex_trans = delta_click_dB - trans_allow;  ex_trans = ex_trans > 0 ? ex_trans : 0;
+ex_side = side_hi_rel_dB - side_allow;    ex_side = ex_side > 0 ? ex_side : 0;
+
+// demands
+level_want = src_w * (K_w*ex_margin + (1-K_w)*ex_self);
+common_want = level_want + src_w * (trans_w * ex_trans);
+common_want = min(common_want, max_common);
+
+side_want = src_w * (side_w * ex_side);
+side_want = min(side_want, max_side);
+
+// smooth
+cC = common_want > common_dB ? c_ca : c_cr;
+common_dB = common_want + cC*(common_dB - common_want);
+
+cS = side_want > side_dB ? c_sa : c_sr;
+side_dB = side_want + cS*(side_dB - side_want);
+
+// apply gains (attenuation-only)
+g_form  = pow(10, -(common_dB * formW)/20);
+g_edge  = pow(10, -(common_dB * edgeW)/20);
+g_air   = pow(10, -(common_dB * airW )/20);
+g_side  = pow(10, -side_dB/20);
+g_broad = pow(10, -(common_dB * broadW)/20);
+
+// keep body mostly intact
+M_form *= g_form;  S_form *= g_form;
+M_edge *= g_edge;  S_edge *= (g_edge * g_side);
+M_air  *= g_air;   S_air  *= (g_air  * g_side);
+
+M = M_body + M_form + M_edge + M_air;
+S = S_body + S_form + S_edge + S_air;
+
+spl0 = (M + S) * g_broad * out_gain;
+spl1 = (M - S) * g_broad * out_gain;
+
+@gfx 520 170
+gfx_ext_retina = 1;
+
+function clamp(x, lo, hi) (
+  x < lo ? lo : (x > hi ? hi : x);
+);
+
+function meter01(x,y,w,h,v,r,g,b,a)
+(
+  v = clamp(v,0,1);
+  gfx_set(1,1,1,0.08*a); gfx_rect(x,y,w,h,1);
+  gfx_set(0,0,0,0.22*a); gfx_rect(x+1,y+1,w-2,h-2,1);
+  gfx_set(r,g,b,0.95*a); gfx_rect(x+1,y+1,(w-2)*v,h-2,1);
+);
+
+function txt(x,y,s,r,g,b,a)
+(
+  gfx_set(0,0,0,0.72*a); gfx_x=x+1; gfx_y=y+1; gfx_drawstr(s);
+  gfx_set(r,g,b,a);      gfx_x=x;   gfx_y=y;   gfx_drawstr(s);
+);
+
+gfx_set(0.035,0.035,0.040,1);
+gfx_rect(0,0,gfx_w,gfx_h,1);
+
+ui = min(gfx_w/520, gfx_h/170);
+ui = ui < 0.85 ? 0.85 : ui;
+
+pad = 10*ui;
+line = 18*ui;
+barw = gfx_w - pad*2 - 120*ui;
+xbar = pad + 90*ui;
+
+sprintf(#prof,"Neutral");
+profile == 1 ? ( sprintf(#prof,"Vocals"); );
+profile == 2 ? ( sprintf(#prof,"SFX"); );
+profile == 3 ? ( sprintf(#prof,"Foley"); );
+profile == 4 ? ( sprintf(#prof,"BG"); );
+
+gfx_setfont(1,"Arial",13*ui);
+txt(pad,pad,"Salience Push",0.96,0.96,0.99,1);
+
+gfx_setfont(1,"Arial",11*ui);
+sprintf(#s0,"%s   Push %.0f%%   Tame %.0f%%   Preserve %.0f%%", #prof, push*100, tame*100, presv*100);
+txt(pad,pad+line,#s0,0.78,0.80,0.86,1);
+
+y = pad + line*2.3;
+
+txt(pad,y,"Common",0.84,0.86,0.92,1);
+sprintf(#v0,"%.1f dB", common_dB);
+txt(gfx_w-pad-52*ui,y,#v0,0.95,0.95,0.98,1);
+meter01(xbar,y+2*ui,barw,10*ui,common_dB/max(0.25,max_common),0.35,0.85,1.00,1);
+
+y += line;
+txt(pad,y,"Side",0.84,0.86,0.92,1);
+sprintf(#v1,"%.1f dB", side_dB);
+txt(gfx_w-pad-52*ui,y,#v1,0.95,0.95,0.98,1);
+meter01(xbar,y+2*ui,barw,10*ui,side_dB/max(0.25,max_side),1.00,0.45,0.95,1);
+
+y += line;
+txt(pad,y,"Ref",0.84,0.86,0.92,1);
+sprintf(#v2,"%.0f%%", K_w*100);
+txt(gfx_w-pad-52*ui,y,#v2,0.95,0.95,0.98,1);
+meter01(xbar,y+2*ui,barw,10*ui,K_w,0.80,0.86,0.96,1);
+
+y += line + 4*ui;
+sprintf(#m0,"Self %.1f dB   Click %.1f dB   Side %.1f dB", A_hot_dB, delta_click_dB, side_hi_rel_dB);
+txt(pad,y,#m0,0.72,0.74,0.80,1);
+
+y += line;
+sprintf(#m1,"form %.2f   edge %.2f   air %.2f   src %.0f%%", formW, edgeW, airW, src_w*100);
+txt(pad,y,#m1,0.72,0.74,0.80,1);

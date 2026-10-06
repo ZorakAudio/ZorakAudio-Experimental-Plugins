@@ -1,0 +1,671 @@
+desc: Ambience Discipline System (ADS) - Minimal Safe + Salience Budget
+
+// INPUTS:
+//  ch 1/2 = ambience (stereo)
+//  ch 3/4 = OPTIONAL sidechain key (dialogue) for ducking (set track to 4ch and route dialogue send to 3/4)
+//
+// DESIGN RULES (SAFE):
+//  - attenuation-only (no boosts)
+//  - slow time constants
+//  - capped moves
+//  - width = regulate, not widen
+//  - salience = regulate attention capture (presence/transients/hi-side motion)
+
+// #HELP: Ambience/room-bed governor. Attenuation-only, slow, capped moves.
+// #HELP: Core actions: (1) trims body/presence/air when the bed is too forward, (2) reins in Side energy (width discipline), (3) optional dialogue-key ducking (SC 3/4), (4) salience governor that limits “attention capture” using presence level, presence transients (fast vs slow), and high-band side-motion.
+// #HELP: Depth is a gentle broadband downward expander to keep the bed behind the foreground (no pumping by design).
+// #HELP: Routing: ch1/2 = ambience. Optional: route dialogue/key to ch3/4 (4ch track) for duck + salience reference.
+// #HELP: Quick start (beds): Fit 40–60, Tone 50–80, Width 40–70, Depth 30–50, HPF 60–120 Hz, Salience 40–70, then Output.
+// #HELP: If it feels “lifeless”: lower Fit first, then lower Salience. If it feels “wide/splashy”: raise Width Discipline.
+// #HELP: If it steps on dialogue: raise Dialog Duck and/or Salience Budget. (Salience is the smarter one.)
+
+// #TOOLTIP: Master intensity. Scales all attenuation moves (bed cuts + width discipline + duck contribution).
+slider1:65<0,100,1:sqr>Fit (%)
+// #TOOLTIP: Bed tonal bias (Pink→Brown). Higher = darker targets (more presence/air attenuation relative to low band).
+slider2:75<0,100,1:sqr>Tone (Pink->Brown)
+// #TOOLTIP: Stereo restraint. Caps Side-vs-Mid in body/high bands and increases sub-mono below ~120 Hz (no widening).
+slider3:70<0,100,1:sqr>Width Discipline (%)
+// #TOOLTIP: “Push back” depth. Broadband downward expansion (slow) that adds attenuation when the bed falls below its long-term average.
+slider4:35<0,100,1:sqr>Depth (Expander) (%)
+// #TOOLTIP: Dialogue-key duck amount (SC 3/4). Adds extra attenuation mainly to presence/air when key energy is present.
+slider5:20<0,120,1:log>HPF (Hz)
+// #TOOLTIP: Extra ducking when a 'key' / dialogue-like signal is present.
+slider6:40<0,100,1:sqr>Dialog Duck (SC 3/4) (%)
+// #TOOLTIP: Output trim after all processing.
+slider7:0<-12,12,0.1:log>Output Trim (dB)
+// #TOOLTIP: Salience strictness. Limits “attention capture” by enforcing: (a) presence below dialogue by a margin, (b) capped presence transients, (c) capped high-band side-motion. Higher = more suppression when needed.
+slider8:60<0,100,1:sqr>Salience Budget (%)
+
+@init
+eps   = 0.00000000000000000001;
+ilog10 = 1/log(10);
+
+// --- HPF states ---
+hpfLP_L = 0;
+hpfLP_R = 0;
+
+// --- Band split states (M) ---
+M_lp200 = 0;
+M_lp800 = 0;
+M_lp4k  = 0;
+
+// --- Band split states (S) ---
+S_lp120 = 0;
+S_lp200 = 0;
+S_lp800 = 0;
+S_lp4k  = 0;
+
+// --- Sidechain key states ---
+K_lp800 = 0;
+K_lp4k  = 0;
+K_E     = 0;     // fast-ish energy
+
+// --- Energy followers (slow) ---
+M_lowE  = 0;
+M_bodyE = 0;
+M_presE = 0;
+M_airE  = 0;
+
+S_bodyE = 0;
+S_hiE   = 0;
+M_hiE   = 0;
+
+// --- Smoothing states (dB) ---
+cut_body_dB = 0;
+cut_pres_dB = 0;
+cut_air_dB  = 0;
+
+sidecut_body_dB = 0;
+sidecut_hi_dB   = 0;
+
+duck_dB = 0;
+
+exp_dB = 0;
+Efast = 0;
+Eslow = 0;
+
+// --- Salience governor states ---
+A_presE  = 0;
+A_airE   = 0;
+A_pres_fastE = 0;
+A_pres_slowE = 0;
+
+sideRel_fast = 0;
+sideRel_slow = 0;
+
+sal_common_dB = 0;
+sal_side_dB   = 0;
+
+gfx_ext_retina = 1;
+
+@slider
+fit   = slider1/100;
+brown = slider2/100;
+wdisc = slider3/100;
+depth = slider4/100;
+duckA = slider6/100;
+salB  = slider8/100;
+
+out_gain = pow(10, slider7/20);
+
+// Clamp FCs
+nyq = srate*0.49;
+hpf_fc = min(max(slider5, 0), nyq);
+
+fc120 = min(120, nyq);
+fc200 = min(200, nyq);
+fc800 = min(800, nyq);
+fc4k  = min(4000, nyq);
+
+// One-pole lowpass coeff: y += g*(x-y)
+g_hpf = 1 - exp(-2*$pi*hpf_fc/srate);
+g120  = 1 - exp(-2*$pi*fc120/srate);
+g200  = 1 - exp(-2*$pi*fc200/srate);
+g800  = 1 - exp(-2*$pi*fc800/srate);
+g4k   = 1 - exp(-2*$pi*fc4k/srate);
+
+// Energy follower (slow)
+tauE = 2.0;
+aE = 1 - exp(-1/(tauE*srate));
+
+// Key energy follower (faster)
+tauK = 0.05;
+aK = 1 - exp(-1/(tauK*srate));
+
+// Cut smoothing
+tau_cut_a = 1.0;
+tau_cut_r = 12.0;
+c_cut_a = exp(-1/(tau_cut_a*srate));
+c_cut_r = exp(-1/(tau_cut_r*srate));
+
+// Width smoothing
+tau_w_a = 0.7;
+tau_w_r = 14.0;
+c_w_a = exp(-1/(tau_w_a*srate));
+c_w_r = exp(-1/(tau_w_r*srate));
+
+// Duck smoothing
+tau_d_a = 0.15;
+tau_d_r = 1.8;
+c_d_a = exp(-1/(tau_d_a*srate));
+c_d_r = exp(-1/(tau_d_r*srate));
+
+// Expander smoothing + envelopes
+a_fast = 1 - exp(-1/(0.05*srate)); // 50 ms
+a_slow = 1 - exp(-1/(6.0*srate));  // 6 s
+tau_exp_a = 0.25;
+tau_exp_r = 6.0;
+c_exp_a = exp(-1/(tau_exp_a*srate));
+c_exp_r = exp(-1/(tau_exp_r*srate));
+
+// --- Targets (dB), learned “good” defaults ---
+t_body = -3  - 3*brown;   // 200–800 vs <200
+t_pres = -10 - 6*brown;   // 800–4k vs <200
+t_air  = -18 - 8*brown;   // >4k vs <200
+
+max_body_cut = 4;
+max_pres_cut = 8;
+max_air_cut  = 12;
+
+// Width targets (Side vs Mid ratios, dB)
+// wdisc=0 => permissive, wdisc=1 => cinema-tight
+t_w_body = 6 - 20*wdisc;   // 200–800
+t_w_hi   = 6 - 24*wdisc;   // >800
+
+max_w_body = 18*wdisc;
+max_w_hi   = 24*wdisc;
+
+// Sub-mono amount tied to width discipline (minimal UI)
+submono = 0.90*wdisc; // 0..0.9
+
+// Expander params
+exp_ratio = 1 + 1.2*depth;     // 1..2.2
+exp_offset = 2.0;              // dB below slow avg before expansion bites
+exp_max = 8*depth;             // 0..8 dB max extra attenuation
+
+// Duck params (auto-threshold vs knob, minimal UI)
+duck_max = 3*duckA;            // 0..3 dB
+duck_thresh = -30 - 20*duckA;  // -30..-50 dB “power dB”
+
+// --- Salience Budget governor params (attenuation-only, capped) ---
+// Relative presence margin vs dialogue (when dialogue active)
+sal_X = 6 + 12*salB;           // 6..18 dB: ambience presence must sit below dialogue presence by this margin
+
+// Presence transient cap (fast-vs-slow in presence band)
+sal_T = 6 - 5*salB;            // 6..1 dB allowed "sparkle pop"
+
+// Hi-side motion cap (fast-vs-slow of S/M ratio in hi band)
+sal_V = 4 - 3*salB;            // 4..1 dB allowed motion
+
+// Absolute ceilings when dialogue absent (power dB)
+abs_pres = -18 - 24*salB;      // -18..-42 dB
+abs_air  = abs_pres - (6 + 6*salB); // air even lower when strict
+
+// Max extra cuts (dB)
+sal_max_common = 12*salB;      // 0..12 dB (applies to pres/air)
+sal_max_side   = 8*salB;       // 0..8 dB (extra side-only in hi)
+
+// Dialogue activity gate (based on K_dB)
+K_gate   = -60;                // dB power: below this, treat as "no dialogue"
+K_gate_w = 12;                 // fade width (dB) for soft switching
+
+// Salience energy follower (for stable "power dB" readouts)
+aSalE = 1 - exp(-1/(0.10*srate));    // 100 ms
+
+// Hi-side motion smoothing (ratio dB, not energy)
+a_side_fast = 1 - exp(-1/(0.25*srate)); // 250 ms
+a_side_slow = 1 - exp(-1/(6.0*srate));  // 6 s
+
+// Salience cut smoothing
+tau_sal_a  = 0.35;
+tau_sal_r  = 10.0;
+c_sal_a    = exp(-1/(tau_sal_a*srate));
+c_sal_r    = exp(-1/(tau_sal_r*srate));
+
+tau_sals_a = 0.50;
+tau_sals_r = 12.0;
+c_sals_a   = exp(-1/(tau_sals_a*srate));
+c_sals_r   = exp(-1/(tau_sals_r*srate));
+
+@sample
+// --- input ---
+L0 = spl0;
+R0 = spl1;
+
+// Optional dialogue key on 3/4 (if absent, spl2/spl3 are 0)
+K0 = (spl2 + spl3)*0.5;
+
+// --- HPF (static) ---
+hpfLP_L += g_hpf*(L0 - hpfLP_L);
+hpfLP_R += g_hpf*(R0 - hpfLP_R);
+L = L0 - hpfLP_L;
+R = R0 - hpfLP_R;
+
+// --- M/S ---
+M = (L+R)*0.5;
+S = (L-R)*0.5;
+
+// --- Band split (M) ---
+M_lp200 += g200*(M - M_lp200);
+M_lp800 += g800*(M - M_lp800);
+M_lp4k  += g4k*(M - M_lp4k);
+
+M_low  = M_lp200;                  // <200
+M_body = M_lp800 - M_lp200;        // 200–800
+M_pres = M_lp4k  - M_lp800;        // 800–4k
+M_air  = M - M_lp4k;               // >4k
+
+// --- Band split (S) ---
+S_lp120 += g120*(S - S_lp120);
+S_lp200 += g200*(S - S_lp200);
+S_lp800 += g800*(S - S_lp800);
+S_lp4k  += g4k*(S - S_lp4k);
+
+S_low200 = S_lp200;                // <200
+S_body   = S_lp800 - S_lp200;      // 200–800
+S_pres   = S_lp4k  - S_lp800;      // 800–4k
+S_air    = S - S_lp4k;             // >4k
+
+// --- Energies (slow) ---
+M_lowE  += aE*(M_low*M_low   - M_lowE);
+M_bodyE += aE*(M_body*M_body - M_bodyE);
+M_presE += aE*(M_pres*M_pres - M_presE);
+M_airE  += aE*(M_air*M_air   - M_airE);
+
+// Width energies
+S_bodyE += aE*(S_body*S_body - S_bodyE);
+
+M_hi = M_pres + M_air;
+S_hi = S_pres + S_air;
+M_hiE += aE*(M_hi*M_hi - M_hiE);
+S_hiE += aE*(S_hi*S_hi - S_hiE);
+
+// --- Spectral allocation: attenuation-only toward targets ---
+body_rel = 10*log((M_bodyE+eps)/(M_lowE+eps))*ilog10;
+pres_rel = 10*log((M_presE+eps)/(M_lowE+eps))*ilog10;
+air_rel  = 10*log((M_airE +eps)/(M_lowE+eps))*ilog10;
+
+ex_body = body_rel - t_body; ex_body = ex_body > 0 ? ex_body : 0;
+ex_pres = pres_rel - t_pres; ex_pres = ex_pres > 0 ? ex_pres : 0;
+ex_air  = air_rel  - t_air;  ex_air  = ex_air  > 0 ? ex_air  : 0;
+
+// Fit scales these (system knob)
+want_body = min(ex_body * fit * 0.75, max_body_cut);
+want_pres = min(ex_pres * fit * 1.00, max_pres_cut);
+want_air  = min(ex_air  * fit * 1.00, max_air_cut);
+
+// --- Optional dialogue duck (SC 3/4), pushes PRES/AIR down a bit ---
+K_lp800 += g800*(K0 - K_lp800);
+K_lp4k  += g4k*(K0 - K_lp4k);
+K_bp = K_lp4k - K_lp800;                 // ~800–4k proxy
+
+K_E += aK*(K_bp*K_bp - K_E);
+K_dB = 10*log(K_E+eps)*ilog10;
+
+duck_ex = K_dB - duck_thresh; duck_ex = duck_ex > 0 ? duck_ex : 0;
+duck_want = min(duck_ex, duck_max);
+
+// smooth duck
+cD = duck_want > duck_dB ? c_d_a : c_d_r;
+duck_dB = duck_want + cD*(duck_dB - duck_want);
+
+// apply duck as EXTRA attenuation to pres/air (does not touch low/body)
+want_pres = min(want_pres + duck_dB, max_pres_cut + duck_max);
+want_air  = min(want_air  + duck_dB*0.7, max_air_cut + duck_max);
+
+// smooth spectral cuts
+cB = want_body > cut_body_dB ? c_cut_a : c_cut_r;
+cP = want_pres > cut_pres_dB ? c_cut_a : c_cut_r;
+cA = want_air  > cut_air_dB  ? c_cut_a : c_cut_r;
+
+cut_body_dB = want_body + cB*(cut_body_dB - want_body);
+cut_pres_dB = want_pres + cP*(cut_pres_dB - want_pres);
+cut_air_dB  = want_air  + cA*(cut_air_dB  - want_air);
+
+g_body = pow(10, -cut_body_dB/20);
+g_pres = pow(10, -cut_pres_dB/20);
+g_air  = pow(10, -cut_air_dB /20);
+
+// --- Width governance (attenuation-only) ---
+side_rel_body = 10*log((S_bodyE+eps)/(M_bodyE+eps))*ilog10;
+exWb = side_rel_body - t_w_body; exWb = exWb > 0 ? exWb : 0;
+want_side_body = min(exWb * fit, max_w_body);
+
+side_rel_hi = 10*log((S_hiE+eps)/(M_hiE+eps))*ilog10;
+exWh = side_rel_hi - t_w_hi; exWh = exWh > 0 ? exWh : 0;
+want_side_hi = min(exWh * fit, max_w_hi);
+
+// smooth width cuts
+cWB = want_side_body > sidecut_body_dB ? c_w_a : c_w_r;
+cWH = want_side_hi   > sidecut_hi_dB   ? c_w_a : c_w_r;
+
+sidecut_body_dB = want_side_body + cWB*(sidecut_body_dB - want_side_body);
+sidecut_hi_dB   = want_side_hi   + cWH*(sidecut_hi_dB   - want_side_hi);
+
+gS_body = pow(10, -sidecut_body_dB/20);
+gS_hi   = pow(10, -sidecut_hi_dB  /20);
+
+// Sub mono (<120): reduce ONLY side below 120
+S_0_120    = S_lp120 * (1 - submono);
+S_120_200  = (S_low200 - S_lp120);
+S_low = S_0_120 + S_120_200;
+
+// Apply width gains (body + hi)
+S_body *= gS_body;
+S_pres *= gS_hi;
+S_air  *= gS_hi;
+
+// --- Apply spectral gains to BOTH M and S (keeps stereo stable) ---
+M_body *= g_body;  S_body *= g_body;
+M_pres *= g_pres;  S_pres *= g_pres;
+M_air  *= g_air;   S_air  *= g_air;
+
+// --- Salience Budget Governor (attenuation-only, slow, capped) ---
+// Measures: (1) presence vs dialogue, (2) presence transients, (3) hi-side motion.
+// Acts: extra attenuation in PRES/AIR + extra SIDE-only attenuation in hi when motion exceeds budget.
+Apres_inst = M_pres*M_pres + S_pres*S_pres; // average L/R presence energy (cross-terms cancel)
+Aair_inst  = M_air*M_air   + S_air*S_air;
+
+A_presE += aSalE*(Apres_inst - A_presE);
+A_airE  += aSalE*(Aair_inst  - A_airE);
+
+A_pres_fastE += a_fast*(Apres_inst - A_pres_fastE);
+A_pres_slowE += a_slow*(Apres_inst - A_pres_slowE);
+
+A_pres_dB = 10*log(A_presE + eps)*ilog10;
+A_air_dB  = 10*log(A_airE  + eps)*ilog10;
+
+delta_pres_dB = 10*log((A_pres_fastE+eps)/(A_pres_slowE+eps))*ilog10;
+
+// Dialogue activity gate (0..1)
+K_w = (K_dB - K_gate)/K_gate_w;
+K_w = min(max(K_w, 0), 1);
+
+// Excess presence vs dialogue (when dialogue active)
+ex_margin = A_pres_dB - K_dB + sal_X; ex_margin = ex_margin > 0 ? ex_margin : 0;
+
+// Absolute excess when dialogue absent
+ex_absP = A_pres_dB - abs_pres; ex_absP = ex_absP > 0 ? ex_absP : 0;
+ex_absA = A_air_dB  - abs_air;  ex_absA = ex_absA > 0 ? ex_absA : 0;
+ex_abs  = ex_absP + 0.6*ex_absA;
+
+// Excess transients in presence
+ex_trans = delta_pres_dB - sal_T; ex_trans = ex_trans > 0 ? ex_trans : 0;
+
+// Common salience demand (pres/air)
+sal_common_want = (K_w*ex_margin + (1-K_w)*ex_abs) + 0.7*ex_trans;
+sal_common_want = min(sal_common_want, sal_max_common);
+
+// Smooth common cut
+cSC = sal_common_want > sal_common_dB ? c_sal_a : c_sal_r;
+sal_common_dB = sal_common_want + cSC*(sal_common_dB - sal_common_want);
+
+// Hi-side motion (ratio dB fast-vs-slow)
+M_hi_now = M_pres + M_air;
+S_hi_now = S_pres + S_air;
+
+side_rel_hi_inst = 10*log((S_hi_now*S_hi_now + eps)/(M_hi_now*M_hi_now + eps))*ilog10;
+
+sideRel_fast += a_side_fast*(side_rel_hi_inst - sideRel_fast);
+sideRel_slow += a_side_slow*(side_rel_hi_inst - sideRel_slow);
+
+motion = abs(sideRel_fast - sideRel_slow);
+ex_motion = motion - sal_V; ex_motion = ex_motion > 0 ? ex_motion : 0;
+
+sal_side_want = min(ex_motion, sal_max_side);
+
+// Smooth side-only cut
+cSS = sal_side_want > sal_side_dB ? c_sals_a : c_sals_r;
+sal_side_dB = sal_side_want + cSS*(sal_side_dB - sal_side_want);
+
+// Apply (attenuation-only) salience cuts to PRES/AIR (+ side extra)
+g_salP = pow(10, -sal_common_dB/20);
+g_salA = pow(10, -(sal_common_dB*0.8)/20);
+g_salS = pow(10, -sal_side_dB/20);
+
+M_pres *= g_salP;         S_pres *= (g_salP * g_salS);
+M_air  *= g_salA;         S_air  *= (g_salA * g_salS);
+
+// Recombine M/S
+M = M_low + M_body + M_pres + M_air;
+S = S_low + S_body + S_pres + S_air;
+
+// Back to L/R
+L = M + S;
+R = M - S;
+
+// --- Depth restoration: gentle downward expansion (broadband) ---
+Efast += a_fast*(M*M - Efast);
+Eslow += a_slow*(M*M - Eslow);
+
+diff_dB = 10*log((Efast+eps)/(Eslow+eps))*ilog10; // current vs slow avg
+below = -(diff_dB + exp_offset);                  // positive only when below avg by >offset
+below = below > 0 ? below : 0;
+
+exp_want = below * (exp_ratio - 1);
+exp_want = min(exp_want, exp_max);
+
+// smooth expander attenuation
+cE = exp_want > exp_dB ? c_exp_a : c_exp_r;
+exp_dB = exp_want + cE*(exp_dB - exp_want);
+
+g_exp = pow(10, -exp_dB/20);
+
+// Apply expander and output trim
+spl0 = L * g_exp * out_gain;
+spl1 = R * g_exp * out_gain;
+
+@gfx 620 300
+// ---------- ADS GFX (faithful + scalable) ----------
+
+function clamp(x, lo, hi) ( x < lo ? lo : (x > hi ? hi : x); );
+function lin2db_amp(x) ( 20*log10(max(0.00000000000000000001, x)); );
+
+function txt(x,y,str,r,g,b,a)
+(
+  gfx_set(0,0,0,0.72*a); gfx_x=x+1; gfx_y=y+1; gfx_drawstr(str);
+  gfx_set(r,g,b,a);      gfx_x=x;   gfx_y=y;   gfx_drawstr(str);
+);
+
+function meter01(x,y,w,h,v01,r,g,b,a)
+(
+  v01 = clamp(v01, 0, 1);
+  gfx_set(1,1,1,0.09*a); gfx_rect(x,y,w,h,1);
+  gfx_set(0,0,0,0.18*a); gfx_rect(x+1,y+1,w-2,h-2,1);
+  gfx_set(r,g,b,0.92*a); gfx_rect(x+1,y+1,(w-2)*v01,h-2,1);
+);
+
+function row_db(x,y,w,label,db,dbmax,r,g,b,a)
+local(lblW,valW,barX,barW,v01)
+(
+  lblW = 92*ui;
+  valW = 56*ui;
+  v01 = db / max(0.000001, dbmax);
+
+  gfx_setfont(1,"Arial",11*ui);
+  txt(x, y, label, 0.84,0.86,0.92, a);
+
+  sprintf(#rv, "%.1f dB", db);
+  txt(x+w-valW, y, #rv, 0.95,0.95,0.98, a);
+
+  barX = x + lblW;
+  barW = w - lblW - valW - 8*ui;
+  meter01(barX, y+2*ui, barW, 10*ui, v01, r,g,b, a);
+
+  y + 18*ui;
+);
+
+function row_pct(x,y,w,label,v01,r,g,b,a)
+local(lblW,valW,barX,barW)
+(
+  lblW = 92*ui;
+  valW = 44*ui;
+
+  gfx_setfont(1,"Arial",11*ui);
+  txt(x, y, label, 0.84,0.86,0.92, a);
+
+  sprintf(#rv, "%.0f%%", v01*100);
+  txt(x+w-valW, y, #rv, 0.95,0.95,0.98, a);
+
+  barX = x + lblW;
+  barW = w - lblW - valW - 8*ui;
+  meter01(barX, y+2*ui, barW, 10*ui, v01, r,g,b, a);
+
+  y + 18*ui;
+);
+
+function small(x,y,str,a)
+(
+  gfx_setfont(1,"Arial",11*ui);
+  txt(x,y,str,0.72,0.74,0.80,a);
+);
+
+function card(x,y,w,h,title,a)
+(
+  gfx_set(0.055,0.055,0.065,0.98); gfx_rect(x,y,w,h,1);
+  gfx_set(1,1,1,0.065*a);         gfx_rect(x,y,w,1,1);
+  gfx_set(1,1,1,0.045*a);         gfx_rect(x,y+h-1,w,1,1);
+  gfx_set(1,1,1,0.050*a);         gfx_rect(x,y+24*ui,w,1,1);
+
+  gfx_setfont(1,"Arial",12*ui);
+  txt(x+10*ui, y+6*ui, title, 0.96,0.96,0.99, 0.98*a);
+
+  y + 32*ui;
+);
+
+// ---------------- scaling ----------------
+// Base design size was 620x300.
+// Panels already use gfx_w/gfx_h, but type/spacing must scale too.
+baseW = 620;
+baseH = 300;
+
+sx = gfx_w / baseW;
+sy = gfx_h / baseH;
+
+// Isotropic scale so layout keeps its proportions.
+// Gentle curve so it doesn't become cartoonishly huge.
+ui = min(sx, sy);
+ui = ui < 1 ? ui : (1 + (ui - 1) * 0.85);
+ui = clamp(ui, 0.85, 2.50);
+
+// ---------------- background ----------------
+gfx_set(0.035,0.035,0.040,1);
+gfx_rect(0,0,gfx_w,gfx_h,1);
+
+// ---------------- display ranges = current control budgets ----------------
+disp_body_max  = max(0.25, max_body_cut);
+disp_pres_max  = max(0.25, max_pres_cut + duck_max);
+disp_air_max   = max(0.25, max_air_cut + duck_max*0.7);
+
+disp_wb_max    = max(0.25, max_w_body);
+disp_wh_max    = max(0.25, max_w_hi);
+
+disp_duck_max  = max(0.25, duck_max);
+disp_depth_max = max(0.25, exp_max);
+
+disp_sc_max    = max(0.25, sal_max_common);
+disp_ss_max    = max(0.25, sal_max_side);
+
+// ---------------- occupancy (normalized to current budgets) ----------------
+occ_body  = clamp(cut_body_dB      / disp_body_max,  0, 1);
+occ_pres  = clamp(cut_pres_dB      / disp_pres_max,  0, 1);
+occ_air   = clamp(cut_air_dB       / disp_air_max,   0, 1);
+
+occ_wb    = clamp(sidecut_body_dB  / disp_wb_max,    0, 1);
+occ_wh    = clamp(sidecut_hi_dB    / disp_wh_max,    0, 1);
+
+occ_duck  = clamp(duck_dB          / disp_duck_max,  0, 1);
+occ_depth = clamp(exp_dB           / disp_depth_max, 0, 1);
+
+occ_sc    = clamp(sal_common_dB    / disp_sc_max,    0, 1);
+occ_ss    = clamp(sal_side_dB      / disp_ss_max,    0, 1);
+
+bed_occ   = (occ_body + occ_pres + occ_air) / 3;
+width_occ = (occ_wb + occ_wh) / 2;
+focus_occ = (occ_duck + occ_depth) / 2;
+sal_occ   = (occ_sc + occ_ss) / 2;
+
+// ---------------- enabled weights for header activity ----------------
+w_bed   = (fit > 0.001 || duckA > 0.001) ? 0.34 : 0;
+w_width = (fit > 0.001 && wdisc > 0.001) ? 0.18 : 0;
+w_focus = (duckA > 0.001 || depth > 0.001) ? 0.22 : 0;
+w_sal   = (salB  > 0.001) ? 0.26 : 0;
+
+wsum = w_bed + w_width + w_focus + w_sal;
+activity = wsum > 0 ? (
+  (w_bed*bed_occ + w_width*width_occ + w_focus*focus_occ + w_sal*sal_occ) / wsum
+) : 0;
+
+aHdr   = 0.58 + 0.42*activity;
+aBed   = 0.60 + 0.40*bed_occ;
+aWidth = 0.58 + 0.42*max(width_occ, clamp(submono/0.9,0,1)*0.40);
+aFocus = 0.58 + 0.42*max(focus_occ, K_w*0.65);
+aSal   = 0.58 + 0.42*sal_occ;
+
+// ---------------- header ----------------
+pad = 10*ui;
+gap = 10*ui;
+header_h = 48*ui;
+out_db = lin2db_amp(out_gain);
+
+gfx_set(0,0,0,0.56);
+gfx_rect(pad,pad,gfx_w-pad*2,header_h,1);
+gfx_set(1,1,1,0.10*aHdr); gfx_rect(pad,pad,gfx_w-pad*2,1,1);
+gfx_set(1,1,1,0.07*aHdr); gfx_rect(pad,pad+header_h-1,gfx_w-pad*2,1,1);
+
+gfx_setfont(1,"Arial",14*ui);
+txt(pad+10*ui, pad+6*ui, "Ambience Discipline System (ADS)", 0.96,0.96,0.99, 1);
+
+gfx_setfont(1,"Arial",11*ui);
+sprintf(#h0, "Fit %.0f%%  Tone %.0f%%  Width %.0f%%  Depth %.0f%%  HPF %.0f Hz  Duck %.0f%%  Sal %.0f%%",
+  fit*100, brown*100, wdisc*100, depth*100, hpf_fc, duckA*100, salB*100);
+txt(pad+10*ui, pad+28*ui, #h0, 0.78,0.80,0.86, 1);
+
+sprintf(#h1, "Activity %.0f%%", activity*100);
+txt(gfx_w-120*ui, pad+8*ui, #h1, 0.92,0.92,0.96, 1);
+
+sprintf(#h2, "Dialog %.0f%%   Out %+.1f dB", K_w*100, out_db);
+txt(gfx_w-170*ui, pad+28*ui, #h2, 0.72,0.74,0.80, 1);
+
+// ---------------- layout ----------------
+colW = (gfx_w - pad*2 - gap) * 0.5;
+xL = pad;
+xR = xL + colW + gap;
+
+yTop = pad + header_h + gap;
+usableH = gfx_h - yTop - pad;
+hTop = usableH * 0.38;
+hBot = usableH - gap - hTop;
+yBot = yTop + hTop + gap;
+
+// ---------------- left / top : bed cuts ----------------
+y = card(xL, yTop, colW, hTop, "Bed cuts", aBed);
+y = row_db(xL+10*ui, y, colW-20*ui, "Body",     cut_body_dB, disp_body_max, 0.40,1.00,0.55, aBed);
+y = row_db(xL+10*ui, y, colW-20*ui, "Presence", cut_pres_dB, disp_pres_max, 0.35,0.85,1.00, aBed);
+y = row_db(xL+10*ui, y, colW-20*ui, "Air",      cut_air_dB,  disp_air_max,  0.95,0.70,0.35, aBed);
+
+// ---------------- left / bottom : stereo discipline ----------------
+y = card(xL, yBot, colW, hBot, "Stereo discipline", aWidth);
+y = row_db (xL+10*ui, y, colW-20*ui, "Side body",     sidecut_body_dB, disp_wb_max, 1.00,0.45,0.95, aWidth);
+y = row_db (xL+10*ui, y, colW-20*ui, "Side hi",       sidecut_hi_dB,   disp_wh_max, 1.00,0.55,0.25, aWidth);
+y = row_pct(xL+10*ui, y, colW-20*ui, "Sub-mono <120", clamp(submono/0.9,0,1), 0.60,0.65,0.95, aWidth);
+
+// ---------------- right / top : dialogue + depth ----------------
+y = card(xR, yTop, colW, hTop, "Dialogue + depth", aFocus);
+y = row_pct(xR+10*ui, y, colW-20*ui, "Dialog active", K_w, 0.80,0.86,0.96, aFocus);
+y = row_db (xR+10*ui, y, colW-20*ui, "Duck",         duck_dB, disp_duck_max,  0.35,1.00,0.75, aFocus);
+y = row_db (xR+10*ui, y, colW-20*ui, "Depth atten",  exp_dB,  disp_depth_max, 0.95,0.70,0.35, aFocus);
+
+sprintf(#d0, "Key %.1f dB(pwr)", K_dB);
+small(xR+10*ui, y+6*ui, #d0, aFocus);
+
+// ---------------- right / bottom : salience budget ----------------
+y = card(xR, yBot, colW, hBot, "Salience budget", aSal);
+y = row_db(xR+10*ui, y, colW-20*ui, "Common cut", sal_common_dB, disp_sc_max, 0.35,0.85,1.00, aSal);
+y = row_db(xR+10*ui, y, colW-20*ui, "Side cut",   sal_side_dB,   disp_ss_max, 1.00,0.45,0.95, aSal);
+
+sprintf(#s0, "A_pres %.1f dB   A_air %.1f dB", A_pres_dB, A_air_dB);
+small(xR+10*ui, y+6*ui, #s0, aSal);
+
+sprintf(#s1, "Δpres %.1f vs %.1f dB   motion %.1f vs %.1f dB", delta_pres_dB, sal_T, motion, sal_V);
+small(xR+10*ui, y+22*ui, #s1, aSal);

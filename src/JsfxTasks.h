@@ -345,6 +345,16 @@ class Runtime {
   }
 
 public:
+  // No locks or reclamation: completion stays a wake obligation until released.
+  bool hasOutstandingWorkForIdle() const noexcept {
+    for (const auto& job : *jobs) if(job.id.load(std::memory_order_acquire)) {
+      const int status=job.status.load(std::memory_order_acquire);
+      if(status==Pending || status==Running || !job.released.load(std::memory_order_acquire))return true;
+    }
+    const int status=arena.status.load(std::memory_order_acquire);
+    if(arena.id.load(std::memory_order_acquire) && (status==1 || status==2 || status==3 || !arena.released.load(std::memory_order_acquire)))return true;
+    return false;
+  }
   void setHeapSwapHooks(ValidateHeap validate,RebindHeap rebind) {validateHeap=validate;rebindHeap=rebind;}
   void setArenaHooks(AcquireLease acquire, ExecutePinned execute, ValidateLease validate) { acquireLease=acquire;executePinned=execute;validateLease=validate; }
   static bool privateHeap(const DSPJSFX_State* state) {

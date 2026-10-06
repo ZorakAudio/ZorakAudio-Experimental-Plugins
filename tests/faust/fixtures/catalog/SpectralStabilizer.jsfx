@@ -1,0 +1,763 @@
+desc:DoSG Spectral Stabilizer (3 knobs + GFX)
+options:gfx_hz=30
+
+// Slider shaping (REAPER 6.74+):
+//  - Sigma: :log keeps ratios feeling consistent (midpoint pinned to 1.20)
+//  - Depth/MotionBias: :sqr gives finer control in the lower range
+// #HELP: Stabilizes tonal balance by attenuating only “excess” energy per ERB band relative to a smoothed baseline (no boosting, SAFE).
+// #HELP: Sigma defines the baseline smoothness (higher = more stable but slower; lower = more lively and reactive).
+// #HELP: Depth sets how much excess is reduced; push until swings calm down, then back off if you hear spectral pumping or dulling.
+// #HELP: MotionBias gates action during fast changes; increase for transient-rich material to avoid over-grab, decrease for sustained sources to “hold” tone steady.
+
+// #TOOLTIP: Sets the spectral smoothing window that defines the “expected” baseline. Higher = steadier tone (less swing), but slower to react and more risk of dulling. Lower = livelier, more reactive, less stabilization.
+slider1:1.20<0.70,2.00,0.01:log=1.20>Sigma (spectral smoothness)
+// #TOOLTIP: How strongly the plugin pushes positive residuals down (never boosts). Higher = more stabilization and less harsh/muddy variance, but too high can sound like spectral “holding” or subtle pumping.
+slider2:35<0,100,1:sqr=2>Depth (%)
+// #TOOLTIP: Motion gating. Higher = follows movement more (less stabilization during fast spectral motion/transients). Lower = resists changes more (stronger holding), useful for steady sources but can over-grab on animated material.
+slider3:55<0,100,1:sqr=2>MotionBias (%)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+// ---------------------
+// Utility / Math
+// ---------------------
+function clamp(x,lo,hi) ( x < lo ? lo : (x > hi ? hi : x); );
+function softclip_lim(x,lim) ( x * lim / (lim + abs(x) + 0.00000000000000000001); ); // saturates to +/-lim
+
+// dB helpers using exp/log (fast)
+ln10  = log(10);
+dbfac = ln10/20;     // dB -> ln amplitude multiplier
+function db2lin(d) ( exp(d*dbfac); );
+function lin2db(x) ( (x = max(x,0.00000000000000000001); log(x)/dbfac); );
+
+// ---------------------
+// ERB-ish spacing
+// ---------------------
+function erb_cf(i, n, fmin, fmax) local(t,ear_min,ear_max,cf)(
+  ear_min = 21.4*log10(4.37*fmin*0.001 + 1.0);
+  ear_max = 21.4*log10(4.37*fmax*0.001 + 1.0);
+  t = i / max(n - 1, 1);
+  cf = (pow(10.0, (ear_min + t*(ear_max-ear_min)) / 21.4) - 1.0) / 4.37 * 1000.0;
+  cf;
+);
+function erb_bw(f) ( 24.7 * (4.37 * f * 0.001 + 1.0); );
+
+// ---------------------
+// Gaussian weights (discrete, normalized)
+// ---------------------
+function fill_gauss_weights(radius, sigma, base_idx) local(sum,j,k,w)(
+  sigma = max(sigma, 0.000001);
+  sum = 0.0;
+  j = -radius;
+  loop(radius*2+1,
+    w = exp( -(j*j) / (2.0*sigma*sigma) );
+    mem[base_idx + j + radius] = w;
+    sum += w;
+    j += 1;
+  );
+  k = 0;
+  loop(radius*2+1,
+    mem[base_idx + k] /= max(sum,0.00000000000000000001);
+    k += 1;
+  );
+);
+
+// ---------------------
+// Biquad bandpass (RBJ, constant peak gain)
+// ---------------------
+two_pi = 6.283185307179586;
+function biquad_bp_coefs(fc, q, idx_b) local(w0,alpha,b0,b1,b2,a0,a1,a2)(
+  fc = clamp(fc, 10, srate*0.45);
+  q  = max(q, 0.10);
+
+  w0 = two_pi * fc / srate;
+  alpha = sin(w0) / (2.0*q);
+
+  // constant peak gain bandpass
+  b0 = alpha;
+  b1 = 0.0;
+  b2 = -alpha;
+
+  a0 = 1.0 + alpha;
+  a1 = -2.0*cos(w0);
+  a2 = 1.0 - alpha;
+
+  b0 /= a0; b1 /= a0; b2 /= a0; a1 /= a0; a2 /= a0;
+
+  mem[idx_b+0] = b0;
+  mem[idx_b+1] = b1;
+  mem[idx_b+2] = b2;
+  mem[idx_b+3] = a1;
+  mem[idx_b+4] = a2;
+);
+
+function biquad_proc(x, idx_b, idx_z1, idx_z2) local(b0,b1,b2,a1,a2,z1,z2,y)(
+  b0 = mem[idx_b+0]; b1 = mem[idx_b+1]; b2 = mem[idx_b+2];
+  a1 = mem[idx_b+3]; a2 = mem[idx_b+4];
+  z1 = mem[idx_z1];  z2 = mem[idx_z2];
+
+  // Direct Form II (transposed)
+  y  = b0*x + z1;
+  z1 = b1*x - a1*y + z2;
+  z2 = b2*x - a2*y;
+
+  mem[idx_z1] = z1;
+  mem[idx_z2] = z2;
+  y;
+);
+
+// ---------------------
+// Core parameters
+// ---------------------
+bands = 12;
+minHz = 100;
+maxHz = 12000;
+
+gauss_radius = 5;   // +/- bands
+k_ratio      = 2.50;
+
+atk_ms = 6;
+rel_ms = 160;
+env_ms = 25;        // band energy smoothing
+mot_ms = 40;        // motion envelope smoothing
+
+res_clip = 1.50;    // residual soft limit (log domain)
+kneeadj  = 0.50;    // soft-knee around 0 residual
+res2db   = 6.0;     // residual-to-dB scale
+
+onset_thr = 0.12;   // onset detection threshold (delta log-energy)
+
+max_att_db    = 18.0;
+min_gain_lin  = db2lin(-max_att_db);
+
+// ---------------------
+// Memory layout
+// ---------------------
+// Per-band constants:
+ofs_cf = 0;      // [bands]
+ofs_bw = 64;     // [bands]
+ofs_q  = 128;    // [bands]
+ofs_bq = 256;    // [bands*5] (b0,b1,b2,a1,a2)
+
+// States (z1/z2 per band per channel):
+ofs_z1L = 512;                  // [bands]
+ofs_z2L = ofs_z1L + bands;      // [bands]
+ofs_z1R = ofs_z1L + bands*2;    // [bands]
+ofs_z2R = ofs_z1L + bands*3;    // [bands]
+
+// Analysis / control:
+ofs_envlin = 1024; // [bands] smoothed energy (linear)
+ofs_envlog = 1100; // [bands] smoothed energy (log)
+ofs_d1     = 1200; // [bands]
+ofs_d2     = 1300; // [bands]
+ofs_mot    = 1400; // [bands] motion envelope 0..1
+ofs_res    = 1500; // [bands] DoSG residual
+ofs_gt     = 1600; // [bands] target gain (linear <=1)
+ofs_gs     = 1700; // [bands] smoothed gain (linear <=1)
+
+// Gaussian weights:
+ofs_gn = 2000; // [2*radius+1]
+ofs_gw = 2040; // [2*radius+1]
+
+// UI helpers:
+action_amt = 1.0;  // 0..1 (1=full action)
+
+// ---------------------
+// Build filterbank (ERB-ish) and init states
+// ---------------------
+maxHz_eff = min(maxHz, srate*0.45);
+
+bi = 0;
+loop(bands,
+  cf = erb_cf(bi, bands, minHz, maxHz_eff);
+  bw = erb_bw(cf);
+  q  = cf / max(bw, 1.0);
+
+  mem[ofs_cf+bi] = cf;
+  mem[ofs_bw+bi] = bw;
+  mem[ofs_q +bi] = q;
+
+  biquad_bp_coefs(cf, q, ofs_bq + bi*5);
+
+  // clear states / envelopes / gains
+  mem[ofs_z1L+bi] = mem[ofs_z2L+bi] = 0.0;
+  mem[ofs_z1R+bi] = mem[ofs_z2R+bi] = 0.0;
+
+  mem[ofs_envlin+bi] = 0.0;
+  mem[ofs_envlog+bi] = 0.0;
+  mem[ofs_d1+bi]     = 0.0;
+  mem[ofs_d2+bi]     = 0.0;
+  mem[ofs_mot+bi]    = 0.0;
+
+  mem[ofs_res+bi] = 0.0;
+  mem[ofs_gt+bi]  = 1.0;
+  mem[ofs_gs+bi]  = 1.0;
+
+  bi += 1;
+);
+
+// init gaussian weights (also updated in @slider)
+fill_gauss_weights(gauss_radius, slider1, ofs_gn);
+fill_gauss_weights(gauss_radius, slider1*k_ratio, ofs_gw);
+
+@slider
+// Only the Gaussian smoothers depend on Sigma
+fill_gauss_weights(gauss_radius, slider1, ofs_gn);
+fill_gauss_weights(gauss_radius, slider1*k_ratio, ofs_gw);
+
+@block
+// Time constants (computed once per block)
+atk_a = exp(-1000.0/(max(atk_ms,0.01)*srate));
+rel_a = exp(-1000.0/(max(rel_ms,0.01)*srate));
+env_a = exp(-1000.0/(max(env_ms,0.01)*srate));
+mot_a = exp(-1000.0/(max(mot_ms,0.01)*srate));
+
+// Per-block target gain update (cheap + stable)
+depth = slider2*0.01;
+mb    = slider3*0.01;
+
+low_min_gain = 1.0;
+
+bi = 0;
+loop(bands,
+  // DoSG smoothing across bands on log-energy
+  acc_n = 0.0;
+  acc_w = 0.0;
+
+  k = -gauss_radius;
+  loop(gauss_radius*2+1,
+    bj = bi + k;
+    bj = bj < 0 ? 0 : (bj >= bands ? bands-1 : bj);
+
+    e = mem[ofs_envlog + bj];
+    wn = mem[ofs_gn + k + gauss_radius];
+    ww = mem[ofs_gw + k + gauss_radius];
+
+    acc_n += wn * e;
+    acc_w += ww * e;
+
+    k += 1;
+  );
+
+  r = acc_n - acc_w;
+  r = softclip_lim(r, res_clip);
+  mem[ofs_res+bi] = r;
+
+  // Motion gating (0..1) from smoothed motion envelope
+  mgate = 1.0 - mb * clamp(mem[ofs_mot+bi], 0.0, 1.0);
+
+  // Soft-knee residual shaping
+  rk = r * (abs(r) / (abs(r) + kneeadj));
+
+  // Attenuate only on positive residual (never boost)
+  att_db = rk > 0 ? (-depth * mgate * rk * res2db) : 0.0;
+  att_db = max(att_db, -max_att_db);
+
+  g_t = db2lin(att_db);
+  g_t = clamp(g_t, min_gain_lin, 1.0);
+  mem[ofs_gt+bi] = g_t;
+
+  bi < 3 ? ( low_min_gain = min(low_min_gain, g_t); );
+
+  bi += 1;
+);
+
+// Safety “back-off”: if lows are being hit hard, reduce action amount
+// (this reduces *how much* we move toward the attenuating gain, not making it harsher)
+action_amt = 1.0;
+(low_min_gain < db2lin(-4.0)) ? ( action_amt = 0.60; ); // > ~4 dB low-band attenuation target -> back off
+
+@sample
+inL = spl0;
+inR = spl1;
+
+outL = inL;
+outR = inR;
+
+bi = 0;
+loop(bands,
+  // Bandpass filter outputs
+  idx_b = ofs_bq + bi*5;
+
+  yL = biquad_proc(inL, idx_b, ofs_z1L+bi, ofs_z2L+bi);
+  yR = biquad_proc(inR, idx_b, ofs_z1R+bi, ofs_z2R+bi);
+
+  // Smoothed band energy (linear), then log
+  e   = 0.5*(yL*yL + yR*yR);
+  env = mem[ofs_envlin+bi];
+  env = env_a*env + (1.0-env_a)*e;
+  mem[ofs_envlin+bi] = env;
+
+  elog = log(env + 0.000000000001);
+
+  // Derivatives (for motion / onset)
+  prev_elog = mem[ofs_envlog+bi];
+  d1 = elog - prev_elog;
+
+  prev_d1 = mem[ofs_d1+bi];
+  d2 = d1 - prev_d1;
+
+  mem[ofs_d2+bi]     = d2;
+  mem[ofs_d1+bi]     = d1;
+  mem[ofs_envlog+bi] = elog;
+
+  onset = d1 > onset_thr ? 1.0 : 0.0;
+
+  // Motion envelope (0..1)
+  m_inst = abs(d1)*6.0 + abs(d2)*3.0 + onset*0.75;
+  m_inst = clamp(m_inst, 0.0, 1.0);
+
+  m = mem[ofs_mot+bi];
+  m = mot_a*m + (1.0-mot_a)*m_inst;
+  mem[ofs_mot+bi] = m;
+
+  // Gain smoothing (attack when attenuating more; release when returning)
+  g_prev = mem[ofs_gs+bi];
+  g_t    = mem[ofs_gt+bi];
+
+  g_next = g_t < g_prev
+           ? (atk_a*g_prev + (1.0-atk_a)*g_t)
+           : (rel_a*g_prev + (1.0-rel_a)*g_t);
+
+  mem[ofs_gs+bi] = g_next;
+
+  // Apply as parallel dynamic EQ (never boosts; action_amt backs off safely)
+  g_apply = 1.0 + action_amt*(g_next - 1.0);
+
+  outL += (g_apply - 1.0) * yL;
+  outR += (g_apply - 1.0) * yR;
+
+  bi += 1;
+);
+
+spl0 = outL;
+spl1 = outR;
+
+@gfx 760 360
+// DoSG Spectral Stabilizer -- modern causality-first monitor
+// Shows:
+// - Per-band residual (top, bipolar)
+// - Per-band attenuation actually applied (bottom, gold)
+// - Motion as edge intensity
+// - Global history of max/avg GR + avg motion
+//
+// Uses gx_* names to avoid stomping DSP-side globals.
+
+// ---------- helpers ----------
+function gx_clamp(x, lo, hi) ( x < lo ? lo : (x > hi ? hi : x); );
+function gx_set(r,g,b,a) ( gfx_set(r,g,b,a); );
+
+function gx_shadow_text(x,y,str, r,g,b,a)
+(
+  gx_set(0,0,0,0.78*a);
+  gfx_x = x+1; gfx_y = y+1; gfx_drawstr(str);
+
+  gx_set(r,g,b,a);
+  gfx_x = x;   gfx_y = y;   gfx_drawstr(str);
+);
+
+function gx_panel(x,y,w,h)
+(
+  gx_set(0.10,0.11,0.13,1); gfx_rect(x,y,w,h,1);
+  gx_set(1,1,1,0.06); gfx_rect(x,y,w,1,1);
+  gx_set(1,1,1,0.03); gfx_rect(x,y+h-1,w,1,1);
+);
+
+function gx_chip(x,y,w,h,label,v, r,g,b)
+local(gx_t, gx_tr,gx_tg,gx_tb)
+(
+  gx_t = gx_clamp(v, 0, 1);
+
+  gx_set(r,g,b, 0.10 + 0.28*gx_t); gfx_rect(x,y,w,h,1);
+  gx_set(r,g,b, 0.14 + 0.58*gx_t); gfx_rect(x,y,w,h,0);
+
+  gx_tr = 0.62 + 0.34*gx_t;
+  gx_tg = 0.62 + 0.34*gx_t;
+  gx_tb = 0.66 + 0.30*gx_t;
+  gx_shadow_text(x+4, y+3, label, gx_tr,gx_tg,gx_tb, 1);
+);
+
+function gx_scope(base, x,y,w,h, vmin,vmax, r,g,b,a)
+local(gx_i, gx_idx, gx_val, gx_t, gx_px, gx_py)
+(
+  gx_set(r,g,b,a);
+  gx_i = 0;
+  loop(gx_hist_len,
+    gx_idx = gx_hist_i + gx_i;
+    gx_idx >= gx_hist_len ? gx_idx -= gx_hist_len;
+
+    gx_val = base[gx_idx];
+    gx_t = (gx_val - vmin) / max(0.000001, (vmax - vmin));
+    gx_t = gx_clamp(gx_t, 0, 1);
+
+    gx_px = x + (gx_i*(w-1)) / max(1, gx_hist_len-1);
+    gx_py = y + (1-gx_t)*(h-1);
+
+    gx_i == 0 ? (
+      gfx_x = gx_px; gfx_y = gx_py;
+    ) : (
+      gfx_lineto(gx_px, gx_py, 1);
+    );
+
+    gx_i += 1;
+  );
+);
+
+// ---------- scaling ----------
+gx_sx = gfx_w / 760;
+gx_sy = gfx_h / 360;
+gx_sc = min(gx_sx, gx_sy);
+
+gx_pad      = max(8, floor(10*gx_sc));
+gx_gap      = max(6, floor(10*gx_sc));
+gx_header_h = max(48, floor(56*gx_sc));
+gx_hist_h   = max(60, floor(82*gx_sc));
+
+gx_font_title = gx_clamp(floor(16*gx_sc), 12, 28);
+gx_font_big   = gx_clamp(floor(24*gx_sc), 16, 42);
+gx_font_mid   = gx_clamp(floor(13*gx_sc), 10, 24);
+gx_font_sm    = gx_clamp(floor(11*gx_sc),  9, 20);
+
+// ---------- history buffers ----------
+gx_hist_ready != 1 ? (
+  gx_hist_ready = 1;
+
+  gx_hist_len    = 180;
+  gx_hist_i      = 0;
+
+  gx_hist_maxgr  = 16000;
+  gx_hist_avggr  = gx_hist_maxgr + gx_hist_len;
+  gx_hist_avgmot = gx_hist_avggr + gx_hist_len;
+  gx_hist_action = gx_hist_avgmot + gx_hist_len;
+
+  gx_ui_maxgr  = 0;
+  gx_ui_avggr  = 0;
+  gx_ui_avgmot = 0;
+
+  gx_hi = 0;
+  loop(gx_hist_len,
+    gx_hist_maxgr[gx_hi]  = 0;
+    gx_hist_avggr[gx_hi]  = 0;
+    gx_hist_avgmot[gx_hi] = 0;
+    gx_hist_action[gx_hi] = 1;
+    gx_hi += 1;
+  );
+);
+
+// ---------- colors ----------
+gx_bg_r = 0.06; gx_bg_g = 0.07; gx_bg_b = 0.08;
+
+gx_txt_r = 0.95; gx_txt_g = 0.96; gx_txt_b = 0.98;
+gx_sub_r = 0.72; gx_sub_g = 0.74; gx_sub_b = 0.80;
+
+gx_pos_r = 0.96; gx_pos_g = 0.36; gx_pos_b = 0.28; // positive residual
+gx_neg_r = 0.28; gx_neg_g = 0.58; gx_neg_b = 0.98; // negative residual
+gx_gr_r  = 0.98; gx_gr_g  = 0.84; gx_gr_b  = 0.26; // attenuation
+gx_mo_r  = 0.96; gx_mo_g  = 0.97; gx_mo_b  = 1.00; // motion edge
+gx_bo_r  = 0.95; gx_bo_g  = 0.35; gx_bo_b  = 1.00; // backoff accent
+
+// ---------- globals from DSP ----------
+gx_maxgr_show = 12.0;
+gx_res_show   = max(0.001, res_clip);
+
+// ---------- summarize current state ----------
+gx_sum_gr  = 0;
+gx_sum_mot = 0;
+gx_max_gr  = 0;
+gx_hot     = 0;
+gx_sum_pos = 0;
+
+gx_bi = 0;
+loop(bands,
+  gx_gs   = mem[ofs_gs + gx_bi];
+  gx_gapp = 1.0 + action_amt*(gx_gs - 1.0);
+  gx_gr   = -lin2db(gx_gapp);
+  gx_gr   = gx_clamp(gx_gr, 0.0, gx_maxgr_show);
+
+  gx_mot  = gx_clamp(mem[ofs_mot + gx_bi], 0.0, 1.0);
+  gx_res  = mem[ofs_res + gx_bi];
+
+  gx_sum_gr  += gx_gr;
+  gx_sum_mot += gx_mot;
+  gx_max_gr   = max(gx_max_gr, gx_gr);
+  gx_res > 0 ? gx_sum_pos += gx_res;
+  gx_gr > 0.60 ? gx_hot += 1;
+
+  gx_bi += 1;
+);
+
+gx_avg_gr  = gx_sum_gr  / max(bands, 1);
+gx_avg_mot = gx_sum_mot / max(bands, 1);
+
+// status text
+action_amt < 0.99 ? (
+  sprintf(#gx_state, "BACK-OFF");
+) : gx_avg_gr > 0.80 ? (
+  sprintf(#gx_state, "STABILIZING");
+) : gx_avg_mot > 0.45 ? (
+  sprintf(#gx_state, "FOLLOWING");
+) : (
+  sprintf(#gx_state, "IDLE");
+);
+
+// ---------- push history ----------
+gx_hist_smooth = 0.80;
+gx_ui_maxgr  = gx_ui_maxgr *gx_hist_smooth + gx_max_gr *(1-gx_hist_smooth);
+gx_ui_avggr  = gx_ui_avggr *gx_hist_smooth + gx_avg_gr *(1-gx_hist_smooth);
+gx_ui_avgmot = gx_ui_avgmot*gx_hist_smooth + gx_avg_mot*(1-gx_hist_smooth);
+
+gx_hist_maxgr[gx_hist_i]  = gx_ui_maxgr;
+gx_hist_avggr[gx_hist_i]  = gx_ui_avggr;
+gx_hist_avgmot[gx_hist_i] = gx_ui_avgmot;
+gx_hist_action[gx_hist_i] = action_amt;
+
+gx_hist_i += 1;
+gx_hist_i >= gx_hist_len ? gx_hist_i = 0;
+
+// ---------- background ----------
+gx_set(gx_bg_r, gx_bg_g, gx_bg_b, 1);
+gfx_rect(0,0,gfx_w,gfx_h,1);
+
+// ---------- layout ----------
+gx_hdr_x = gx_pad;
+gx_hdr_y = gx_pad;
+gx_hdr_w = gfx_w - gx_pad*2;
+gx_hdr_h = gx_header_h;
+
+gx_hist_x = gx_pad;
+gx_hist_y = gfx_h - gx_pad - gx_hist_h;
+gx_hist_w = gfx_w - gx_pad*2;
+gx_hist_h2 = gx_hist_h;
+
+gx_main_x = gx_pad;
+gx_main_y = gx_hdr_y + gx_hdr_h + gx_gap;
+gx_main_w = gfx_w - gx_pad*2;
+gx_main_h = gx_hist_y - gx_gap - gx_main_y;
+gx_main_h < 120 ? gx_main_h = 120;
+
+// ============================================================
+// HEADER
+// ============================================================
+gx_panel(gx_hdr_x, gx_hdr_y, gx_hdr_w, gx_hdr_h);
+
+gfx_setfont(1, "Arial", gx_font_title);
+gx_shadow_text(gx_hdr_x+gx_pad, gx_hdr_y+6, "DoSG Spectral Stabilizer", gx_txt_r,gx_txt_g,gx_txt_b, 1);
+
+gfx_setfont(2, "Arial", gx_font_sm);
+sprintf(#gx_info, "Sigma %.2f   Depth %.0f%%   MotionBias %.0f%%   Action %.0f%%   State %s",
+  slider1, slider2, slider3, action_amt*100, #gx_state);
+gx_shadow_text(gx_hdr_x+gx_pad, gx_hdr_y+28, #gx_info, gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+// chips
+gx_chip_y = gx_hdr_y + 8;
+gx_chip_h = max(16, floor(18*gx_sc));
+
+gx_chip(gx_hdr_x + gx_hdr_w - floor(222*gx_sc), gx_chip_y, floor(52*gx_sc), gx_chip_h, "ACTIVE", gx_max_gr/gx_maxgr_show, gx_gr_r,gx_gr_g,gx_gr_b);
+gx_chip(gx_hdr_x + gx_hdr_w - floor(164*gx_sc), gx_chip_y, floor(56*gx_sc), gx_chip_h, "MOTION", gx_avg_mot, gx_mo_r,gx_mo_g,gx_mo_b);
+gx_chip(gx_hdr_x + gx_hdr_w - floor(102*gx_sc), gx_chip_y, floor(54*gx_sc), gx_chip_h, "PEAKS", gx_clamp(gx_hot/max(1,bands*0.5),0,1), gx_pos_r,gx_pos_g,gx_pos_b);
+gx_chip(gx_hdr_x + gx_hdr_w - floor(42*gx_sc),  gx_chip_y, floor(34*gx_sc), gx_chip_h, "BO", 1-action_amt, gx_bo_r,gx_bo_g,gx_bo_b);
+
+// big right readout
+gfx_setfont(3, "Arial", gx_font_big);
+sprintf(#gx_big, "%.1f dB", gx_max_gr);
+gx_shadow_text(gx_hdr_x + gx_hdr_w - floor(116*gx_sc), gx_hdr_y + max(16, floor(28*gx_sc)), #gx_big, 0.98,0.98,1.00, 1);
+
+gfx_setfont(4, "Arial", gx_font_sm);
+gx_shadow_text(gx_hdr_x + gx_hdr_w - floor(116*gx_sc), gx_hdr_y + gx_hdr_h - 16, "MAX GR", gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+// ============================================================
+// MAIN PANEL
+// ============================================================
+gx_panel(gx_main_x, gx_main_y, gx_main_w, gx_main_h);
+
+gfx_setfont(5, "Arial", gx_font_mid);
+gx_shadow_text(gx_main_x+gx_pad, gx_main_y+6, "Band field", gx_txt_r,gx_txt_g,gx_txt_b, 1);
+
+gfx_setfont(6, "Arial", gx_font_sm);
+gx_shadow_text(gx_main_x+gx_pad+74, gx_main_y+6, "Residual", gx_pos_r,gx_pos_g,gx_pos_b, 0.95);
+gx_shadow_text(gx_main_x+gx_pad+130, gx_main_y+6, "/", 0.75,0.75,0.78, 1);
+gx_shadow_text(gx_main_x+gx_pad+138, gx_main_y+6, "below baseline", gx_neg_r,gx_neg_g,gx_neg_b, 0.95);
+gx_shadow_text(gx_main_x+gx_pad+246, gx_main_y+6, "•", 0.7,0.7,0.75, 1);
+gx_shadow_text(gx_main_x+gx_pad+258, gx_main_y+6, "edge = motion", gx_mo_r,gx_mo_g,gx_mo_b, 0.90);
+gx_shadow_text(gx_main_x+gx_pad+344, gx_main_y+6, "•", 0.7,0.7,0.75, 1);
+gx_shadow_text(gx_main_x+gx_pad+356, gx_main_y+6, "gold = attenuation", gx_gr_r,gx_gr_g,gx_gr_b, 0.95);
+
+// tile region
+gx_tiles_x = gx_main_x + gx_pad;
+gx_tiles_y = gx_main_y + max(24, floor(30*gx_sc));
+gx_tiles_w = gx_main_w - gx_pad*2;
+gx_tiles_h = gx_main_h - (gx_tiles_y - gx_main_y) - gx_pad;
+
+gx_tile_gap = max(4, floor(6*gx_sx));
+gx_tile_w = (gx_tiles_w - gx_tile_gap*(bands-1)) / max(1, bands);
+gx_tile_h = gx_tiles_h;
+
+gx_res_zone_h = gx_tile_h * 0.46;
+gx_gr_zone_y  = gx_tiles_y + gx_tile_h * 0.58;
+gx_gr_zone_h  = gx_tile_h * 0.25;
+gx_lbl_y      = gx_tiles_y + gx_tile_h - max(14, floor(16*gx_sc));
+
+gx_bi = 0;
+loop(bands,
+  gx_tx = gx_tiles_x + gx_bi*(gx_tile_w + gx_tile_gap);
+  gx_ty = gx_tiles_y;
+  gx_tw = max(12, gx_tile_w);
+  gx_th = gx_tile_h;
+
+  gx_res = mem[ofs_res + gx_bi];
+  gx_resn = gx_clamp(gx_res / gx_res_show, -1.0, 1.0);
+
+  gx_mot = gx_clamp(mem[ofs_mot + gx_bi], 0.0, 1.0);
+
+  gx_gs   = mem[ofs_gs + gx_bi];
+  gx_gapp = 1.0 + action_amt*(gx_gs - 1.0);
+  gx_gr   = -lin2db(gx_gapp);
+  gx_gr   = gx_clamp(gx_gr, 0.0, gx_maxgr_show);
+  gx_grn  = gx_gr / gx_maxgr_show;
+
+  // band card
+  gx_set(0.09,0.10,0.12,1); gfx_rect(gx_tx, gx_ty, gx_tw, gx_th, 1);
+
+  // warm body tint from actual action
+  gx_set(gx_gr_r, gx_gr_g, gx_gr_b, 0.03 + 0.12*gx_grn);
+  gfx_rect(gx_tx+1, gx_gr_zone_y, gx_tw-2, gx_gr_zone_h, 1);
+
+  // motion edge + top cap
+  gx_set(gx_mo_r, gx_mo_g, gx_mo_b, 0.08 + 0.55*gx_mot);
+  gfx_rect(gx_tx, gx_ty, gx_tw, gx_th, 0);
+  gfx_rect(gx_tx+1, gx_ty+1, gx_tw-2, max(2, floor(3*gx_sc)), 1);
+
+  // residual zone background + center line
+  gx_set(1,1,1,0.03);
+  gfx_rect(gx_tx+2, gx_ty+6, gx_tw-4, gx_res_zone_h, 1);
+
+  gx_res_mid = gx_ty + 6 + gx_res_zone_h*0.5;
+  gx_set(1,1,1,0.08);
+  gfx_line(gx_tx+3, gx_res_mid, gx_tx+gx_tw-3, gx_res_mid, 1);
+
+  // residual draw
+  gx_res_inner_x = gx_tx + max(3, floor(4*gx_sc));
+  gx_res_inner_w = gx_tw - max(6, floor(8*gx_sc));
+  gx_res_h = abs(gx_resn) * (gx_res_zone_h*0.44);
+
+  gx_resn >= 0 ? (
+    gx_set(gx_pos_r, gx_pos_g, gx_pos_b, 0.92);
+    gfx_rect(gx_res_inner_x, gx_res_mid - gx_res_h, gx_res_inner_w, gx_res_h, 1);
+  ) : (
+    gx_set(gx_neg_r, gx_neg_g, gx_neg_b, 0.92);
+    gfx_rect(gx_res_inner_x, gx_res_mid, gx_res_inner_w, gx_res_h, 1);
+  );
+
+  // residual hotspot cap when strongly positive
+  gx_res > 0 ? (
+    gx_cap_a = 0.08 + 0.30*gx_clamp(gx_resn, 0, 1);
+    gx_set(gx_pos_r, gx_pos_g, gx_pos_b, gx_cap_a);
+    gfx_rect(gx_tx+2, gx_ty+2, gx_tw-4, max(2, floor(4*gx_sc)), 1);
+  );
+
+  // GR zone base line
+  gx_set(1,1,1,0.05);
+  gfx_rect(gx_tx+2, gx_gr_zone_y, gx_tw-4, gx_gr_zone_h, 1);
+
+  // attenuation fill
+  gx_gh = gx_grn * gx_gr_zone_h;
+  gx_set(gx_gr_r, gx_gr_g, gx_gr_b, 0.95);
+  gfx_rect(gx_tx+2, gx_gr_zone_y + gx_gr_zone_h - gx_gh, gx_tw-4, gx_gh, 1);
+
+  // attenuation reference line
+  gx_set(1,1,1,0.10);
+  gfx_line(gx_tx+2, gx_gr_zone_y, gx_tx+gx_tw-2, gx_gr_zone_y, 1);
+
+  // tiny dB tick for hot bands only
+  gx_gr > 1.2 ? (
+    gfx_setfont(7, "Arial", max(8, gx_font_sm-1));
+    sprintf(#gx_grlbl, "%.1f", gx_gr);
+    gx_shadow_text(gx_tx + 3, gx_gr_zone_y + gx_gr_zone_h - gx_gh - max(11, floor(12*gx_sc)), #gx_grlbl, 0.95,0.95,0.98, 0.90);
+  );
+
+  // band label
+  gx_cf = mem[ofs_cf + gx_bi];
+  gfx_setfont(8, "Arial", gx_font_sm);
+
+  gx_cf < 1000 ? (
+    sprintf(#gx_lbl, "%.0f", gx_cf);
+  ) : gx_cf < 10000 ? (
+    sprintf(#gx_lbl, "%.1fk", gx_cf/1000);
+  ) : (
+    sprintf(#gx_lbl, "%.0fk", gx_cf/1000);
+  );
+
+  gx_shadow_text(gx_tx + 2, gx_lbl_y, #gx_lbl, gx_sub_r,gx_sub_g,gx_sub_b, 0.95);
+
+  gx_bi += 1;
+);
+
+// ============================================================
+// HISTORY PANEL
+// ============================================================
+gx_panel(gx_hist_x, gx_hist_y, gx_hist_w, gx_hist_h2);
+
+gfx_setfont(9, "Arial", gx_font_mid);
+gx_shadow_text(gx_hist_x+gx_pad, gx_hist_y+6, "History", gx_txt_r,gx_txt_g,gx_txt_b, 1);
+
+gx_hx = gx_hist_x + max(46, floor(54*gx_sc));
+gx_hy = gx_hist_y + max(18, floor(22*gx_sc));
+gx_hw = gx_hist_w - gx_hx + gx_hist_x - gx_pad;
+gx_hh = gx_hist_h2 - (gx_hy - gx_hist_y) - max(18, floor(22*gx_sc));
+
+// backoff ribbon
+gx_colw = max(1, gx_hw / max(1, gx_hist_len-1));
+gx_hi = 0;
+loop(gx_hist_len,
+  gx_idx = gx_hist_i + gx_hi;
+  gx_idx >= gx_hist_len ? gx_idx -= gx_hist_len;
+
+  gx_ax = gx_hx + gx_hi*gx_hw / max(1, gx_hist_len-1);
+  gx_av = gx_hist_action[gx_idx];
+
+  gx_av < 0.99 ? (
+    gx_set(gx_bo_r, gx_bo_g, gx_bo_b, (1-gx_av)*0.20);
+    gfx_rect(gx_ax, gx_hy, gx_colw+1, gx_hh, 1);
+  );
+
+  gx_hi += 1;
+);
+
+// grid
+gx_set(1,1,1,0.06); gfx_rect(gx_hx, gx_hy, gx_hw, gx_hh, 0);
+gx_set(1,1,1,0.04); gfx_line(gx_hx, gx_hy+gx_hh*0.25, gx_hx+gx_hw, gx_hy+gx_hh*0.25, 1);
+gx_set(1,1,1,0.04); gfx_line(gx_hx, gx_hy+gx_hh*0.50, gx_hx+gx_hw, gx_hy+gx_hh*0.50, 1);
+gx_set(1,1,1,0.04); gfx_line(gx_hx, gx_hy+gx_hh*0.75, gx_hx+gx_hw, gx_hy+gx_hh*0.75, 1);
+
+// traces
+gx_scope(gx_hist_maxgr,  gx_hx, gx_hy, gx_hw, gx_hh, 0, gx_maxgr_show, gx_gr_r, gx_gr_g, gx_gr_b, 0.98);
+gx_scope(gx_hist_avggr,  gx_hx, gx_hy, gx_hw, gx_hh, 0, gx_maxgr_show, 0.35, 0.85, 1.00, 0.82);
+gx_scope(gx_hist_avgmot, gx_hx, gx_hy, gx_hw, gx_hh, 0, 1.0,           gx_mo_r, gx_mo_g, gx_mo_b, 0.75);
+
+// history legend
+gfx_setfont(10, "Arial", gx_font_sm);
+gx_ly = gx_hist_y + gx_hist_h2 - max(16, floor(18*gx_sc));
+
+gx_shadow_text(gx_hist_x+gx_pad,      gx_ly, "Max GR", gx_gr_r,gx_gr_g,gx_gr_b, 1);
+sprintf(#gx_h1, "%.1f", gx_max_gr);
+gx_shadow_text(gx_hist_x+gx_pad+40,   gx_ly, #gx_h1, gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+gx_shadow_text(gx_hist_x+gx_pad+84,   gx_ly, "Avg GR", 0.35,0.85,1.00, 1);
+sprintf(#gx_h2, "%.1f", gx_avg_gr);
+gx_shadow_text(gx_hist_x+gx_pad+126,  gx_ly, #gx_h2, gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+gx_shadow_text(gx_hist_x+gx_pad+164,  gx_ly, "Avg Mot", gx_mo_r,gx_mo_g,gx_mo_b, 1);
+sprintf(#gx_h3, "%.0f%%", gx_avg_mot*100);
+gx_shadow_text(gx_hist_x+gx_pad+214,  gx_ly, #gx_h3, gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+gx_shadow_text(gx_hist_x+gx_pad+258,  gx_ly, "Hot", gx_pos_r,gx_pos_g,gx_pos_b, 1);
+sprintf(#gx_h4, "%d/%d", gx_hot, bands);
+gx_shadow_text(gx_hist_x+gx_pad+282,  gx_ly, #gx_h4, gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+action_amt < 0.99 ? (
+  gx_shadow_text(gx_hist_x+gx_pad+326, gx_ly, "Back-off active", gx_bo_r,gx_bo_g,gx_bo_b, 1);
+);

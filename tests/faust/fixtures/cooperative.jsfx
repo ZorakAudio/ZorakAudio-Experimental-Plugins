@@ -1,0 +1,20 @@
+desc:Cooperative Idle Contract Fixture
+slider1:permission=0<0,2,1>Permission
+slider2:task_action=0<0,2,1>Task
+slider3:manual_keep=0<0,1,1>Keep awake
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+@init
+za_sleep_ready=0;za_keep_awake=0;ticks=0;stale_seen=0;t=0;
+@block
+ticks+=1;stale_seen=za_sleep_ready;za_keep_awake=manual_keep;
+permission==1 ? za_sleep_ready=1;
+permission==2 && ticks==1 ? za_sleep_ready=1;
+task_action==1 && t==0 ? t=defer(42;);
+task_action==2 && t>0 ? (task_release(t);t=0;);
+@sample
+spl0*=0.5;spl1*=0.5;
+@gfx 32 32
+gfx_rect(0,0,1,1);

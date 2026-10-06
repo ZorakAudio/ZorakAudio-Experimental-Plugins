@@ -1,0 +1,1224 @@
+desc:DoSG Spectral Stabilizer (3 knobs + GFX)
+options:gfx_hz=30
+
+// Slider shaping (REAPER 6.74+):
+//  - Sigma: :log keeps ratios feeling consistent (midpoint pinned to 1.20)
+//  - Depth/MotionBias: :sqr gives finer control in the lower range
+// #HELP: Stabilizes tonal balance by attenuating only “excess” energy per ERB band relative to a smoothed baseline (no boosting, SAFE).
+// #HELP: Sigma defines the baseline smoothness (higher = more stable but slower; lower = more lively and reactive).
+// #HELP: Depth sets how much excess is reduced; push until swings calm down, then back off if you hear spectral pumping or dulling.
+// #HELP: MotionBias gates action during fast changes; increase for transient-rich material to avoid over-grab, decrease for sustained sources to “hold” tone steady.
+
+// #TOOLTIP: Sets the spectral smoothing window that defines the “expected” baseline. Higher = steadier tone (less swing), but slower to react and more risk of dulling. Lower = livelier, more reactive, less stabilization.
+slider1:1.20<0.70,2.00,0.01:log=1.20>Sigma (spectral smoothness)
+// #TOOLTIP: How strongly the plugin pushes positive residuals down (never boosts). Higher = more stabilization and less harsh/muddy variance, but too high can sound like spectral “holding” or subtle pumping.
+slider2:35<0,100,1:sqr=2>Depth (%)
+// #TOOLTIP: Motion gating. Higher = follows movement more (less stabilization during fast spectral motion/transients). Lower = resists changes more (stronger holding), useful for steady sources but can over-grab on animated material.
+slider3:55<0,100,1:sqr=2>MotionBias (%)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+st_b0_0=0;
+st_b0_1=0;
+st_b0_2=0;
+st_b0_3=0;
+st_b0_4=0;
+st_target0=1;
+st_env0=0;
+st_log0=0;
+st_d10=0;
+st_d20=0;
+st_motion0=0;
+st_gain0=1;
+st_b1_0=0;
+st_b1_1=0;
+st_b1_2=0;
+st_b1_3=0;
+st_b1_4=0;
+st_target1=1;
+st_env1=0;
+st_log1=0;
+st_d11=0;
+st_d21=0;
+st_motion1=0;
+st_gain1=1;
+st_b2_0=0;
+st_b2_1=0;
+st_b2_2=0;
+st_b2_3=0;
+st_b2_4=0;
+st_target2=1;
+st_env2=0;
+st_log2=0;
+st_d12=0;
+st_d22=0;
+st_motion2=0;
+st_gain2=1;
+st_b3_0=0;
+st_b3_1=0;
+st_b3_2=0;
+st_b3_3=0;
+st_b3_4=0;
+st_target3=1;
+st_env3=0;
+st_log3=0;
+st_d13=0;
+st_d23=0;
+st_motion3=0;
+st_gain3=1;
+st_b4_0=0;
+st_b4_1=0;
+st_b4_2=0;
+st_b4_3=0;
+st_b4_4=0;
+st_target4=1;
+st_env4=0;
+st_log4=0;
+st_d14=0;
+st_d24=0;
+st_motion4=0;
+st_gain4=1;
+st_b5_0=0;
+st_b5_1=0;
+st_b5_2=0;
+st_b5_3=0;
+st_b5_4=0;
+st_target5=1;
+st_env5=0;
+st_log5=0;
+st_d15=0;
+st_d25=0;
+st_motion5=0;
+st_gain5=1;
+st_b6_0=0;
+st_b6_1=0;
+st_b6_2=0;
+st_b6_3=0;
+st_b6_4=0;
+st_target6=1;
+st_env6=0;
+st_log6=0;
+st_d16=0;
+st_d26=0;
+st_motion6=0;
+st_gain6=1;
+st_b7_0=0;
+st_b7_1=0;
+st_b7_2=0;
+st_b7_3=0;
+st_b7_4=0;
+st_target7=1;
+st_env7=0;
+st_log7=0;
+st_d17=0;
+st_d27=0;
+st_motion7=0;
+st_gain7=1;
+st_b8_0=0;
+st_b8_1=0;
+st_b8_2=0;
+st_b8_3=0;
+st_b8_4=0;
+st_target8=1;
+st_env8=0;
+st_log8=0;
+st_d18=0;
+st_d28=0;
+st_motion8=0;
+st_gain8=1;
+st_b9_0=0;
+st_b9_1=0;
+st_b9_2=0;
+st_b9_3=0;
+st_b9_4=0;
+st_target9=1;
+st_env9=0;
+st_log9=0;
+st_d19=0;
+st_d29=0;
+st_motion9=0;
+st_gain9=1;
+st_b10_0=0;
+st_b10_1=0;
+st_b10_2=0;
+st_b10_3=0;
+st_b10_4=0;
+st_target10=1;
+st_env10=0;
+st_log10=0;
+st_d110=0;
+st_d210=0;
+st_motion10=0;
+st_gain10=1;
+st_b11_0=0;
+st_b11_1=0;
+st_b11_2=0;
+st_b11_3=0;
+st_b11_4=0;
+st_target11=1;
+st_env11=0;
+st_log11=0;
+st_d111=0;
+st_d211=0;
+st_motion11=0;
+st_gain11=1;
+// ---------------------
+// Utility / Math
+// ---------------------
+function clamp(x,lo,hi) ( x < lo ? lo : (x > hi ? hi : x); );
+function softclip_lim(x,lim) ( x * lim / (lim + abs(x) + 0.00000000000000000001); ); // saturates to +/-lim
+
+// dB helpers using exp/log (fast)
+ln10  = log(10);
+dbfac = ln10/20;     // dB -> ln amplitude multiplier
+function db2lin(d) ( exp(d*dbfac); );
+function lin2db(x) ( (x = max(x,0.00000000000000000001); log(x)/dbfac); );
+
+// ---------------------
+// ERB-ish spacing
+// ---------------------
+function erb_cf(i, n, fmin, fmax) local(t,ear_min,ear_max,cf)(
+  ear_min = 21.4*log10(4.37*fmin*0.001 + 1.0);
+  ear_max = 21.4*log10(4.37*fmax*0.001 + 1.0);
+  t = i / max(n - 1, 1);
+  cf = (pow(10.0, (ear_min + t*(ear_max-ear_min)) / 21.4) - 1.0) / 4.37 * 1000.0;
+  cf;
+);
+function erb_bw(f) ( 24.7 * (4.37 * f * 0.001 + 1.0); );
+
+// ---------------------
+// Gaussian weights (discrete, normalized)
+// ---------------------
+function fill_gauss_weights(radius, sigma, base_idx) local(sum,j,k,w)(
+  sigma = max(sigma, 0.000001);
+  sum = 0.0;
+  j = -radius;
+  loop(radius*2+1,
+    w = exp( -(j*j) / (2.0*sigma*sigma) );
+    mem[base_idx + j + radius] = w;
+    sum += w;
+    j += 1;
+  );
+  k = 0;
+  loop(radius*2+1,
+    mem[base_idx + k] /= max(sum,0.00000000000000000001);
+    k += 1;
+  );
+);
+
+// ---------------------
+// Biquad bandpass (RBJ, constant peak gain)
+// ---------------------
+two_pi = 6.283185307179586;
+function biquad_bp_coefs(fc, q, idx_b) local(w0,alpha,b0,b1,b2,a0,a1,a2)(
+  fc = clamp(fc, 10, srate*0.45);
+  q  = max(q, 0.10);
+
+  w0 = two_pi * fc / srate;
+  alpha = sin(w0) / (2.0*q);
+
+  // constant peak gain bandpass
+  b0 = alpha;
+  b1 = 0.0;
+  b2 = -alpha;
+
+  a0 = 1.0 + alpha;
+  a1 = -2.0*cos(w0);
+  a2 = 1.0 - alpha;
+
+  b0 /= a0; b1 /= a0; b2 /= a0; a1 /= a0; a2 /= a0;
+
+  mem[idx_b+0] = b0;
+  mem[idx_b+1] = b1;
+  mem[idx_b+2] = b2;
+  mem[idx_b+3] = a1;
+  mem[idx_b+4] = a2;
+);
+
+function biquad_proc(x, idx_b, idx_z1, idx_z2) local(b0,b1,b2,a1,a2,z1,z2,y)(
+  b0 = mem[idx_b+0]; b1 = mem[idx_b+1]; b2 = mem[idx_b+2];
+  a1 = mem[idx_b+3]; a2 = mem[idx_b+4];
+  z1 = mem[idx_z1];  z2 = mem[idx_z2];
+
+  // Direct Form II (transposed)
+  y  = b0*x + z1;
+  z1 = b1*x - a1*y + z2;
+  z2 = b2*x - a2*y;
+
+  mem[idx_z1] = z1;
+  mem[idx_z2] = z2;
+  y;
+);
+
+// ---------------------
+// Core parameters
+// ---------------------
+bands = 12;
+minHz = 100;
+maxHz = 12000;
+
+gauss_radius = 5;   // +/- bands
+k_ratio      = 2.50;
+
+atk_ms = 6;
+rel_ms = 160;
+env_ms = 25;        // band energy smoothing
+mot_ms = 40;        // motion envelope smoothing
+
+res_clip = 1.50;    // residual soft limit (log domain)
+kneeadj  = 0.50;    // soft-knee around 0 residual
+res2db   = 6.0;     // residual-to-dB scale
+
+onset_thr = 0.12;   // onset detection threshold (delta log-energy)
+
+max_att_db    = 18.0;
+min_gain_lin  = db2lin(-max_att_db);
+
+// ---------------------
+// Memory layout
+// ---------------------
+// Per-band constants:
+ofs_cf = 0;      // [bands]
+ofs_bw = 64;     // [bands]
+ofs_q  = 128;    // [bands]
+ofs_bq = 256;    // [bands*5] (b0,b1,b2,a1,a2)
+
+// States (z1/z2 per band per channel):
+ofs_z1L = 512;                  // [bands]
+ofs_z2L = ofs_z1L + bands;      // [bands]
+ofs_z1R = ofs_z1L + bands*2;    // [bands]
+ofs_z2R = ofs_z1L + bands*3;    // [bands]
+
+// Analysis / control:
+ofs_envlin = 1024; // [bands] smoothed energy (linear)
+ofs_envlog = 1100; // [bands] smoothed energy (log)
+ofs_d1     = 1200; // [bands]
+ofs_d2     = 1300; // [bands]
+ofs_mot    = 1400; // [bands] motion envelope 0..1
+ofs_res    = 1500; // [bands] DoSG residual
+ofs_gt     = 1600; // [bands] target gain (linear <=1)
+ofs_gs     = 1700; // [bands] smoothed gain (linear <=1)
+
+// Gaussian weights:
+ofs_gn = 2000; // [2*radius+1]
+ofs_gw = 2040; // [2*radius+1]
+
+// UI helpers:
+action_amt = 1.0;  // 0..1 (1=full action)
+
+// ---------------------
+// Build filterbank (ERB-ish) and init states
+// ---------------------
+maxHz_eff = min(maxHz, srate*0.45);
+
+bi = 0;
+loop(bands,
+  cf = erb_cf(bi, bands, minHz, maxHz_eff);
+  bw = erb_bw(cf);
+  q  = cf / max(bw, 1.0);
+
+  mem[ofs_cf+bi] = cf;
+  mem[ofs_bw+bi] = bw;
+  mem[ofs_q +bi] = q;
+
+  biquad_bp_coefs(cf, q, ofs_bq + bi*5);
+
+  // clear states / envelopes / gains
+  mem[ofs_z1L+bi] = mem[ofs_z2L+bi] = 0.0;
+  mem[ofs_z1R+bi] = mem[ofs_z2R+bi] = 0.0;
+
+  mem[ofs_envlin+bi] = 0.0;
+  mem[ofs_envlog+bi] = 0.0;
+  mem[ofs_d1+bi]     = 0.0;
+  mem[ofs_d2+bi]     = 0.0;
+  mem[ofs_mot+bi]    = 0.0;
+
+  mem[ofs_res+bi] = 0.0;
+  mem[ofs_gt+bi]  = 1.0;
+  mem[ofs_gs+bi]  = 1.0;
+
+  bi += 1;
+);
+
+// init gaussian weights (also updated in @slider)
+fill_gauss_weights(gauss_radius, slider1, ofs_gn);
+fill_gauss_weights(gauss_radius, slider1*k_ratio, ofs_gw);
+
+@slider
+// Only the Gaussian smoothers depend on Sigma
+fill_gauss_weights(gauss_radius, slider1, ofs_gn);
+fill_gauss_weights(gauss_radius, slider1*k_ratio, ofs_gw);
+
+@block
+// Previous block detector state for DoSG control and display.
+mem[ofs_envlin+0]=st_env0;
+mem[ofs_envlog+0]=st_log0;
+mem[ofs_d1+0]=st_d10;
+mem[ofs_d2+0]=st_d20;
+mem[ofs_mot+0]=st_motion0;
+mem[ofs_gs+0]=st_gain0;
+mem[ofs_envlin+1]=st_env1;
+mem[ofs_envlog+1]=st_log1;
+mem[ofs_d1+1]=st_d11;
+mem[ofs_d2+1]=st_d21;
+mem[ofs_mot+1]=st_motion1;
+mem[ofs_gs+1]=st_gain1;
+mem[ofs_envlin+2]=st_env2;
+mem[ofs_envlog+2]=st_log2;
+mem[ofs_d1+2]=st_d12;
+mem[ofs_d2+2]=st_d22;
+mem[ofs_mot+2]=st_motion2;
+mem[ofs_gs+2]=st_gain2;
+mem[ofs_envlin+3]=st_env3;
+mem[ofs_envlog+3]=st_log3;
+mem[ofs_d1+3]=st_d13;
+mem[ofs_d2+3]=st_d23;
+mem[ofs_mot+3]=st_motion3;
+mem[ofs_gs+3]=st_gain3;
+mem[ofs_envlin+4]=st_env4;
+mem[ofs_envlog+4]=st_log4;
+mem[ofs_d1+4]=st_d14;
+mem[ofs_d2+4]=st_d24;
+mem[ofs_mot+4]=st_motion4;
+mem[ofs_gs+4]=st_gain4;
+mem[ofs_envlin+5]=st_env5;
+mem[ofs_envlog+5]=st_log5;
+mem[ofs_d1+5]=st_d15;
+mem[ofs_d2+5]=st_d25;
+mem[ofs_mot+5]=st_motion5;
+mem[ofs_gs+5]=st_gain5;
+mem[ofs_envlin+6]=st_env6;
+mem[ofs_envlog+6]=st_log6;
+mem[ofs_d1+6]=st_d16;
+mem[ofs_d2+6]=st_d26;
+mem[ofs_mot+6]=st_motion6;
+mem[ofs_gs+6]=st_gain6;
+mem[ofs_envlin+7]=st_env7;
+mem[ofs_envlog+7]=st_log7;
+mem[ofs_d1+7]=st_d17;
+mem[ofs_d2+7]=st_d27;
+mem[ofs_mot+7]=st_motion7;
+mem[ofs_gs+7]=st_gain7;
+mem[ofs_envlin+8]=st_env8;
+mem[ofs_envlog+8]=st_log8;
+mem[ofs_d1+8]=st_d18;
+mem[ofs_d2+8]=st_d28;
+mem[ofs_mot+8]=st_motion8;
+mem[ofs_gs+8]=st_gain8;
+mem[ofs_envlin+9]=st_env9;
+mem[ofs_envlog+9]=st_log9;
+mem[ofs_d1+9]=st_d19;
+mem[ofs_d2+9]=st_d29;
+mem[ofs_mot+9]=st_motion9;
+mem[ofs_gs+9]=st_gain9;
+mem[ofs_envlin+10]=st_env10;
+mem[ofs_envlog+10]=st_log10;
+mem[ofs_d1+10]=st_d110;
+mem[ofs_d2+10]=st_d210;
+mem[ofs_mot+10]=st_motion10;
+mem[ofs_gs+10]=st_gain10;
+mem[ofs_envlin+11]=st_env11;
+mem[ofs_envlog+11]=st_log11;
+mem[ofs_d1+11]=st_d111;
+mem[ofs_d2+11]=st_d211;
+mem[ofs_mot+11]=st_motion11;
+mem[ofs_gs+11]=st_gain11;
+// Time constants (computed once per block)
+atk_a = exp(-1000.0/(max(atk_ms,0.01)*srate));
+rel_a = exp(-1000.0/(max(rel_ms,0.01)*srate));
+env_a = exp(-1000.0/(max(env_ms,0.01)*srate));
+mot_a = exp(-1000.0/(max(mot_ms,0.01)*srate));
+
+// Per-block target gain update (cheap + stable)
+depth = slider2*0.01;
+mb    = slider3*0.01;
+
+low_min_gain = 1.0;
+
+bi = 0;
+loop(bands,
+  // DoSG smoothing across bands on log-energy
+  acc_n = 0.0;
+  acc_w = 0.0;
+
+  k = -gauss_radius;
+  loop(gauss_radius*2+1,
+    bj = bi + k;
+    bj = bj < 0 ? 0 : (bj >= bands ? bands-1 : bj);
+
+    e = mem[ofs_envlog + bj];
+    wn = mem[ofs_gn + k + gauss_radius];
+    ww = mem[ofs_gw + k + gauss_radius];
+
+    acc_n += wn * e;
+    acc_w += ww * e;
+
+    k += 1;
+  );
+
+  r = acc_n - acc_w;
+  r = softclip_lim(r, res_clip);
+  mem[ofs_res+bi] = r;
+
+  // Motion gating (0..1) from smoothed motion envelope
+  mgate = 1.0 - mb * clamp(mem[ofs_mot+bi], 0.0, 1.0);
+
+  // Soft-knee residual shaping
+  rk = r * (abs(r) / (abs(r) + kneeadj));
+
+  // Attenuate only on positive residual (never boost)
+  att_db = rk > 0 ? (-depth * mgate * rk * res2db) : 0.0;
+  att_db = max(att_db, -max_att_db);
+
+  g_t = db2lin(att_db);
+  g_t = clamp(g_t, min_gain_lin, 1.0);
+  mem[ofs_gt+bi] = g_t;
+
+  bi < 3 ? ( low_min_gain = min(low_min_gain, g_t); );
+
+  bi += 1;
+);
+
+// Safety “back-off”: if lows are being hit hard, reduce action amount
+// (this reduces *how much* we move toward the attenuating gain, not making it harsher)
+action_amt = 1.0;
+(low_min_gain < db2lin(-4.0)) ? ( action_amt = 0.60; ); // > ~4 dB low-band attenuation target -> back off
+
+st_b0_0=mem[ofs_bq+0];
+st_b0_1=mem[ofs_bq+1];
+st_b0_2=mem[ofs_bq+2];
+st_b0_3=mem[ofs_bq+3];
+st_b0_4=mem[ofs_bq+4];
+st_target0=mem[ofs_gt+0];
+st_b1_0=mem[ofs_bq+5];
+st_b1_1=mem[ofs_bq+6];
+st_b1_2=mem[ofs_bq+7];
+st_b1_3=mem[ofs_bq+8];
+st_b1_4=mem[ofs_bq+9];
+st_target1=mem[ofs_gt+1];
+st_b2_0=mem[ofs_bq+10];
+st_b2_1=mem[ofs_bq+11];
+st_b2_2=mem[ofs_bq+12];
+st_b2_3=mem[ofs_bq+13];
+st_b2_4=mem[ofs_bq+14];
+st_target2=mem[ofs_gt+2];
+st_b3_0=mem[ofs_bq+15];
+st_b3_1=mem[ofs_bq+16];
+st_b3_2=mem[ofs_bq+17];
+st_b3_3=mem[ofs_bq+18];
+st_b3_4=mem[ofs_bq+19];
+st_target3=mem[ofs_gt+3];
+st_b4_0=mem[ofs_bq+20];
+st_b4_1=mem[ofs_bq+21];
+st_b4_2=mem[ofs_bq+22];
+st_b4_3=mem[ofs_bq+23];
+st_b4_4=mem[ofs_bq+24];
+st_target4=mem[ofs_gt+4];
+st_b5_0=mem[ofs_bq+25];
+st_b5_1=mem[ofs_bq+26];
+st_b5_2=mem[ofs_bq+27];
+st_b5_3=mem[ofs_bq+28];
+st_b5_4=mem[ofs_bq+29];
+st_target5=mem[ofs_gt+5];
+st_b6_0=mem[ofs_bq+30];
+st_b6_1=mem[ofs_bq+31];
+st_b6_2=mem[ofs_bq+32];
+st_b6_3=mem[ofs_bq+33];
+st_b6_4=mem[ofs_bq+34];
+st_target6=mem[ofs_gt+6];
+st_b7_0=mem[ofs_bq+35];
+st_b7_1=mem[ofs_bq+36];
+st_b7_2=mem[ofs_bq+37];
+st_b7_3=mem[ofs_bq+38];
+st_b7_4=mem[ofs_bq+39];
+st_target7=mem[ofs_gt+7];
+st_b8_0=mem[ofs_bq+40];
+st_b8_1=mem[ofs_bq+41];
+st_b8_2=mem[ofs_bq+42];
+st_b8_3=mem[ofs_bq+43];
+st_b8_4=mem[ofs_bq+44];
+st_target8=mem[ofs_gt+8];
+st_b9_0=mem[ofs_bq+45];
+st_b9_1=mem[ofs_bq+46];
+st_b9_2=mem[ofs_bq+47];
+st_b9_3=mem[ofs_bq+48];
+st_b9_4=mem[ofs_bq+49];
+st_target9=mem[ofs_gt+9];
+st_b10_0=mem[ofs_bq+50];
+st_b10_1=mem[ofs_bq+51];
+st_b10_2=mem[ofs_bq+52];
+st_b10_3=mem[ofs_bq+53];
+st_b10_4=mem[ofs_bq+54];
+st_target10=mem[ofs_gt+10];
+st_b11_0=mem[ofs_bq+55];
+st_b11_1=mem[ofs_bq+56];
+st_b11_2=mem[ofs_bq+57];
+st_b11_3=mem[ofs_bq+58];
+st_b11_4=mem[ofs_bq+59];
+st_target11=mem[ofs_gt+11];
+
+@faust
+import("stdfaust.lib");
+// Fixed bank, exact transposed biquad and EMA operation order.
+st_biquad(b0,b1,b2,a1,a2,x)=x:(step~(_,_)):(!,!,_) with {
+ step(z1,z2,value)=b1*value-a1*y+z2,b2*value-a2*y,y with {y=b0*value+z1;};
+};
+st_smooth(a,x)=x:(step~_):(!,_) with {
+ step(previous,value)=next,next with {next=a*previous+(1-a)*value;};
+};
+st_gain_smooth(x)=x:(step~_):(!,_) with {
+ step(old,value)=next,next with {
+  previous=select2((1')==0,old,1);
+  a=select2(value<previous,rel_a,atk_a);
+  next=a*previous+(1-a)*value;
+ };
+};
+st_left0=st_biquad(st_b0_0,st_b0_1,st_b0_2,st_b0_3,st_b0_4,spl0);
+st_right0=st_biquad(st_b0_0,st_b0_1,st_b0_2,st_b0_3,st_b0_4,spl1);
+st_env0=st_smooth(env_a,0.5*(st_left0*st_left0+st_right0*st_right0));
+st_log0=log(st_env0+0.000000000001);
+st_d10=st_log0-st_log0';
+st_d20=st_d10-st_d10';
+st_minst0=min(1,max(0,abs(st_d10)*6+abs(st_d20)*3+(st_d10>onset_thr)*0.75));
+st_motion0=st_smooth(mot_a,st_minst0);
+st_gain0=st_gain_smooth(st_target0);
+st_apply0=(1+action_amt*(st_gain0-1))-1;
+st_add_l0=st_apply0*st_left0;
+st_add_r0=st_apply0*st_right0;
+st_left1=st_biquad(st_b1_0,st_b1_1,st_b1_2,st_b1_3,st_b1_4,spl0);
+st_right1=st_biquad(st_b1_0,st_b1_1,st_b1_2,st_b1_3,st_b1_4,spl1);
+st_env1=st_smooth(env_a,0.5*(st_left1*st_left1+st_right1*st_right1));
+st_log1=log(st_env1+0.000000000001);
+st_d11=st_log1-st_log1';
+st_d21=st_d11-st_d11';
+st_minst1=min(1,max(0,abs(st_d11)*6+abs(st_d21)*3+(st_d11>onset_thr)*0.75));
+st_motion1=st_smooth(mot_a,st_minst1);
+st_gain1=st_gain_smooth(st_target1);
+st_apply1=(1+action_amt*(st_gain1-1))-1;
+st_add_l1=st_apply1*st_left1;
+st_add_r1=st_apply1*st_right1;
+st_left2=st_biquad(st_b2_0,st_b2_1,st_b2_2,st_b2_3,st_b2_4,spl0);
+st_right2=st_biquad(st_b2_0,st_b2_1,st_b2_2,st_b2_3,st_b2_4,spl1);
+st_env2=st_smooth(env_a,0.5*(st_left2*st_left2+st_right2*st_right2));
+st_log2=log(st_env2+0.000000000001);
+st_d12=st_log2-st_log2';
+st_d22=st_d12-st_d12';
+st_minst2=min(1,max(0,abs(st_d12)*6+abs(st_d22)*3+(st_d12>onset_thr)*0.75));
+st_motion2=st_smooth(mot_a,st_minst2);
+st_gain2=st_gain_smooth(st_target2);
+st_apply2=(1+action_amt*(st_gain2-1))-1;
+st_add_l2=st_apply2*st_left2;
+st_add_r2=st_apply2*st_right2;
+st_left3=st_biquad(st_b3_0,st_b3_1,st_b3_2,st_b3_3,st_b3_4,spl0);
+st_right3=st_biquad(st_b3_0,st_b3_1,st_b3_2,st_b3_3,st_b3_4,spl1);
+st_env3=st_smooth(env_a,0.5*(st_left3*st_left3+st_right3*st_right3));
+st_log3=log(st_env3+0.000000000001);
+st_d13=st_log3-st_log3';
+st_d23=st_d13-st_d13';
+st_minst3=min(1,max(0,abs(st_d13)*6+abs(st_d23)*3+(st_d13>onset_thr)*0.75));
+st_motion3=st_smooth(mot_a,st_minst3);
+st_gain3=st_gain_smooth(st_target3);
+st_apply3=(1+action_amt*(st_gain3-1))-1;
+st_add_l3=st_apply3*st_left3;
+st_add_r3=st_apply3*st_right3;
+st_left4=st_biquad(st_b4_0,st_b4_1,st_b4_2,st_b4_3,st_b4_4,spl0);
+st_right4=st_biquad(st_b4_0,st_b4_1,st_b4_2,st_b4_3,st_b4_4,spl1);
+st_env4=st_smooth(env_a,0.5*(st_left4*st_left4+st_right4*st_right4));
+st_log4=log(st_env4+0.000000000001);
+st_d14=st_log4-st_log4';
+st_d24=st_d14-st_d14';
+st_minst4=min(1,max(0,abs(st_d14)*6+abs(st_d24)*3+(st_d14>onset_thr)*0.75));
+st_motion4=st_smooth(mot_a,st_minst4);
+st_gain4=st_gain_smooth(st_target4);
+st_apply4=(1+action_amt*(st_gain4-1))-1;
+st_add_l4=st_apply4*st_left4;
+st_add_r4=st_apply4*st_right4;
+st_left5=st_biquad(st_b5_0,st_b5_1,st_b5_2,st_b5_3,st_b5_4,spl0);
+st_right5=st_biquad(st_b5_0,st_b5_1,st_b5_2,st_b5_3,st_b5_4,spl1);
+st_env5=st_smooth(env_a,0.5*(st_left5*st_left5+st_right5*st_right5));
+st_log5=log(st_env5+0.000000000001);
+st_d15=st_log5-st_log5';
+st_d25=st_d15-st_d15';
+st_minst5=min(1,max(0,abs(st_d15)*6+abs(st_d25)*3+(st_d15>onset_thr)*0.75));
+st_motion5=st_smooth(mot_a,st_minst5);
+st_gain5=st_gain_smooth(st_target5);
+st_apply5=(1+action_amt*(st_gain5-1))-1;
+st_add_l5=st_apply5*st_left5;
+st_add_r5=st_apply5*st_right5;
+st_left6=st_biquad(st_b6_0,st_b6_1,st_b6_2,st_b6_3,st_b6_4,spl0);
+st_right6=st_biquad(st_b6_0,st_b6_1,st_b6_2,st_b6_3,st_b6_4,spl1);
+st_env6=st_smooth(env_a,0.5*(st_left6*st_left6+st_right6*st_right6));
+st_log6=log(st_env6+0.000000000001);
+st_d16=st_log6-st_log6';
+st_d26=st_d16-st_d16';
+st_minst6=min(1,max(0,abs(st_d16)*6+abs(st_d26)*3+(st_d16>onset_thr)*0.75));
+st_motion6=st_smooth(mot_a,st_minst6);
+st_gain6=st_gain_smooth(st_target6);
+st_apply6=(1+action_amt*(st_gain6-1))-1;
+st_add_l6=st_apply6*st_left6;
+st_add_r6=st_apply6*st_right6;
+st_left7=st_biquad(st_b7_0,st_b7_1,st_b7_2,st_b7_3,st_b7_4,spl0);
+st_right7=st_biquad(st_b7_0,st_b7_1,st_b7_2,st_b7_3,st_b7_4,spl1);
+st_env7=st_smooth(env_a,0.5*(st_left7*st_left7+st_right7*st_right7));
+st_log7=log(st_env7+0.000000000001);
+st_d17=st_log7-st_log7';
+st_d27=st_d17-st_d17';
+st_minst7=min(1,max(0,abs(st_d17)*6+abs(st_d27)*3+(st_d17>onset_thr)*0.75));
+st_motion7=st_smooth(mot_a,st_minst7);
+st_gain7=st_gain_smooth(st_target7);
+st_apply7=(1+action_amt*(st_gain7-1))-1;
+st_add_l7=st_apply7*st_left7;
+st_add_r7=st_apply7*st_right7;
+st_left8=st_biquad(st_b8_0,st_b8_1,st_b8_2,st_b8_3,st_b8_4,spl0);
+st_right8=st_biquad(st_b8_0,st_b8_1,st_b8_2,st_b8_3,st_b8_4,spl1);
+st_env8=st_smooth(env_a,0.5*(st_left8*st_left8+st_right8*st_right8));
+st_log8=log(st_env8+0.000000000001);
+st_d18=st_log8-st_log8';
+st_d28=st_d18-st_d18';
+st_minst8=min(1,max(0,abs(st_d18)*6+abs(st_d28)*3+(st_d18>onset_thr)*0.75));
+st_motion8=st_smooth(mot_a,st_minst8);
+st_gain8=st_gain_smooth(st_target8);
+st_apply8=(1+action_amt*(st_gain8-1))-1;
+st_add_l8=st_apply8*st_left8;
+st_add_r8=st_apply8*st_right8;
+st_left9=st_biquad(st_b9_0,st_b9_1,st_b9_2,st_b9_3,st_b9_4,spl0);
+st_right9=st_biquad(st_b9_0,st_b9_1,st_b9_2,st_b9_3,st_b9_4,spl1);
+st_env9=st_smooth(env_a,0.5*(st_left9*st_left9+st_right9*st_right9));
+st_log9=log(st_env9+0.000000000001);
+st_d19=st_log9-st_log9';
+st_d29=st_d19-st_d19';
+st_minst9=min(1,max(0,abs(st_d19)*6+abs(st_d29)*3+(st_d19>onset_thr)*0.75));
+st_motion9=st_smooth(mot_a,st_minst9);
+st_gain9=st_gain_smooth(st_target9);
+st_apply9=(1+action_amt*(st_gain9-1))-1;
+st_add_l9=st_apply9*st_left9;
+st_add_r9=st_apply9*st_right9;
+st_left10=st_biquad(st_b10_0,st_b10_1,st_b10_2,st_b10_3,st_b10_4,spl0);
+st_right10=st_biquad(st_b10_0,st_b10_1,st_b10_2,st_b10_3,st_b10_4,spl1);
+st_env10=st_smooth(env_a,0.5*(st_left10*st_left10+st_right10*st_right10));
+st_log10=log(st_env10+0.000000000001);
+st_d110=st_log10-st_log10';
+st_d210=st_d110-st_d110';
+st_minst10=min(1,max(0,abs(st_d110)*6+abs(st_d210)*3+(st_d110>onset_thr)*0.75));
+st_motion10=st_smooth(mot_a,st_minst10);
+st_gain10=st_gain_smooth(st_target10);
+st_apply10=(1+action_amt*(st_gain10-1))-1;
+st_add_l10=st_apply10*st_left10;
+st_add_r10=st_apply10*st_right10;
+st_left11=st_biquad(st_b11_0,st_b11_1,st_b11_2,st_b11_3,st_b11_4,spl0);
+st_right11=st_biquad(st_b11_0,st_b11_1,st_b11_2,st_b11_3,st_b11_4,spl1);
+st_env11=st_smooth(env_a,0.5*(st_left11*st_left11+st_right11*st_right11));
+st_log11=log(st_env11+0.000000000001);
+st_d111=st_log11-st_log11';
+st_d211=st_d111-st_d111';
+st_minst11=min(1,max(0,abs(st_d111)*6+abs(st_d211)*3+(st_d111>onset_thr)*0.75));
+st_motion11=st_smooth(mot_a,st_minst11);
+st_gain11=st_gain_smooth(st_target11);
+st_apply11=(1+action_amt*(st_gain11-1))-1;
+st_add_l11=st_apply11*st_left11;
+st_add_r11=st_apply11*st_right11;
+process=((((((((((((spl0+st_add_l0)+st_add_l1)+st_add_l2)+st_add_l3)+st_add_l4)+st_add_l5)+st_add_l6)+st_add_l7)+st_add_l8)+st_add_l9)+st_add_l10)+st_add_l11),((((((((((((spl1+st_add_r0)+st_add_r1)+st_add_r2)+st_add_r3)+st_add_r4)+st_add_r5)+st_add_r6)+st_add_r7)+st_add_r8)+st_add_r9)+st_add_r10)+st_add_r11);
+
+@block
+// Publish current block detector values for the existing display.
+mem[ofs_envlin+0]=st_env0;
+mem[ofs_envlog+0]=st_log0;
+mem[ofs_d1+0]=st_d10;
+mem[ofs_d2+0]=st_d20;
+mem[ofs_mot+0]=st_motion0;
+mem[ofs_gs+0]=st_gain0;
+mem[ofs_envlin+1]=st_env1;
+mem[ofs_envlog+1]=st_log1;
+mem[ofs_d1+1]=st_d11;
+mem[ofs_d2+1]=st_d21;
+mem[ofs_mot+1]=st_motion1;
+mem[ofs_gs+1]=st_gain1;
+mem[ofs_envlin+2]=st_env2;
+mem[ofs_envlog+2]=st_log2;
+mem[ofs_d1+2]=st_d12;
+mem[ofs_d2+2]=st_d22;
+mem[ofs_mot+2]=st_motion2;
+mem[ofs_gs+2]=st_gain2;
+mem[ofs_envlin+3]=st_env3;
+mem[ofs_envlog+3]=st_log3;
+mem[ofs_d1+3]=st_d13;
+mem[ofs_d2+3]=st_d23;
+mem[ofs_mot+3]=st_motion3;
+mem[ofs_gs+3]=st_gain3;
+mem[ofs_envlin+4]=st_env4;
+mem[ofs_envlog+4]=st_log4;
+mem[ofs_d1+4]=st_d14;
+mem[ofs_d2+4]=st_d24;
+mem[ofs_mot+4]=st_motion4;
+mem[ofs_gs+4]=st_gain4;
+mem[ofs_envlin+5]=st_env5;
+mem[ofs_envlog+5]=st_log5;
+mem[ofs_d1+5]=st_d15;
+mem[ofs_d2+5]=st_d25;
+mem[ofs_mot+5]=st_motion5;
+mem[ofs_gs+5]=st_gain5;
+mem[ofs_envlin+6]=st_env6;
+mem[ofs_envlog+6]=st_log6;
+mem[ofs_d1+6]=st_d16;
+mem[ofs_d2+6]=st_d26;
+mem[ofs_mot+6]=st_motion6;
+mem[ofs_gs+6]=st_gain6;
+mem[ofs_envlin+7]=st_env7;
+mem[ofs_envlog+7]=st_log7;
+mem[ofs_d1+7]=st_d17;
+mem[ofs_d2+7]=st_d27;
+mem[ofs_mot+7]=st_motion7;
+mem[ofs_gs+7]=st_gain7;
+mem[ofs_envlin+8]=st_env8;
+mem[ofs_envlog+8]=st_log8;
+mem[ofs_d1+8]=st_d18;
+mem[ofs_d2+8]=st_d28;
+mem[ofs_mot+8]=st_motion8;
+mem[ofs_gs+8]=st_gain8;
+mem[ofs_envlin+9]=st_env9;
+mem[ofs_envlog+9]=st_log9;
+mem[ofs_d1+9]=st_d19;
+mem[ofs_d2+9]=st_d29;
+mem[ofs_mot+9]=st_motion9;
+mem[ofs_gs+9]=st_gain9;
+mem[ofs_envlin+10]=st_env10;
+mem[ofs_envlog+10]=st_log10;
+mem[ofs_d1+10]=st_d110;
+mem[ofs_d2+10]=st_d210;
+mem[ofs_mot+10]=st_motion10;
+mem[ofs_gs+10]=st_gain10;
+mem[ofs_envlin+11]=st_env11;
+mem[ofs_envlog+11]=st_log11;
+mem[ofs_d1+11]=st_d111;
+mem[ofs_d2+11]=st_d211;
+mem[ofs_mot+11]=st_motion11;
+mem[ofs_gs+11]=st_gain11;
+
+@gfx 760 360
+// DoSG Spectral Stabilizer -- modern causality-first monitor
+// Shows:
+// - Per-band residual (top, bipolar)
+// - Per-band attenuation actually applied (bottom, gold)
+// - Motion as edge intensity
+// - Global history of max/avg GR + avg motion
+//
+// Uses gx_* names to avoid stomping DSP-side globals.
+
+// ---------- helpers ----------
+function gx_clamp(x, lo, hi) ( x < lo ? lo : (x > hi ? hi : x); );
+function gx_set(r,g,b,a) ( gfx_set(r,g,b,a); );
+
+function gx_shadow_text(x,y,str, r,g,b,a)
+(
+  gx_set(0,0,0,0.78*a);
+  gfx_x = x+1; gfx_y = y+1; gfx_drawstr(str);
+
+  gx_set(r,g,b,a);
+  gfx_x = x;   gfx_y = y;   gfx_drawstr(str);
+);
+
+function gx_panel(x,y,w,h)
+(
+  gx_set(0.10,0.11,0.13,1); gfx_rect(x,y,w,h,1);
+  gx_set(1,1,1,0.06); gfx_rect(x,y,w,1,1);
+  gx_set(1,1,1,0.03); gfx_rect(x,y+h-1,w,1,1);
+);
+
+function gx_chip(x,y,w,h,label,v, r,g,b)
+local(gx_t, gx_tr,gx_tg,gx_tb)
+(
+  gx_t = gx_clamp(v, 0, 1);
+
+  gx_set(r,g,b, 0.10 + 0.28*gx_t); gfx_rect(x,y,w,h,1);
+  gx_set(r,g,b, 0.14 + 0.58*gx_t); gfx_rect(x,y,w,h,0);
+
+  gx_tr = 0.62 + 0.34*gx_t;
+  gx_tg = 0.62 + 0.34*gx_t;
+  gx_tb = 0.66 + 0.30*gx_t;
+  gx_shadow_text(x+4, y+3, label, gx_tr,gx_tg,gx_tb, 1);
+);
+
+function gx_scope(base, x,y,w,h, vmin,vmax, r,g,b,a)
+local(gx_i, gx_idx, gx_val, gx_t, gx_px, gx_py)
+(
+  gx_set(r,g,b,a);
+  gx_i = 0;
+  loop(gx_hist_len,
+    gx_idx = gx_hist_i + gx_i;
+    gx_idx >= gx_hist_len ? gx_idx -= gx_hist_len;
+
+    gx_val = base[gx_idx];
+    gx_t = (gx_val - vmin) / max(0.000001, (vmax - vmin));
+    gx_t = gx_clamp(gx_t, 0, 1);
+
+    gx_px = x + (gx_i*(w-1)) / max(1, gx_hist_len-1);
+    gx_py = y + (1-gx_t)*(h-1);
+
+    gx_i == 0 ? (
+      gfx_x = gx_px; gfx_y = gx_py;
+    ) : (
+      gfx_lineto(gx_px, gx_py, 1);
+    );
+
+    gx_i += 1;
+  );
+);
+
+// ---------- scaling ----------
+gx_sx = gfx_w / 760;
+gx_sy = gfx_h / 360;
+gx_sc = min(gx_sx, gx_sy);
+
+gx_pad      = max(8, floor(10*gx_sc));
+gx_gap      = max(6, floor(10*gx_sc));
+gx_header_h = max(48, floor(56*gx_sc));
+gx_hist_h   = max(60, floor(82*gx_sc));
+
+gx_font_title = gx_clamp(floor(16*gx_sc), 12, 28);
+gx_font_big   = gx_clamp(floor(24*gx_sc), 16, 42);
+gx_font_mid   = gx_clamp(floor(13*gx_sc), 10, 24);
+gx_font_sm    = gx_clamp(floor(11*gx_sc),  9, 20);
+
+// ---------- history buffers ----------
+gx_hist_ready != 1 ? (
+  gx_hist_ready = 1;
+
+  gx_hist_len    = 180;
+  gx_hist_i      = 0;
+
+  gx_hist_maxgr  = 16000;
+  gx_hist_avggr  = gx_hist_maxgr + gx_hist_len;
+  gx_hist_avgmot = gx_hist_avggr + gx_hist_len;
+  gx_hist_action = gx_hist_avgmot + gx_hist_len;
+
+  gx_ui_maxgr  = 0;
+  gx_ui_avggr  = 0;
+  gx_ui_avgmot = 0;
+
+  gx_hi = 0;
+  loop(gx_hist_len,
+    gx_hist_maxgr[gx_hi]  = 0;
+    gx_hist_avggr[gx_hi]  = 0;
+    gx_hist_avgmot[gx_hi] = 0;
+    gx_hist_action[gx_hi] = 1;
+    gx_hi += 1;
+  );
+);
+
+// ---------- colors ----------
+gx_bg_r = 0.06; gx_bg_g = 0.07; gx_bg_b = 0.08;
+
+gx_txt_r = 0.95; gx_txt_g = 0.96; gx_txt_b = 0.98;
+gx_sub_r = 0.72; gx_sub_g = 0.74; gx_sub_b = 0.80;
+
+gx_pos_r = 0.96; gx_pos_g = 0.36; gx_pos_b = 0.28; // positive residual
+gx_neg_r = 0.28; gx_neg_g = 0.58; gx_neg_b = 0.98; // negative residual
+gx_gr_r  = 0.98; gx_gr_g  = 0.84; gx_gr_b  = 0.26; // attenuation
+gx_mo_r  = 0.96; gx_mo_g  = 0.97; gx_mo_b  = 1.00; // motion edge
+gx_bo_r  = 0.95; gx_bo_g  = 0.35; gx_bo_b  = 1.00; // backoff accent
+
+// ---------- globals from DSP ----------
+gx_maxgr_show = 12.0;
+gx_res_show   = max(0.001, res_clip);
+
+// ---------- summarize current state ----------
+gx_sum_gr  = 0;
+gx_sum_mot = 0;
+gx_max_gr  = 0;
+gx_hot     = 0;
+gx_sum_pos = 0;
+
+gx_bi = 0;
+loop(bands,
+  gx_gs   = mem[ofs_gs + gx_bi];
+  gx_gapp = 1.0 + action_amt*(gx_gs - 1.0);
+  gx_gr   = -lin2db(gx_gapp);
+  gx_gr   = gx_clamp(gx_gr, 0.0, gx_maxgr_show);
+
+  gx_mot  = gx_clamp(mem[ofs_mot + gx_bi], 0.0, 1.0);
+  gx_res  = mem[ofs_res + gx_bi];
+
+  gx_sum_gr  += gx_gr;
+  gx_sum_mot += gx_mot;
+  gx_max_gr   = max(gx_max_gr, gx_gr);
+  gx_res > 0 ? gx_sum_pos += gx_res;
+  gx_gr > 0.60 ? gx_hot += 1;
+
+  gx_bi += 1;
+);
+
+gx_avg_gr  = gx_sum_gr  / max(bands, 1);
+gx_avg_mot = gx_sum_mot / max(bands, 1);
+
+// status text
+action_amt < 0.99 ? (
+  sprintf(#gx_state, "BACK-OFF");
+) : gx_avg_gr > 0.80 ? (
+  sprintf(#gx_state, "STABILIZING");
+) : gx_avg_mot > 0.45 ? (
+  sprintf(#gx_state, "FOLLOWING");
+) : (
+  sprintf(#gx_state, "IDLE");
+);
+
+// ---------- push history ----------
+gx_hist_smooth = 0.80;
+gx_ui_maxgr  = gx_ui_maxgr *gx_hist_smooth + gx_max_gr *(1-gx_hist_smooth);
+gx_ui_avggr  = gx_ui_avggr *gx_hist_smooth + gx_avg_gr *(1-gx_hist_smooth);
+gx_ui_avgmot = gx_ui_avgmot*gx_hist_smooth + gx_avg_mot*(1-gx_hist_smooth);
+
+gx_hist_maxgr[gx_hist_i]  = gx_ui_maxgr;
+gx_hist_avggr[gx_hist_i]  = gx_ui_avggr;
+gx_hist_avgmot[gx_hist_i] = gx_ui_avgmot;
+gx_hist_action[gx_hist_i] = action_amt;
+
+gx_hist_i += 1;
+gx_hist_i >= gx_hist_len ? gx_hist_i = 0;
+
+// ---------- background ----------
+gx_set(gx_bg_r, gx_bg_g, gx_bg_b, 1);
+gfx_rect(0,0,gfx_w,gfx_h,1);
+
+// ---------- layout ----------
+gx_hdr_x = gx_pad;
+gx_hdr_y = gx_pad;
+gx_hdr_w = gfx_w - gx_pad*2;
+gx_hdr_h = gx_header_h;
+
+gx_hist_x = gx_pad;
+gx_hist_y = gfx_h - gx_pad - gx_hist_h;
+gx_hist_w = gfx_w - gx_pad*2;
+gx_hist_h2 = gx_hist_h;
+
+gx_main_x = gx_pad;
+gx_main_y = gx_hdr_y + gx_hdr_h + gx_gap;
+gx_main_w = gfx_w - gx_pad*2;
+gx_main_h = gx_hist_y - gx_gap - gx_main_y;
+gx_main_h < 120 ? gx_main_h = 120;
+
+// ============================================================
+// HEADER
+// ============================================================
+gx_panel(gx_hdr_x, gx_hdr_y, gx_hdr_w, gx_hdr_h);
+
+gfx_setfont(1, "Arial", gx_font_title);
+gx_shadow_text(gx_hdr_x+gx_pad, gx_hdr_y+6, "DoSG Spectral Stabilizer", gx_txt_r,gx_txt_g,gx_txt_b, 1);
+
+gfx_setfont(2, "Arial", gx_font_sm);
+sprintf(#gx_info, "Sigma %.2f   Depth %.0f%%   MotionBias %.0f%%   Action %.0f%%   State %s",
+  slider1, slider2, slider3, action_amt*100, #gx_state);
+gx_shadow_text(gx_hdr_x+gx_pad, gx_hdr_y+28, #gx_info, gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+// chips
+gx_chip_y = gx_hdr_y + 8;
+gx_chip_h = max(16, floor(18*gx_sc));
+
+gx_chip(gx_hdr_x + gx_hdr_w - floor(222*gx_sc), gx_chip_y, floor(52*gx_sc), gx_chip_h, "ACTIVE", gx_max_gr/gx_maxgr_show, gx_gr_r,gx_gr_g,gx_gr_b);
+gx_chip(gx_hdr_x + gx_hdr_w - floor(164*gx_sc), gx_chip_y, floor(56*gx_sc), gx_chip_h, "MOTION", gx_avg_mot, gx_mo_r,gx_mo_g,gx_mo_b);
+gx_chip(gx_hdr_x + gx_hdr_w - floor(102*gx_sc), gx_chip_y, floor(54*gx_sc), gx_chip_h, "PEAKS", gx_clamp(gx_hot/max(1,bands*0.5),0,1), gx_pos_r,gx_pos_g,gx_pos_b);
+gx_chip(gx_hdr_x + gx_hdr_w - floor(42*gx_sc),  gx_chip_y, floor(34*gx_sc), gx_chip_h, "BO", 1-action_amt, gx_bo_r,gx_bo_g,gx_bo_b);
+
+// big right readout
+gfx_setfont(3, "Arial", gx_font_big);
+sprintf(#gx_big, "%.1f dB", gx_max_gr);
+gx_shadow_text(gx_hdr_x + gx_hdr_w - floor(116*gx_sc), gx_hdr_y + max(16, floor(28*gx_sc)), #gx_big, 0.98,0.98,1.00, 1);
+
+gfx_setfont(4, "Arial", gx_font_sm);
+gx_shadow_text(gx_hdr_x + gx_hdr_w - floor(116*gx_sc), gx_hdr_y + gx_hdr_h - 16, "MAX GR", gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+// ============================================================
+// MAIN PANEL
+// ============================================================
+gx_panel(gx_main_x, gx_main_y, gx_main_w, gx_main_h);
+
+gfx_setfont(5, "Arial", gx_font_mid);
+gx_shadow_text(gx_main_x+gx_pad, gx_main_y+6, "Band field", gx_txt_r,gx_txt_g,gx_txt_b, 1);
+
+gfx_setfont(6, "Arial", gx_font_sm);
+gx_shadow_text(gx_main_x+gx_pad+74, gx_main_y+6, "Residual", gx_pos_r,gx_pos_g,gx_pos_b, 0.95);
+gx_shadow_text(gx_main_x+gx_pad+130, gx_main_y+6, "/", 0.75,0.75,0.78, 1);
+gx_shadow_text(gx_main_x+gx_pad+138, gx_main_y+6, "below baseline", gx_neg_r,gx_neg_g,gx_neg_b, 0.95);
+gx_shadow_text(gx_main_x+gx_pad+246, gx_main_y+6, "•", 0.7,0.7,0.75, 1);
+gx_shadow_text(gx_main_x+gx_pad+258, gx_main_y+6, "edge = motion", gx_mo_r,gx_mo_g,gx_mo_b, 0.90);
+gx_shadow_text(gx_main_x+gx_pad+344, gx_main_y+6, "•", 0.7,0.7,0.75, 1);
+gx_shadow_text(gx_main_x+gx_pad+356, gx_main_y+6, "gold = attenuation", gx_gr_r,gx_gr_g,gx_gr_b, 0.95);
+
+// tile region
+gx_tiles_x = gx_main_x + gx_pad;
+gx_tiles_y = gx_main_y + max(24, floor(30*gx_sc));
+gx_tiles_w = gx_main_w - gx_pad*2;
+gx_tiles_h = gx_main_h - (gx_tiles_y - gx_main_y) - gx_pad;
+
+gx_tile_gap = max(4, floor(6*gx_sx));
+gx_tile_w = (gx_tiles_w - gx_tile_gap*(bands-1)) / max(1, bands);
+gx_tile_h = gx_tiles_h;
+
+gx_res_zone_h = gx_tile_h * 0.46;
+gx_gr_zone_y  = gx_tiles_y + gx_tile_h * 0.58;
+gx_gr_zone_h  = gx_tile_h * 0.25;
+gx_lbl_y      = gx_tiles_y + gx_tile_h - max(14, floor(16*gx_sc));
+
+gx_bi = 0;
+loop(bands,
+  gx_tx = gx_tiles_x + gx_bi*(gx_tile_w + gx_tile_gap);
+  gx_ty = gx_tiles_y;
+  gx_tw = max(12, gx_tile_w);
+  gx_th = gx_tile_h;
+
+  gx_res = mem[ofs_res + gx_bi];
+  gx_resn = gx_clamp(gx_res / gx_res_show, -1.0, 1.0);
+
+  gx_mot = gx_clamp(mem[ofs_mot + gx_bi], 0.0, 1.0);
+
+  gx_gs   = mem[ofs_gs + gx_bi];
+  gx_gapp = 1.0 + action_amt*(gx_gs - 1.0);
+  gx_gr   = -lin2db(gx_gapp);
+  gx_gr   = gx_clamp(gx_gr, 0.0, gx_maxgr_show);
+  gx_grn  = gx_gr / gx_maxgr_show;
+
+  // band card
+  gx_set(0.09,0.10,0.12,1); gfx_rect(gx_tx, gx_ty, gx_tw, gx_th, 1);
+
+  // warm body tint from actual action
+  gx_set(gx_gr_r, gx_gr_g, gx_gr_b, 0.03 + 0.12*gx_grn);
+  gfx_rect(gx_tx+1, gx_gr_zone_y, gx_tw-2, gx_gr_zone_h, 1);
+
+  // motion edge + top cap
+  gx_set(gx_mo_r, gx_mo_g, gx_mo_b, 0.08 + 0.55*gx_mot);
+  gfx_rect(gx_tx, gx_ty, gx_tw, gx_th, 0);
+  gfx_rect(gx_tx+1, gx_ty+1, gx_tw-2, max(2, floor(3*gx_sc)), 1);
+
+  // residual zone background + center line
+  gx_set(1,1,1,0.03);
+  gfx_rect(gx_tx+2, gx_ty+6, gx_tw-4, gx_res_zone_h, 1);
+
+  gx_res_mid = gx_ty + 6 + gx_res_zone_h*0.5;
+  gx_set(1,1,1,0.08);
+  gfx_line(gx_tx+3, gx_res_mid, gx_tx+gx_tw-3, gx_res_mid, 1);
+
+  // residual draw
+  gx_res_inner_x = gx_tx + max(3, floor(4*gx_sc));
+  gx_res_inner_w = gx_tw - max(6, floor(8*gx_sc));
+  gx_res_h = abs(gx_resn) * (gx_res_zone_h*0.44);
+
+  gx_resn >= 0 ? (
+    gx_set(gx_pos_r, gx_pos_g, gx_pos_b, 0.92);
+    gfx_rect(gx_res_inner_x, gx_res_mid - gx_res_h, gx_res_inner_w, gx_res_h, 1);
+  ) : (
+    gx_set(gx_neg_r, gx_neg_g, gx_neg_b, 0.92);
+    gfx_rect(gx_res_inner_x, gx_res_mid, gx_res_inner_w, gx_res_h, 1);
+  );
+
+  // residual hotspot cap when strongly positive
+  gx_res > 0 ? (
+    gx_cap_a = 0.08 + 0.30*gx_clamp(gx_resn, 0, 1);
+    gx_set(gx_pos_r, gx_pos_g, gx_pos_b, gx_cap_a);
+    gfx_rect(gx_tx+2, gx_ty+2, gx_tw-4, max(2, floor(4*gx_sc)), 1);
+  );
+
+  // GR zone base line
+  gx_set(1,1,1,0.05);
+  gfx_rect(gx_tx+2, gx_gr_zone_y, gx_tw-4, gx_gr_zone_h, 1);
+
+  // attenuation fill
+  gx_gh = gx_grn * gx_gr_zone_h;
+  gx_set(gx_gr_r, gx_gr_g, gx_gr_b, 0.95);
+  gfx_rect(gx_tx+2, gx_gr_zone_y + gx_gr_zone_h - gx_gh, gx_tw-4, gx_gh, 1);
+
+  // attenuation reference line
+  gx_set(1,1,1,0.10);
+  gfx_line(gx_tx+2, gx_gr_zone_y, gx_tx+gx_tw-2, gx_gr_zone_y, 1);
+
+  // tiny dB tick for hot bands only
+  gx_gr > 1.2 ? (
+    gfx_setfont(7, "Arial", max(8, gx_font_sm-1));
+    sprintf(#gx_grlbl, "%.1f", gx_gr);
+    gx_shadow_text(gx_tx + 3, gx_gr_zone_y + gx_gr_zone_h - gx_gh - max(11, floor(12*gx_sc)), #gx_grlbl, 0.95,0.95,0.98, 0.90);
+  );
+
+  // band label
+  gx_cf = mem[ofs_cf + gx_bi];
+  gfx_setfont(8, "Arial", gx_font_sm);
+
+  gx_cf < 1000 ? (
+    sprintf(#gx_lbl, "%.0f", gx_cf);
+  ) : gx_cf < 10000 ? (
+    sprintf(#gx_lbl, "%.1fk", gx_cf/1000);
+  ) : (
+    sprintf(#gx_lbl, "%.0fk", gx_cf/1000);
+  );
+
+  gx_shadow_text(gx_tx + 2, gx_lbl_y, #gx_lbl, gx_sub_r,gx_sub_g,gx_sub_b, 0.95);
+
+  gx_bi += 1;
+);
+
+// ============================================================
+// HISTORY PANEL
+// ============================================================
+gx_panel(gx_hist_x, gx_hist_y, gx_hist_w, gx_hist_h2);
+
+gfx_setfont(9, "Arial", gx_font_mid);
+gx_shadow_text(gx_hist_x+gx_pad, gx_hist_y+6, "History", gx_txt_r,gx_txt_g,gx_txt_b, 1);
+
+gx_hx = gx_hist_x + max(46, floor(54*gx_sc));
+gx_hy = gx_hist_y + max(18, floor(22*gx_sc));
+gx_hw = gx_hist_w - gx_hx + gx_hist_x - gx_pad;
+gx_hh = gx_hist_h2 - (gx_hy - gx_hist_y) - max(18, floor(22*gx_sc));
+
+// backoff ribbon
+gx_colw = max(1, gx_hw / max(1, gx_hist_len-1));
+gx_hi = 0;
+loop(gx_hist_len,
+  gx_idx = gx_hist_i + gx_hi;
+  gx_idx >= gx_hist_len ? gx_idx -= gx_hist_len;
+
+  gx_ax = gx_hx + gx_hi*gx_hw / max(1, gx_hist_len-1);
+  gx_av = gx_hist_action[gx_idx];
+
+  gx_av < 0.99 ? (
+    gx_set(gx_bo_r, gx_bo_g, gx_bo_b, (1-gx_av)*0.20);
+    gfx_rect(gx_ax, gx_hy, gx_colw+1, gx_hh, 1);
+  );
+
+  gx_hi += 1;
+);
+
+// grid
+gx_set(1,1,1,0.06); gfx_rect(gx_hx, gx_hy, gx_hw, gx_hh, 0);
+gx_set(1,1,1,0.04); gfx_line(gx_hx, gx_hy+gx_hh*0.25, gx_hx+gx_hw, gx_hy+gx_hh*0.25, 1);
+gx_set(1,1,1,0.04); gfx_line(gx_hx, gx_hy+gx_hh*0.50, gx_hx+gx_hw, gx_hy+gx_hh*0.50, 1);
+gx_set(1,1,1,0.04); gfx_line(gx_hx, gx_hy+gx_hh*0.75, gx_hx+gx_hw, gx_hy+gx_hh*0.75, 1);
+
+// traces
+gx_scope(gx_hist_maxgr,  gx_hx, gx_hy, gx_hw, gx_hh, 0, gx_maxgr_show, gx_gr_r, gx_gr_g, gx_gr_b, 0.98);
+gx_scope(gx_hist_avggr,  gx_hx, gx_hy, gx_hw, gx_hh, 0, gx_maxgr_show, 0.35, 0.85, 1.00, 0.82);
+gx_scope(gx_hist_avgmot, gx_hx, gx_hy, gx_hw, gx_hh, 0, 1.0,           gx_mo_r, gx_mo_g, gx_mo_b, 0.75);
+
+// history legend
+gfx_setfont(10, "Arial", gx_font_sm);
+gx_ly = gx_hist_y + gx_hist_h2 - max(16, floor(18*gx_sc));
+
+gx_shadow_text(gx_hist_x+gx_pad,      gx_ly, "Max GR", gx_gr_r,gx_gr_g,gx_gr_b, 1);
+sprintf(#gx_h1, "%.1f", gx_max_gr);
+gx_shadow_text(gx_hist_x+gx_pad+40,   gx_ly, #gx_h1, gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+gx_shadow_text(gx_hist_x+gx_pad+84,   gx_ly, "Avg GR", 0.35,0.85,1.00, 1);
+sprintf(#gx_h2, "%.1f", gx_avg_gr);
+gx_shadow_text(gx_hist_x+gx_pad+126,  gx_ly, #gx_h2, gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+gx_shadow_text(gx_hist_x+gx_pad+164,  gx_ly, "Avg Mot", gx_mo_r,gx_mo_g,gx_mo_b, 1);
+sprintf(#gx_h3, "%.0f%%", gx_avg_mot*100);
+gx_shadow_text(gx_hist_x+gx_pad+214,  gx_ly, #gx_h3, gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+gx_shadow_text(gx_hist_x+gx_pad+258,  gx_ly, "Hot", gx_pos_r,gx_pos_g,gx_pos_b, 1);
+sprintf(#gx_h4, "%d/%d", gx_hot, bands);
+gx_shadow_text(gx_hist_x+gx_pad+282,  gx_ly, #gx_h4, gx_sub_r,gx_sub_g,gx_sub_b, 1);
+
+action_amt < 0.99 ? (
+  gx_shadow_text(gx_hist_x+gx_pad+326, gx_ly, "Back-off active", gx_bo_r,gx_bo_g,gx_bo_b, 1);
+);

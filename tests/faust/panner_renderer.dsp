@@ -1,0 +1,67 @@
+// A new perceptual renderer: no fitted KEMAR bank or original audio histories.
+import("stdfaust.lib");
+np_s(v)=v:si.smooth(exp(-1/(ma.SR*max(.005,select2(slider16>=.5,.005,slider18*.001)))));
+np_bound(lo,hi,x)=min(hi,max(lo,x));
+np_dist=max(.2,np_s(dist_m));
+np_side=np_bound(-1,1,np_s(np_lat)*np_phys+np_s(tgt_cue_side)*(1-np_phys)+np_s(tgt_motion)*.035*os.osc(.17));
+np_ahead=np_bound(-1,1,np_s(np_front)*np_phys+np_s(tgt_cue_front)*(1-np_phys));
+np_height=np_bound(-1,1,np_s(np_up));
+np_th=np_s(tgt_throw);np_ext=np_s(tgt_ext);np_size=np_s(tgt_width);
+np_width=np_s(tgt_in_width);np_anchor=np_s(tgt_bed_anchor);
+np_room=np_s(tgt_room)*np_s(np_room_weight);np_roomsize=np_s(tgt_rsize);np_occlusion=np_s(tgt_occ);
+np_phys=np_s(p7_model);np_travel=np_s(p7_t_travel);
+np_gain=(1-.65*np_phys*np_occlusion)*((1-np_phys)*np_s(tgt_direct_g)+np_phys*pow(max(.2,np_dist),-np_s(p7_t_distance_gain)));
+np_m0=np_s(tgt_source_mode==0);np_m1=np_s(tgt_source_mode==1);
+np_m2=np_s(tgt_source_mode==2);np_m3=np_s(tgt_source_mode==3);
+np_mid=(spl0+spl1)*.5;np_diff=(spl0-spl1)*.5;
+np_spread=np_width*(.45*np_m1+np_m2+np_m3)*(.2+.8*np_size);
+np_mono_spread=.15*np_size*np_m0*(np_mid-de.fdelay(512,ma.SR*.0015*(.3+.7*np_size),np_mid));
+np_feed_l=np_mid+np_diff*np_spread+np_mono_spread;np_feed_r=np_mid-np_diff*np_spread-np_mono_spread;
+np_delay(n,d,x)=de.fdelay(n,np_bound(1,n-2,d),x);
+np_common=1+np_phys*np_travel*np_dist/343*ma.SR;
+np_itd=.00065*ma.SR*np_th;
+np_pinna(e,x)=x-.22*np_ext*(.4+.35*abs(np_height)+.25*(1-np_ahead))
+ *np_delay(128,ma.SR/(4500*np_s(p7_t_profile)+1700*np_height+400*e*np_side-400*(1-np_ahead)),x);
+np_ear(e,x)=np_delay(65536,np_common+max(0,-e*np_side)*np_itd,x)
+ : si.smooth(np_s(select2(e>0,np_shadow_l,np_shadow_r)))
+ : np_pinna(e) : si.smooth(np_s(np_air)) : si.smooth(np_s(np_occ));
+np_direct_l=np_ear(-1,np_feed_l)*sqrt(max(.03,.5-.45*np_side*np_th))*np_gain;
+np_direct_r=np_ear(1,np_feed_r)*sqrt(max(.03,.5+.45*np_side*np_th))*np_gain;
+np_reflect(e,x)=sum(i,6,np_delay(16384,ma.SR*(.005+.006*i+.026*np_roomsize
+ +.0015*e*np_side*(i%2*2-1)+.003*(1-np_ahead)+.0015*(i==4)*np_s(p7_t_ear_height)+.0015*(i==5)*np_s(p7_t_room_height-p7_t_ear_height)),x)
+ *((i%2==0)*.08+(i%2!=0)*.055)*(1+.22*e*(i%2*2-1)))
+ : si.smooth(np_s(np_air));
+np_early_l=np_reflect(-1,np_feed_l)*np_room*(1-.5*np_occlusion);
+np_early_r=np_reflect(1,np_feed_r)*np_room*(1-.5*np_occlusion);
+np_decay=np_bound(.05,.85,np_s(sv_t_decay));
+np_latesize=np_s(sv_size);
+np_exc_l=(np_feed_l-(np_feed_l:si.smooth(np_s(sv_t_hp_a))))*np_s(np_room_weight);
+np_exc_r=(np_feed_r-(np_feed_r:si.smooth(np_s(sv_t_hp_a))))*np_s(np_room_weight);
+np_comb(i,x)=x:fi.fb_fcomb(65536,ma.SR*(.029+.016*i+.051*np_latesize+.012*np_roomsize),1,-np_decay);
+np_tank_l=sum(i,4,np_comb(i,np_exc_l)*(.14/(i+1))):si.smooth(np_s(sv_t_damp_a));
+np_tank_r=sum(i,4,np_comb(i,np_exc_r)*(.14/(i+1))):si.smooth(np_s(sv_t_damp_a));
+np_env=max(abs(np_mid),abs(np_diff)):si.smooth(exp(-1/(.025*ma.SR)));
+np_return=np_s(sv_on_target)*np_s(sv_t_send)*np_s(sv_t_trim)/(1+8*np_s(sv_t_duck)*np_env);
+np_tank_mid=(np_tank_l+np_tank_r)*.5;
+np_tank_side=(np_tank_l-np_tank_r)*.5*np_s(sv_t_width);
+np_core_l=np_direct_l+np_early_l+(np_tank_mid+np_tank_side)*np_return;
+np_core_r=np_direct_r+np_early_r+(np_tank_mid-np_tank_side)*np_return;
+np_bed=np_m2*(1-np_anchor)*.85;
+np_output_l=(np_core_l*(1-np_bed)+spl0*np_bed)*np_s(tgt_trim);
+np_output_r=(np_core_r*(1-np_bed)+spl1*np_bed)*np_s(tgt_trim);
+// Existing display bindings publish one final value per host buffer.
+meter_direct=max(abs(np_direct_l),abs(np_direct_r)):si.smooth(.995);
+meter_er=max(abs(np_early_l),abs(np_early_r)):si.smooth(.995);
+input_corr_l2=spl0*spl0:si.smooth(.995);
+input_corr_r2=spl1*spl1:si.smooth(.995);
+input_corr_lr=spl0*spl1:si.smooth(.995);
+last_input_corr=np_bound(-1,1,input_corr_lr/(sqrt(input_corr_l2*input_corr_r2)+1e-12));
+last_source_warn=(tgt_source_mode==0)*(last_input_corr<.82);
+sm_cue_side=np_s(tgt_cue_side);sm_cue_front=np_s(tgt_cue_front);
+sm_width=np_size;sm_room=np_room;sm_ext=np_ext;sm_elev=np_s(tgt_elev);
+sm_depth=np_s(tgt_depth);sm_far=np_s(tgt_far01);sm_throw=np_th;
+sceneverb_active=np_s(sv_on_target)>.0001;
+p7_high_energy=((spl0-(spl0:si.smooth(.6)))*(spl0-(spl0:si.smooth(.6)))+(spl1-(spl1:si.smooth(.6)))*(spl1-(spl1:si.smooth(.6))))*.5:si.smooth(.995);
+p7_total_energy=(spl0*spl0+spl1*spl1)*.5:si.smooth(.995);
+p7_height_limited=(p7_total_energy>1e-10)*(p7_high_energy<.01*p7_total_energy);
+process=np_output_l,np_output_r;

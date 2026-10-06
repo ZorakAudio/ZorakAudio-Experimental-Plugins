@@ -37,6 +37,43 @@ slider7:0<-12,12,0.1:log>Output Trim (dB)
 slider8:60<0,100,1:sqr>Salience Budget (%)
 
 @init
+za_sleep_ready=0;za_scalar_valid=0;za_scalar_zero=0;
+za_prev_hpflp_l=0;
+za_prev_hpflp_r=0;
+za_prev_m_lp200=0;
+za_prev_m_lp800=0;
+za_prev_m_lp4k=0;
+za_prev_s_lp120=0;
+za_prev_s_lp200=0;
+za_prev_s_lp800=0;
+za_prev_s_lp4k=0;
+za_prev_m_lowe=0;
+za_prev_m_bodye=0;
+za_prev_m_prese=0;
+za_prev_m_aire=0;
+za_prev_s_bodye=0;
+za_prev_m_hie=0;
+za_prev_s_hie=0;
+za_prev_k_lp800=0;
+za_prev_k_lp4k=0;
+za_prev_k_e=0;
+za_prev_duck_db=0;
+za_prev_cut_body_db=0;
+za_prev_cut_pres_db=0;
+za_prev_cut_air_db=0;
+za_prev_sidecut_body_db=0;
+za_prev_sidecut_hi_db=0;
+za_prev_a_prese=0;
+za_prev_a_aire=0;
+za_prev_a_pres_faste=0;
+za_prev_a_pres_slowe=0;
+za_prev_sal_common_db=0;
+za_prev_siderel_fast=0;
+za_prev_siderel_slow=0;
+za_prev_sal_side_db=0;
+za_prev_efast=0;
+za_prev_eslow=0;
+za_prev_exp_db=0;
 eps   = 0.00000000000000000001;
 ilog10 = 1/log(10);
 
@@ -99,6 +136,8 @@ sal_side_dB   = 0;
 gfx_ext_retina = 1;
 
 @slider
+// New controls require a new zero-input fixed-point certificate.
+za_scalar_valid=0;
 fit   = slider1/100;
 brown = slider2/100;
 wdisc = slider3/100;
@@ -227,7 +266,88 @@ tau_sals_r = 12.0;
 c_sals_a   = exp(-1/(tau_sals_a*srate));
 c_sals_r   = exp(-1/(tau_sals_r*srate));
 
+@block
+// Under fixed controls and zero input these scalar one-poles are monotone.
+// Equality over the entire preceding silent block certifies a fixed point.
+// This includes every persistent sample recurrence, not just audible output.
+za_sleep_ready = za_scalar_valid && za_scalar_zero &&
+  hpflp_l === za_prev_hpflp_l &&
+  hpflp_r === za_prev_hpflp_r &&
+  m_lp200 === za_prev_m_lp200 &&
+  m_lp800 === za_prev_m_lp800 &&
+  m_lp4k === za_prev_m_lp4k &&
+  s_lp120 === za_prev_s_lp120 &&
+  s_lp200 === za_prev_s_lp200 &&
+  s_lp800 === za_prev_s_lp800 &&
+  s_lp4k === za_prev_s_lp4k &&
+  m_lowe === za_prev_m_lowe &&
+  m_bodye === za_prev_m_bodye &&
+  m_prese === za_prev_m_prese &&
+  m_aire === za_prev_m_aire &&
+  s_bodye === za_prev_s_bodye &&
+  m_hie === za_prev_m_hie &&
+  s_hie === za_prev_s_hie &&
+  k_lp800 === za_prev_k_lp800 &&
+  k_lp4k === za_prev_k_lp4k &&
+  k_e === za_prev_k_e &&
+  duck_db === za_prev_duck_db &&
+  cut_body_db === za_prev_cut_body_db &&
+  cut_pres_db === za_prev_cut_pres_db &&
+  cut_air_db === za_prev_cut_air_db &&
+  sidecut_body_db === za_prev_sidecut_body_db &&
+  sidecut_hi_db === za_prev_sidecut_hi_db &&
+  a_prese === za_prev_a_prese &&
+  a_aire === za_prev_a_aire &&
+  a_pres_faste === za_prev_a_pres_faste &&
+  a_pres_slowe === za_prev_a_pres_slowe &&
+  sal_common_db === za_prev_sal_common_db &&
+  siderel_fast === za_prev_siderel_fast &&
+  siderel_slow === za_prev_siderel_slow &&
+  sal_side_db === za_prev_sal_side_db &&
+  efast === za_prev_efast &&
+  eslow === za_prev_eslow &&
+  exp_db === za_prev_exp_db;
+za_prev_hpflp_l=hpflp_l;
+za_prev_hpflp_r=hpflp_r;
+za_prev_m_lp200=m_lp200;
+za_prev_m_lp800=m_lp800;
+za_prev_m_lp4k=m_lp4k;
+za_prev_s_lp120=s_lp120;
+za_prev_s_lp200=s_lp200;
+za_prev_s_lp800=s_lp800;
+za_prev_s_lp4k=s_lp4k;
+za_prev_m_lowe=m_lowe;
+za_prev_m_bodye=m_bodye;
+za_prev_m_prese=m_prese;
+za_prev_m_aire=m_aire;
+za_prev_s_bodye=s_bodye;
+za_prev_m_hie=m_hie;
+za_prev_s_hie=s_hie;
+za_prev_k_lp800=k_lp800;
+za_prev_k_lp4k=k_lp4k;
+za_prev_k_e=k_e;
+za_prev_duck_db=duck_db;
+za_prev_cut_body_db=cut_body_db;
+za_prev_cut_pres_db=cut_pres_db;
+za_prev_cut_air_db=cut_air_db;
+za_prev_sidecut_body_db=sidecut_body_db;
+za_prev_sidecut_hi_db=sidecut_hi_db;
+za_prev_a_prese=a_prese;
+za_prev_a_aire=a_aire;
+za_prev_a_pres_faste=a_pres_faste;
+za_prev_a_pres_slowe=a_pres_slowe;
+za_prev_sal_common_db=sal_common_db;
+za_prev_siderel_fast=siderel_fast;
+za_prev_siderel_slow=siderel_slow;
+za_prev_sal_side_db=sal_side_db;
+za_prev_efast=efast;
+za_prev_eslow=eslow;
+za_prev_exp_db=exp_db;
+za_scalar_zero=1;za_scalar_valid=1;
+
 @sample
+// Observe original source AND key channels before sample code overwrites them.
+za_scalar_zero = za_scalar_zero && spl0 === 0 && spl1 === 0 && spl2 === 0 && spl3 === 0;
 // --- input ---
 L0 = spl0;
 R0 = spl1;
