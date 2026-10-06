@@ -102,6 +102,17 @@ public:
     // Metadata, interpolation taps and stereo reads reuse its immutable pins.
     using Storage = SamplePoolStorage<DspJsfxSamplePoolGeneration>;
     using ReadBatch = Storage::ReadBatch;
+    class PinnedRead {
+    public:
+        explicit PinnedRead(DspJsfxSamplePool& pool): owner(pool),scope(pool.storage_,true) {}
+        std::uint64_t generation() const noexcept {return scope.generation ? scope.generation->sourceGeneration : 0;}
+        bool isCurrent() const noexcept {return scope.generation && owner.storage_.requestedId()==scope.generation->publicationRequestId;}
+        bool bind(ReadBatch& batch) const noexcept {return scope.generation && batch.bindPinned(owner.storage_,scope.generation);}
+    private:
+        DspJsfxSamplePool& owner;
+        Storage::ReaderScope scope;
+    };
+    std::shared_ptr<PinnedRead> pinRead() {return std::make_shared<PinnedRead>(*this);}
     void setMode(int mode) noexcept;
     // Opt-in: publication announces readiness, but playback stays on the old bank
     // until the audio client reaches a voice-free boundary and adopts it.

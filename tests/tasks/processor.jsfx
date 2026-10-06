@@ -1,0 +1,17 @@
+desc:Structured task processor fixture
+options:maxmem=65536
+in_pin:left
+out_pin:left
+@init
+job=0;adopted=0;
+@block
+job<=0 ? job=defer_reduce(i,100,SUM,0,i;);
+task_status(job)==TASK_SUCCEEDED ? adopted=task_result(job)/4950;
+za_keep_awake=adopted==0;
+@sample
+spl0=adopted;
+@gfx 100 60
+ui_job<=0 ? ui_job=defer(12;);
+task_status(ui_job)==TASK_SUCCEEDED ? gfx_set(0,1,0) : gfx_set(1,0,0);
+task_status(ui_job)==TASK_SUCCEEDED ? ui_result=task_result(ui_job);
+gfx_rect(0,0,100,60);

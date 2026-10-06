@@ -201,6 +201,9 @@ class Frame {
         beginDrawingFrame();
     }
     void begin(const DSPJSFX_State &s, int w, int h) {
+#if DSPJSFX_HAS_TASKS
+        state.taskContext = s.taskContext;
+#endif
 #if DSPJSFX_NATIVE_GFX_LEGACY
         bindLegacy(const_cast<DSPJSFX_State&>(s), w, h);
 #else
@@ -210,6 +213,9 @@ class Frame {
     }
 #if DSPJSFX_NATIVE_GFX_LEGACY
     void bindLegacy(DSPJSFX_State& shared, int w, int h) {
+#if DSPJSFX_HAS_TASKS
+        state.taskContext = shared.taskContext;
+#endif
         if(state.sharedState != &shared)state.sharedState = &shared;
         state.atomicContext = shared.atomicContext;
         state.mem = shared.mem;

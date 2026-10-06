@@ -1,4 +1,4 @@
-desc:Corpus v1.9.1 - Load Progress / Contextual PE / Pruning
+desc:Corpus v1.9.4 - Fully Deferred Preparation / Contextual PE / Pruning
 tags:instrument sampler granular synthesis ui
 // #GFX_RESIZE: responsive
 // #FILE: Corpus sources {Slot 0: use Open Multiple, as in Sample v71. A single long file is valid.}
@@ -11,7 +11,7 @@ options:maxmem=25165824 gfx_hz=30
 // @za:gfx_sync_mem 49152 16384 DSP_TO_GFX
 // Corpus v0.7.0: combined representation, walk, envelope, mutation, branching,
 // and exploration prototype. Requires Sample v71's EXTENDED sample-pool host.
-// Not stock REAPER JSFX. No compiler/runtime modifications or imports needed.
+// Requires this repository's structured-task AOT runtime; not stock REAPER JSFX.
 // Loader and analysis scaffolding derived from Corpus v0.1.2 / Sample v71.
 // DSP owns corpus, analysis, scheduler, history and voices. GFX reads ONLY the
 // bounded explicit snapshot and writes acknowledged slider24 command packets.
@@ -718,7 +718,10 @@ function xc_best_insert(base id cost) local(i j exists) (
     i<4 ? (j=3;while(j>i)(base[j]=base[j-1];base[4+j]=base[4+j-1];j-=1;);base[i]=id;base[4+i]=cost;);
   );
 );
-function xc_begin() local(i) (
+function xc_begin() (
+  cg_stage>0 ? cg_cancel();xc_tasks_cancel();xc_prepare();
+);
+function xc_prepare() local(i) (
   xc_ready=0;xc_grammar_ready=0;xc_map_ready=0;xc_epoch=index_epoch;xc_phase=1;xc_cursor=0;xc_frame=0;xc_subphase=0;
   xc_pcm_reads=0;xc_fft_count=0;xc_precompute_comparisons=0;xc_runtime_comparisons=0;xc_spectral_frames=0;xc_descriptor_count=0;
   xc_coarse_n=0;xc_matrix_cursor=0;xc_coverage_limited=0;xc_sparse_sources=0;xc_mapping_misses=0;xc_recurrences=0;
@@ -881,6 +884,81 @@ function xc_coarse_similarity(a b) local(p q d i value harm conf) (
   i=0;loop(12,harm+=abs(p[8+i]-q[8+i]);i+=1;);conf=min(p[28],q[28]);
   cp_01(1-value-0.40*conf*harm*0.5);
 );
+// Sealed inputs and batched scalar outputs keep workers away from the live heap.
+function xc_tasks_retire() local(rc) (
+  xc_task_retiring ? (
+    xc_task>0 ? (
+      rc=task_cancel(xc_task);
+      rc!=-2 ? (rc=task_release(xc_task);rc!=-2 ? xc_task=0;);
+    );
+    xc_task<=0 && xc_task_buffer>0 ? (
+      rc=task_buffer_release(xc_task_buffer);rc!=-2 ? xc_task_buffer=0;
+    );
+    xc_task<=0 && xc_task_buffer<=0 ? xc_task_retiring=0;
+  );
+);
+function xc_tasks_cancel() (
+  xc_task_retiring=1;xc_tasks_retire();
+  xc_task_stage=0;xc_task_copy=0;xc_task_adopt=0;
+);
+function xc_task_similarity(buf n pair) local(a b i value harm conf p q) (
+  a=floor(pair/n);b=pair%n;p=a*30;q=b*30;value=0;harm=0;i=0;
+  loop(8,
+    value+=abs(sqrt(max(0,task_buffer_read(buf,p+i)))-sqrt(max(0,task_buffer_read(buf,q+i))))*0.065
+      +abs(task_buffer_read(buf,p+20+i)-task_buffer_read(buf,q+20+i))*0.035;i+=1;
+  );i=0;loop(12,harm+=abs(task_buffer_read(buf,p+8+i)-task_buffer_read(buf,q+8+i));i+=1;);
+  conf=min(task_buffer_read(buf,p+28),task_buffer_read(buf,q+28));
+  min(1,max(0,1-value-0.40*conf*harm*0.5));
+);
+function xc_matrix_step() local(i rc total pair a b batch buf n start) (
+  total=xc_coarse_n*xc_coarse_n;
+  !xc_task_retiring ? (
+  xc_task_stage==0 ? (
+    xc_task_buffer=task_buffer_create(max(1,xc_coarse_n*30));
+    xc_task_buffer>0 ? (xc_task_stage=1;xc_task_copy=0;) : xc_task_buffer!=-2 ? xc_task_stage=4;
+  );
+  xc_task_stage==1 ? (
+    i=0;rc=1;
+    while(i<512 && xc_task_copy<xc_coarse_n*30 && rc>0)(
+      a=floor(xc_task_copy/30);b=xc_task_copy%30;
+      rc=task_buffer_set(xc_task_buffer,xc_task_copy,xc_coarse[a*48+b]);
+      rc>0 ? (xc_task_copy+=1;i+=1;);
+    );
+    rc<0 && rc!=-2 ? (xc_tasks_cancel();xc_task_stage=4;);
+    xc_task_stage==1 && xc_task_copy>=xc_coarse_n*30 ? (
+      rc=task_buffer_seal(xc_task_buffer);
+      rc>0 ? xc_task_stage=2 : rc!=-2 ? (xc_tasks_cancel();xc_task_stage=4;);
+    );
+  );
+  xc_task_stage==2 && xc_cursor<total ? (
+    buf=xc_task_buffer;n=xc_coarse_n;start=xc_cursor;batch=min(4096,total-start);
+    xc_task=defer_for(pair,batch,xc_task_similarity(buf,n,start+pair););
+    xc_task>0 ? (xc_task_count=batch;xc_task_adopt=0;xc_task_stage=3;)
+      : xc_task!=-2 ? (xc_tasks_cancel();xc_task_stage=4;);
+  );
+  xc_task_stage==3 ? (
+    task_status(xc_task)==TASK_SUCCEEDED ? (
+      i=0;while(i<512 && xc_task_adopt<xc_task_count)(
+        pair=xc_cursor+xc_task_adopt;a=floor(pair/xc_coarse_n);b=pair%xc_coarse_n;
+        xc_matrix[a*512+b]=task_value(xc_task,xc_task_adopt);
+        xc_task_adopt+=1;xc_precompute_comparisons+=1;i+=1;
+      );
+      xc_task_adopt>=xc_task_count ? (
+        rc=task_release(xc_task);rc!=-2 ? (xc_task=0;xc_cursor+=xc_task_count;xc_task_stage=2;);
+      );
+    ) : task_finished(xc_task) ? (xc_tasks_cancel();xc_task_stage=4;xc_task_fallbacks+=1;);
+  );
+  xc_task_stage==4 ? (
+    i=0;while(i<48 && xc_cursor<total)(
+      a=floor(xc_cursor/xc_coarse_n);b=xc_cursor%xc_coarse_n;
+      xc_matrix[a*512+b]=xc_coarse_similarity(a,b);
+      xc_cursor+=1;xc_precompute_comparisons+=1;i+=1;
+    );
+  );
+  xc_cursor>=total ? (xc_tasks_cancel();xc_phase=5;xc_cursor=0;);
+  );
+);
+
 function xc_recur_finish_row(row) local(i j p q score total n same best bi novelty scale a b left right cross sums count l r)
 (
   p=xc_coarse+row*48;best=0;bi=-1;i=0;
@@ -937,7 +1015,7 @@ function xd_res_add(id) local(d conf value bin k n slot) (
   d=0;loop(51,conf=cp_desc_conf(id,d);conf>0.05 ? (value=cp_desc(id,d);bin=min(15,max(0,floor(value*16)));k=d*16+bin;n=desc_res_counts[k];desc_res_counts[k]=n+1;
     slot=n<32 ? n : ((id*127+k*8191)%max(1,n+1));slot<32 ? desc_reservoir[k*32+slot]=id;);d+=1;);
 );
-function xc_build(work) local(budget g p s n frame l r win i j a b c idx count variance mean total)
+function xc_features_work(work) local(budget g p s n frame l r win i j a b c idx count variance mean total)
 (
   xc_phase==1 ? (
     budget=min(4096,max(128,work));
@@ -977,10 +1055,7 @@ function xc_build(work) local(budget g p s n frame l r win i j a b c idx count v
     xc_cursor<source_count ? (xc_coarse_one(xc_cursor);xc_cursor+=1;);
     xc_cursor>=source_count ? (xc_phase=4;xc_cursor=0;);
   ) : xc_phase==4 ? (
-    i=0;while(i<48 && xc_cursor<xc_coarse_n*xc_coarse_n)(
-      a=floor(xc_cursor/xc_coarse_n);b=xc_cursor%xc_coarse_n;xc_matrix[a*512+b]=xc_coarse_similarity(a,b);
-      xc_cursor+=1;xc_precompute_comparisons+=1;i+=1;
-    );xc_cursor>=xc_coarse_n*xc_coarse_n ? (xc_phase=5;xc_cursor=0;);
+    0;
   ) : xc_phase==5 ? (
     xc_cursor<xc_coarse_n ? (xc_recur_finish_row(xc_cursor);xc_cursor+=1;);
     xc_cursor>=xc_coarse_n ? (xc_phase=6;xc_cursor=0;);
@@ -994,6 +1069,109 @@ function xc_build(work) local(budget g p s n frame l r win i j a b c idx count v
   ) : xc_phase==10 ? (
     i=0;while(i<8 && xc_cursor<grain_count)(xd_res_add(xc_cursor);xc_cursor+=1;i+=1;);
     xc_cursor>=grain_count ? (xc_phase=0;xc_ready=1;xc_epoch=index_epoch;xc_request_hierarchy=1;h_rebuild_requested=1;);
+  );
+);
+
+function xc_build(work) (
+  xc_phase==4 ? xc_matrix_step() : xc_features_work(work);
+);
+function cg_features_step(work) local(total i a b) (
+  xc_phase==4 ? (
+    total=xc_coarse_n*xc_coarse_n;i=0;
+    while(i<48 && xc_cursor<total)(
+      a=floor(xc_cursor/xc_coarse_n);b=xc_cursor%xc_coarse_n;
+      xc_matrix[a*512+b]=xc_coarse_similarity(a,b);
+      xc_cursor+=1;xc_precompute_comparisons+=1;i+=1;
+    );xc_cursor>=total ? (xc_phase=5;xc_cursor=0;);
+  ) : xc_features_work(work);
+);
+// Dependency stages use one private arena and a pinned immutable audio generation.
+function cg_index() (
+  while(build_phase>0)(task_report(5,build_phase,grain_count,max(1,tile_total));cp_index_work(4096););
+  task_report(5,0,grain_count,grain_count);1;
+);
+function cg_features() (
+  while(xc_phase>0)(task_report(1,xc_phase,xc_cursor,grain_count);cg_features_step(4096););
+  task_report(1,0,grain_count,grain_count);1;
+);
+function cg_structure() (
+  h_begin();h_rebuild_requested=0;
+  while(h_phase>0)(task_report(2,h_phase,h_cursor,grain_count);h_build(););
+  task_report(2,0,grain_count,grain_count);1;
+);
+function cg_context() (
+  xc_post_begin();while(xc_post_phase>0 || xc_map_phase>0)(task_report(3,xc_post_phase,xc_post_cursor,hm_n);xc_post_step(););
+  fc_begin();while(fc_phase>0)(task_report(3,fc_phase,fc_cursor,hm_n);fc_step(););
+  task_report(3,0,hm_n,hm_n);1;
+);
+function cg_pe() (
+  pe_begin();while(pe_phase>0)(task_report(4,pe_phase,pe_cursor,grain_count);pe_build(4096););
+  task_report(4,0,grain_count,grain_count);1;
+);
+
+function cg_key() (
+  auto_config_key;
+);
+function cg_retire() local(rc) (
+  cg_retiring ? (
+    cg_arena>0 ? (rc=task_arena_release(cg_arena);rc!=-2 ? cg_arena=0;);
+    cg_t0>0 ? (rc=task_release(cg_t0);rc!=-2 ? cg_t0=0;);
+    cg_t1>0 ? (rc=task_release(cg_t1);rc!=-2 ? cg_t1=0;);
+    cg_t2>0 ? (rc=task_release(cg_t2);rc!=-2 ? cg_t2=0;);
+    cg_t3>0 ? (rc=task_release(cg_t3);rc!=-2 ? cg_t3=0;);
+    cg_t4>0 ? (rc=task_release(cg_t4);rc!=-2 ? cg_t4=0;);
+    cg_arena<=0 && cg_t0<=0 && cg_t1<=0 && cg_t2<=0 && cg_t3<=0 && cg_t4<=0 ? cg_retiring=0;
+  );
+);
+function cg_cancel() (
+  cg_retiring=1;cg_retire();cg_stage=0;
+);
+function cg_publish() (task_arena_adopt(cg_arena,a_bin,a_binpeak,a_binpower,a_burst_count,a_burst_ready,a_burst_start,a_diff,a_envdiff,a_envsum,a_g,a_headn,a_headpower,a_inburst,a_last_l,a_last_r,a_lowpower,a_lowref,a_lp_l,a_lp_r,a_lpc,a_max_env,a_ndiff,a_num,a_peak,a_peak_bin,a_power,a_prev_env,a_rise,a_sidepower,a_tailn,a_tailpower,a_tile_ready,analysis_points,apply_saved_edits,auto_budget_coarsened,auto_budget_scale,auto_desired_cells,auto_quiet_n,auto_s,auto_scout_sparse,auto_window_max,auto_window_min,browse_dirty,build_phase,corpus_key,edit_cursor,edits_inactive,edits_match,effective_window,fc_built_key,fc_cfg_key,fc_class_cursor,fc_cursor,fc_epoch,fc_iter,fc_last_norm,fc_lo,fc_member_cursor,fc_model_key,fc_n,fc_pc,fc_phase,fc_ready,fc_subphase,fill_grain,grain_count,h_best0,h_best1,h_best2,h_bestdist,h_boundary,h_cleanup_done,h_cluster_cap,h_coarsened,h_coverage_lost,h_cursor,h_detail,h_empty_classes,h_epoch,h_excluded,h_finalize_stage,h_level,h_link_sources,h_ls,h_macro_gap_n,h_macro_lost,h_macro_singletons,h_mend,h_merges,h_mflags,h_micro_only_short,h_min_macro,h_min_meso,h_monsets,h_mopen,h_mseconds,h_msource,h_msource_start,h_mstart,h_mtrans,h_pair_n,h_part_direction,h_part_distribution,h_part_motion,h_part_role,h_part_timing,h_phase,h_range_end,h_range_hi,h_range_lo,h_range_start,h_ready,h_rebuild_requested,h_refine_pass,h_rest_amp,h_rest_db,h_rest_seconds,h_rest_seed_conf,h_sensitive,h_status,h_step,h_weight0,h_weight1,h_weight2,h_xcount,h_xend,h_xflags,h_xopen,h_xscan,h_xseconds,h_xsource,h_xstart,hm_k,hm_n,hm_radius,hm_transitions,hx_k,hx_n,hx_radius,hx_transitions,invalid_audio,invalid_sources,layout_cursor,max_grain_seconds,merge_active,merge_done,merge_new_count,merge_new_start,merge_orig_end,merge_orig_start,merge_read,merge_source,merge_write,meta_cursor,norm_cursor,pe_count,pe_cross,pe_cursor,pe_diff,pe_epoch,pe_ffts,pe_fits,pe_frame_read,pe_frames,pe_last_l,pe_last_r,pe_lpow,pe_model_key,pe_nfft,pe_nr,pe_offset,pe_peak,pe_phase,pe_read_errors,pe_reads,pe_ready,pe_ref_mode,pe_rpow,pe_subphase,pg_load_pending,pg_ready,play_frames,play_run_limited,play_srcpos,playable_grains,posting_count,ready,scan_previous_tail,scan_source,scan_tile,scout_diff,scout_in,scout_l,scout_n,scout_peak,scout_probe,scout_r,scout_reads,scout_source,scout_started,scout_step,scout_sum,selected_id,silent_grains,source_count,tile_total,total_seconds,ui_left,xc_built_ceiling,xc_coarse_n,xc_coarse_window,xc_coverage_limited,xc_cross,xc_cursor,xc_descriptor_count,xc_epoch,xc_fft_count,xc_fft_size,xc_frame,xc_grammar_epoch,xc_grammar_overflow,xc_grammar_ready,xc_map_costsum,xc_map_count,xc_map_cursor,xc_map_epoch,xc_map_phase,xc_map_ready,xc_map_source,xc_map_target,xc_map_unmatched,xc_mapping_misses,xc_matrix_cursor,xc_pcm_reads,xc_peak,xc_phase,xc_pool_n,xc_post_cursor,xc_post_phase,xc_pow_l,xc_pow_r,xc_precompute_comparisons,xc_quality,xc_read_count,xc_read_i,xc_read_start,xc_ready,xc_recurrences,xc_request_hierarchy,xc_runtime_comparisons,xc_schema,xc_sparse_sources,xc_spectral_frames,xc_subphase,xc_terminal_examples,xc_triples););
+function cg_step() local(rc phase cursor stage) (
+  cg_retire();
+  cg_stage==0 && !cg_disabled && !cg_retiring && !xc_task_retiring && !rebuild_request && !pending_adoption && pool_state!=1 && pool_state!=2 && build_phase==1 && loaded_count>0 && cp_hold_count()==0 && cp_busy()==0 ? (
+    cg_arena=task_arena_clone(__memtop(),bank_pool,generation);
+    cg_arena>0 ? (
+      cg_epoch=index_epoch;cg_config=cg_key();cg_command=cmd_seen;cg_ceiling=slider52;cg_scope=slider14;cg_source=slider64;
+      cg_stage=1;cg_keep=0;ready=0;xc_ready=0;h_ready=0;fc_ready=0;pe_ready=0;pg_ready=0;
+    ) : cg_arena==-3 ? cg_disabled=1;
+  );
+  cg_stage>0 && (pool_state==1 || pool_state==2 || pending_adoption || cg_epoch!=index_epoch || cg_config!=cg_key() || cg_command!=cmd_seen || cg_ceiling!=slider52 || cg_scope!=slider14 || cg_source!=slider64) ? (
+    cg_cancel();rebuild_request=1;poll_left=0;
+  );
+  cg_stage==1 ? (
+    rc=task_arena_status(cg_arena);
+    rc==4 ? (
+      // Only live controls/runtime are copied at adoption; model storage is swapped.
+      cg_keep==0 ? rc=task_arena_preserve(cg_arena,0,hist);
+      cg_keep==1 ? rc=task_arena_preserve(cg_arena,candidates,source_base-candidates);
+      cg_keep==2 ? rc=task_arena_preserve(cg_arena,traj_base,traj_memory_end-traj_base);
+      cg_keep==3 ? rc=task_arena_preserve(cg_arena,td_buf_l,td_memory_end-td_buf_l);
+      cg_keep==4 ? rc=task_arena_preserve(cg_arena,xc_params,16);
+      cg_keep==5 ? rc=task_arena_preserve(cg_arena,pe_event_locks,32);
+      rc>0 ? cg_keep+=1;
+      cg_keep>=6 ? cg_stage=2;
+    ) : rc==5 ? (cg_cancel();cg_disabled=1;cg_failed_key=cg_retry_key;rebuild_request=1;poll_left=0;);
+  );
+  cg_stage==2 ? (cg_t0=defer_arena(cg_arena,0,cg_index(););cg_t0>0 ? cg_stage=3 : cg_t0!=-2 ? (cg_cancel();cg_disabled=1;cg_failed_key=cg_retry_key;rebuild_request=1;poll_left=0;););
+  cg_stage==3 ? (cg_t1=defer_arena(cg_arena,cg_t0,cg_features(););cg_t1>0 ? cg_stage=4 : cg_t1!=-2 ? (cg_cancel();cg_disabled=1;cg_failed_key=cg_retry_key;rebuild_request=1;poll_left=0;););
+  cg_stage==4 ? (cg_t2=defer_arena(cg_arena,cg_t1,cg_structure(););cg_t2>0 ? cg_stage=5 : cg_t2!=-2 ? (cg_cancel();cg_disabled=1;cg_failed_key=cg_retry_key;rebuild_request=1;poll_left=0;););
+  cg_stage==5 ? (cg_t3=defer_arena(cg_arena,cg_t2,cg_context(););cg_t3>0 ? cg_stage=6 : cg_t3!=-2 ? (cg_cancel();cg_disabled=1;cg_failed_key=cg_retry_key;rebuild_request=1;poll_left=0;););
+  cg_stage==6 ? (cg_t4=defer_arena(cg_arena,cg_t3,cg_pe(););cg_t4>0 ? cg_stage=7 : cg_t4!=-2 ? (cg_cancel();cg_disabled=1;cg_failed_key=cg_retry_key;rebuild_request=1;poll_left=0;););
+  cg_stage>=2 && cg_stage<=7 ? (
+    stage=task_arena_progress(cg_arena,0);phase=task_arena_progress(cg_arena,1);cursor=task_arena_progress(cg_arena,2);
+    stage>0 && phase>=0 && cursor>=0 ? (
+      build_phase=stage==5 ? max(1,phase) : 0;
+      xc_phase=stage==1 ? max(1,phase) : 0;xc_cursor=stage==1 ? cursor : 0;
+      h_phase=stage==2 ? max(1,phase) : 0;h_cursor=stage==2 ? cursor : 0;
+      xc_post_phase=stage==3 ? 1 : 0;fc_phase=0;
+      pe_phase=stage==4 ? max(1,phase) : 0;pe_cursor=stage==4 ? cursor : 0;
+    );
+    task_arena_status(cg_arena)==5 ? (cg_cancel();cg_disabled=1;cg_failed_key=cg_retry_key;rebuild_request=1;poll_left=0;);
+    cg_stage==7 && task_status(cg_t4)==TASK_SUCCEEDED ? cg_stage=8;
+  );
+  cg_stage==8 ? (
+    rc=cg_publish();rc>0 ? (cg_completed+=1;cg_cancel();) : rc!=-2 ? (cg_cancel();rebuild_request=1;poll_left=0;);
   );
 );
 
@@ -2663,6 +2841,8 @@ function cp_scout_step(work) local(s a lo hi start frame l r power diff n val b 
 
 function cp_begin() local(n cap avail)
 (
+  cg_cancel();cg_retry_key=generation+slider5+slider6*2048+slider21*16384+slider22*65536+slider61*0.001+slider60*524288+slider63*1048576;cg_failed_key!=cg_retry_key ? cg_disabled=0;
+  xc_tasks_cancel();
   // Must only be called at a block boundary with no current/pending voices.
   pe_ready=0;pe_phase=0;pe_epoch=-1;pg_ready=0;pg_stage=0;pg_apply=0;pg_preview=0;pg_preview_pending=0;
   loaded_count=max(0,floor(sample_pool_loaded(bank_pool)));
@@ -2878,7 +3058,7 @@ function cp_fill_grain(id) local(g v pos) (
     );v+=1;
   ););
 );
-function cp_build(work) local(s id frames sr nch cells i b w pos l r energy diff g take binlo binhi maxwork total c read_ok)
+function cp_index_work(work) local(s id frames sr nch cells i b w pos l r energy diff g take binlo binhi maxwork total c read_ok)
 (
   build_phase==1 ? (
     i=0;
@@ -2974,9 +3154,13 @@ function cp_build(work) local(s id frames sr nch cells i b w pos l r energy diff
       playable_grains=vertex_counts[28];
       ready && playable_grains>0 && selected_id<0 ? selected_id=postings[offsets[28]];
       memset(vertex_cursor,0,29);browse_dirty=1;ui_left=0;
-      xc_begin();h_ready=0;h_phase=0;h_rebuild_requested=0;freembuf(max(postings+posting_count+64,pe_memory_end));
+      xc_prepare();h_ready=0;h_phase=0;h_rebuild_requested=0;
     );
   );
+);
+function cp_build(work) (
+  cp_index_work(work);
+  build_phase==0 ? freembuf(max(postings+posting_count+64,pe_memory_end));
 );
 // Four constant-time status reads detect a loader transition on the first
 // available callback, even if the periodic poll has not expired. No PCM access.
@@ -4929,7 +5113,7 @@ function ui_load_text() local(p group phase) (
     phase==8 ? strcpy(#ui_load_label,"FEATURES / PCA projection");
     phase==9 ? strcpy(#ui_load_label,"FEATURES / PCA normalization");
     phase==3 ? strcpy(#ui_load_label,"FEATURES / Coarse regions");
-    phase==4 ? strcpy(#ui_load_label,"FEATURES / Recurrence pairs");
+    phase==4 ? strcpy(#ui_load_label,"FEATURES / Parallel recurrence pairs");
     phase==5 ? strcpy(#ui_load_label,"FEATURES / Recurrence rows");
     phase==6 ? strcpy(#ui_load_label,"FEATURES / Grain neighbours");
     phase==10 ? strcpy(#ui_load_label,"FEATURES / Retrieval tables");
@@ -5695,6 +5879,8 @@ output_target=cp_amp(slider7);
 slider11!=last_seed ? (rng_state=max(1,floor(slider11));last_seed=slider11;);
 
 @block
+cg_retire();
+xc_tasks_retire();
 load_block_serial+=1;
 // v1.5 migration: v1.4 serialized 16 coherence cells but did not assign the
 // final four. Preserve its first 12 values, initialize the new performance
@@ -5726,8 +5912,10 @@ clock-auto_change_clock>=srate*0.15 ? (
 cp_pool_changed() ? (poll_left=0;ui_left=0;);
 pending_adoption && cp_busy()==0 && cp_hold_count()==0 ? poll_left=0;
 poll_left-=samplesblock;poll_left<=0 ? (cp_poll();poll_left=max(64,floor(srate*0.20)););
-build_phase>0 ? cp_build(min(4096,max(256,samplesblock*8)));
+cg_step();
+!cg_stage && !cg_retiring && !rebuild_request && !pending_adoption && pool_state!=1 && pool_state!=2 && build_phase>0 ? cp_build(min(4096,max(256,samplesblock*8)));
 cp_browse_update();
+!cg_stage && !cg_retiring && (cg_disabled || xc_phase==0) ? (
 // Complete heavy analysis before adopting a new rich/structural model. Never
 // rebuild cache memory under sounding voices or hold a GFX thread hostage.
 ready && xc_ready && slider52!=xc_built_ceiling && cp_hold_count()==0 && cp_busy()==0 ? (xc_begin();h_ready=0;h_phase=0;);
@@ -5752,6 +5940,7 @@ xc_ready && h_ready && h_phase==0 && cp_hold_count()==0 && cp_busy()==0 ? (
 ready && xc_ready && h_ready && h_phase==0 && fc_ready && xc_grammar_ready && cp_hold_count()==0 && cp_busy()==0 ? (
   !pe_ready && pe_phase==0 && pe_epoch!=index_epoch ? pe_begin();
   pe_phase>0 ? pe_build(min(4096,max(256,samplesblock*8)));
+);
 );
 pg_load_pending ? pg_load_begin();
 pg_stage>0 ? pg_build();
@@ -5789,7 +5978,7 @@ block_all_rest=event_count>0;block_any_model=0;block_expected=0;bi09=0;loop(8,be
 block_gap=0;block_lowsal=0;
 ui_snapshot_base[0]=cmd_seen;ui_left-=samplesblock;
 ui_left<=0 ? (cp_ui_publish();ui_left=max(64,floor(srate/20)););
-za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || pe_phase>0 || pg_stage>0 || pg_load_pending || pg_preview_pending || td_mix>0.0001 || pool_state==1 || pool_state==2;
+za_keep_awake=cg_stage>0 || cg_retiring || xc_task_retiring || voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || pe_phase>0 || pg_stage>0 || pg_load_pending || pg_preview_pending || td_mix>0.0001 || pool_state==1 || pool_state==2;
 
 @sample
 out_l=0;out_r=0;sample_coverage=0;sample_lowvoices=0;sample_startedvoices=0;vi=0;
@@ -5863,7 +6052,7 @@ hole_now=audible_hole_run>=max(8,floor(srate*0.020));
 sched_gap_now=hole_now && !sample_coverage;source_hole_now=hole_now && sample_coverage;
 low_now=sample_startedvoices>0 ? sample_lowvoices/sample_startedvoices : 0;
 peak_meter=max(output_peak,peak_meter*0.9995);meter_sum+=(out_l*out_l+out_r*out_r)*0.5;meter_peak_block=max(meter_peak_block,output_peak);meter_n+=1;meter_rest_sum+=block_all_rest;meter_gap_sum+=sched_gap_now;meter_lowsal_sum+=low_now;meter_voice_sum+=voice_list_n;meter_hole_sum+=hole_now;meter_sourcehole_sum+=source_hole_now;meter_coverage_sum+=sample_coverage;spl0=out_l;spl1=out_r;clock+=1;
-za_keep_awake=voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || pe_phase>0 || pg_stage>0 || pg_load_pending || pg_preview_pending || td_mix>0.0001 || pool_state==1 || pool_state==2;
+za_keep_awake=cg_stage>0 || cg_retiring || xc_task_retiring || voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || pe_phase>0 || pg_stage>0 || pg_load_pending || pg_preview_pending || td_mix>0.0001 || pool_state==1 || pool_state==2;
 
 @gfx 1120 780
 ui_scope=41000;ui_pending=44100;ui_queue=40000;ui_scroll=40400;ui_local_path=40600;ui_curve_paint=44600;ui_auto=57184;

@@ -1,0 +1,30 @@
+desc:Structured task integration fixture
+@init
+function captured(a) local(temp) (
+  temp=a*2;
+  defer(temp+1;);
+);
+// This non-audio fixture retries contention to make initialization deterministic.
+while(input<=0)(input=task_buffer_create(100););
+i=0;loop(100,while(task_buffer_set(input,i,i)==-2)(0;);i+=1;);
+while(task_buffer_seal(input)==-2)(0;);
+gain=3;
+while(mapped<=0)(mapped=defer_for(i,100,task_buffer_read(input,i)*gain;););
+while(sum_task<=0)(sum_task=defer_reduce(i,100,SUM,0,task_buffer_read(input,i);););
+while(product_task<=0)(product_task=defer_reduce(i,4,PRODUCT,1,i+1;););
+while(minimum_task<=0)(minimum_task=defer_reduce(i,4,MIN,100,i-2;););
+while(maximum_task<=0)(maximum_task=defer_reduce(i,4,MAX,-100,i-2;););
+while(any_task<=0)(any_task=defer_reduce(i,4,ANY,0,i==2;););
+while(all_task<=0)(all_task=defer_reduce(i,4,ALL,1,i>=0;););
+while(empty_task<=0)(empty_task=defer_reduce(i,0,SUM,17,i;););
+while(local_task<=0)(local_task=captured(5););
+while(nested_task<=0)(nested_task=defer(
+  defer(loop(1000000,sin(0.5););13;);
+  7;
+););
+while(after_task<=0)(after_task=defer_after(sum_task,task_result(sum_task)*2;););
+while(joined<=0)(joined=defer_all(mapped,sum_task,nested_task,after_task););
+gain=99;
+@block
+// Results are explicitly adopted by the caller, never written by workers.
+task_status(joined)==TASK_SUCCEEDED ? adopted=task_result(after_task);

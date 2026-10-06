@@ -26,6 +26,14 @@ public:
             for (std::size_t i = 0; i < count_; ++i)
                 pins_[i].store->readers_.fetch_sub(1);
         }
+        // Caller holds a ReaderScope for this exact generation throughout the batch.
+        bool bindPinned(const SamplePoolStorage& store, const Generation* gen) noexcept
+        {
+            if (auto* pin=find(store)) {pin->generation=gen;return true;}
+            if (count_==pins_.size()) return false;
+            store.readers_.fetch_add(1);
+            pins_[count_++]={&store,gen};last_=&pins_[count_-1];return true;
+        }
         ReadBatch(const ReadBatch&) = delete;
         ReadBatch& operator=(const ReadBatch&) = delete;
     private:
@@ -77,10 +85,10 @@ public:
     class ReaderScope
     {
     public:
-        explicit ReaderScope(const SamplePoolStorage& store) noexcept : store_(store)
+        explicit ReaderScope(const SamplePoolStorage& store, bool independent = false) noexcept : store_(store)
         {
             bool pinned = false;
-            if (ReadBatch::current_ != nullptr)
+            if (!independent && ReadBatch::current_ != nullptr)
                 generation = ReadBatch::current_->pin(store, pinned);
             if (!pinned)
             {
@@ -106,6 +114,7 @@ public:
         auto previous = requestedId_.load(std::memory_order_acquire);
         while (id > previous && !requestedId_.compare_exchange_weak(previous, id, std::memory_order_acq_rel)) {}
     }
+    std::uint64_t requestedId() const noexcept {return requestedId_.load(std::memory_order_acquire);}
     bool deferred() const noexcept { return deferred_.load(); }
     bool hasPending() const noexcept { return pending_.load(std::memory_order_acquire) != nullptr; }
     void setDeferred(bool value) noexcept

@@ -13,9 +13,13 @@ class BuildModes(unittest.TestCase):
         for s in specs:
             for p,l in [(False,False),(True,False),(False,True)]:self.assertEqual(build.native_gfx_modes_for_plugin(s,prototype=p,legacy=l),(False,True),s.slug)
     def test_other_jsfx_preserve_options(self):
-        specs=[s for s in SPECS if s.category!='JoepVanlier' and s.plugin_type=='jsfx'];self.assertEqual(len(specs),28)
+        specs=[s for s in SPECS if s.category!='JoepVanlier' and s.plugin_type=='jsfx' and s.raw.get('nativeGfx')!='legacy'];self.assertEqual(len(specs),27)
         for s in specs:
             for p,l in [(False,False),(True,False),(False,True)]:self.assertEqual(build.native_gfx_modes_for_plugin(s,prototype=p,legacy=l),(p,l),s.slug)
+    def test_corpus_always_legacy(self):
+        spec=next(s for s in SPECS if s.slug=='Corpus')
+        for p,l in [(False,False),(True,False),(False,True)]:
+            self.assertEqual(build.native_gfx_modes_for_plugin(spec,prototype=p,legacy=l),(False,True))
     def test_faust_never_legacy(self):
         specs=[s for s in SPECS if s.plugin_type=='faust'];self.assertEqual(len(specs),5)
         for s in specs:self.assertEqual(build.native_gfx_modes_for_plugin(s,legacy=True),(False,False))
@@ -30,9 +34,9 @@ class BuildModes(unittest.TestCase):
                     with self.assertRaises(Configured):build.main()
                     self.assertIn('-DZA_NATIVE_GFX_LEGACY='+('ON' if legacy else 'OFF'),calls[0])
                     if spec.plugin_type=='jsfx':self.assertEqual(compile_.call_args.kwargs['native_gfx_legacy'],legacy);self.assertFalse(compile_.call_args.kwargs['native_gfx_prototype'])
-    def test_direct_joep_helper_overrides_prototype(self):
+    def test_direct_manifest_helper_overrides_prototype(self):
         class Compiling(Exception):pass
-        spec=next(s for s in SPECS if s.category=='JoepVanlier');commands=[]
+        spec=next(s for s in SPECS if s.slug=='Corpus');commands=[]
         for prototype in [False,True]:
             with tempfile.TemporaryDirectory() as t:
                 def stop(cmd,*a,**k):commands.append(cmd);raise Compiling

@@ -218,7 +218,7 @@ def native_gfx_modes_for_plugin(spec: PluginSpec, *, prototype: bool = False,
     """Return the effective compiler/host modes for a configured plugin."""
     if spec.plugin_type != "jsfx":
         return False, False
-    if spec.category == "JoepVanlier":
+    if spec.category == "JoepVanlier" or spec.raw.get("nativeGfx") == "legacy":
         return False, True
     return prototype, legacy
 
@@ -234,6 +234,10 @@ def build_jsfx_aot(repo_root: Path, cmake_build: Path, slug: str, jsfx_path: Pat
     """
     # Cover direct callers of this helper as well as main().
     if jsfx_path.resolve().is_relative_to((repo_root / "plugins" / "JoepVanlier").resolve()):
+        native_gfx_prototype, native_gfx_legacy = False, True
+
+    manifest = jsfx_path.parent.parent / "plugin.json"
+    if manifest.exists() and json.loads(manifest.read_text(encoding="utf-8")).get("nativeGfx") == "legacy":
         native_gfx_prototype, native_gfx_legacy = False, True
 
     def env_truthy(name: str) -> bool:

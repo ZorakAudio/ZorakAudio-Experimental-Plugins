@@ -51,8 +51,9 @@
 #include "JSFXDSP.h"
 #include "JsfxSharedCells.h"
 #include "JsfxLegacyAtomics.h"
-#if !defined(DSPJSFX_RUNTIME_STATE_ABI) || (DSPJSFX_RUNTIME_STATE_ABI != 3 && DSPJSFX_RUNTIME_STATE_ABI != 5)
- #error "Regenerate JSFXDSP.h and its AOT object with the patched dsp_jsfx_aot.py (runtime state ABI 3 or 5)."
+#include "JsfxTasks.h"
+#if !defined(DSPJSFX_RUNTIME_STATE_ABI) || (DSPJSFX_RUNTIME_STATE_ABI < 3 || DSPJSFX_RUNTIME_STATE_ABI > 6)
+ #error "Regenerate JSFXDSP.h and its AOT object with the patched dsp_jsfx_aot.py (runtime state ABI 3 through 6)."
 #endif
 #include "PluginMarkdownHelp.h"
 #include "ZAUnicodeText.h"
@@ -1377,6 +1378,12 @@ extern "C" double jsfx_fft_ipermute (DSPJSFX_State* st, double baseD, double siz
 
 extern "C" void jsfx_ensure_mem (DSPJSFX_State* st, int64_t needed)
 {
+#if DSPJSFX_HAS_TASKS
+    if (jsfx_tasks::Runtime::privateHeap(st)) {
+        if (needed<=0 || needed>st->memN || !st->mem) st->memoryFault=1;
+        return;
+    }
+#endif
 #if DSPJSFX_NATIVE_GFX_LEGACY
     if (st != nullptr && (needed <= 0 || needed > st->memN || st->mem == nullptr)) st->memoryFault = 1;
     return;
@@ -3000,6 +3007,35 @@ public:
         initStateMemory();
         jsfxRuntime.attachToState (&st);
         st.hostOwner = this;
+#if DSPJSFX_HAS_TASKS
+        st.taskContext = taskRuntime.get();
+        taskRuntime->setArenaHooks(
+            [](DSPJSFX_State* state,double handle,double generation)->std::shared_ptr<void> {
+                auto* owner=static_cast<JSFXJuceProcessor*>(state->hostOwner);
+                auto* pool=owner ? owner->getSamplePoolForHandle(handle) : nullptr;
+                if (!pool) return {};
+                auto pin=pool->pinRead();
+                return pin->generation()==static_cast<uint64_t>(generation) && pin->isCurrent() ? pin : nullptr;
+            },
+            [](const std::shared_ptr<void>& opaque,jsfx_tasks::Callback fn,DSPJSFX_State* state,const double* captures)->double {
+                auto pin=std::static_pointer_cast<za::jsfx::DspJsfxSamplePool::PinnedRead>(opaque);
+                za::jsfx::DspJsfxSamplePool::ReadBatch batch;
+                if (!pin->bind(batch)) throw std::runtime_error("Unable to bind analysis sample generation");
+                return fn(state,0,captures);
+            },
+            [](const std::shared_ptr<void>& opaque)->bool {return opaque && static_cast<za::jsfx::DspJsfxSamplePool::PinnedRead*>(opaque.get())->isCurrent();});
+#endif
+#if DSPJSFX_HAS_TASKS && DSPJSFX_NATIVE_GFX_LEGACY
+        taskRuntime->setHeapSwapHooks(
+            [](DSPJSFX_State* state)->bool {
+                auto* owner=static_cast<JSFXJuceProcessor*>(state->hostOwner);
+                return owner && state==&owner->st && state->mem && state->memN==DSPJSFX_MAX_MEM_CELLS;
+            },
+            [](DSPJSFX_State* state) {
+                auto* owner=static_cast<JSFXJuceProcessor*>(state->hostOwner);
+                if(owner && owner->legacyFrame) owner->legacyFrame->bindLegacy(*state,DSPJSFX_NATIVE_GFX_WIDTH,DSPJSFX_NATIVE_GFX_HEIGHT);
+            });
+#endif
         initGfxSnapshots();
         resetGfxSliderPreviewState();
 
@@ -3021,6 +3057,10 @@ public:
 
         // Host lifecycle must have stopped processing before processor destruction.
         st.hostOwner = nullptr;
+#if DSPJSFX_HAS_TASKS
+        taskRuntime.reset(); // Join workers before releasing instance resources.
+        st.taskContext = nullptr;
+#endif
 
         shutdownFileRuntime();
         jsfxRuntime.detachFromState();
@@ -3033,6 +3073,9 @@ public:
     }
 
     juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return *apvts; }
+#if DSPJSFX_HAS_TASKS
+    void* taskContext() noexcept { return taskRuntime.get(); }
+#endif
 
     void registerParameterWakeListeners()
     {
@@ -9484,10 +9527,16 @@ private:
 
     void resetStateStructOnly()
     {
+#if DSPJSFX_HAS_TASKS
+        taskRuntime->reset();
+#endif
         DSPJSFX_Cell* memKeep  = st.mem;
         int64_t memNKeep = st.memN;
 
         std::memset (&st, 0, sizeof (st));
+#if DSPJSFX_HAS_TASKS
+        st.taskContext = taskRuntime.get();
+#endif
         initialiseJsfxHostDefaults();
 
         st.mem  = memKeep;
@@ -10293,6 +10342,9 @@ private:
         return clamp01f (std::log (std::abs (inside)) / logBase);
     }
     DSPJSFX_State st {};
+#if DSPJSFX_HAS_TASKS
+    std::unique_ptr<jsfx_tasks::Runtime> taskRuntime { std::make_unique<jsfx_tasks::Runtime>() };
+#endif
     za::jsfx::DspJsfxRuntime jsfxRuntime;
     JsfxMidiRuntime midiRuntime;
     RuntimeMidiNoteTracker midiInputNoteTracker;
@@ -15878,6 +15930,9 @@ private:
         nativeFrame->publication = &snapshot->nativePublication;
 #endif
         nativeFrame->focused = windowFocused.load (std::memory_order_acquire);
+#if DSPJSFX_HAS_TASKS
+        nativeFrame->state.taskContext = processor.taskContext();
+#endif
         nativeFrame->visible = windowVisible.load (std::memory_order_acquire);
         nativeFrame->set ("mouse_x", inputCopy.mouseX);
         nativeFrame->set ("mouse_y", inputCopy.mouseY);
@@ -16858,6 +16913,34 @@ extern "C" uint64_t za_native_gfx_frames()
 {
     return jsfx_native_gfx::publishedFrames.load (std::memory_order_acquire);
 }
+extern "C" int za_native_gfx_heap_copy(juce::AudioProcessor* base,const char* name,double* out,int count)
+{
+#if DSPJSFX_NATIVE_GFX_LEGACY
+    auto& p=*static_cast<JSFXJuceProcessor*>(base);
+    const std::lock_guard<std::mutex> lock(p.legacyGfxMutex());
+    auto& state=p.legacyScriptState();
+    const int slot=jsfx_native_gfx::Frame::findIndex(name);
+    const int64_t address=slot<0 ? -1 : int64_t(double(state.vars[slot]));
+    if(address<0 || count<0 || address+count>state.memN) return 0;
+    for(int i=0;i<count;++i) out[i]=double(state.mem[address+i]);
+    return count;
+#else
+    juce::ignoreUnused(base,name,out,count);return 0;
+#endif
+}
+extern "C" double za_native_gfx_heap_value(juce::AudioProcessor* base, const char* name, int offset)
+{
+#if DSPJSFX_NATIVE_GFX_LEGACY
+    auto& p = *static_cast<JSFXJuceProcessor*>(base);
+    const std::lock_guard<std::mutex> lock(p.legacyGfxMutex());
+    auto& state = p.legacyScriptState();
+    const int slot = jsfx_native_gfx::Frame::findIndex(name);
+    const int64_t address = slot < 0 ? -1 : int64_t(double(state.vars[slot])) + offset;
+    return address >= 0 && address < state.memN ? double(state.mem[address]) : 0;
+#else
+    juce::ignoreUnused(base, name, offset); return 0;
+#endif
+}
 #endif
 
 #if ZA_SAMPLE_GFX_TEST_RUNNER
@@ -17161,6 +17244,10 @@ extern "C" double jsfx_sample_pool_generation (DSPJSFX_State* state, double pool
 
 extern "C" double jsfx_sample_get (DSPJSFX_State* state, double pool, double index)
 {
+#if DSPJSFX_HAS_TASKS
+    if(!jsfx_tasks::Runtime::sampleReadAllowed(state,pool)) return 0.;
+#endif
+
     juce::ignoreUnused (state);
     if (auto* owner = ownerFromState (state))
         return owner->rt_sample_get (pool, index);
@@ -17169,6 +17256,10 @@ extern "C" double jsfx_sample_get (DSPJSFX_State* state, double pool, double ind
 
 extern "C" double jsfx_sample_len (DSPJSFX_State* state, double pool, double sampleId)
 {
+#if DSPJSFX_HAS_TASKS
+    if(!jsfx_tasks::Runtime::sampleReadAllowed(state,pool)) return 0.;
+#endif
+
     juce::ignoreUnused (state);
     if (auto* owner = ownerFromState (state))
         return owner->rt_sample_len (pool, sampleId);
@@ -17177,6 +17268,10 @@ extern "C" double jsfx_sample_len (DSPJSFX_State* state, double pool, double sam
 
 extern "C" double jsfx_sample_channels (DSPJSFX_State* state, double pool, double sampleId)
 {
+#if DSPJSFX_HAS_TASKS
+    if(!jsfx_tasks::Runtime::sampleReadAllowed(state,pool)) return 0.;
+#endif
+
     juce::ignoreUnused (state);
     if (auto* owner = ownerFromState (state))
         return owner->rt_sample_channels (pool, sampleId);
@@ -17185,6 +17280,10 @@ extern "C" double jsfx_sample_channels (DSPJSFX_State* state, double pool, doubl
 
 extern "C" double jsfx_sample_srate (DSPJSFX_State* state, double pool, double sampleId)
 {
+#if DSPJSFX_HAS_TASKS
+    if(!jsfx_tasks::Runtime::sampleReadAllowed(state,pool)) return 0.;
+#endif
+
     juce::ignoreUnused (state);
     if (auto* owner = ownerFromState (state))
         return owner->rt_sample_srate (pool, sampleId);
@@ -17193,6 +17292,10 @@ extern "C" double jsfx_sample_srate (DSPJSFX_State* state, double pool, double s
 
 extern "C" double jsfx_sample_peak (DSPJSFX_State* state, double pool, double sampleId)
 {
+#if DSPJSFX_HAS_TASKS
+    if(!jsfx_tasks::Runtime::sampleReadAllowed(state,pool)) return 0.;
+#endif
+
     juce::ignoreUnused (state);
     if (auto* owner = ownerFromState (state))
         return owner->rt_sample_peak (pool, sampleId);
@@ -17232,6 +17335,12 @@ extern "C" double jsfx_sample_read_interp (DSPJSFX_State* state, double pool, do
 
 extern "C" double jsfx_sample_read2 (DSPJSFX_State* state, double pool, double sampleId, double phase, double* outL, double* outR)
 {
+#if DSPJSFX_HAS_TASKS
+    if (!jsfx_tasks::Runtime::sampleReadAllowed(state,pool)) {
+        if(outL) jsfxCellStore(outL,0.);if(outR) jsfxCellStore(outR,0.);return 0.;
+    }
+#endif
+
     if (auto* owner = ownerFromState (state))
         return owner->rt_sample_read2 (pool, sampleId, phase, outL, outR, false);
     if (outL) jsfxCellStore (outL, 0.0);

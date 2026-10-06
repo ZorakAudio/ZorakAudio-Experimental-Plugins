@@ -46,6 +46,7 @@ Usage:
 from __future__ import annotations
 
 import sys
+from scripts import jsfx_tasks_compiler as tasks_compiler
 import argparse
 import contextlib
 from collections import Counter
@@ -800,6 +801,10 @@ class Parser:
                     raise SyntaxError(self._fmt_err("Can only call a named function"))
                 fn = node.name
 
+                if fn in tasks_compiler.DEFERRED:
+                    node = tasks_compiler.parse(sys.modules[__name__], self, fn, sp)
+                    continue
+
                 # ---- SPECIAL: loop(count, body) where body may be un-comma'd multiline sequence ----
                 if fn == "loop":
                     self._skip_seps()
@@ -1266,6 +1271,12 @@ def analyze_gfx_var_sync(jsfx_text: str, user_vars: Dict[str, int]) -> Dict[str,
                 walk_assign(node)
                 return
             if isinstance(node, Call):
+                if node.fn in tasks_compiler.DEFERRED:
+                    for arg in node.args[:-1]:
+                        walk_read(arg)
+                    private = walk_node(node.args[-1], locals_)
+                    out.reads.update(private.reads)
+                    return
                 for index, a in enumerate(node.args):
                     if node.fn == "gfx_measurestr" and index in (1, 2):
                         # These are output lvalues, including helper locals.
@@ -2538,6 +2549,9 @@ def validate_native_gfx_prototype(programs: Dict[str, List[Node]], fn_defs: Dict
                  "floor": (1, 1), "ceil": (1, 1), "sin": (1, 1),
                  "cos": (1, 1), "exp": (1, 1), "log": (1, 1),
                  "sqrt": (1, 1), "pow": (2, 2)}
+    supported.update({name: (arity, arity) if arity is not None else (1, 32)
+                      for name, (_, arity) in tasks_compiler.APIS.items()})
+    supported.update({'defer': (1,1), 'defer_after': (2,2), 'defer_for': (3,3), 'defer_reduce': (5,5)})
     if interactive:
         supported.update({"gfx_getchar": (0, 1), "gfx_showmenu": (1, 1),
                           "strcpy": (2, 2), "strcat": (2, 2), "strncpy": (3, 3),
@@ -2565,6 +2579,12 @@ def validate_native_gfx_prototype(programs: Dict[str, List[Node]], fn_defs: Dict
         if not legacy and isinstance(value, Var) and ((value.name.startswith("mouse_") and not interactive) or value.name.startswith("gfx_ext_") or value.name in ("gfx_clear", "gfx_mode", "gfx_dest")):
             raise ValueError(f"Native display prototype does not support {value.name}")
         if isinstance(value, Call):
+            if value.fn in tasks_compiler.DEFERRED:
+                # The task validator checks private bodies separately. Only
+                # submission arguments execute on the graphics state.
+                for arg in value.args[:-1]:
+                    visit(arg)
+                return
             if value.fn in fn_defs:
                 if value.fn not in reachable:
                     reachable.add(value.fn)
@@ -2653,7 +2673,25 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
     fn_defs: Dict[str, FunctionDef] = dict(pipeline["fn_defs"])
     loop_hoists: Dict[int, List[Node]] = dict(pipeline["loop_hoists"])
 
+    slider_aliases = {name.lower() for _, name in re.findall(
+        r"(?m)^\s*slider([0-9]+)\s*:\s*([A-Za-z_][A-Za-z_0-9]*)\s*=", jsfx_text)}
+    has_tasks = tasks_compiler.validate(sys.modules[__name__], programs, fn_defs, slider_aliases)
+    gfx_source = pipeline['sections'].get('gfx', ('', 0))[0]
+    gfx_code = re.sub(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"', '', gfx_source, flags=re.S)
+    task_calls = '|'.join(sorted(set(tasks_compiler.DEFERRED) | set(tasks_compiler.APIS)))
+    serialize_source = pipeline['sections'].get('serialize', ('', 0))
+    serialize_code = re.sub(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"', '', serialize_source[0], flags=re.S)
+    if serialize_source[0] and (has_tasks or re.search(r'\b(?:' + task_calls + r')\s*\(', serialize_code)):
+        validation_programs = dict(programs)
+        validation_programs['serialize'] = Parser(serialize_source[0], base_line=serialize_source[1]).parse_program()
+        tasks_compiler.validate(sys.modules[__name__], validation_programs, fn_defs, slider_aliases)
+    if not native_gfx_prototype and re.search(r'\b(?:' + task_calls + r')\s*\(', gfx_code):
+        raise ValueError('Tasks in @gfx require --native-gfx-legacy or --native-gfx-prototype')
+    if has_tasks and (pipeline['loop_hoists'] or pipeline['opt_report']['settings'].get('section_hoists_enabled')):
+        raise ValueError('Tasks are incompatible with custom scalar hoisting')
     user_vars = collect_user_vars(programs, fn_defs)
+    if has_tasks and len(user_vars) > 4096:
+        raise ValueError('Task snapshot limit is 4096 scalar variables')
     if native_gfx_legacy:
         # 'mem' is an ordinary EEL variable, often an allocator cursor.
         # The older DSP dialect reserved it as a zero-valued heap base.
@@ -2736,7 +2774,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
         sym.slider_aliases = {name.lower(): int(index) - 1 for index, name in re.findall(
             r"(?m)^\s*slider([0-9]+)\s*:\s*([A-Za-z_][A-Za-z_0-9]*)\s*=", jsfx_text)}
 
-    emitter = LLVMModuleEmitter(sym, native_gfx_legacy=native_gfx_legacy, stream_functions=stream_functions)
+    emitter = LLVMModuleEmitter(sym, native_gfx_legacy=native_gfx_legacy, stream_functions=stream_functions, has_tasks=has_tasks)
     emitter.native_gfx_prototype = native_gfx_prototype
     emitter.native_gfx_functions = native_functions
     emitter.jsfx_memtop_slots = resolve_jsfx_memtop_slots(options)
@@ -2774,6 +2812,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
             plugin_kind = "midi_effect"
 
     meta = {
+        "has_tasks": has_tasks,
         "vars": user_vars,
         "var_cap": emitter.var_cap,
         "sections_present": {k: bool(v) for k, v in programs.items()},
@@ -3736,7 +3775,8 @@ class _SerializedFunctionModule(ir.Module):
 
 
 class LLVMModuleEmitter:
-    def __init__(self, sym: SymTable, *, native_gfx_legacy: bool = False, stream_functions: bool = False):
+    def __init__(self, sym: SymTable, *, native_gfx_legacy: bool = False, stream_functions: bool = False, has_tasks: bool = False):
+        self.has_tasks = has_tasks
         self.native_gfx_legacy = native_gfx_legacy
         self.sym = sym
 
@@ -3824,6 +3864,10 @@ class LLVMModuleEmitter:
         if native_gfx_legacy:
             self.state_ty = ir.LiteralStructType(list(self.state_ty.elements) +
                                                 [self.i8.as_pointer(), self.i8.as_pointer(), self.i8.as_pointer()])
+            self.state_ptr = self.state_ty.as_pointer()
+
+        if has_tasks:
+            self.state_ty = ir.LiteralStructType(list(self.state_ty.elements) + [self.i8.as_pointer()])
             self.state_ptr = self.state_ty.as_pointer()
 
         self.module = (_SerializedFunctionModule if stream_functions else ir.Module)(name="dsp_jsfx_module", context=ir.Context())
@@ -4710,6 +4754,10 @@ class LLVMModuleEmitter:
                 # eligible for normal inlining.
                 self.user_fn_ir[name].attributes.add("noinline")
 
+    def _task_entry_alloca(self, builder, typ):
+        with builder.goto_entry_block():
+            return builder.alloca(typ)
+
     def emit_user_functions(self) -> None:
         for name, fdef in self.user_fn_defs.items():
             self._emitting_gfx = name in self.native_gfx_functions
@@ -4740,6 +4788,8 @@ class LLVMModuleEmitter:
                 locals_map[l] = slot
 
             self._local_slots_stack.append(locals_map)
+            if self.has_tasks:
+                tasks_compiler.checkpoint(sys.modules[__name__], self, b, st)
             retv = self.emit_expr(b, st, fdef.body)
             self._local_slots_stack.pop()
 
@@ -4825,6 +4875,8 @@ class LLVMModuleEmitter:
             builder.position_at_end(cond_bb)
             counter = builder.phi(self.i32, name="while_iterations")
             counter.add_incoming(self._const_i32(0), pre_bb)
+            if self.has_tasks:
+                tasks_compiler.checkpoint(sys.modules[__name__], self, builder, st)
             condv = self.emit_expr(builder, st, n.cond)
             cond = self._truthy(condv, builder)
             cond_end = builder.block
@@ -4872,6 +4924,8 @@ class LLVMModuleEmitter:
 
         # variable
         if isinstance(n, Var):
+            if self.has_tasks and n.name in tasks_compiler.CONSTANTS:
+                return self._const_f64(tasks_compiler.CONSTANTS[n.name])
             if (self._emitting_gfx or self.native_gfx_legacy) and n.name.startswith("#"):
                 name = n.name if n.name != "#" else f"#anonymous_{len(self._named_gfx_strings)}"
                 handle = self._named_gfx_strings.setdefault(name, (1 << 39) + len(self._named_gfx_strings))
@@ -5127,6 +5181,8 @@ class LLVMModuleEmitter:
 
 # call
         if isinstance(n, Call):
+            if n.fn in tasks_compiler.DEFERRED or n.fn in tasks_compiler.APIS:
+                return tasks_compiler.emit(sys.modules[__name__], self, builder, st, n)
             fn = n.fn
             if self.native_gfx_legacy and fn in NATIVE_STRING_APIS:
                 minimum, maximum = NATIVE_STRING_APIS[fn]
@@ -6419,6 +6475,8 @@ class LLVMModuleEmitter:
             builder.cbranch(keep_going, body_bb, after_bb)
 
             builder.position_at_end(body_bb)
+            if self.has_tasks:
+                tasks_compiler.checkpoint(sys.modules[__name__], self, builder, st)
             v = self.emit_expr(builder, st, n.body)
             i_next = builder.add(phi_i, self._const_i64(1))
             latch_bb = builder.block
@@ -6712,6 +6770,7 @@ def _emit_header(meta: Dict[str, Any]) -> str:
 
     lines = []
     lines.append("#pragma once")
+    lines.append(f"#define DSPJSFX_HAS_TASKS {1 if meta.get('has_tasks') else 0}")
     lines.append("#include <stdint.h>")
     lines.append(f"#define DSPJSFX_NATIVE_GFX_LEGACY {1 if meta.get('native_gfx_legacy') else 0}")
     lines.append(f"#define DSPJSFX_MAX_MEM_CELLS {int(meta.get('memtop_slots', JSFX_DEFAULT_MEMTOP_SLOTS))}LL")
@@ -6753,7 +6812,7 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("    int32_t msg3;")
     lines.append("} DSPJSFX_MidiEvent;")
     lines.append("")
-    lines.append(f"#define DSPJSFX_RUNTIME_STATE_ABI {5 if meta.get('native_gfx_legacy') else 3}")
+    lines.append(f"#define DSPJSFX_RUNTIME_STATE_ABI {(6 if meta.get('native_gfx_legacy') else 4) if meta.get('has_tasks') else (5 if meta.get('native_gfx_legacy') else 3)}")
     lines.append("#define DSPJSFX_MAX_SLIDERS 256")
     lines.append("#define DSPJSFX_SLIDER_MASK_WORDS 4")
     lines.append("typedef struct DSPJSFX_State {")
@@ -6797,6 +6856,8 @@ def _emit_header(meta: Dict[str, Any]) -> str:
         lines.append("    void* sharedState; /* null for DSP; GFX points at the DSP state */")
         lines.append("    void* atomicContext; /* instance mutex for explicit atomic_* calls */")
         lines.append("    void* nativeStrings; /* instance-owned native string context */")
+    if meta.get('has_tasks'):
+        lines.append("    void* taskContext; /* instance-owned structured task runtime */")
     lines.append("} DSPJSFX_State;")
     lines.append("")
 

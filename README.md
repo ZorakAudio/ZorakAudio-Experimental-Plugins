@@ -67,6 +67,11 @@ Release artifacts are packaged by category so the output mirrors the repository 
 
 ## Correctness and validation
 
+Structured background tasks (`defer`, `defer_after`, `defer_for`,
+`defer_reduce`, and completion joins) are available in the compiled DSP-JSFX
+language. See [Structured tasks](docs/Structured-Tasks.md) for the API,
+ownership rules, resource bounds, and current qualification limits.
+
 Native shared-state JSFX graphics is available as an opt-in prototype:
 
 ```bash
