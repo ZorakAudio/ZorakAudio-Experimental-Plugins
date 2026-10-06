@@ -1,0 +1,652 @@
+[
+  {
+    "plugin": "ADS",
+    "category": "Ambience",
+    "type": "jsfx",
+    "entry": "plugins\\Ambience\\ADS\\src\\ADS.jsfx",
+    "source_sha256": "83b2f95e155751f642d7b0721636a0bf26e993ee754dfd76e1f14225cf6811f9",
+    "sections": [
+      "init",
+      "slider",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 8,
+    "faust_decision": "Candidate measured slower; retained EEL",
+    "sleep_decision": "Implemented",
+    "reason": "36 detector/gain states must be unchanged across an entirely silent source/key block; slider changes invalidate the proof."
+  },
+  {
+    "plugin": "GesturePad",
+    "category": "Control",
+    "type": "jsfx",
+    "entry": "plugins\\Control\\GesturePad\\src\\GPad.jsfx",
+    "source_sha256": "0f4ed520af389a17173e5d1c454df30cf9285c9b168697b63acd2a6169621aba",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "gfx",
+      "serialize"
+    ],
+    "calls": {
+      "midirecv": 1,
+      "midisend": 10
+    },
+    "sliders": 30,
+    "faust_decision": "No sample DSP hot loop",
+    "sleep_decision": "Withheld",
+    "reason": "Gesture playback clock, held-note release, MIDI forwarding and output events remain obligations."
+  },
+  {
+    "plugin": "IPCProbeA",
+    "category": "Control",
+    "type": "jsfx",
+    "entry": "plugins\\Control\\IPCProbeA\\src\\IPCProbeA.jsfx",
+    "source_sha256": "e0a09bb3a96535f8cebc0869296c4492510b857e32e32d9b9b0ea10983ae10ab",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "msg_recv": 1,
+      "msg_send": 1
+    },
+    "sliders": 2,
+    "faust_decision": "No useful audio migration",
+    "sleep_decision": "Withheld",
+    "reason": "IPC publication/polling and oscillator phase must continue even when output is quiet."
+  },
+  {
+    "plugin": "IPCProbeB",
+    "category": "Control",
+    "type": "jsfx",
+    "entry": "plugins\\Control\\IPCProbeB\\src\\IPCProbeB.jsfx",
+    "source_sha256": "e0a09bb3a96535f8cebc0869296c4492510b857e32e32d9b9b0ea10983ae10ab",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "msg_recv": 1,
+      "msg_send": 1
+    },
+    "sliders": 2,
+    "faust_decision": "No useful audio migration",
+    "sleep_decision": "Withheld",
+    "reason": "IPC publication/polling and oscillator phase must continue even when output is quiet."
+  },
+  {
+    "plugin": "ATTACK",
+    "category": "Dynamics",
+    "type": "jsfx",
+    "entry": "plugins\\Dynamics\\ATTACK\\src\\ATTACK.jsfx",
+    "source_sha256": "19633cede7d874c47ba42577cf55630bf157bf31cc6161be468fb8050cb9308b",
+    "sections": [
+      "init",
+      "slider",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 6,
+    "faust_decision": "Retained EEL; branch-sensitive multiband dynamics",
+    "sleep_decision": "Withheld",
+    "reason": "Reference floor/reset logic may cycle on silence; zero output does not certify unchanged internal state."
+  },
+  {
+    "plugin": "EasyExpander",
+    "category": "Dynamics",
+    "type": "jsfx",
+    "entry": "plugins\\Dynamics\\EasyExpander\\src\\EasyExpander.jsfx",
+    "source_sha256": "4d42c200f5c8ff68375e36f6ae80c97feea1dc0d8bfe32734275bd733a01f9b4",
+    "sections": [
+      "init",
+      "slider",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 5,
+    "faust_decision": "Existing EEL reference retained",
+    "sleep_decision": "Withheld",
+    "reason": "Detector filters, envelopes and sleeping-recovery differences previously demonstrated the danger of silence-only suspension."
+  },
+  {
+    "plugin": "EasyExpanderFaust",
+    "category": "Dynamics",
+    "type": "jsfx",
+    "entry": "plugins\\Dynamics\\EasyExpanderFaust\\src\\EasyExpanderFaust.jsfx",
+    "source_sha256": "faf0eff1ba2de631a767941d7ab0c291759e2331d514a83a97f4cfa350fae8bf",
+    "sections": [
+      "init",
+      "slider",
+      "faust",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 5,
+    "faust_decision": "Already migrated; hardened first-sample initialization latch",
+    "sleep_decision": "Withheld",
+    "reason": "Private detector histories continue evolving; no complete state certificate."
+  },
+  {
+    "plugin": "GTS",
+    "category": "Dynamics",
+    "type": "faust",
+    "entry": "plugins\\Dynamics\\GTS\\src\\Gaussian Transient Shaper (GTS).dsp",
+    "source_sha256": "5c5a519d2a1ef3bc467049e24e6866198a5725d85b586c869feb4820d45eecf2",
+    "sections": [],
+    "calls": {},
+    "sliders": 0,
+    "faust_decision": "Already pure FAUST",
+    "sleep_decision": "Withheld",
+    "reason": "Finite FIR history plus private smoothed controls; native pure-FAUST readiness protocol and state proof are absent."
+  },
+  {
+    "plugin": "ModTilt",
+    "category": "Dynamics",
+    "type": "faust",
+    "entry": "plugins\\Dynamics\\ModTilt\\src\\ModTilt.dsp",
+    "source_sha256": "e7ff269494acdfbae1815ccca058dd541c43c13094d4abadf0f3f4ec4fdb9b2b",
+    "sections": [],
+    "calls": {},
+    "sliders": 0,
+    "faust_decision": "Already pure FAUST",
+    "sleep_decision": "Withheld",
+    "reason": "Private envelope, baseline, pivot and gain-control followers evolve while quiet."
+  },
+  {
+    "plugin": "RED",
+    "category": "Dynamics",
+    "type": "faust",
+    "entry": "plugins\\Dynamics\\RED\\src\\Reverb Expanding Downwards (RED).dsp",
+    "source_sha256": "c72d21884c55b1419db78f4f3d11a6f9c7ce1926835986562e026f6ec36ba88b",
+    "sections": [],
+    "calls": {},
+    "sliders": 0,
+    "faust_decision": "Already pure FAUST",
+    "sleep_decision": "Withheld",
+    "reason": "Private return detector, grace/hold and attack/release histories evolve while quiet."
+  },
+  {
+    "plugin": "RTT",
+    "category": "Dynamics",
+    "type": "jsfx",
+    "entry": "plugins\\Dynamics\\RTT\\src\\Reverb Tail Tamer.jsfx",
+    "source_sha256": "61443c02446d7e2429db5486ba55bef5139de8fd19f2f080bae3fa334890cbf2",
+    "sections": [
+      "init",
+      "slider",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 8,
+    "faust_decision": "Retained EEL; multichannel tail/dynamics engine",
+    "sleep_decision": "Withheld",
+    "reason": "Eight-channel followers, grace/age/hold, permissions and gain targets continue evolving on silence."
+  },
+  {
+    "plugin": "SOMA",
+    "category": "Dynamics",
+    "type": "jsfx",
+    "entry": "plugins\\Dynamics\\SOMA\\src\\SOMA.jsfx",
+    "source_sha256": "fc3da933c731ff4bd63eeb68a365695ee38c7c6a3b52503e4ed3cf600922e550",
+    "sections": [
+      "init",
+      "slider",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "rand": 2
+    },
+    "sliders": 13,
+    "faust_decision": "Retained EEL; lookahead and modulation engine",
+    "sleep_decision": "Withheld",
+    "reason": "Delay/lookahead, detectors, limiting and continuously advancing RNG affect recovery."
+  },
+  {
+    "plugin": "ClickBeGoneSG",
+    "category": "Restoration",
+    "type": "faust",
+    "entry": "plugins\\Restoration\\ClickBeGoneSG\\src\\Click-Be-Gone (SG).dsp",
+    "source_sha256": "ce81b138c2b1cc394cfebe486bcd881e648eda08d6c7b28d32ce4f3b1adf1934",
+    "sections": [],
+    "calls": {},
+    "sliders": 0,
+    "faust_decision": "Already pure FAUST",
+    "sleep_decision": "Withheld",
+    "reason": "History, high-pass, envelope/baseline and hold state need a complete certificate."
+  },
+  {
+    "plugin": "VAR",
+    "category": "Restoration",
+    "type": "faust",
+    "entry": "plugins\\Restoration\\VAR\\src\\Vocal Air Recovery (VAR).dsp",
+    "source_sha256": "5eb25c5206dbd5bef87e0d0b7b04776b96ebd357e2c5fc85a9d513234393fc1b",
+    "sections": [],
+    "calls": {},
+    "sliders": 0,
+    "faust_decision": "Already pure FAUST",
+    "sleep_decision": "Withheld",
+    "reason": "Noise generator advances continuously; pausing changes the next noise phase as well as filter history."
+  },
+  {
+    "plugin": "3DPanner",
+    "category": "Spatialization",
+    "type": "jsfx",
+    "entry": "plugins\\Spatialization\\3DPanner\\src\\3DPanner.jsfx",
+    "source_sha256": "509bec278041623c73200d36eb6e8ca589da7406cf54b4e5163ab1cff8bfedaa",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 45,
+    "faust_decision": "Retained EEL; whole-engine port would be substantial",
+    "sleep_decision": "Withheld",
+    "reason": "Multiple delay/reverb/sparkle histories, motion, IPC and control followers need a full-state proof."
+  },
+  {
+    "plugin": "3DPannerManager",
+    "category": "Spatialization",
+    "type": "jsfx",
+    "entry": "plugins\\Spatialization\\3DPannerManager\\src\\3DPannerManager.jsfx",
+    "source_sha256": "ec9962b78ae07a373dfae0b0c72dfefdc6231a1048d78371eee6c6d023589350",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "msg_recv": 1,
+      "msg_send": 1
+    },
+    "sliders": 21,
+    "faust_decision": "Control/registry manager; no DSP hot loop",
+    "sleep_decision": "Withheld",
+    "reason": "Registry TTL, scanning, publishing and messages are ongoing obligations."
+  },
+  {
+    "plugin": "DDT",
+    "category": "Spatialization",
+    "type": "jsfx",
+    "entry": "plugins\\Spatialization\\DDT\\src\\DDT.jsfx",
+    "source_sha256": "6579259218796a7badcb5089d64e49e35a751cc84ab76be4ff709a61b88ef973",
+    "sections": [
+      "init",
+      "slider",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 9,
+    "faust_decision": "Retained EEL; no measured FAUST candidate",
+    "sleep_decision": "Implemented",
+    "reason": "Full 16384-sample stereo history must be empty; six recursive states must be exact zero-input fixed points."
+  },
+  {
+    "plugin": "DOT",
+    "category": "Spatialization",
+    "type": "jsfx",
+    "entry": "plugins\\Spatialization\\DOT\\src\\DOT.jsfx",
+    "source_sha256": "9d9e24727174388563d1fa0dad9a4198f7efb9f86ac4623e4ca4e210497648a3",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "fft": 4
+    },
+    "sliders": 8,
+    "faust_decision": "Retained EEL; dynamic FIR and RAM FFT analyzer",
+    "sleep_decision": "Withheld",
+    "reason": "Empty FIR history does not certify periodic spectrum/analyzer clock and window state."
+  },
+  {
+    "plugin": "DPT",
+    "category": "Spatialization",
+    "type": "jsfx",
+    "entry": "plugins\\Spatialization\\DPT\\src\\DPT.jsfx",
+    "source_sha256": "6f739c8ba3677f098ed7035c27e19401635b1e04929e4d724c118727fb680285",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 4,
+    "faust_decision": "Candidate speeds headphones but regresses speakers; retained EEL",
+    "sleep_decision": "Implemented",
+    "reason": "Full 8192-sample mono history must be empty; pan/naturalness and the active headphone filters must be exact floating-point fixed points."
+  },
+  {
+    "plugin": "PsychoConvolver",
+    "category": "Spatialization",
+    "type": "jsfx",
+    "entry": "plugins\\Spatialization\\PsychoConvolver\\src\\PsychoConvolver.jsfx",
+    "source_sha256": "20d124e92f0b79cabd1c66b21eeaf3ab17d321541a81f1e844e1988b438c6acb",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "fft_real": 4,
+      "file_open": 2,
+      "file_mem": 1
+    },
+    "sliders": 8,
+    "faust_decision": "Retained EEL; FFT/IR callback and RAM boundary",
+    "sleep_decision": "Withheld",
+    "reason": "Partitioned convolution tails, IR reload polling, PDC, drift and filters remain active obligations."
+  },
+  {
+    "plugin": "Roomalizer",
+    "category": "Spatialization",
+    "type": "jsfx",
+    "entry": "plugins\\Spatialization\\Roomalizer\\src\\Roomalizer.jsfx",
+    "source_sha256": "7d408fe133cf1bfddac77b08acaa581e2f9fef7a01ef94ffcb52d7e71d6cf0d2",
+    "sections": [
+      "init",
+      "slider",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 7,
+    "faust_decision": "Retained EEL; RAM delays and instance filter state",
+    "sleep_decision": "Withheld",
+    "reason": "Early/decorrelation rings, four allpass cells, wet filters, envelope and limiter need certification."
+  },
+  {
+    "plugin": "SaliencePush",
+    "category": "Spatialization",
+    "type": "jsfx",
+    "entry": "plugins\\Spatialization\\SaliencePush\\src\\SP.jsfx",
+    "source_sha256": "c0ad15d6c5a7cc888766de170d132468f65d38c65f738d86ca5f456c4d6c2691",
+    "sections": [
+      "init",
+      "slider",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 5,
+    "faust_decision": "Candidate measured slower; retained EEL",
+    "sleep_decision": "Implemented",
+    "reason": "20 detector/gain states must be unchanged across an entirely silent source/key block; slider changes invalidate the proof."
+  },
+  {
+    "plugin": "Alias",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\Alias\\src\\Alias.jsfx",
+    "source_sha256": "51d36f9779aa70b869d3eb7c685f68f93848e7c2cc7f1aaf9a346a6727220985",
+    "sections": [
+      "init",
+      "slider",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 15,
+    "faust_decision": "Retained EEL; phase-sensitive decimation engine",
+    "sleep_decision": "Withheld",
+    "reason": "Fractional sample-hold phase advances even on silence; suspension changes subsequent sample selection."
+  },
+  {
+    "plugin": "BedRock",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\BedRock\\src\\BedRock.jsfx",
+    "source_sha256": "5269c4d4c6c8a30b202c0c1a792d213aea7be0ab64631008b38cb4d3bc7cb2aa",
+    "sections": [
+      "init",
+      "slider",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "rand": 3
+    },
+    "sliders": 5,
+    "faust_decision": "Retained EEL; oscillator/pitch/RNG engine",
+    "sleep_decision": "Withheld",
+    "reason": "Suboscillator phase, pitch hold, bursts and RNG continue. Amount-zero bypass is a possible narrower future certificate, not implemented."
+  },
+  {
+    "plugin": "CMD",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\CMD\\src\\CrossMixDeclutter.jsfx",
+    "source_sha256": "32f4afcffc3ac9b44ec76a1fcd9106252d4d36bb1677f8462bb696651c5c260c",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 11,
+    "faust_decision": "Retained EEL; shared-bus policy plus band bank",
+    "sleep_decision": "Withheld",
+    "reason": "Peer polling/publication and shared policy are active; a partial bank port needs separate benchmarking."
+  },
+  {
+    "plugin": "Contour",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\Contour\\src\\Contour.jsfx",
+    "source_sha256": "a80d5a30fdce570002749010fa8f7ed8e8a318db2c819ba9c8e908f5b3ebd23f",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "file_open": 1,
+      "file_mem": 1
+    },
+    "sliders": 17,
+    "faust_decision": "Retained EEL; file/grain/delay engine",
+    "sleep_decision": "Withheld",
+    "reason": "File polling, grain RNG, feedback history and continuous detector states remain obligations."
+  },
+  {
+    "plugin": "Corpus",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\Corpus\\src\\Corpus.jsfx",
+    "source_sha256": "4c8e5efb7ad05bc2da8574b75a383e9f5a0cd989b8dd16f757ec7b09b8fbd0a0",
+    "sections": [
+      "init",
+      "serialize",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "fft": 4,
+      "midirecv": 1,
+      "file_mem": 10
+    },
+    "sliders": 64,
+    "faust_decision": "Retained optimized defer/task pipeline",
+    "sleep_decision": "Withheld",
+    "reason": "Outstanding tasks/private arenas, expiry clocks, adoption and playback obligations must all be accounted for; keep-awake veto is not a sleep grant."
+  },
+  {
+    "plugin": "ERBTilt",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\ERBTilt\\src\\ERB Tilt.jsfx",
+    "source_sha256": "8374d05703ce6543571bc49a94a65080819f41acad4984a4e7737ff853fe9fa3",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 4,
+    "faust_decision": "Migrated fixed 16-band bank",
+    "sleep_decision": "Withheld",
+    "reason": "Private detector/roughness state continues evolving on silence; no exported proof of every private state."
+  },
+  {
+    "plugin": "Sample",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\Sample\\src\\Sample.jsfx",
+    "source_sha256": "4500f593db9ebf5516508f30b9b9f018862042a9056cf636c01ac4ae25279235",
+    "sections": [
+      "init",
+      "serialize",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "fft": 4,
+      "rand": 2,
+      "midirecv": 1,
+      "midisend": 3
+    },
+    "sliders": 64,
+    "faust_decision": "Retained EEL; voice/file/task/FFT engine",
+    "sleep_decision": "Withheld",
+    "reason": "Voice queues, source analysis, hub expiry, effects tails and latency warmup need an explicit combined proof."
+  },
+  {
+    "plugin": "SpectralStabilizer",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\SpectralStabilizer\\src\\Spectral Stabilizer.jsfx",
+    "source_sha256": "1fe2978f65d3f36cff277bd55ba8377fbb5ab6de8275cb9947dee8b0d93c29a6",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 3,
+    "faust_decision": "Migrated fixed 12-band bank",
+    "sleep_decision": "Withheld",
+    "reason": "Private biquad, derivative, motion and gain histories must remain correct across silence; output silence alone is insufficient."
+  },
+  {
+    "plugin": "Texture",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\Texture\\src\\Texture.jsfx",
+    "source_sha256": "8b1097a09f96dcda4c0f05f9edfe88b0ed3688f42c978de667534246b4498f3d",
+    "sections": [
+      "init",
+      "slider",
+      "serialize",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "midirecv": 1,
+      "midisend": 1,
+      "file_open": 1,
+      "file_mem": 1
+    },
+    "sliders": 36,
+    "faust_decision": "Retained EEL; RAM granular engine",
+    "sleep_decision": "Withheld",
+    "reason": "Voice timing, RNG, MIDI, file polling, previews and automatic cycles prevent a silence-only grant."
+  },
+  {
+    "plugin": "TexturePM",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\TexturePM\\src\\TexturePM.jsfx",
+    "source_sha256": "8b3eec45a3a884765abb3080b9faddda40f6327a187f87dc5f5b625eb9270e1d",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 9,
+    "faust_decision": "Retained EEL; loaded texture/time-warp engine",
+    "sleep_decision": "Withheld",
+    "reason": "Texture phase, time-warp delay, input envelope and scope continue; missing texture still has loading/polling obligations."
+  },
+  {
+    "plugin": "TextureXY",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\TextureXY\\src\\TextureXY.jsfx",
+    "source_sha256": "c61117c1ee3af7e1bbe1852a3e98ab236d06b405a8c89ca12743666f2f3c007f",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {
+      "file_open": 1,
+      "file_mem": 1
+    },
+    "sliders": 6,
+    "faust_decision": "Retained EEL; file/grain/motion engine",
+    "sleep_decision": "Withheld",
+    "reason": "File reload polling, motion clock, spawning, RNG and voices must continue."
+  },
+  {
+    "plugin": "TSEQ",
+    "category": "Spectral",
+    "type": "jsfx",
+    "entry": "plugins\\Spectral\\TSEQ\\src\\TSEQ.jsfx",
+    "source_sha256": "5e19823fa86633a9c2d9cfbf2d16ee388b95bbd323d986efcfe93e84bfafcb50",
+    "sections": [
+      "init",
+      "slider",
+      "block",
+      "sample",
+      "gfx"
+    ],
+    "calls": {},
+    "sliders": 23,
+    "faust_decision": "Retained EEL; dynamic FIR/RAM and eco decimation",
+    "sleep_decision": "Withheld",
+    "reason": "FIR history, gate followers, eco counters/held samples, DC filtering and limiting need phase-preserving certification."
+  }
+]

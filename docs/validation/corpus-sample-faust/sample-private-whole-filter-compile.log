@@ -1,0 +1,32 @@
+before compiled
+Traceback (most recent call last):
+  File "D:\Dev\ZorakAudio-Experimental-Plugins\scripts\jsfx_faust_compiler.py", line 154, in compile_stage
+    result=subprocess.run([executable,'-lang','llvm','-double','-mdd','2147483647','-cn',name,*[item for directory in include_paths for item in ('-I',str(directory))],'-o',str(bc),str(p)],capture_output=True,text=True,env=env,timeout=120)
+  File "C:\Users\LouisJenkinsCS\AppData\Local\Python\pythoncore-3.14-64\Lib\subprocess.py", line 556, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\LouisJenkinsCS\AppData\Local\Python\pythoncore-3.14-64\Lib\subprocess.py", line 1220, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\LouisJenkinsCS\AppData\Local\Python\pythoncore-3.14-64\Lib\subprocess.py", line 1663, in _communicate
+    raise TimeoutExpired(self.args, orig_timeout)
+subprocess.TimeoutExpired: Command '['C:\\Program Files\\Faust\\bin\\faust.EXE', '-lang', 'llvm', '-double', '-mdd', '2147483647', '-cn', 'ZaFaust1_6d9863fb5e34', '-o', 'C:\\Users\\LOUISJ~1\\AppData\\Local\\Temp\\jsfx-faust-d_85pdh4\\section.bc', 'C:\\Users\\LOUISJ~1\\AppData\\Local\\Temp\\jsfx-faust-d_85pdh4\\section.dsp']' timed out after 120 seconds
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<stdin>", line 6, in <module>
+  File "D:\Dev\ZorakAudio-Experimental-Plugins\dsp_jsfx_aot.py", line 6766, in compile_jsfx_to_ir
+    return compile_pipeline_to_ir(jsfx_text, pipeline, native_gfx_prototype=native_gfx_prototype,
+                                  native_gfx_legacy=native_gfx_legacy, stream_functions=stream_functions)
+  File "D:\Dev\ZorakAudio-Experimental-Plugins\dsp_jsfx_aot.py", line 2807, in compile_pipeline_to_ir
+    faust_stages, faust_modules, faust_islands = faust_compiler.attach(sys.modules[__name__],emitter,faust_plan,faust_nodes,user_vars,faust_aliases,fn_defs) if faust_plan else ([],[],[])
+                                                 ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Dev\ZorakAudio-Experimental-Plugins\scripts\jsfx_faust_compiler.py", line 220, in attach
+    desc,module=compile_stage(stage,known,aliases,include_paths=plan.get('include_paths',()));descriptors.append(desc);modules.append(module)
+                ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Dev\ZorakAudio-Experimental-Plugins\scripts\jsfx_faust_compiler.py", line 156, in compile_stage
+    raise ValueError('@faust at line %d exceeded the 120-second build limit '
+    ...<2 lines>...
+                     (stage['line'], len(imported), len(exports))) from exc
+ValueError: @faust at line 297 exceeded the 120-second build limit (inferred imports=30, scalar exports=0). Reduce or partition this expression graph; no replacement DSP was generated.

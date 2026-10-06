@@ -114,6 +114,5 @@ The renewed audit changes Sample's assessment: its private-state block EQ is dem
 
 Corpus's export reduction removes avoidable work and preserves tested rendering, but meaningful block execution requires a broader boundary design. Keep its production implementation until that design is compiled, its actual block call counts are verified, and complete audio plus meter/continuity/reset comparisons pass. Neither plugin should be classified as inherently unsuitable for FAUST on the basis of the earlier candidates.
 '''
-(out/'Corpus-Sample-Revised-Audit.md').write_text(text,encoding='utf-8');(r/'docs/Corpus-Sample-Revised-Audit.md').write_text(text,encoding='utf-8');shutil.copyfile(base/'privatefull-compile.log',dest/'sample-private-whole-filter-compile.log')
-p=r/'docs/Corpus-Sample-Faust-Integration-Audit.md';p.write_text(p.read_text(encoding='utf-8')+'\n> Revised audit: [Corpus-Sample-Revised-Audit.md](Corpus-Sample-Revised-Audit.md) measures private-state block EQ and export-pruned Corpus. The earlier Sample bridge regression is not a verdict on a coherent block implementation.\n',encoding='utf-8')
+(out/'Corpus-Sample-Revised-Audit.md').write_text(text,encoding='utf-8');(dest/'historical-revised-audit.txt').write_text(text,encoding='utf-8');shutil.copyfile(base/'privatefull-compile.log',dest/'sample-private-whole-filter-compile.log')
 print('Saved revised audit and measurements; production hashes unchanged.')

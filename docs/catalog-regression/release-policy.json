@@ -1,0 +1,20 @@
+{
+  "joep": {
+    "command": "python scripts/build.py --only joep_bandjoiner --config Release (no native flag)",
+    "legacy": true,
+    "object_sha256": "5f3d6baaa53614ba4bc176c88a26cfec08702157aabaefd2f335fca8fd8edecc",
+    "artifacts": {
+      "joep_bandjoiner_artefacts/Release/CLAP/joep_bandjoiner.clap": "92f040e000ac8b80a3fda335bede14dab2dcb639682e06204ed461c3d93f8477",
+      "joep_bandjoiner_artefacts/Release/VST3/joep_bandjoiner.vst3/Contents/x86_64-linux/joep_bandjoiner.so": "50272c351ebb7c2908f884f481ad9ebff73bdd675b214cb32a7754164a4bdaaa"
+    }
+  },
+  "faust": {
+    "command": "python scripts/build.py --only GTS --native-gfx-legacy --config Release",
+    "legacy": false,
+    "artifacts": {
+      "GTS_artefacts/Release/VST3/GTS.vst3/Contents/x86_64-linux/GTS.so": "59075b8ac6a388487ba05f5bff99ba5b250e8c5036b2b76e816d1c4108763881",
+      "GTS_artefacts/Release/CLAP/GTS.clap": "19ca22a7483aa004c35b8b4baf42a7819a3ce6551fa514d1525eea07fa856c1d"
+    },
+    "recovery": "Initial link had an empty cached JUCE GUI object. Deleting it and rebuilding completed both wrappers; cause of empty object undetermined."
+  }
+}

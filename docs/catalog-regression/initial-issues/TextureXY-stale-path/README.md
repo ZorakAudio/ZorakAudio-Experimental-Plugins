@@ -1,0 +1,1 @@
+The baseline GUI path contained 5508 green pixels, 4777 outside the dragged path bounds. point_count is UI-owned and cannot be checked through the DSP publication snapshot. The visible fan still reveals real stale heap overwrites.

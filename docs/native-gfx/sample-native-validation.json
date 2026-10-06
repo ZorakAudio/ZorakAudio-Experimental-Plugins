@@ -1,0 +1,40 @@
+{
+  "base_commit": "7b6c120c8f9042d22c8003c88efa61175934cf7a",
+  "sample_source_sha256": "4500f593db9ebf5516508f30b9b9f018862042a9056cf636c01ac4ae25279235",
+  "native_helpers": 68,
+  "indexed_reads": 31,
+  "indexed_writes": 0,
+  "published_scalars": 116,
+  "dsp_command_variables": 1,
+  "compiler_tests": 19,
+  "numeric_comparisons": 10,
+  "native_actual_editor": [
+    "PASS native Sample editor: bank=3; MIDI peak=0.0591894; canvas mode edit; Color/Harmonics automation; log; resize; 2 lifetimes; blocks=391 frames=126 logical_heap_cells=747826 snapshot_cells=1412 snapshot_capacity_cells=66944 publication_mean_ms=0.0197967 publication_max_ms=0.286 gestures=2/2",
+    "PASS 4 simultaneous native Sample editors: cycles=103 total_publication_capacity_cells=803328 publication_mean_ms=0.0153571 publication_max_ms=0.028"
+  ],
+  "eel_actual_editor": [
+    "PASS EEL Sample editor: bank=3; MIDI peak=0.0591894; canvas mode edit; Color/Harmonics automation; log; resize; 2 lifetimes; blocks=202 frames=43 logical_heap_cells=747826 snapshot_cells=747826 snapshot_capacity_cells=2844978 publication_mean_ms=0.889673 publication_max_ms=5.036 gestures=0/0"
+  ],
+  "drawing_parity": [
+    "1380x760 state=0 commands=3317 mismatched_pixels=0 nonblack=1048800 text_pixels=13361",
+    "2070x1140 state=0 commands=5197 mismatched_pixels=0 nonblack=2359800 text_pixels=13361",
+    "PASS native strings/input/gesture/memory-boundary contracts",
+    "PASS native AOT @gfx prototype"
+  ],
+  "max_cells_per_slot": 66944,
+  "slots_per_instance": 3,
+  "builds": [
+    "Linux x86-64 VST3",
+    "Linux x86-64 CLAP"
+  ],
+  "build_test_diagnostics_enabled": true,
+  "not_validated": [
+    "Actual DAW loading and state restoration",
+    "Windows/macOS builds",
+    "Maximum 16384-file bank profiling"
+  ],
+  "easy_actual_editor": [
+    "Threshold parameter: Threshold (dB)",
+    "PASS actual JUCE native editor: 4 lifetimes; control + host automation; resize; re-prepare + idle rendering; zero heap snapshot storage; audio_blocks=217 native_frames=63"
+  ]
+}

@@ -1,0 +1,83 @@
+-- Checking for modules 'webkit2gtk-4.0;gtk+-x11-3.0'
+--   Package 'webkit2gtk-4.0', required by 'virtual:world', not found
+--   Package 'gtk+-x11-3.0', required by 'virtual:world', not found
+-- Configuring juceaide
+-- Building juceaide
+-- Exporting juceaide
+-- Testing juceaide
+-- Finished setting up juceaide
+-- Building CLAP with CLAP_CXX_STANDARD=17
+-- CLAP version: 1.2.0
+CMake Warning (policy) at /workspace/scratch/286141ad5a40/repo-checkout/libs/clap-juce-extensions/clap-libs/clap-helpers/CMakeLists.txt:90 (install):
+  Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+  "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+  command to set the policy and suppress this warning.
+This warning is for project developers.  Use -Wno-author or -Wno-policy to
+suppress it.
+
+-- Using FAUST_CMD=/workspace/scratch/286141ad5a40/recovery-deps/faust-local/bin/faust
+-- Creating CLAP GTS_CLAP from GTS
+-- Setting Misbehaviour handler level to 'Ignore'
+-- Setting Checking handler level to 'Minimal'
+-- Setting event resolution to 0 samples (no sample-accurate automation)
+-- Setting "Always split block" to OFF
+-- Setting "Use JUCE parameter ranges" to OFF
+-- Configuring done (0.6s)
+-- Generating done (0.0s)
+-- Build files have been written to: /workspace/scratch/286141ad5a40/repo-checkout/build/linux/GTS
+[0/2] Re-checking globbed directories...
+[1/6] Building CXX object CMakeFiles/GTS.dir/workspace/scratch/286141ad5a40/repo-checkout/src/FaustJuceProcessor.cpp.o
+In file included from /workspace/scratch/286141ad5a40/repo-checkout/src/FaustJuceProcessor.cpp:6:
+/workspace/scratch/286141ad5a40/repo-checkout/build/linux/GTS/FaustDSP.h: In static member function ‘static void mydsp::classInit(int)’:
+/workspace/scratch/286141ad5a40/repo-checkout/build/linux/GTS/FaustDSP.h:101:35: warning: unused parameter ‘sample_rate’ [-Wunused-parameter]
+  101 |         static void classInit(int sample_rate) {
+      |                               ~~~~^~~~~~~~~~~
+In file included from /workspace/scratch/286141ad5a40/repo-checkout/src/FaustJuceProcessor.cpp:7:
+/workspace/scratch/286141ad5a40/repo-checkout/src/PluginMarkdownHelp.h: In function ‘juce::Font za::pluginui::pickSansFont(float)’:
+/workspace/scratch/286141ad5a40/repo-checkout/src/PluginMarkdownHelp.h:52:30: warning: ‘juce::Font::Font(float, int)’ is deprecated: Use the constructor that takes a FontOptions argument [-Wdeprecated-declarations]
+   52 |     return juce::Font (height);
+      |                              ^
+In file included from /workspace/scratch/286141ad5a40/repo-checkout/libs/JUCE/modules/juce_graphics/juce_graphics.h:141,
+                 from /workspace/scratch/286141ad5a40/repo-checkout/libs/JUCE/modules/juce_gui_basics/juce_gui_basics.h:68,
+                 from /workspace/scratch/286141ad5a40/repo-checkout/libs/JUCE/modules/juce_gui_extra/juce_gui_extra.h:68,
+                 from /workspace/scratch/286141ad5a40/repo-checkout/libs/JUCE/modules/juce_audio_processors/juce_audio_processors.h:65,
+                 from /workspace/scratch/286141ad5a40/repo-checkout/src/FaustJuceProcessor.cpp:2:
+/workspace/scratch/286141ad5a40/repo-checkout/libs/JUCE/modules/juce_graphics/fonts/juce_Font.h:77:5: note: declared here
+   77 |     Font (float fontHeight, int styleFlags = plain);
+      |     ^~~~
+/workspace/scratch/286141ad5a40/repo-checkout/src/PluginMarkdownHelp.h: In function ‘juce::Font za::pluginui::pickMonoFont(float)’:
+/workspace/scratch/286141ad5a40/repo-checkout/src/PluginMarkdownHelp.h:58:50: warning: ‘juce::Font::Font(const juce::String&, float, int)’ is deprecated: Use the constructor that takes a FontOptions argument [-Wdeprecated-declarations]
+   58 |     juce::Font f (name, height, juce::Font::plain);
+      |                                                  ^
+/workspace/scratch/286141ad5a40/repo-checkout/libs/JUCE/modules/juce_graphics/fonts/juce_Font.h:89:5: note: declared here
+   89 |     Font (const String& typefaceName, float fontHeight, int styleFlags);
+      |     ^~~~
+/workspace/scratch/286141ad5a40/repo-checkout/src/PluginMarkdownHelp.h:62:49: warning: ‘juce::Font::Font(float, int)’ is deprecated: Use the constructor that takes a FontOptions argument [-Wdeprecated-declarations]
+   62 |     return juce::Font (height, juce::Font::plain);
+      |                                                 ^
+/workspace/scratch/286141ad5a40/repo-checkout/libs/JUCE/modules/juce_graphics/fonts/juce_Font.h:77:5: note: declared here
+   77 |     Font (float fontHeight, int styleFlags = plain);
+      |     ^~~~
+/workspace/scratch/286141ad5a40/repo-checkout/src/PluginMarkdownHelp.h: In constructor ‘za::pluginui::MarkdownDocumentComponent::LayoutItem::LayoutItem()’:
+/workspace/scratch/286141ad5a40/repo-checkout/src/PluginMarkdownHelp.h:167:12: warning: ‘juce::Font::Font()’ is deprecated: Use the constructor that takes a FontOptions argument [-Wdeprecated-declarations]
+  167 |     struct LayoutItem
+      |            ^~~~~~~~~~
+/workspace/scratch/286141ad5a40/repo-checkout/libs/JUCE/modules/juce_graphics/fonts/juce_Font.h:111:5: note: declared here
+  111 |     Font();
+      |     ^~~~
+/workspace/scratch/286141ad5a40/repo-checkout/src/PluginMarkdownHelp.h: In member function ‘void za::pluginui::MarkdownDocumentComponent::ensureLayout(int)’:
+/workspace/scratch/286141ad5a40/repo-checkout/src/PluginMarkdownHelp.h:715:32: note: synthesized method ‘za::pluginui::MarkdownDocumentComponent::LayoutItem::LayoutItem()’ first required here
+  715 |                     LayoutItem item;
+      |                                ^~~~
+[2/6] Building CXX object CMakeFiles/GTS.dir/workspace/scratch/286141ad5a40/repo-checkout/libs/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.o
+[3/6] Linking CXX static library GTS_artefacts/Release/libGTS_SharedCode.a
+[4/6] Linking CXX shared module GTS_artefacts/Release/VST3/GTS.vst3/Contents/x86_64-linux/GTS.so
+removing moduleinfo.json
+creating /workspace/scratch/286141ad5a40/repo-checkout/build/linux/GTS/GTS_artefacts/Release/VST3/GTS.vst3
+[5/6] Linking CXX shared module GTS_artefacts/Release/CLAP/GTS.clap
+
+=== Building Gaussian Transient Shaper (GTS) (GTS) ===
++ cmake -S /workspace/scratch/286141ad5a40/repo-checkout/cmake/plugin -B /workspace/scratch/286141ad5a40/repo-checkout/build/linux/GTS -DZA_ROOT=/workspace/scratch/286141ad5a40/repo-checkout -DPLUGIN_NAME=Gaussian Transient Shaper (GTS) -DPLUGIN_SLUG=GTS -DPLUGIN_CODE=GTS1 -DMANUFACTURER_NAME=ZorakAudio -DMANUFACTURER_CODE=Zrak -DBUNDLE_ID=com.zorakaudio.experimental.gts -DPLUGIN_VERSION=0.0.0 -DPLUGIN_TYPE=faust -DPLUGIN_DSP=/workspace/scratch/286141ad5a40/repo-checkout/plugins/Dynamics/GTS/src/Gaussian Transient Shaper (GTS).dsp -DPLUGIN_JSFX_OBJ= -DPLUGIN_KIND=audio_effect -DPLUGIN_IS_SYNTH=OFF -DPLUGIN_NEEDS_MIDI_INPUT=OFF -DPLUGIN_NEEDS_MIDI_OUTPUT=OFF -DPLUGIN_IS_MIDI_EFFECT=OFF -DZA_JSFX_CORRECTNESS_CHECK=OFF -DZA_NATIVE_GFX_LEGACY=OFF -DZA_ENABLE_CLAP=ON -DCLAP_ID=com.zorakaudio.experimental.gts -DCLAP_FEATURES=audio-effect -G Ninja -DCMAKE_BUILD_TYPE=Release
++ cmake --build /workspace/scratch/286141ad5a40/repo-checkout/build/linux/GTS --config Release
+Packed: ZorakAudio-Experimental-Plugins-faust-catalog-check-linux.zip
+Done. Output: /workspace/scratch/286141ad5a40/catalog-release/faust-catalog-check/linux

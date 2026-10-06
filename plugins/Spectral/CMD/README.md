@@ -128,3 +128,22 @@ The somatic engine is intentionally bounded:
 - Saturation is subtle and unipolar.
 - No pitch, delay-time, Haas, or phase modulation is used in this version.
 
+## Native FAUST integration
+
+Native CMD builds now use `src/CrossMixDeclutterFaust.jsfx`. This preserves the
+original variable 8–24-band cascaded ERB filterbank, detector/block sums, original
+smoothing and sample-rate breathing, shared-bus cadence, roles, TurnPulse,
+width and saturation. The original `src/CrossMixDeclutter.jsfx` remains unchanged
+for stock JSFX and as the qualification reference. No CMD Flow simplification
+is installed. Native product/parameter identities are preserved.
+
+FAUST runs the original audio engine once per full buffer; JSFX retains policy,
+coefficient setup and the original canvas. LEGACY native graphics matches the
+qualification fixture. Tests cover interacting instances, extreme controls,
+all supported band counts and live band transitions, with numerical differences
+below 3e-14. See `docs/CMD-Original-FAUST-Integration.md` for exact benchmark scope
+and results. This is tested numerical equivalence, not a universal bit-exact proof.
+
+The redesigned CMD Flow experiment has been archived outside the plugin catalog
+under `tests/faust/experiments/CMDFlow`. Stock REAPER does not implement @faust;
+use the unchanged original JSFX there, or the native CLAP/VST3 build for this port.

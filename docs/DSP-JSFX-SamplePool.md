@@ -87,4 +87,15 @@ These copy pool audio into JSFX double `mem[]`. They are explicit, expensive com
 
 ## GFX rule
 
-`@gfx` should use metadata and previews, not raw full-resolution reads. The current lightweight GFX VM gets compatibility stubs for compilation. Plugin UIs should display state mirrored from DSP or future preview APIs rather than scanning gigabytes of sample data.
+`@gfx` should display metadata/previews mirrored from DSP or a declared native
+publication contract rather than scanning full-resolution PCM. DSP accessors
+`sample_preview_bins(pool, id)` and
+`sample_preview_read(pool, id, bin, minimum, maximum, rms)` expose prepared
+preview data; they do not authorize direct sample-pool calls from GFX.
+
+## Deferred generation adoption
+
+`sample_pool_set_deferred(pool, 1)` holds a completed worker generation for
+script-controlled adoption. Call `sample_pool_adopt(pool)` from an allowed
+setup section (`@init`, `@slider` or `@block`), normally at a block-safe model
+boundary. Validate generation-dependent descriptors whenever the pool changes.

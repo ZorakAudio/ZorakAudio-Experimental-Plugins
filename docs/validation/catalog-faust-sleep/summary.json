@@ -1,0 +1,920 @@
+{
+  "recording_sha256": "1f44c88399234d13891fb9bd29eac84108262334c7e041111dabc89267c7e8c5",
+  "recording_duration_seconds": 609.989,
+  "catalog_count": 34,
+  "measured_faust_candidates": [
+    "ERBTilt",
+    "SpectralStabilizer",
+    "ADS",
+    "SaliencePush",
+    "DPT"
+  ],
+  "full_recording": {
+    "ERBTilt": {
+      "before": {
+        "idle_mode": 4,
+        "offline": true,
+        "sleep_blocks": 0,
+        "sample_rate": 48000,
+        "block_size": 256,
+        "frames": 29279468,
+        "wall_seconds_with_output_dump": 58.0745,
+        "processBlock_seconds": 42.4718,
+        "max_callback_ms": 2.0569,
+        "callbacks": 114373,
+        "peak": 0.47914,
+        "dsp_faults": 0,
+        "gfx_faults": 0,
+        "editor_and_rate_reset_passed": true
+      },
+      "after": {
+        "idle_mode": 4,
+        "offline": true,
+        "sleep_blocks": 0,
+        "sample_rate": 48000,
+        "block_size": 256,
+        "frames": 29279468,
+        "wall_seconds_with_output_dump": 24.4283,
+        "processBlock_seconds": 15.7052,
+        "max_callback_ms": 1.1273,
+        "callbacks": 114373,
+        "peak": 0.47914,
+        "dsp_faults": 0,
+        "gfx_faults": 0,
+        "editor_and_rate_reset_passed": true
+      },
+      "speedup": 2.7043144945623108,
+      "samples": 58558936,
+      "different": 3919,
+      "maximum_error": 5.551115123125783e-17,
+      "rms_error": 7.280940364608707e-21
+    },
+    "SpectralStabilizer": {
+      "before": {
+        "idle_mode": 4,
+        "offline": true,
+        "sleep_blocks": 0,
+        "sample_rate": 48000,
+        "block_size": 256,
+        "frames": 29279468,
+        "wall_seconds_with_output_dump": 83.517,
+        "processBlock_seconds": 66.413,
+        "max_callback_ms": 3.5469,
+        "callbacks": 114373,
+        "peak": 0.450427,
+        "dsp_faults": 0,
+        "gfx_faults": 0,
+        "editor_and_rate_reset_passed": true
+      },
+      "after": {
+        "idle_mode": 4,
+        "offline": true,
+        "sleep_blocks": 0,
+        "sample_rate": 48000,
+        "block_size": 256,
+        "frames": 29279468,
+        "wall_seconds_with_output_dump": 26.3121,
+        "processBlock_seconds": 17.7605,
+        "max_callback_ms": 3.8462,
+        "callbacks": 114373,
+        "peak": 0.450427,
+        "dsp_faults": 0,
+        "gfx_faults": 0,
+        "editor_and_rate_reset_passed": true
+      },
+      "speedup": 3.7393654457926293,
+      "samples": 58558936,
+      "different": 107,
+      "maximum_error": 1.862645149230957e-09,
+      "rms_error": 3.068585056351874e-13
+    }
+  },
+  "sleep": {
+    "ADS": {
+      "active_timings": [
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 48000,
+            "block_size": 64,
+            "frames": 1920000,
+            "median_seconds": 0.574224,
+            "ns_per_frame": 299.075
+          },
+          "after": {
+            "sample_rate": 48000,
+            "block_size": 64,
+            "frames": 1920000,
+            "median_seconds": 0.587933,
+            "ns_per_frame": 306.215
+          },
+          "speedup": 0.9766827172483938,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        },
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 48000,
+            "block_size": 256,
+            "frames": 1920000,
+            "median_seconds": 0.582024,
+            "ns_per_frame": 303.137
+          },
+          "after": {
+            "sample_rate": 48000,
+            "block_size": 256,
+            "frames": 1920000,
+            "median_seconds": 0.57653,
+            "ns_per_frame": 300.276
+          },
+          "speedup": 1.009529426048948,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        },
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 96000,
+            "block_size": 1024,
+            "frames": 3840000,
+            "median_seconds": 1.15162,
+            "ns_per_frame": 299.901
+          },
+          "after": {
+            "sample_rate": 96000,
+            "block_size": 1024,
+            "frames": 3840000,
+            "median_seconds": 1.15675,
+            "ns_per_frame": 301.237
+          },
+          "speedup": 0.9955651610114546,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        }
+      ],
+      "host_tests": [
+        {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "mode": 0,
+          "sleep_blocks": 17522,
+          "awake_seconds": 2.7305,
+          "cooperative_seconds": 1.03437,
+          "savings_percent": 62.11792711957518,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "mode": 1,
+          "sleep_blocks": 17522,
+          "awake_seconds": 2.70241,
+          "cooperative_seconds": 1.02695,
+          "savings_percent": 61.99873446294233,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "mode": 0,
+          "sleep_blocks": 8825,
+          "awake_seconds": 4.82553,
+          "cooperative_seconds": 1.40467,
+          "savings_percent": 70.89086587380038,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "mode": 1,
+          "sleep_blocks": 8825,
+          "awake_seconds": 4.77489,
+          "cooperative_seconds": 1.40469,
+          "savings_percent": 70.58173067861249,
+          "exact_null": true
+        }
+      ]
+    },
+    "SaliencePush": {
+      "active_timings": [
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 48000,
+            "block_size": 64,
+            "frames": 1920000,
+            "median_seconds": 0.256315,
+            "ns_per_frame": 133.497
+          },
+          "after": {
+            "sample_rate": 48000,
+            "block_size": 64,
+            "frames": 1920000,
+            "median_seconds": 0.267124,
+            "ns_per_frame": 139.127
+          },
+          "speedup": 0.9595356463664816,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        },
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 48000,
+            "block_size": 256,
+            "frames": 1920000,
+            "median_seconds": 0.252675,
+            "ns_per_frame": 131.602
+          },
+          "after": {
+            "sample_rate": 48000,
+            "block_size": 256,
+            "frames": 1920000,
+            "median_seconds": 0.272235,
+            "ns_per_frame": 141.789
+          },
+          "speedup": 0.9281503113119179,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        },
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 96000,
+            "block_size": 1024,
+            "frames": 3840000,
+            "median_seconds": 0.531474,
+            "ns_per_frame": 138.405
+          },
+          "after": {
+            "sample_rate": 96000,
+            "block_size": 1024,
+            "frames": 3840000,
+            "median_seconds": 0.523629,
+            "ns_per_frame": 136.362
+          },
+          "speedup": 1.0149819815174483,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        }
+      ],
+      "host_tests": [
+        {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "mode": 0,
+          "sleep_blocks": 22498,
+          "awake_seconds": 1.20301,
+          "cooperative_seconds": 0.27234,
+          "savings_percent": 77.3617841913201,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "mode": 1,
+          "sleep_blocks": 22498,
+          "awake_seconds": 1.20052,
+          "cooperative_seconds": 0.276981,
+          "savings_percent": 76.9282477593043,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "mode": 0,
+          "sleep_blocks": 11248,
+          "awake_seconds": 2.09991,
+          "cooperative_seconds": 0.231228,
+          "savings_percent": 88.98867094304042,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "mode": 1,
+          "sleep_blocks": 11248,
+          "awake_seconds": 2.08324,
+          "cooperative_seconds": 0.226595,
+          "savings_percent": 89.12295270828133,
+          "exact_null": true
+        }
+      ]
+    },
+    "DPT": {
+      "active_timings": [
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 48000,
+            "block_size": 64,
+            "frames": 1920000,
+            "median_seconds": 0.120973,
+            "ns_per_frame": 63.0069
+          },
+          "after": {
+            "sample_rate": 48000,
+            "block_size": 64,
+            "frames": 1920000,
+            "median_seconds": 0.125006,
+            "ns_per_frame": 65.1075
+          },
+          "speedup": 0.9677375485976673,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        },
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 48000,
+            "block_size": 256,
+            "frames": 1920000,
+            "median_seconds": 0.119963,
+            "ns_per_frame": 62.4806
+          },
+          "after": {
+            "sample_rate": 48000,
+            "block_size": 256,
+            "frames": 1920000,
+            "median_seconds": 0.118989,
+            "ns_per_frame": 61.9737
+          },
+          "speedup": 1.0081856306045096,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        },
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 96000,
+            "block_size": 1024,
+            "frames": 3840000,
+            "median_seconds": 0.237664,
+            "ns_per_frame": 61.8917
+          },
+          "after": {
+            "sample_rate": 96000,
+            "block_size": 1024,
+            "frames": 3840000,
+            "median_seconds": 0.232119,
+            "ns_per_frame": 60.4478
+          },
+          "speedup": 1.0238886088601105,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        }
+      ],
+      "host_tests": [
+        {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "mode": 0,
+          "sleep_blocks": 5871,
+          "awake_seconds": 0.0821264,
+          "cooperative_seconds": 0.0712275,
+          "savings_percent": 13.270884879892463,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "mode": 1,
+          "sleep_blocks": 5871,
+          "awake_seconds": 0.122529,
+          "cooperative_seconds": 0.079412,
+          "savings_percent": 35.18922051106269,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "mode": 0,
+          "sleep_blocks": 1467,
+          "awake_seconds": 0.0409971,
+          "cooperative_seconds": 0.0306527,
+          "savings_percent": 25.23202860690146,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "mode": 1,
+          "sleep_blocks": 1467,
+          "awake_seconds": 0.0798921,
+          "cooperative_seconds": 0.0398792,
+          "savings_percent": 50.083675357137935,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 1024,
+          "mode": 0,
+          "sleep_blocks": 365,
+          "awake_seconds": 0.030862,
+          "cooperative_seconds": 0.0192949,
+          "savings_percent": 37.480072581167775,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 1024,
+          "mode": 1,
+          "sleep_blocks": 365,
+          "awake_seconds": 0.0766471,
+          "cooperative_seconds": 0.03158,
+          "savings_percent": 58.79818023121553,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 64,
+          "mode": 0,
+          "sleep_blocks": 11871,
+          "awake_seconds": 0.159563,
+          "cooperative_seconds": 0.138228,
+          "savings_percent": 13.370894254933797,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 64,
+          "mode": 1,
+          "sleep_blocks": 11871,
+          "awake_seconds": 0.254251,
+          "cooperative_seconds": 0.164188,
+          "savings_percent": 35.4228695265702,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 256,
+          "mode": 0,
+          "sleep_blocks": 2967,
+          "awake_seconds": 0.0775336,
+          "cooperative_seconds": 0.0560249,
+          "savings_percent": 27.741134166348512,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 256,
+          "mode": 1,
+          "sleep_blocks": 2967,
+          "awake_seconds": 0.166014,
+          "cooperative_seconds": 0.078573,
+          "savings_percent": 52.670859084173614,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "mode": 0,
+          "sleep_blocks": 740,
+          "awake_seconds": 0.0590502,
+          "cooperative_seconds": 0.0374669,
+          "savings_percent": 36.55076528106594,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "mode": 1,
+          "sleep_blocks": 740,
+          "awake_seconds": 0.147084,
+          "cooperative_seconds": 0.0551509,
+          "savings_percent": 62.503807348181994,
+          "exact_null": true
+        }
+      ]
+    },
+    "DDT": {
+      "active_timings": [
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 48000,
+            "block_size": 64,
+            "frames": 1920000,
+            "median_seconds": 0.79425,
+            "ns_per_frame": 413.672
+          },
+          "after": {
+            "sample_rate": 48000,
+            "block_size": 64,
+            "frames": 1920000,
+            "median_seconds": 0.818122,
+            "ns_per_frame": 426.105
+          },
+          "speedup": 0.9708209778003769,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        },
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 48000,
+            "block_size": 256,
+            "frames": 1920000,
+            "median_seconds": 0.815973,
+            "ns_per_frame": 424.986
+          },
+          "after": {
+            "sample_rate": 48000,
+            "block_size": 256,
+            "frames": 1920000,
+            "median_seconds": 0.814554,
+            "ns_per_frame": 424.247
+          },
+          "speedup": 1.0017420576168061,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        },
+        {
+          "scenario": 0,
+          "before": {
+            "sample_rate": 96000,
+            "block_size": 1024,
+            "frames": 3840000,
+            "median_seconds": 1.63039,
+            "ns_per_frame": 424.581
+          },
+          "after": {
+            "sample_rate": 96000,
+            "block_size": 1024,
+            "frames": 3840000,
+            "median_seconds": 1.61818,
+            "ns_per_frame": 421.401
+          },
+          "speedup": 1.0075455140960834,
+          "maximum_sample_error": 0.0,
+          "different_samples": 0
+        }
+      ],
+      "host_tests": [
+        {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "mode": 0,
+          "sleep_blocks": 5743,
+          "awake_seconds": 0.564141,
+          "cooperative_seconds": 0.303817,
+          "savings_percent": 46.1452012883304,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "mode": 1,
+          "sleep_blocks": 5743,
+          "awake_seconds": 0.865997,
+          "cooperative_seconds": 0.510067,
+          "savings_percent": 41.10060427461064,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "mode": 0,
+          "sleep_blocks": 1435,
+          "awake_seconds": 0.453246,
+          "cooperative_seconds": 0.191658,
+          "savings_percent": 57.71435379462808,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "mode": 1,
+          "sleep_blocks": 1435,
+          "awake_seconds": 0.726483,
+          "cooperative_seconds": 0.38248,
+          "savings_percent": 47.351830669127835,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 1024,
+          "mode": 0,
+          "sleep_blocks": 357,
+          "awake_seconds": 0.412186,
+          "cooperative_seconds": 0.163584,
+          "savings_percent": 60.313062549431564,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 48000,
+          "block_size": 1024,
+          "mode": 1,
+          "sleep_blocks": 357,
+          "awake_seconds": 0.712518,
+          "cooperative_seconds": 0.370211,
+          "savings_percent": 48.04187402984906,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 64,
+          "mode": 0,
+          "sleep_blocks": 11743,
+          "awake_seconds": 1.07808,
+          "cooperative_seconds": 0.570049,
+          "savings_percent": 47.123682843573754,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 64,
+          "mode": 1,
+          "sleep_blocks": 11743,
+          "awake_seconds": 1.69297,
+          "cooperative_seconds": 0.977446,
+          "savings_percent": 42.26442287813724,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 256,
+          "mode": 0,
+          "sleep_blocks": 2935,
+          "awake_seconds": 0.877012,
+          "cooperative_seconds": 0.361795,
+          "savings_percent": 58.746858651877055,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 256,
+          "mode": 1,
+          "sleep_blocks": 2935,
+          "awake_seconds": 1.47478,
+          "cooperative_seconds": 0.755933,
+          "savings_percent": 48.742659922157884,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "mode": 0,
+          "sleep_blocks": 732,
+          "awake_seconds": 0.830498,
+          "cooperative_seconds": 0.314618,
+          "savings_percent": 62.1169466994502,
+          "exact_null": true
+        },
+        {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "mode": 1,
+          "sleep_blocks": 732,
+          "awake_seconds": 1.40136,
+          "cooperative_seconds": 0.697036,
+          "savings_percent": 50.26003311069247,
+          "exact_null": true
+        }
+      ]
+    }
+  },
+  "rejected_faust": {
+    "ADS": [
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "frames": 192000,
+          "median_seconds": 0.0599063,
+          "ns_per_frame": 312.012
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "frames": 192000,
+          "median_seconds": 0.0852453,
+          "ns_per_frame": 443.986
+        },
+        "speedup": 0.702751940576196,
+        "maximum_sample_error": 3.4887343645095825e-06,
+        "different_samples": 188695
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "frames": 192000,
+          "median_seconds": 0.0562129,
+          "ns_per_frame": 292.776
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "frames": 192000,
+          "median_seconds": 0.0838917,
+          "ns_per_frame": 436.936
+        },
+        "speedup": 0.6700650958318881,
+        "maximum_sample_error": 3.4887343645095825e-06,
+        "different_samples": 188695
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "frames": 384000,
+          "median_seconds": 0.11281,
+          "ns_per_frame": 293.777
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "frames": 384000,
+          "median_seconds": 0.160974,
+          "ns_per_frame": 419.203
+        },
+        "speedup": 0.7007964019034129,
+        "maximum_sample_error": 3.939494490623474e-06,
+        "different_samples": 377901
+      }
+    ],
+    "SaliencePush": [
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "frames": 192000,
+          "median_seconds": 0.0263005,
+          "ns_per_frame": 136.982
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "frames": 192000,
+          "median_seconds": 0.0395591,
+          "ns_per_frame": 206.037
+        },
+        "speedup": 0.6648407066894849,
+        "maximum_sample_error": 1.3232231140136719e-05,
+        "different_samples": 191122
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "frames": 192000,
+          "median_seconds": 0.0258044,
+          "ns_per_frame": 134.398
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "frames": 192000,
+          "median_seconds": 0.0400413,
+          "ns_per_frame": 208.548
+        },
+        "speedup": 0.6444446109392052,
+        "maximum_sample_error": 1.3232231140136719e-05,
+        "different_samples": 191122
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "frames": 384000,
+          "median_seconds": 0.0548164,
+          "ns_per_frame": 142.751
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "frames": 384000,
+          "median_seconds": 0.078264,
+          "ns_per_frame": 203.812
+        },
+        "speedup": 0.7004037616273127,
+        "maximum_sample_error": 1.3841316103935242e-05,
+        "different_samples": 382332
+      }
+    ],
+    "DPT": [
+      {
+        "scenario": 0,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "frames": 192000,
+          "median_seconds": 0.0034728,
+          "ns_per_frame": 18.0875
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "frames": 192000,
+          "median_seconds": 0.0058792,
+          "ns_per_frame": 30.6208
+        },
+        "speedup": 0.5906926112396244,
+        "maximum_sample_error": 0.0,
+        "different_samples": 0
+      },
+      {
+        "scenario": 1,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "frames": 192000,
+          "median_seconds": 0.0104773,
+          "ns_per_frame": 54.5693
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "frames": 192000,
+          "median_seconds": 0.0061896,
+          "ns_per_frame": 32.2375
+        },
+        "speedup": 1.6927265089828099,
+        "maximum_sample_error": 0.0,
+        "different_samples": 0
+      },
+      {
+        "scenario": 0,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "frames": 192000,
+          "median_seconds": 0.0024583,
+          "ns_per_frame": 12.8036
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "frames": 192000,
+          "median_seconds": 0.0054639,
+          "ns_per_frame": 28.4578
+        },
+        "speedup": 0.44991672614798955,
+        "maximum_sample_error": 0.0,
+        "different_samples": 0
+      },
+      {
+        "scenario": 1,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "frames": 192000,
+          "median_seconds": 0.0101425,
+          "ns_per_frame": 52.8255
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "frames": 192000,
+          "median_seconds": 0.0056892,
+          "ns_per_frame": 29.6313
+        },
+        "speedup": 1.7827638332278704,
+        "maximum_sample_error": 0.0,
+        "different_samples": 0
+      },
+      {
+        "scenario": 0,
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "frames": 384000,
+          "median_seconds": 0.0045104,
+          "ns_per_frame": 11.7458
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "frames": 384000,
+          "median_seconds": 0.0120945,
+          "ns_per_frame": 31.4961
+        },
+        "speedup": 0.37292984414403246,
+        "maximum_sample_error": 0.0,
+        "different_samples": 0
+      },
+      {
+        "scenario": 1,
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "frames": 384000,
+          "median_seconds": 0.0195555,
+          "ns_per_frame": 50.9258
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "frames": 384000,
+          "median_seconds": 0.0112624,
+          "ns_per_frame": 29.3292
+        },
+        "speedup": 1.7363528200028413,
+        "maximum_sample_error": 0.0,
+        "different_samples": 0
+      }
+    ]
+  }
+}

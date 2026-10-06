@@ -17,4 +17,4 @@ The existing V7.1.2 source has no manager IPC implementation. This variant conse
 
 This is a separate native VST3/CLAP identity; installing it does not replace 3DPanner. The embedded source requires this repository's compiler and FAUST LLVM at build time, and is not stock REAPER JSFX. Use `python scripts/build.py --only HyperrealFaust` to build it.
 
-Maintained DSP: `tests/faust/panner_renderer.dsp`. Recreate the interaction-shell integration with `python tests/faust/panner_candidates.py`, then requalify it. The generator checks integration boundaries. See [the audit](../../../docs/Hyperreal-Panner-Variants.md) for measurements and tested limits. Numerical checks do not establish subjective localization quality; audition it on headphones.
+Maintained DSP: `tests/faust/panner_renderer.dsp`. Recreate the interaction-shell integration with `python tests/faust/panner_candidates.py`, then requalify it. The generator checks integration boundaries. See [the audit](../../../docs/Hyperreal-Panner.md) for measurements and tested limits. Numerical checks do not establish subjective localization quality; audition it on headphones.

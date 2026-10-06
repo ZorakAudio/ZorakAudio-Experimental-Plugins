@@ -2,6 +2,11 @@
 
 # ZorakAudio Experimental Plugins
 
+Start with the [consolidated DSP-JSFX guide](docs/DSP-JSFX-Guide.md) for the current
+FAUST interface, background tasks, sample pools, communication, graphics, sleep,
+and differences from stock JSFX. Historical qualification reports document their
+tested configurations; the guide links the current contracts.
+
 ZorakAudio Experimental Plugins is a category-organized repository for building, validating, packaging, and shipping a growing catalog of experimental audio tools.
 
 This repo is not a single-plugin project and it is not a loose pile of prototypes. It is a shared plugin platform where DSP-JSFX, Faust, JUCE, CMake, per-plugin metadata, embedded markdown help, and automated packaging all work together.
@@ -98,10 +103,10 @@ before build or staging directories are changed.
 See [native package coverage and qualification](docs/JoepVanlier-Native-Compatibility.md).
 See [non-Joep catalog regression coverage](docs/Plugin-Catalog-Regression.md).
 
-The scalable JSFX validation path is the built-in **WDL/EEL2 shadow runtime** enabled with `--correctness-check`:
+For eligible ordinary JSFX, the validation path is the built-in **WDL/EEL2 shadow runtime** enabled with `--correctness-check`:
 
 ```bash
-python scripts/build.py --config Release --tag dev --out dist --correctness-check
+python scripts/build.py --only DDT --config Release --tag dev --out dist --correctness-check
 ```
 
 Target a single plugin when needed:
@@ -110,7 +115,9 @@ Target a single plugin when needed:
 python scripts/build.py --config Release --tag dev --out dist --only DDT --correctness-check
 ```
 
-That mode checks the compiled DSP-JSFX path against a WDL/EEL2 reference execution path. This repo is no longer documented around the legacy REAPER/AHK null-test workflow.
+That mode checks eligible ordinary DSP-JSFX against a WDL/EEL2 reference.
+FAUST-mixed, task-enabled and native Legacy selections reject the shadow monitor;
+use their dedicated fixtures and paired processor comparisons. This repo is no longer documented around the legacy REAPER/AHK null-test workflow.
 
 ## Documentation model
 
@@ -133,15 +140,8 @@ Good next places to look:
 - `scripts/build.py`
 - `scripts/new_plugin.py`
 
-## Release-note intent for this pass
+## Platform references
 
-This documentation pass is focused on:
-
-- syncing plugin READMEs to the current upstream JSFX and Faust sources
-- cleaning up category indexes so they match the actual tree
-- removing the outdated DSP-JSFX REAPER null-test workflow from CI
-- drafting a release note for the next catalog refresh
-
-Embedded `@faust` sections are supported in the JSFX AOT path. See [the mixed-section interface](docs/JSFX-Faust-Sections.md) and [EasyExpander Faust](plugins/Dynamics/EasyExpanderFaust/README.md) for the motivating example and profiling workflow.
-
-Plugin sleep now requires an explicit per-block grant: see [Cooperative Sleep](docs/Cooperative-Sleep.md).
+Use the [documentation index](docs/README.md) to distinguish current API contracts,
+product decisions and fingerprinted qualification checkpoints. The
+[consolidated guide](docs/DSP-JSFX-Guide.md) is the starting point.

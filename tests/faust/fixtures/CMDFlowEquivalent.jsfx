@@ -1,0 +1,1244 @@
+desc:CMD Flow - Cooperative Mix Engine (FAUST)
+
+// Cross-Mix Somatic Bus (CMD v4 TurnPulse Manifold)
+// One global shared bus for now. Drop on every related track.
+// Engine A: ERB/gammatone declutter driven by the shared TurnPulse salience phase.
+// Engine B: bounded psychoacoustic somatic injection from peer bus motion.
+// Engine C: shared JND-width TurnPulse / piston ordering with bounded prediction error.
+//
+// String-bus integration hook:
+//   All bus identity is isolated to the two endpoint strings in @init:
+//     msg_subscribe / msg_advertise / msg_recv / msg_send channel
+//     gmem_attach_size namespace
+//   Replace those with your resolved user string when you add typed bus support.
+//   No user-facing bus names are hard-coded in this DSP file.
+
+options:idle=always
+options:gfx_hz=30
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+// #TOOLTIP: Role controls how this layer drives and receives the shared somatic/declutter bus.
+slider1:0<0,7,1{Neutral,Lead,Body,Wet Detail,Impact,Ambience,Sub/Weight,Air/Tingle}>Role
+// #TOOLTIP: One macro for ERB declutter strength, turn-taking ownership, tuck amount, and bus coupling. Higher = stronger shared salience choreography.
+slider2:55<0,100,1>Manifold (%)
+// #TOOLTIP: Cross-actor psychoacoustic modulation amount. Higher values make this layer breathe more with peer activity.
+slider3:35<0,100,1>Somatic (%)
+// #TOOLTIP: Shared piston cycle rate. Instances on the same Bus Name average this value into one bus clock.
+slider4:1.20<0.05,8,0.01>TurnPulse Rate (Hz)
+// #TOOLTIP: Bounded prediction error. Raises chances of adjacent piston swaps, while preventing random soup.
+slider5:18<0,100,1>Prediction Error (%)
+// #TOOLTIP: Coordinated width-piston amount. Capped below +/-1% M/S width for barely-JND salience tagging.
+slider6:0.50<0,0.95,0.01>Width JND (%)
+// #TOOLTIP: Band activity floor. Raise to ignore room tone/noise; lower for subtle sustained material.
+slider7:-46<-80,-12,1>Activity Floor (dB)
+// #TOOLTIP: Higher values clamp somatic movement more tightly. Lower values allow more obvious modulation.
+slider8:70<0,100,1>Safety Governor (%)
+// #TOOLTIP: Final output trim after declutter and somatic processing.
+slider9:0<-12,12,0.1>Output Trim (dB)
+// #TOOLTIP: Bus namespace. Instances with the same bus name share gmem state and the same TurnPulse manifold.
+slider10:#bus_name="ZorakAudio.CMSB.Global"<string>Bus Name
+// #TOOLTIP: Number of ERB bands processed. Lower values reduce CPU across large sessions.
+slider11:12<12,12,1>-Fixed 12-band engine
+
+@init
+function clamp(x, lo, hi) (
+  x < lo ? lo : (x > hi ? hi : x);
+);
+
+function sanitize(x, fallback) (
+  (x == x) && (abs(x) < 1000000000) ? x : fallback;
+);
+
+function active_norm(e, scale) local(x) (
+  x = e / floor_energy - 1;
+  x < 0 ? x = 0;
+  clamp(x / scale, 0, 1);
+);
+
+function erb_from_hz(f) (
+  21.4 * log(0.00437 * f + 1) * inv_ln10;
+);
+
+function hz_from_erb(e) (
+  (exp((e / 21.4) * ln10) - 1) / 0.00437;
+);
+
+function erb_bandwidth_hz(f) (
+  24.7 * (0.00437 * f + 1);
+);
+
+function band_weight(f, center, width_oct) local(d) (
+  d = log(max(f, 1) / center) * inv_ln2;
+  exp(-(d * d) / max(width_oct * width_oct, 0.0001));
+);
+
+function setup_from_sliders() (
+  role_id = floor(slider1 + 0.5);
+  role_id = clamp(role_id, ROLE_NEUTRAL, ROLE_TINGLE);
+
+  manifold_amt = clamp(slider2 * 0.01, 0, 1);
+  depth_amt = manifold_amt;
+  somatic_amt = clamp(slider3 * 0.01, 0, 1);
+
+  // TurnPulse uses percent-of-width input converted to M/S side-gain delta.
+  // slider6 max is 0.95%, so the pulse stays below +/-1% by construction.
+  piston_rate = clamp(slider4, 0.05, 8);
+  piston_surprise = clamp(slider5 * 0.01, 0, 1);
+  piston_depth = clamp(slider6 * 0.01, 0, JND_WIDTH_LIMIT);
+  piston_tuck = clamp(0.25 + 0.55 * manifold_amt + 0.15 * piston_surprise, 0.20, 0.92);
+
+  floor_energy = exp(2 * slider7 * db2lin);
+  floor_energy < 0.000000000001 ? floor_energy = 0.000000000001;
+  floor_amp = sqrt(floor_energy);
+
+  safety_amt = clamp(slider8 * 0.01, 0, 1);
+  out_gain = exp(slider9 * db2lin);
+
+  // Priority/order controls are now internal. The shared TurnPulse phase is the main owner/yield driver.
+  priority_weight = 1;
+  role_id == ROLE_LEAD ? priority_weight = 1.10;
+  role_id == ROLE_BODY ? priority_weight = 1.04;
+  role_id == ROLE_WET ? priority_weight = 1.00;
+  role_id == ROLE_IMPACT ? priority_weight = 1.08;
+  role_id == ROLE_AMBIENCE ? priority_weight = 0.88;
+  role_id == ROLE_SUB ? priority_weight = 0.96;
+  role_id == ROLE_TINGLE ? priority_weight = 0.92;
+
+  // Fairness remains only as a low-level backstop so the phase engine, not a focus knob, drives ownership.
+  fairness_amt = clamp(0.14 + 0.42 * manifold_amt, 0, 1);
+  fairness_weight = 0.34 * fairness_amt;
+
+  // Removed user-facing Max Cut / Release / Influence controls; the manifold derives them.
+  max_cut_db = 2.0 + 10.0 * manifold_amt * (1 - 0.18 * safety_amt);
+  release_ms = 80 + 170 * safety_amt + 60 * (1 - manifold_amt);
+
+  influence_out = clamp(0.25 + 0.75 * manifold_amt, 0, 1);
+  influence_in = clamp(0.25 + 0.75 * manifold_amt, 0, 1);
+
+  active_nb = 12;
+  width_cap = (0.035 + 0.130 * (1 - safety_amt)) * somatic_amt * influence_in;
+  sat_cap = (0.030 + 0.180 * (1 - safety_amt)) * somatic_amt * influence_in;
+);
+
+function build_filterbank() local(i nyq fmax erb_min erb_max erb_step erb_c fc_i bw q w0 sinw cosw alpha a0i) (
+  work_srate = srate;
+  work_srate < 1000 ? work_srate = 48000;
+
+  nyq = work_srate * 0.5;
+  fmax = 20000;
+  fmax > nyq * 0.94 ? fmax = nyq * 0.94;
+  fmax < 200 ? fmax = 200;
+
+  erb_min = erb_from_hz(50);
+  erb_max = erb_from_hz(fmax);
+  active_nb < 1 ? active_nb = 12;
+  active_nb > NB ? active_nb = NB;
+  erb_step = (erb_max - erb_min) / active_nb;
+
+  i = 0;
+  while (i < NB) (
+    i < active_nb ? (
+      erb_c = erb_min + (i + 0.5) * erb_step;
+      fc_i = i==0 ? 40 : (i==11 ? 20000 : 80*200^((i-.5)/10));
+      fc_i = clamp(fc_i, 30, fmax);
+
+      bw = erb_bandwidth_hz(fc_i);
+      q = fc_i / (bw * 1.12);
+      q = clamp(q, 0.30, 14.0);
+
+      w0 = 2 * pi * fc_i / work_srate;
+      w0 > pi * 0.98 ? w0 = pi * 0.98;
+
+      sinw = sin(w0);
+      cosw = cos(w0);
+      alpha = sinw / (2 * q);
+      a0i = 1 + alpha;
+
+      fc[i] = fc_i;
+      b0c[i] = alpha / a0i;
+      b2c[i] = -alpha / a0i;
+      a1c[i] = (-2 * cosw) / a0i;
+      a2c[i] = (1 - alpha) / a0i;
+    ) : (
+      fc[i] = 0;
+      b0c[i] = 0;
+      b2c[i] = 0;
+      a1c[i] = 0;
+      a2c[i] = 0;
+      env[i] = 0;
+      accum[i] = 0;
+      targetCut[i] = 0;
+      smoothCut[i] = 0;
+      credit[i] = 0;
+      targetSom[i] = 0;
+      smoothSom[i] = 0;
+    );
+
+    i += 1;
+  );
+
+  need_filter_rebuild = 0;
+
+  cut_smooth = 1 - exp(-1 / (0.030 * work_srate));
+  som_smooth = 1 - exp(-1 / (0.055 * work_srate));
+  width_smooth = 1 - exp(-1 / (0.090 * work_srate));
+  sat_smooth = 1 - exp(-1 / (0.070 * work_srate));
+  fast_env_coeff = 1 - exp(-1 / (0.006 * work_srate));
+  breath_base_inc = 2 * pi / work_srate;
+
+  last_srate = work_srate;
+);
+
+function clear_own_slot() (
+  my_slot_base >= 0 ? (
+    gmem[my_slot_base + SLOT_ID] == iid ? (
+      gmem[my_slot_base + SLOT_ID] = 0;
+      gmem[my_slot_base + SLOT_HB] = 0;
+    );
+  );
+  my_slot = -1;
+  my_slot_base = -1;
+);
+
+function ensure_bus_header() (
+  ((gmem[BUS_MAGIC] != MAGIC) || (gmem[BUS_VERSION] != VERSION)) ? (
+    gmem_zero(0, GMEM_SIZE);
+    gmem[BUS_MAGIC] = MAGIC;
+    gmem[BUS_VERSION] = VERSION;
+    gmem[BUS_TICK] = 0;
+    gmem[BUS_PISTON_PHASE] = 0;
+    gmem[BUS_PISTON_CYCLE] = 0;
+    gmem[BUS_PISTON_SEED] = 0;
+  );
+
+  tick = gmem[BUS_TICK] + 1;
+  tick < 1 ? tick = 1;
+  gmem[BUS_TICK] = tick;
+);
+
+function allocate_slot() local(i sb sid hb stale fallback) (
+  my_slot >= 0 ? (
+    sb = BUS_HEADER + my_slot * SLOT_STRIDE;
+    gmem[sb + SLOT_ID] == iid ? (
+      my_slot_base = sb;
+    ) : (
+      my_slot = -1;
+      my_slot_base = -1;
+    );
+  );
+
+  my_slot < 0 ? (
+    i = 0;
+    while (i < MAX_SLOTS) (
+      sb = BUS_HEADER + i * SLOT_STRIDE;
+      gmem[sb + SLOT_ID] == iid ? (
+        my_slot = i;
+        my_slot_base = sb;
+        i = MAX_SLOTS;
+      );
+      i += 1;
+    );
+  );
+
+  my_slot < 0 ? (
+    i = 0;
+    while (i < MAX_SLOTS) (
+      sb = BUS_HEADER + i * SLOT_STRIDE;
+      sid = gmem[sb + SLOT_ID];
+      hb = gmem[sb + SLOT_HB];
+      stale = (sid <= 0) || ((tick - hb) > STALE_TICKS);
+      stale ? (
+        my_slot = i;
+        my_slot_base = sb;
+        i = MAX_SLOTS;
+      );
+      i += 1;
+    );
+  );
+
+  my_slot < 0 ? (
+    fallback = iid - floor(iid / MAX_SLOTS) * MAX_SLOTS;
+    fallback < 0 ? fallback = 0;
+    fallback >= MAX_SLOTS ? fallback = MAX_SLOTS - 1;
+    my_slot = fallback;
+    my_slot_base = BUS_HEADER + my_slot * SLOT_STRIDE;
+  );
+
+  gmem[my_slot_base + SLOT_ID] = iid;
+);
+
+function drain_messages() (
+  // Message traffic is disabled in the CMD hot path.
+  // gmem SLOT_HB/SLOT_ID already provides heartbeat/discovery.
+  msg_seen = 0;
+);
+
+function update_band_envs() local(i e coeff invblock atk rel) (
+  work_srate = srate;
+  work_srate < 1000 ? work_srate = 48000;
+
+  invblock = 1 / max(samplesblock, 1);
+  atk = 1 - exp(-samplesblock / (0.010 * work_srate));
+  rel = 1 - exp(-samplesblock / ((release_ms * 0.001) * work_srate));
+
+  i = 0;
+  while (i < active_nb) (
+    e = accum[i] * invblock;
+    accum[i] = 0;
+    e = sanitize(e, 0);
+    coeff = e > env[i] ? atk : rel;
+    env[i] += coeff * (e - env[i]);
+    env[i] < 0 ? env[i] = 0;
+    i += 1;
+  );
+);
+
+function update_motion_envs() local(invblock totalE lowE contactE viscE onsetN thrustN pressureRaw contactRaw viscRaw arousalRaw fatigueRaw coeffFast coeffSlow coeffFat roleSendScale) (
+  invblock = 1 / max(samplesblock, 1);
+
+  totalE = total_accum * invblock;
+  lowE = low_accum * invblock;
+  contactE = contact_accum * invblock;
+  viscE = visc_accum * invblock;
+
+  onsetN = onset_accum * invblock / max(floor_amp, 0.000001);
+  onsetN = clamp(onsetN * 0.35, 0, 1);
+
+  pressureRaw = active_norm(lowE, 10);
+  contactRaw = clamp(0.55 * active_norm(contactE, 14) + 0.45 * onsetN, 0, 1);
+  thrustN = clamp(onsetN * 1.35 + active_norm(totalE, 22) * 0.20, 0, 1);
+  viscRaw = clamp(active_norm(viscE, 12) * (1 - 0.35 * thrustN), 0, 1);
+  arousalRaw = active_norm(totalE, 18);
+  fatigueRaw = clamp(arousalRaw * (1 - thrustN) * (0.45 + 0.55 * viscRaw), 0, 1);
+
+  coeffFast = 1 - exp(-samplesblock / (0.060 * work_srate));
+  coeffSlow = 1 - exp(-samplesblock / (0.450 * work_srate));
+  coeffFat = 1 - exp(-samplesblock / (1.750 * work_srate));
+
+  local_pressure += coeffFast * (pressureRaw - local_pressure);
+  local_contact += coeffFast * (contactRaw - local_contact);
+  local_viscosity += coeffSlow * (viscRaw - local_viscosity);
+  local_thrust += coeffFast * (thrustN - local_thrust);
+  local_arousal += coeffSlow * (arousalRaw - local_arousal);
+  local_fatigue += coeffFat * (fatigueRaw - local_fatigue);
+
+  // Role send emphasis: the role changes how strongly this layer participates in the bus,
+  // not which bus it belongs to.
+  roleSendScale = 1;
+  role_id == ROLE_LEAD ? roleSendScale = 0.60;
+  role_id == ROLE_IMPACT ? roleSendScale = 1.20;
+  role_id == ROLE_AMBIENCE ? roleSendScale = 0.70;
+  role_id == ROLE_SUB ? roleSendScale = 1.10;
+
+  local_send_weight = clamp(influence_out * roleSendScale, 0, 1.5);
+
+  total_accum = 0;
+  low_accum = 0;
+  contact_accum = 0;
+  visc_accum = 0;
+  onset_accum = 0;
+);
+
+function scan_active_slots() local(j sb sid hb stale rateVal surpriseVal sumRate sumSurprise) (
+  active_instances = 0;
+  my_rank = 0;
+  leader_slot = -1;
+  sumRate = 0;
+  sumSurprise = 0;
+
+  j = 0;
+  while (j < MAX_SLOTS) (
+    sb = BUS_HEADER + j * SLOT_STRIDE;
+    sid = gmem[sb + SLOT_ID];
+    hb = gmem[sb + SLOT_HB];
+    stale = (sid <= 0) || ((tick - hb) > STALE_TICKS);
+
+    !stale ? (
+      leader_slot < 0 ? leader_slot = j;
+      j < my_slot ? my_rank += 1;
+      active_instances += 1;
+
+      rateVal = gmem[sb + SLOT_PISTON_RATE];
+      rateVal <= 0 ? rateVal = piston_rate;
+      sumRate += clamp(rateVal, 0.05, 8);
+
+      surpriseVal = gmem[sb + SLOT_PISTON_SURPRISE];
+      sumSurprise += clamp(surpriseVal, 0, 1);
+    );
+
+    j += 1;
+  );
+
+  active_instances > 0 ? (
+    bus_piston_rate = sumRate / active_instances;
+    bus_piston_surprise = sumSurprise / active_instances;
+  ) : (
+    active_instances = 1;
+    my_rank = 0;
+    leader_slot = my_slot;
+    bus_piston_rate = piston_rate;
+    bus_piston_surprise = piston_surprise;
+  );
+);
+
+function compute_declutter_targets() local(i j sb sid hb stale ownE ownAct ownScore peerE peerC peerP peerAct peerGate score topScore topAct topId pressure activity overlap desired decay turn_rate pubBase turnWeight ownGate scoreMul yieldScale) (
+  scan_active_slots();
+
+  turnWeight = clamp(0.95 * manifold_amt, 0, 0.95);
+  ownGate = clamp(pistonGate, -1, 1);
+
+  i = 0;
+  while (i < active_nb) (
+    ownE = env[i];
+    ownAct = ownE / floor_energy - 1;
+    ownAct < 0 ? ownAct = 0;
+    ownAct = clamp(ownAct, 0, 1000000);
+
+    // The same TurnPulse manifold that widens this layer also biases ERB ownership.
+    // Active piston: higher ownership score. Inactive piston: lower ownership score.
+    scoreMul = clamp(1 + turnWeight * ownGate, 0.30, 2.10);
+    ownScore = ownAct * priority_weight * scoreMul * (1 + credit[i] * fairness_weight);
+
+    topScore = ownScore;
+    topAct = ownAct;
+    topId = iid;
+
+    j = 0;
+    while (j < MAX_SLOTS) (
+      sb = BUS_HEADER + j * SLOT_STRIDE;
+      sid = gmem[sb + SLOT_ID];
+      hb = gmem[sb + SLOT_HB];
+      stale = (sid <= 0) || ((tick - hb) > STALE_TICKS);
+
+      (!stale) && (sid != iid) ? (
+        peerE = gmem[sb + SLOT_BANDS + i];
+        peerC = gmem[sb + SLOT_BANDS + NB + i];
+        peerP = gmem[sb + SLOT_PRIO];
+        peerP <= 0 ? peerP = 1;
+        peerGate = clamp(gmem[sb + SLOT_PISTON_GATE], -1, 1);
+
+        peerAct = peerE / floor_energy - 1;
+        peerAct < 0 ? peerAct = 0;
+        peerAct = clamp(peerAct, 0, 1000000);
+
+        scoreMul = clamp(1 + turnWeight * peerGate, 0.30, 2.10);
+        score = peerAct * peerP * scoreMul * (1 + clamp(peerC, 0, 4) * fairness_weight);
+
+        ((score > topScore + 0.0000001) || ((abs(score - topScore) <= 0.0000001) && (sid < topId))) ? (
+          topScore = score;
+          topAct = peerAct;
+          topId = sid;
+        );
+      );
+
+      j += 1;
+    );
+
+    desired = 0;
+    ((active_instances > 1) && (ownAct > 0.0001) && (topId != iid) && (topScore > 0.0001)) ? (
+      pressure = (topScore - ownScore) / (topScore + ownScore + 0.0000001);
+      pressure = clamp(pressure, 0, 1);
+
+      activity = ownAct / (ownAct + 1);
+      overlap = topAct / (topAct + ownAct + 0.0000001);
+      desired = manifold_amt * max_cut_coeff * pressure * activity * (0.45 + 0.55 * overlap);
+
+      // Same firing pattern also shapes yield amount:
+      // active layers resist cuts; inactive layers tuck harder.
+      yieldScale = 1 + 0.78 * turnWeight * max(-ownGate, 0) - 0.48 * turnWeight * max(ownGate, 0);
+      desired *= clamp(yieldScale, 0.35, 1.75);
+      desired = clamp(desired, 0, 0.92);
+    );
+
+    targetCut[i] = desired;
+
+    turn_rate = 0.0012 + 0.010 * fairness_amt;
+
+    ownAct > 0.0001 ? (
+      topId == iid ? (
+        decay = 0.025 + 0.090 * fairness_amt;
+        credit[i] *= (1 - decay);
+      ) : (
+        pressure = (topScore - ownScore) / (topScore + ownScore + 0.0000001);
+        pressure = clamp(pressure, 0, 1);
+        credit[i] += turn_rate * (0.25 + pressure);
+      );
+    ) : (
+      credit[i] *= 0.965;
+    );
+
+    credit[i] = clamp(credit[i], 0, 4);
+
+    pubBuf[i] = env[i];
+    pubBuf[NB + i] = credit[i];
+
+    i += 1;
+  );
+
+  i = active_nb;
+  while (i < NB) (
+    targetCut[i] = 0;
+    credit[i] *= 0.965;
+    pubBuf[i] = 0;
+    pubBuf[NB + i] = 0;
+    i += 1;
+  );
+
+  pubBase = my_slot_base + SLOT_BANDS;
+  gmem_put(pubBase, pubBuf, NB2);
+);
+
+function publish_slot() (
+  gmem[my_slot_base + SLOT_ID] = iid;
+  gmem[my_slot_base + SLOT_HB] = tick;
+  gmem[my_slot_base + SLOT_SEQ] = seq;
+  gmem[my_slot_base + SLOT_ROLE] = role_id;
+  gmem[my_slot_base + SLOT_PRIO] = priority_weight;
+  gmem[my_slot_base + SLOT_DEPTH] = depth_amt;
+  gmem[my_slot_base + SLOT_DROP] = 0;
+  gmem[my_slot_base + SLOT_SEND] = local_send_weight;
+  gmem[my_slot_base + SLOT_RECV] = influence_in;
+  gmem[my_slot_base + SLOT_PRESSURE] = local_pressure;
+  gmem[my_slot_base + SLOT_CONTACT] = local_contact;
+  gmem[my_slot_base + SLOT_VISCOSITY] = local_viscosity;
+  gmem[my_slot_base + SLOT_THRUST] = local_thrust;
+  gmem[my_slot_base + SLOT_AROUSAL] = local_arousal;
+  gmem[my_slot_base + SLOT_FATIGUE] = local_fatigue;
+  gmem[my_slot_base + SLOT_PISTON_DEPTH] = piston_depth;
+  gmem[my_slot_base + SLOT_PISTON_RATE] = piston_rate;
+  gmem[my_slot_base + SLOT_PISTON_SURPRISE] = piston_surprise;
+  gmem[my_slot_base + SLOT_PISTON_PULSE] = pistonPulse;
+  gmem[my_slot_base + SLOT_PISTON_GATE] = pistonGate;
+);
+
+function compute_peer_bus() local(j sb sid hb stale w sumW p c v t a f rawP rawC rawV rawT rawA rawF busCoeff) (
+  sumW = 0;
+  rawP = 0; rawC = 0; rawV = 0; rawT = 0; rawA = 0; rawF = 0;
+  active_peer_instances = 0;
+
+  j = 0;
+  while (j < MAX_SLOTS) (
+    sb = BUS_HEADER + j * SLOT_STRIDE;
+    sid = gmem[sb + SLOT_ID];
+    hb = gmem[sb + SLOT_HB];
+    stale = (sid <= 0) || ((tick - hb) > STALE_TICKS);
+
+    (!stale) && (sid != iid) ? (
+      w = gmem[sb + SLOT_SEND];
+      w <= 0 ? w = 0;
+      p = clamp(gmem[sb + SLOT_PRESSURE], 0, 1);
+      c = clamp(gmem[sb + SLOT_CONTACT], 0, 1);
+      v = clamp(gmem[sb + SLOT_VISCOSITY], 0, 1);
+      t = clamp(gmem[sb + SLOT_THRUST], 0, 1);
+      a = clamp(gmem[sb + SLOT_AROUSAL], 0, 1);
+      f = clamp(gmem[sb + SLOT_FATIGUE], 0, 1);
+
+      rawP += p * w;
+      rawC += c * w;
+      rawV += v * w;
+      rawT += t * w;
+      rawA += a * w;
+      rawF += f * w;
+      sumW += w;
+      active_peer_instances += 1;
+    );
+
+    j += 1;
+  );
+
+  sumW > 0 ? (
+    rawP /= sumW;
+    rawC /= sumW;
+    rawV /= sumW;
+    rawT /= sumW;
+    rawA /= sumW;
+    rawF /= sumW;
+  ) : (
+    rawP = 0; rawC = 0; rawV = 0; rawT = 0; rawA = 0; rawF = 0;
+  );
+
+  busCoeff = 1 - exp(-samplesblock / (0.090 * work_srate));
+  bus_pressure += busCoeff * (rawP - bus_pressure);
+  bus_contact += busCoeff * (rawC - bus_contact);
+  bus_viscosity += busCoeff * (rawV - bus_viscosity);
+  bus_thrust += busCoeff * (rawT - bus_thrust);
+  bus_arousal += busCoeff * (rawA - bus_arousal);
+  bus_fatigue += busCoeff * (rawF - bus_fatigue);
+);
+
+function role_band_drive(f) local(wLow wBody wDetail wAir p c v t a fatigue drive) (
+  wLow = band_weight(f, 120, 1.25);
+  wBody = band_weight(f, 430, 1.45);
+  wDetail = band_weight(f, 2600, 1.30);
+  wAir = band_weight(f, 8500, 1.20);
+
+  p = bus_pressure;
+  c = bus_contact;
+  v = bus_viscosity;
+  t = bus_thrust;
+  a = bus_arousal;
+  fatigue = bus_fatigue;
+
+  drive = 0;
+
+  role_id == ROLE_NEUTRAL ? (
+    drive = 0.23 * p * wBody + 0.20 * c * wDetail + 0.16 * v * wAir + 0.16 * t * (wLow + wDetail) - 0.20 * fatigue * wAir;
+  );
+
+  role_id == ROLE_LEAD ? (
+    drive = 0.10 * p * wBody - 0.22 * c * wDetail - 0.14 * v * wBody - 0.12 * fatigue * wAir;
+  );
+
+  role_id == ROLE_BODY ? (
+    drive = 0.34 * p * wBody + 0.27 * t * wLow + 0.12 * c * wDetail + 0.09 * v * wBody - 0.16 * fatigue * wAir;
+  );
+
+  role_id == ROLE_WET ? (
+    drive = 0.34 * c * wDetail + 0.25 * v * (wBody + wAir) + 0.18 * t * wAir - 0.16 * p * wLow - 0.30 * fatigue * wAir;
+  );
+
+  role_id == ROLE_IMPACT ? (
+    drive = 0.24 * t * (wLow + wBody) + 0.18 * c * wDetail - 0.12 * fatigue * wAir;
+  );
+
+  role_id == ROLE_AMBIENCE ? (
+    drive = -0.32 * a * wDetail - 0.26 * p * wBody + 0.20 * v * wAir - 0.25 * fatigue * wAir;
+  );
+
+  role_id == ROLE_SUB ? (
+    drive = 0.42 * p * wLow + 0.18 * t * wLow - 0.18 * c * wAir - 0.12 * a * wDetail;
+  );
+
+  role_id == ROLE_TINGLE ? (
+    drive = 0.40 * c * wAir + 0.20 * t * wDetail - 0.44 * fatigue * wAir - 0.15 * a * wAir;
+  );
+
+  drive;
+);
+
+function compute_somatic_targets() local(i raw target cap wmod satDesired recvScale) (
+  compute_peer_bus();
+
+  recvScale = somatic_amt * influence_in;
+  active_peer_instances <= 0 ? recvScale = 0;
+
+  i = 0;
+  while (i < active_nb) (
+    raw = role_band_drive(fc[i]);
+    cap = band_somatic_cap;
+    target = clamp(raw * recvScale, -cap, cap);
+
+    // Fatigue narrows positive high-band excitation before it becomes abrasive.
+    fc[i] > 4500 ? (
+      target > 0 ? target *= (1 - 0.55 * bus_fatigue);
+    );
+
+    targetSom[i] = target;
+    i += 1;
+  );
+
+  i = active_nb;
+  while (i < NB) (
+    targetSom[i] = 0;
+    smoothSom[i] *= 0.995;
+    i += 1;
+  );
+
+  wmod = 0;
+  role_id == ROLE_NEUTRAL ? wmod = 0.035 * bus_contact + 0.030 * bus_viscosity - 0.020 * bus_fatigue;
+  role_id == ROLE_LEAD ? wmod = -0.018 * bus_arousal;
+  role_id == ROLE_BODY ? wmod = 0.025 * bus_thrust - 0.020 * bus_fatigue;
+  role_id == ROLE_WET ? wmod = 0.060 * bus_contact + 0.035 * bus_thrust - 0.025 * bus_fatigue;
+  role_id == ROLE_IMPACT ? wmod = -0.030 * bus_arousal;
+  role_id == ROLE_AMBIENCE ? wmod = 0.095 * bus_viscosity + 0.070 * bus_arousal - 0.050 * bus_pressure;
+  role_id == ROLE_SUB ? wmod = -0.110 * (bus_pressure + 0.5 * bus_arousal);
+  role_id == ROLE_TINGLE ? wmod = 0.050 * bus_contact - 0.080 * bus_fatigue;
+
+  targetWidth = clamp(wmod * recvScale, -width_cap, width_cap);
+
+  satDesired = 0;
+  role_id == ROLE_BODY ? satDesired = 0.30 * bus_pressure + 0.18 * bus_thrust;
+  role_id == ROLE_WET ? satDesired = 0.18 * bus_viscosity + 0.12 * bus_contact;
+  role_id == ROLE_IMPACT ? satDesired = 0.24 * bus_thrust + 0.12 * bus_pressure;
+  role_id == ROLE_SUB ? satDesired = 0.32 * bus_pressure;
+  role_id == ROLE_TINGLE ? satDesired = 0.10 * bus_contact * (1 - bus_fatigue);
+  role_id == ROLE_AMBIENCE ? satDesired = 0.06 * bus_viscosity;
+  role_id == ROLE_LEAD ? satDesired = 0.04 * bus_pressure;
+  role_id == ROLE_NEUTRAL ? satDesired = 0.10 * bus_arousal;
+
+  targetSat = clamp(satDesired * recvScale, 0, sat_cap);
+);
+
+function hash01(x) local(y) (
+  y = sin((x + 1.2345) * 12.9898 + gmem[BUS_PISTON_SEED] * 78.233) * 43758.5453123;
+  y - floor(y);
+);
+
+function piston_curve(u) local(p) (
+  p = 0;
+  u < 0 ? u = 0;
+  u > 1 ? u = 1;
+
+  u < 0.18 ? (
+    p = u / 0.18;
+  ) : (
+    u < 0.34 ? (
+      p = 1;
+    ) : (
+      p = exp(-5.2 * (u - 0.34) / 0.66);
+    );
+  );
+
+  clamp(p, 0, 1);
+);
+
+function compute_turnpulse_target() local(oldPhase newPhase inc wraps cycle n rnd gate swapA swapOn phase posRank u pulse activeContrast tuckAmt roleScale totalCap) (
+  scan_active_slots();
+
+  n = active_instances;
+  n < 1 ? n = 1;
+
+  // One deterministic leader advances the bus clock. All instances read it.
+  leader_slot == my_slot ? (
+    gmem[BUS_PISTON_SEED] <= 0 ? gmem[BUS_PISTON_SEED] = iid + 17.371;
+
+    oldPhase = sanitize(gmem[BUS_PISTON_PHASE], 0);
+    oldPhase = oldPhase - floor(oldPhase);
+
+    inc = samplesblock * clamp(bus_piston_rate, 0.05, 8) / max(work_srate, 1);
+    newPhase = oldPhase + inc;
+    wraps = floor(newPhase);
+    wraps > 0 ? (
+      newPhase -= wraps;
+      gmem[BUS_PISTON_CYCLE] = gmem[BUS_PISTON_CYCLE] + wraps;
+    );
+
+    cycle = floor(gmem[BUS_PISTON_CYCLE]);
+    swapOn = 0;
+    swapA = 0;
+
+    // Bounded prediction error: at most one adjacent swap per full cycle.
+    (n > 2) && (bus_piston_surprise > 0.001) ? (
+      rnd = hash01(cycle * 3.17 + n * 11.0);
+      gate = 0.08 + 0.62 * bus_piston_surprise;
+      rnd < gate ? (
+        swapOn = 1;
+        swapA = floor(hash01(cycle * 7.91 + n * 29.0) * (n - 1));
+        swapA = clamp(swapA, 0, n - 2);
+      );
+    );
+
+    gmem[BUS_PISTON_PHASE] = newPhase;
+    gmem[BUS_PISTON_ACTIVE] = n;
+    gmem[BUS_PISTON_SWAP_ON] = swapOn;
+    gmem[BUS_PISTON_SWAP_A] = swapA;
+    gmem[BUS_IDX_PISTON_RATE] = bus_piston_rate;
+    gmem[BUS_IDX_PISTON_SURPRISE] = bus_piston_surprise;
+  );
+
+  phase = sanitize(gmem[BUS_PISTON_PHASE], 0);
+  phase = phase - floor(phase);
+  piston_phase = phase;
+  piston_cycle = sanitize(gmem[BUS_PISTON_CYCLE], 0);
+  piston_swap_on = sanitize(gmem[BUS_PISTON_SWAP_ON], 0);
+  piston_swap_a = floor(sanitize(gmem[BUS_PISTON_SWAP_A], 0) + 0.5);
+
+  // Rank is slot order. Swap changes order position, not ownership identity.
+  posRank = my_rank;
+  piston_swap_on > 0.5 ? (
+    my_rank == piston_swap_a ? posRank = piston_swap_a + 1;
+    my_rank == piston_swap_a + 1 ? posRank = piston_swap_a;
+  );
+
+  u = phase * n - posRank;
+  u < 0 ? u += n;
+
+  pulse = 0;
+  u < 1 ? pulse = piston_curve(u);
+
+  tuckAmt = piston_tuck * 0.64;
+  activeContrast = pulse - tuckAmt * (1 - pulse);
+
+  roleScale = 1;
+  role_id == ROLE_LEAD ? roleScale = 0.75;
+  role_id == ROLE_IMPACT ? roleScale = 0.70;
+  role_id == ROLE_AMBIENCE ? roleScale = 0.85;
+  role_id == ROLE_SUB ? roleScale = 0.30;
+
+  pistonTargetWidth = piston_depth * activeContrast * roleScale;
+
+  // Sub/Weight should not get a positive width bloom; let it only yield/narrow subtly.
+  role_id == ROLE_SUB ? (
+    pistonTargetWidth > 0 ? pistonTargetWidth = 0;
+  );
+
+  totalCap = JND_WIDTH_LIMIT;
+  pistonTargetWidth = clamp(pistonTargetWidth, -totalCap, totalCap);
+  pistonPulse = pulse;
+  pistonGate = activeContrast;
+  pistonOrderPos = posRank;
+);
+
+function role_name() (
+  role_id == ROLE_NEUTRAL ? gfx_drawstr("Neutral");
+  role_id == ROLE_LEAD ? gfx_drawstr("Lead");
+  role_id == ROLE_BODY ? gfx_drawstr("Body");
+  role_id == ROLE_WET ? gfx_drawstr("Wet Detail");
+  role_id == ROLE_IMPACT ? gfx_drawstr("Impact");
+  role_id == ROLE_AMBIENCE ? gfx_drawstr("Ambience");
+  role_id == ROLE_SUB ? gfx_drawstr("Sub/Weight");
+  role_id == ROLE_TINGLE ? gfx_drawstr("Air/Tingle");
+);
+
+
+pi = 3.141592653589793;
+ln10 = 2.302585092994046;
+ln2 = 0.6931471805599453;
+inv_ln10 = 0.4342944819032518;
+inv_ln2 = 1.4426950408889634;
+db2lin = 0.11512925464970229; // ln(10)/20
+
+NB = 12; // storage width / maximum ERB bands
+NB2 = NB * 2;
+active_nb = 12;
+need_filter_rebuild = 1;
+
+MAX_SLOTS = 64;
+
+BUS_MAGIC = 0;
+BUS_VERSION = 1;
+BUS_TICK = 2;
+BUS_PISTON_PHASE = 3;
+BUS_PISTON_CYCLE = 4;
+BUS_PISTON_SEED = 5;
+BUS_PISTON_ACTIVE = 6;
+BUS_PISTON_SWAP_A = 7;
+BUS_PISTON_SWAP_ON = 8;
+BUS_IDX_PISTON_RATE = 9;
+BUS_IDX_PISTON_SURPRISE = 10;
+BUS_HEADER = 64;
+
+SLOT_ID = 0;
+SLOT_HB = 1;
+SLOT_SEQ = 2;
+SLOT_ROLE = 3;
+SLOT_PRIO = 4;
+SLOT_DEPTH = 5;
+SLOT_DROP = 6;
+SLOT_SEND = 7;
+SLOT_RECV = 8;
+SLOT_PRESSURE = 9;
+SLOT_CONTACT = 10;
+SLOT_VISCOSITY = 11;
+SLOT_THRUST = 12;
+SLOT_AROUSAL = 13;
+SLOT_FATIGUE = 14;
+SLOT_PISTON_DEPTH = 15;
+SLOT_PISTON_RATE = 16;
+SLOT_PISTON_SURPRISE = 17;
+SLOT_PISTON_PULSE = 18;
+SLOT_PISTON_GATE = 19;
+SLOT_BANDS = 20;
+
+SLOT_STRIDE = SLOT_BANDS + NB2; // scalar state + TurnPulse state + energy[NB] + credit[NB]
+GMEM_SIZE = BUS_HEADER + MAX_SLOTS * SLOT_STRIDE + 64;
+
+MAGIC = 2026042404;
+VERSION = 4;
+JND_WIDTH_LIMIT = 0.0095; // 0.95% M/S side-gain delta; stays below +/-1%.
+STALE_TICKS = MAX_SLOTS * 16;
+
+OP_HEART = 1;
+OP_BYE = 2;
+
+ROLE_NEUTRAL = 0;
+ROLE_LEAD = 1;
+ROLE_BODY = 2;
+ROLE_WET = 3;
+ROLE_IMPACT = 4;
+ROLE_AMBIENCE = 5;
+ROLE_SUB = 6;
+ROLE_TINGLE = 7;
+
+comm_join("ZorakAudio.CMD.Flow");
+instance_set_name("Cross-Mix Somatic Bus + TurnPulse Manifold");
+instance_uid(#uid);
+iid = instance_id();
+
+// Single named endpoint. Instances sharing Bus Name share one gmem namespace.
+// Message bus intentionally not used for CMD heartbeat; gmem is the hot path.
+sprintf(#flow_namespace,"ZorakAudio.CMD.Flow.%s",#bus_name);
+gmem_attach_size(#flow_namespace, GMEM_SIZE);
+
+mempos = 0;
+
+fc = mempos; mempos += NB;
+b0c = mempos; mempos += NB;
+b2c = mempos; mempos += NB;
+a1c = mempos; mempos += NB;
+a2c = mempos; mempos += NB;
+
+x1La = mempos; mempos += NB;
+x2La = mempos; mempos += NB;
+y1La = mempos; mempos += NB;
+y2La = mempos; mempos += NB;
+x1Lb = mempos; mempos += NB;
+x2Lb = mempos; mempos += NB;
+y1Lb = mempos; mempos += NB;
+y2Lb = mempos; mempos += NB;
+
+x1Ra = mempos; mempos += NB;
+x2Ra = mempos; mempos += NB;
+y1Ra = mempos; mempos += NB;
+y2Ra = mempos; mempos += NB;
+x1Rb = mempos; mempos += NB;
+x2Rb = mempos; mempos += NB;
+y1Rb = mempos; mempos += NB;
+y2Rb = mempos; mempos += NB;
+
+env = mempos; mempos += NB;
+accum = mempos; mempos += NB;
+targetCut = mempos; mempos += NB;
+smoothCut = mempos; mempos += NB;
+credit = mempos; mempos += NB;
+targetSom = mempos; mempos += NB;
+smoothSom = mempos; mempos += NB;
+pubBuf = mempos; mempos += NB2;
+
+memset(0, 0, mempos);
+
+last_srate = -1;
+my_slot = -1;
+my_slot_base = -1;
+seq = 0;
+msg_seen = 0;
+active_instances = 1;
+active_peer_instances = 0;
+peer_count = 0;
+
+local_pressure = 0;
+local_contact = 0;
+local_viscosity = 0;
+local_thrust = 0;
+local_arousal = 0;
+local_fatigue = 0;
+local_send_weight = 0;
+
+bus_pressure = 0;
+bus_contact = 0;
+bus_viscosity = 0;
+bus_thrust = 0;
+bus_arousal = 0;
+bus_fatigue = 0;
+
+targetWidth = 0;
+smoothWidth = 0;
+pistonTargetWidth = 0;
+pistonPulse = 0;
+pistonGate = 0;
+piston_phase = 0;
+pistonOrderPos = 0;
+piston_swap_on = 0;
+piston_swap_a = 0;
+my_rank = 0;
+leader_slot = -1;
+bus_piston_rate = 1.20;
+bus_piston_surprise = 0;
+targetSat = 0;
+smoothSat = 0;
+
+fastAmp = 0;
+prevFastAmp = 0;
+breathPhase = (iid - floor(iid / 997) * 997) * 0.006283185307179586;
+
+setup_from_sliders();
+build_filterbank();
+
+cf_energy_c=1-exp(-1/(.010*srate));
+cf_smooth_c=1-exp(-1/(.040*srate));
+cf_breath=1;
+cf_e0=0;
+cf_e1=0;
+cf_e2=0;
+cf_e3=0;
+cf_e4=0;
+cf_e5=0;
+cf_e6=0;
+cf_e7=0;
+cf_e8=0;
+cf_e9=0;
+cf_e10=0;
+cf_e11=0;
+cf_a0=1-exp(-2*$pi*min(80,srate*.42)/srate);
+cf_a1=1-exp(-2*$pi*min(135.891717171,srate*.42)/srate);
+cf_a2=1-exp(-2*$pi*min(230.831984945,srate*.42)/srate);
+cf_a3=1-exp(-2*$pi*min(392.101935152,srate*.42)/srate);
+cf_a4=1-exp(-2*$pi*min(666.042565921,srate*.42)/srate);
+cf_a5=1-exp(-2*$pi*min(1131.3708499,srate*.42)/srate);
+cf_a6=1-exp(-2*$pi*min(1921.79909437,srate*.42)/srate);
+cf_a7=1-exp(-2*$pi*min(3264.45723739,srate*.42)/srate);
+cf_a8=1-exp(-2*$pi*min(5545.15874524,srate*.42)/srate);
+cf_a9=1-exp(-2*$pi*min(9419.26429844,srate*.42)/srate);
+cf_a10=1-exp(-2*$pi*min(16000,srate*.42)/srate);
+
+@slider
+cf_policy_time=.020;
+setup_from_sliders();
+// Re-bind the shared endpoint when the string bus name changes.
+// Numeric slider moves also pass through here; the slot is republished next @block.
+clear_own_slot();
+sprintf(#flow_namespace,"ZorakAudio.CMD.Flow.%s",#bus_name);
+gmem_attach_size(#flow_namespace, GMEM_SIZE);
+
+@block
+// Summaries from the preceding FAUST block feed peer policy once per block.
+cf_energy_c=1-exp(-1/(.010*srate));
+cf_smooth_c=1-exp(-1/(.040*srate));
+cf_breath_phase += samplesblock/srate*(.045+.420*bus_arousal+.220*bus_thrust)*2*$pi;
+cf_breath_phase -= floor(cf_breath_phase/(2*$pi))*2*$pi;
+cf_breath=.70+.30*sin(cf_breath_phase);
+total_accum=0; low_accum=0; contact_accum=0; visc_accum=0;
+accum[0]=max(0,cf_e0)*samplesblock; total_accum+=accum[0];
+low_accum+=accum[0];
+accum[1]=max(0,cf_e1)*samplesblock; total_accum+=accum[1];
+low_accum+=accum[1];
+accum[2]=max(0,cf_e2)*samplesblock; total_accum+=accum[2];
+low_accum+=accum[2];
+accum[3]=max(0,cf_e3)*samplesblock; total_accum+=accum[3];
+visc_accum+=accum[3];
+accum[4]=max(0,cf_e4)*samplesblock; total_accum+=accum[4];
+visc_accum+=accum[4];
+accum[5]=max(0,cf_e5)*samplesblock; total_accum+=accum[5];
+contact_accum+=accum[5];
+visc_accum+=accum[5];
+accum[6]=max(0,cf_e6)*samplesblock; total_accum+=accum[6];
+contact_accum+=accum[6];
+visc_accum+=accum[6];
+accum[7]=max(0,cf_e7)*samplesblock; total_accum+=accum[7];
+contact_accum+=accum[7];
+visc_accum+=accum[7];
+accum[8]=max(0,cf_e8)*samplesblock; total_accum+=accum[8];
+contact_accum+=accum[8];
+visc_accum+=accum[8];
+accum[9]=max(0,cf_e9)*samplesblock; total_accum+=accum[9];
+contact_accum+=accum[9];
+visc_accum+=accum[9];
+accum[10]=max(0,cf_e10)*samplesblock; total_accum+=accum[10];
+contact_accum+=accum[10];
+accum[11]=max(0,cf_e11)*samplesblock; total_accum+=accum[11];
+onset_accum=max(0,total_accum-cf_previous_total); cf_previous_total=total_accum;
+cf_policy_time += samplesblock/srate;
+cf_policy_time >= .020 ? (
+cf_policy_time = cf_policy_time-floor(cf_policy_time/.020)*.020;
+setup_from_sliders();
+
+work_srate = srate;
+work_srate < 1000 ? work_srate = 48000;
+(work_srate != last_srate || need_filter_rebuild) ? build_filterbank();
+
+ensure_bus_header();
+allocate_slot();
+publish_slot();
+
+drain_messages();
+update_band_envs();
+update_motion_envs();
+compute_turnpulse_target();
+publish_slot();
+compute_declutter_targets();
+publish_slot();
+compute_somatic_targets();
+// Final M/S width target is kept below +/-1% for barely-JND piston behavior.
+targetWidth = manifold_amt * clamp(targetWidth + pistonTargetWidth, -JND_WIDTH_LIMIT, JND_WIDTH_LIMIT);
+
+seq += 1;
+peer_count = active_peer_instances;
+
+
+);
+cf_tcut0=targetCut[0]; cf_tsom0=targetSom[0]; smoothCut[0]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[0]-smoothCut[0]); smoothSom[0]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[0]-smoothSom[0]);
+cf_tcut1=targetCut[1]; cf_tsom1=targetSom[1]; smoothCut[1]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[1]-smoothCut[1]); smoothSom[1]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[1]-smoothSom[1]);
+cf_tcut2=targetCut[2]; cf_tsom2=targetSom[2]; smoothCut[2]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[2]-smoothCut[2]); smoothSom[2]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[2]-smoothSom[2]);
+cf_tcut3=targetCut[3]; cf_tsom3=targetSom[3]; smoothCut[3]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[3]-smoothCut[3]); smoothSom[3]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[3]-smoothSom[3]);
+cf_tcut4=targetCut[4]; cf_tsom4=targetSom[4]; smoothCut[4]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[4]-smoothCut[4]); smoothSom[4]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[4]-smoothSom[4]);
+cf_tcut5=targetCut[5]; cf_tsom5=targetSom[5]; smoothCut[5]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[5]-smoothCut[5]); smoothSom[5]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[5]-smoothSom[5]);
+cf_tcut6=targetCut[6]; cf_tsom6=targetSom[6]; smoothCut[6]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[6]-smoothCut[6]); smoothSom[6]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[6]-smoothSom[6]);
+cf_tcut7=targetCut[7]; cf_tsom7=targetSom[7]; smoothCut[7]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[7]-smoothCut[7]); smoothSom[7]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[7]-smoothSom[7]);
+cf_tcut8=targetCut[8]; cf_tsom8=targetSom[8]; smoothCut[8]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[8]-smoothCut[8]); smoothSom[8]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[8]-smoothSom[8]);
+cf_tcut9=targetCut[9]; cf_tsom9=targetSom[9]; smoothCut[9]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[9]-smoothCut[9]); smoothSom[9]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[9]-smoothSom[9]);
+cf_tcut10=targetCut[10]; cf_tsom10=targetSom[10]; smoothCut[10]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[10]-smoothCut[10]); smoothSom[10]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[10]-smoothSom[10]);
+cf_tcut11=targetCut[11]; cf_tsom11=targetSom[11]; smoothCut[11]+=(1-exp(-samplesblock/(.040*srate)))*(targetCut[11]-smoothCut[11]); smoothSom[11]+=(1-exp(-samplesblock/(.040*srate)))*(targetSom[11]-smoothSom[11]);
+
+@sample
+cf_lp_l0+=( spl0-cf_lp_l0)*cf_a0;
+cf_lp_l1+=( spl0-cf_lp_l1)*cf_a1;
+cf_lp_l2+=( spl0-cf_lp_l2)*cf_a2;
+cf_lp_l3+=( spl0-cf_lp_l3)*cf_a3;
+cf_lp_l4+=( spl0-cf_lp_l4)*cf_a4;
+cf_lp_l5+=( spl0-cf_lp_l5)*cf_a5;
+cf_lp_l6+=( spl0-cf_lp_l6)*cf_a6;
+cf_lp_l7+=( spl0-cf_lp_l7)*cf_a7;
+cf_lp_l8+=( spl0-cf_lp_l8)*cf_a8;
+cf_lp_l9+=( spl0-cf_lp_l9)*cf_a9;
+cf_lp_l10+=( spl0-cf_lp_l10)*cf_a10;
+cf_b_l0=cf_lp_l0;
+cf_b_l1=cf_lp_l1-cf_lp_l0;
+cf_b_l2=cf_lp_l2-cf_lp_l1;
+cf_b_l3=cf_lp_l3-cf_lp_l2;
+cf_b_l4=cf_lp_l4-cf_lp_l3;
+cf_b_l5=cf_lp_l5-cf_lp_l4;
+cf_b_l6=cf_lp_l6-cf_lp_l5;
+cf_b_l7=cf_lp_l7-cf_lp_l6;
+cf_b_l8=cf_lp_l8-cf_lp_l7;
+cf_b_l9=cf_lp_l9-cf_lp_l8;
+cf_b_l10=cf_lp_l10-cf_lp_l9;
+cf_b_l11=spl0-cf_lp_l10;
+cf_lp_r0+=( spl1-cf_lp_r0)*cf_a0;
+cf_lp_r1+=( spl1-cf_lp_r1)*cf_a1;
+cf_lp_r2+=( spl1-cf_lp_r2)*cf_a2;
+cf_lp_r3+=( spl1-cf_lp_r3)*cf_a3;
+cf_lp_r4+=( spl1-cf_lp_r4)*cf_a4;
+cf_lp_r5+=( spl1-cf_lp_r5)*cf_a5;
+cf_lp_r6+=( spl1-cf_lp_r6)*cf_a6;
+cf_lp_r7+=( spl1-cf_lp_r7)*cf_a7;
+cf_lp_r8+=( spl1-cf_lp_r8)*cf_a8;
+cf_lp_r9+=( spl1-cf_lp_r9)*cf_a9;
+cf_lp_r10+=( spl1-cf_lp_r10)*cf_a10;
+cf_b_r0=cf_lp_r0;
+cf_b_r1=cf_lp_r1-cf_lp_r0;
+cf_b_r2=cf_lp_r2-cf_lp_r1;
+cf_b_r3=cf_lp_r3-cf_lp_r2;
+cf_b_r4=cf_lp_r4-cf_lp_r3;
+cf_b_r5=cf_lp_r5-cf_lp_r4;
+cf_b_r6=cf_lp_r6-cf_lp_r5;
+cf_b_r7=cf_lp_r7-cf_lp_r6;
+cf_b_r8=cf_lp_r8-cf_lp_r7;
+cf_b_r9=cf_lp_r9-cf_lp_r8;
+cf_b_r10=cf_lp_r10-cf_lp_r9;
+cf_b_r11=spl1-cf_lp_r10;
+cf_e0+=(.5*(cf_b_l0*cf_b_l0+cf_b_r0*cf_b_r0)-cf_e0)*cf_energy_c;
+cf_cut0+=(min(.95,max(0,cf_tcut0))-cf_cut0)*cf_smooth_c;
+cf_som0+=(min(.25,max(-.25,cf_tsom0))-cf_som0)*cf_smooth_c;
+cf_gain0=1-cf_cut0+cf_som0*cf_breath;
+cf_e1+=(.5*(cf_b_l1*cf_b_l1+cf_b_r1*cf_b_r1)-cf_e1)*cf_energy_c;
+cf_cut1+=(min(.95,max(0,cf_tcut1))-cf_cut1)*cf_smooth_c;
+cf_som1+=(min(.25,max(-.25,cf_tsom1))-cf_som1)*cf_smooth_c;
+cf_gain1=1-cf_cut1+cf_som1*cf_breath;
+cf_e2+=(.5*(cf_b_l2*cf_b_l2+cf_b_r2*cf_b_r2)-cf_e2)*cf_energy_c;
+cf_cut2+=(min(.95,max(0,cf_tcut2))-cf_cut2)*cf_smooth_c;
+cf_som2+=(min(.25,max(-.25,cf_tsom2))-cf_som2)*cf_smooth_c;
+cf_gain2=1-cf_cut2+cf_som2*cf_breath;
+cf_e3+=(.5*(cf_b_l3*cf_b_l3+cf_b_r3*cf_b_r3)-cf_e3)*cf_energy_c;
+cf_cut3+=(min(.95,max(0,cf_tcut3))-cf_cut3)*cf_smooth_c;
+cf_som3+=(min(.25,max(-.25,cf_tsom3))-cf_som3)*cf_smooth_c;
+cf_gain3=1-cf_cut3+cf_som3*cf_breath;
+cf_e4+=(.5*(cf_b_l4*cf_b_l4+cf_b_r4*cf_b_r4)-cf_e4)*cf_energy_c;
+cf_cut4+=(min(.95,max(0,cf_tcut4))-cf_cut4)*cf_smooth_c;
+cf_som4+=(min(.25,max(-.25,cf_tsom4))-cf_som4)*cf_smooth_c;
+cf_gain4=1-cf_cut4+cf_som4*cf_breath;
+cf_e5+=(.5*(cf_b_l5*cf_b_l5+cf_b_r5*cf_b_r5)-cf_e5)*cf_energy_c;
+cf_cut5+=(min(.95,max(0,cf_tcut5))-cf_cut5)*cf_smooth_c;
+cf_som5+=(min(.25,max(-.25,cf_tsom5))-cf_som5)*cf_smooth_c;
+cf_gain5=1-cf_cut5+cf_som5*cf_breath;
+cf_e6+=(.5*(cf_b_l6*cf_b_l6+cf_b_r6*cf_b_r6)-cf_e6)*cf_energy_c;
+cf_cut6+=(min(.95,max(0,cf_tcut6))-cf_cut6)*cf_smooth_c;
+cf_som6+=(min(.25,max(-.25,cf_tsom6))-cf_som6)*cf_smooth_c;
+cf_gain6=1-cf_cut6+cf_som6*cf_breath;
+cf_e7+=(.5*(cf_b_l7*cf_b_l7+cf_b_r7*cf_b_r7)-cf_e7)*cf_energy_c;
+cf_cut7+=(min(.95,max(0,cf_tcut7))-cf_cut7)*cf_smooth_c;
+cf_som7+=(min(.25,max(-.25,cf_tsom7))-cf_som7)*cf_smooth_c;
+cf_gain7=1-cf_cut7+cf_som7*cf_breath;
+cf_e8+=(.5*(cf_b_l8*cf_b_l8+cf_b_r8*cf_b_r8)-cf_e8)*cf_energy_c;
+cf_cut8+=(min(.95,max(0,cf_tcut8))-cf_cut8)*cf_smooth_c;
+cf_som8+=(min(.25,max(-.25,cf_tsom8))-cf_som8)*cf_smooth_c;
+cf_gain8=1-cf_cut8+cf_som8*cf_breath;
+cf_e9+=(.5*(cf_b_l9*cf_b_l9+cf_b_r9*cf_b_r9)-cf_e9)*cf_energy_c;
+cf_cut9+=(min(.95,max(0,cf_tcut9))-cf_cut9)*cf_smooth_c;
+cf_som9+=(min(.25,max(-.25,cf_tsom9))-cf_som9)*cf_smooth_c;
+cf_gain9=1-cf_cut9+cf_som9*cf_breath;
+cf_e10+=(.5*(cf_b_l10*cf_b_l10+cf_b_r10*cf_b_r10)-cf_e10)*cf_energy_c;
+cf_cut10+=(min(.95,max(0,cf_tcut10))-cf_cut10)*cf_smooth_c;
+cf_som10+=(min(.25,max(-.25,cf_tsom10))-cf_som10)*cf_smooth_c;
+cf_gain10=1-cf_cut10+cf_som10*cf_breath;
+cf_e11+=(.5*(cf_b_l11*cf_b_l11+cf_b_r11*cf_b_r11)-cf_e11)*cf_energy_c;
+cf_cut11+=(min(.95,max(0,cf_tcut11))-cf_cut11)*cf_smooth_c;
+cf_som11+=(min(.25,max(-.25,cf_tsom11))-cf_som11)*cf_smooth_c;
+cf_gain11=1-cf_cut11+cf_som11*cf_breath;
+cf_out_l=cf_b_l0*cf_gain0+cf_b_l1*cf_gain1+cf_b_l2*cf_gain2+cf_b_l3*cf_gain3+cf_b_l4*cf_gain4+cf_b_l5*cf_gain5+cf_b_l6*cf_gain6+cf_b_l7*cf_gain7+cf_b_l8*cf_gain8+cf_b_l9*cf_gain9+cf_b_l10*cf_gain10+cf_b_l11*cf_gain11;
+cf_out_r=cf_b_r0*cf_gain0+cf_b_r1*cf_gain1+cf_b_r2*cf_gain2+cf_b_r3*cf_gain3+cf_b_r4*cf_gain4+cf_b_r5*cf_gain5+cf_b_r6*cf_gain6+cf_b_r7*cf_gain7+cf_b_r8*cf_gain8+cf_b_r9*cf_gain9+cf_b_r10*cf_gain10+cf_b_r11*cf_gain11;
+cf_width+=(targetWidth-cf_width)*cf_smooth_c;
+cf_sat+=(min(.35,max(0,targetSat))-cf_sat)*cf_smooth_c;
+cf_mid=.5*(cf_out_l+cf_out_r);
+cf_side=.5*(cf_out_l-cf_out_r)*(1+cf_width);
+cf_left=cf_mid+cf_side;
+cf_right=cf_mid-cf_side;
+spl0=min(8,max(-8,out_gain*cf_left*(1+cf_sat)/(1+cf_sat*abs(cf_left))));
+spl1=min(8,max(-8,out_gain*cf_right*(1+cf_sat)/(1+cf_sat*abs(cf_right))));
+
+@gfx 620 300
+gfx_clear = 0;
+w = gfx_w;
+h = gfx_h;
+
+gfx_set(0.80, 0.80, 0.80, 1);
+gfx_x = 12; gfx_y = 10;
+gfx_drawstr("CMD Flow | Full-block FAUST  |  Shared Bus  |  Active ");
+gfx_drawnumber(active_instances, 0);
+gfx_drawstr("  |  Peers ");
+gfx_drawnumber(active_peer_instances, 0);
+gfx_drawstr("  |  Role ");
+role_name();
+
+x0 = 14; y0 = 44; x1 = w - 14; y1 = 142;
+barw = (x1 - x0) / max(active_nb, 1);
+
+i = 0;
+while (i < active_nb) (
+  x = x0 + i * barw;
+  a = env[i] / floor_energy - 1;
+  a < 0 ? a = 0;
+  a = clamp(a / 24, 0, 1);
+
+  gr = smoothCut[i];
+  gr = clamp(gr, 0, 1);
+
+  sm = abs(smoothSom[i]);
+  sm = clamp(sm * 8, 0, 1);
+
+  gfx_set(0.20, 0.35 + 0.45 * a, 0.90, 0.82);
+  gfx_rect(x, y1 - a * (y1 - y0), max(1, barw - 2), a * (y1 - y0), 1);
+
+  gfx_set(0.95, 0.35, 0.20, 0.90);
+  gfx_rect(x, y1 - gr * (y1 - y0), max(1, barw - 2), 2 + gr * (y1 - y0) * 0.08, 1);
+
+  gfx_set(0.35, 0.95, 0.55, 0.80);
+  gfx_rect(x, y1 - sm * (y1 - y0), max(1, barw - 2), 2, 1);
+
+  i += 1;
+);
+
+gfx_set(0.55, 0.55, 0.55, 1);
+gfx_line(x0, y1, x1, y1, 1);
+
+gfx_x = 14; gfx_y = 156;
+gfx_set(0.80, 0.80, 0.80, 1);
+gfx_drawstr("Bus motion from peers:  Pressure "); gfx_drawnumber(bus_pressure * 100, 0); gfx_drawstr("%   Contact "); gfx_drawnumber(bus_contact * 100, 0); gfx_drawstr("%   Viscosity "); gfx_drawnumber(bus_viscosity * 100, 0); gfx_drawstr("%");
+
+gfx_x = 14; gfx_y = 178;
+gfx_drawstr("                         Thrust "); gfx_drawnumber(bus_thrust * 100, 0); gfx_drawstr("%   Arousal "); gfx_drawnumber(bus_arousal * 100, 0); gfx_drawstr("%   Fatigue "); gfx_drawnumber(bus_fatigue * 100, 0); gfx_drawstr("%");
+
+gfx_x = 14; gfx_y = 206;
+gfx_drawstr("This track drives: P "); gfx_drawnumber(local_pressure * 100, 0); gfx_drawstr("  C "); gfx_drawnumber(local_contact * 100, 0); gfx_drawstr("  V "); gfx_drawnumber(local_viscosity * 100, 0); gfx_drawstr("  T "); gfx_drawnumber(local_thrust * 100, 0);
+
+gfx_x = 14; gfx_y = 232;
+gfx_set(0.80, 0.80, 0.80, 1);
+gfx_drawstr("TurnPulse manifold: rank "); gfx_drawnumber(my_rank + 1, 0); gfx_drawstr("/"); gfx_drawnumber(active_instances, 0);
+gfx_drawstr("  pulse "); gfx_drawnumber(pistonPulse * 100, 0); gfx_drawstr("%  gate "); gfx_drawnumber(pistonGate * 100, 0); gfx_drawstr("%  width "); gfx_drawnumber(pistonTargetWidth * 100, 2); gfx_drawstr("%  swap "); gfx_drawnumber(piston_swap_on, 0);
+
+gfx_x = 14; gfx_y = 266;
+gfx_set(0.70, 0.70, 0.70, 1);
+gfx_drawstr("Blue=local broad-band activity. Orange=TurnPulse-shaped declutter yield. Green=somatic peer modulation. Width is M/S-capped below +/-1%.");

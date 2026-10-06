@@ -1,0 +1,274 @@
+{
+  "status": "PASS",
+  "python": "3.13.5 (main, Jul 15 2026, 20:25:40) [GCC 14.2.0]",
+  "config": "Debug",
+  "asan": true,
+  "gfx_backend": "JUCE contract double",
+  "scope": "Headless generated native DSP vs supplied portable WDL/EEL; real CPU LICE",
+  "not_validated": [
+    "full JUCE plugin build",
+    "MSVC plugin link",
+    "DAW/pluginval",
+    "REAPER process output",
+    "entire JoepVanlier repository"
+  ],
+  "snapshot": [
+    "PASS src/Abyss_Dependencies/saike_abyss_delays.jsfx-inc: local SHA-256",
+    "PASS src/Abyss_Dependencies/saike_abyss_pitchlib.jsfx-inc: local SHA-256",
+    "PASS src/Abyss_Dependencies/saike_abyss_verb.jsfx-inc: local SHA-256",
+    "PASS src/saike_abyss.jsfx: local SHA-256"
+  ],
+  "source_tests": "........................\n----------------------------------------------------------------------\nRan 24 tests in 0.027s\n\nOK\n",
+  "same_dsp_gfx_source": true,
+  "expanded_source_sha256": "2f77321b6ed8120032a22340fb6fb3afb66de96e3da93ae10494600b5f7897d7",
+  "source_files": [
+    {
+      "path": "Abyss_Dependencies/saike_abyss_pitchlib.jsfx-inc",
+      "sha256": "fd214cf36820dd7b94241ee8b250c16293b8de879dab069f17357e1e84553672"
+    },
+    {
+      "path": "Abyss_Dependencies/saike_abyss_delays.jsfx-inc",
+      "sha256": "36fdef2d3bb83c3ab89b0b65624bd7d3a21d104d7db716bb3dce6db26215d5e0"
+    },
+    {
+      "path": "Abyss_Dependencies/saike_abyss_verb.jsfx-inc",
+      "sha256": "e184630ef4f3e5ffbac2f7e823969a47d9bd2f074ca0a1637bbf5a9c4f99ccbe"
+    },
+    {
+      "path": "saike_abyss.jsfx",
+      "sha256": "8dd78aa0b8bf5cbdfbf309c0610b233f7746acf221037c32ba6de392515aa3df"
+    }
+  ],
+  "audio": [
+    {
+      "rate": "44100",
+      "frames": "176400",
+      "mode": "0",
+      "profile": "stress",
+      "path": "double_samples",
+      "init_mismatches": "0",
+      "differing_samples": "0",
+      "max_error": "0",
+      "relative_error": "0",
+      "tail_energy": "618.462732851",
+      "dry_error": "0",
+      "peak": "0.300755674929",
+      "blocks": "2757"
+    },
+    {
+      "rate": "48000",
+      "frames": "192000",
+      "mode": "0",
+      "profile": "stress",
+      "path": "double_samples",
+      "init_mismatches": "0",
+      "differing_samples": "0",
+      "max_error": "0",
+      "relative_error": "0",
+      "tail_energy": "933.514303405",
+      "dry_error": "0",
+      "peak": "0.287380802525",
+      "blocks": "3000"
+    },
+    {
+      "rate": "48000",
+      "frames": "192000",
+      "mode": "1",
+      "profile": "stress",
+      "path": "double_samples",
+      "init_mismatches": "0",
+      "differing_samples": "0",
+      "max_error": "1.39784017694e-14",
+      "relative_error": "4.14756196062e-14",
+      "tail_energy": "961.402289743",
+      "dry_error": "0",
+      "peak": "0.287567927808",
+      "blocks": "3000"
+    },
+    {
+      "rate": "48000",
+      "frames": "192000",
+      "mode": "2",
+      "profile": "stress",
+      "path": "double_samples",
+      "init_mismatches": "0",
+      "differing_samples": "0",
+      "max_error": "1.89154247821e-14",
+      "relative_error": "5.93564922667e-14",
+      "tail_energy": "916.555458126",
+      "dry_error": "0",
+      "peak": "0.287549985731",
+      "blocks": "3000"
+    },
+    {
+      "rate": "96000",
+      "frames": "384000",
+      "mode": "0",
+      "profile": "stress",
+      "path": "double_samples",
+      "init_mismatches": "0",
+      "differing_samples": "0",
+      "max_error": "0",
+      "relative_error": "0",
+      "tail_energy": "875.285676178",
+      "dry_error": "0",
+      "peak": "0.253088855393",
+      "blocks": "6000"
+    },
+    {
+      "rate": "48000",
+      "frames": "192000",
+      "mode": "0",
+      "profile": "defaults",
+      "path": "float_blocks",
+      "init_mismatches": "0",
+      "differing_samples": "0",
+      "max_error": "0",
+      "relative_error": "0",
+      "tail_energy": "104.626975817",
+      "dry_error": "0",
+      "peak": "0.262687921524",
+      "blocks": "1528"
+    },
+    {
+      "rate": "48000",
+      "frames": "192000",
+      "mode": "0",
+      "profile": "dry",
+      "path": "float_blocks",
+      "init_mismatches": "0",
+      "differing_samples": "0",
+      "max_error": "0",
+      "relative_error": "0",
+      "tail_energy": "0",
+      "dry_error": "0",
+      "peak": "0.350250571966",
+      "blocks": "1528"
+    },
+    {
+      "rate": "48000",
+      "frames": "192000",
+      "mode": "0",
+      "profile": "automation",
+      "path": "float_blocks",
+      "init_mismatches": "0",
+      "differing_samples": "0",
+      "max_error": "1.49011611938e-08",
+      "relative_error": "3.92962915678e-10",
+      "tail_energy": "965.990788368",
+      "dry_error": "0",
+      "peak": "0.307520508766",
+      "blocks": "1528"
+    }
+  ],
+  "gfx": "PASS Abyss GFX: 48 frames, 2 sizes, 2 editor lifetimes; particle_updates=46 sampled_nonblack_pixels=4295 max_commands=1748 max_surface_maps=2 memory_snapshot_bytes=0\nBackend: JUCE contract double + supplied WDL/EEL + CPU LICE; NOT a JUCE/host build\n",
+  "native_micro_cases": [
+    {
+      "name": "instance_children",
+      "values": {
+        "x": 3.0,
+        "y": 7.0,
+        "xx": 6.0,
+        "yy": 14.0
+      },
+      "status": "PASS"
+    },
+    {
+      "name": "relative_this",
+      "values": {
+        "x": 4.0,
+        "y": 9.0,
+        "xx": 5.0,
+        "yy": 10.0
+      },
+      "status": "PASS"
+    },
+    {
+      "name": "persistent_locals",
+      "values": {
+        "x": 1.0,
+        "y": 2.0,
+        "z": 3.0,
+        "xx": 7.0,
+        "yy": 4.0
+      },
+      "status": "PASS"
+    },
+    {
+      "name": "nested_prefix",
+      "values": {
+        "x": 12.0,
+        "y": 23.0
+      },
+      "status": "PASS"
+    },
+    {
+      "name": "parameter_shadows_instance",
+      "values": {
+        "x": 0.0,
+        "y": 0.0,
+        "xx": 4.0,
+        "yy": 9.0
+      },
+      "status": "PASS"
+    },
+    {
+      "name": "division_store_recovery",
+      "values": {
+        "a": 0.0,
+        "b": 0.0,
+        "c": 0.0,
+        "v": 0.0,
+        "w": 1.0
+      },
+      "status": "PASS"
+    },
+    {
+      "name": "memory_store_recovery",
+      "values": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "status": "PASS"
+    },
+    {
+      "name": "subnormal_store",
+      "values": {
+        "x": 0.0,
+        "y": 0.0,
+        "a": 1e-200,
+        "b": 1e-200
+      },
+      "status": "PASS"
+    },
+    {
+      "name": "assignment_results",
+      "values": {
+        "x": 2.0,
+        "y": 0.0,
+        "z": 0.0,
+        "w": 0.0,
+        "q": 3.0
+      },
+      "status": "PASS"
+    },
+    {
+      "name": "independent_delay_buffers",
+      "values": {
+        "x": 1.0,
+        "y": 2.0,
+        "z": 3.0,
+        "ah": 2.0,
+        "bh": 1.0
+      },
+      "status": "PASS"
+    }
+  ],
+  "snapshot_after_tests": [
+    "PASS src/Abyss_Dependencies/saike_abyss_delays.jsfx-inc: local SHA-256",
+    "PASS src/Abyss_Dependencies/saike_abyss_pitchlib.jsfx-inc: local SHA-256",
+    "PASS src/Abyss_Dependencies/saike_abyss_verb.jsfx-inc: local SHA-256",
+    "PASS src/saike_abyss.jsfx: local SHA-256"
+  ],
+  "elapsed_seconds": 58.482
+}

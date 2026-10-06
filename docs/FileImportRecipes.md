@@ -1,6 +1,6 @@
 # File Import Recipes
 
-This patch adds direct file ingress and non-destructive recipe processing for the JSFX/JUCE file-slot bridge.
+The JSFX/JUCE file-slot bridge supports direct file ingress and non-destructive in-memory recipes. See [the sample-pool API](DSP-JSFX-SamplePool.md) for DSP access.
 
 ## Import actions
 

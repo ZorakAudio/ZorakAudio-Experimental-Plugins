@@ -8,4 +8,4 @@ The canvas and controls work as in the current 3DPanner source. That source is l
 
 Build with `python scripts/build.py --only HyperrealFast`. Regenerate from the maintained 3DPanner implementation using `python tests/faust/panner_candidates.py`, then rerun qualification. The checked generator is the maintained patch; avoid hand-editing the generated copy.
 
-See [the audit](../../../docs/Hyperreal-Panner-Variants.md) for complete-plugin timing, null comparisons and limitations. Fixed-offset specialization reduces overhead; it does not remove the original Physical renderer's substantial workload.
+See [the audit](../../../docs/Hyperreal-Panner.md) for complete-plugin timing, null comparisons and limitations. Fixed-offset specialization reduces overhead; it does not remove the original Physical renderer's substantial workload.

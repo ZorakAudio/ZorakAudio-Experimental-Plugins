@@ -1,0 +1,1373 @@
+{
+  "rechecked_utc": "2026-10-06T05:23:11.240543+00:00",
+  "executables_present_after_testing": [
+    {
+      "path": "D:\\Dev\\ZorakAudio-Experimental-Plugins\\build\\faust-sections\\sampler-corpus\\Corpus\\before\\kernel.exe",
+      "bytes": 336384,
+      "sha256": "0e940fe6f13172c33bdefb5fda1fe98d4bb10552d67d8f4d223242cf4de7245e"
+    },
+    {
+      "path": "D:\\Dev\\ZorakAudio-Experimental-Plugins\\build\\faust-sections\\sampler-corpus\\Corpus\\after\\kernel.exe",
+      "bytes": 357376,
+      "sha256": "7abd4431a1bd4cf9b8a75e4aa908d2154aad20776203c71a92fb058ad3274e0b"
+    },
+    {
+      "path": "D:\\Dev\\ZorakAudio-Experimental-Plugins\\build\\faust-sections\\sampler-corpus\\Sample\\before\\kernel.exe",
+      "bytes": 348672,
+      "sha256": "1ff130bd16ca1408a89ff08546b0dc73aa9a154ece9580edd162641a482f44de"
+    },
+    {
+      "path": "D:\\Dev\\ZorakAudio-Experimental-Plugins\\build\\faust-sections\\sampler-corpus\\Sample\\after\\kernel.exe",
+      "bytes": 383488,
+      "sha256": "a37789e33f7cc7427f749658dabfbef0f42ac0ae3b4350dcd8cd027e6fb6ccc8"
+    },
+    {
+      "path": "D:\\Dev\\ZorakAudio-Experimental-Plugins\\build\\faust-sections\\sampler-corpus\\Corpus\\block-before\\kernel.exe",
+      "bytes": 336384,
+      "sha256": "81460cf6bbdeec080b71558de15d2b6ffd4eaab20831d23c480c96675bd8a3bc"
+    },
+    {
+      "path": "D:\\Dev\\ZorakAudio-Experimental-Plugins\\build\\faust-sections\\sampler-corpus\\Corpus\\block-after\\kernel.exe",
+      "bytes": 343552,
+      "sha256": "1886254b1dcfee855818837e29905461f25bc5ee45a78fe9a9a19134d9b057a7"
+    },
+    {
+      "path": "D:\\Dev\\ZorakAudio-Experimental-Plugins\\build\\faust-sections\\sampler-corpus\\Sample\\private-before\\eq_profile.exe",
+      "bytes": 346624,
+      "sha256": "4d177758e17ec466061e5457f41bc998afa547c51a6cd6f15de55422c6ffd9c6"
+    },
+    {
+      "path": "D:\\Dev\\ZorakAudio-Experimental-Plugins\\build\\faust-sections\\sampler-corpus\\Sample\\private-after\\eq_profile.exe",
+      "bytes": 359936,
+      "sha256": "304fad466fd10feda35f9e97069be3f0e32b96ba7ecdd34df87a7fba81b1e349"
+    }
+  ],
+  "production_sources_unchanged": {
+    "Corpus": true,
+    "Sample": true
+  },
+  "results": {
+    "Corpus_bridge": [
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0066704,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 1265402
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0690387,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 1265402
+        },
+        "speedup": 0.09661827351905526,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 1265402,
+          "different": 3092,
+          "maximum_error": 1.3877787807814457e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0121514,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 1265402
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0763313,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 1265402
+        },
+        "speedup": 0.15919288679742122,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 1265402,
+          "different": 13679,
+          "maximum_error": 1.3877787807814457e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0117083,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 1265402
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.077674,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 1265402
+        },
+        "speedup": 0.15073641115431158,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 1265402,
+          "different": 4062,
+          "maximum_error": 1.6653345369377348e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0064381,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 327014
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.071277,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 327014
+        },
+        "speedup": 0.09032506979811161,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 327014,
+          "different": 786,
+          "maximum_error": 1.1102230246251565e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0117236,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 327014
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0634191,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 327014
+        },
+        "speedup": 0.1848591354970348,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 327014,
+          "different": 3434,
+          "maximum_error": 1.1102230246251565e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0131516,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 327014
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0719012,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 327014
+        },
+        "speedup": 0.1829121071692823,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 327014,
+          "different": 1132,
+          "maximum_error": 1.1102230246251565e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 0,
+          "frames": 384000,
+          "median_seconds": 0.0154585,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 163507
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 0,
+          "frames": 384000,
+          "median_seconds": 0.134699,
+          "scalar_calls": 384000,
+          "block_calls": 0,
+          "state_values": 163507
+        },
+        "speedup": 0.1147632870325689,
+        "audio": {
+          "count": 768000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 163507,
+          "different": 514,
+          "maximum_error": 1.1102230246251565e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 1,
+          "frames": 384000,
+          "median_seconds": 0.025682,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 163507
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 1,
+          "frames": 384000,
+          "median_seconds": 0.13397,
+          "scalar_calls": 384000,
+          "block_calls": 0,
+          "state_values": 163507
+        },
+        "speedup": 0.19169963424647307,
+        "audio": {
+          "count": 768000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 163507,
+          "different": 4747,
+          "maximum_error": 1.1102230246251565e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 2,
+          "frames": 384000,
+          "median_seconds": 0.0245819,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 163507
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 2,
+          "frames": 384000,
+          "median_seconds": 0.142949,
+          "scalar_calls": 384000,
+          "block_calls": 0,
+          "state_values": 163507
+        },
+        "speedup": 0.17196272796591794,
+        "audio": {
+          "count": 768000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 163507,
+          "different": 5694,
+          "maximum_error": 1.1102230246251565e-16
+        }
+      }
+    ],
+    "Sample_bridge": [
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0135155,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0449291,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "speedup": 0.30081840054663905,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 21716,
+          "different": 1988,
+          "maximum_error": 7.591149930874508e-15
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0188572,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0471723,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "speedup": 0.39975154910826904,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 21716,
+          "different": 3658,
+          "maximum_error": 2.992051051364797e-14
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0264399,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0547548,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "speedup": 0.4828782134169059,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 21716,
+          "different": 3775,
+          "maximum_error": 2.8449465006019636e-14
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 3,
+          "frames": 192000,
+          "median_seconds": 0.0447346,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 3,
+          "frames": 192000,
+          "median_seconds": 0.0754403,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "speedup": 0.5929801445646424,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 21716,
+          "different": 5617,
+          "maximum_error": 2.303018886706809e-14
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0139901,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0450585,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "speedup": 0.3104874773905035,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 5612,
+          "different": 532,
+          "maximum_error": 9.360567876370851e-15
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0190541,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0495946,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "speedup": 0.3841970698422812,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 5612,
+          "different": 958,
+          "maximum_error": 3.9246383920499284e-14
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0242635,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.053492,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "speedup": 0.4535911912061617,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 5612,
+          "different": 985,
+          "maximum_error": 1.659783421814609e-14
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 3,
+          "frames": 192000,
+          "median_seconds": 0.0463671,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 3,
+          "frames": 192000,
+          "median_seconds": 0.0758955,
+          "scalar_calls": 192000,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "speedup": 0.6109334545526415,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 5612,
+          "different": 1450,
+          "maximum_error": 1.687538997430238e-14
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 0,
+          "frames": 384000,
+          "median_seconds": 0.0292257,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 0,
+          "frames": 384000,
+          "median_seconds": 0.0923191,
+          "scalar_calls": 384000,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "speedup": 0.31657262689952564,
+        "audio": {
+          "count": 768000,
+          "different": 1,
+          "maximum_error": 5.820766091346741e-11
+        },
+        "state": {
+          "count": 2806,
+          "different": 267,
+          "maximum_error": 1.3891665595622271e-14
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 1,
+          "frames": 384000,
+          "median_seconds": 0.0392938,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 1,
+          "frames": 384000,
+          "median_seconds": 0.0906888,
+          "scalar_calls": 384000,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "speedup": 0.4332817282839777,
+        "audio": {
+          "count": 768000,
+          "different": 2,
+          "maximum_error": 3.725290298461914e-09
+        },
+        "state": {
+          "count": 2806,
+          "different": 480,
+          "maximum_error": 4.9960036108132044e-14
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 2,
+          "frames": 384000,
+          "median_seconds": 0.0492162,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 2,
+          "frames": 384000,
+          "median_seconds": 0.105931,
+          "scalar_calls": 384000,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "speedup": 0.46460620592649937,
+        "audio": {
+          "count": 768000,
+          "different": 1,
+          "maximum_error": 9.094947017729282e-13
+        },
+        "state": {
+          "count": 2806,
+          "different": 492,
+          "maximum_error": 4.106957829375091e-14
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 3,
+          "frames": 384000,
+          "median_seconds": 0.0947889,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 3,
+          "frames": 384000,
+          "median_seconds": 0.146724,
+          "scalar_calls": 384000,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "speedup": 0.6460354134292958,
+        "audio": {
+          "count": 768000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 2806,
+          "different": 731,
+          "maximum_error": 5.3991533466302144e-14
+        }
+      }
+    ],
+    "Corpus_block-": [
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0070501,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 1780
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0080125,
+          "scalar_calls": 0,
+          "block_calls": 3000,
+          "state_values": 1780
+        },
+        "speedup": 0.8798876755070202,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 1780,
+          "different": 14,
+          "maximum_error": 3.3306690738754696e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0121847,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 1780
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0080372,
+          "scalar_calls": 0,
+          "block_calls": 3000,
+          "state_values": 1780
+        },
+        "speedup": 1.5160379236550043,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 1780,
+          "different": 25,
+          "maximum_error": 3.3306690738754696e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0132995,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 1780
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0086464,
+          "scalar_calls": 0,
+          "block_calls": 3000,
+          "state_values": 1780
+        },
+        "speedup": 1.5381546076980015,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 1780,
+          "different": 35,
+          "maximum_error": 3.3306690738754696e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0068417,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 460
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0074762,
+          "scalar_calls": 0,
+          "block_calls": 750,
+          "state_values": 460
+        },
+        "speedup": 0.9151306813621894,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 460,
+          "different": 2,
+          "maximum_error": 1.1102230246251565e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0139274,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 460
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0074087,
+          "scalar_calls": 0,
+          "block_calls": 750,
+          "state_values": 460
+        },
+        "speedup": 1.8798709625170407,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 460,
+          "different": 6,
+          "maximum_error": 1.1102230246251565e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0126812,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 460
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0072988,
+          "scalar_calls": 0,
+          "block_calls": 750,
+          "state_values": 460
+        },
+        "speedup": 1.7374362908971337,
+        "audio": {
+          "count": 384000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 460,
+          "different": 6,
+          "maximum_error": 1.1102230246251565e-16
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 0,
+          "frames": 384000,
+          "median_seconds": 0.0127069,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 230
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 0,
+          "frames": 384000,
+          "median_seconds": 0.0202425,
+          "scalar_calls": 0,
+          "block_calls": 375,
+          "state_values": 230
+        },
+        "speedup": 0.627733728541435,
+        "audio": {
+          "count": 768000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 230,
+          "different": 1,
+          "maximum_error": 5.551115123125783e-17
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 1,
+          "frames": 384000,
+          "median_seconds": 0.0243119,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 230
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 1,
+          "frames": 384000,
+          "median_seconds": 0.0166365,
+          "scalar_calls": 0,
+          "block_calls": 375,
+          "state_values": 230
+        },
+        "speedup": 1.4613590598984163,
+        "audio": {
+          "count": 768000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 230,
+          "different": 1,
+          "maximum_error": 5.551115123125783e-17
+        }
+      },
+      {
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 2,
+          "frames": 384000,
+          "median_seconds": 0.0248652,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 230
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 2,
+          "frames": 384000,
+          "median_seconds": 0.0173243,
+          "scalar_calls": 0,
+          "block_calls": 375,
+          "state_values": 230
+        },
+        "speedup": 1.4352787702822047,
+        "audio": {
+          "count": 768000,
+          "different": 0,
+          "maximum_error": 0.0
+        },
+        "state": {
+          "count": 230,
+          "different": 4,
+          "maximum_error": 1.1102230246251565e-16
+        }
+      }
+    ],
+    "Sample_private_EQ": [
+      {
+        "rate": 48000,
+        "block": 64,
+        "case": 0,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0071671,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0029749,
+          "scalar_calls": 0,
+          "block_calls": 3000,
+          "state_values": 20826
+        },
+        "speedup": 2.4091902248815087,
+        "maximum_error": 0.0
+      },
+      {
+        "rate": 48000,
+        "block": 64,
+        "case": 1,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0120291,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0026785,
+          "scalar_calls": 0,
+          "block_calls": 3000,
+          "state_values": 20826
+        },
+        "speedup": 4.490983759566921,
+        "maximum_error": 0.0
+      },
+      {
+        "rate": 48000,
+        "block": 64,
+        "case": 2,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.011755,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0027931,
+          "scalar_calls": 0,
+          "block_calls": 3000,
+          "state_values": 20826
+        },
+        "speedup": 4.208585442698077,
+        "maximum_error": 0.0
+      },
+      {
+        "rate": 48000,
+        "block": 64,
+        "case": 3,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 3,
+          "frames": 192000,
+          "median_seconds": 0.0119096,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 21716
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 64,
+          "scenario": 3,
+          "frames": 192000,
+          "median_seconds": 0.0027468,
+          "scalar_calls": 0,
+          "block_calls": 3000,
+          "state_values": 20826
+        },
+        "speedup": 4.335808941313528,
+        "maximum_error": 0.0
+      },
+      {
+        "rate": 48000,
+        "block": 256,
+        "case": 0,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0060257,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 0,
+          "frames": 192000,
+          "median_seconds": 0.0023563,
+          "scalar_calls": 0,
+          "block_calls": 750,
+          "state_values": 5382
+        },
+        "speedup": 2.5572719942282394,
+        "maximum_error": 0.0
+      },
+      {
+        "rate": 48000,
+        "block": 256,
+        "case": 1,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0134563,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 1,
+          "frames": 192000,
+          "median_seconds": 0.0025143,
+          "scalar_calls": 0,
+          "block_calls": 750,
+          "state_values": 5382
+        },
+        "speedup": 5.3519070914369795,
+        "maximum_error": 0.0
+      },
+      {
+        "rate": 48000,
+        "block": 256,
+        "case": 2,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0115522,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 2,
+          "frames": 192000,
+          "median_seconds": 0.0027158,
+          "scalar_calls": 0,
+          "block_calls": 750,
+          "state_values": 5382
+        },
+        "speedup": 4.253700567052066,
+        "maximum_error": 0.0
+      },
+      {
+        "rate": 48000,
+        "block": 256,
+        "case": 3,
+        "before": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 3,
+          "frames": 192000,
+          "median_seconds": 0.0117615,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 5612
+        },
+        "after": {
+          "sample_rate": 48000,
+          "block_size": 256,
+          "scenario": 3,
+          "frames": 192000,
+          "median_seconds": 0.0029575,
+          "scalar_calls": 0,
+          "block_calls": 750,
+          "state_values": 5382
+        },
+        "speedup": 3.976838546069315,
+        "maximum_error": 0.0
+      },
+      {
+        "rate": 96000,
+        "block": 1024,
+        "case": 0,
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 0,
+          "frames": 384000,
+          "median_seconds": 0.0130822,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 0,
+          "frames": 384000,
+          "median_seconds": 0.0052977,
+          "scalar_calls": 0,
+          "block_calls": 375,
+          "state_values": 2691
+        },
+        "speedup": 2.469411253940389,
+        "maximum_error": 0.0
+      },
+      {
+        "rate": 96000,
+        "block": 1024,
+        "case": 1,
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 1,
+          "frames": 384000,
+          "median_seconds": 0.0252898,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 1,
+          "frames": 384000,
+          "median_seconds": 0.0062998,
+          "scalar_calls": 0,
+          "block_calls": 375,
+          "state_values": 2691
+        },
+        "speedup": 4.014381408933617,
+        "maximum_error": 0.0
+      },
+      {
+        "rate": 96000,
+        "block": 1024,
+        "case": 2,
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 2,
+          "frames": 384000,
+          "median_seconds": 0.0253419,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 2,
+          "frames": 384000,
+          "median_seconds": 0.0067279,
+          "scalar_calls": 0,
+          "block_calls": 375,
+          "state_values": 2691
+        },
+        "speedup": 3.766687970986489,
+        "maximum_error": 0.0
+      },
+      {
+        "rate": 96000,
+        "block": 1024,
+        "case": 3,
+        "before": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 3,
+          "frames": 384000,
+          "median_seconds": 0.0348323,
+          "scalar_calls": 0,
+          "block_calls": 0,
+          "state_values": 2806
+        },
+        "after": {
+          "sample_rate": 96000,
+          "block_size": 1024,
+          "scenario": 3,
+          "frames": 384000,
+          "median_seconds": 0.0056297,
+          "scalar_calls": 0,
+          "block_calls": 375,
+          "state_values": 2691
+        },
+        "speedup": 6.187239106879585,
+        "maximum_error": 0.0
+      }
+    ]
+  }
+}
