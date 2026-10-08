@@ -101,27 +101,28 @@ inline juce::Image decodeImage(const void* data,size_t size)
   for(int y=0;y<image.getHeight();++y)for(int x=0;x<image.getWidth();++x){const uint32_t pixel=decoded.getPixelAt(x,y).getARGB();std::memcpy(bits.getLinePointer(y)+x*4,&pixel,4);}
   return image;
 }
-inline juce::Image loadImage(const juce::String& filename)
+inline juce::Image loadImage(const juce::String& filename,const char* sourceDir=kSourceDir,bool moduleFallback=true)
 {
   try {
     const std::string name=filename.toRawUTF8();if(name.empty()||name.size()>32768)return {};
     const auto path=std::filesystem::u8path(name);
     const auto normalized=normalizeName(name);
     // Embedded assets are immutable; gfx_loadimg always decodes a fresh writable slot.
-    if(!path.is_absolute())for(size_t i=0;i<kEntryCount;++i)
+    if(moduleFallback&&!path.is_absolute())for(size_t i=0;i<kEntryCount;++i)
       if(normalized==kEntries[i].name)return decodeImage(kEntries[i].bytes,kEntries[i].size);
     std::vector<std::filesystem::path> candidates;
     if(path.is_absolute())candidates.push_back(path);
     else {
-      const auto module=moduleDirectory();
+      const auto module=moduleFallback?moduleDirectory():std::filesystem::path{};
       if(!module.empty()) {
         candidates.push_back(module/"Resources"/std::filesystem::u8path(normalized));
         candidates.push_back(module.parent_path()/"Resources"/std::filesystem::u8path(normalized));
         candidates.push_back(module.parent_path().parent_path()/"Resources"/std::filesystem::u8path(normalized));
       }
-      if(*kSourceDir) {
-        const auto source=std::filesystem::u8path(kSourceDir);
+      if(sourceDir && *sourceDir) {
+        const auto source=std::filesystem::u8path(sourceDir);
         candidates.push_back(source/path);
+        if(!moduleFallback)candidates.push_back(source/"Resources"/std::filesystem::u8path(normalized));
         candidates.push_back(source.parent_path()/"Resources"/std::filesystem::u8path(normalized));
       }
     }

@@ -18,8 +18,8 @@ def split(text):
         kind=m[1].lower();body=text[m.end():matches[i+1].start() if i+1<len(matches) else len(text)]
         if kind in ('faust','sample','block'):
             mode=m[0].strip().split()[1:] if kind=='faust' else []
-            if mode and not (mode==['block'] or (len(mode)==3 and mode[:2]==['block','when'] and re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*',mode[2]))):raise ValueError('Supported explicit Faust mode is @faust block [when variable]')
-            index=len(stages);stages.append({'kind':kind,'source':body,'line':text.count('\n',0,m.start())+2,'index':index,'block_mode':bool(mode),'condition':mode[2] if len(mode)==3 else None})
+            if mode and not (mode in (['block'],['sample']) or (len(mode)==3 and mode[0] in ('block','sample') and mode[1]=='when' and re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*',mode[2]))):raise ValueError('Supported explicit Faust modes are @faust block/sample [when variable]')
+            index=len(stages);stages.append({'kind':kind,'source':body,'line':text.count('\n',0,m.start())+2,'index':index,'block_mode':bool(mode and mode[0]=='block'),'condition':mode[2] if len(mode)==3 else None})
             if kind!='faust':parts.append('@'+kind+'\n'+MARKER+str(index)+'();\n'+body)
         else:parts.append(m[0]+body)
     return {'text':'\n'.join(parts),'stages':stages}
@@ -181,12 +181,12 @@ def compile_stage(stage,known,aliases,faust_cmd=None,include_paths=()):
                          '(inputs=%s, outputs=%s, inferred audio inputs=%s, scalar exports=%s, bytes=%s)' %
                          (info['inputs'], info['outputs'], len(signals), len(exports), info['size']+4*sum(table_sizes)))
     zones=[]
-    def walk(nodes):
+    def walk(nodes,path=""):
         for node in nodes:
-            if 'items' in node:walk(node['items'])
+            if 'items' in node:walk(node['items'],path+"/"+node.get("label",""))
             elif 'index' in node:
                 label=node['label'];external=label[len('__za_in_'):] if label.startswith('__za_in_') else None
-                zones.append({'offset':int(node['index']),'default':float(node.get('init',0)),'variable':external,'type':node['type']})
+                zones.append({'offset':int(node['index']),'default':float(node.get('init',0)),'variable':external,'type':node['type'],'label':label,'path':path+'/'+label,'minimum':float(node.get('min',0)),'maximum':float(node.get('max',1)),'step':float(node.get('step',1 if node['type'] in ('button','checkbox') else 0))})
     walk(info['ui'])
     if table_sizes:
         missing_controls=set(controls)-{z['variable'] for z in zones if z['variable']}
@@ -323,8 +323,12 @@ def emit_bulk_sample(c,e,stage):
                 kind,slot,*_=item['binding']
                 field={0:2,1:1,3:5,4:6}[kind]
                 indices=[zero,c.ir.Constant(e.i32,field)]
-                if kind in (0,1):indices.append(c.ir.Constant(e.i32,slot))
-                value=e._load_cell(b,b.gep(state,indices,inbounds=True))
+                pointer=b.gep(state,indices,inbounds=True)
+                if kind==0 and e.native_gfx_legacy:
+                    pointer=b.gep(b.load(pointer),[c.ir.Constant(e.i32,slot)],inbounds=True)
+                elif kind in (0,1):
+                    pointer=b.gep(state,indices+[c.ir.Constant(e.i32,slot)],inbounds=True)
+                value=e._load_cell(b,pointer)
                 b.store(value,b.gep(target,[index]))
         def output_channel(channel):
             value=e._load_cell(b,b.gep(state,[zero,zero,channel],inbounds=True))
@@ -345,9 +349,7 @@ def merge(module,extras):
 
 def header(meta):
     if not meta.get('has_faust'):return ''
-    stages=meta['faust_stages'];out=['#ifdef __cplusplus','namespace jsfx_faust {','inline constexpr int quantum='+str(meta.get('faust_quantum',0))+';']
-    out+=['struct Binding { int kind,index; int alias=-1; };','struct Zone { int offset; double initial; Binding source; };',
-          'struct Stage { int kind,island; bool fused; void (*eel)(DSPJSFX_State*); int size,inputs,outputs,audioOutputs; void (*classInit)(int); void (*constants)(void*,int); void (*clear)(void*); void (*allocate)(void*); void (*destroy)(void*); void (*compute)(void*,int,double**,double**); const Zone* zones; int zoneCount; const Binding* signals; int signalCount; const Binding* exports; int exportCount; const int* tableSizes; int tableCount; void (*bindTables)(void**); void (*seedTables)(void**); int captureStage=-1; Binding condition{-1,0}; void (*bulk)(DSPJSFX_State*,double*,int,int,int,int,double**)=nullptr; };']
+    stages=meta['faust_stages'];out=['#ifdef __cplusplus','#include "JsfxFaustPlan.h"','namespace jsfx_faust {','using Binding=za::jsfx::Binding; using Zone=za::jsfx::Zone; using Stage=za::jsfx::Stage;','inline constexpr int quantum='+str(meta.get('faust_quantum',0))+';']
     out.append('inline constexpr Stage eelStage(int kind,int island,bool fused,void (*eel)(DSPJSFX_State*),void (*bulk)(DSPJSFX_State*,double*,int,int,int,int,double**)) { Stage s{};s.kind=kind;s.island=island;s.fused=fused;s.eel=eel;s.bulk=bulk;return s; }')
     def arr(name,values,typ):
         out.append('inline constexpr '+typ+' '+name+'[] = {'+','.join(values or ['{}'])+'};');return name

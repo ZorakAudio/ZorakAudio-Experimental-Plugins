@@ -12,7 +12,8 @@ For an author, ordinary JSFX remains the starting point. Add only the extension 
 
 | Need | Facility | Execution |
 | --- | --- | --- |
-| Stateful audio filters or a signal graph | `@faust block` | Synchronously on the host processing thread |
+| Stateful audio filters or a signal graph | `@faust sample` | Explicit spelling of the automatic dependency-preserving path; may batch independent stages or interleave samples |
+| `@faust block` | Synchronously on the host processing thread |
 | Long analysis independent of current audio | `defer` task graph | Two task workers per instance |
 | Large immutable recordings | `sample_pool_*` | Worker loading, realtime reads |
 | Coordination between plugin instances | `msg_*`, named `gmem` | Block-resolved messages / shared cells |
@@ -75,7 +76,7 @@ In a mixed script, source order of repeated `@block`, `@sample` and `@faust` sec
 | `@faust block` | Requires block execution; rejects unresolved sample feedback instead of silently using `compute(1)` |
 | `@faust block when enabled` | Block execution with a scalar gate; when disabled, passes audio through and freezes private history and exports |
 
-**There is currently no `@faust sample` spelling.** Unqualified `@faust` supplies the dependency-preserving automatic path. Use explicit block mode when full-buffer execution is a requirement.
+`@faust sample` and unqualified `@faust` share the dependency-preserving automatic path. The explicit sample form also accepts a `when enabled` gate. Use explicit block mode when full-buffer execution is a requirement.
 
 For `@faust block`, imports written by the nearest preceding `@sample`, including reachable helpers, can become private per-frame streams. The runtime captures those values after that sample stage, so a changing gain can remain sample-accurate while FAUST processes a buffer. Captured streams do not create host audio pins. Other imports are scalar controls. A later block assignment does not overwrite an already captured stream: use a separate name for a block control.
 
@@ -126,7 +127,7 @@ Status values: INVALID −1, PENDING 1, RUNNING 2, SUCCEEDED 3, CANCELLED 4, FAI
 
 Use `task_buffer_create/set/seal/read/release` for immutable multi-cell inputs. Initialize every cell before sealing. Ordinary deferred bodies cannot access live RAM, `gmem`, sliders, audio samples, graphics, strings, files, random state or host communication; reachable helpers are checked too. Capture slider values into ordinary scalars first.
 
-Two workers per instance service a bounded scheduler: 32 task slots, 4096 iterations per parallel task, 64 captured function locals, 4096 scalar variables, eight buffers of up to 65536 doubles. Iterations are chunked in groups of 32; idle workers poll approximately every millisecond. There is no global worker budget or work stealing. Stage large graphs and release root handles. Handles are instance-local, transient and invalidated by reset; do not serialize them. Reduction combination is in index order, not worker completion order.
+Two workers per instance service a bounded scheduler: 32 task slots, 4096 iterations per parallel task, 64 captured function locals, and eight buffers of up to 65536 doubles. Ordinary publication-mode task snapshots retain their 4096-scalar-variable bound. Native shared-state AOT/JIT snapshots use the actual compiler-reported variable extent instead. Iterations are chunked in groups of 32; idle workers poll approximately every millisecond. There is no global worker budget or work stealing. Stage large graphs and release root handles. Handles are instance-local, transient and invalidated by reset; do not serialize them. Reduction combination is in index order, not worker completion order.
 
 Successful results are published for polling without an audio-pacing delay. **Adoption still requires the host to call the plugin's coordinator.** Workers do not modify an active audio model automatically. Outstanding work/results veto sleep until acknowledged. There is no general offline preparation barrier or promised completion deadline.
 
@@ -235,3 +236,10 @@ Current examples separate functionality from experiments:
 - **Hyperreal default:** faithful EEL Fast optimization, not a FAUST conversion; [promotion report](Hyperreal-Panner.md). Redesigned FAUST renderers are separate algorithm experiments.
 
 Use this guide for the current platform interface, plugin READMEs for operation, and individual reports for measured evidence. Older reports retain historical configurations and should not override the current contracts.
+
+
+### Standalone JIT Editor
+
+The Windows x64 [JIT Editor guide](../tools/jit_editor/README.md) covers the dedicated CLAP/VST3 editor, its bundled production Python/LLVM/Faust compiler, full plugin GFX view, dynamic controls/pins, imports, state, task/sample-pool services, installation and limitations. Compiling and editing are specific to that standalone plugin; ordinary catalog plugins remain AOT. The [C++ migration design](../tools/jit_editor/CPP-MIGRATION.md) records the separate native frontend's completed source/token/AST phase and the remaining lowering, LLVM and execution equivalence gates. The user-facing Run button uses the standard compiler without a frontend checkbox. The experimental C++ resolver/parser remains available in developer tests and for older saved projects, feeding the existing production lowering and LLVM emitter. Python remains bundled.
+
+AOT and JIT now share production runtime components for compiled sections, Faust execution, files/sample pools, deferred tasks, numeric/string/slider services, MIDI, host transport, routing/oversampling, and sleep policy. JIT binds those components to its program-specific entrypoints and metadata; it does not maintain a second reduced feature runtime. The [qualification record](../tools/jit_editor/VALIDATION.md) distinguishes frozen AOT comparisons, JIT catalog smoke coverage, loaded-bank tests, and behavior still requiring live-host qualification.

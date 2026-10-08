@@ -11,6 +11,23 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES = [
+ ('while_name_newlines', '''
+historyX=64;historyY=80;historyX[0]=2;historyY[0]=3;viewScale=2;coord=0;
+while
+// A line comment and blank line between the name and group are whitespace.
+
+(
+  offsetX=(historyX[coord]*viewScale);
+  offsetY=(historyY[coord]*viewScale);
+  coord+=1;
+  coord<1;
+);
+while /* block comment */
+(coord<3)
+(coord+=1;);
+x=while
+(coord+=1;coord<5;);
+''', ['offsetx','offsety','coord','x']),
  ('receiver_namespace_members', '''
 function band(x) instance(child,gain)(gain=x;child.left=gain;'''+16*'child.left+=gain/100;'+'''child.left;);
 a=left.band(2);b=right.band(4);c=left.child.left;d=right.child.left;
@@ -132,13 +149,14 @@ def test_cases(output: Path, eel_oracle: Path, cxx: str, *, sanitizer=False, leg
         meta = json.loads((folder/'case.json').read_text())
         if meta['numeric_semantics'] != 'eel2-stores':raise AssertionError('Store option not enabled')
         native_source = '''#include "case.h"
+#include "JsfxStateVariables.h"
 #include <iostream>
 #include <iomanip>
 #include <vector>
 #include <stdexcept>
 extern "C" void jsfx_ensure_mem(DSPJSFX_State*st,int64_t n){
  if(n<0||n>st->memN)throw std::runtime_error("test memory bound");}
-int main(){DSPJSFX_State st{};std::vector<DSPJSFX_Cell> memory(65536);st.mem=memory.data();st.memN=memory.size();st.srate=48000;
+int main(){DSPJSFX_State st{};za::jsfx::StateVariables variables;variables.bind(st,DSPJSFX_VARS_COUNT);std::vector<DSPJSFX_Cell> memory(65536);st.mem=memory.data();st.memN=memory.size();st.srate=48000;
 jsfx_init(&st);std::cout<<std::setprecision(17);
 '''
         for q in queries:

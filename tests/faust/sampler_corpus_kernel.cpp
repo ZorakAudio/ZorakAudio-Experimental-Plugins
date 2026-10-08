@@ -1,4 +1,5 @@
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #if DSPJSFX_HAS_FAUST
 #define JSFX_FAUST_IMPLEMENTATION
 #include "JsfxFaust.h"
@@ -24,7 +25,7 @@ int main(int argc,char** argv){
  r[i]=float(amplitude*(0.35*std::sin(2*3.141592653589793*315*t)+0.1*std::sin(2*3.141592653589793*9000*t)));
  if(i%997==0&&amplitude)l[i]=0.7f;if(t>=2.3&&t<2.4){l[i]=1e-9f;r[i]=-1e-9f;}}
  uint64_t scalars=0,blocks=0;
- for(int trial=0;trial<4;++trial){DSPJSFX_State s{};s.srate=rate;s.memN=DSPJSFX_MAX_MEM_CELLS;s.mem=static_cast<DSPJSFX_Cell*>(std::calloc(size_t(s.memN),sizeof(DSPJSFX_Cell)));
+ for(int trial=0;trial<4;++trial){DSPJSFX_State s{};za::jsfx::StateVariables s_variables;s_variables.bind(s,DSPJSFX_VARS_COUNT);s.srate=rate;s.memN=DSPJSFX_MAX_MEM_CELLS;s.mem=static_cast<DSPJSFX_Cell*>(std::calloc(size_t(s.memN),sizeof(DSPJSFX_Cell)));
 #if DSPJSFX_HAS_FAUST
  jsfx_faust::Engine engine;s.faustContext=&engine;engine.prepare(rate,block);
 #endif

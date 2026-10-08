@@ -23,7 +23,8 @@ struct MatchContext {
         std::string lower=name;
         for(char& c:lower)c=(char)std::tolower((unsigned char)c);
         if(!lower.empty() && lower[0]=='#') {
-            for(const auto& item:DSPJSFX_NAMED_STRINGS)if(lower==item.name){*namedString=(double)item.handle;return namedString;}
+            const auto handle=frame.namedStringHandle(lower);
+            if(handle){*namedString=(double)handle;return namedString;}
             return {};
         }
         if(auto* p=frame.cellPointer(lower.c_str()))return p;

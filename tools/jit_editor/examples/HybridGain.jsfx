@@ -1,0 +1,27 @@
+desc:Example - Hybrid Gain with EEL Interface
+// Three roles: EEL block setup, full-buffer Faust DSP, EEL graphics.
+// Hidden sliders remain host parameters but the custom UI draws them.
+slider1:gain_db=-6<-24,12,.1>-Gain (dB)
+@init
+input_peak=0;
+@block
+// Faust imports this ordinary JSFX scalar automatically.
+linear_gain=10^(gain_db/20);
+@faust block
+import("stdfaust.lib");
+g = linear_gain : si.smoo;
+// This matching JSFX global exports the last envelope sample to EEL/GFX.
+input_peak = max(abs(spl0),abs(spl1)) : an.peak_envelope(0.2);
+process=spl0*g,spl1*g;
+@gfx 540 180
+gfx_set(.07,.09,.12,1);gfx_rect(0,0,gfx_w,gfx_h);
+gfx_setfont(1,"Arial",20);gfx_set(.9,.95,1,1);gfx_x=20;gfx_y=15;
+gfx_drawstr("EEL controls + UI; FAUST full-block gain and detector");
+gfx_set(.17,.23,.3,1);gfx_rect(20,60,gfx_w-40,28);
+mouse_cap&1 && mouse_y>=60 && mouse_y<88 ? (
+  new_gain=max(-24,min(12,-24+36*(mouse_x-20)/(gfx_w-40)));
+  new_gain != gain_db ? (gain_db=new_gain;slider_automate(gain_db););
+);
+gfx_set(.2,.7,.95,1);gfx_rect(20,60,(gfx_w-40)*(gain_db+24)/36,28);
+gfx_set(.9,.95,1,1);gfx_x=20;gfx_y=103;gfx_printf("Gain: %.1f dB    input peak: %.1f dB",gain_db,20*log(max(.000001,input_peak))/log(10));
+gfx_x=20;gfx_y=142;gfx_drawstr("Drag the blue bar. Run creates fresh DSP state and defaults.");

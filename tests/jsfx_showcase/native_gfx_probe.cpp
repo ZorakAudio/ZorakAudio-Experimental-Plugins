@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Zlib
 // Native AOT @gfx versus existing EEL renderer, using the same draw backend.
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #ifdef ZA_SHOWCASE_REAL_JUCE
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -53,7 +54,7 @@ int main(int argc, char **argv) try {
     if (!input || text.str().empty())
         throw std::runtime_error("Missing JSFX source");
 
-    DSPJSFX_State dsp{};
+    DSPJSFX_State dsp{};za::jsfx::StateVariables dsp_variables;dsp_variables.bind(dsp,DSPJSFX_VARS_COUNT);
     dsp.srate = 48000;
     dsp.samplesblock = 512;
     const std::regex slider(

@@ -4,6 +4,9 @@ import unittest
 import subprocess
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
+if sys.platform=='win32':
+    import ctypes
+    ctypes.windll.kernel32.SetErrorMode(0x0001|0x0002|0x8000)
 sys.path.insert(0,str(ROOT))
 import dsp_jsfx_aot as c
 from llvmlite import binding as llvm

@@ -1,0 +1,34 @@
+desc:Example - JSFX Envelope Gate
+// A small downward gate written entirely in EEL2, with a linked stereo detector.
+// This is not a lookahead gate: a fast transient can arrive before it opens.
+slider1:threshold_db=-30<-60,0,.1>Threshold (dB)
+slider2:floor_db=-24<-60,0,.1>Closed gain (dB)
+slider3:attack_ms=5<1,100,1>Open time (ms)
+slider4:release_ms=150<20,1000,1>Close time (ms)
+in_pin:left
+in_pin:right
+out_pin:left
+out_pin:right
+@init
+envelope=0;gain=1;
+@slider
+threshold=10^(threshold_db/20);floor_gain=10^(floor_db/20);
+open_coefficient=exp(-1/(max(1,attack_ms)*.001*srate));
+close_coefficient=exp(-1/(max(20,release_ms)*.001*srate));
+@sample
+// Instant peak capture, exponential release; one gain controls both channels.
+envelope=max(max(abs(spl0),abs(spl1)),envelope*close_coefficient);
+t=min(1,envelope/max(.000001,threshold));
+desired=floor_gain+(1-floor_gain)*t*t;
+coefficient=desired>gain ? open_coefficient : close_coefficient;
+gain=desired+(gain-desired)*coefficient;
+spl0*=gain;spl1*=gain;
+@gfx 540 180
+gfx_set(.07,.09,.12,1);gfx_rect(0,0,gfx_w,gfx_h);
+gfx_setfont(1,"Arial",20);gfx_set(.9,.95,1,1);gfx_x=20;gfx_y=15;
+gfx_drawstr("EEL detector -> smooth linked gate -> EEL meters");
+gfx_set(.14,.2,.27,1);gfx_rect(20,62,gfx_w-40,22);gfx_rect(20,100,gfx_w-40,22);
+gfx_set(.2,.8,.5,1);gfx_rect(20,62,(gfx_w-40)*min(1,envelope),22);
+gfx_set(.2,.65,.95,1);gfx_rect(20,100,(gfx_w-40)*gain,22);
+gfx_set(.9,.95,1,1);gfx_x=20;gfx_y=140;
+gfx_printf("Detector %.1f dBFS    gain %.1f dB",20*log(max(.000001,envelope))/log(10),20*log(max(.000001,gain))/log(10));

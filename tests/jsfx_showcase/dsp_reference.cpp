@@ -2,6 +2,7 @@
 // Actual generated native DSP vs the repository's portable WDL/EEL2 engine.
 // FFT/memcpy below are extracted verbatim from the production processor TU.
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -71,7 +72,7 @@ try {
     NSEEL_VM_setramsize(ref.m_vm,8*1024*1024);
     auto var=[&](const char*name){return NSEEL_VM_regvar(ref.m_vm,name);};
     std::vector<double> mem(8*1024*1024);
-    DSPJSFX_State st{};st.mem=mem.data();st.memN=int64_t(mem.size());st.srate=sr;st.samplesblock=64;
+    DSPJSFX_State st{};za::jsfx::StateVariables st_variables;st_variables.bind(st,DSPJSFX_VARS_COUNT);st.mem=mem.data();st.memN=int64_t(mem.size());st.srate=sr;st.samplesblock=64;
     *var("srate")=sr;*var("samplesblock")=64;
     auto code=sections(argv[1]); std::map<std::string,NSEEL_CODEHANDLE> handles;
     for(auto name:{"init","slider","block","sample"}) {

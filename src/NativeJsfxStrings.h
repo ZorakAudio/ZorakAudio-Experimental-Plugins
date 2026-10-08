@@ -18,6 +18,8 @@ public:
     std::mutex mutex;
     std::unordered_map<int64_t,std::string> values;
     std::unordered_set<int64_t> literals;
+    std::unordered_map<int64_t,std::string> suppliedLiterals;
+    bool hasSuppliedLiterals=false;
     static constexpr size_t lengthHint=65536;
     int64_t nextHandle=int64_t(1)<<48;
     static int64_t key(double v) noexcept {
@@ -26,13 +28,20 @@ public:
     static int integer(double v) noexcept { return jsfx_gfx::boundedGfxInt(v); }
     void reset() {
         std::lock_guard lock(mutex); values.clear(); literals.clear(); nextHandle=int64_t(1)<<48;
-        for(int i=0;i<DSPJSFX_STRING_LITERALS_COUNT;++i) {
+        if(hasSuppliedLiterals) {
+            values=suppliedLiterals;
+            for(const auto& item:suppliedLiterals)literals.insert(item.first);
+        }else for(int i=0;i<DSPJSFX_STRING_LITERALS_COUNT;++i) {
             const auto& s=DSPJSFX_STRING_LITERALS[i];
             values.emplace(s.handle,std::string((const char*)s.data,(size_t)s.length));
             literals.insert(s.handle);
         }
     }
     Strings(){reset();}
+    void configureLiterals(std::unordered_map<int64_t,std::string> source) {
+        {std::lock_guard lock(mutex);suppliedLiterals=std::move(source);hasSuppliedLiterals=true;}
+        reset();
+    }
     std::string read(double handle) {
         std::lock_guard lock(mutex); return readUnlocked(handle);
     }

@@ -1,4 +1,5 @@
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #if DSPJSFX_HAS_FAUST
 #define JSFX_FAUST_IMPLEMENTATION
 #include "JsfxFaust.h"
@@ -21,7 +22,7 @@ int main(int argc,char** argv){
  for(int i=0;i<frames;++i){double t=double(i)/rate;double amplitude=(i/(rate/5))%3==0?0.0003:0.02;left[i]=float(amplitude*(std::sin(2*3.141592653589793*310*t)+0.3*std::sin(2*3.141592653589793*1950*t)));right[i]=float(amplitude*(0.7*std::sin(2*3.141592653589793*315*t)+0.1*std::sin(2*3.141592653589793*3000*t)));}
  std::vector<double> trials;
  for(int trial=0;trial<3;++trial){
-  DSPJSFX_State s{};s.srate=rate;s.memN=DSPJSFX_MAX_MEM_CELLS;s.mem=static_cast<DSPJSFX_Cell*>(std::calloc(size_t(s.memN),sizeof(DSPJSFX_Cell)));
+  DSPJSFX_State s{};za::jsfx::StateVariables s_variables;s_variables.bind(s,DSPJSFX_VARS_COUNT);s.srate=rate;s.memN=DSPJSFX_MAX_MEM_CELLS;s.mem=static_cast<DSPJSFX_Cell*>(std::calloc(size_t(s.memN),sizeof(DSPJSFX_Cell)));
   const double defaults[]={-40,24,50,0,20000};
   const char* aliases[]={"thresh_db","depth_db","contour","det_hpf_hz","det_lpf_hz"};
   auto sync=[&]{for(int c=0;c<5;++c)for(const auto& v:DSPJSFX_VARS)if(std::strcmp(v.name,aliases[c])==0)s.vars[v.index]=double(s.sliders[c]);};

@@ -1,0 +1,116 @@
+desc:Example - Studio Channel (EEL UI + FAUST DSP)
+// Read the stage comments below or examples/README.md for the architecture.
+// All 12 sliders are hidden from generated UI, but remain host parameters.
+slider1:drive_db=0<0,18,.1>-Drive (dB)
+slider2:bass_db=0<-12,12,.1>-Bass (dB)
+slider3:mid_db=0<-12,12,.1>-Mid (dB)
+slider4:treble_db=0<-12,12,.1>-Treble (dB)
+slider5:threshold_db=-18<-48,0,.1>-Threshold (dB)
+slider6:ratio=3<1,12,.1>-Ratio
+slider7:attack_ms=10<1,100,1>-Attack (ms)
+slider8:release_ms=150<20,1000,1>-Release (ms)
+slider9:makeup_db=0<0,18,.1>-Makeup (dB)
+slider10:mix=1<0,1,.01>-Wet
+slider11:output_db=0<-18,6,.1>-Output (dB)
+slider12:bypass=0<0,1,1{Active,Bypass}>-Bypass
+in_pin:left
+in_pin:right
+out_pin:left
+out_pin:right
+
+@init
+// Declare Faust-to-EEL output ownership. These are UI meters, not audio inputs.
+input_peak=0;output_peak=0;gain_reduction=0;
+
+@block
+// STAGE 1: one EEL setup pass per host callback. No per-sample UI work.
+drive_linear=10^(drive_db/20);
+makeup_linear=10^(makeup_db/20);
+output_linear=10^(output_db/20);
+attack_seconds=attack_ms*.001;release_seconds=release_ms*.001;
+// Avoid Faust library names such as ratio/mix when capturing EEL controls.
+channel_ratio=ratio;channel_wet=mix*(1-bypass);
+
+@faust block
+// STAGE 2: Faust owns filters, nonlinear DSP, envelope and stereo gain.
+// The bridge imports the sliders/setup scalars; there is no manual slider glue.
+import("stdfaust.lib");
+drive = drive_linear : si.smoo;
+makeup = makeup_linear : si.smoo;
+level = output_linear : si.smoo;
+wet = channel_wet : si.smoo;
+bass = bass_db : si.smoo;
+mid = mid_db : si.smoo;
+treble = treble_db : si.smoo;
+compression_ratio = max(1,channel_ratio : si.smoo);
+compression_threshold = threshold_db : si.smoo;
+eq = fi.low_shelf1(bass,180) : fi.peak_eq_cq(mid,1000,0.8)
+     : fi.high_shelf1(treble,min(4500,0.4*ma.SR));
+// Normalized tanh saturation; it adds harmonics, it is not a triode model.
+shape(x) = ma.tanh(drive*x)/max(0.000001,ma.tanh(drive));
+left = eq(spl0) : shape;
+right = eq(spl1) : shape;
+// Linked detector: the stereo image does not wander under compression.
+compression_gain = co.compression_gain_mono(compression_ratio,
+    compression_threshold,attack_seconds,release_seconds,abs(left)+abs(right));
+out_left = level*((1-wet)*spl0 + wet*left*compression_gain*makeup);
+out_right = level*((1-wet)*spl1 + wet*right*compression_gain*makeup);
+// Matching declared globals export meter signals without adding audio pins.
+input_peak = max(abs(spl0),abs(spl1)) : an.peak_envelope(0.2);
+output_peak = max(abs(out_left),abs(out_right)) : an.peak_envelope(0.2);
+gain_reduction = -20*log10(max(0.000001,compression_gain));
+process = out_left,out_right;
+
+@block
+// STAGE 3: these meter exports are final samples from the completed buffer.
+// They are used only by UI; no sample-rate feedback dependency is introduced.
+ui_input_db=20*log(max(.000001,input_peak))/log(10);
+ui_output_db=20*log(max(.000001,output_peak))/log(10);
+
+@gfx 860 500
+// STAGE 4: drawing/input on the graphics worker, not the audio callback.
+// UI helper returns a value; caller assigns the slider and notifies the host.
+function control(x,y,w,label,value,lo,hi,slot)
+local(next,t)
+global(mouse_x,mouse_y,mouse_cap,gfx_x,gfx_y,ui_active,ui_pressed)
+(
+  gfx_set(.88,.92,.98,1);gfx_x=x;gfx_y=y;gfx_drawstr(label);
+  gfx_x=x+w-70;gfx_printf("%.2f",value);
+  gfx_set(.14,.2,.27,1);gfx_rect(x,y+23,w,20);
+  gfx_set(.2,.7,.95,1);gfx_rect(x,y+23,w*(value-lo)/(hi-lo),20);
+  ui_pressed && mouse_x>=x && mouse_x<=x+w && mouse_y>=y+23 && mouse_y<=y+43 ? ui_active=slot;
+  next=value;
+  ui_active==slot && mouse_cap&1 ? (t=max(0,min(1,(mouse_x-x)/w));next=lo+(hi-lo)*t;);
+  next;
+);
+gfx_set(.055,.075,.1,1);gfx_rect(0,0,gfx_w,gfx_h);
+gfx_setfont(1,"Arial",20);gfx_set(.9,.95,1,1);gfx_x=20;gfx_y=14;
+gfx_drawstr("STUDIO CHANNEL | EEL interface + full-buffer FAUST DSP");
+gfx_setfont(1,"Arial",15);gfx_x=20;gfx_y=44;
+gfx_drawstr("EQ -> normalized saturation -> linked compression -> wet/dry -> output");
+ui_pressed=(mouse_cap&1) && !(ui_last_cap&1);
+!(mouse_cap&1) ? ui_active=0;
+column_w=max(120,(gfx_w-80)/3);
+old=drive_db;drive_db=control(20,82,column_w,"Drive dB",drive_db,0,18,1);old!=drive_db ? slider_automate(drive_db);
+old=bass_db;bass_db=control(20,146,column_w,"Bass dB",bass_db,-12,12,2);old!=bass_db ? slider_automate(bass_db);
+old=mid_db;mid_db=control(20,210,column_w,"Mid dB",mid_db,-12,12,3);old!=mid_db ? slider_automate(mid_db);
+old=treble_db;treble_db=control(20,274,column_w,"Treble dB",treble_db,-12,12,4);old!=treble_db ? slider_automate(treble_db);
+x2=40+column_w;
+old=threshold_db;threshold_db=control(x2,82,column_w,"Threshold dB",threshold_db,-48,0,5);old!=threshold_db ? slider_automate(threshold_db);
+old=ratio;ratio=control(x2,146,column_w,"Ratio",ratio,1,12,6);old!=ratio ? slider_automate(ratio);
+old=attack_ms;attack_ms=control(x2,210,column_w,"Attack ms",attack_ms,1,100,7);old!=attack_ms ? slider_automate(attack_ms);
+old=release_ms;release_ms=control(x2,274,column_w,"Release ms",release_ms,20,1000,8);old!=release_ms ? slider_automate(release_ms);
+x3=60+2*column_w;
+old=makeup_db;makeup_db=control(x3,82,column_w,"Makeup dB",makeup_db,0,18,9);old!=makeup_db ? slider_automate(makeup_db);
+old=mix;mix=control(x3,146,column_w,"Wet",mix,0,1,10);old!=mix ? slider_automate(mix);
+old=output_db;output_db=control(x3,210,column_w,"Output dB",output_db,-18,6,11);old!=output_db ? slider_automate(output_db);
+gfx_set(.2,.3,.4,1);gfx_rect(x3,294,column_w,28);
+ui_pressed && mouse_x>=x3 && mouse_x<x3+column_w && mouse_y>=294 && mouse_y<322 ? (bypass=1-bypass;slider_automate(bypass););
+gfx_set(.9,.95,1,1);gfx_x=x3+8;gfx_y=299;bypass ? gfx_drawstr("BYPASS (DSP keeps state warm)") : gfx_drawstr("ACTIVE - click for bypass");
+gfx_x=20;gfx_y=350;gfx_printf("Input %.1f dBFS    Output %.1f dBFS    Gain reduction %.1f dB",ui_input_db,ui_output_db,gain_reduction);
+gfx_set(.14,.2,.27,1);gfx_rect(20,382,gfx_w-40,18);
+gfx_set(.2,.85,.55,1);gfx_rect(20,382,(gfx_w-40)*min(1,output_peak),18);
+gfx_set(.7,.78,.85,1);gfx_x=20;gfx_y=426;
+gfx_drawstr("Drag a bar. Parameters are automatable; meters are display-only.");
+gfx_x=20;gfx_y=452;gfx_drawstr("Bypass fades the wet path; output gain still applies.");
+ui_last_cap=mouse_cap;

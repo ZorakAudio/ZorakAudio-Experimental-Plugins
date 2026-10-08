@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Zlib
 // Deterministic DSP-only comparison. Does not run or replace plugin @gfx.
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #include "JoepTestConfig.h"
 #include "JsfxLegacyAtomics.h"
 #include <algorithm>
@@ -108,7 +109,7 @@ struct Oracle {
   }
 };
 static Oracle *activeOracle;
-static DSPJSFX_State oracleNotifications{};
+static DSPJSFX_State oracleNotifications{};za::jsfx::StateVariables oracleNotifications_variables;oracleNotifications_variables.bind(oracleNotifications,DSPJSFX_VARS_COUNT);
 static EEL_F NSEEL_CGEN_CALL oracleSlider(void *, EEL_F *index) {
   int i = int(*index + 1.e-5) - 1;
   return i >= 0 && i < DSPJSFX_MAX_SLIDERS ? activeOracle->sliders[i] : 0.;
@@ -195,7 +196,7 @@ int main(int argc, char **argv) try {
   }
   std::vector<DSPJSFX_Cell> memory(DSPJSFX_MAX_MEM_CELLS);
   std::mutex atomicMutex;
-  DSPJSFX_State st{};
+  DSPJSFX_State st{};za::jsfx::StateVariables st_variables;st_variables.bind(st,DSPJSFX_VARS_COUNT);
   st.mem = memory.data(); st.memN = memory.size(); st.srate = rate;
   st.samplesblock = 64; st.atomicContext = &atomicMutex;
   for (const auto &v : DSPJSFX_VARS) {

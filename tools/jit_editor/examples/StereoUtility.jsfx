@@ -1,0 +1,30 @@
+desc:Example - JSFX Stereo Utility
+// EEL2 owns all DSP and UI here. Start with Width = 0 to hear mono.
+// The meter measures this block's peak; it is not a loudness meter.
+slider1:gain_db=0<-24,12,.1>Gain (dB)
+slider2:width=1<0,2,.01>Width (0 = mono)
+slider3:swap=0<0,1,1{Normal,Swap}>Channels
+in_pin:left
+in_pin:right
+out_pin:left
+out_pin:right
+
+@init
+left_peak=right_peak=0;
+@slider
+target_gain=10^(gain_db/20);
+@block
+left_peak=right_peak=0;
+@sample
+// Mid/side width keeps the centre fixed; a wide setting can increase peaks.
+mid=(spl0+spl1)*.5; side=(spl0-spl1)*.5*width;
+left=(mid+side)*target_gain; right=(mid-side)*target_gain;
+swap ? (spl0=right;spl1=left;) : (spl0=left;spl1=right;);
+left_peak=max(left_peak,abs(spl0));right_peak=max(right_peak,abs(spl1));
+@gfx 560 170
+gfx_set(.08,.1,.13,1);gfx_rect(0,0,gfx_w,gfx_h);
+gfx_setfont(1,"Arial",18);gfx_set(.9,.94,1,1);gfx_x=16;gfx_y=12;
+gfx_drawstr("JSFX stereo utility: gain -> mid/side width -> swap");
+gfx_set(.15,.2,.25,1);gfx_rect(16,52,gfx_w-32,24);gfx_rect(16,90,gfx_w-32,24);
+gfx_set(.2,.8,.5,1);gfx_rect(16,52,(gfx_w-32)*min(1,left_peak),24);gfx_rect(16,90,(gfx_w-32)*min(1,right_peak),24);
+gfx_set(.8,.85,.9,1);gfx_x=16;gfx_y=130;gfx_drawstr("Use the generated controls below. No Faust section is required.");

@@ -4,7 +4,9 @@
 // the publication mode retains worker-owned variables and bounded read views.
 #pragma once
 #include "JsfxSharedCells.h"
+#include "JsfxStateVariables.h"
 #include <atomic>
+#include <mutex>
 #include <cstdio>
 #include <climits>
 #include <chrono>
@@ -14,6 +16,7 @@
 #include <deque>
 #include <sstream>
 #include "NativeJsfxStrings.h"
+#include "JsfxSliderMask.h"
 #if !DSPJSFX_HAS_NATIVE_GFX
 #error "Build this bridge only with --native-gfx-prototype"
 #endif
@@ -132,6 +135,7 @@ struct Publication {
 class Frame {
   public:
     Frame() {
+        ownedVariables.bind(state,DSPJSFX_VARS_COUNT);
         for (int i = 0; i < DSPJSFX_VARS_COUNT; ++i)
             if (DSPJSFX_GFX_VAR_FLAGS[i] & DSPJSFX_GFX_VAR_FLAG_TO_GFX)
                 publishedIndices.push_back(i);
@@ -151,6 +155,7 @@ class Frame {
         commands.reserve(64);
     }
     DSPJSFX_State state{};
+    za::jsfx::StateVariables ownedVariables;
     const Publication *publication =
         nullptr; // Valid only while the slot is pinned.
     bool memoryFault = false, focused = false, visible = false;
@@ -217,6 +222,18 @@ class Frame {
         state.taskContext = shared.taskContext;
 #endif
         if(state.sharedState != &shared)state.sharedState = &shared;
+#if ZA_JIT_DYNAMIC_GFX
+        if(dynamicIsolatedGlobals)state.sharedState=&state;
+#endif
+#if DSPJSFX_DYNAMIC_VARIABLES
+#if ZA_JIT_DYNAMIC_GFX
+        if(!dynamicIsolatedGlobals){
+#endif
+        state.vars=shared.vars;state.varsN=shared.varsN;
+#if ZA_JIT_DYNAMIC_GFX
+        }
+#endif
+#endif
         state.atomicContext = shared.atomicContext;
         state.mem = shared.mem;
         state.memN = shared.memN;
@@ -245,6 +262,20 @@ class Frame {
         executedFrames.fetch_add(1, std::memory_order_release);
 #endif
     }
+#if ZA_JIT_DYNAMIC_GFX
+    std::mutex dynamicFileMutex;
+    void* dynamicPoolOwner=nullptr;
+    std::function<double(int,double**,int)> dynamicFileDispatch;
+    std::unordered_map<std::string, int> dynamicIndices;
+    bool dynamicIsolatedGlobals=false;
+    std::unordered_map<std::string, int64_t> dynamicNamedStrings;
+    std::vector<int> dynamicAliases;
+    int findIndex(const char* name) const noexcept {
+        auto it = dynamicIndices.find(name);
+        return it == dynamicIndices.end() ? -1 : it->second;
+    }
+    int aliasFor(int i) const noexcept { return i >= 0 && i < (int)dynamicAliases.size() ? dynamicAliases[(size_t)i] : -1; }
+#else
     static int findIndex(const char *name) noexcept {
         static const auto indices = [] {
             std::unordered_map<std::string_view, int> result;
@@ -256,11 +287,29 @@ class Frame {
         const auto it = indices.find(name);
         return it == indices.end() ? -1 : it->second;
     }
+    int aliasFor(int i) const noexcept {
+#if DSPJSFX_NATIVE_GFX_LEGACY
+        return DSPJSFX_LEGACY_SLIDER_ALIASES[i];
+#else
+        return -1;
+#endif
+    }
+#endif
+    int64_t namedStringHandle(const std::string& name) const noexcept {
+#if ZA_JIT_DYNAMIC_GFX
+        const auto it=dynamicNamedStrings.find(name);
+        return it==dynamicNamedStrings.end()?0:it->second;
+#else
+        for(const auto& item:DSPJSFX_NAMED_STRINGS)
+            if(name==item.name)return item.handle;
+        return 0;
+#endif
+    }
     void set(const char *name, double v) noexcept {
         const int i = findIndex(name);
         if (i < 0) return;
 #if DSPJSFX_NATIVE_GFX_LEGACY
-        const int alias = DSPJSFX_LEGACY_SLIDER_ALIASES[i];
+        const int alias = aliasFor(i);
         if (alias >= 0) { scriptState().sliders[alias] = v; return; }
 #endif
         scriptState().vars[i] = v;
@@ -268,8 +317,8 @@ class Frame {
     double get(const char *name) const noexcept {
         const int i = findIndex(name);
 #if DSPJSFX_NATIVE_GFX_LEGACY
-        if (i >= 0 && DSPJSFX_LEGACY_SLIDER_ALIASES[i] >= 0)
-            return scriptState().sliders[DSPJSFX_LEGACY_SLIDER_ALIASES[i]];
+        if (i >= 0 && aliasFor(i) >= 0)
+            return scriptState().sliders[aliasFor(i)];
 #endif
         return i >= 0 ? double(scriptState().vars[i]) : 0;
     }
@@ -277,7 +326,7 @@ class Frame {
         const int i=findIndex(name);
         if(i<0)return nullptr;
 #if DSPJSFX_NATIVE_GFX_LEGACY
-        const int alias=DSPJSFX_LEGACY_SLIDER_ALIASES[i];
+        const int alias=aliasFor(i);
         if(alias>=0)return &scriptState().sliders[alias];
 #endif
         return &scriptState().vars[i];
@@ -637,14 +686,7 @@ extern "C" double jsfx_native_slider_event(DSPJSFX_State *s, double value,
     auto *f = jsfx_native_gfx::owner(s);
     if (!f)
         return 0;
-    jsfx_gfx::SliderMask mask;
-    if (index >= 0 && index < DSPJSFX_MAX_SLIDERS)
-        mask.set(index);
-    else if (std::isfinite(value)) {
-        const double rounded = std::round(value);
-        if (rounded >= 0 && rounded < 18446744073709551616.0)
-            mask.words[0] = (uint64_t)rounded;
-    }
+    const auto mask=jsfx_gfx::sliderMask(value,index);
     if (automate) {
         if (end != 0)
             f->automateEndMask.merge(mask);
@@ -664,6 +706,11 @@ extern "C" double jsfx_native_gfx_dispatch(DSPJSFX_State* state,int32_t opcode,d
     if(count>32)large.resize((size_t)count);
     auto* refs=count>32?large.data():smallval.data();
     for(int i=0;i<count;++i)refs[i]=args[i];
+    #if ZA_JIT_DYNAMIC_GFX
+    std::unique_lock<std::mutex> fileGuard(frame->dynamicFileMutex,std::defer_lock);
+    if(opcode>=DSPJSFX_FILE_OPEN && opcode<=DSPJSFX_FILE_MULTI_SELECT)fileGuard.lock();
+    if(opcode>=DSPJSFX_FILE_OPEN && opcode<=DSPJSFX_FILE_MULTI_SELECT && frame->dynamicFileDispatch){double result=frame->dynamicFileDispatch(opcode,args,count);if(!std::isnan(result))return result;}
+#endif
     switch(opcode) {
     case DSPJSFX_GFX_SET: return jsfx_native_gfx::Frame::eel_gfx_set(frame,count,refs);
     case DSPJSFX_GFX_RECT: return jsfx_native_gfx::Frame::eel_gfx_rect(frame,count,refs);

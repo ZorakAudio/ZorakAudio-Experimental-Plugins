@@ -1,4 +1,5 @@
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #include "JsfxTasks.h"
 #include <cassert>
 #include <cmath>
@@ -13,7 +14,7 @@ static double& var(DSPJSFX_State& s,const char* name){
 int main(){
     auto runtime=std::make_unique<jsfx_tasks::Runtime>();
     std::vector<double> heap(300000);
-    DSPJSFX_State s{};s.mem=heap.data();s.memN=heap.size();s.taskContext=runtime.get();s.srate=48000;s.samplesblock=256;
+    DSPJSFX_State s{};za::jsfx::StateVariables s_variables;s_variables.bind(s,DSPJSFX_VARS_COUNT);s.mem=heap.data();s.memN=heap.size();s.taskContext=runtime.get();s.srate=48000;s.samplesblock=256;
     jsfx_init(&s);
     for(int run=0;run<12;++run){
         std::cout<<"matrix run "<<run<<std::endl;int n=run==0?512:80;var(s,"xc_coarse_n")=n;var(s,"test_restart")=1;

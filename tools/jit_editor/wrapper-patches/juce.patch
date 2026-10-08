@@ -1,0 +1,94 @@
+diff --git a/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp b/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp
+index c7b02c3774..09806caeb5 100644
+--- a/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp
++++ b/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp
+@@ -33,6 +33,9 @@
+ */
+ 
+ #include <juce_core/system/juce_TargetPlatform.h>
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++#include "JitHostInterface.h"
++#endif
+ #include <juce_core/system/juce_CompilerWarnings.h>
+ #include <juce_audio_processors_headless/format/juce_PluginFormatDefs.h>
+ 
+@@ -402,6 +405,9 @@ public:
+         setupParameters();
+     }
+ 
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++    void refreshJitParameters(){vstParamIDs.clear();paramMap.clear();juceIdParameterMap.clear();setupParameters();}
++#endif
+     AudioProcessor* get() const noexcept      { return audioProcessor.get(); }
+ 
+     JUCE_DECLARE_VST3_COM_QUERY_METHODS
+@@ -681,6 +687,9 @@ private:
+         if (bypassParameter == nullptr)
+         {
+             vst3WrapperProvidedBypassParam = true;
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++            if(!ownedBypassParameter)
++#endif
+             ownedBypassParameter.reset (new AudioParameterBool ("byps", "Bypass", false));
+             bypassParameter = ownedBypassParameter.get();
+         }
+@@ -1502,12 +1511,30 @@ public:
+         paramChanged (index, audioProcessor->getVSTParamIDForIndex (index), newValue);
+     }
+ 
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++    void requestJitRestart(){componentRestarter.restart(Vst::kIoChanged);}
++    bool jitControllerReady=false;
++#endif
+     void audioProcessorChanged (AudioProcessor*, const ChangeDetails& details) override
+     {
+         int32 flags = 0;
+ 
+         if (details.parameterInfoChanged)
+         {
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++            if(jitControllerReady){
++                parameters.removeAll();audioProcessor->refreshJitParameters();
++                auto* instance=getPluginInstance();
++                for(auto id:audioProcessor->getParamIDs()){
++                    if(id==audioProcessor->getProgramParamID())continue;
++                    auto* p=audioProcessor->getParamForVSTParamID(id);
++                    auto* group=instance->getParameterTree().getGroupsForParameter(p).getLast();
++                    parameters.addParameter(new Param(*this,*p,id,JuceAudioProcessor::getUnitID(group),id==audioProcessor->getBypassParamID()));
++                }
++                flags|=Vst::kParamTitlesChanged|Vst::kParamValuesChanged;
++            }
++            jitControllerReady=true;
++#endif
+             for (int32 i = 0; i < parameters.getParameterCount(); ++i)
+                 if (auto* param = dynamic_cast<Param*> (parameters.getParameterByIndex (i)))
+                     if (param->updateParameterInfo())
+@@ -2691,6 +2718,15 @@ public:
+         jassert (checkBusFormatsAreNotDiscrete());
+ 
+         comPluginInstance = VSTComSmartPtr (new JuceAudioProcessor (pluginInstance), IncrementRef::yes);
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++        if(auto* editor=dynamic_cast<JitHostInterface*>(pluginInstance))editor->requestHostReconfigure=[this,editor]{
++            if(active && juceVST3EditController!=nullptr)juceVST3EditController->requestJitRestart();
++            else if(editor->commitHostConfiguration()){
++                if(juceVST3EditController!=nullptr)pluginInstance->updateHostDisplay(AudioProcessorListener::ChangeDetails().withParameterInfoChanged(true));
++                else comPluginInstance->refreshJitParameters();
++            }
++        };
++#endif
+ 
+         zerostruct (processContext);
+ 
+@@ -2830,6 +2866,12 @@ public:
+         else
+         {
+             getPluginInstance().releaseResources();
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++            if(auto* editor=dynamic_cast<JitHostInterface*>(pluginInstance))if(editor->commitHostConfiguration()){
++                if(juceVST3EditController!=nullptr)pluginInstance->updateHostDisplay(AudioProcessorListener::ChangeDetails().withParameterInfoChanged(true));
++                else comPluginInstance->refreshJitParameters();
++            }
++#endif
+         }
+ 
+         return kResultOk;

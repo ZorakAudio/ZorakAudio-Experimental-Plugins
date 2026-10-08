@@ -1,4 +1,5 @@
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #define JSFX_FAUST_IMPLEMENTATION
 #include "JsfxFaust.h"
 #include <chrono>
@@ -9,7 +10,7 @@ extern "C" void jsfx_ensure_mem(DSPJSFX_State* s,int64_t n){assert(n<=s->memN);}
 extern "C" double jsfx_native_gfx_dispatch(DSPJSFX_State*,int32_t,double**,int32_t){return 0;}
 extern "C" double jsfx_native_string_dispatch(DSPJSFX_State*,int32_t,const double*,int32_t){return 0;}
 double rd(DSPJSFX_State&s,jsfx_faust::Binding b){switch(b.kind){case 0:return s.vars[b.index];case 1:return s.sliders[b.index];case 2:return s.spl[b.index];case 3:return s.srate;case 4:return s.samplesblock;default:return 0;}}
-int main(){DSPJSFX_State s{};s.srate=48000;s.samplesblock=256;s.memN=DSPJSFX_MAX_MEM_CELLS;s.mem=(DSPJSFX_Cell*)calloc(s.memN,sizeof(DSPJSFX_Cell));jsfx_init(&s);
+int main(){DSPJSFX_State s{};za::jsfx::StateVariables s_variables;s_variables.bind(s,DSPJSFX_VARS_COUNT);s.srate=48000;s.samplesblock=256;s.memN=DSPJSFX_MAX_MEM_CELLS;s.mem=(DSPJSFX_Cell*)calloc(s.memN,sizeof(DSPJSFX_Cell));jsfx_init(&s);
 #if CORPUS_TEST
 s.sliders[44]=.8;
 #else

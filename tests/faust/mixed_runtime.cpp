@@ -1,4 +1,5 @@
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #define JSFX_FAUST_IMPLEMENTATION
 #include "JsfxFaust.h"
 #include <cassert>
@@ -7,7 +8,7 @@
 extern "C" void jsfx_ensure_mem(DSPJSFX_State*,int64_t){assert(false);}
 static int idx(const char* name) {for(const auto& v:DSPJSFX_VARS)if(std::strcmp(v.name,name)==0)return v.index;assert(false);return 0;}
 int main(){
- DSPJSFX_State s{};s.srate=48000;s.sliders[0]=0.5;
+ DSPJSFX_State s{};za::jsfx::StateVariables s_variables;s_variables.bind(s,DSPJSFX_VARS_COUNT);s.srate=48000;s.sliders[0]=0.5;
  jsfx_faust::Engine engine;s.faustContext=&engine;engine.prepare(48000,32);jsfx_init(&s);
  float a[33],b[33],c[33],d[33];for(int i=0;i<33;++i){a[i]=0.8f;b[i]=-0.4f;}
 #if TEST_KIND==6 || TEST_KIND==7
@@ -63,7 +64,7 @@ int main(){
 #else
  assert(engine.blockCalls>0 && engine.scalarCalls==0);
 #endif
- DSPJSFX_State other{};other.srate=96000;jsfx_faust::Engine second;other.faustContext=&second;second.prepare(96000,32);jsfx_init(&other);
+ DSPJSFX_State other{};za::jsfx::StateVariables other_variables;other_variables.bind(other,DSPJSFX_VARS_COUNT);other.srate=96000;jsfx_faust::Engine second;other.faustContext=&second;second.prepare(96000,32);jsfx_init(&other);
  assert(other.faustContext!=s.faustContext);
 #if TEST_KIND==13
  assert(double(s.vars[idx("blocks")])==1 && double(s.vars[idx("boundaries")])==4);

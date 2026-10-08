@@ -57,7 +57,7 @@ import os
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import shutil
 import subprocess
 import tempfile
@@ -547,6 +547,9 @@ class Parser:
         condition expression with a no-op body.
         """
         kw = self._eat("kw", "while")
+        # EEL whitespace may separate the function name and opening group.
+        # Consume only newlines: a semicolon still terminates the statement.
+        self._skip_eol()
         self._eat("punc", "(")
         self._skip_seps()
 
@@ -1693,14 +1696,15 @@ def detect_midi_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, Functi
         'produces_midi_output': uses_midisend,
     }
 
-def infer_spl_io(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef], pin_hints: Optional[Dict[str, Optional[int]]] = None) -> Dict[str, int]:
+def infer_spl_io(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef], pin_hints: Optional[Dict[str, Optional[int]]] = None, *, include_fallback: bool = True) -> Dict[str, int]:
     """Infer minimum input/output channel counts from splN usage.
 
     Heuristic:
       - Any read of splN implies at least (N+1) input channels.
       - Any write to splN (assignment target) implies at least (N+1) output channels.
 
-    Returned counts are clamped to 1..64.
+    Returned counts are clamped to 0..64. Faust pipelines disable the
+    stereo/mirrored fallback because their stages provide actual port counts.
 
     NOTE:
       In REAPER JSFX can see higher track channels even when a plugin only exposes fewer pins.
@@ -1811,15 +1815,15 @@ def infer_spl_io(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef
 
     # If a script has no explicit I/O usage and no explicit pin declarations,
     # keep a conservative stereo fallback for backward compatibility.
-    if declared_in is None and declared_out is None and in_ch == 0 and out_ch == 0:
+    if include_fallback and declared_in is None and declared_out is None and in_ch == 0 and out_ch == 0:
         in_ch = 2
         out_ch = 2
 
     # Mirror unspecified side to the specified side only when there was no explicit
     # declaration forcing silence on that edge.
-    if declared_in is None and in_ch == 0 and out_ch > 0:
+    if include_fallback and declared_in is None and in_ch == 0 and out_ch > 0:
         in_ch = out_ch
-    if declared_out is None and out_ch == 0 and in_ch > 0:
+    if include_fallback and declared_out is None and out_ch == 0 and in_ch > 0:
         out_ch = in_ch
 
     in_ch = max(0, min(64, int(in_ch)))
@@ -2416,10 +2420,12 @@ def _ensure_dir(path: str) -> Path:
 def prepare_jsfx_pipeline(jsfx_text: str,
                           *,
                           include_gfx: bool = False,
+                          include_serialize: bool = False,
                           native_gfx_legacy: bool = False,
                           enable_section_hoists: bool = False,
                           enable_loop_hoists: bool = False,
-                          collect_opt_report: bool = False) -> Dict[str, Any]:
+                          collect_opt_report: bool = False,
+                          parse_program: Optional[Callable[[str, int], List[Node]]] = None) -> Dict[str, Any]:
     if native_gfx_legacy and (enable_section_hoists or enable_loop_hoists):
         raise ValueError("Native legacy shared state is incompatible with custom scalar hoisting")
     include_gfx = include_gfx or native_gfx_legacy
@@ -2429,11 +2435,11 @@ def prepare_jsfx_pipeline(jsfx_text: str,
     sections = extract_sections(faust_plan["text"] if faust_plan else jsfx_text)
 
     programs: Dict[str, List[Node]] = {}
-    for sec in _OPT_DEBUG_SECTION_ORDER + (("gfx",) if include_gfx else ()):
+    for sec in _OPT_DEBUG_SECTION_ORDER + (("serialize",) if include_serialize else ()) + (("gfx",) if include_gfx else ()):
         if sec in sections:
             code, start_line = sections[sec]
-            parser = Parser(code, base_line=start_line)
-            programs[sec] = parser.parse_program()
+            programs[sec] = (parse_program(code, start_line) if parse_program is not None
+                             else Parser(code, base_line=start_line).parse_program())
         else:
             programs[sec] = []
 
@@ -2455,6 +2461,7 @@ def prepare_jsfx_pipeline(jsfx_text: str,
 
     return {
         "sections": sections,
+        "parse_program": parse_program,
         "faust_plan": faust_plan,
         "fn_defs": fn_defs,
         "lowered_programs": lowered_programs,
@@ -2566,7 +2573,7 @@ def validate_native_gfx_prototype(programs: Dict[str, List[Node]], fn_defs: Dict
         supported.update(NATIVE_GFX_APIS)
         supported.update(NATIVE_STRING_APIS)
         supported.update({"memcpy": (3, 3), "memset": (3, 3), "freembuf": (1, 1),
-                          "__memtop": (0, 0), "fft": (2, 2), "ifft": (2, 2),
+                          "__memtop": (0, 0), "slider_show": (1, 2), "fft": (2, 2), "ifft": (2, 2),
                           "fft_real": (2, 2), "ifft_real": (2, 2),
                           "fft_permute": (2, 2), "fft_ipermute": (2, 2),
                           "convolve_c": (3, 3), "slider": (1, 1), "spl": (1, 1),
@@ -2668,7 +2675,7 @@ def validate_native_gfx_prototype(programs: Dict[str, List[Node]], fn_defs: Dict
 
 
 def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
-                           *, native_gfx_prototype: bool = False, native_gfx_legacy: bool = False, stream_functions: bool = False) -> Tuple[ir.Module, Dict[str, Any]]:
+                           *, native_gfx_prototype: bool = False, native_gfx_legacy: bool = False, stream_functions: bool = False, state_var_capacity: int = 0) -> Tuple[ir.Module, Dict[str, Any]]:
     native_gfx_prototype = native_gfx_prototype or native_gfx_legacy
     if native_gfx_legacy and pipeline["opt_report"]["settings"].get("section_hoists_enabled"):
         raise ValueError("Native legacy shared state is incompatible with custom scalar hoisting")
@@ -2692,14 +2699,16 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
     serialize_code = re.sub(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"', '', serialize_source[0], flags=re.S)
     if serialize_source[0] and (has_tasks or re.search(r'\b(?:' + task_calls + r')\s*\(', serialize_code)):
         validation_programs = dict(programs)
-        validation_programs['serialize'] = Parser(serialize_source[0], base_line=serialize_source[1]).parse_program()
+        parse_program = pipeline.get('parse_program')
+        validation_programs['serialize'] = (parse_program(*serialize_source) if parse_program is not None
+                                            else Parser(serialize_source[0], base_line=serialize_source[1]).parse_program())
         tasks_compiler.validate(sys.modules[__name__], validation_programs, fn_defs, slider_aliases)
     if not native_gfx_prototype and re.search(r'\b(?:' + task_calls + r')\s*\(', gfx_code):
         raise ValueError('Tasks in @gfx require --native-gfx-legacy or --native-gfx-prototype')
     if has_tasks and (pipeline['loop_hoists'] or pipeline['opt_report']['settings'].get('section_hoists_enabled')):
         raise ValueError('Tasks are incompatible with custom scalar hoisting')
     user_vars = collect_user_vars(programs, fn_defs)
-    if has_tasks and len(user_vars) > 4096:
+    if has_tasks and not native_gfx_legacy and len(user_vars) > 4096:
         raise ValueError('Task snapshot limit is 4096 scalar variables')
     if native_gfx_legacy:
         # 'mem' is an ordinary EEL variable, often an allocator cursor.
@@ -2773,7 +2782,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
         gfx_mem_shared = False
 
     pin_hints = parse_pin_hints(jsfx_text)
-    io_channels = infer_spl_io(programs, fn_defs, pin_hints=pin_hints)
+    io_channels = infer_spl_io(programs, fn_defs, pin_hints=pin_hints, include_fallback=not bool(faust_plan))
     midi_caps = detect_midi_usage(programs, fn_defs)
     comm_caps = detect_comm_usage(programs, fn_defs)
     sample_pool_caps = detect_sample_pool_usage(programs, fn_defs)
@@ -2783,7 +2792,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
         sym.slider_aliases = {name.lower(): int(index) - 1 for index, name in re.findall(
             r"(?m)^\s*slider([0-9]+)\s*:\s*([A-Za-z_][A-Za-z_0-9]*)\s*=", jsfx_text)}
 
-    emitter = LLVMModuleEmitter(sym, native_gfx_legacy=native_gfx_legacy, stream_functions=stream_functions, has_tasks=has_tasks, has_faust=bool(faust_plan))
+    emitter = LLVMModuleEmitter(sym, native_gfx_legacy=native_gfx_legacy, stream_functions=stream_functions, has_tasks=has_tasks, has_faust=bool(faust_plan), state_var_capacity=state_var_capacity)
     emitter.native_gfx_prototype = native_gfx_prototype
     emitter.native_gfx_functions = native_functions
     emitter.jsfx_memtop_slots = resolve_jsfx_memtop_slots(options)
@@ -2800,6 +2809,8 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
     fn_slider = emitter.emit_section_fn("jsfx_slider", programs["slider"])
     fn_block = emitter.emit_section_fn("jsfx_block", programs["block"])
     fn_sample = emitter.emit_section_fn("jsfx_sample", programs["sample"])
+    if "serialize" in programs:
+        emitter.emit_section_fn("jsfx_serialize",programs["serialize"])
 
     if native_gfx_prototype:
         emitter.emit_section_fn("jsfx_gfx_aot", programs["gfx"])
@@ -3808,7 +3819,7 @@ class _SerializedFunctionModule(ir.Module):
 
 
 class LLVMModuleEmitter:
-    def __init__(self, sym: SymTable, *, native_gfx_legacy: bool = False, stream_functions: bool = False, has_tasks: bool = False, has_faust: bool = False):
+    def __init__(self, sym: SymTable, *, native_gfx_legacy: bool = False, stream_functions: bool = False, has_tasks: bool = False, has_faust: bool = False, state_var_capacity: int = 0):
         self.has_tasks = has_tasks
         self.native_gfx_legacy = native_gfx_legacy
         self.sym = sym
@@ -3852,13 +3863,13 @@ class LLVMModuleEmitter:
         # 33: void* hostOwner (instance-bound callbacks; never a global map)
         # 34: int64_t memUsed (audio-owned heap high-water mark)
         # 35: int32_t memoryFault (latched until state reset)
-        self.var_cap = max(1, (max(sym.vars.values()) + 1) if sym.vars else 1)
+        self.var_cap = max(1, state_var_capacity, (max(sym.vars.values()) + 1) if sym.vars else 1)
         self.midi_event_ty = ir.LiteralStructType([self.i32, self.i32, self.i32, self.i32])
 
         self.state_ty = ir.LiteralStructType([
             ir.ArrayType(self.double, 64),
             ir.ArrayType(self.double, MAX_JSFX_SLIDERS),
-            ir.ArrayType(self.double, self.var_cap),
+            self.double.as_pointer() if native_gfx_legacy else ir.ArrayType(self.double, self.var_cap),
             self.double.as_pointer(),
             self.i64,
             self.double,
@@ -3899,12 +3910,15 @@ class LLVMModuleEmitter:
                                                 [self.i8.as_pointer(), self.i8.as_pointer(), self.i8.as_pointer()])
             self.state_ptr = self.state_ty.as_pointer()
 
-        if has_tasks:
+        if has_tasks or native_gfx_legacy:
             self.state_ty = ir.LiteralStructType(list(self.state_ty.elements) + [self.i8.as_pointer()])
             self.state_ptr = self.state_ty.as_pointer()
 
-        if has_faust:
+        if has_faust or native_gfx_legacy:
             self.state_ty = ir.LiteralStructType(list(self.state_ty.elements) + [self.i8.as_pointer()])
+            self.state_ptr = self.state_ty.as_pointer()
+        if native_gfx_legacy:
+            self.state_ty = ir.LiteralStructType(list(self.state_ty.elements) + [self.i64])
             self.state_ptr = self.state_ty.as_pointer()
 
         self.module = (_SerializedFunctionModule if stream_functions else ir.Module)(name="dsp_jsfx_module", context=ir.Context())
@@ -4345,6 +4359,9 @@ class LLVMModuleEmitter:
         field = {"spl": 0, "slider": 1, "var": 2}[ref.kind]
         fld = ir.Constant(self.i32, field)
         idx = ir.Constant(self.i32, ref.index)
+        if ref.kind == "var" and self.native_gfx_legacy:
+            cells = builder.load(builder.gep(st, [zero, fld], inbounds=True))
+            return builder.gep(cells, [idx], inbounds=True)
         return builder.gep(st, [zero, fld, idx], inbounds=True)
 
     def _script_state(self, builder, st):
@@ -4740,6 +4757,13 @@ class LLVMModuleEmitter:
 
     def _get_out_lvalue_ptr(self, builder: ir.IRBuilder, st: ir.Value, node: Node, api_name: str) -> ir.Value:
         if isinstance(node, Var):
+            if self.native_gfx_legacy and node.name.startswith("#") and api_name in {"instance_uid", "instance_get_name", "track_name", "msg_peer_name", "msg_peer_uid", "sample_name", "midirecv_str"}:
+                # Native named strings are stable handles, not scalar slots.
+                # The runtime writes their existing string context in place.
+                handle = self.emit_expr(builder, st, node)
+                pointer = self._entry_alloca(builder, self.double, name="string_output")
+                builder.store(handle, pointer)
+                return pointer
             if node.name == "gmem" or node.name == "mem" and not self.native_gfx_legacy:
                 raise ValueError(f"{api_name} output arguments must be assignable variables or mem[] slots")
             return self._get_slot_ptr(builder, st, node.name)
@@ -6030,6 +6054,16 @@ class LLVMModuleEmitter:
             # Strategy: treat these calls as no-ops that evaluate their args
             # (preserving side effects) and return 0.
             # ------------------------------------------------------------
+            if fn == "file_string" and self.native_gfx_legacy:
+                args = [self.emit_expr(builder, st, arg) for arg in n.args]
+                if len(args) != 2:
+                    raise ValueError("file_string expects 2 arguments")
+                rt_name = "jsfx_file_string"
+                callee = self._buildins.get(rt_name)
+                if callee is None:
+                    callee = self._function(self.module, ir.FunctionType(self.double, [self.state_ptr, self.double, self.double]), name=rt_name)
+                    self._buildins[rt_name] = callee
+                return builder.call(callee, [st] + args)
             if fn.startswith("gfx_") or fn in (
                 # formatting / strings
                 "sprintf", "printf",
@@ -6759,6 +6793,7 @@ def compile_jsfx_to_ir(jsfx_text: str,
                        native_gfx_prototype: bool = False,
                        native_gfx_legacy: bool = False,
                        stream_functions: bool = False,
+                       state_var_capacity: int = 0,
                        pipeline: Optional[Dict[str, Any]] = None) -> Tuple[ir.Module, Dict[str, Any]]:
     if pipeline is None:
         pipeline = prepare_jsfx_pipeline(
@@ -6770,7 +6805,7 @@ def compile_jsfx_to_ir(jsfx_text: str,
             collect_opt_report=False,
         )
     return compile_pipeline_to_ir(jsfx_text, pipeline, native_gfx_prototype=native_gfx_prototype,
-                                  native_gfx_legacy=native_gfx_legacy, stream_functions=stream_functions)
+                                  native_gfx_legacy=native_gfx_legacy, stream_functions=stream_functions, state_var_capacity=state_var_capacity)
 
 
 
@@ -6853,13 +6888,16 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("")
     state_abi=(6 if meta.get('native_gfx_legacy') else 4) if meta.get('has_tasks') else (5 if meta.get('native_gfx_legacy') else 3)
     if meta.get('has_faust'): state_abi+=10
+    if meta.get('native_gfx_legacy'): state_abi=17
     lines.append(f"#define DSPJSFX_RUNTIME_STATE_ABI {state_abi}")
     lines.append("#define DSPJSFX_MAX_SLIDERS 256")
     lines.append("#define DSPJSFX_SLIDER_MASK_WORDS 4")
     lines.append("typedef struct DSPJSFX_State {")
     lines.append("    DSPJSFX_Cell spl[64];")
     lines.append("    DSPJSFX_Cell sliders[DSPJSFX_MAX_SLIDERS];")
-    lines.append(f"    DSPJSFX_Cell vars[{var_cap}];")
+    lines.append(f"#define DSPJSFX_DYNAMIC_VARIABLES {1 if meta.get('native_gfx_legacy') else 0}")
+    lines.append(f"#define DSPJSFX_STATE_VARS_CAPACITY {var_cap}")
+    lines.append("    DSPJSFX_Cell* vars;" if meta.get('native_gfx_legacy') else f"    DSPJSFX_Cell vars[{var_cap}];")
     lines.append("    DSPJSFX_Cell* mem;")
     lines.append("    int64_t memN;")
     lines.append("    DSPJSFX_Cell srate;")
@@ -6897,10 +6935,11 @@ def _emit_header(meta: Dict[str, Any]) -> str:
         lines.append("    void* sharedState; /* null for DSP; GFX points at the DSP state */")
         lines.append("    void* atomicContext; /* instance mutex for explicit atomic_* calls */")
         lines.append("    void* nativeStrings; /* instance-owned native string context */")
-    if meta.get('has_tasks'):
+    if meta.get('has_tasks') or meta.get('native_gfx_legacy'):
         lines.append("    void* taskContext; /* instance-owned structured task runtime */")
-    if meta.get("has_faust"):
+    if meta.get("has_faust") or meta.get("native_gfx_legacy"):
         lines.append("    void* faustContext; /* instance-owned mixed Faust pipeline */")
+    if meta.get("native_gfx_legacy"): lines.append("    int64_t varsN; /* instance variable extent, independent of code loading */")
     lines.append("} DSPJSFX_State;")
     lines.append("")
 

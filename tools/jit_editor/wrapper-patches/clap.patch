@@ -1,0 +1,192 @@
+diff --git a/src/wrapper/clap-juce-wrapper.cpp b/src/wrapper/clap-juce-wrapper.cpp
+index 502e8b4..9935622 100644
+--- a/src/wrapper/clap-juce-wrapper.cpp
++++ b/src/wrapper/clap-juce-wrapper.cpp
+@@ -1,3 +1,6 @@
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++#include "../../../../tools/jit_editor/JitHostInterface.h"
++#endif
+ /*
+  * clap-juce-wrapper.cpp
+  *
+@@ -477,6 +480,14 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+             };
+         }
+ 
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++        refreshJitParameters();
++        if(auto* editor=dynamic_cast<JitHostInterface*>(processor.get()))
++            editor->requestHostReconfigure=[this]{
++                if(isActive())_host.requestRestart();
++                else { commitJitConfiguration(); _host.requestCallback(); }
++            };
++#else
+         const bool forceLegacyParamIDs = false;
+ 
+         juceParameters.update(*processor, forceLegacyParamIDs);
+@@ -506,6 +517,8 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+             clapIDByParamPtr[juceParam] = clapID;
+         }
+ 
++#endif
++
+ #if HAS_LINUX_FD
+         juce::LinuxEventLoopInternal::registerLinuxEventLoopListener(*this);
+ #endif
+@@ -761,7 +774,7 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+ 
+         auto id = clapIdFromParameterIndex(index);
+         newValue = getUnNormalisedParameterValue(paramPtrByClapID[id], newValue);
+-        uiParamChangeQ.push({CLAP_EVENT_PARAM_VALUE, 0, id, newValue});
++        uiParamChangeQ.push({CLAP_EVENT_PARAM_VALUE, juce::MessageManager::existsAndIsCurrentThread() ? CLAP_EVENT_IS_LIVE : 0, id, newValue});
+ 
+         if (_host.canUseParams())
+             _host.paramsRequestFlush();
+@@ -772,7 +785,7 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+         auto id = clapIdFromParameterIndex(index);
+         auto &pbi = paramPtrByClapID[id];
+         auto value = getUnNormalisedParameterValue(pbi, pbi.processorParam->getValue());
+-        uiParamChangeQ.push({CLAP_EVENT_PARAM_GESTURE_BEGIN, 0, id, value});
++        uiParamChangeQ.push({CLAP_EVENT_PARAM_GESTURE_BEGIN, juce::MessageManager::existsAndIsCurrentThread() ? CLAP_EVENT_IS_LIVE : 0, id, value});
+ 
+         if (_host.canUseParams())
+             _host.paramsRequestFlush();
+@@ -783,7 +796,7 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+         auto id = clapIdFromParameterIndex(index);
+         auto &pbi = paramPtrByClapID[id];
+         auto value = getUnNormalisedParameterValue(pbi, pbi.processorParam->getValue());
+-        uiParamChangeQ.push({CLAP_EVENT_PARAM_GESTURE_END, 0, id, value});
++        uiParamChangeQ.push({CLAP_EVENT_PARAM_GESTURE_END, juce::MessageManager::existsAndIsCurrentThread() ? CLAP_EVENT_IS_LIVE : 0, id, value});
+ 
+         if (_host.canUseParams())
+             _host.paramsRequestFlush();
+@@ -889,6 +902,9 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+     bool activate(double sampleRate, uint32_t minFrameCount,
+                   uint32_t maxFrameCount) noexcept override
+     {
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++        flushJitRescans();
++#endif
+         juce::ignoreUnused(minFrameCount);
+         processor->setRateAndBufferSizeDetails(sampleRate, (int)maxFrameCount);
+         processor->prepareToPlay(sampleRate, (int)maxFrameCount);
+@@ -906,8 +922,29 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+         return true;
+     }
+ 
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++    bool jitRescanPending=false;
++    void refreshJitParameters() {
++        allClapIDs.clear();paramPtrByClapID.clear();clapIDByParamPtr.clear();
++        juceParameters.update(*processor,false);usingLegacyParameterAPI=false;
++        for(auto* p:juceParameters){auto id=generateClapIDForJuceParam(p);allClapIDs.insert(id);
++            paramPtrByClapID[id]=JUCEParameterVariant{p,dynamic_cast<juce::RangedAudioParameter*>(p),dynamic_cast<clap_juce_extensions::clap_juce_parameter_capabilities*>(p)};
++            clapIDByParamPtr[p]=id;
++        }
++    }
++    void flushJitRescans(){if(jitRescanPending && !isActive()){jitRescanPending=false;if(_host.canUseParams())_host.paramsRescan(CLAP_PARAM_RESCAN_ALL);if(_host.canUseAudioPorts())_host.audioPortsRescan(CLAP_AUDIO_PORTS_RESCAN_LIST);}}
++    void commitJitConfiguration(){
++        if(auto* editor=dynamic_cast<JitHostInterface*>(processor.get()))if(editor->commitHostConfiguration()){
++            refreshJitParameters();jitRescanPending=true;_host.requestCallback();
++        }
++    }
++#endif
++
+     void deactivate() noexcept override
+     {
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++        commitJitConfiguration();
++#endif
+         if (processorAsClapProperties)
+             processorAsClapProperties->is_clap_active = false;
+     }
+@@ -916,6 +953,9 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+ 
+     void defineAudioPorts()
+     {
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++        return;
++#endif
+         jassert(!isActive());
+ 
+         auto requested = processor->getBusesLayout();
+@@ -954,19 +994,32 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+     bool implementsAudioPorts() const noexcept override { return true; }
+     uint32_t audioPortsCount(bool isInput) const noexcept override
+     {
++        #if ZA_JIT_EDITOR_DYNAMIC_HOST
++        return processor->getTotalNumInputChannels()==0 && isInput ? 0 : processor->getTotalNumOutputChannels()==0 && !isInput ? 0 : (uint32_t)processor->getBusCount(isInput);
++#else
+         return (uint32_t)processor->getBusCount(isInput);
++#endif
+     }
+ 
+     bool audioPortsInfo(uint32_t index, bool isInput,
+                         clap_audio_port_info *info) const noexcept override
+     {
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++        if(index>=audioPortsCount(isInput))return false;
++        *info={};
++#endif
+         // For now hardcode to stereo out. Fix this obviously.
+         const auto bus = processor->getBus(isInput, (int)index);
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++        const auto busDefaultLayout=bus->getCurrentLayout();
++#else
+         const auto busDefaultLayout = bus->getDefaultLayout();
++#endif
+ 
+         // For now we only support mono or stereo buses
+-        jassert(busDefaultLayout == juce::AudioChannelSet::mono() ||
+-                busDefaultLayout == juce::AudioChannelSet::stereo());
++#if !ZA_JIT_EDITOR_DYNAMIC_HOST
++        jassert(busDefaultLayout == juce::AudioChannelSet::mono() || busDefaultLayout == juce::AudioChannelSet::stereo());
++#endif
+ 
+         auto getPortID = [](bool isPortInput, uint32_t portIndex) {
+             return (isPortInput ? 1 << 15 : 1) + portIndex;
+@@ -994,7 +1047,12 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+             info->flags |= CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE;
+         }
+ 
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++        auto* opposite=processor->getBus(!isInput,(int)index);
++        if(opposite && opposite->getCurrentLayout().size()==busDefaultLayout.size() && busDefaultLayout.size()>0)
++#else
+         if (processor->getBus(!isInput, (int)index) != nullptr)
++#endif
+         {
+             // this bus has a corresponding bus on the other side, so it can do in-place processing
+             info->in_place_pair = getPortID(!isInput, index);
+@@ -1012,7 +1070,12 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+         else if (busDefaultLayout == juce::AudioChannelSet::stereo())
+             info->port_type = CLAP_PORT_STEREO;
+         else
+-            jassertfalse; // @TODO: implement CLAP_PORT_SURROUND and CLAP_PORT_AMBISONIC through
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++            info->port_type=nullptr;
++#else
++            jassertfalse;
++#endif
++            // @TODO: implement CLAP_PORT_SURROUND and CLAP_PORT_AMBISONIC through
+                           // extensions
+ 
+         return true;
+@@ -1505,6 +1568,9 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+ 
+     void onMainThread() noexcept override
+     {
++#if ZA_JIT_EDITOR_DYNAMIC_HOST
++        flushJitRescans();
++#endif
+ #if 0 // PARAM_LISTENERS_ON_MAIN_THREAD
+       // handle parameter change listener callbacks
+         juce::ScopedValueSetter<bool> suppressCallbacks{supressParameterChangeMessages, true};
+@@ -1855,6 +1921,7 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+                 evt.header.flags = (uint32_t)pc.flag;
+                 evt.param_id = pc.id;
+                 evt.value = pc.newval;
++                evt.note_id = -1;evt.port_index = -1;evt.channel = -1;evt.key = -1;
+                 ov->try_push(ov, reinterpret_cast<const clap_event_header *>(&evt));
+             }
+ 

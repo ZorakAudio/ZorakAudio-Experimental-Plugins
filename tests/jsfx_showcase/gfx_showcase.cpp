@@ -2,6 +2,7 @@
 // Actual Abyss @init/@gfx, EEL engine and CPU LICE renderer. The fallback test
 // double provides only JUCE allocation/host/font contracts, not JUCE validation.
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #ifdef ZA_SHOWCASE_REAL_JUCE
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_graphics/juce_graphics.h>
@@ -28,7 +29,7 @@ int main(int argc,char**argv)try{
  require(argc>1,"Pass expanded source path");
  std::ifstream f(argv[1]);std::ostringstream stream;stream<<f.rdbuf();const auto source=stream.str();
  require(!source.empty(),"empty source");
- DSPJSFX_State st{};std::vector<double> heap(8*1024*1024);st.mem=heap.data();st.memN=heap.size();st.srate=48000;st.samplesblock=512;
+ DSPJSFX_State st{};za::jsfx::StateVariables st_variables;st_variables.bind(st,DSPJSFX_VARS_COUNT);std::vector<double> heap(8*1024*1024);st.mem=heap.data();st.memN=heap.size();st.srate=48000;st.samplesblock=512;
  const char* aliases[]={"diffusion","current_verb_decay","verb_mod_depth","current_verb_mod_rate","current_verb_lowpass","current_verb_highpass","shimmer","drop_mode","drops","nonlinearity","wet"};
  const double values[]={.6,.8,.1,.3,1,0,.2,0,0,0,.25};
  for(int i=0;i<11;++i){st.sliders[i]=values[i];st.vars[indexOf(aliases[i])]=values[i];}

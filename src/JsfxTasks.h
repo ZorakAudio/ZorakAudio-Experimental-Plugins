@@ -12,6 +12,8 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
+#include <stdexcept>
 
 namespace jsfx_tasks {
 using Callback = double (*)(DSPJSFX_State *, double, const double *);
@@ -31,11 +33,15 @@ static_assert(std::atomic<double>::is_always_lock_free &&
                   std::atomic<uint64_t>::is_always_lock_free,
               "Task result polling requires lock-free 64-bit atomics");
 class Runtime {
+  int variableExtent=0;
   struct Job {
     bool arenaJob = false;
     Job *owner =
         nullptr; // Retained by the child's outstanding parent reference.
     DSPJSFX_State state{};
+#if DSPJSFX_DYNAMIC_VARIABLES
+    std::vector<DSPJSFX_Cell> variables;
+#endif
     std::array<double, Captures> captures{};
     std::array<std::atomic<double>, Iterations> values{};
     std::array<uint64_t, Slots> dependencies{};
@@ -64,6 +70,9 @@ class Runtime {
   // One private heap per instance. Allocation/reclamation happen on workers.
   struct Arena {
     DSPJSFX_State state{};
+#if DSPJSFX_DYNAMIC_VARIABLES
+    std::vector<DSPJSFX_Cell> variables;
+#endif
     Heap memory;
     std::shared_ptr<void> lease;
     std::atomic<uint64_t> id{0}, epoch{0};
@@ -87,6 +96,10 @@ class Runtime {
   using RebindHeap=void (*)(DSPJSFX_State*);
   ValidateHeap validateHeap=nullptr;
   RebindHeap rebindHeap=nullptr;
+  using TryHeapBoundary=bool (*)(DSPJSFX_State*);
+  using LeaveHeapBoundary=void (*)(DSPJSFX_State*);
+  TryHeapBoundary tryHeapBoundary=nullptr;
+  LeaveHeapBoundary leaveHeapBoundary=nullptr;
   AcquireLease acquireLease=nullptr;
   ExecutePinned executePinned=nullptr;
   std::unique_ptr<std::array<Job, Slots>> jobs{new std::array<Job, Slots>};
@@ -94,6 +107,9 @@ class Runtime {
       new std::array<Buffer, Buffers>};
   std::mutex mutex;
   std::array<std::thread, 2> threads;
+#if DSPJSFX_DYNAMIC_VARIABLES
+  std::array<std::vector<DSPJSFX_Cell>,2> workerVariables;
+#endif
   std::atomic<bool> stopping{false};
   uint64_t serial = 0;
   std::atomic<uint64_t> epoch{1};
@@ -229,7 +245,10 @@ class Runtime {
     }
     return code;
   }
-  void run() {
+  void run(size_t worker) {
+#if !DSPJSFX_DYNAMIC_VARIABLES
+    (void)worker;
+#endif
     while (!stopping.load()) {
       bool allocate=false, reclaim=false;
       Heap retiredMemory;
@@ -310,7 +329,10 @@ class Runtime {
       for (int i = first; i < last && !j.cancel.load() && !stopping.load();
            ++i) {
         DSPJSFX_State local{};
-        for (int v = 0; v < DSPJSFX_VARS_COUNT; ++v)
+#if DSPJSFX_DYNAMIC_VARIABLES
+        local.vars=workerVariables[worker].data();local.varsN=variableExtent;
+#endif
+        for (int v = 0; v < variableExtent; ++v)
           local.vars[v] = double(j.state.vars[v]);
         local.srate = j.state.srate;
         local.samplesblock = j.state.samplesblock;
@@ -355,7 +377,7 @@ public:
     if(arena.id.load(std::memory_order_acquire) && (status==1 || status==2 || status==3 || !arena.released.load(std::memory_order_acquire)))return true;
     return false;
   }
-  void setHeapSwapHooks(ValidateHeap validate,RebindHeap rebind) {validateHeap=validate;rebindHeap=rebind;}
+  void setHeapSwapHooks(ValidateHeap validate,RebindHeap rebind,TryHeapBoundary enter=nullptr,LeaveHeapBoundary leave=nullptr) {validateHeap=validate;rebindHeap=rebind;tryHeapBoundary=enter;leaveHeapBoundary=leave;}
   void setArenaHooks(AcquireLease acquire, ExecutePinned execute, ValidateLease validate) { acquireLease=acquire;executePinned=execute;validateLease=validate; }
   static bool privateHeap(const DSPJSFX_State* state) {
     return current && currentJob && currentJob->arenaJob && state==&current->arena.state;
@@ -366,7 +388,13 @@ public:
     if(!allowed) {state->memoryFault=1;currentJob->failed=true;currentJob->cancel=true;}
     return allowed;
   }
-  Runtime() {
+  explicit Runtime(int count=DSPJSFX_VARS_COUNT):variableExtent(count) {
+    if(count<0)throw std::invalid_argument("Negative task variable extent");
+#if DSPJSFX_DYNAMIC_VARIABLES
+    for(auto& variables:workerVariables)variables.resize((size_t)count);
+    for(auto& job:*jobs){job.variables.resize((size_t)count);job.state.vars=job.variables.data();job.state.varsN=count;}
+    arena.variables.resize((size_t)count);arena.state.vars=arena.variables.data();arena.state.varsN=count;
+#endif
     // Explicitly initialize atomic storage for C++17 too, and commit its pages
     // before an audio callback can submit the first task.
     for (auto &job : *jobs)
@@ -376,8 +404,8 @@ public:
       for (auto &value : buffer.data)
         value.store(0);
     try {
-      for (auto &t : threads)
-        t = std::thread([this] { run(); });
+      for (size_t worker=0;worker<threads.size();++worker)
+        threads[worker] = std::thread([this,worker] { run(worker); });
     } catch (...) {
       stopping.store(true);
       for (auto &t : threads)
@@ -484,7 +512,7 @@ public:
     if (source->sharedState)
       source = static_cast<DSPJSFX_State *>(source->sharedState);
 #endif
-    for (int i = 0; i < DSPJSFX_VARS_COUNT; ++i)
+    for (int i = 0; i < variableExtent; ++i)
       j->state.vars[i] = double(source->vars[i]);
     j->state.srate = source->srate;
     j->state.samplesblock = source->samplesblock;
@@ -498,7 +526,9 @@ public:
     return double(id);
   }
   double arenaApi(DSPJSFX_State* source,int op,const double* a,int n) {
+    bool fromGraphics=false;
 #if DSPJSFX_NATIVE_GFX_LEGACY
+    fromGraphics=source && source->sharedState;
     if(source && source->sharedState) source=static_cast<DSPJSFX_State*>(source->sharedState);
 #endif
     if (op==27) {
@@ -508,6 +538,17 @@ public:
     std::unique_lock<std::mutex> lock(mutex,std::try_to_lock);
     if (!lock.owns_lock()) return -2;
     if (current==this) return reject(-3);
+    // A graphics invocation already holds the host's lifecycle guard. DSP
+    // never waits for it: retry the publication instead of freeing a heap that
+    // graphics still references. The guard also covers clone pointer capture.
+    struct HeapBoundary {
+      DSPJSFX_State* source;LeaveHeapBoundary leave;bool entered=false;
+      ~HeapBoundary(){if(entered && leave)leave(source);}
+    } boundary{source,leaveHeapBoundary};
+    if((op==30 || op==32) && !fromGraphics && tryHeapBoundary) {
+      if(!tryHeapBoundary(source))return -2;
+      boundary.entered=true;
+    }
     if (op==20 || op==30) {
       if(op==30) {
 #if DSPJSFX_NATIVE_GFX_LEGACY
@@ -519,7 +560,10 @@ public:
       if(n!=3 || !std::isfinite(a[1]) || !std::isfinite(a[2]) || a[1]<0 || a[2]<0 || a[1]>=9007199254740992. || a[2]>=9007199254740992. || std::floor(a[1])!=a[1] || std::floor(a[2])!=a[2] || !std::isfinite(a[0]) || a[0]<=0 || a[0]>25165824 || std::floor(a[0])!=a[0] || !source || a[0]!=source->memN) return -3;
       if(arena.id) return -1;
       arena.state={};
-      for(int i=0;i<DSPJSFX_VARS_COUNT;++i) arena.state.vars[i]=double(source->vars[i]);
+#if DSPJSFX_DYNAMIC_VARIABLES
+      arena.state.vars=arena.variables.data();arena.state.varsN=variableExtent;
+#endif
+      for(int i=0;i<variableExtent;++i) arena.state.vars[i]=double(source->vars[i]);
       for(int i=0;i<DSPJSFX_MAX_SLIDERS;++i) arena.state.sliders[i]=double(source->sliders[i]);
       arena.state.srate=double(source->srate);arena.state.samplesblock=double(source->samplesblock);
       arena.state.hostOwner=source->hostOwner;arena.state.taskContext=this;
@@ -552,7 +596,7 @@ public:
     if(op==32) {
 #if DSPJSFX_NATIVE_GFX_LEGACY
       if(arena.status!=4 || arena.refs || !arena.clone || !source || source->mem!=arena.input || source->memN!=arena.size || !validateHeap || !validateHeap(source) || n<1 || n>4097) return -4;
-      for(int i=1;i<n;++i) if(!std::isfinite(a[i]) || a[i]<0 || a[i]>=DSPJSFX_VARS_COUNT || std::floor(a[i])!=a[i]) return -3;
+      for(int i=1;i<n;++i) if(!std::isfinite(a[i]) || a[i]<0 || a[i]>=variableExtent || std::floor(a[i])!=a[i]) return -3;
       for(int r=0;r<arena.preserveCount;++r) {
         const auto first=arena.preserve[r][0],end=first+arena.preserve[r][1];
         for(int64_t i=first;i<end;++i) arena.memory[i]=double(source->mem[i]);
@@ -572,12 +616,12 @@ public:
     }
     if(op==29) {
       if(arena.status!=4 || arena.refs || !source || n<1 || n>4097) return -4;
-      for(int i=1;i<n;++i) if(!std::isfinite(a[i]) || a[i]<0 || a[i]>=DSPJSFX_VARS_COUNT || std::floor(a[i])!=a[i]) return -3;
+      for(int i=1;i<n;++i) if(!std::isfinite(a[i]) || a[i]<0 || a[i]>=variableExtent || std::floor(a[i])!=a[i]) return -3;
       for(int i=1;i<n;++i) source->vars[int(a[i])]=double(arena.state.vars[int(a[i])]);
       return 1;
     }
     if(op==25) {
-      if(arena.status!=4 || arena.refs || !std::isfinite(a[1]) || a[1]<0 || a[1]>=DSPJSFX_VARS_COUNT || std::floor(a[1])!=a[1]) return -4;
+      if(arena.status!=4 || arena.refs || !std::isfinite(a[1]) || a[1]<0 || a[1]>=variableExtent || std::floor(a[1])!=a[1]) return -4;
       return double(arena.state.vars[int(a[1])]);
     }
     if(op==22 || op==24) {

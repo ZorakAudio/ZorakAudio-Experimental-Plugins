@@ -1,4 +1,5 @@
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #include "JsfxTasks.h"
 #include <cassert>
 #include <iostream>
@@ -84,7 +85,8 @@ static void heapSwapChecks(DSPJSFX_State& s) {
   auto* runtime=static_cast<jsfx_tasks::Runtime*>(s.taskContext);
   s.mem=static_cast<DSPJSFX_Cell*>(std::calloc(64,sizeof(DSPJSFX_Cell)));s.memN=64;s.sliders[0]=3;s.mem[0]=7;
   auto* original=s.mem;
-  runtime->setHeapSwapHooks([](DSPJSFX_State* x){return x->mem && x->memN==64;},[](DSPJSFX_State* x){assert(x->mem);});
+  static std::mutex lifecycle;
+  runtime->setHeapSwapHooks([](DSPJSFX_State* x){return x->mem && x->memN==64;},[](DSPJSFX_State* x){assert(x->mem);},[](DSPJSFX_State*){return lifecycle.try_lock();},[](DSPJSFX_State*){lifecycle.unlock();});
 #if DSPJSFX_NATIVE_GFX_LEGACY
   double a=-1;while(a==-1 || a==-2) a=retryApi(s,30,{64,0,0});
   assert(a>0);
@@ -95,6 +97,9 @@ static void heapSwapChecks(DSPJSFX_State& s) {
   while(first==-2)first=jsfx_task_submit_arena(&s,arenaFirst,nullptr,0,a,0);
   while(next==-2)next=jsfx_task_submit_arena(&s,arenaNext,nullptr,0,a,first);
   wait(s,next);s.mem[0]=99;
+  lifecycle.lock();const double adoptionArgs[]={a,0};
+  assert(runtime->arenaApi(&s,32,adoptionArgs,2)==-2 && s.mem==original);
+  lifecycle.unlock();
   assert(retryApi(s,32,{a,0})==1);
   assert(s.mem!=original && double(s.mem[0])==99 && double(s.mem[1])==20 && double(s.vars[0])==91);
   assert(retryApi(s,32,{a,0})==-4); // consumed exactly once
@@ -116,6 +121,7 @@ int main() {
   auto runtime = std::make_unique<jsfx_tasks::Runtime>();
   assert(!runtime->hasOutstandingWorkForIdle());
   DSPJSFX_State state{};
+  za::jsfx::StateVariables variables;variables.bind(state,DSPJSFX_VARS_COUNT);
   state.taskContext = runtime.get();
   state.srate = 48000;
   arenaChecks(state);

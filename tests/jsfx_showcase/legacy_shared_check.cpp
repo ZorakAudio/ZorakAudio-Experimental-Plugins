@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Zlib
 // Actual AOT entries, actual extracted production bulk helpers, and WDL oracle.
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #include "JsfxLegacyAtomics.h"
 #include <algorithm>
 #include <array>
@@ -65,6 +66,7 @@ int main(int argc, char **argv) try {
   std::vector<DSPJSFX_Cell> memory(DSPJSFX_MAX_MEM_CELLS);
   std::mutex atomicMutex;
   DSPJSFX_State dsp{}, gfx{};
+  za::jsfx::StateVariables variables;variables.bind(dsp,DSPJSFX_VARS_COUNT);
   dsp.mem = memory.data();
   dsp.memN = memory.size();
   dsp.atomicContext = &atomicMutex;

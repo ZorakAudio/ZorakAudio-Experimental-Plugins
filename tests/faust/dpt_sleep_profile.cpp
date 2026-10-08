@@ -1,4 +1,5 @@
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -14,7 +15,7 @@ int main(int argc,char** argv){
  if(argc<5)return 1;
  const int rate=std::stoi(argv[2]), block=std::stoi(argv[3]);const bool cooperative=std::stoi(argv[4]);
  const int frames=((rate*12+block-1)/block)*block;const int mode=argc>5?std::stoi(argv[5]):0;
- DSPJSFX_State s{};s.srate=rate;s.memN=DSPJSFX_MAX_MEM_CELLS;s.mem=static_cast<DSPJSFX_Cell*>(std::calloc(size_t(s.memN),sizeof(DSPJSFX_Cell)));
+ DSPJSFX_State s{};za::jsfx::StateVariables s_variables;s_variables.bind(s,DSPJSFX_VARS_COUNT);s.srate=rate;s.memN=DSPJSFX_MAX_MEM_CELLS;s.mem=static_cast<DSPJSFX_Cell*>(std::calloc(size_t(s.memN),sizeof(DSPJSFX_Cell)));
  s.sliders[0]=0;s.sliders[1]=70;s.sliders[2]=mode;s.sliders[3]=0;jsfx_init(&s);jsfx_slider(&s);
  int ready=-1;for(auto v:DSPJSFX_VARS)if(std::strcmp(v.name,"za_sleep_ready")==0)ready=v.index;
  std::vector<float> l(block),r(block),ol(block),orr(block),dump;dump.reserve(size_t(frames)*2);

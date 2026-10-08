@@ -1,4 +1,5 @@
 #include "JSFXDSP.h"
+#include "JsfxStateVariables.h"
 #if DSPJSFX_HAS_FAUST
 #define JSFX_FAUST_IMPLEMENTATION
 #include "JsfxFaust.h"
@@ -16,7 +17,7 @@ extern "C" double jsfx_native_gfx_dispatch(DSPJSFX_State*,int32_t,double**,int32
 extern "C" double jsfx_native_string_dispatch(DSPJSFX_State*,int32_t,const double*,int32_t){assert(false);return 0;}
 int main(int argc,char**argv){assert(argc==5);int rate=atoi(argv[2]),block=atoi(argv[3]),scenario=atoi(argv[4]);int frames=((rate*8+block-1)/block)*block;std::vector<float>l(frames),r(frames),ol(frames),orr(frames);std::vector<double>times,states;
 for(int i=0;i<frames;i++){double t=double(i)/rate,a=t<2?0.12:t<3?1.2:t<4.5?0:t<5?1e-9:t<6?0.45:2.4;l[i]=float(a*(sin(2*3.141592653589793*310*t)+.25*sin(2*3.141592653589793*7900*t)));r[i]=float(a*(.8*sin(2*3.141592653589793*347*t)+.2*sin(2*3.141592653589793*11000*t)));if(i%1709==0&&a>.1)l[i]=float(a*1.5);}
-for(int trial=0;trial<4;trial++){DSPJSFX_State s{};s.srate=rate;s.memN=DSPJSFX_MAX_MEM_CELLS;s.mem=(DSPJSFX_Cell*)calloc(s.memN,sizeof(DSPJSFX_Cell));
+for(int trial=0;trial<4;trial++){DSPJSFX_State s{};za::jsfx::StateVariables s_variables;s_variables.bind(s,DSPJSFX_VARS_COUNT);s.srate=rate;s.memN=DSPJSFX_MAX_MEM_CELLS;s.mem=(DSPJSFX_Cell*)calloc(s.memN,sizeof(DSPJSFX_Cell));
 #if DSPJSFX_HAS_FAUST
 jsfx_faust::Engine engine;s.faustContext=&engine;engine.prepare(rate,block);
 #endif

@@ -2,14 +2,12 @@
 
 For a condensed current interface and the other language extensions, start with
 [the consolidated guide](DSP-JSFX-Guide.md). Explicit modes are `@faust block`
-and `@faust block when control`; `@faust sample` is not implemented. Unqualified
-`@faust` retains automatic dependency-preserving execution.
+and `@faust block when control`. `@faust sample` (also `sample when control`) explicitly selects the automatic dependency-preserving path retained by unqualified `@faust`; this path may batch independent stages or interleave samples when required.
 
 `@faust` contains Faust source, including its normal imports, definitions and
 `process` expression. The installed Faust compiler's LLVM backend is invoked
 at build time. Its LLVM module is linked with the EEL2 module before the existing
-AOT optimization/object-emission path. Plugins do not load libfaust, compile,
-JIT, or run a Faust worker at playback time. Verified locally with Faust 2.81.2
+AOT optimization/object-emission path. AOT-built catalog plugins do not load libfaust, compile, JIT, or run a Faust worker at playback time. The separate [standalone JIT Editor](../tools/jit_editor/README.md) intentionally bundles compilation support. Verified locally with Faust 2.81.2
 (LLVM 17), llvmlite's LLVM reader and Clang 21 on Windows x64.
 
 ```eel
