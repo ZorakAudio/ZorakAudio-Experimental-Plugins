@@ -70,6 +70,12 @@ python scripts/build.py --config Release --tag dev --out dist
 
 Release artifacts are packaged by category so the output mirrors the repository structure inside `VST3/` and `CLAP/`.
 
+The normal AOT and JIT builds automatically check/apply the repository's host
+wrapper patches, including when reusing a build directory. CI builds both formats
+on Windows, universal2 macOS and Linux, plus the standalone JIT Editor on Windows.
+See [building and CI](docs/Build-and-CI.md) for fresh checkout setup, artifact
+downloads, full/smoke builds, dependency updates and platform qualification limits.
+
 ## Correctness and validation
 
 Structured background tasks (`defer`, `defer_after`, `defer_for`,

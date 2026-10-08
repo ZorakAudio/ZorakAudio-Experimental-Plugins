@@ -7,10 +7,8 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 get_filename_component(ZA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
-execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/apply_wrapper_patches.py" RESULT_VARIABLE JIT_PATCH_RESULT)
-if(NOT JIT_PATCH_RESULT EQUAL 0)
- message(FATAL_ERROR "Could not apply the JIT-only wrapper hooks; see diagnostic above")
-endif()
+set(ZA_ENABLE_CLAP ON)
+include("${ZA_ROOT}/cmake/ApplyWrapperPatches.cmake")
 
 add_subdirectory("${ZA_ROOT}/libs/JUCE" juce)
 add_subdirectory("${ZA_ROOT}/libs/clap-juce-extensions" clap_juce_extensions EXCLUDE_FROM_ALL)
@@ -20,6 +18,8 @@ juce_add_plugin(JITEditor
   PLUGIN_MANUFACTURER_CODE Zrak PLUGIN_CODE JtEd
   IS_SYNTH FALSE NEEDS_MIDI_INPUT TRUE NEEDS_MIDI_OUTPUT TRUE
   EDITOR_WANTS_KEYBOARD_FOCUS TRUE COPY_PLUGIN_AFTER_BUILD FALSE FORMATS VST3)
+add_dependencies(JITEditor za_wrapper_patches)
+add_dependencies(JITEditor_VST3 za_wrapper_patches)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/JitBridge.h"
  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/generate_bridge.py" "${CMAKE_CURRENT_BINARY_DIR}/JitBridge.h"
  DEPENDS generate_bridge.py "${ZA_ROOT}/dsp_jsfx_aot.py")
@@ -40,6 +40,7 @@ target_sources(JITEditor PRIVATE ${WDL_SOURCES} "${ZA_ROOT}/src/WDL/fft.c" "${ZA
 target_compile_definitions(JITEditor PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0)
 target_link_libraries(JITEditor PRIVATE juce::juce_audio_utils juce::juce_gui_extra PUBLIC juce::juce_recommended_config_flags)
 clap_juce_extensions_plugin(TARGET JITEditor CLAP_ID "com.zorakaudio.experimental.jiteditor" CLAP_FEATURES audio-effect)
+add_dependencies(JITEditor_CLAP za_wrapper_patches)
 target_compile_definitions(JITEditor_CLAP PRIVATE ZA_JIT_EDITOR_DYNAMIC_HOST=1)
 target_compile_definitions(JITEditor_VST3 PRIVATE ZA_JIT_EDITOR_DYNAMIC_HOST=1)
 target_include_directories(JITEditor_VST3 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

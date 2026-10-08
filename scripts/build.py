@@ -12,6 +12,9 @@ from pathlib import Path
 
 from pluginlib import PluginSpec, PluginDiscoveryError, discover_plugins, filter_plugins
 
+# CI exercises ordinary EEL graphics, mixed Faust, native Legacy and pure Faust.
+CI_SMOKE_SLUGS = {"DDT", "ERBTilt", "HyperrealFast", "ModTilt", "joep_bandjoiner"}
+
 def is_nested_vst3_payload(path: Path) -> bool:
     """Return True for files inside an outer .vst3 bundle.
 
@@ -36,6 +39,15 @@ def collect_stageable_vst3_artifacts(artefacts: Path) -> list[Path]:
         if p.exists() and not is_nested_vst3_payload(p)
     ]
     return sorted(vst3s, key=lambda p: (len(p.parts), str(p).lower()))
+
+
+def collect_stageable_clap_artifacts(artefacts: Path) -> list[Path]:
+    # macOS CLAP is a bundle, Windows/Linux CLAP is a binary file.
+    return sorted(
+        (p for p in artefacts.rglob("*.clap") if p.exists()
+         and not any(parent.suffix.lower() == ".clap" for parent in p.parents)),
+        key=lambda p: (len(p.parts), str(p).lower()),
+    )
 
 def _run_text(cmd: list[str]) -> str:
     return subprocess.check_output(cmd, text=True, encoding="utf-8", errors="replace").strip()
@@ -466,6 +478,7 @@ def main() -> None:
     ap.add_argument("--tag", default="0.0.0")
     ap.add_argument("--out", default="dist")
     ap.add_argument("--only", default="", help="Build only one plugin (match category, key, slug, name, path, bundleId, or clapId).")
+    ap.add_argument("--smoke", action="store_true", help="Build the five representative CI plugins")
     ap.add_argument("--clean", action="store_true", help="Delete build directory for current platform before building")
     ap.add_argument("--clean-only", action="store_true", help="Delete build directory for current platform and exit")
     ap.add_argument("--correctness-check", action="store_true", help="Enable JSFX shadow EEL2 correctness monitor/instrumentation")
@@ -473,6 +486,8 @@ def main() -> None:
     ap.add_argument("--native-gfx-legacy", action="store_true", help="Opt other JSFX into native shared state (C++20); automatic for JoepVanlier")
     ap.add_argument("--list", action="store_true", help="List discovered plugins and exit")
     args = ap.parse_args()
+    if args.smoke and args.only:
+        ap.error("Use --smoke or --only, not both")
     if args.native_gfx_prototype and args.native_gfx_legacy:
         ap.error("Choose one native GFX mode")
     if args.native_gfx_legacy and args.correctness_check:
@@ -489,6 +504,11 @@ def main() -> None:
         return
 
     selected = filter_plugins(plugins, args.only)
+    if args.smoke:
+        selected = [spec for spec in plugins if spec.slug in CI_SMOKE_SLUGS]
+        missing = CI_SMOKE_SLUGS - {spec.slug for spec in selected}
+        if missing:
+            die("CI smoke plugins missing: " + ", ".join(sorted(missing)))
     if args.only and not selected:
         die(f"No plugins matched --only={args.only!r}")
 
@@ -506,7 +526,9 @@ def main() -> None:
         if args.clean_only:
             return
 
-    enable_clap = os_id in ("windows", "linux")
+    # Check once before emitting DSP objects; direct CMake callers also check.
+    run([sys.executable, str(repo_root / "tools/jit_editor/apply_wrapper_patches.py")])
+    enable_clap = os_id in ("windows", "linux", "macos")
     package_root_name = f"ZorakAudio-Experimental-Plugins-{args.tag}-{os_id}"
     stage_root = out_dir / package_root_name
     if stage_root.exists():
@@ -561,6 +583,7 @@ def main() -> None:
             "-S", str(repo_root / "cmake" / "plugin"),
             "-B", str(cmake_build),
             f"-DZA_ROOT={repo_root}",
+            f"-DPython3_EXECUTABLE={sys.executable}",
             f"-DPLUGIN_NAME={spec.name}",
             f"-DPLUGIN_SLUG={spec.slug}",
             f"-DPLUGIN_CODE={spec.plugin_code}",
@@ -631,7 +654,12 @@ def main() -> None:
                     if not os.environ.get("CC") and not os.environ.get("CXX"):
                         cmake_args += ["-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
         else:
-            cmake_args += ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release"]
+            cmake_args += ["-G", "Ninja", f"-DCMAKE_BUILD_TYPE={args.config}"]
+            if is_macos():
+                cmake_args += [
+                    "-DCMAKE_OSX_ARCHITECTURES=" + os.environ.get("CMAKE_OSX_ARCHITECTURES", "arm64;x86_64"),
+                    "-DCMAKE_OSX_DEPLOYMENT_TARGET=" + os.environ.get("CMAKE_OSX_DEPLOYMENT_TARGET", "11.0"),
+                ]
 
         run(cmake_args)
         run(["cmake", "--build", str(cmake_build), "--config", args.config])
@@ -644,7 +672,9 @@ def main() -> None:
         install_clap_dir = clap_dir / spec.install_rel_dir
 
         vst3s = collect_stageable_vst3_artifacts(artefacts)
-        claps = [p for p in artefacts.rglob("*.clap") if p.exists()]
+        claps = collect_stageable_clap_artifacts(artefacts)
+        if not vst3s or (enable_clap and not claps):
+            die(f"Missing requested VST3/CLAP artifacts for {spec.slug} in {artefacts}")
 
         for artifact in vst3s:
             copy_bundle(artifact, install_vst3_dir)
@@ -659,7 +689,9 @@ def main() -> None:
 
     if is_macos():
         print("Ad-hoc signing macOS bundles")
-        for bundle in sorted((p for p in stage_root.rglob("*.vst3") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+        for bundle in sorted((p for p in stage_root.rglob("*") if p.is_dir()
+                              and p.suffix.lower() in (".vst3", ".clap")),
+                             key=lambda p: len(p.parts), reverse=True):
             run(["codesign", "--force", "--deep", "--sign", "-", str(bundle)])
         for binary in sorted(p for p in stage_root.rglob("*.clap") if p.is_file()):
             run(["codesign", "--force", "--sign", "-", str(binary)])

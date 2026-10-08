@@ -28,6 +28,7 @@ def package(build, output, faust, python, staging=None):
     source_files+=[REPO/'scripts'/name for name in ('jsfx_faust_compiler.py','jsfx_tasks_compiler.py','jsfx_source.py','jsfx_preprocessor.py')]
     source_files+=list((REPO/'tools/native_compiler').glob('*.cpp'))+list((REPO/'tools/native_compiler').glob('*.h'))
     source_files+=list(Path(__file__).with_name('examples').glob('*'))+[Path(__file__).with_name('CMakeLists.txt')]
+    source_files+=[REPO/'cmake/ApplyWrapperPatches.cmake']+list(Path(__file__).with_name('wrapper-patches').glob('*.patch'))
     provenance={str(p.relative_to(REPO)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(source_files) if p.is_file()}
     result = {}
     for kind in ("CLAP", "VST3"):
@@ -43,7 +44,16 @@ def package(build, output, faust, python, staging=None):
             destination = folder / name / "Contents/Resources/JITEditor.runtime"
         shutil.copytree(runtime, destination, ignore=shutil.ignore_patterns("__pycache__"))
         for document in ("README.md","CPP-MIGRATION.md","VALIDATION.md"):
-            shutil.copy2(Path(__file__).parent / document, folder / document)
+            text=(Path(__file__).parent / document).read_text(encoding='utf-8')
+            text=text.replace('../native_compiler/', 'native_compiler/')
+            text=text.replace('../../docs/Build-and-CI.md', 'BUILD-AND-CI.md')
+            (folder/document).write_text(text,encoding='utf-8')
+        native_docs=folder/'native_compiler'
+        native_docs.mkdir()
+        for document in ('README.md','PROTOCOL.md','VALIDATION.md'):
+            text=(REPO/'tools/native_compiler'/document).read_text(encoding='utf-8')
+            (native_docs/document).write_text(text.replace('../jit_editor/', '../'),encoding='utf-8')
+        shutil.copy2(REPO/'docs/Build-and-CI.md',folder/'BUILD-AND-CI.md')
         shutil.copytree(Path(__file__).with_name('examples'),folder/'examples')
         (folder/'SOURCE-SHA256.json').write_text(json.dumps(provenance,indent=2)+'\n',encoding='utf-8')
         archive = output / ("JIT-Editor-Shared-Runtime-Windows-" + kind + ".zip")

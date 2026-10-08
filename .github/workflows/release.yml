@@ -1,182 +1,158 @@
 name: Build & Release
 
-env:
-  FAUST_VERSION: "2.81.2"
-
 on:
   push:
-    tags:
-      - "v*"
-      - "R*"
-  workflow_dispatch: {}
+    branches: ['**']
+    tags: ['v*', 'R*']
+  pull_request: {}
+  workflow_dispatch:
+    inputs:
+      full_catalog:
+        description: Build every catalog plugin (otherwise build the five CI examples)
+        type: boolean
+        default: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: '2'
+  BUILD_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('ci-{0}', github.run_number) }}
+  CATALOG_SCOPE: ${{ (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.full_catalog)) && 'full' || 'smoke' }}
 
 jobs:
   build:
-    name: Build (${{ matrix.os }})
+    name: Catalog (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
-
+        os: [windows-latest, macos-latest, ubuntu-24.04]
     steps:
-      # Quick check for required macOS tools
-      - name: macOS pre-build preflight
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare toolchain and patched host wrappers
+        uses: ./.github/actions/setup-build
+      - name: Dependency patch and packaging contract tests
+        run: python tests/build/test_wrapper_patches.py
+      - name: Configure universal2 macOS catalog
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          echo 'CMAKE_OSX_ARCHITECTURES=arm64;x86_64' >> "$GITHUB_ENV"
+          echo 'CMAKE_OSX_DEPLOYMENT_TARGET=11.0' >> "$GITHUB_ENV"
+          echo 'MACOSX_DEPLOYMENT_TARGET=11.0' >> "$GITHUB_ENV"
+      - name: Build and package VST3 + CLAP
+        shell: python
+        run: |
+          import os, subprocess, sys
+          flags = [] if os.environ['CATALOG_SCOPE'] == 'full' else ['--smoke']
+          subprocess.check_call([sys.executable, '-u', 'scripts/build.py',
+              '--config', 'Release', '--tag', os.environ['BUILD_TAG'], '--out', 'dist', *flags])
+      - name: Verify applied dependency patches
+        run: python tools/jit_editor/apply_wrapper_patches.py --check
+      - name: Verify macOS architectures and signatures
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "== macOS pre-build preflight =="
-
-          need() {
-            command -v "$1" >/dev/null 2>&1 || {
-              echo "ERROR: required command '$1' not found"
-              exit 127
-            }
-          }
-
-          # Commands we rely on later
-          need find
-          need grep
-          need sed
-          need file
-          need lipo
-          need codesign
-          need spctl
-          need ditto
-          need python3
-
-          echo "All required macOS tools present"
-
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Python deps
-        run: python -m pip install --upgrade pip llvmlite
-
-      - name: Install deps (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            faust ninja-build build-essential pkg-config \
-            libasound2-dev libjack-jackd2-dev \
-            libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev \
-            libfreetype-dev libfontconfig1-dev \
-            libglu1-mesa-dev mesa-common-dev
-
-      - name: Install deps (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew update
-          brew install faust ninja
-
-      - name: Install deps (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install ninja --no-progress
-          choco install llvm -y
-          $ErrorActionPreference = "Stop"
-
-
-          $v = "${{ env.FAUST_VERSION }}"
-          $exe = "$env:RUNNER_TEMP\faust.exe"
-
-          Invoke-WebRequest -Uri "https://github.com/grame-cncm/faust/releases/download/$v/Faust-$v-win64.exe" -OutFile $exe
-          Start-Process -FilePath $exe -ArgumentList "/S" -Wait
-
-          # Find faust.exe
-          $faust = Get-ChildItem "C:\Program Files", "C:\Program Files (x86)" -Recurse -Filter faust.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $faust) { throw "faust.exe not found after install" }
-
-          $faustDir = Split-Path $faust.FullName
-
-          # Make it available NOW (this step) and ALSO for later steps
-          $env:Path = "$faustDir;$env:Path"
-          $faustDir | Out-File -FilePath $env:GITHUB_PATH -Append
-
-          faust --version
-
-
-      - name: Configure macOS universal2
-        if: runner.os == 'macOS'
-        run: |
-          echo "CMAKE_OSX_ARCHITECTURES=arm64;x86_64" >> $GITHUB_ENV
-          echo "CMAKE_OSX_DEPLOYMENT_TARGET=11.0" >> $GITHUB_ENV
-          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> $GITHUB_ENV
-
-      - name: Show discovered plugins
-        run: |
-          python scripts/build.py --list
-
-      - name: Build + package category-organized VST3/CLAP layout
-        run: |
-          python scripts/build.py --config Release --tag "${{ github.ref_name }}" --out dist
-
-      - name: Upload build artifacts
+          while IFS= read -r -d '' bundle; do
+            codesign --verify --deep --strict "$bundle"
+            while IFS= read -r -d '' binary; do
+              lipo -verify_arch arm64 x86_64 "$binary"
+            done < <(find "$bundle/Contents/MacOS" -type f -print0)
+          done < <(find dist -type d \( -name '*.vst3' -o -name '*.clap' \) -print0)
+      - name: Upload catalog archives
         uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ matrix.os }}
-          path: dist
+          name: catalog-${{ runner.os }}
+          path: dist/**/*.zip
           if-no-files-found: error
+      - name: Upload compiler diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-catalog-${{ runner.os }}
+          path: build/ci
+          if-no-files-found: ignore
+
+  jit_editor:
+    name: JIT Editor (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare toolchain and patched host wrappers
+        uses: ./.github/actions/setup-build
+      - name: Build, package and qualify the standalone editor
+        run: python -u scripts/ci_jit_editor.py --output dist/jit-editor
+      - name: Verify applied dependency patches
+        run: python tools/jit_editor/apply_wrapper_patches.py --check
+      - name: Upload usable JIT Editor archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: jit-editor-Windows
+          path: dist/jit-editor/*.zip
+          if-no-files-found: error
+      - name: Upload JIT qualification logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jit-editor-diagnostics-Windows
+          path: |
+            build/ci/environment.json
+            build/ci/jit-editor
+          if-no-files-found: ignore
 
   release:
-    name: Create/Update Release
-    needs: build
+    name: Publish tagged release
+    needs: [build, jit_editor]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-
+    permissions:
+      contents: write
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: dist
-
-      - name: Publish GitHub Release + upload zips
+          pattern: catalog-*
+          path: dist/catalog
+      - uses: actions/download-artifact@v4
+        with:
+          name: jit-editor-Windows
+          path: dist/jit-editor
+      - name: Publish archives after every build and qualification gate passes
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+        shell: bash
         run: |
           set -euo pipefail
           shopt -s globstar nullglob
-
           if [[ "$TAG" == R* ]]; then
             gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --generate-notes
           else
             gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --generate-notes --prerelease
           fi
-
-
-          files=(dist/**/ZorakAudio-Experimental-Plugins-${TAG}-*.zip)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No zip files found to upload"
+          files=(dist/catalog/**/ZorakAudio-Experimental-Plugins-"$TAG"-*.zip dist/jit-editor/*.zip)
+          if [[ ${#files[@]} -ne 5 ]]; then
+            echo 'Expected three catalog archives and two Windows JIT Editor archives'
             exit 2
           fi
-
           for attempt in 1 2 3; do
-            echo "Upload attempt $attempt..."
             if gh release upload "$TAG" "${files[@]}" --clobber; then
-              printf 'Uploading:\n%s\n' "${files[@]}"
               exit 0
             fi
             sleep 2
           done
           exit 1
-
-

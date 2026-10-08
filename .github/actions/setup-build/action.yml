@@ -1,0 +1,57 @@
+name: Set up the plugin toolchain
+description: Prepare patched host wrappers and install the pinned compiler toolchain.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Apply and verify JUCE and CLAP wrapper patches
+      shell: bash
+      run: |
+        python tools/jit_editor/apply_wrapper_patches.py
+        python tools/jit_editor/apply_wrapper_patches.py --check
+    - name: Python compiler dependency
+      shell: bash
+      run: |
+        python -m pip install --only-binary=:all: -r scripts/requirements-ci.txt
+    - name: Linux build dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          ninja-build build-essential pkg-config llvm-18-dev libzstd-dev libedit-dev \
+          libasound2-dev libjack-jackd2-dev \
+          libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+          libfreetype-dev libfontconfig1-dev libglu1-mesa-dev mesa-common-dev
+    - name: macOS build dependencies
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install ninja llvm@18
+    - name: Pinned Faust with C++ and LLVM backends (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: bash scripts/ci_install_faust.sh
+    - name: Windows build dependencies
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        choco install ninja llvm -y --no-progress
+        if ($LASTEXITCODE -ne 0) { throw 'Native toolchain installation failed' }
+        $installer = Join-Path $env:RUNNER_TEMP 'Faust-2.81.2-win64.exe'
+        Invoke-WebRequest 'https://github.com/grame-cncm/faust/releases/download/2.81.2/Faust-2.81.2-win64.exe' -OutFile $installer
+        if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne '31667eb378cb560cb124ec9d6c85236644bc5191ccc49ed9f99de01e3d7c0b02') {
+          throw 'Faust installer checksum mismatch'
+        }
+        $installed = Start-Process -FilePath $installer -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+        if ($installed.ExitCode -ne 0) { throw 'Faust installation failed' }
+        $faust = 'C:\Program Files\Faust\bin\faust.exe'
+        if (-not (Test-Path -LiteralPath $faust)) { throw "Faust compiler missing at $faust" }
+        Split-Path $faust | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+        'C:\Program Files\LLVM\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+        "JSFX_FAUST_COMPILER=$faust" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+    - name: Verify compiler backends and record versions
+      shell: bash
+      run: python scripts/check_build_environment.py --output build/ci/environment.json

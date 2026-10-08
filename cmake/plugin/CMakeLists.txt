@@ -136,6 +136,8 @@ if(NOT ZA_ROOT)
   get_filename_component(ZA_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 endif()
 
+include("${ZA_ROOT}/cmake/ApplyWrapperPatches.cmake")
+
 # ---- JUCE (required as submodule) ----
 if(NOT EXISTS "${ZA_ROOT}/libs/JUCE/CMakeLists.txt")
   message(FATAL_ERROR "JUCE not found at libs/JUCE. Add it as a submodule and run: git submodule update --init --recursive")
@@ -190,6 +192,8 @@ juce_add_plugin(${PLUGIN_SLUG}
   COPY_PLUGIN_AFTER_BUILD FALSE
   FORMATS VST3
 )
+add_dependencies(${PLUGIN_SLUG} za_wrapper_patches)
+add_dependencies(${PLUGIN_SLUG}_VST3 za_wrapper_patches)
 
 if(PLUGIN_TYPE STREQUAL "faust")
   target_sources(${PLUGIN_SLUG}
@@ -311,6 +315,7 @@ if(ZA_ENABLE_CLAP)
     CLAP_ID "${CLAP_ID}"
     CLAP_FEATURES ${_clap_features}
   )
+  add_dependencies(${PLUGIN_SLUG}_CLAP za_wrapper_patches)
 endif()
 if(PLUGIN_TYPE STREQUAL "jsfx" AND UNIX AND NOT APPLE)
   target_link_libraries(${PLUGIN_SLUG} PRIVATE rt)
