@@ -83,8 +83,9 @@ review/regenerate the corresponding patch and run these checks before publishing
 
 ## CI coverage
 
-The existing **Build & Release** workflow now also runs for branch pushes and pull
-requests. It has these build jobs:
+**Build & Release** builds the catalog. **JIT Editor Build & Release** builds the
+standalone Editor independently. Both run for branch pushes and pull requests,
+with these platform jobs:
 
 | Job | Formats | Architectures |
 | --- | --- | --- |
@@ -98,8 +99,10 @@ Branch/PR catalog builds use `--smoke`: AntiSalienceMX, ERBTilt, 3DPanner, ModTi
 Saike BandJoiner. This covers ordinary JSFX graphics, mixed JSFX/Faust, native
 Legacy graphics, pure Faust and the automatic Joep Legacy path. Tags matching
 `v*` or `R*` build the entire catalog. **Run workflow** defaults to the entire
-catalog; uncheck **full_catalog** for the representative set. Windows and Linux
-JIT builds and qualification run in every case. Full catalog builds split the
+catalog; uncheck **full_catalog** for the representative set. The separate Editor
+workflow builds and qualifies Windows and Linux on branch/PR pushes, its own
+`jit-v*` tags, or its own manual **Run workflow**. Catalog tags do not trigger an
+Editor build, and Editor tags do not trigger catalog builds. Full catalog builds split the
 catalog into four disjoint groups per platform. Tagged releases merge those
 groups only after checking that every group and all distributable catalog plugins are present,
 without changing plugin bytes, bundle modes, symlinks or signing metadata.
@@ -159,10 +162,32 @@ AntiSalienceMX identity. See [release selection and installation](Release-Collec
 Raw platform shards are separate `catalog-shard-*` artifacts; smoke builds cannot
 produce full collections.
 
-Tagged releases publish three all-platform collection ZIPs plus four Windows/Linux JIT archives only
-after all build/qualification jobs pass. `R*` tags are regular releases; `v*` tags
-retain the existing prerelease policy. Branch, PR and manual builds do not publish
-GitHub releases. No additional repository secrets are needed for this unsigned CI.
+## Independent release targets
+
+| Target | Workflow | Tag | Published assets |
+| --- | --- | --- | --- |
+| Catalog | `.github/workflows/release.yml` | `R*` or `v*` | Three all-platform collection ZIPs: Essentials, All and JoepVanlier. |
+| JIT Editor | `.github/workflows/jit-editor-release.yml` | `jit-v*` | Windows CLAP/VST3 ZIPs and Linux CLAP/VST3 tar.gz archives. |
+
+Each publishes a **different GitHub Release** after its own build/qualification
+jobs pass. A failing or slow Editor build cannot block catalog publication.
+Existing catalog tags keep their policy: `R*` regular releases, `v*` prereleases.
+Editor releases are prereleases and explicitly do not become the repository's
+Latest release. macOS Editor assets cannot be added until its platform port and
+qualification exist; the catalog's universal2 support is separate.
+
+For example, push a new `R1` tag to release the catalog, or a new `jit-v0.1.0` tag
+to release the Editor. Use distinct new tags for subsequent versions. Branch,
+PR and manual builds upload Actions artifacts without publishing a GitHub
+Release. A manual run of one workflow does not launch the other. Workflows
+already running use their original configuration; this split applies after it
+has been pushed.
+
+New release bodies come from [catalog notes](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/blob/main/docs/releases/Catalog.md) and
+[Editor notes](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/blob/main/docs/releases/JIT-Editor.md). Review/edit those Markdown files before
+tagging. Rerunning publication keeps an existing release's body and replaces its
+named assets. Missing or empty expected archives stop publication before release
+creation. No additional repository secrets are needed for this unsigned CI.
 
 ## Qualification limits
 

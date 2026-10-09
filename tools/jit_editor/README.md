@@ -14,6 +14,12 @@ Close the DAW before replacing the previous build. For CLAP, extract the archive
 
 Windows packages are ZIP archives. Linux packages are tar.gz archives; extract them with permissions preserved, for example `tar -xzf JIT-Editor-Shared-Runtime-Linux-CLAP.tar.gz`. The Linux baseline is x86-64 Ubuntu 24.04, including its glibc and desktop/audio libraries. Python, llvmlite/LLVM, Faust and their non-glibc native dependencies are private to the runtime folder. A system compiler installation is unnecessary. macOS editor packages are not available yet; macOS AOT catalog support is separate.
 
+The Editor has its own GitHub Release, identified by a `jit-v*` tag, with separate
+packages for each supported operating system and format. It is not included in
+Essentials, All or JoepVanlier, and those catalog releases do not wait for Editor
+builds. See [release targets](../../docs/Build-and-CI.md#independent-release-targets)
+and the [Editor release overview](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/blob/main/docs/releases/JIT-Editor.md).
+
 The normal view displays the plugin graphics with an **Edit** button in the corner. Press **Edit** to reveal source and compilation controls. Use **Open source...** for a local JSFX/DSP file, or write source/load an example, then press **Run**. A successful Run returns to the plugin view; **Show plugin** also closes the source pane. Editing alone does not change audio. The previous program continues during compilation and after a compilation failure. **Default** restores stereo passthrough and removes program controls. Each successful Run initializes a fresh DSP state and uses declared slider defaults; saved projects restore numeric/string controls, selected file paths, and values explicitly saved by `@serialize` when recompiling their saved source. Other DSP histories are not automatically migrated. Changes can click; no crossfade is guaranteed.
 
 For pasted code, use **Source folder...** to select the original source directory containing its dependency folders. The selected folder is shown in Edit and saved with the project. The editor uses a virtual `editor.jsfx` path there; it does not write your code to that file. `provides:` does not download dependencies: the files must exist. Image lookup supports direct paths, `Resources` inside the selected folder, and a sibling `Resources` folder using the shared production decoder. Imported files and images remain external and must stay available when reopening a project.

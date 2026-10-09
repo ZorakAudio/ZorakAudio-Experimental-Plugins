@@ -1,0 +1,461 @@
+{
+  "version": "Corpus v1.9.4 Fully Deferred Preparation",
+  "settings": {
+    "size": 49432748,
+    "sha256": "1f44c88399234d13891fb9bd29eac84108262334c7e041111dabc89267c7e8c5",
+    "sample_rate": 48000,
+    "block_size": 256,
+    "settings": "defaults; Balanced analysis; 8192 grain budget",
+    "graphics": "native Legacy, no editor",
+    "paced": true,
+    "baseline_commit": "e14e5adae6be00dc42023d0dd09cf27316644d4b"
+  },
+  "runs": {
+    "original_paced": {
+      "Decode": {
+        "wall_s": 1.00935,
+        "process_cpu_s": 1.04688,
+        "deadline_overruns": 0.0,
+        "max_ms": 3.0879
+      },
+      "Features": {
+        "wall_s": 101.88205150000002,
+        "process_cpu_s": 13.06251,
+        "deadline_overruns": 0.0,
+        "max_ms": 2.9767
+      },
+      "Focus": {
+        "wall_s": 1.8208979999999997,
+        "process_cpu_s": 0.1875,
+        "deadline_overruns": 0.0,
+        "max_ms": 1.105
+      },
+      "Grammar": {
+        "wall_s": 0.0748281,
+        "process_cpu_s": 0.03125,
+        "deadline_overruns": 0.0,
+        "max_ms": 1.3013
+      },
+      "Index": {
+        "wall_s": 23.608781899999997,
+        "process_cpu_s": 2.57813,
+        "deadline_overruns": 0.0,
+        "max_ms": 1.4301
+      },
+      "Map": {
+        "wall_s": 0.446948,
+        "process_cpu_s": 0.0625,
+        "deadline_overruns": 0.0,
+        "max_ms": 1.3042
+      },
+      "PE": {
+        "wall_s": 165.3243368,
+        "process_cpu_s": 20.39065,
+        "deadline_overruns": 0.0,
+        "max_ms": 3.8027
+      },
+      "Prune": {
+        "wall_s": 0.0269639,
+        "process_cpu_s": 0.015625,
+        "deadline_overruns": 1.0,
+        "max_ms": 5.506
+      },
+      "Structure": {
+        "wall_s": 2.1412721,
+        "process_cpu_s": 0.3125,
+        "deadline_overruns": 0.0,
+        "max_ms": 4.7652
+      },
+      "TOTAL": {
+        "wall_s": 297.181,
+        "process_cpu_s": 37.8438,
+        "deadline_overruns": 0.0,
+        "max_ms": 0.0
+      }
+    },
+    "previous_graph_paced": {
+      "Decode": {
+        "wall_s": 1.57151,
+        "process_cpu_s": 1.375,
+        "deadline_overruns": 1.0,
+        "max_ms": 6.8242
+      },
+      "Features": {
+        "wall_s": 13.860446099999999,
+        "process_cpu_s": 5.76563,
+        "deadline_overruns": 10.0,
+        "max_ms": 6.7242
+      },
+      "Grammar": {
+        "wall_s": 0.0530591,
+        "process_cpu_s": 0.0625,
+        "deadline_overruns": 0.0,
+        "max_ms": 0.937
+      },
+      "Index": {
+        "wall_s": 23.553392900000002,
+        "process_cpu_s": 3.15625,
+        "deadline_overruns": 28.0,
+        "max_ms": 6.9576
+      },
+      "PE": {
+        "wall_s": 17.01133,
+        "process_cpu_s": 8.60938,
+        "deadline_overruns": 21.0,
+        "max_ms": 8.4978
+      },
+      "Prune": {
+        "wall_s": 0.04692060000000001,
+        "process_cpu_s": 0.03125,
+        "deadline_overruns": 2.0,
+        "max_ms": 24.0373
+      },
+      "Structure": {
+        "wall_s": 0.2167754,
+        "process_cpu_s": 0.15625,
+        "deadline_overruns": 0.0,
+        "max_ms": 1.4009
+      },
+      "TOTAL": {
+        "wall_s": 56.5608,
+        "process_cpu_s": 19.2188,
+        "deadline_overruns": 0.0,
+        "max_ms": 0.0
+      }
+    },
+    "previous_graph_unpaced": {
+      "Decode": {
+        "wall_s": 1.7455,
+        "process_cpu_s": 2.34375,
+        "deadline_overruns": 48.0,
+        "max_ms": 8.6761
+      },
+      "Features": {
+        "wall_s": 7.3178738,
+        "process_cpu_s": 8.921875,
+        "deadline_overruns": 270.0,
+        "max_ms": 12.215
+      },
+      "Grammar": {
+        "wall_s": 0.0646704,
+        "process_cpu_s": 0.078125,
+        "deadline_overruns": 3.0,
+        "max_ms": 5.8155
+      },
+      "Index": {
+        "wall_s": 3.1819141,
+        "process_cpu_s": 2.140625,
+        "deadline_overruns": 86.0,
+        "max_ms": 6.8461
+      },
+      "PE": {
+        "wall_s": 13.8394204,
+        "process_cpu_s": 15.624979999999999,
+        "deadline_overruns": 714.0,
+        "max_ms": 12.5474
+      },
+      "Prune": {
+        "wall_s": 0.052281100000000004,
+        "process_cpu_s": 0.03125,
+        "deadline_overruns": 3.0,
+        "max_ms": 28.9971
+      },
+      "Structure": {
+        "wall_s": 0.2499074,
+        "process_cpu_s": 0.34375,
+        "deadline_overruns": 12.0,
+        "max_ms": 6.5315
+      },
+      "TOTAL": {
+        "wall_s": 26.6407,
+        "process_cpu_s": 29.6875,
+        "deadline_overruns": 0.0,
+        "max_ms": 0.0
+      }
+    },
+    "fully_deferred_paced": {
+      "Decode": {
+        "wall_s": 1.65072,
+        "process_cpu_s": 1.15625,
+        "deadline_overruns": 1.0,
+        "max_ms": 5.8954
+      },
+      "Features": {
+        "wall_s": 5.8475632,
+        "process_cpu_s": 4.42188,
+        "deadline_overruns": 10.0,
+        "max_ms": 10.9826
+      },
+      "Grammar": {
+        "wall_s": 0.0592769,
+        "process_cpu_s": 0.015625,
+        "deadline_overruns": 0.0,
+        "max_ms": 1.1913
+      },
+      "Index": {
+        "wall_s": 1.2945733000000001,
+        "process_cpu_s": 0.984375,
+        "deadline_overruns": 1.0,
+        "max_ms": 7.9986
+      },
+      "PE": {
+        "wall_s": 10.496080000000001,
+        "process_cpu_s": 8.17187,
+        "deadline_overruns": 12.0,
+        "max_ms": 11.8668
+      },
+      "Prune": {
+        "wall_s": 0.0476397,
+        "process_cpu_s": 0.03125,
+        "deadline_overruns": 2.0,
+        "max_ms": 17.0318
+      },
+      "Structure": {
+        "wall_s": 0.2061016,
+        "process_cpu_s": 0.125,
+        "deadline_overruns": 0.0,
+        "max_ms": 1.547
+      },
+      "TOTAL": {
+        "wall_s": 19.7435,
+        "process_cpu_s": 14.9844,
+        "deadline_overruns": 0.0,
+        "max_ms": 0.0
+      }
+    },
+    "fully_deferred_unpaced": {
+      "Decode": {
+        "wall_s": 1.90585,
+        "process_cpu_s": 2.40625,
+        "deadline_overruns": 99.0,
+        "max_ms": 12.4172
+      },
+      "Features": {
+        "wall_s": 6.4070416,
+        "process_cpu_s": 8.234375,
+        "deadline_overruns": 300.0,
+        "max_ms": 8.1577
+      },
+      "Grammar": {
+        "wall_s": 0.0549793,
+        "process_cpu_s": 0.125,
+        "deadline_overruns": 2.0,
+        "max_ms": 5.8317
+      },
+      "Index": {
+        "wall_s": 1.4616054999999997,
+        "process_cpu_s": 1.78125,
+        "deadline_overruns": 78.0,
+        "max_ms": 6.689
+      },
+      "PE": {
+        "wall_s": 10.9948178,
+        "process_cpu_s": 13.75,
+        "deadline_overruns": 499.0,
+        "max_ms": 7.86
+      },
+      "Prune": {
+        "wall_s": 0.033180100000000004,
+        "process_cpu_s": 0.03125,
+        "deadline_overruns": 2.0,
+        "max_ms": 20.0872
+      },
+      "Structure": {
+        "wall_s": 0.21906100000000003,
+        "process_cpu_s": 0.296875,
+        "deadline_overruns": 6.0,
+        "max_ms": 6.6973
+      },
+      "TOTAL": {
+        "wall_s": 21.2677,
+        "process_cpu_s": 26.8594,
+        "deadline_overruns": 0.0,
+        "max_ms": 0.0
+      }
+    }
+  },
+  "comparison": [
+    {
+      "baseline": "previous_graph_paced",
+      "new": "fully_deferred_paced",
+      "before_s": 56.5608,
+      "after_s": 19.7435,
+      "saved_s": 36.8173,
+      "saved_percent": 65.09331551180324,
+      "speedup": 2.8647808139387645
+    },
+    {
+      "baseline": "original_paced",
+      "new": "fully_deferred_paced",
+      "before_s": 297.181,
+      "after_s": 19.7435,
+      "saved_s": 277.4375,
+      "saved_percent": 93.35640569215394,
+      "speedup": 15.052093093929646
+    },
+    {
+      "baseline": "previous_graph_unpaced",
+      "new": "fully_deferred_unpaced",
+      "before_s": 26.6407,
+      "after_s": 21.2677,
+      "saved_s": 5.3729999999999976,
+      "saved_percent": 20.168388968758318,
+      "speedup": 1.252636627373905
+    }
+  ],
+  "model_reference": "Previous v1.9.3 graph, extended to include initial indexing tables",
+  "model_equivalence": [
+    {
+      "name": "source_base",
+      "cells": 8,
+      "different": 0
+    },
+    {
+      "name": "grain_base",
+      "cells": 120832,
+      "different": 0
+    },
+    {
+      "name": "hist",
+      "cells": 1024,
+      "different": 0
+    },
+    {
+      "name": "norm_low",
+      "cells": 8,
+      "different": 0
+    },
+    {
+      "name": "norm_span",
+      "cells": 8,
+      "different": 0
+    },
+    {
+      "name": "counts",
+      "cells": 29,
+      "different": 0
+    },
+    {
+      "name": "offsets",
+      "cells": 30,
+      "different": 0
+    },
+    {
+      "name": "vertex_counts",
+      "cells": 29,
+      "different": 0
+    },
+    {
+      "name": "role_stats",
+      "cells": 16,
+      "different": 0
+    },
+    {
+      "name": "xc_features",
+      "cells": 211456,
+      "different": 0
+    },
+    {
+      "name": "xc_coarse",
+      "cells": 24528,
+      "different": 0
+    },
+    {
+      "name": "xc_matrix",
+      "cells": 262144,
+      "different": 0
+    },
+    {
+      "name": "hm_episodes",
+      "cells": 16224,
+      "different": 0
+    },
+    {
+      "name": "hx_episodes",
+      "cells": 7168,
+      "different": 0
+    },
+    {
+      "name": "hm_classes",
+      "cells": 4608,
+      "different": 0
+    },
+    {
+      "name": "hx_classes",
+      "cells": 3072,
+      "different": 0
+    },
+    {
+      "name": "hm_grainmap",
+      "cells": 1888,
+      "different": 0
+    },
+    {
+      "name": "h_change",
+      "cells": 1888,
+      "different": 0
+    },
+    {
+      "name": "focus_ep_vec",
+      "cells": 10816,
+      "different": 0
+    },
+    {
+      "name": "focus_ep_conf",
+      "cells": 10816,
+      "different": 0
+    },
+    {
+      "name": "xc_maps",
+      "cells": 2028,
+      "different": 0
+    },
+    {
+      "name": "pe_vectors",
+      "cells": 30208,
+      "different": 0
+    },
+    {
+      "name": "pe_stats",
+      "cells": 30208,
+      "different": 0
+    },
+    {
+      "name": "pe_prefix",
+      "cells": 7552,
+      "different": 0
+    },
+    {
+      "name": "pe_source_hash",
+      "cells": 4,
+      "different": 0
+    }
+  ],
+  "model_cells_checked": 746592,
+  "all_tested_cells_bit_exact": true,
+  "paced_and_unpaced_models_identical": true,
+  "input_unchanged": true,
+  "checks": [
+    "11 compiler/runtime contract tests in ordinary and Legacy modes",
+    "512-region matrix limits, restart, 12 rebuilds and exhausted-buffer fallback",
+    "MIDI playback and editor creation after paced preparation",
+    "Reload during indexing and PE: only latest generation published once; no memory faults or sample-read errors",
+    "Reload just before heap adoption: latest generation published once; no faults/read errors; playback and editor passed"
+  ],
+  "notes": [
+    "Single final timing runs, not repeated-trial means. Earlier new-build smoke run completed in 21.48 seconds.",
+    "Only the supplied recording was loaded. Reload tests load that same file; numeric tests load no audio.",
+    "Five dependent single-writer stages: Index, Features, Structure, Context, PE. Two scheduler workers; stages remain serial.",
+    "The worker snapshots the fixed 192 MiB heap. Adoption copies approximately 1 MiB of live controls/playback state and swaps model heaps. Retired heap reclamation runs on a worker.",
+    "Decode/load and final prune publication remain separate. The host callback still submits tasks, polls progress and publishes completion.",
+    "Unpaced busy polling consumes extra CPU and competes with workers; its 21.27 seconds versus paced 19.74 is not evidence of audio pacing delay.",
+    "Callbacks are measured in a normal-priority standalone JUCE harness; durations include OS preemption, and deadline compliance is not certified.",
+    "Original and previous graph timings come from earlier profiling runs with matching defaults/rate/buffer/native Legacy mode.",
+    "Reload correctness runs overlapped production compilation; their durations are excluded from performance comparisons."
+  ],
+  "provenance": {
+    "kind": "historical checkpoint, not a current-release rerun",
+    "source": "build/tasks/corpus-next/fully-deferred-results.json",
+    "redaction": "Only the private recording name and absolute path were removed."
+  }
+}

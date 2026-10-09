@@ -1,6 +1,6 @@
 # DSP-JSFX: consolidated user and author guide
 
-Current local implementation, 6 October 2026. This is the entry point for the repository's additions to ordinary JSFX. Detailed API contracts and qualification reports remain linked for reference; older experiment reports are not the specification.
+Current local implementation, 9 October 2026. This is the entry point for the repository's additions to ordinary JSFX. Detailed API contracts and qualification reports remain linked for reference; older experiment reports are not the specification.
 
 ## What you get
 
@@ -13,8 +13,8 @@ For an author, ordinary JSFX remains the starting point. Add only the extension 
 | Need | Facility | Execution |
 | --- | --- | --- |
 | Stateful audio filters or a signal graph | `@faust sample` | Explicit spelling of the automatic dependency-preserving path; may batch independent stages or interleave samples |
-| `@faust block` | Synchronously on the host processing thread |
-| Long analysis independent of current audio | `defer` task graph | Two task workers per instance |
+| Explicit whole-buffer audio stage | `@faust block` | Synchronously on the host processing thread |
+| Long analysis independent of current audio | `defer` task graph | Two workers per instance whose compiled program requires them |
 | Large immutable recordings | `sample_pool_*` | Worker loading, realtime reads |
 | Coordination between plugin instances | `msg_*`, named `gmem` | Block-resolved messages / shared cells |
 | Compile an existing interactive canvas | Native Legacy `@gfx` | Graphics worker, live shared guest cells |
@@ -127,7 +127,7 @@ Status values: INVALID −1, PENDING 1, RUNNING 2, SUCCEEDED 3, CANCELLED 4, FAI
 
 Use `task_buffer_create/set/seal/read/release` for immutable multi-cell inputs. Initialize every cell before sealing. Ordinary deferred bodies cannot access live RAM, `gmem`, sliders, audio samples, graphics, strings, files, random state or host communication; reachable helpers are checked too. Capture slider values into ordinary scalars first.
 
-Two workers per instance service a bounded scheduler: 32 task slots, 4096 iterations per parallel task, 64 captured function locals, and eight buffers of up to 65536 doubles. Ordinary publication-mode task snapshots retain their 4096-scalar-variable bound. Native shared-state AOT/JIT snapshots use the actual compiler-reported variable extent instead. Iterations are chunked in groups of 32; idle workers poll approximately every millisecond. There is no global worker budget or work stealing. Stage large graphs and release root handles. Handles are instance-local, transient and invalidated by reset; do not serialize them. Reduction combination is in index order, not worker completion order.
+Two workers per task-capable instance service a bounded scheduler: 32 task slots, 4096 iterations per parallel task, 64 captured function locals, and eight buffers of up to 65536 doubles. Ordinary publication-mode task snapshots retain their 4096-scalar-variable bound. Native shared-state AOT/JIT snapshots use the actual compiler-reported variable extent instead. Iterations are chunked in groups of 32. The compiler omits workers when the program does not require them, including programs using only task queries/buffers. Idle workers park and wake on scheduler notifications; they do not poll on a timer. A capable program keeps its parked pool between tasks so audio callbacks never create threads. There is no global worker budget or work stealing. Stage large graphs and release root handles. Handles are instance-local, transient and invalidated by reset; do not serialize them. Reduction combination is in index order, not worker completion order.
 
 Successful results are published for polling without an audio-pacing delay. **Adoption still requires the host to call the plugin's coordinator.** Workers do not modify an active audio model automatically. Outstanding work/results veto sleep until acknowledged. There is no general offline preparation barrier or promised completion deadline.
 
@@ -223,7 +223,7 @@ python scripts/build.py --only "Cross-Mix Somatic Bus (CMD)" --config Release --
 python scripts/build.py --only Sample --native-gfx-legacy --config Release
 ```
 
-Each leaf has a `plugin.json`, source and embedded README. Manifests can select native graphics; JoepVanlier sources automatically select Legacy. Native Legacy and publication flags are mutually exclusive. Build-time dependencies include Python/llvmlite, CMake, a native compiler and initialized JUCE/CLAP dependencies; mixed sections also require a compatible FAUST LLVM compiler. `JSFX_FAUST_COMPILER` selects its executable; repeatable AOT `--faust-include` adds import paths, and normal builds include the source directory. Both AOT and JIT builds automatically apply/check the repository's wrapper patches. See [build and CI setup](Build-and-CI.md) for the three-platform catalog matrix and Windows JIT packaging/qualification.
+Each leaf has a `plugin.json`, source and embedded README. Manifests can select native graphics; JoepVanlier sources automatically select Legacy. Native Legacy and publication flags are mutually exclusive. Build-time dependencies include Python/llvmlite, CMake, a native compiler and initialized JUCE/CLAP dependencies; mixed sections also require a compatible FAUST LLVM compiler. `JSFX_FAUST_COMPILER` selects its executable; repeatable AOT `--faust-include` adds import paths, and normal builds include the source directory. Both AOT and JIT builds automatically apply/check the repository's wrapper patches. See [build and CI setup](Build-and-CI.md) for the three-platform catalog matrix and separate Windows/Linux JIT packaging/qualification.
 
 `--correctness-check` enables the WDL/EEL shadow path for eligible ordinary scripts. It is rejected for mixed FAUST, tasks and Legacy rather than pretending stock EEL can evaluate extensions. Their validation uses dedicated compiler/runtime fixtures and paired complete-processor tests. Foreign functions, all DAWs/platforms, every preset and universal bit-exact parity are not certified by those tests.
 
@@ -240,6 +240,6 @@ Use this guide for the current platform interface, plugin READMEs for operation,
 
 ### Standalone JIT Editor
 
-The Windows x64 [JIT Editor guide](../tools/jit_editor/README.md) covers the dedicated CLAP/VST3 editor, its bundled production Python/LLVM/Faust compiler, full plugin GFX view, dynamic controls/pins, imports, state, task/sample-pool services, installation and limitations. Compiling and editing are specific to that standalone plugin; ordinary catalog plugins remain AOT. The [C++ migration design](../tools/jit_editor/CPP-MIGRATION.md) records the separate native frontend's completed source/token/AST phase and the remaining lowering, LLVM and execution equivalence gates. The user-facing Run button uses the standard compiler without a frontend checkbox. The experimental C++ resolver/parser remains available in developer tests and for older saved projects, feeding the existing production lowering and LLVM emitter. Python remains bundled.
+The Windows/Linux x64 [JIT Editor guide](../tools/jit_editor/README.md) covers the dedicated CLAP/VST3 editor, its bundled production Python/LLVM/Faust compiler, full plugin GFX view, dynamic controls/pins, imports, state, task/sample-pool services, installation and limitations. macOS Editor support remains future work. Compiling and editing are specific to that standalone plugin; ordinary catalog plugins remain AOT. The [C++ migration design](../tools/jit_editor/CPP-MIGRATION.md) records the separate native frontend's completed source/token/AST phase and the remaining lowering, LLVM and execution equivalence gates. The user-facing Run button uses the standard compiler without a frontend checkbox. The experimental C++ resolver/parser remains available in developer tests and for older saved projects, feeding the existing production lowering and LLVM emitter. Python remains bundled.
 
 AOT and JIT now share production runtime components for compiled sections, Faust execution, files/sample pools, deferred tasks, numeric/string/slider services, MIDI, host transport, routing/oversampling, and sleep policy. JIT binds those components to its program-specific entrypoints and metadata; it does not maintain a second reduced feature runtime. The [qualification record](../tools/jit_editor/VALIDATION.md) distinguishes frozen AOT comparisons, JIT catalog smoke coverage, loaded-bank tests, and behavior still requiring live-host qualification.

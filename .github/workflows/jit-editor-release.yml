@@ -1,0 +1,113 @@
+name: JIT Editor Build & Release
+
+on:
+  push:
+    branches: ['**']
+    tags: ['jit-v*']
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: '2'
+
+jobs:
+  jit_editor:
+    name: JIT Editor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS requires a JIT platform port; AOT catalog support is separate.
+        os: [windows-latest, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare toolchain and patched host wrappers
+        uses: ./.github/actions/setup-build
+      - name: Build, package and qualify the standalone editor
+        shell: python
+        run: |
+          import os, subprocess, sys
+          command = [sys.executable, '-u', 'scripts/ci_jit_editor.py', '--output', 'dist/jit-editor']
+          if os.environ['RUNNER_OS'] == 'Linux':
+              command = ['xvfb-run', '-a', *command]
+          subprocess.check_call(command)
+      - name: Verify applied dependency patches
+        run: python tools/jit_editor/apply_wrapper_patches.py --check
+      - name: Upload usable JIT Editor archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: jit-editor-${{ runner.os }}
+          path: |
+            dist/jit-editor/*.zip
+            dist/jit-editor/*.tar.gz
+          if-no-files-found: error
+      - name: Upload JIT qualification logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jit-editor-diagnostics-${{ runner.os }}
+          path: |
+            build/ci/environment.json
+            build/ci/jit-editor
+          if-no-files-found: ignore
+
+  release:
+    name: Publish standalone JIT Editor release
+    needs: jit_editor
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/jit-v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: jit-editor-Windows
+          path: dist/jit-editor
+      - uses: actions/download-artifact@v4
+        with:
+          name: jit-editor-Linux
+          path: dist/jit-editor
+      - name: Publish platform packages after JIT qualification passes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            dist/jit-editor/JIT-Editor-Shared-Runtime-Windows-CLAP.zip
+            dist/jit-editor/JIT-Editor-Shared-Runtime-Windows-VST3.zip
+            dist/jit-editor/JIT-Editor-Shared-Runtime-Linux-CLAP.tar.gz
+            dist/jit-editor/JIT-Editor-Shared-Runtime-Linux-VST3.tar.gz
+          )
+          for archive in "${files[@]}"; do
+            if [[ ! -s "$archive" ]]; then
+              echo "Missing or empty JIT Editor package: $archive"
+              exit 2
+            fi
+          done
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+            --verify-tag --title "ZorakAudio JIT Editor ${TAG#jit-}" \
+            --notes-file docs/releases/JIT-Editor.md --prerelease --latest=false
+          for attempt in 1 2 3; do
+            if gh release upload "$TAG" "${files[@]}" --clobber; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1

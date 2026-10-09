@@ -2,7 +2,9 @@
 
 New full catalog releases contain three ZIPs. **Each ZIP includes Windows,
 macOS and Linux builds**, with both VST3 and CLAP in separate operating-system
-folders. The standalone JIT Editor keeps its separate Windows/Linux packages.
+folders. The standalone JIT Editor has its own GitHub releases and separate
+Windows/Linux packages; it is not part of these collection ZIPs. macOS Editor
+support still requires a platform port.
 
 | Collection | Plugins | Intended use |
 | --- | ---: | --- |
@@ -114,8 +116,12 @@ synthetic ZIP fixtures to exercise these gates without rebuilding the catalog:
 python tests/build/test_catalog_merge.py
 ```
 
-Tagged CI publishes these three collections and the four separate JIT Editor
-archives only after every required build and qualification job succeeds. A manual
-full **Run workflow** also uploads the three ZIPs as `catalog-collections`, without
+Catalog tags (`R*` or `v*`) publish only these three collections after their
+catalog gates pass. JIT Editor tags (`jit-v*`) use a separate workflow and create
+a separate prerelease with four Windows/Linux format packages. Catalog releases
+do not wait for JIT builds, and JIT tags do not rebuild the catalog. See
+[publishing instructions](Build-and-CI.md#independent-release-targets).
+
+A manual full **Run workflow** also uploads the three ZIPs as `catalog-collections`, without
 creating a GitHub release. Branch/PR smoke runs upload their five-plugin platform
 archives; they do not masquerade as complete collections.

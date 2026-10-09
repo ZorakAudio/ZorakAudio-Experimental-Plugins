@@ -2,6 +2,12 @@
 
 Start with [DSP-JSFX: consolidated guide](DSP-JSFX-Guide.md). It explains the current additions to stock JSFX with examples and limits. Plugin leaf READMEs are the operation manuals embedded in native help panels.
 
+For release readers, use the [catalog overview and Essentials summaries](releases/Catalog.md)
+or the separate [JIT Editor overview](releases/JIT-Editor.md). These Markdown
+files also supply the bodies of new tagged releases. See
+[release collections](Release-Collections.md) for downloads and
+[independent release targets](Build-and-CI.md#independent-release-targets) for publishing.
+
 ## Author contracts
 
 | Topic | Reference |
@@ -24,6 +30,7 @@ Start with [DSP-JSFX: consolidated guide](DSP-JSFX-Guide.md). It explains the cu
 | Original CMD design with block FAUST | [CMD](CMD-Original-FAUST-Integration.md) |
 | Optional Sample character variant | [Sample Faust](Sample-Faust-Character-Integration.md) |
 | Hyperreal default, alternate models, idle and matched comparisons | [Hyperreal](Hyperreal-Panner.md) |
+| Historical long-recording preparation timings and model checks | [Corpus preparation](validation/Corpus-Preparation.md) |
 | JoepVanlier native coverage | [Joep checkpoint](JoepVanlier-Native-Compatibility.md) |
 | JoepVanlier native WDL/EEL2 JIT versus LLVM DSP timings | [Joep performance](Joep-Performance.md) |
 | Non-Joep editor/audio coverage | [Catalog checkpoint](Plugin-Catalog-Regression.md) |

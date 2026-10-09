@@ -76,6 +76,12 @@ IPC probes and the superseded SaliencePush are excluded from normal builds.
 See [release collections and selection rationale](docs/Release-Collections.md).
 Local builds still produce a platform-local archive.
 
+The **JIT Editor** has its own releases (`jit-v*` tags), with separate Windows
+and Linux packages. It is not part of the collection ZIPs; macOS Editor support
+remains future work. See the [catalog release overview](docs/releases/Catalog.md)
+for the Essentials summaries and the [Editor overview](docs/releases/JIT-Editor.md)
+for writing and running programs inside a DAW.
+
 The normal AOT and JIT builds automatically check/apply the repository's host
 wrapper patches, including when reusing a build directory. CI builds both formats
 on Windows, universal2 macOS and Linux, plus the standalone JIT Editor on Windows and Linux.
