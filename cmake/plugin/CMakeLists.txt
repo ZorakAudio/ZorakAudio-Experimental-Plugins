@@ -207,10 +207,11 @@ if(PLUGIN_TYPE STREQUAL "faust")
   )
 else()
   # JSFX: JUCE processor + WDL/EEL2 (C) sources.
+  # YSFXGfxInterpreter.h supplies the mutex host stubs inside the processor TU.
+  # Do not also link NSEELHostStubs.cpp: that defines the same external symbols.
   target_sources(${PLUGIN_SLUG}
     PRIVATE
       "${ZA_ROOT}/src/JSFXJuceProcessor.cpp"
-      "${ZA_ROOT}/src/NSEELHostStubs.cpp"
       "${ZA_ROOT}/src/DspJsfxRuntime.cpp"
       "${ZA_ROOT}/src/DspJsfxRuntimeBuiltins.cpp"
       "${ZA_ROOT}/src/DspJsfxMessageBus.cpp"

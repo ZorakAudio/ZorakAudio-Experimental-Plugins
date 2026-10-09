@@ -45,6 +45,7 @@ jobs:
         run: |
           python tests/build/test_wrapper_patches.py
           python tests/build/test_catalog_merge.py
+          python tests/build/test_build_paths.py
           python scripts/check_plugin_readmes.py
       - name: Compiler, deferred-worker and idle IPC contracts
         if: matrix.shard == 0
@@ -67,6 +68,9 @@ jobs:
           flags = [] if os.environ['CATALOG_SCOPE'] == 'full' else ['--smoke']
           if os.environ['CATALOG_SCOPE'] == 'full':
               flags += ['--shard', '${{ matrix.shard }}/4']
+          if os.environ['RUNNER_OS'] == 'Windows':
+              # MSVC can reject long nested VST3 output paths under the checkout.
+              flags += ['--build-root', os.path.join(os.environ['RUNNER_TEMP'], 'za-catalog')]
           subprocess.check_call([sys.executable, '-u', 'scripts/build.py',
               '--config', 'Release', '--tag', os.environ['BUILD_TAG'], '--out', 'dist', *flags])
       - name: Verify applied dependency patches

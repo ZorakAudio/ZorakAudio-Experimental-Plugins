@@ -134,8 +134,33 @@ def host_os() -> str:
     return "linux"
 
 
-def clean_build_dir(repo_root: Path, os_id: str) -> None:
-    build_root = repo_root / "build" / os_id
+def platform_build_root(repo_root: Path, os_id: str, base_dir: str | Path = "build") -> Path:
+    """Resolve a platform's build tree beneath the explicitly selected base."""
+    if os_id not in ("windows", "macos", "linux"):
+        raise ValueError(f"Unknown build platform: {os_id!r}")
+    base = (repo_root / base_dir).resolve()
+    target = (base / os_id).resolve()
+    if target.parent != base:
+        raise ValueError(f"Build directory resolves outside its selected base: {target}")
+    return target
+
+
+def validate_windows_build_paths(build_root: Path, specs: list[PluginSpec], config: str) -> None:
+    """Catch MSVC's long VST3 output paths before compiling the catalog."""
+    for spec in specs:
+        slug = spec.slug
+        payload = (build_root / slug / f"{slug}_artefacts" / config / "VST3"
+                   / f"{slug}.vst3" / "Contents" / "x86_64-win" / f"{slug}.vst3")
+        length = len(str(payload).encode("utf-16-le")) // 2
+        if length >= 260:
+            raise ValueError(
+                f"Windows VST3 output path for {slug} is too long ({length} characters): "
+                f"{payload}. Use --build-root with a shorter base directory."
+            )
+
+
+def clean_build_dir(repo_root: Path, os_id: str, base_dir: str | Path = "build") -> None:
+    build_root = platform_build_root(repo_root, os_id, base_dir)
     if build_root.exists():
         print(f"[clean] removing {build_root}")
         shutil.rmtree(build_root)
@@ -481,6 +506,7 @@ def main() -> None:
     ap.add_argument("--config", default="Release")
     ap.add_argument("--tag", default="0.0.0")
     ap.add_argument("--out", default="dist")
+    ap.add_argument("--build-root", default="build", help="Build base directory (relative to the repository or absolute); platform subdirectories are added automatically")
     ap.add_argument("--only", default="", help="Build only one plugin (match category, key, slug, name, path, bundleId, or clapId).")
     ap.add_argument("--smoke", action="store_true", help="Build the five representative CI plugins")
     ap.add_argument('--shard', help='Build one disjoint full-catalog group: zero-based INDEX/COUNT')
@@ -532,11 +558,16 @@ def main() -> None:
         ap.error("JoepVanlier always uses LEGACY, which cannot use the shadow EEL monitor; select a non-Joep plugin for --correctness-check")
 
     os_id = host_os()
+    try:
+        build_root = platform_build_root(repo_root, os_id, args.build_root)
+        if os_id == "windows" and not args.clean_only:
+            validate_windows_build_paths(build_root, selected, args.config)
+    except ValueError as exc:
+        ap.error(str(exc))
     out_dir = repo_root / args.out / args.tag / os_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    build_root = repo_root / "build" / os_id
     if args.clean or args.clean_only:
-        clean_build_dir(repo_root, os_id)
+        clean_build_dir(repo_root, os_id, args.build_root)
         if args.clean_only:
             return
 

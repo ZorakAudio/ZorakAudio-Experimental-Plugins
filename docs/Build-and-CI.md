@@ -14,6 +14,14 @@ git submodule update --init --recursive
 python scripts/build.py --config Release --tag dev --out dist
 ```
 
+Windows catalog CI puts build intermediates under `RUNNER_TEMP/za-catalog/windows`
+to keep MSVC's nested VST3 output paths below its traditional 260-character limit.
+Local builds retain `build/<platform>` by default. For a deep checkout, pass
+`--build-root` with a short directory; relative paths resolve against the repository.
+`--clean` and `--clean-only` clean only the selected platform under that base.
+The builder checks Windows VST3 paths before compilation and reports a shorter-root
+remedy. Plugin filenames, IDs and packaged collection layouts are unaffected.
+
 The normal builder, direct AOT CMake configuration and JIT CMake configuration
 invoke `tools/jit_editor/apply_wrapper_patches.py`. CMake also checks at build
 time, before compiling the wrappers. A reused build directory therefore repairs
