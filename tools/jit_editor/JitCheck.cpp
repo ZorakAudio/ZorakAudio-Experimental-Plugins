@@ -8,6 +8,9 @@
 #include "../../tests/runtime/SyntheticBank.h"
 #if JUCE_WINDOWS
 #include <windows.h>
+#else
+namespace juce::detail { bool dispatchNextMessageOnSystemQueue(bool); }
+namespace { namespace linux_test { void dispatch() { while(juce::detail::dispatchNextMessageOnSystemQueue(true)) {} } } }
 #endif
 
 using namespace juce;

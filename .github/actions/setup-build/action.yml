@@ -21,10 +21,11 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
-          ninja-build build-essential pkg-config llvm-18-dev libzstd-dev libedit-dev \
+          ninja-build build-essential clang pkg-config llvm-18-dev libzstd-dev libedit-dev patchelf xvfb xauth locales \
           libasound2-dev libjack-jackd2-dev \
           libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev \
           libfreetype-dev libfontconfig1-dev libglu1-mesa-dev mesa-common-dev
+        sudo localedef -i de_DE -f UTF-8 de_DE.UTF-8
     - name: macOS build dependencies
       if: runner.os == 'macOS'
       shell: bash

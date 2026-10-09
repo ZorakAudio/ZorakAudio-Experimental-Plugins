@@ -1,4 +1,4 @@
-"""Private, short-lived compiler helper for the standalone Windows JIT Editor.
+"""Private, short-lived compiler helper for the standalone JIT Editor.
 
 Only this helper imports Python/llvmlite. The DAW links the resulting native IR.
 Uses the production compiler pipeline. This is not a sandbox for untrusted code.
@@ -14,6 +14,7 @@ import time
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent
+EXE = ".exe" if os.name == "nt" else ""
 sys.path.insert(0, str(ROOT))
 import dsp_jsfx_aot as compiler
 from llvmlite import binding as llvm
@@ -53,7 +54,7 @@ def compile_request(request, directory):
         source = "@faust block\n" + source
     if request.get('mode','jsfx') != 'faust':
         from scripts.jsfx_source import resolve_source
-        if (ROOT / "jsfx_eel_pp.exe").exists():os.environ["JSFX_EEL_PP"]=str(ROOT / "jsfx_eel_pp.exe")
+        if (ROOT / ("jsfx_eel_pp" + EXE)).exists():os.environ["JSFX_EEL_PP"]=str(ROOT / ("jsfx_eel_pp" + EXE))
         origin=Path(request.get('sourcePath') or directory / 'editor.jsfx').resolve()
         try:
             if frontend_backend == "cpp-frontend":
@@ -81,7 +82,7 @@ def compile_request(request, directory):
     phase("frontend")
     if pipeline.get("faust_plan"):
         pipeline["faust_plan"]["include_paths"] = [str(ROOT.parent / "faust" / "share" / "faust")]
-        os.environ["JSFX_FAUST_COMPILER"] = str(ROOT.parent / "faust" / "bin" / "faust.exe")
+        os.environ["JSFX_FAUST_COMPILER"] = str(ROOT.parent / "faust" / "bin" / ("faust" + EXE))
     module, meta = compiler.compile_jsfx_to_ir(source, pipeline=pipeline, native_gfx_legacy=True, state_var_capacity=0)
     # Native code uses the production GFX services, but its editor adapter must
     # preserve AOT's separate scalar view rather than alias DSP scratch cells.

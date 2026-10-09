@@ -14,6 +14,9 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def stage(destination, python, faust):
+    if sys.platform == 'linux':
+        from package_linux_runtime import stage_linux
+        return stage_linux(destination.resolve(), python.resolve(), faust.resolve())
     destination = destination.resolve()
     destination.mkdir(parents=True, exist_ok=True)
     py = destination / "python"

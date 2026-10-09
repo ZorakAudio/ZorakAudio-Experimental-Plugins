@@ -135,6 +135,7 @@ def isolate_tables(module,name,version):
 def compile_stage(stage,known,aliases,faust_cmd=None,include_paths=()):
     executable=faust_cmd or os.environ.get('JSFX_FAUST_COMPILER') or shutil.which('faust')
     if not executable:raise ValueError('@faust requires the Faust compiler with its LLVM backend on PATH (or JSFX_FAUST_COMPILER)')
+    if Path(executable).is_file():executable=str(Path(executable).resolve())
     source=stage['source'];defs=definitions(source)
     exports=sorted(n for n in definition_paths(source) if n.lower() in known or n.lower() in aliases)
     if any(n.startswith('__za_') for n in defs):raise ValueError('@faust reserves the __za_ namespace for its bridge')
@@ -142,6 +143,18 @@ def compile_stage(stage,known,aliases,faust_cmd=None,include_paths=()):
     imported=[];module=None
     with tempfile.TemporaryDirectory(prefix='jsfx-faust-') as scratch:
         p=Path(scratch)/'section.dsp';bc=p.with_suffix('.bc')
+        # The Windows Faust executable uses narrow argv for file operations.
+        # Keep source/output arguments relative to its Unicode-aware process cwd.
+        # Mirror only include roots that it cannot address, without relying on
+        # NTFS short names being enabled on the user's installation volume.
+        compiler_includes=[]
+        for index,directory in enumerate(include_paths):
+            directory=Path(directory).resolve()
+            if os.name=='nt' and not str(directory).isascii():
+                include=Path(scratch)/('include_'+str(index))
+                shutil.copytree(directory,include)
+                compiler_includes.append(include.name)
+            else:compiler_includes.append(str(directory))
         for attempt in range(257):
             signals=[n for n in imported if re.fullmatch(r'spl\d+',n.lower()) or n.lower() in stage.get('stream_vars',set())]
             controls=[n for n in imported if n not in signals]
@@ -153,7 +166,7 @@ def compile_stage(stage,known,aliases,faust_cmd=None,include_paths=()):
             p.write_text(code,encoding='utf-8')
             env=dict(os.environ);env['FAUST_DEBUG']='FAUST_LLVM_NO_FM'
             try:
-                result=subprocess.run([executable,'-lang','llvm','-double','-mdd','2147483647','-cn',name,*[item for directory in include_paths for item in ('-I',str(directory))],'-o',str(bc),str(p)],capture_output=True,text=True,env=env,timeout=120)
+                result=subprocess.run([executable,'-lang','llvm','-double','-mdd','2147483647','-cn',name,*[item for directory in compiler_includes for item in ('-I',directory)],'-o',bc.name,p.name],cwd=scratch,capture_output=True,text=True,env=env,timeout=120)
             except subprocess.TimeoutExpired as exc:
                 raise ValueError('@faust at line %d exceeded the 120-second build limit '
                                  '(inferred imports=%d, scalar exports=%d). '

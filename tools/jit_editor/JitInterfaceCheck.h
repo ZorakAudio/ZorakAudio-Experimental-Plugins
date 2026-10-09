@@ -87,7 +87,7 @@ void checkInterfaceUnicode(const juce::File& output){
     const auto disk=sourceFile.loadFileAsString();require(disk==code->getDocument().getAllContent(),"Ctrl+S saves the complete UTF-8 draft to the opened source file");waitForRun(p,before);pumpEditor();
     require(p.engine.appliedSource()==disk && std::abs(p.sliderValue(0)-.25)<1e-6,"Ctrl+S compiles/runs the saved source with fresh defaults");
     clickButton(*editor,"Edit");auto blocked=folder.getChildFile("blocked");require(blocked.createDirectory().wasOk(),"Save failure fixture");p.setSourceFile(blocked.getFullPathName());before=p.engine.activeRevision();code->keyPressed(juce::KeyPress('S',juce::ModifierKeys::ctrlModifier,0));pumpEditor();
-    require(visibleLabel(*editor,"Save failed") && p.engine.activeRevision()==before && sourceFile.loadFileAsString()==disk,"Failed save retains running program and original disk source");p.setSourceFile(sourceFile.getFullPathName());
+    require(visibleLabel(*editor,"Save failed") && p.engine.activeRevision()==before && sourceFile.loadFileAsString()==disk && blocked.isDirectory(),"Failed save retains running program, original disk source and target directory");p.setSourceFile(sourceFile.getFullPathName());
     // Normal Run is still available after a failed save and clears its error.
     clickButton(*editor,"Run");waitForRun(p,before);pumpEditor();
     clickButton(*editor,"Edit");code->getDocument().replaceAllContent(line+"\n\tABC\n");pumpEditor();

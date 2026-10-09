@@ -5,6 +5,8 @@ import hashlib
 from pathlib import Path
 import shutil
 import zipfile
+import sys
+import tarfile
 from package_runtime import stage
 
 REPO = Path(__file__).resolve().parents[2]
@@ -15,6 +17,7 @@ def bytes_in(folder):
 
 
 def package(build, output, faust, python, staging=None):
+    platform_name = 'Windows' if sys.platform == 'win32' else 'Linux'
     output.mkdir(parents=True, exist_ok=True)
     staging = staging or build / "package"
     if staging.exists():
@@ -56,10 +59,14 @@ def package(build, output, faust, python, staging=None):
         shutil.copy2(REPO/'docs/Build-and-CI.md',folder/'BUILD-AND-CI.md')
         shutil.copytree(Path(__file__).with_name('examples'),folder/'examples')
         (folder/'SOURCE-SHA256.json').write_text(json.dumps(provenance,indent=2)+'\n',encoding='utf-8')
-        archive = output / ("JIT-Editor-Shared-Runtime-Windows-" + kind + ".zip")
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipped:
-            for file in sorted(folder.rglob("*")):
-                if file.is_file(): zipped.write(file, str(file.relative_to(folder)))
+        archive = output / ("JIT-Editor-Shared-Runtime-" + platform_name + "-" + kind + (".zip" if sys.platform == 'win32' else ".tar.gz"))
+        if sys.platform == 'win32':
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipped:
+                for file in sorted(folder.rglob("*")):
+                    if file.is_file(): zipped.write(file, str(file.relative_to(folder)))
+        else:
+            with tarfile.open(archive, 'w:gz', compresslevel=6) as tar:
+                for file in sorted(folder.iterdir()): tar.add(file, arcname=file.name)
         result[kind] = dict(zipBytes=archive.stat().st_size, installedBytes=bytes_in(folder),
                             compilerBytes=bytes_in(destination), binaryBytes=source.stat().st_size if kind == "CLAP" else bytes_in(source)-bytes_in(source / "Contents/Resources/JITEditor.runtime"))
     (output / "JIT-Editor-Shared-Runtime-sizes.json").write_text(json.dumps(result, indent=2), encoding="utf-8")

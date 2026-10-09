@@ -1,7 +1,7 @@
 #include "JitDeclarations.h"
 #include "JitEngine.h"
 #define NOMINMAX
-#include <windows.h>
+#include "JitPlatform.h"
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -59,40 +59,22 @@ std::vector<var> array(const var& value) {
     if (auto* items = value.getArray()) for (auto& item : *items) result.push_back(item);
     return result;
 }
-File findRuntime() {
-    HMODULE module = nullptr;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                      reinterpret_cast<LPCWSTR>(&findRuntime), &module);
-    wchar_t path[32768] {};
-    GetModuleFileNameW(module, path, 32768);
-    File folder = File(String(path)).getParentDirectory();
-    auto sibling = folder.getChildFile("JITEditor.runtime");
-    if (sibling.isDirectory()) return sibling;
-    return folder.getParentDirectory().getChildFile("Resources/JITEditor.runtime");
-}
 struct LinkElement { uint8_t kind; const char* value; size_t length; };
 struct SymbolAddress { const char* name; uint64_t address; };
 struct LLVMApi {
-    HMODULE module = nullptr;
+    jit_platform::Module module = nullptr;
     void* (*create)(void*, bool, bool, char**) = nullptr;
     void (*dispose)(void*) = nullptr;
     void* (*link)(void*, const char*, LinkElement*, size_t, SymbolAddress*, size_t, SymbolAddress*, size_t, char**) = nullptr;
     bool (*release)(void*, char**) = nullptr;
     void (*freeString)(char*) = nullptr;
     template<class T> T symbol(const char* name) {
-        auto result = reinterpret_cast<T>(GetProcAddress(module, name));
+        auto result = reinterpret_cast<T>(jit_platform::symbol(module, name));
         if (!result) fail(String("Bundled LLVM missing symbol: ") + name);
         return result;
     }
     explicit LLVMApi(const File& runtime) {
-        auto dll = runtime.getChildFile("python/Lib/site-packages/llvmlite/binding/llvmlite.dll");
-        module = LoadLibraryExW(dll.getFullPathName().toWideCharPointer(), nullptr,
-                              LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        if (!module) fail("Cannot load bundled LLVM DLL: " + String(static_cast<int>(GetLastError())));
-        // Pin native code support for this process. Multiple plugin instances may use it.
-        HMODULE pinned = nullptr;
-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                          reinterpret_cast<LPCWSTR>(GetProcAddress(module, "LLVMPY_CreateLLJITCompiler")), &pinned);
+        module = jit_platform::loadLLVM(runtime);
         create = symbol<decltype(create)>("LLVMPY_CreateLLJITCompiler");
         dispose = symbol<decltype(dispose)>("LLVMPY_LLJITDispose");
         link = symbol<decltype(link)>("LLVMPY_LLJIT_Link");
@@ -137,39 +119,6 @@ uint64_t mathAddress(const String& name) {
     fail("Unsupported native import: " + name);
 }
 
-// Run private Python without a console, in a job that also owns its Faust child.
-// The job is killed on cancellation, failure, and plugin destruction.
-String runHelper(const File& runtime, const File& job, const std::function<bool()>& cancelled) {
-    auto python = runtime.getChildFile("python/python.exe");
-    auto script = runtime.getChildFile("compiler/compiler_worker.py");
-    if (!python.existsAsFile() || !script.existsAsFile()) fail("Bundled compiler is missing beside this plugin");
-    String command = "\"" + python.getFullPathName() + "\" -I \"" + script.getFullPathName() + "\" \"" + job.getFullPathName() + "\"";
-    HANDLE task = CreateJobObjectW(nullptr, nullptr);
-    if (!task) fail("Cannot create compiler job");
-    struct JobGuard { HANDLE handle; ~JobGuard() { CloseHandle(handle); } } jobGuard {task};
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit {};
-    limit.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    if (!SetInformationJobObject(task, JobObjectExtendedLimitInformation, &limit, sizeof(limit))) fail("Cannot set compiler job limits");
-    STARTUPINFOW startup {}; startup.cb = sizeof(startup);
-    PROCESS_INFORMATION child {};
-    std::wstring writable(command.toWideCharPointer());
-    if (!CreateProcessW(python.getFullPathName().toWideCharPointer(), writable.data(), nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, runtime.getFullPathName().toWideCharPointer(), &startup, &child))
-        fail("Cannot launch bundled Python: " + String(static_cast<int>(GetLastError())));
-    struct ProcessGuard { PROCESS_INFORMATION value; ~ProcessGuard() { CloseHandle(value.hThread); CloseHandle(value.hProcess); } } processGuard {child};
-    if (!AssignProcessToJobObject(task, child.hProcess)) { TerminateProcess(child.hProcess, 1); fail("Cannot contain compiler helper in its job"); }
-    ResumeThread(child.hThread);
-    while (WaitForSingleObject(child.hProcess, 25) == WAIT_TIMEOUT) {
-        if (cancelled()) fail("Compilation cancelled by a newer request");
-    }
-    DWORD code = 1;
-    GetExitCodeProcess(child.hProcess, &code);
-    if (code != 0) {
-        auto error = job.getChildFile("error.txt").loadFileAsString();
-        fail(error.isNotEmpty() ? error : "Compiler helper failed (exit " + String(static_cast<int64>(code)) + ")");
-    }
-    return job.getChildFile("program.ll").loadFileAsString();
-}
 double eelStore(double value) {
     uint64_t bits; std::memcpy(&bits, &value, 8);
     auto exponent = (bits >> 52) & 2047;
@@ -299,7 +248,7 @@ struct JitEngine::Program : za::jsfx::MidiHostRuntime,za::jsfx::IdleRuntime,za::
     }
 };
 
-JitEngine::JitEngine(File location) : Thread("JIT Editor compiler"), runtime(location.isDirectory() ? location : findRuntime()) {
+JitEngine::JitEngine(File location) : Thread("JIT Editor compiler"), runtime(location.isDirectory() ? location : jit_platform::findRuntime(reinterpret_cast<const void*>(&eelStore))) {
     for (auto& control : controls) control.store(0.5f);
     startThread();
 }
@@ -441,7 +390,7 @@ std::unique_ptr<JitEngine::Program> JitEngine::compile(const Request& jobRequest
     requestObject->setProperty("source", jobRequest.source); requestObject->setProperty("mode", jobRequest.mode);requestObject->setProperty("sourcePath",jobRequest.sourcePath);
     requestObject->setProperty("frontend",jobRequest.frontend);
     if (!folder.getChildFile("request.json").replaceWithText(JSON::toString(var(requestObject.get())))) fail("Cannot save compilation request");
-    auto ir = runHelper(runtime, folder, [&] { return threadShouldExit() || revision.load() != jobRequest.id; });
+    auto ir = jit_platform::runHelper(runtime, folder, [&] { return threadShouldExit() || revision.load() != jobRequest.id; });
     auto descriptor = JSON::parse(folder.getChildFile("program.json"));
     Array<var> declarations;
     for(auto& item:jitDeclarations(jobRequest.source,descriptor)) {

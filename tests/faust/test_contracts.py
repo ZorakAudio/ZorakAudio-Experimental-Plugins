@@ -49,7 +49,7 @@ class Contracts(unittest.TestCase):
   with self.assertRaisesRegex(ValueError,'@faust'):
    c.compile_jsfx_to_ir('@init\ngain=0.5;\n@faust\nprocess=rdtable(16,gain,int(_)%16),_;')
  def test_resolver_and_relative_library(self):
-  with tempfile.TemporaryDirectory(dir=ROOT/'build/faust-sections') as d:
+  with tempfile.TemporaryDirectory(prefix='jsfx-relative-library Ω-') as d:
    d=Path(d);(d/'helper.jsfx-inc').write_text('@init\nfunction twice(x)(x*2);\n')
    (d/'custom.lib').write_text('half=0.5;')
    p=d/'mixed.jsfx';p.write_text('import helper.jsfx-inc\n@init\ngain=0.5;\n@block\ngain=twice(gain);\n@faust\nimport("custom.lib");process=_,_:*(half),_;\n@block\ngain=0.25;\n@faust\nprocess=_,_;\n')

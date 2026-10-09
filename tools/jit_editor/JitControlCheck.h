@@ -12,9 +12,19 @@ void clickButton(juce::Component& root,const juce::String& name) {
     for(auto* b:descendants<juce::TextButton>(root))if(b->getButtonText()==name){b->onClick();return;}
     throw std::runtime_error("Missing button: "+name.toStdString());
 }
+#if JUCE_LINUX
+namespace linux_test { void dispatch(); }
+#endif
 void pumpEditor(){
     const auto start=juce::Time::getMillisecondCounter();
-    while(juce::Time::getMillisecondCounter()-start<100){MSG message;while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}juce::Thread::sleep(1);}
+    while(juce::Time::getMillisecondCounter()-start<100){
+#if JUCE_WINDOWS
+        MSG message;while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}
+#else
+        linux_test::dispatch();
+#endif
+        juce::Thread::sleep(1);
+    }
 }
 struct ParameterEvents final : juce::AudioProcessorParameter::Listener {
     std::vector<int> events;

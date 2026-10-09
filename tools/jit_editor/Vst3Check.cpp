@@ -1,6 +1,6 @@
 // Public VST3 ABI test: no JUCE linkage and no developer compiler dependency.
 #define NOMINMAX
-#include <windows.h>
+#include "TestModule.h"
 #include "pluginterfaces/base/ipluginbase.h"
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
@@ -16,15 +16,47 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <functional>
+#if defined(__linux__)
+#include "pluginterfaces/gui/iplugview.h"
+#include <poll.h>
+#include <algorithm>
+#endif
 using namespace Steinberg;using namespace Steinberg::Vst;
 void require(bool b,const char* msg){if(!b)throw std::runtime_error(msg);}
-void pump(){MSG m;while(PeekMessageW(&m,nullptr,0,0,PM_REMOVE)){TranslateMessage(&m);DispatchMessageW(&m);}}
+static std::function<void()> linuxPump;
+void pump(){pumpTestMessages();if(linuxPump)linuxPump();}
 template<class T>bool same(const TUID id){return std::memcmp(id,T::iid.toTUID(),16)==0;}
-struct Host:IHostApplication{
- tresult PLUGIN_API queryInterface(const TUID id,void** out)override{if(same<IHostApplication>(id)||same<FUnknown>(id)){*out=this;return kResultOk;}*out=nullptr;return kNoInterface;}
+struct Host:IHostApplication
+#if defined(__linux__)
+ ,Linux::IRunLoop
+#endif
+{
+ tresult PLUGIN_API queryInterface(const TUID id,void** out)override{
+#if defined(__linux__)
+  if(std::memcmp(id,Linux::IRunLoop_iid,16)==0){*out=static_cast<Linux::IRunLoop*>(this);return kResultOk;}
+#endif
+  if(same<IHostApplication>(id)||same<FUnknown>(id)){*out=static_cast<IHostApplication*>(this);return kResultOk;}*out=nullptr;return kNoInterface;}
  uint32 PLUGIN_API addRef()override{return 1;}uint32 PLUGIN_API release()override{return 1;}
  tresult PLUGIN_API getName(String128 n)override{std::memset(n,0,sizeof(String128));n[0]='T';return kResultOk;}
  tresult PLUGIN_API createInstance(TUID,TUID,void** out)override{*out=nullptr;return kNoInterface;}
+#if defined(__linux__)
+ std::vector<std::pair<int,Linux::IEventHandler*>> events;
+ struct Timer {Linux::ITimerHandler* handler;std::chrono::milliseconds period;std::chrono::steady_clock::time_point next;};
+ std::vector<Timer> timers;
+ tresult PLUGIN_API registerEventHandler(Linux::IEventHandler* handler,int fd)override{handler->addRef();events.emplace_back(fd,handler);return kResultOk;}
+ tresult PLUGIN_API unregisterEventHandler(Linux::IEventHandler* handler)override{for(auto i=events.begin();i!=events.end();)if(i->second==handler){i->second->release();i=events.erase(i);}else ++i;return kResultOk;}
+ tresult PLUGIN_API registerTimer(Linux::ITimerHandler* handler,Linux::TimerInterval milliseconds)override{handler->addRef();auto period=std::chrono::milliseconds(milliseconds);timers.push_back({handler,period,std::chrono::steady_clock::now()+period});return kResultOk;}
+ tresult PLUGIN_API unregisterTimer(Linux::ITimerHandler* handler)override{for(auto i=timers.begin();i!=timers.end();)if(i->handler==handler){i->handler->release();i=timers.erase(i);}else ++i;return kResultOk;}
+ void dispatch(){
+  auto snapshot=events;for(auto& event:snapshot)event.second->addRef();
+  for(auto& event:snapshot){pollfd descriptor{event.first,POLLIN,0};if(poll(&descriptor,1,0)>0 && descriptor.revents)event.second->onFDIsSet(event.first);event.second->release();}
+  std::vector<Linux::ITimerHandler*> due;auto now=std::chrono::steady_clock::now();
+  for(auto& timer:timers)if(now>=timer.next){timer.next=now+timer.period;timer.handler->addRef();due.push_back(timer.handler);}
+  for(auto* handler:due){handler->onTimer();handler->release();}
+ }
+ ~Host(){for(auto& event:events)event.second->release();for(auto& timer:timers)timer.handler->release();}
+#endif
 };
 struct Handler:IComponentHandler{
  int32 flags=0;int restarts=0;
@@ -44,14 +76,24 @@ struct Stream:IBStream{
 };
 std::string quote(const std::string& t){std::string r="\"";for(char c:t){if(c=='\n')r+="\\n";else{if(c=='\"'||c=='\\')r+='\\';r+=c;}}return r+'\"';}
 int main(int argc,char** argv)try{
- require(argc==2,"Pass VST3 binary");auto module=LoadLibraryA(argv[1]);require(module,"Load VST3");
- auto init=(bool(*)())GetProcAddress(module,"InitDll");if(init)require(init(),"InitDll");
- auto getFactory=(IPluginFactory*(*)())GetProcAddress(module,"GetPluginFactory");require(getFactory,"Factory export");auto* factory=getFactory();
+ require(argc==2,"Pass VST3 binary");const auto path=testArgument(1,argv);auto module=loadTestModule(path.c_str());require(module,"Load VST3");
+#if defined(_WIN32)
+ auto init=(bool(*)())testSymbol(module,"InitDll");if(init)require(init(),"InitDll");
+#else
+ auto init=(bool(*)(void*))testSymbol(module,"ModuleEntry");require(init && init(module),"ModuleEntry");
+#endif
+ auto getFactory=(IPluginFactory*(*)())testSymbol(module,"GetPluginFactory");require(getFactory,"Factory export");auto* factory=getFactory();
+ Host host;Handler handler;
+#if defined(__linux__)
+ linuxPump=[&]{host.dispatch();};IPluginFactory3* contextualFactory=nullptr;
+ require(factory->queryInterface(IPluginFactory3::iid.toTUID(),(void**)&contextualFactory)==kResultOk,"Linux factory host context");
+ contextualFactory->setHostContext(static_cast<IHostApplication*>(&host));contextualFactory->release();
+#endif
  PClassInfo ci{};require(factory->getClassInfo(0,&ci)==kResultOk,"Class info");IComponent* component=nullptr;
  require(factory->createInstance(ci.cid,IComponent::iid.toTUID(),(void**)&component)==kResultOk,"Component");
- Host host;Handler handler;require(component->initialize(&host)==kResultOk,"Initialize component");
+ require(component->initialize(static_cast<IHostApplication*>(&host))==kResultOk,"Initialize component");
  TUID cid{};component->getControllerClassId(cid);IEditController* controller=nullptr;require(factory->createInstance(cid,IEditController::iid.toTUID(),(void**)&controller)==kResultOk,"Controller");
- require(controller->initialize(&host)==kResultOk,"Initialize controller");controller->setComponentHandler(&handler);
+ require(controller->initialize(static_cast<IHostApplication*>(&host))==kResultOk,"Initialize controller");controller->setComponentHandler(&handler);
  IConnectionPoint *cp=nullptr,*ep=nullptr;component->queryInterface(IConnectionPoint::iid.toTUID(),(void**)&cp);controller->queryInterface(IConnectionPoint::iid.toTUID(),(void**)&ep);require(cp&&ep,"Connection points");cp->connect(ep);ep->connect(cp);
  IAudioProcessor* audio=nullptr;component->queryInterface(IAudioProcessor::iid.toTUID(),(void**)&audio);require(audio,"Audio processor");
  ProcessSetup setup{kRealtime,kSample32,256,48000};require(audio->setupProcessing(setup)==kResultOk,"Processing setup");component->activateBus(kAudio,kInput,0,true);component->activateBus(kAudio,kOutput,0,true);SpeakerArrangement initial=SpeakerArr::kStereo;audio->setBusArrangements(&initial,1,&initial,1);component->setActive(true);audio->setProcessing(true);
@@ -67,6 +109,12 @@ int main(int argc,char** argv)try{
  for(int i=0;i<5;++i){ParameterInfo binary{};require(controller->getParameterInfo(i,binary)==kResultOk,"Faust parameter info");require((binary.stepCount==1)==(binary.title[0]!='G'),"Binary Faust parameters boolean; continuous Gain keeps its range");}
  run("@sample\nspl0*=0.25;spl1*=0.25;spl2*=0.25;spl3*=0.25;",.25f,0,4);
  run("@sample\nspl0*=0.5;",.5f,0,1);run("@sample\nspl0*=0.125;spl1*=0.125;",.125f,0,2);require(handler.restarts>=3,"Host restarts");
- audio->setProcessing(false);component->setActive(false);cp->disconnect(ep);ep->disconnect(cp);cp->release();ep->release();audio->release();controller->terminate();controller->release();component->terminate();component->release();factory->release();auto exit=(bool(*)())GetProcAddress(module,"ExitDll");if(exit)exit();FreeLibrary(module);
+ audio->setProcessing(false);component->setActive(false);cp->disconnect(ep);ep->disconnect(cp);cp->release();ep->release();audio->release();controller->terminate();controller->release();component->terminate();component->release();factory->release();
+#if defined(_WIN32)
+ auto exit=(bool(*)())testSymbol(module,"ExitDll");
+#else
+ auto exit=(bool(*)())testSymbol(module,"ModuleExit");
+#endif
+ if(exit)exit();linuxPump={};closeTestModule(module);
  std::cout<<"PACKAGED VST3 PASS: dynamic controls, aliases, binary/continuous Faust parameters, audio, inferred stereo/four-channel pins, host restart\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

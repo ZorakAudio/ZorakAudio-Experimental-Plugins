@@ -9,15 +9,25 @@
 #include "JsfxSliderValues.h"
 #include <juce_gui_extra/juce_gui_extra.h>
 #define NOMINMAX
+#if JUCE_WINDOWS
 #include <windows.h>
+#endif
 using namespace juce;
 namespace {
 NormalisableRange<float> range(const JsfxSliderDecl&);
 class SourceEditor final : public CodeEditorComponent {
 public:
     std::function<void()> onSave;
-    SourceEditor(CodeDocument& d):CodeEditorComponent(d,nullptr){setMouseClickGrabsKeyboardFocus(true);editors.push_back(this);if(!hook)hook=SetWindowsHookExW(WH_GETMESSAGE,messageHook,nullptr,GetCurrentThreadId());}
-    ~SourceEditor() override {editors.erase(std::remove(editors.begin(),editors.end(),this),editors.end());if(editors.empty() && hook){UnhookWindowsHookEx(hook);hook=nullptr;}}
+    SourceEditor(CodeDocument& d):CodeEditorComponent(d,nullptr){setMouseClickGrabsKeyboardFocus(true);
+#if JUCE_WINDOWS
+        editors.push_back(this);if(!hook)hook=SetWindowsHookExW(WH_GETMESSAGE,messageHook,nullptr,GetCurrentThreadId());
+#endif
+    }
+    ~SourceEditor() override {
+#if JUCE_WINDOWS
+        editors.erase(std::remove(editors.begin(),editors.end(),this),editors.end());if(editors.empty() && hook){UnhookWindowsHookEx(hook);hook=nullptr;}
+#endif
+    }
     void paint(Graphics& g) override {
         // CodeEditorComponent's caret/hit-testing uses fixed columns. Drawing
         // shaped runs with proportional fallback glyphs breaks that contract,
@@ -54,6 +64,7 @@ public:
     // REAPER can consume Ctrl shortcuts in its accelerator before dispatching
     // a queued Windows key message to the plugin's child window. Intercept only
     // editing shortcuts while this source editor actually owns keyboard focus.
+#if JUCE_WINDOWS
     static LRESULT CALLBACK messageHook(int code,WPARAM removed,LPARAM value){
         if(code>=0 && removed==PM_REMOVE){auto* msg=reinterpret_cast<MSG*>(value);
             if(msg->message==WM_KEYDOWN && (GetKeyState(VK_CONTROL)&0x8000) && !(GetKeyState(VK_MENU)&0x8000))
@@ -67,6 +78,7 @@ public:
     }
     inline static thread_local HHOOK hook=nullptr;
     inline static thread_local std::vector<SourceEditor*> editors;
+#endif
     bool keyStateChanged(bool) override {return hasKeyboardFocus(true);}
     bool keyPressed(const KeyPress& key) override {
         if(key.getModifiers().isCtrlDown() || key.getModifiers().isCommandDown()) {
@@ -208,6 +220,9 @@ private:
         chooser->launchAsync(FileBrowserComponent::saveMode|FileBrowserComponent::canSelectFiles|FileBrowserComponent::warnAboutOverwriting,[safe=Component::SafePointer<Editor>(this)](const FileChooser& c){if(safe && c.getResult()!=File{})safe->saveToFile(c.getResult());});
     }
     void saveToFile(const File& file){
+        // On POSIX, JUCE's replacement helper can remove an empty directory.
+        // A stale/preset save target must never replace a directory with source.
+        if(file.isDirectory()){fileError="Save failed: source target is a directory: "+file.getFullPathName()+"\nThe running program was retained.";refreshFeedback();resized();return;}
         TemporaryFile temporary(file);bool wrote=false;
         {auto stream=temporary.getFile().createOutputStream();if(stream){auto text=document.getAllContent();wrote=stream->write(text.toRawUTF8(),text.getNumBytesAsUTF8());stream->flush();wrote=wrote && stream->getStatus().wasOk();}}
         if(!wrote || !temporary.overwriteTargetFileWithTemporary()){fileError="Save failed: could not replace "+file.getFullPathName()+"\nThe previous source file and running program were retained.";refreshFeedback();resized();return;}

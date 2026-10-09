@@ -6,13 +6,14 @@ the same production passes used by the standard compiler.
 """
 from dataclasses import fields
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
 
 
 def run_native(root, job, source, origin=None):
-    helper = root / "jsfx_frontend.exe"
+    helper = root / ("jsfx_frontend.exe" if os.name == "nt" else "jsfx_frontend")
     if not helper.is_file():
         raise ValueError("C++ frontend is missing from the compiler bundle; reinstall the complete new runtime")
     request = dict(protocol=1, stage="frontend", source=source, resolve=origin is not None)

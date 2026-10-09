@@ -26,7 +26,12 @@ int main()
         auto decimal=object({{"protocol",1},{"stage","frontend"},{"snippet",true},{"source","x=.25;y=1e-10;"}});
         auto before=juce::JSON::toString(frontend(decimal)["sections"]);
         std::string previous=std::setlocale(LC_NUMERIC,nullptr);
-        require(std::setlocale(LC_NUMERIC,"German_Germany.1252")!=nullptr,"Locale test could not establish comma decimal locale");
+#if defined(_WIN32)
+        constexpr auto commaLocale = "German_Germany.1252";
+#else
+        constexpr auto commaLocale = "de_DE.UTF-8";
+#endif
+        require(std::setlocale(LC_NUMERIC,commaLocale)!=nullptr,"Locale test could not establish comma decimal locale");
         auto after=juce::JSON::toString(frontend(decimal)["sections"]);
         std::setlocale(LC_NUMERIC,previous.c_str());
         require(before==after,"Host locale changed numeric parsing");

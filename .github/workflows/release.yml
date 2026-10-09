@@ -26,13 +26,14 @@ env:
 
 jobs:
   build:
-    name: Catalog (${{ matrix.os }})
+    name: Catalog (${{ matrix.os }}, group ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-24.04]
+        shard: ${{ fromJSON((startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.full_catalog)) && '[0,1,2,3]' || '[0]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,7 +42,9 @@ jobs:
       - name: Prepare toolchain and patched host wrappers
         uses: ./.github/actions/setup-build
       - name: Dependency patch and packaging contract tests
-        run: python tests/build/test_wrapper_patches.py
+        run: |
+          python tests/build/test_wrapper_patches.py
+          python tests/build/test_catalog_merge.py
       - name: Configure universal2 macOS catalog
         if: runner.os == 'macOS'
         shell: bash
@@ -54,6 +57,8 @@ jobs:
         run: |
           import os, subprocess, sys
           flags = [] if os.environ['CATALOG_SCOPE'] == 'full' else ['--smoke']
+          if os.environ['CATALOG_SCOPE'] == 'full':
+              flags += ['--shard', '${{ matrix.shard }}/4']
           subprocess.check_call([sys.executable, '-u', 'scripts/build.py',
               '--config', 'Release', '--tag', os.environ['BUILD_TAG'], '--out', 'dist', *flags])
       - name: Verify applied dependency patches
@@ -66,27 +71,31 @@ jobs:
           while IFS= read -r -d '' bundle; do
             codesign --verify --deep --strict "$bundle"
             while IFS= read -r -d '' binary; do
-              lipo -verify_arch arm64 x86_64 "$binary"
+              lipo "$binary" -verify_arch arm64 x86_64
             done < <(find "$bundle/Contents/MacOS" -type f -print0)
           done < <(find dist -type d \( -name '*.vst3' -o -name '*.clap' \) -print0)
       - name: Upload catalog archives
         uses: actions/upload-artifact@v4
         with:
-          name: catalog-${{ runner.os }}
+          name: catalog-${{ runner.os }}-${{ matrix.shard }}
           path: dist/**/*.zip
           if-no-files-found: error
       - name: Upload compiler diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diagnostics-catalog-${{ runner.os }}
+          name: diagnostics-catalog-${{ runner.os }}-${{ matrix.shard }}
           path: build/ci
           if-no-files-found: ignore
 
   jit_editor:
-    name: JIT Editor (Windows x64)
-    runs-on: windows-latest
+    name: JIT Editor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -95,20 +104,28 @@ jobs:
       - name: Prepare toolchain and patched host wrappers
         uses: ./.github/actions/setup-build
       - name: Build, package and qualify the standalone editor
-        run: python -u scripts/ci_jit_editor.py --output dist/jit-editor
+        shell: python
+        run: |
+          import os, subprocess, sys
+          command = [sys.executable, '-u', 'scripts/ci_jit_editor.py', '--output', 'dist/jit-editor']
+          if os.environ['RUNNER_OS'] == 'Linux':
+              command = ['xvfb-run', '-a', *command]
+          subprocess.check_call(command)
       - name: Verify applied dependency patches
         run: python tools/jit_editor/apply_wrapper_patches.py --check
       - name: Upload usable JIT Editor archives
         uses: actions/upload-artifact@v4
         with:
-          name: jit-editor-Windows
-          path: dist/jit-editor/*.zip
+          name: jit-editor-${{ runner.os }}
+          path: |
+            dist/jit-editor/*.zip
+            dist/jit-editor/*.tar.gz
           if-no-files-found: error
       - name: Upload JIT qualification logs and screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: jit-editor-diagnostics-Windows
+          name: jit-editor-diagnostics-${{ runner.os }}
           path: |
             build/ci/environment.json
             build/ci/jit-editor
@@ -122,13 +139,27 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - uses: actions/download-artifact@v4
         with:
           pattern: catalog-*
-          path: dist/catalog
+          path: build/catalog-shards
+      - name: Assemble complete catalogs and verify all plugins are present
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python scripts/merge_catalog_archives.py --input build/catalog-shards --output dist/catalog --tag "$TAG"
       - uses: actions/download-artifact@v4
         with:
           name: jit-editor-Windows
+          path: dist/jit-editor
+      - uses: actions/download-artifact@v4
+        with:
+          name: jit-editor-Linux
           path: dist/jit-editor
       - name: Publish archives after every build and qualification gate passes
         env:
@@ -144,9 +175,9 @@ jobs:
           else
             gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --generate-notes --prerelease
           fi
-          files=(dist/catalog/**/ZorakAudio-Experimental-Plugins-"$TAG"-*.zip dist/jit-editor/*.zip)
-          if [[ ${#files[@]} -ne 5 ]]; then
-            echo 'Expected three catalog archives and two Windows JIT Editor archives'
+          files=(dist/catalog/**/ZorakAudio-Experimental-Plugins-"$TAG"-*.zip dist/jit-editor/*.zip dist/jit-editor/*.tar.gz)
+          if [[ ${#files[@]} -ne 7 ]]; then
+            echo 'Expected three catalog archives and four Windows/Linux JIT Editor archives'
             exit 2
           fi
           for attempt in 1 2 3; do

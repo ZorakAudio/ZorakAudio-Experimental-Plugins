@@ -448,7 +448,7 @@ def write_install_guide(stage_root: Path, built_specs: list[PluginSpec]) -> None
     (stage_root / "INSTALL.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_release_manifest(stage_root: Path, built_specs: list[PluginSpec]) -> None:
+def write_release_manifest(stage_root: Path, built_specs: list[PluginSpec], shard=None) -> None:
     manifest = {
         "schemaVersion": 2,
         "package": stage_root.name,
@@ -469,6 +469,8 @@ def write_release_manifest(stage_root: Path, built_specs: list[PluginSpec]) -> N
             for spec in built_specs
         ],
     }
+    if shard is not None:
+        manifest['buildShard'] = dict(index=shard[0], count=shard[1])
     (stage_root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
@@ -479,6 +481,7 @@ def main() -> None:
     ap.add_argument("--out", default="dist")
     ap.add_argument("--only", default="", help="Build only one plugin (match category, key, slug, name, path, bundleId, or clapId).")
     ap.add_argument("--smoke", action="store_true", help="Build the five representative CI plugins")
+    ap.add_argument('--shard', help='Build one disjoint full-catalog group: zero-based INDEX/COUNT')
     ap.add_argument("--clean", action="store_true", help="Delete build directory for current platform before building")
     ap.add_argument("--clean-only", action="store_true", help="Delete build directory for current platform and exit")
     ap.add_argument("--correctness-check", action="store_true", help="Enable JSFX shadow EEL2 correctness monitor/instrumentation")
@@ -488,6 +491,13 @@ def main() -> None:
     args = ap.parse_args()
     if args.smoke and args.only:
         ap.error("Use --smoke or --only, not both")
+    shard = None
+    if args.shard:
+        if args.smoke or args.only: ap.error('--shard selects the full catalog; do not combine with --smoke or --only')
+        try:
+            shard = tuple(map(int, args.shard.split('/')))
+            if len(shard) != 2 or not 0 <= shard[0] < shard[1]: raise ValueError()
+        except ValueError: ap.error('--shard must be INDEX/COUNT with 0 <= INDEX < COUNT')
     if args.native_gfx_prototype and args.native_gfx_legacy:
         ap.error("Choose one native GFX mode")
     if args.native_gfx_legacy and args.correctness_check:
@@ -504,6 +514,8 @@ def main() -> None:
         return
 
     selected = filter_plugins(plugins, args.only)
+    if shard is not None:
+        selected = [spec for index, spec in enumerate(plugins) if index % shard[1] == shard[0]]
     if args.smoke:
         selected = [spec for spec in plugins if spec.slug in CI_SMOKE_SLUGS]
         missing = CI_SMOKE_SLUGS - {spec.slug for spec in selected}
@@ -698,7 +710,7 @@ def main() -> None:
 
     prune_empty_dirs(stage_root)
     write_install_guide(stage_root, built_specs)
-    write_release_manifest(stage_root, built_specs)
+    write_release_manifest(stage_root, built_specs, shard)
 
     zip_name = f"ZorakAudio-Experimental-Plugins-{args.tag}-{os_id}.zip"
     zip_out = out_dir / zip_name

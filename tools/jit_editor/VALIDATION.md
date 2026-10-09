@@ -1,4 +1,59 @@
-# Shared AOT/JIT runtime qualification — 7 October 2026
+# Shared AOT/JIT runtime qualification
+
+## Linux qualification — 8 October 2026
+
+The standalone editor now builds and runs on x86-64 Ubuntu 24.04 under WSL2.
+This port changes OS integration and packaging; DSP/GFX still use the production
+AOT/JIT runtime. The tested payload uses Python 3.11.17, llvmlite 0.46.0 and
+Faust 2.81.2 built with LLVM 18.1.3. macOS editor support remains separate work.
+
+`scripts/ci_jit_editor.py` passed against the real Linux CLAP and VST3 archives,
+extracted into a different directory containing spaces and Unicode. Native
+runtime/public-interface tests run with PATH empty and developer compiler/Python
+environment settings removed. The bundled Python import paths stay inside the
+payload. No system Python/Faust/LLVM is needed by the running editor.
+
+| Gate | Linux result |
+| --- | --- |
+| Native frontend contract | Passed, including numeric parsing under a non-default locale |
+| Packaged compiler | All 24 positive/negative cases passed for each frontend |
+| Shared runtime | Standard and optional C++ frontend suites passed |
+| Interface | Controls/defaults, binary Faust controls, hidden/empty panes, Unicode glyph/caret/clipboard, imports/images, saved state and Ctrl+S checks passed |
+| Examples | All six documented JSFX/Faust/hybrid programs passed |
+| Resources and host settings | Nested imports, image roots, preset resource restoration and 1/2/4/8x oversampling/rate/MIDI checks passed |
+| Sample | Three generated WAVs loaded; tape and granular MIDI playback produced finite nonzero audio and GFX/state save passed |
+| Corpus | Three generated WAVs completed actual analysis; MIDI playback produced finite nonzero audio and GFX/state save passed |
+| Public CLAP/VST3 | Extracted plugins passed processing, dynamic controls, inferred pins and host restart/rescan checks |
+| Compiler lifetime | Both supervisor tests passed, including parent exit terminating the Python worker and its descendant |
+| Graphics concurrency | All 64 columns survived all 60 synthetic frames; actual Sample retained all 61 bank bars and its unchanged non-flat EQ over 200 frames and 445 MIDI retriggers |
+| Shared Faust compiler | 12 compiler/import contracts and 19 mixed execution fixtures passed on Windows and Linux |
+
+The Linux save test exposed a POSIX directory-replacement behavior; source saving
+now rejects a directory target explicitly and the test checks that it survives.
+Archive isolation also caught a distro `sitecustomize.py` shadowing the private
+startup module. The packager excludes the distro file. Windows Faust include
+roots with Unicode are mirrored to relative private paths because its executable
+uses narrow file arguments; the standard shared compiler handles this too.
+
+These are WSL build and public-interface results, not a live Linux DAW or realtime
+latency certification. The earlier frozen AOT comparison and full JIT catalog
+results below are Windows historical evidence, not reruns of those matrices on
+Linux. Full Linux AOT catalog compilation is tracked separately from this editor
+qualification. Native execution remains in-process with the existing safety limits.
+
+## Windows package requalification — 8 October 2026
+
+The Windows CLAP and VST3 archives were rebuilt and passed the same expanded
+`scripts/ci_jit_editor.py` qualification, including isolated extraction into a
+Unicode path, all 24 compiler cases per frontend, native frontend contracts,
+shared runtime, controls, Unicode/save/examples, imports/images, oversampling
+and loaded Sample/Corpus banks. The public test loaders now decode Windows
+command-line arguments and module paths as Unicode; both extracted plugin
+interfaces passed. The Linux-specific supervisor remains a Linux-only gate.
+This run does not replace the historical frozen AOT comparison below or claim
+that the entire Windows AOT catalog was rebuilt on 8 October.
+
+## Windows interface and runtime evidence — 7 October 2026
 
 The interface/Unicode follow-up removes the user-facing frontend selector, uses the standard compiler for the editor's Run button, and displays a footer only for failed compilation. Empty GFX/controls collapse. The source editor uses a monospace primary font and draws fallback Unicode glyphs in the same codepoint grid used by caret/hit-testing. Its focused check exercises glyph pixels, caret/backspace, undo, clipboard, tabs and horizontal scrolling, UTF-8 source/import/image paths, labels/choices/string defaults, GFX text/image pixels, saved Unicode source/draft/path and numeric/string controls, failed-Run retention and fresh successful-Run defaults. Pure Faust Unicode labels and controls-only layout are checked too. Run with `jit_editor_check.exe --interface-unicode` (optional screenshot directory). The generated-control checks and public packaged interface/compiler checks are rerun for this delivery. The full catalog, frozen AOT comparisons and Sample stress results below are earlier qualification evidence, not reruns for this UI change. No shared AOT DSP/runtime source changes are part of this follow-up.
 
@@ -86,6 +141,6 @@ The catalog is a default-state processing/UI/save smoke gate. It is not an origi
 
 The same AOT limitations carry into JIT: parameters apply at callback boundaries; `slider_next_chg` reports the current value and no remaining sub-block change point. Legacy `file_read`/`file_write` semantics are not a new generic writable-file API. Disk calls belong in init/GFX; background sample pools provide audio reads. The production slider acknowledgment policy can retain an exact value a host float cannot represent; this does not make host automation double-precision.
 
-Host-delivered Ctrl shortcuts still require a live REAPER check. Direct key-handler tests and the focused-editor Windows hook do not certify REAPER's accelerator path. Public wrapper tests do not certify every host's routing/UI behavior. Faust bargraph meter widgets, foreign functions/variables/constants and soundfile integration remain unavailable. A linter/debugger, native execution watchdog, crossfade/state-history migration and macOS/Linux support remain future work. Native DSP is not sandboxed; an infinite guest loop or an invalid native operation can still hang/crash the host.
+Host-delivered Ctrl shortcuts still require a live REAPER check. Direct key-handler tests and the focused-editor Windows hook do not certify REAPER's accelerator path. Public wrapper tests do not certify every host's routing/UI behavior. Faust bargraph meter widgets, foreign functions/variables/constants and soundfile integration remain unavailable. A linter/debugger, native execution watchdog, crossfade/state-history migration and macOS support remain future work. Native DSP is not sandboxed; an infinite guest loop or an invalid native operation can still hang/crash the host.
 
-The loaded LLVM DLL is pinned for the host process lifetime. Close the DAW before replacing `JITEditor.runtime`. Compiler process cleanup does not unlock a DLL loaded by the DAW; this build has no versioned runtime cache. Distribution archives retain dependency notices; public redistribution needs the existing licensing review. Python-to-C++ lowering/emission migration remains separate work described in [CPP-MIGRATION.md](CPP-MIGRATION.md).
+The loaded LLVM DLL/shared library is retained for the host process lifetime. Close the DAW before replacing `JITEditor.runtime`. Compiler process cleanup does not unlock a DLL loaded by the DAW; this build has no versioned runtime cache. Distribution archives retain dependency notices; public redistribution needs the existing licensing review. Python-to-C++ lowering/emission migration remains separate work described in [CPP-MIGRATION.md](CPP-MIGRATION.md).

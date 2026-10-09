@@ -8,7 +8,7 @@ import tempfile
 
 
 def check(runtime, frontend="python-reference"):
-    python = runtime / "python/python.exe"
+    python = runtime / ("python/python.exe" if os.name == "nt" else "python/bin/python3")
     worker = runtime / "compiler/compiler_worker.py"
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
     env["PATH"] = ""

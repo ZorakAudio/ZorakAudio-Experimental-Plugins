@@ -1,7 +1,8 @@
 // Load the packaged module through the public CLAP ABI, with no JUCE linkage.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
+#include "TestModule.h"
+#include <clap/ext/timer-support.h>
 #include <clap/clap.h>
 #include <clap/ext/state.h>
 #include <clap/ext/params.h>
@@ -21,11 +22,18 @@ static bool restartPending=false,callbackPending=false;
 static int paramRescans=0,portRescans=0;
 static const clap_host_params_t hostParams{[](const clap_host_t*,uint32_t flags){if(flags&CLAP_PARAM_RESCAN_ALL)++paramRescans;},[](const clap_host_t*,clap_id,uint32_t){},[](const clap_host_t*){}};
 static const clap_host_audio_ports_t hostPorts{[](const clap_host_t*,uint32_t){return true;},[](const clap_host_t*,uint32_t){++portRescans;}};
-static const void* extension(const clap_host_t*, const char* id) { if(std::strcmp(id,CLAP_EXT_PARAMS)==0)return &hostParams;if(std::strcmp(id,CLAP_EXT_AUDIO_PORTS)==0)return &hostPorts;return std::strcmp(id, CLAP_EXT_THREAD_CHECK) == 0 ? &threads : nullptr; }
+static const clap_plugin_t* timerPlugin = nullptr;
+static bool timerRegistered = false;
+static clap_id timerId = 0;
+static const clap_host_timer_support_t timers {
+    [](const clap_host_t*,uint32_t,clap_id* id){*id=1;timerId=1;timerRegistered=true;return true;},
+    [](const clap_host_t*,clap_id){timerRegistered=false;return true;}
+};
+static const void* extension(const clap_host_t*, const char* id) { if(std::strcmp(id,CLAP_EXT_TIMER_SUPPORT)==0)return &timers;if(std::strcmp(id,CLAP_EXT_PARAMS)==0)return &hostParams;if(std::strcmp(id,CLAP_EXT_AUDIO_PORTS)==0)return &hostPorts;return std::strcmp(id, CLAP_EXT_THREAD_CHECK) == 0 ? &threads : nullptr; }
 static void request(const clap_host_t*) {}
 static void restart(const clap_host_t*){restartPending=true;}
 static void callback(const clap_host_t*){callbackPending=true;}
-static void pump(){MSG message;while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}}
+static void pump(){pumpTestMessages();if(timerRegistered && timerPlugin){auto* timer=static_cast<const clap_plugin_timer_support_t*>(timerPlugin->get_extension(timerPlugin,CLAP_EXT_TIMER_SUPPORT));if(timer)timer->on_timer(timerPlugin,timerId);}}
 static uint32_t noEvents(const clap_input_events_t*) { return 0; }
 static const clap_event_header_t* noEvent(const clap_input_events_t*, uint32_t) { return nullptr; }
 static bool acceptEvent(const clap_output_events_t*, const clap_event_header_t*) { return true; }
@@ -46,14 +54,16 @@ static std::string quote(const std::string& text) {
 }
 int main(int argc, char** argv) try {
     require(argc == 2 || argc == 3, "Pass packaged CLAP path");
-    HMODULE module = LoadLibraryA(argv[1]); require(module != nullptr, "Load packaged CLAP");
-    auto* entry = reinterpret_cast<const clap_plugin_entry_t*>(GetProcAddress(module, "clap_entry"));
-    require(entry && entry->init(argv[1]), "CLAP entry init");
+    const auto path=testArgument(1,argv);
+    auto module = loadTestModule(path.c_str()); require(module != nullptr, "Load packaged CLAP");
+    auto* entry = reinterpret_cast<const clap_plugin_entry_t*>(testSymbol(module, "clap_entry"));
+    require(entry && entry->init(path.c_str()), "CLAP entry init");
     auto* factory = static_cast<const clap_plugin_factory_t*>(entry->get_factory(CLAP_PLUGIN_FACTORY_ID));
     require(factory && factory->get_plugin_count(factory) == 1, "CLAP factory");
     auto* descriptor = factory->get_plugin_descriptor(factory, 0);
     clap_host_t host {CLAP_VERSION, nullptr, "JIT Editor package test", "ZorakAudio", "", "0", extension, restart, request, callback};
     auto* plugin = factory->create_plugin(factory, &host, descriptor->id); require(plugin && plugin->init(plugin), "CLAP plugin init");
+    timerPlugin = plugin;
     auto* state = static_cast<const clap_plugin_state_t*>(plugin->get_extension(plugin, CLAP_EXT_STATE)); require(state, "CLAP state");
     auto* params = static_cast<const clap_plugin_params_t*>(plugin->get_extension(plugin, CLAP_EXT_PARAMS)); require(params && params->count(plugin) == 0, "No artificial fixed controls");
     require(plugin->activate(plugin, 48000, 1, 1024), "CLAP activate");
@@ -122,7 +132,7 @@ int main(int argc, char** argv) try {
     require(check(.125f), "Saved state recompiled");
     require(paramRescans>=5 && portRescans>=5,"Host rescans performed");
     audioThread = true; plugin->stop_processing(plugin); audioThread = false;
-    plugin->deactivate(plugin); plugin->destroy(plugin); entry->deinit(); FreeLibrary(module);
+    plugin->deactivate(plugin); plugin->destroy(plugin); timerPlugin=nullptr; entry->deinit(); closeTestModule(module);
     std::cout << "PACKAGED CLAP PASS: factory, JSFX Run, mixed full-block Faust Run, pure Faust Run, binary/continuous Faust parameters, failed compile retains audio, Default, saved-state recompile, dynamic parameters, inferred 4-channel and zero-input pins, host restart/rescan\n";
     return 0;
 } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
