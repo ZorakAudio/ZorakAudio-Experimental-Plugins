@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 import tempfile
 import zipfile
 from pluginlib import discover_plugins
-from release_collections import build_catalog, collections_for, load_policy, policy_digest, PLATFORMS
+from release_collections import build_catalog, collections_for, load_policy, policy_digest, policy_receipt_digests, PLATFORMS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,9 +30,10 @@ def verify_plugin_payloads(archive, package, specs, platform):
             if info.is_dir() or info.file_size == 0:
                 raise ValueError('Empty plugin payload: ' + name)
 
-def merge(input_dir, output_dir, tag, platforms=PLATFORMS, report=True):
-    specs = build_catalog(discover_plugins(ROOT))
+def merge(input_dir, output_dir, tag, platforms=PLATFORMS, report=True, repo_root=ROOT):
+    specs = build_catalog(discover_plugins(repo_root), repo_root)
     expected = {spec.slug for spec in specs}
+    accepted_policy_digests = policy_receipt_digests(repo_root)
     grouped = defaultdict(list)
     for path in sorted(input_dir.rglob('*.zip')):
         with zipfile.ZipFile(path) as archive:
@@ -40,8 +41,9 @@ def merge(input_dir, output_dir, tag, platforms=PLATFORMS, report=True):
             if len(manifests) != 1: raise ValueError('Expected one catalog manifest in ' + str(path))
             manifest = json.loads(archive.read(manifests[0]))
             digest = manifest.get('releasePolicySha256')
-            if digest != policy_digest():
-                raise ValueError('Release policy differs from build receipt: ' + str(path))
+            if digest not in accepted_policy_digests:
+                raise ValueError(f'Release policy differs from build receipt: {path} '
+                                 f'(receipt {digest!r}; expected {policy_digest(repo_root)})')
             platform = manifest['package'].rsplit('-', 1)[-1]
             if manifest['package'] != f'ZorakAudio-Experimental-Plugins-{tag}-{platform}':
                 raise ValueError('Unexpected catalog package/tag: ' + manifest['package'])
@@ -87,7 +89,7 @@ def merge(input_dir, output_dir, tag, platforms=PLATFORMS, report=True):
                         merged.writestr(info, data)
                         written[name] = (info.CRC, info.file_size)
             manifest = dict(schemaVersion=2, package=package,
-                            releasePolicySha256=policy_digest(),
+                            releasePolicySha256=policy_digest(repo_root),
                             plugins=[records[spec.slug] for spec in specs],
                             mergedBuildShards=next(iter(counts)))
             merged.writestr(package + '/manifest.json', json.dumps(manifest, indent=2) + '\n')
@@ -128,20 +130,20 @@ def selected_member(name, package, specs):
     return False
 
 
-def assemble_collections(input_dir, output_dir, tag):
+def assemble_collections(input_dir, output_dir, tag, repo_root=ROOT):
     """Validate all shards, then publish three ZIPs containing all three OSes.
 
     Collection selection never recompiles DSP. Signed bundles, executable modes,
     symlinks and resource metadata are copied verbatim from validated builds.
     """
-    specs = discover_plugins(ROOT)
-    collections = collections_for(specs)
-    policy = load_policy()
+    specs = discover_plugins(repo_root)
+    collections = collections_for(specs, repo_root)
+    policy = load_policy(repo_root)
     purposes = {item['slug']: item['purpose'] for item in policy['essentials']}
     output_dir.mkdir(parents=True, exist_ok=True)
     results = {}
     with tempfile.TemporaryDirectory(prefix='catalog-verified-', dir=output_dir) as directory:
-        verified = merge(input_dir, Path(directory), tag, report=False)
+        verified = merge(input_dir, Path(directory), tag, report=False, repo_root=repo_root)
         for collection, selected in collections.items():
             package = f'ZorakAudio-Experimental-Plugins-{tag}-{collection}-all-platforms'
             target = output_dir / (package + '.zip')
@@ -171,7 +173,7 @@ def assemble_collections(input_dir, output_dir, tag):
                         output.writestr(package + '/' + platform + '/manifest.json',
                                         json.dumps(platform_receipts[platform], indent=2) + '\n')
                 manifest = dict(schemaVersion=3, package=package, collection=collection,
-                                releasePolicySha256=policy_digest(),
+                                releasePolicySha256=policy_digest(repo_root),
                                 platforms=list(PLATFORMS), pluginCount=len(selected),
                                 plugins=[dict(slug=spec.slug, name=spec.name, category=spec.category,
                                               installPath=spec.install_rel_dir.as_posix(),
@@ -205,12 +207,14 @@ if __name__ == '__main__':
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--tag', required=True)
+    parser.add_argument('--catalog-root', type=Path, default=ROOT,
+                        help='Catalog sources/policy checkout; use the original build commit when recovering older artifacts')
     parser.add_argument('--platform', action='append', choices=('windows','macos','linux'))
     parser.add_argument('--collections', action='store_true', help='Publish JoepVanlier, Essentials and All; requires all three platforms')
     args = parser.parse_args()
     if args.collections:
         if args.platform:
             parser.error('--collections requires all three platforms; do not use --platform')
-        assemble_collections(args.input, args.output, args.tag)
+        assemble_collections(args.input, args.output, args.tag, repo_root=args.catalog_root)
     else:
-        merge(args.input, args.output, args.tag, args.platform or PLATFORMS)
+        merge(args.input, args.output, args.tag, args.platform or PLATFORMS, repo_root=args.catalog_root)

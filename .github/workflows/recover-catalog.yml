@@ -1,0 +1,87 @@
+name: Recover catalog packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Completed catalog release run ID whose twelve build artifacts should be reused
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  collections:
+    name: Repackage saved catalog builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # Use the corrected packager from the selected workflow branch.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Packaging contracts
+        run: python tests/build/test_catalog_merge.py -v
+      - name: Verify original release run and saved artifacts
+        id: source
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import json, os, re, urllib.request
+          run_id = os.environ['SOURCE_RUN_ID']
+          if not run_id.isascii() or not run_id.isdigit():
+              raise ValueError('Source run ID must contain only digits')
+          base = os.environ['GITHUB_API_URL'] + '/repos/' + os.environ['GITHUB_REPOSITORY']
+          def get(path):
+              request = urllib.request.Request(base + path, headers={
+                  'Authorization': 'Bearer ' + os.environ['GITHUB_TOKEN'],
+                  'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          run = get('/actions/runs/' + run_id)
+          if run['status'] != 'completed' or run['path'].split('@')[0] != '.github/workflows/release.yml':
+              raise ValueError('Choose a completed Build & Release catalog run')
+          tag = run['head_branch']
+          if run['event'] != 'push' or not re.fullmatch(r'[Rv][A-Za-z0-9_.-]+', tag):
+              raise ValueError('Recovery requires an original R* or v* catalog release tag')
+          sha = run['head_sha']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha):
+              raise ValueError('Invalid source commit SHA')
+          artifacts = get('/actions/runs/' + run_id + '/artifacts?per_page=100')['artifacts']
+          shards = [item for item in artifacts if item['name'].startswith('catalog-shard-')]
+          expected = {f'catalog-shard-{platform}-{index}' for platform in ('Windows', 'macOS', 'Linux') for index in range(4)}
+          if len(shards) != 12 or {item['name'] for item in shards} != expected or any(item['expired'] for item in shards):
+              raise ValueError('The original run must retain all twelve catalog build artifacts')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'tag={tag}\nsha={sha}\n')
+          print(f'Reusing all twelve builds from {tag}, commit {sha}; no DSP compilation')
+      # Read definitions/curation from the exact original commit, even if main changed.
+      # Only the current packager is executed; this source checkout supplies data.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          path: build/catalog-source
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+          pattern: catalog-shard-*
+          path: build/catalog-shards
+      - name: Assemble the three original collections
+        env:
+          TAG: ${{ steps.source.outputs.tag }}
+        run: python scripts/merge_catalog_archives.py --input build/catalog-shards --output dist/catalog --tag "$TAG" --catalog-root build/catalog-source --collections
+      - name: Upload ready-to-install ZIPs for review and release upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-collections-recovered-${{ inputs.source_run_id }}
+          path: dist/catalog/*.zip
+          if-no-files-found: error

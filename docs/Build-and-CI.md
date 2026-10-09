@@ -117,6 +117,39 @@ without changing plugin bytes, bundle modes, symlinks or signing metadata.
 The merger also requires a nonempty CLAP binary and VST3 binary at each plugin's
 platform-specific bundle path; a manifest entry alone cannot satisfy this gate.
 
+The release policy checksum normalizes LF/CRLF line endings, so Windows, macOS
+and Linux agree even when Git uses different checkout line endings. The merger
+also accepts old raw-byte checksums for this exact policy's LF and CRLF forms;
+it still rejects changed policies, missing shards and missing/empty binaries.
+
+If final assembly fails after all catalog jobs succeed, reuse the uploaded
+`catalog-shard-*` artifacts from that run. Download all twelve and unwrap each
+artifact ZIP once into its own folder under `build/catalog-shards`. Keep the
+inner plugin ZIPs intact, especially macOS bundles: assembly preserves their
+executable modes, symlinks and signed contents without extracting them on Windows.
+With the same release sources/policy and the corrected merger, run:
+
+```sh
+python scripts/merge_catalog_archives.py --input build/catalog-shards --output dist/catalog --tag R2026.10.09-02 --collections
+```
+
+Use the original run's tag in place of the example. This produces the three
+all-platform collection ZIPs locally without invoking a compiler. Upload those
+ZIPs to the matching GitHub release after reviewing them; no full rebuild is needed.
+
+For a packaging-only run in GitHub Actions, push the corrected packager and
+`.github/workflows/recover-catalog.yml` to the default branch. Open **Actions →
+Recover catalog packages → Run workflow**, select that branch, and enter the
+original release run ID (for example `37991931940`). This workflow downloads only
+that run's twelve saved build artifacts and uses its exact original commit for
+catalog definitions and collection policy. The current corrected packager
+produces an artifact named `catalog-collections-recovered-<run ID>` containing
+the three ZIPs. It does not compile plugins or publish a release. Expired or
+incomplete artifacts stop recovery before packaging.
+
+The local equivalent can pass `--catalog-root` with a separate checkout of the
+original build commit, while running the corrected merger from the current checkout.
+
 Every catalog and JIT job uses the shared setup action to apply and verify the
 JUCE and CLAP wrapper patches before installing the native toolchain or compiling.
 A patch conflict fails the job immediately; each job also verifies the patches

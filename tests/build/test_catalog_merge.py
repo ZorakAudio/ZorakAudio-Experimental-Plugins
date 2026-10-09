@@ -1,6 +1,7 @@
 """Catalog publication requires complete, disjoint shards and intact bundle bytes."""
 import contextlib
 import io
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -13,11 +14,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from merge_catalog_archives import merge, assemble_collections
 from pluginlib import discover_plugins
-from release_collections import build_catalog, collections_for, load_policy, policy_digest, PLATFORMS
+from release_collections import build_catalog, collections_for, load_policy, policy_digest, policy_receipt_digests, PLATFORMS
 import build as builder
+import merge_catalog_archives as merger
 
 class CatalogMergeTests(unittest.TestCase):
-    def fixture(self, root, missing=None, duplicate=False, platform='linux', missing_payload=False, empty_payload=False):
+    def fixture(self, root, missing=None, duplicate=False, platform='linux', missing_payload=False, empty_payload=False, policy_hash=None):
         specs = build_catalog(discover_plugins(ROOT))
         package = 'ZorakAudio-Experimental-Plugins-test-' + platform
         for index in range(4):
@@ -25,7 +27,7 @@ class CatalogMergeTests(unittest.TestCase):
             with zipfile.ZipFile(root / f'{index}.zip', 'w') as archive:
                 records = [dict(slug=spec.slug) for position, spec in enumerate(specs) if position % 4 == index]
                 if duplicate and index == 1: records.append(dict(slug=specs[0].slug))
-                archive.writestr(package + '/manifest.json', json.dumps(dict(package=package, releasePolicySha256=policy_digest(), buildShard=dict(index=index,count=4),plugins=records)))
+                archive.writestr(package + '/manifest.json', json.dumps(dict(package=package, releasePolicySha256=policy_digest() if policy_hash is None else policy_hash, buildShard=dict(index=index,count=4),plugins=records)))
                 for spec in (s for position, s in enumerate(specs) if position % 4 == index):
                     prefix = f'{package}/{{format}}/{spec.install_rel_dir.as_posix()}/{spec.slug}'
                     if platform == 'macos':
@@ -126,7 +128,11 @@ class CatalogMergeTests(unittest.TestCase):
             root=Path(directory)
             for platform in PLATFORMS:
                 folder=root/platform;folder.mkdir()
-                self.fixture(folder,platform=platform)
+                # Reproduce the failed release: older Windows receipts hash CRLF,
+                # while macOS/Linux receipts hash the identical policy with LF.
+                policy_bytes=(ROOT/'release-collections.json').read_bytes().replace(b'\r\n', b'\n')
+                policy_hash=hashlib.sha256(policy_bytes.replace(b'\n', b'\r\n') if platform=='windows' else policy_bytes).hexdigest()
+                self.fixture(folder,platform=platform,policy_hash=policy_hash)
             with contextlib.redirect_stdout(io.StringIO()):
                 result=assemble_collections(root,root/'published','test')
             self.assertEqual(len(list((root/'published').glob('*.zip'))), 3)
@@ -135,6 +141,7 @@ class CatalogMergeTests(unittest.TestCase):
                     package=Path(result[collection]['archive']).stem
                     manifest=json.loads(archive.read(package+'/manifest.json'))
                     self.assertEqual(manifest['platforms'], list(PLATFORMS))
+                    self.assertEqual(manifest['releasePolicySha256'], policy_digest())
                     self.assertEqual([s.slug for s in specs], [r['slug'] for r in manifest['plugins']])
                     self.assertFalse(any('IPCProbe' in name or '/SaliencePush/' in name for name in archive.namelist()))
                     for platform in PLATFORMS:
@@ -177,5 +184,51 @@ class CatalogMergeTests(unittest.TestCase):
                     archive.writestr(info,data)
             with self.assertRaisesRegex(ValueError,'Release policy differs'):
                 merge(root,root/'merged','test',['linux'])
+
+    def test_policy_digest_is_independent_of_checkout_line_endings(self):
+        data=(ROOT/'release-collections.json').read_bytes().replace(b'\r\n', b'\n')
+        expected=hashlib.sha256(data).hexdigest()
+        legacy=hashlib.sha256(data.replace(b'\n',b'\r\n')).hexdigest()
+        self.assertNotEqual(expected,legacy)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            for content in (data,data.replace(b'\n',b'\r\n')):
+                (root/'release-collections.json').write_bytes(content)
+                self.assertEqual(policy_digest(root),expected)
+                self.assertEqual(policy_receipt_digests(root),{expected,legacy})
+
+    def test_changed_policy_values_do_not_match_legacy_receipts(self):
+        policy=load_policy()
+        policy['essentials'][0]['purpose']+=' altered release policy'
+        original=policy_receipt_digests()
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            (root/'release-collections.json').write_bytes(json.dumps(policy,indent=2).encode('utf-8'))
+            self.assertTrue(original.isdisjoint(policy_receipt_digests(root)))
+
+    def test_recovery_reads_the_original_catalog_policy_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            source=root/'original-source';source.mkdir()
+            policy=load_policy()
+            policy['essentials'][0]['purpose']='Purpose from the original release'
+            content=json.dumps(policy,indent=2).encode('utf-8')+b'\n'
+            (source/'release-collections.json').write_bytes(content)
+            self.assertNotEqual(policy_digest(source),policy_digest())
+            for platform in PLATFORMS:
+                folder=root/'shards'/platform;folder.mkdir(parents=True)
+                digest=hashlib.sha256(content.replace(b'\n',b'\r\n') if platform=='windows' else content).hexdigest()
+                self.fixture(folder,platform=platform,policy_hash=digest)
+            with patch.object(merger,'discover_plugins',return_value=discover_plugins(ROOT)) as discover, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                result=assemble_collections(root/'shards',root/'published','test',repo_root=source)
+            self.assertTrue(discover.call_args_list)
+            for call in discover.call_args_list:
+                self.assertEqual(call.args,(source,))
+            with zipfile.ZipFile(result['Essentials']['archive']) as archive:
+                package=Path(result['Essentials']['archive']).stem
+                receipt=json.loads(archive.read(package+'/manifest.json'))
+                self.assertEqual(receipt['releasePolicySha256'],policy_digest(source))
+                self.assertEqual(receipt['plugins'][0]['purpose'],'Purpose from the original release')
 
 if __name__=='__main__': unittest.main()

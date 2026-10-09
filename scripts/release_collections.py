@@ -19,7 +19,20 @@ def load_policy(repo_root=ROOT):
 
 
 def policy_digest(repo_root=ROOT):
-    return hashlib.sha256((repo_root / 'release-collections.json').read_bytes()).hexdigest()
+    """Hash the policy identically after LF or Windows CRLF checkout."""
+    data = (repo_root / 'release-collections.json').read_bytes().replace(b'\r\n', b'\n')
+    return hashlib.sha256(data).hexdigest()
+
+
+def policy_receipt_digests(repo_root=ROOT):
+    """Accept earlier raw-byte receipts for exactly this policy's LF/CRLF forms.
+
+    This recovers already-built Windows shards without accepting a different
+    policy or disabling the gate. New receipts always use policy_digest().
+    """
+    data = (repo_root / 'release-collections.json').read_bytes().replace(b'\r\n', b'\n')
+    return {hashlib.sha256(data).hexdigest(),
+            hashlib.sha256(data.replace(b'\n', b'\r\n')).hexdigest()}
 
 
 def build_catalog(specs, repo_root=ROOT):
