@@ -2,6 +2,7 @@
 // Payload/registration implementations are not recreated by this test.
 #include "../../src/DspJsfxMessageBus.cpp"
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <iostream>
 #include <thread>
@@ -32,7 +33,12 @@ int main(int argc,char** argv){
     bus.registerRuntime(nullptr,directReceiver,domain,"direct");
     bus.updateSubscription(receiver,channel,true);
     DspJsfxSharedMemorySegment mapping;bool created=true;
-    assert(mapping.openOrCreate("msg_v4_"+hex64(domain),sizeof(IpcHeader),&created) && !created);
+    const auto objectStem="msg_v4_"+hex64(domain);
+    const bool opened=mapping.openOrCreate(objectStem,sizeof(IpcHeader),&created);
+    if(!opened || created)
+        std::cerr<<"IPC shared-memory attachment failed: "<<makeSharedMemoryObjectName(objectStem)
+                 <<" opened="<<opened<<" created="<<created<<" errno="<<errno<<'\n';
+    assert(opened && !created);
     auto* header=static_cast<IpcHeader*>(mapping.data());mapping.finishInitialization();
     uint64_t cursor=0,directCursor=0;
     std::unordered_set<uint64_t> subscriptions{channel},none;

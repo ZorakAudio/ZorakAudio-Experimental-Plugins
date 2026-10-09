@@ -41,6 +41,12 @@ private:
     void* initializationMutex_ = nullptr;
    #else
     int fd_ = -1;
+    // Darwin cannot flock a POSIX shared-memory descriptor. A separate
+    // regular-file descriptor owns the setup lock until publication completes.
+    // The test define exercises this strategy under Linux's syscall contract shim.
+    #if defined(__APPLE__) || defined(ZA_JSFX_TEST_DARWIN_SHM)
+    int initializationLockFd_ = -1;
+    #endif
    #endif
 };
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 #include <cerrno>
@@ -40,6 +41,27 @@ static std::string sanitizeStem(const std::string& stem)
         out = "default";
     return out;
 }
+
+#if defined(__APPLE__) || defined(ZA_JSFX_TEST_DARWIN_SHM)
+static std::string compactDarwinName(const std::string& fullName)
+{
+    // XNU accepts at most 31 bytes, INCLUDING the initial slash. Hash the
+    // complete name rather than truncating domain/namespace suffixes. A
+    // separate prefix avoids aliasing an ordinary short sanitized stem.
+    if (fullName.size() <= 31)
+        return fullName;
+    std::uint64_t hash = 14695981039346656037ull;
+    for (const unsigned char ch : fullName)
+    {
+        hash ^= ch;
+        hash *= 1099511628211ull;
+    }
+    char compact[32] {};
+    std::snprintf(compact, sizeof(compact), "/za_jsfxh_%016llx",
+                  static_cast<unsigned long long>(hash));
+    return compact;
+}
+#endif
 } // namespace
 
 std::string makeSharedMemoryObjectName(const std::string& stem)
@@ -47,7 +69,11 @@ std::string makeSharedMemoryObjectName(const std::string& stem)
    #if JUCE_WINDOWS || defined(_WIN32)
     return std::string("Local\\za_jsfx_") + sanitizeStem(stem);
    #else
-    return std::string("/za_jsfx_") + sanitizeStem(stem);
+    auto name = std::string("/za_jsfx_") + sanitizeStem(stem);
+    #if defined(__APPLE__) || defined(ZA_JSFX_TEST_DARWIN_SHM)
+    name = compactDarwinName(name);
+    #endif
+    return name;
    #endif
 }
 
@@ -80,6 +106,10 @@ DspJsfxSharedMemorySegment& DspJsfxSharedMemorySegment::operator=(DspJsfxSharedM
    #else
     fd_ = other.fd_;
     other.fd_ = -1;
+    #if defined(__APPLE__) || defined(ZA_JSFX_TEST_DARWIN_SHM)
+    initializationLockFd_ = other.initializationLockFd_;
+    other.initializationLockFd_ = -1;
+    #endif
    #endif
     other.base_ = nullptr;
     other.sizeBytes_ = 0;
@@ -136,12 +166,35 @@ bool DspJsfxSharedMemorySegment::openOrCreate(const std::string& objectName, std
    #else
     if (requestedBytes > static_cast<std::uintmax_t>(std::numeric_limits<off_t>::max()))
         return false;
+    #if defined(__APPLE__) || defined(ZA_JSFX_TEST_DARWIN_SHM)
+    // Darwin's shm descriptors are not vnodes and reject flock. Lock a
+    // private regular file before opening/sizing shared memory instead. Keep
+    // the file in place: unlinking it can split simultaneous openers across
+    // different inodes. OS descriptor cleanup also releases a crashed owner's
+    // lock, unlike a named semaphore whose decremented count could be stranded.
+    const auto lockPath = std::string("/tmp/za_jsfx_init_")
+                        + std::to_string(static_cast<unsigned long long>(::geteuid()))
+                        + "_" + objectName_.substr(1) + ".lock";
+    initializationLockFd_ = ::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (initializationLockFd_ < 0)
+        return false;
+    struct stat lockInfo {};
+    if (::fstat(initializationLockFd_, &lockInfo) != 0
+        || !S_ISREG(lockInfo.st_mode) || lockInfo.st_uid != ::geteuid())
+    {
+        close();
+        return false;
+    }
+    const int lockFd = initializationLockFd_;
+    #else
     fd_ = ::shm_open(objectName_.c_str(), O_RDWR | O_CREAT, 0600);
     if (fd_ < 0)
         return false;
+    const int lockFd = fd_;
+    #endif
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    while (::flock(fd_, LOCK_EX | LOCK_NB) != 0)
+    while (::flock(lockFd, LOCK_EX | LOCK_NB) != 0)
     {
         if ((errno != EWOULDBLOCK && errno != EAGAIN && errno != EINTR)
             || std::chrono::steady_clock::now() >= deadline)
@@ -152,6 +205,14 @@ bool DspJsfxSharedMemorySegment::openOrCreate(const std::string& objectName, std
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     initializationLocked_ = true;
+    #if defined(__APPLE__) || defined(ZA_JSFX_TEST_DARWIN_SHM)
+    fd_ = ::shm_open(objectName_.c_str(), O_RDWR | O_CREAT, 0600);
+    if (fd_ < 0)
+    {
+        close();
+        return false;
+    }
+    #endif
     struct stat st {};
     if (::fstat(fd_, &st) != 0 || st.st_size < 0)
     {
@@ -200,9 +261,19 @@ void DspJsfxSharedMemorySegment::finishInitialization() noexcept
         ::CloseHandle(static_cast<HANDLE>(initializationMutex_));
     initializationMutex_ = nullptr;
    #else
-    if (initializationLocked_ && fd_ >= 0)
-        ::flock(fd_, LOCK_UN);
+    #if defined(__APPLE__) || defined(ZA_JSFX_TEST_DARWIN_SHM)
+    const int lockFd = initializationLockFd_;
+    #else
+    const int lockFd = fd_;
+    #endif
+    if (initializationLocked_ && lockFd >= 0)
+        ::flock(lockFd, LOCK_UN);
     initializationLocked_ = false;
+    #if defined(__APPLE__) || defined(ZA_JSFX_TEST_DARWIN_SHM)
+    if (initializationLockFd_ >= 0)
+        ::close(initializationLockFd_);
+    initializationLockFd_ = -1;
+    #endif
    #endif
 }
 

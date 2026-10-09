@@ -45,6 +45,15 @@ python tests/tasks/test_corpus_matrix.py
 These checks cover worker capability inference, notification wakeups, idle
 parking and shutdown, cached host-variable bindings, and idle IPC with direct
 messages, cross-process delivery, contention retries and peer liveness.
+They also check shared-memory sizing, publication locks, moved ownership and
+production `gmem` namespace isolation.
+macOS uses names within Darwin's 31-byte limit and a private regular-file setup
+lock because Darwin rejects `flock` on POSIX shared-memory descriptors. That
+lock runs only during attachment/initialization. Linux additionally exercises
+the Darwin name/locking strategy under a syscall contract shim; this is not a
+substitute for the native macOS CI check. Windows/Linux retain their existing
+shared-memory names and normal locking strategy.
+
 Windows/macOS AOT emission carries the selected optimization level through to
 Clang's machine-code backend. Its IR optimizer is disabled at that final step
 because the tuned LLVM pipeline has already optimized the module. Linux's
