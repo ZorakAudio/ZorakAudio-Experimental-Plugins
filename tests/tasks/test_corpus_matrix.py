@@ -27,6 +27,6 @@ llvm.parse_assembly(str(module)).verify()
 (out/'matrix.ll').write_text(str(module));(out/'JSFXDSP.h').write_text(compiler._emit_header(meta))
 obj=out/'matrix.obj';exe=out/'matrix.exe'
 subprocess.run(['clang++','-c',str(out/'matrix.ll'),'-o',str(obj)],check=True)
-subprocess.run(['clang++','-std=c++17','-O1','-UNDEBUG','-I'+str(out),'-I'+str(ROOT/'src'),
+subprocess.run(['clang++','-std=c++20','-O1','-UNDEBUG','-I'+str(out),'-I'+str(ROOT/'src'),
                 str(ROOT/'tests/tasks/corpus_matrix.cpp'),str(obj),'-o',str(exe)],check=True)
 subprocess.run([str(exe)],check=True,timeout=180)

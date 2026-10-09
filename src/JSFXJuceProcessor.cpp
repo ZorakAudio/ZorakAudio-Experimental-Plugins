@@ -4884,7 +4884,7 @@ private:
 
     void initialiseJsfxHostDefaults()
     {
-        za::jsfx::initialiseHostDefaults(DSPJSFX_PROCESS_CHANNELS,[this](const char* name,double value){writeExternalJsfxVar(findGeneratedStateVarIndexIgnoreCase(name),value);});
+        za::jsfx::initialiseHostDefaults(DSPJSFX_PROCESS_CHANNELS,hostVariableBindings,[this](int index,double value){writeExternalJsfxVar(index,value);});
     }
 
     void initStateMemory()
@@ -4983,12 +4983,12 @@ private:
 
     void syncJsfxGfxActivity()
     {
-        za::jsfx::syncGfxActivity(gfxAnalysisVisible.load(std::memory_order_acquire),isNonRealtime(),[this](const char* name,double value){writeExternalJsfxVar(findGeneratedStateVarIndexIgnoreCase(name),value);});
+        za::jsfx::syncGfxActivity(gfxAnalysisVisible.load(std::memory_order_acquire),isNonRealtime(),hostVariableBindings,[this](int index,double value){writeExternalJsfxVar(index,value);});
     }
 
     void syncJsfxHostTransport(int hostSamples)
     {
-        hostTransportDiscontinuity=za::jsfx::syncHostTransport(za::jsfx::collectTransport(getPlayHead()),hostTransportTracker,hostSamples,getSampleRate(),std::max(getTotalNumInputChannels(),getTotalNumOutputChannels()),[this](const char* name,double value){writeExternalJsfxVar(findGeneratedStateVarIndexIgnoreCase(name),value);});
+        hostTransportDiscontinuity=za::jsfx::syncHostTransport(za::jsfx::collectTransport(getPlayHead()),hostTransportTracker,hostSamples,getSampleRate(),std::max(getTotalNumInputChannels(),getTotalNumOutputChannels()),hostVariableBindings,[this](int index,double value){writeExternalJsfxVar(index,value);});
     }
 
     void syncJsfxLatency()
@@ -5361,6 +5361,7 @@ private:
     }
 
     za::jsfx::StateVariables stateVariables;
+    const za::jsfx::HostVariableBindings hostVariableBindings{[](const char* name){return findGeneratedStateVarIndexIgnoreCase(name);}};
     DSPJSFX_State st {};
 #if DSPJSFX_HAS_FAUST
     std::unique_ptr<jsfx_faust::Engine> faustEngine { std::make_unique<jsfx_faust::Engine>() };

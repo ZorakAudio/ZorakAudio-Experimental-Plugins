@@ -2,9 +2,21 @@
 
 Corpus loads recordings, learns their acoustic structure, and plays new paths through them from MIDI notes.
 
-## Try the local task build
+## Quick start
 
-Use the VST3 or CLAP in `dist/Corpus-Tasks`, then rescan it in your host. This uses the same plugin identity as Corpus; use one version at a time. Open **Corpus sources**, select your recording and wait for preparation to finish, then send MIDI notes. **Reload Analysis** rebuilds the model.
+1. Insert the current Corpus VST3/CLAP and open **Corpus sources**.
+2. Select your recordings and wait for preparation to finish; the host must keep processing the instance.
+3. Send MIDI notes and start with the default **Balanced** analysis and **8192** grain budget.
+4. Change Force target, Variation and Coherence to steer selection; use the map and browser to inspect the learned material.
+5. Use **Reload Analysis** to rebuild. Changes marked **Apply** need a new analysis pass.
+
+## Controls and playback
+
+The custom canvas owns the hidden slider parameters and their saved/automation values. **Force target**, **Variation**, **Coherence** and **Detail density** guide traversal; **Source scope**, **Identity anchor** and role/descriptor filters restrict eligible material. Map descriptor axes, focus and drawn paths steer where it travels.
+
+**MIDI lifecycle** selects One-shot, Gated or Natural. Attack/Decay/Sustain/Release shape playback; Pitch changes generated tuning, Velocity influence scales note response, and Output is the final trim. Analysis quality and grain budget trade preparation detail for work and memory. Pool RAM budget controls residency. Changing source/configuration cancels obsolete analysis rather than publishing it as the current model.
+
+## Background preparation
 
 Preparation runs Index → Features → Structure → Grammar/Map/Focus → PE as dependent
 background tasks. A worker snapshots the input heap and runs the same deterministic

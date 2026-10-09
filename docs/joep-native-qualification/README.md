@@ -4,7 +4,7 @@ All 50 configured packages passed native generation, the WDL audio/short-MIDI co
 
 Tested compiler SHA-256: `711dce756144c4667cf6a06354b7614d95880d0d8998e4503f2d14f29d7c3278`. Base commit: `7b6c120c8f9042d22c8003c88efa61175934cf7a`.
 
-This is a Linux native compatibility checkpoint. Read [the scope and remaining gaps](../JoepVanlier-Native-Compatibility.md), especially custom `@serialize` and wrapper/DAW qualification. The editor host uses one common identity. Native guest objects use LLVM `-O2`; the test host processor uses `-O0`. Timings in the JSON are fixture measurements, not a controlled WDL/native performance benchmark.
+This is a Linux native compatibility checkpoint. Its WDL audio oracle uses the **portable backend**, not the native x64 SSE JIT. Read [the scope and remaining gaps](../JoepVanlier-Native-Compatibility.md), especially custom `@serialize` and wrapper/DAW qualification. The editor host uses one common identity. Native guest objects use LLVM `-O2`; the test host processor uses `-O0`. Timings in the JSON are fixture measurements, not a controlled WDL/native performance benchmark. The separate [native WDL performance comparison](../Joep-Performance.md) records native-backend output discrepancies as well as timings; portable-oracle success does not override those findings.
 
 | Package | Native | Audio/MIDI | Outputs | Editor | Published frames | Heap MiB |
 |---|---|---|---:|---|---:|---:|

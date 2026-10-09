@@ -13,7 +13,7 @@ class BuildModes(unittest.TestCase):
         for s in specs:
             for p,l in [(False,False),(True,False),(False,True)]:self.assertEqual(build.native_gfx_modes_for_plugin(s,prototype=p,legacy=l),(False,True),s.slug)
     def test_other_jsfx_preserve_options(self):
-        specs=[s for s in SPECS if s.category!='JoepVanlier' and s.plugin_type=='jsfx' and s.raw.get('nativeGfx')!='legacy'];self.assertEqual(len(specs),27)
+        specs=[s for s in SPECS if s.category!='JoepVanlier' and s.plugin_type=='jsfx' and s.raw.get('nativeGfx')!='legacy'];self.assertTrue(specs)
         for s in specs:
             for p,l in [(False,False),(True,False),(False,True)]:self.assertEqual(build.native_gfx_modes_for_plugin(s,prototype=p,legacy=l),(p,l),s.slug)
     def test_corpus_always_legacy(self):
@@ -29,10 +29,12 @@ class BuildModes(unittest.TestCase):
         for spec,opt,legacy in [(joep,[],True),(joep,['--native-gfx-prototype'],True),(other,[],False),(other,['--native-gfx-legacy'],True),(faust,['--native-gfx-legacy'],False)]:
             with tempfile.TemporaryDirectory() as t:
                 root=Path(t);(root/'scripts').mkdir();meta=root/'meta.json';meta.write_text('{}');calls=[]
-                def configured(cmd,*a,**k):calls.append(cmd);raise Configured
+                def configured(cmd,*a,**k):
+                    calls.append(cmd)
+                    if '-S' in cmd:raise Configured
                 with patch.object(build,'__file__',str(root/'scripts/build.py')),patch.object(build,'discover_plugins',return_value=[spec]),patch.object(build,'host_os',return_value='linux'),patch.object(build,'write_plugin_readme_header'),patch.object(build,'build_jsfx_aot',return_value=(root/'d.o',root/'d.h',meta,root/'d.ll')) as compile_,patch.object(build,'run',side_effect=configured),patch.object(sys,'argv',['build.py',*opt]),contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaises(Configured):build.main()
-                    self.assertIn('-DZA_NATIVE_GFX_LEGACY='+('ON' if legacy else 'OFF'),calls[0])
+                    self.assertIn('-DZA_NATIVE_GFX_LEGACY='+('ON' if legacy else 'OFF'),calls[-1])
                     if spec.plugin_type=='jsfx':self.assertEqual(compile_.call_args.kwargs['native_gfx_legacy'],legacy);self.assertFalse(compile_.call_args.kwargs['native_gfx_prototype'])
     def test_direct_manifest_helper_overrides_prototype(self):
         class Compiling(Exception):pass

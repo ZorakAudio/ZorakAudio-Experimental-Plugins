@@ -19,6 +19,11 @@ qualification of every preset, control, algorithm option, or host platform.
 The [result matrix, source manifests, and screenshots](joep-native-qualification/README.md)
 record the tested files.
 
+The separate [native WDL/EEL2 JIT performance comparison](Joep-Performance.md)
+uses the Windows x64 SSE backend and controlled DSP timings. This Linux
+checkpoint uses the portable WDL oracle; its exact matches do not supersede
+native-backend discrepancies found by that later audit.
+
 ## Compatibility changes
 
 - The parser follows EEL operator precedence and boolean tolerance, handles

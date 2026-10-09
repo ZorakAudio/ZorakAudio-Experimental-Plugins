@@ -7,6 +7,7 @@ import dsp_jsfx_aot as compiler
 _, metadata = compiler.compile_jsfx_to_ir('@gfx 640 400\ngfx_rect(0,0,gfx_w,gfx_h);', native_gfx_legacy=True, state_var_capacity=0)
 # Layout/opcodes are static. Actual names, aliases and strings are instance data.
 metadata['has_tasks'] = True
+metadata['has_task_workers'] = True
 metadata['vars'] = {}
 metadata['string_literals'] = []
 metadata['named_strings'] = {}

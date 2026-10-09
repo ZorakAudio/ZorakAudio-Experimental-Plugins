@@ -21,6 +21,13 @@ class Tasks(unittest.TestCase):
         self.assertFalse(meta['has_tasks']);self.assertNotIn('void* taskContext',c._emit_header(meta))
     def test_nested_loops_and_function_captures(self):
         self.compile('@init\nfunction f(x) local(y) (y=x;defer(loop(10,y+=1;);while(y<20)(y+=1;);defer(y;);););t=f(2);')
+    def test_worker_capability(self):
+        self.assertFalse(self.compile('@block\nx=task_finished(t);')[1]['has_task_workers'])
+        self.assertFalse(self.compile('@init\nb=task_buffer_create(8);task_buffer_seal(b);')[1]['has_task_workers'])
+        self.assertFalse(self.compile('@init\nfunction unused() (t=defer(3;););')[1]['has_task_workers'])
+        self.assertTrue(self.compile('@init\nfunction later() (t=defer(3;););\n@block\ntrigger ? later();')[1]['has_task_workers'])
+        self.assertTrue(self.compile('@init\nt=defer_all(a,b);')[1]['has_task_workers'])
+        self.assertTrue(self.compile('@init\na=task_arena_create(64,0,0);')[1]['has_task_workers'])
     def test_unsafe_access_rejected_through_helpers(self):
         for body in ['0[0];','spl0;','slider1;','gfx_rect(0,0,1,1);','rand();','task_buffer_set(b,0,1);']:
             with self.subTest(body=body),self.assertRaisesRegex(ValueError,'Deferred|deferred'):
@@ -69,7 +76,7 @@ class Tasks(unittest.TestCase):
                 subprocess.run(['clang++','-c',str(ll),'-o',str(obj)],check=True,cwd=ROOT)
                 (out/'JSFXDSP.h').write_text(c._emit_header(meta))
                 exe=out/'tasks.exe'
-                command=['clang++','-std=c++20' if legacy else '-std=c++17','-O1','-UNDEBUG','-I'+str(out),'-I'+str(ROOT/'src'),str(ROOT/'tests/tasks/task_runtime.cpp'),str(obj),'-o',str(exe)]
+                command=['clang++','-std=c++20','-DJSFX_TASKS_TESTING=1','-O1','-UNDEBUG','-I'+str(out),'-I'+str(ROOT/'src'),str(ROOT/'tests/tasks/task_runtime.cpp'),str(obj),'-o',str(exe)]
                 subprocess.run(command,check=True,cwd=ROOT)
                 subprocess.run([str(exe)],check=True,timeout=30,cwd=ROOT)
 

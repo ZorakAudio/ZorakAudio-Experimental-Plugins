@@ -150,6 +150,7 @@ struct JitEngine::Program : za::jsfx::MidiHostRuntime,za::jsfx::IdleRuntime,za::
     DSPJSFX_State state{};
     std::unique_ptr<jsfx_native_gfx::Frame> graphics;
     za::jsfx::HostTransportTracker transportTracker;
+    za::jsfx::HostVariableBindings hostVariableBindings;
     std::unique_ptr<za::jsfx::DspJsfxRuntime> hostRuntime;
     std::unique_ptr<jsfx_tasks::Runtime> tasks;std::unique_ptr<za::jsfx::FileRuntime> pools;
     Image canvas;
@@ -174,7 +175,8 @@ struct JitEngine::Program : za::jsfx::MidiHostRuntime,za::jsfx::IdleRuntime,za::
     double readVar(int index) const{return jsfxCellLoad(&state.vars[index]);}
     void writeVar(int index,double value){jsfxCellStore(&state.vars[index],value);}
     double get(const char* name)const{const int i=graphics->findIndex(name);if(i<0)return 0;const int alias=graphics->aliasFor(i);return alias>=0?double(state.sliders[alias]):readVar(i);}
-    void set(const char* name,double value){const int i=graphics->findIndex(name);if(i<0)return;const int alias=graphics->aliasFor(i);if(alias>=0)state.sliders[alias]=value;else writeVar(i,value);}
+    void set(int i,double value){if(i<0)return;const int alias=graphics->aliasFor(i);if(alias>=0)state.sliders[alias]=value;else writeVar(i,value);}
+    void set(const char* name,double value){set(graphics->findIndex(name),value);}
     void applyGraphicsVariables(){graphicsVariables.apply(state,[this](int slot,double value){state.sliders[slot]=value;retainScriptSlider(slot,value);for(auto& item:sliders)if(item.slot==slot)for(int index:item.aliases)writeVar(index,value);});}
     bool applyFactor(int requested,const std::array<std::atomic<double>,256>& controls) {
         if(requested==factor)return false;
@@ -196,7 +198,7 @@ struct JitEngine::Program : za::jsfx::MidiHostRuntime,za::jsfx::IdleRuntime,za::
         lastSlidersValid=true;
         st->sliderVisibilityInit=1;for(auto& word:st->sliderVisibleMask)word=~UINT64_C(0);
         for(auto& item:array(property(descriptor,"sliders")))if((bool)property(item,"hidden"))st->sliderVisibleMask[integer(item,"slot")/64]&=~(UINT64_C(1)<<(integer(item,"slot")%64));
-        za::jsfx::initialiseHostDefaults(channelCount,[this](const char* name,double value){set(name,value);});
+        za::jsfx::initialiseHostDefaults(channelCount,hostVariableBindings,[this](int index,double value){set(index,value);});
         graphics->resetDrawing();graphics->bindLegacy(*st,graphics->frameWidth,graphics->frameHeight);
         for(auto* name:{"gfx_r","gfx_g","gfx_b","gfx_a","gfx_a2"})set(name,1);
         set("gfx_dest",-1);set("gfx_texth",8);
@@ -339,11 +341,11 @@ void JitEngine::process(AudioBuffer<float>& buffer,MidiBuffer* midi,const AudioP
         if(!hostProcessor)fail("Audio host port is not bound");
         const auto topology=active->prepareHostAudio(*hostProcessor,buffer,integer(io,"inputs"),integer(io,"outputs"),factor);
         auto transport=za::jsfx::collectTransport(position);
-        auto set=[&](const char* name,double value){active->set(name,value);};
-        const bool transportJump=za::jsfx::syncHostTransport(transport,active->transportTracker,buffer.getNumSamples(),active->request.rate,topology.channels,set);
+        auto set=[&](int index,double value){active->set(index,value);};
+        const bool transportJump=za::jsfx::syncHostTransport(transport,active->transportTracker,buffer.getNumSamples(),active->request.rate,topology.channels,active->hostVariableBindings,set);
         active->offline=offline;
         active->smartIdleUserOverrideMode.store(static_cast<int>(za::jsfx::IdleRuntime::storedSmartIdleModeToEnum(idleOverride.load())));
-        za::jsfx::syncGfxActivity(graphicsVisible.load(),offline,set);
+        za::jsfx::syncGfxActivity(graphicsVisible.load(),offline,active->hostVariableBindings,set);
         tailSeconds.store(active->smartIdleTailLengthSeconds);
         const bool cleanup=active->observeMidiTransport(transport.observation.valid,transport.observation.playing);
         const bool emergency=st->pendingNoteCleanup!=0;
@@ -503,6 +505,7 @@ std::unique_ptr<JitEngine::Program> JitEngine::compile(const Request& jobRequest
     program->graphicsVariables.configure(std::move(gfxDirections));
     frame.dynamicAliases.resize((size_t)native->varsN,-1);
     if(auto* object=vars.getDynamicObject())for(auto& value:object->getProperties())frame.dynamicIndices[value.name.toString().toStdString()]=(int)value.value;
+    program->hostVariableBindings=za::jsfx::HostVariableBindings([&frame](const char* name){return frame.findIndex(name);});
     auto alias=property(property(descriptor,"metadata"),"slider_aliases");
     if(auto* object=property(property(descriptor,"metadata"),"named_strings").getDynamicObject())
         for(auto& value:object->getProperties())frame.dynamicNamedStrings[value.name.toString().toStdString()]=(int64)value.value;
@@ -511,7 +514,7 @@ std::unique_ptr<JitEngine::Program> JitEngine::compile(const Request& jobRequest
     program->prepareMidiRuntime(*native,program->capacity);
     program->midiRuntime.nativeStrings.graphics=&frame;
     program->hostRuntime=std::make_unique<za::jsfx::DspJsfxRuntime>();program->hostRuntime->attachToState(native);{const ScopedLock lock(messageLock);program->hostRuntime->setHostTrackName(hostTrackName.toStdString());}
-    if((bool)property(property(descriptor,"metadata"),"has_tasks")){program->tasks=std::make_unique<jsfx_tasks::Runtime>((int)native->varsN);native->taskContext=program->tasks.get();program->pools->taskHeap.state=native;program->pools->taskHeap.capacity=slots;program->pools->taskHeap.lifecycleMutex=&program->lifecycleMutex;program->pools->taskHeap.rebind=[p=program.get()](DSPJSFX_State* state){p->graphics->bindLegacy(*state,p->graphics->frameWidth,p->graphics->frameHeight);};za::jsfx::TaskRuntimeHooks<&jitFileOwner>::bind(*program->tasks);}
+    if((bool)property(property(descriptor,"metadata"),"has_tasks")){const auto metadata=property(descriptor,"metadata");const bool workers=metadata.hasProperty("has_task_workers")?(bool)property(metadata,"has_task_workers"):true;program->tasks=std::make_unique<jsfx_tasks::Runtime>((int)native->varsN,workers);native->taskContext=program->tasks.get();program->pools->taskHeap.state=native;program->pools->taskHeap.capacity=slots;program->pools->taskHeap.lifecycleMutex=&program->lifecycleMutex;program->pools->taskHeap.rebind=[p=program.get()](DSPJSFX_State* state){p->graphics->bindLegacy(*state,p->graphics->frameWidth,p->graphics->frameHeight);};za::jsfx::TaskRuntimeHooks<&jitFileOwner>::bind(*program->tasks);}
     native->sliderVisibilityInit=1;for(auto& word:native->sliderVisibleMask)word=~UINT64_C(0);
     for(auto& d:jitDeclarations(jobRequest.source,descriptor))if(d.hidden)native->sliderVisibleMask[d.index0/64]&=~(UINT64_C(1)<<(d.index0%64));
     native->atomicContext=&program->atomicMutex;
@@ -534,7 +537,7 @@ std::unique_ptr<JitEngine::Program> JitEngine::compile(const Request& jobRequest
     for(auto& declaration:parseJsfxFilenameDecls(expandedSource.toRawUTF8()))if(declaration.defaultPath.isNotEmpty()){StringArray paths;auto f=File::isAbsolutePath(declaration.defaultPath)?File(declaration.defaultPath):assetRoot.getChildFile(declaration.defaultPath);paths.add(f.getFullPathName());program->pools->setSlot(declaration.index0,paths);}
     program->compiled.gfx=reinterpret_cast<Program::Section>(address("jsfx_gfx_aot"));
     for(auto& d:jitDeclarations(jobRequest.source,descriptor))if(d.isString){auto named=property(property(descriptor,"metadata"),"named_strings");double h=(double)named.getProperty(d.varName.toLowerCase(),0);if(!h)h=program->midiRuntime.nativeStrings.create(d.stringDefault.toStdString());else program->midiRuntime.nativeStrings.write(h,d.stringDefault.toStdString());program->write(program->sliderOffset+d.index0*8,h);auto it=frame.dynamicIndices.find(d.varName.toLowerCase().toStdString());if(it!=frame.dynamicIndices.end())program->writeVar(it->second,h);program->stringControls.push_back({d.index0,h,d.stringDefault.toStdString()});}
-    za::jsfx::initialiseHostDefaults(program->channelCount,[p=program.get()](const char* name,double value){p->set(name,value);});
+    za::jsfx::initialiseHostDefaults(program->channelCount,program->hostVariableBindings,[p=program.get()](int index,double value){p->set(index,value);});
     auto io=property(property(descriptor,"metadata"),"io_channels");auto mi=property(property(descriptor,"metadata"),"midi");
     program->initialiseIdle(*native,expandedSource.toRawUTF8(),{integer(io,"inputs"),integer(io,"outputs"),(bool)property(mi,"accepts_midi_input"),(bool)property(mi,"produces_midi_output"),program->pools->fileSlotCount()>0},[p=program.get()](const char* name){return p->graphics->findIndex(name);});
     if(!stages.empty()){

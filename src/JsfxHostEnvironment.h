@@ -1,10 +1,44 @@
 // SPDX-License-Identifier: Zlib
 #pragma once
 #include "DspJsfxHostTransport.h"
+#include <array>
+#include <cstddef>
+#include <type_traits>
 
 namespace za::jsfx {
+enum class HostVariable : size_t {
+    Tempo, Channels, TransportBound, TransportValid, TransportDiscontinuity,
+    PlayState, PlayPosition, BeatPosition, GfxBound, GfxActive, Count
+};
+inline constexpr std::array<const char*,size_t(HostVariable::Count)> hostVariableNames{
+    "tempo","num_ch","host_transport_bound","host_transport_valid",
+    "host_transport_discontinuity","play_state","play_position","beat_position",
+    "host_gfx_bound","host_gfx_active"
+};
+// Resolve once per compiled program, before processing. A missing variable
+// remains -1; adapters still perform their normal alias/oracle-aware writes.
+struct HostVariableBindings {
+    std::array<int,size_t(HostVariable::Count)> indices;
+    HostVariableBindings() { indices.fill(-1); }
+    template<class Resolve,std::enable_if_t<std::is_invocable_r_v<int,Resolve&,const char*>,int> = 0>
+    explicit HostVariableBindings(Resolve&& resolve) {
+        for(size_t i=0;i<indices.size();++i)indices[i]=resolve(hostVariableNames[i]);
+    }
+    template<class Write> auto writer(Write&& write) const {
+        return [this,write](HostVariable variable,double value){write(indices[size_t(variable)],value);};
+    }
+};
+template<class Write> auto namedHostWriter(Write&& write) {
+    return [write](HostVariable variable,double value){write(hostVariableNames[size_t(variable)],value);};
+}
+template<class Write> void initialiseHostDefaultsVariables(int channels,Write&& write) {
+    write(HostVariable::Tempo,120.0);write(HostVariable::Channels,double(channels));
+}
 template<class Write> void initialiseHostDefaults(int channels,Write&& write) {
-    write("tempo",120.0);write("num_ch",double(channels));
+    initialiseHostDefaultsVariables(channels,namedHostWriter(write));
+}
+template<class Write> void initialiseHostDefaults(int channels,const HostVariableBindings& bindings,Write&& write) {
+    initialiseHostDefaultsVariables(channels,bindings.writer(write));
 }
 // The observation is collected by the JUCE adapter. Missing host fields retain
 // the last known guest values, matching the production transport contract.
@@ -39,20 +73,32 @@ inline TransportFrame collectTransport(juce::AudioPlayHead* head) {
     return frame;
 #endif
 }
-template<class Write> bool syncHostTransport(const TransportFrame& frame,HostTransportTracker& tracker,int samples,double rate,int channels,Write&& write) {
+template<class Write> bool syncHostTransportVariables(const TransportFrame& frame,HostTransportTracker& tracker,int samples,double rate,int channels,Write&& write) {
     const auto& o=frame.observation;rate=juce::jmax(1.0,rate);
-    write("num_ch",double(channels));
+    write(HostVariable::Channels,double(channels));
     bool discontinuity=tracker.update(o,samples,rate);
-    write("host_transport_bound",1);write("host_transport_valid",o.valid?1:0);write("host_transport_discontinuity",discontinuity?1:0);
+    write(HostVariable::TransportBound,1);write(HostVariable::TransportValid,o.valid?1:0);write(HostVariable::TransportDiscontinuity,discontinuity?1:0);
     if(o.valid){
-        write("play_state",o.playing?(o.recording?5:1):0);
-        if(o.hasSamples)write("play_position",double(o.samples)/rate);else if(o.hasSeconds)write("play_position",o.seconds);
-        if(frame.haveBeats)write("beat_position",frame.beats);if(frame.haveBpm)write("tempo",frame.bpm);
+        write(HostVariable::PlayState,o.playing?(o.recording?5:1):0);
+        if(o.hasSamples)write(HostVariable::PlayPosition,double(o.samples)/rate);else if(o.hasSeconds)write(HostVariable::PlayPosition,o.seconds);
+        if(frame.haveBeats)write(HostVariable::BeatPosition,frame.beats);if(frame.haveBpm)write(HostVariable::Tempo,frame.bpm);
     }
     return discontinuity;
 }
+template<class Write> bool syncHostTransport(const TransportFrame& frame,HostTransportTracker& tracker,int samples,double rate,int channels,Write&& write) {
+    return syncHostTransportVariables(frame,tracker,samples,rate,channels,namedHostWriter(write));
+}
+template<class Write> bool syncHostTransport(const TransportFrame& frame,HostTransportTracker& tracker,int samples,double rate,int channels,const HostVariableBindings& bindings,Write&& write) {
+    return syncHostTransportVariables(frame,tracker,samples,rate,channels,bindings.writer(write));
+}
+template<class Write> void syncGfxActivityVariables(bool visible,bool offline,Write&& write) {
+    write(HostVariable::GfxBound,1);write(HostVariable::GfxActive,visible && !offline?1:0);
+}
 template<class Write> void syncGfxActivity(bool visible,bool offline,Write&& write) {
-    write("host_gfx_bound",1);write("host_gfx_active",visible && !offline?1:0);
+    syncGfxActivityVariables(visible,offline,namedHostWriter(write));
+}
+template<class Write> void syncGfxActivity(bool visible,bool offline,const HostVariableBindings& bindings,Write&& write) {
+    syncGfxActivityVariables(visible,offline,bindings.writer(write));
 }
 inline int latencyFromGuest(double raw,int oversamplingFactor) noexcept {
     const double bounded=std::isfinite(raw)?juce::jlimit(0.0,16777216.0,raw):0.0;

@@ -34,6 +34,30 @@ python tools/jit_editor/apply_wrapper_patches.py
 python tests/build/test_wrapper_patches.py
 ```
 
+Compiler/runtime performance checks run in catalog CI on the first shard:
+
+```sh
+python tests/tasks/test_tasks.py
+python tests/runtime/test_performance_contracts.py
+python tests/tasks/test_corpus_matrix.py
+```
+
+These checks cover worker capability inference, notification wakeups, idle
+parking and shutdown, cached host-variable bindings, and idle IPC with direct
+messages, cross-process delivery, contention retries and peer liveness.
+Windows/macOS AOT emission carries the selected optimization level through to
+Clang's machine-code backend. Its IR optimizer is disabled at that final step
+because the tuned LLVM pipeline has already optimized the module. Linux's
+native object emission continues to use the configured LLVM target machine.
+This preserves the existing floating-point rules and bounded inliner.
+
+On Windows with cached release libraries,
+`python tests/runtime/profile_host_changes.py --plugin joep_amaranth` compares the
+working runtime against HEAD, using identical optimized input IR and a full
+production callback. It also checks audio/MIDI bits, parameters, latency and
+saved-state size across two rates and four oversampling settings. This is a
+local before-commit probe; its numbers are specific to that plugin and setup.
+
 The small `m` on each submodule in Git status is expected after patching. Git stores
 the patches, applier and CMake integration in the main repository; it does not store
 the dirty submodule files themselves. After updating either pinned dependency,
@@ -68,6 +92,12 @@ Every catalog and JIT job uses the shared setup action to apply and verify the
 JUCE and CLAP wrapper patches before installing the native toolchain or compiling.
 A patch conflict fails the job immediately; each job also verifies the patches
 after its build, before uploading plugin archives.
+
+Catalog jobs also run `python scripts/check_plugin_readmes.py`. It checks every
+buildable leaf, rejects placeholder or invalid help, checks local Markdown links,
+and compiles the generated headers to verify exact UTF-8 bytes. Both native
+formats share this embedded README path. Updating documentation requires a
+rebuild; installed binaries do not read loose READMEs at runtime.
 
 The setup action initializes Python 3.11 and pins llvmlite 0.46.0. It verifies
 actual C++ and LLVM Faust output, LLVM bitcode/layout parsing and native object

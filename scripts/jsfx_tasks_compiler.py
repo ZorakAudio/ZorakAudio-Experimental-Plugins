@@ -87,6 +87,13 @@ def validate(c,programs,functions,slider_aliases=()):
                 raise ValueError('Task status constants are read-only')
     return enabled
 
+def needs_workers(c, programs, functions):
+    # Query/buffer APIs cannot schedule work. Helpers and conditional branches
+    # remain conservative: they may run after the initial processing block.
+    scheduling = set(DEFERRED) | {'defer_all', 'task_arena_create', 'task_arena_clone'}
+    return any(isinstance(v,c.Call) and v.fn in scheduling
+               for v in walk(list(programs.values())+[f.body for f in functions.values()]))
+
 def emit_api(c,e,b,st,name,values):
     ir=c.ir
     callee=e._buildins.get('jsfx_task_api')

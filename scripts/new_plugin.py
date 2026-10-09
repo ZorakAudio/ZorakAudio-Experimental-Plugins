@@ -117,8 +117,13 @@ def main() -> None:
         f"- Folder key / slug: `{key}`\n"
         f"- Plugin type: `{plugin_type}`\n\n"
         "This README is embedded into the plugin and shown in the in-plugin `?` help panel at build time.\n\n"
-        "## Overview\n\n"
-        "Describe the DSP idea, intended use, and any design constraints here.\n"
+        "## Quick start\n\n"
+        "This starter effect passes stereo input to output. Insert it on a stereo track "
+        "and play audio to check routing before replacing the DSP.\n\n"
+        "## Controls and routing\n\n"
+        "Use input/output 1/2. The starter JSFX's Example slider stores a value "
+        "but does not affect audio; the Faust starter defines a stereo passthrough without controls. Customize this help "
+        "with the actual controls, loading workflow and limitations when changing the source.\n"
     )
 
     source_text = build_jsfx_template(name) if plugin_type == "jsfx" else build_faust_template(name)

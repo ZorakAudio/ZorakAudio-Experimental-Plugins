@@ -52,6 +52,12 @@ The build embeds it directly into the plugin, and the in-plugin `?` panel render
 
 For JSFX plugins, historical `// #HELP:` comments are no longer the primary documentation target. Keep durable user-facing help in the leaf README.
 
+Keep the help usable inside the plugin: explain a quick workflow, the main controls, loading/routing requirements and current limitations. Canvas-only controls should be identified as hidden automation parameters. Standalone variants need enough usage help to be useful without opening another local document. Do not leave scaffold placeholders in buildable entries.
+
+Run `python scripts/check_plugin_readmes.py` to check the whole catalog, local Markdown links and exact UTF-8 embedding through a C++ compiler. Discovery rejects missing, invalid or scaffold-only help. Existing installed binaries retain their embedded README until rebuilt; editing a loose README does not update them.
+
+JoepVanlier help pages also report the measured native WDL/EEL2 JIT comparison or explicitly explain why a speedup claim is not valid. Distinguish DSP timing from the complete JUCE callback and GFX work.
+
 ## `plugin.json`
 
 Minimal example:

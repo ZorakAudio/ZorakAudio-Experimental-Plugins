@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -94,18 +95,23 @@ private:
         std::string uid;
         std::unordered_set<std::uint64_t> subscriptions;
         std::unordered_map<std::uint64_t, std::uint64_t> advertisedCaps;
+        std::uint64_t revision = 0, publishedRevision = 0;
     };
 
     struct DomainState;
 
     DomainState* domainFor(std::uint64_t domainHash) const;
-    void upsertIpcInstance(const InstanceRecord& rec) const;
+    void upsertIpcInstance(const InstanceRecord& rec);
+    void refreshIpcInstance(std::uint64_t instanceId, bool force = false);
+    void markPublicationPending(InstanceRecord& rec);
+    void updatePublicationPending(); // mutex_ held
     void removeIpcInstance(std::uint64_t instanceId, std::uint64_t domainHash) const;
 
     static bool matchesRole(const InstanceRecord& rec, std::uint64_t channelHash, int role);
 
     mutable std::mutex mutex_;
     std::unordered_map<std::uint64_t, InstanceRecord> instances_;
+    std::atomic<bool> publicationPending_ { false };
     mutable std::mutex domainsMutex_;
     mutable std::unordered_map<std::uint64_t, std::unique_ptr<DomainState>> domains_;
 };

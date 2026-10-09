@@ -138,13 +138,28 @@ all iterations finish, independent of worker scheduling. NaNs propagate through
 MIN/MAX; EEL2's normal assignment filtering still applies when storing results.
 Custom reducers, scans, filters and general mutable shared buffers are not included.
 
-Per instance: two worker threads, 32 task slots (including joins and retained
-results), 4096 iterations per parallel task, 64 captured function locals, 4096
-scalar variables, eight buffers of at most 65536 doubles each. Iterations are
+Per instance using deferred execution: two worker threads, 32 task slots
+(including joins and retained results), 4096 iterations per parallel task,
+64 captured function locals, eight buffers of at most 65536 doubles each.
+Scalar snapshots follow the compiled variable extent; ordinary mode is limited
+to 4096 variables, while legacy mode supports the program's dynamic extent. Iterations are
 scheduled in chunks of 32, not one queue node per iteration. Storage is allocated
 and initialized at processor construction. Submission copies at most the bounded
-scalar state and never allocates. Workers poll the scheduler at approximately
-1 ms when idle. There is no global host-wide thread budget or work stealing yet.
+scalar state and never allocates. Idle workers park until submission, completion,
+cancellation, reset or shutdown changes the scheduler generation. There is no
+timer polling, global host-wide thread budget or work stealing.
+
+The compiler emits `has_task_workers` / `DSPJSFX_HAS_TASK_WORKERS` separately
+from task-API use. Programs without tasks omit the runtime entirely; programs
+using only task queries or task buffers retain API storage without starting
+workers. Deferred bodies, joins and arena creation/cloning require workers,
+including reachable helpers or branches that may run later. In the JIT editor,
+replacing a program retires its pool on the compiler thread, where cancellation
+and joining happen before its code and resources are unloaded. A capable program
+keeps its parked pool between tasks so an audio callback never creates threads.
+Task builds require C++20 atomic wait/notify; the plugin build selects this
+automatically from the generated header. Existing headers without the new flag
+retain the conservative worker behavior.
 
 Releasing a completed root task frees its slot once dependencies release their
 references. Large graphs must be staged to stay within the fixed slot budget.

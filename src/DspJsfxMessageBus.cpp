@@ -314,6 +314,7 @@ void DspJsfxMessageBus::registerRuntime(DspJsfxRuntime* runtime,
         dst.instanceId = instanceId;
         dst.domainHash = domainHash;
         dst.uid = uid;
+        markPublicationPending(dst);
         rec = dst;
     }
     upsertIpcInstance(rec);
@@ -329,6 +330,7 @@ void DspJsfxMessageBus::unregisterRuntime(std::uint64_t instanceId)
         {
             oldDomain = it->second.domainHash;
             instances_.erase(it);
+            updatePublicationPending();
         }
     }
 
@@ -348,6 +350,7 @@ void DspJsfxMessageBus::updateDomain(std::uint64_t instanceId, std::uint64_t dom
         {
             oldDomain = it->second.domainHash;
             it->second.domainHash = domainHash;
+            markPublicationPending(it->second);
             rec = it->second;
             found = true;
         }
@@ -369,6 +372,7 @@ void DspJsfxMessageBus::updateNameHandle(std::uint64_t instanceId, std::int64_t 
         if (it != instances_.end())
         {
             it->second.nameHandle = nameHandle;
+            markPublicationPending(it->second);
             rec = it->second;
             found = true;
         }
@@ -390,6 +394,7 @@ void DspJsfxMessageBus::updateSubscription(std::uint64_t instanceId, std::uint64
             it->second.subscriptions.insert(channelHash);
         else
             it->second.subscriptions.erase(channelHash);
+        markPublicationPending(it->second);
         rec = it->second;
         found = true;
     }
@@ -410,6 +415,7 @@ void DspJsfxMessageBus::updateAdvertisement(std::uint64_t instanceId, std::uint6
             it->second.advertisedCaps.erase(channelHash);
         else
             it->second.advertisedCaps[channelHash] = caps;
+        markPublicationPending(it->second);
         rec = it->second;
         found = true;
     }
@@ -430,15 +436,52 @@ bool DspJsfxMessageBus::matchesRole(const InstanceRecord& rec, std::uint64_t cha
     }
 }
 
-void DspJsfxMessageBus::upsertIpcInstance(const InstanceRecord& rec) const
+void DspJsfxMessageBus::markPublicationPending(InstanceRecord& rec)
 {
-    auto* domain = domainFor(rec.domainHash);
+    ++rec.revision;
+    publicationPending_.store(true, std::memory_order_release);
+}
+
+void DspJsfxMessageBus::updatePublicationPending()
+{
+    bool pending = false;
+    for (const auto& entry : instances_)
+        pending |= entry.second.revision != entry.second.publishedRevision;
+    publicationPending_.store(pending, std::memory_order_release);
+}
+
+void DspJsfxMessageBus::refreshIpcInstance(std::uint64_t instanceId, bool force)
+{
+    if (! force && ! publicationPending_.load(std::memory_order_acquire))
+        return;
+    InstanceRecord rec;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = instances_.find(instanceId);
+        if (it == instances_.end() || (! force && it->second.revision == it->second.publishedRevision))
+            return;
+        rec = it->second;
+    }
+    upsertIpcInstance(rec);
+}
+
+void DspJsfxMessageBus::upsertIpcInstance(const InstanceRecord& requested)
+{
+    auto* domain = domainFor(requested.domainHash);
     if (domain == nullptr || domain->header == nullptr)
         return;
 
     IpcLockGuard guard(domain->header);
     if (! guard.locked)
         return;
+
+    // Publish the current record under the registry lock. Older snapshots must
+    // neither resurrect an unregistered peer nor overwrite newer metadata.
+    std::lock_guard<std::mutex> registryLock(mutex_);
+    const auto found = instances_.find(requested.instanceId);
+    if (found == instances_.end() || found->second.domainHash != requested.domainHash)
+        return;
+    auto& rec = found->second;
 
     auto* h = domain->header;
     const auto nowSeq = h->globalSeq.load(std::memory_order_acquire);
@@ -514,6 +557,8 @@ void DspJsfxMessageBus::upsertIpcInstance(const InstanceRecord& rec) const
     }
 
     selected->mergedCaps.store(mergedCaps, std::memory_order_release);
+    rec.publishedRevision = rec.revision;
+    updatePublicationPending();
 }
 
 void DspJsfxMessageBus::removeIpcInstance(std::uint64_t instanceId, std::uint64_t domainHash) const
@@ -625,33 +670,35 @@ void DspJsfxMessageBus::collectInbox(std::uint64_t instanceId,
                                      std::unordered_map<std::uint64_t, std::deque<DspJsfxMessage>>& readyInbox,
                                      std::unordered_map<std::uint64_t, std::uint64_t>& droppedByChannel)
 {
+    // Retain retries when registration/metadata publication lost the IPC lock.
+    // Successful membership changes are published once, not every callback.
+    refreshIpcInstance(instanceId);
     auto* domain = domainFor(domainHash);
     if (domain == nullptr || domain->header == nullptr)
         return;
 
     auto* h = domain->header;
+    // Only the committed sequence is inspected without the IPC lock. Payloads
+    // still require it. A racing publication is collected on the next block.
+    if (h->globalSeq.load(std::memory_order_acquire) <= lastReadSeq)
+        return;
     IpcLockGuard readGuard(h);
     if (! readGuard.locked)
         return; // Retain cursor and retry; never skip a contended publication.
     const auto newestSeq = h->globalSeq.load(std::memory_order_acquire);
     if (newestSeq <= lastReadSeq)
-    {
-        readGuard.release();
-        InstanceRecord self;
-        bool found = false;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            auto it = instances_.find(instanceId);
-            if (it != instances_.end())
-            {
-                self = it->second;
-                found = true;
-            }
-        }
-        if (found)
-            upsertIpcInstance(self);
         return;
-    }
+
+    // Liveness is measured in committed messages. If the sequence has not
+    // advanced no heartbeat is needed; when it has, update only our timestamp.
+    bool registered = false;
+    for (auto& instance : h->instances)
+        if (instance.instanceId.load(std::memory_order_acquire) == instanceId)
+        {
+            instance.lastSeenSeq.store(newestSeq, std::memory_order_release);
+            registered = true;
+            break;
+        }
 
     auto firstSeq = lastReadSeq + 1u;
     if (newestSeq > kIpcRingSize && firstSeq + kIpcRingSize <= newestSeq)
@@ -679,21 +726,9 @@ void DspJsfxMessageBus::collectInbox(std::uint64_t instanceId,
     }
 
     lastReadSeq = newestSeq;
-    readGuard.release(); // upsertIpcInstance obtains the IPC lock independently.
-
-    InstanceRecord self;
-    bool found = false;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto it = instances_.find(instanceId);
-        if (it != instances_.end())
-        {
-            self = it->second;
-            found = true;
-        }
-    }
-    if (found)
-        upsertIpcInstance(self);
+    readGuard.release();
+    if (! registered)
+        refreshIpcInstance(instanceId, true); // Recover a slot reclaimed as stale.
 
     (void) maxSeen;
 }
@@ -708,6 +743,8 @@ bool DspJsfxMessageBus::hasPendingFor(std::uint64_t instanceId,
         return false;
 
     auto* h = domain->header;
+    if (h->globalSeq.load(std::memory_order_acquire) <= lastReadSeq)
+        return false;
     IpcLockGuard readGuard(h);
     if (! readGuard.locked)
         return true; // Conservative wakeup, not a racy payload inspection.

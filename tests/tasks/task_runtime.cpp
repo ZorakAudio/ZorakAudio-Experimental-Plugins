@@ -118,7 +118,22 @@ static void heapSwapChecks(DSPJSFX_State& s) {
   std::free(s.mem);s.mem=nullptr;s.memN=0;
 }
 int main() {
+#ifdef JSFX_TASKS_TESTING
+  // API-only programs have no worker threads.
+  {jsfx_tasks::Runtime noWorkers(DSPJSFX_VARS_COUNT,false);
+   std::this_thread::sleep_for(std::chrono::milliseconds(20));
+   assert(noWorkers.testWorkerPasses()==0 && noWorkers.testParkedWorkers()==0);}
+#endif
   auto runtime = std::make_unique<jsfx_tasks::Runtime>();
+#ifdef JSFX_TASKS_TESTING
+  for(int n=0;n<1000 && runtime->testParkedWorkers()!=2;++n)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  assert(runtime->testParkedWorkers()==2);
+  const auto idlePasses=runtime->testWorkerPasses();
+  std::this_thread::sleep_for(std::chrono::milliseconds(40));
+  assert(runtime->testWorkerPasses()==idlePasses); // No idle timer wakeups.
+  for(int n=0;n<20;++n){jsfx_tasks::Runtime idle;std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+#endif
   assert(!runtime->hasOutstandingWorkForIdle());
   DSPJSFX_State state{};
   za::jsfx::StateVariables variables;variables.bind(state,DSPJSFX_VARS_COUNT);

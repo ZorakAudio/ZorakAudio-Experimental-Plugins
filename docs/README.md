@@ -25,6 +25,7 @@ Start with [DSP-JSFX: consolidated guide](DSP-JSFX-Guide.md). It explains the cu
 | Optional Sample character variant | [Sample Faust](Sample-Faust-Character-Integration.md) |
 | Hyperreal default, alternate models, idle and matched comparisons | [Hyperreal](Hyperreal-Panner.md) |
 | JoepVanlier native coverage | [Joep checkpoint](JoepVanlier-Native-Compatibility.md) |
+| JoepVanlier native WDL/EEL2 JIT versus LLVM DSP timings | [Joep performance](Joep-Performance.md) |
 | Non-Joep editor/audio coverage | [Catalog checkpoint](Plugin-Catalog-Regression.md) |
 
 Result matrices and raw evidence under `validation/`, `catalog-regression/` and `joep-native-qualification/` are historical checkpoints, not claims that every current source was requalified. Read their fingerprints, fixture scope and platform limits. Older measurements remain evidence for their pinned inputs; they do not override current contracts.

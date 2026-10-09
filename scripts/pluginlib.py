@@ -20,6 +20,19 @@ class PluginDiscoveryError(RuntimeError):
     pass
 
 
+def read_plugin_readme(path: Path) -> str:
+    """Read the canonical help without silently replacing invalid UTF-8."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        raise PluginDiscoveryError(f"Cannot read plugin help {path}: {exc}") from exc
+    if not text.strip() or not re.search(r"(?m)^#\s+\S", text):
+        raise PluginDiscoveryError(f"Plugin help {path} must contain a Markdown title and content.")
+    if "Describe the DSP idea, intended use, and any design constraints here." in text:
+        raise PluginDiscoveryError(f"Plugin help {path} still contains the scaffold placeholder.")
+    return text
+
+
 def _slug_token(text: str) -> str:
     token = re.sub(r"[^a-z0-9]+", "", text.lower())
     return token or "plugin"
@@ -146,6 +159,7 @@ def load_plugin(repo_root: Path, meta_path: Path) -> PluginSpec:
         raise PluginDiscoveryError(
             f"Missing {PLUGIN_README_FILENAME} in plugin leaf {plugin_root}. The embedded '?' help panel now renders the leaf README directly."
         )
+    read_plugin_readme(readme_path)
 
     install_override = data.get("installPath")
     if install_override is not None:

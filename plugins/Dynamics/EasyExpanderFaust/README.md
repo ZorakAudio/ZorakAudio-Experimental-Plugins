@@ -1,38 +1,33 @@
 # EasyExpander Faust
 
-This motivating example keeps EasyExpander's JSFX initialization, slider controls
-and graphics, and implements its audio detector/expander in an embedded `@faust`
-section. The original EasyExpander remains available separately.
+A minimal downward expander with an ERB-weighted detector. It preserves EasyExpander's controls and custom meters, with the detector/expander audio implemented in an embedded FAUST section. This has a separate plugin identity from EasyExpander.
 
-Build with `python tests/faust/build_example.py --package`. VST3 and CLAP are
-staged in `dist/EasyExpander-Faust`. The compiler requires Faust's LLVM backend
-at build time; the plugin has no Faust compiler or libfaust runtime dependency.
-The example has its own plugin identity and uses native Legacy graphics.
+## Quick start
 
-Ordinary JSFX scalars, slider aliases and `splN` signal inputs are inferred from
-Faust's symbol resolution. Top-level Faust scalar definitions matching JSFX
-globals publish their final sample value automatically; the graphics meters
-receive these results. DSP state lives in an independent Faust instance.
+1. Insert it on a stereo track and play the material to clean up.
+2. Set **Threshold** near the level below which spill or tails should be reduced.
+3. Raise **Depth** to set maximum attenuation; adjust **Contour** from gentle to gate-like action.
+4. Adjust **Detector HPF/LPF** if low rumble or high hiss triggers it incorrectly.
+5. Compare quiet passages and attacks, rather than only loud continuous audio.
 
-`python tests/faust/profile_kernel.py` compares original and Faust kernels,
-including parameter changes and multiple rates/buffers. It creates numerical
-signals in memory, without loading an audio file. `build_example.py --before`
-and `build_example.py` produce supplied-file JUCE profilers; invoke the resulting
-`before.exe` / `after.exe` with the authorized recording and a report path.
-Timing excludes file decoding and records `processBlock` time separately from
-output dumping. Editor creation, closure and rate resets are also checked.
+## Controls and routing
 
-See `docs/JSFX-Faust-Sections.md` for ordering, inference and execution guarantees.
+- **Threshold (dB)**: activation point, initially -40 dB.
+- **Depth (dB)**: maximum reduction, initially 24 dB.
+- **Contour**: opening/closing character, initially 50; lower is gentler.
+- **Detector HPF**: low-frequency rejection in the detector; 0 disables it.
+- **Detector LPF**: high-frequency detector limit; 20 kHz is its open setting.
 
-The example now uses the exact user-pasted EasyExpander baseline. Its executable
-code is identical to the earlier repository source; only help/tooltip comments
-and the final newline differ. The host uses explicit plugin sleep permission,
-so this stateful expander remains active through quiet input. Offline renders
-also always advance DSP. See `docs/Cooperative-Sleep.md` for the new contract.
+The detector filters do not EQ the output signal. Use stereo input/output 1/2. The gain and detector histories are stateful; quiet input still needs to advance them. Offline renders always advance DSP. Native idle behaviour also depends on the selected sleep mode; use continuous processing when comparing output with an always-active reference.
 
-Updated comparisons use continuously active processing on both sides. The older
-report compared two builds sharing the previous threshold-based Auto Sleep;
-although those outputs matched each other, Auto Sleep did not null against a
-continuously active reference. Consult the updated idle audit and results.
+## Implementation and comparison
 
-Updated matched active-processing result: 15.821 s -> 3.476 s (4.55x), with 58,558,936 bit-identical float samples. See EasyExpander-Sleep-Audit.md and the accompanying JSON report.
+EEL owns initialization, sliders and graphics. The compiler infers slider aliases, signal inputs and scalar bindings for FAUST; exported final-sample values feed the meters. FAUST has its own DSP state.
+
+The recorded matched active-processing comparison was 15.821 s versus 3.476 s (4.55x), with 58,558,936 bit-identical float samples. That is a specific supplied-recording experiment, not a universal ratio. Earlier threshold-based Auto Sleep results did not null against continuously active processing. See the [sleep audit](../../../docs/validation/EasyExpander-Sleep-Audit.md) and [FAUST integration contract](../../../docs/JSFX-Faust-Sections.md) for scope and limitations.
+
+## Building and help
+
+Build with `python scripts/build.py --only EasyExpanderFaust --config Release`. The compiler needs FAUST's LLVM backend at build time; the plugin does not ship a FAUST compiler. The embedded section requires this repository's compiler rather than stock REAPER JSFX.
+
+The `?` button shows this README embedded in both native formats. Rebuild to update installed help text.

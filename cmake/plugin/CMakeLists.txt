@@ -124,6 +124,10 @@ if(ZA_JSFX_CORRECTNESS_CHECK AND ZA_JSFX_AOT_HEADER_TEXT MATCHES "#define DSPJSF
     message(FATAL_ERROR "Stock EEL cannot execute mixed Faust sections; use the mixed-section integration tests")
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(ZA_JSFX_AOT_HEADER_TEXT MATCHES "#define DSPJSFX_HAS_TASKS 1")
+    # Park idle workers without polling or blocking an audio-thread producer.
+    set(CMAKE_CXX_STANDARD 20)
+endif()
 
 if(MSVC)
   # Repository-authored UI strings are UTF-8. Make MSVC preserve the

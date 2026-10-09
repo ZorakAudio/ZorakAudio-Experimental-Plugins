@@ -2853,6 +2853,7 @@ def compile_pipeline_to_ir(jsfx_text: str, pipeline: Dict[str, Any],
         raise ValueError('za_faust_quantum requires an unfused Faust pipeline beginning with @block and a size from 2 to 4096')
     meta = {
         "has_tasks": has_tasks,
+        "has_task_workers": tasks_compiler.needs_workers(sys.modules[__name__], programs, fn_defs),
         "has_faust": bool(faust_plan),
         "faust_stages": faust_stages,
         "faust_islands": faust_islands,
@@ -6843,6 +6844,7 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines = []
     lines.append("#pragma once")
     lines.append(f"#define DSPJSFX_HAS_TASKS {1 if meta.get('has_tasks') else 0}")
+    lines.append(f"#define DSPJSFX_HAS_TASK_WORKERS {1 if meta.get('has_task_workers', meta.get('has_tasks')) else 0}")
     lines.append(f"#define DSPJSFX_HAS_FAUST {1 if meta.get('has_faust') else 0}")
     lines.append(f"#define DSPJSFX_EEL2_STORES {0 if meta.get('numeric_semantics')=='native' else 1}")
     lines.append("#include <stdint.h>")
@@ -7243,6 +7245,11 @@ def _aot_opt_and_emit(mod_ir: ir.Module,
                 cmd = [
                     clang,
                     f"--target={target_triple}",
+                    f"-O{opt_level}",
+                    # IR has already passed through our tuned LLVM pipeline.
+                    # Select optimized machine-code generation without running
+                    # another, unbounded IR inliner over large instruments.
+                    "-Xclang", "-disable-llvm-passes",
                     "-c",
                     str(ll_path),
                     "-o",

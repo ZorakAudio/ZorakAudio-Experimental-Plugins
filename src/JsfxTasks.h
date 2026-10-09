@@ -2,6 +2,10 @@
 // Include after the generated JSFXDSP.h. No JUCE dependency.
 #pragma once
 #if DSPJSFX_HAS_TASKS
+#ifndef DSPJSFX_HAS_TASK_WORKERS
+// Older generated headers retain the conservative runtime contract.
+#define DSPJSFX_HAS_TASK_WORKERS DSPJSFX_HAS_TASKS
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -14,6 +18,9 @@
 #include <thread>
 #include <vector>
 #include <stdexcept>
+#if !defined(__cpp_lib_atomic_wait) || __cpp_lib_atomic_wait < 201907L
+#error "Deferred tasks require C++20 atomic wait/notify support"
+#endif
 
 namespace jsfx_tasks {
 using Callback = double (*)(DSPJSFX_State *, double, const double *);
@@ -111,6 +118,18 @@ class Runtime {
   std::array<std::vector<DSPJSFX_Cell>,2> workerVariables;
 #endif
   std::atomic<bool> stopping{false};
+  // Snapshot before scanning, then wait for a different generation. A submit,
+  // completion or reset between the scan and wait cannot lose its wakeup.
+  // Producers never acquire an additional mutex or wait for a worker.
+  std::atomic<uint64_t> workGeneration{0};
+  void signalWork() noexcept {
+    workGeneration.fetch_add(1,std::memory_order_release);
+    workGeneration.notify_all();
+  }
+#ifdef JSFX_TASKS_TESTING
+  std::atomic<uint64_t> workerPasses{0};
+  std::atomic<int> parkedWorkers{0};
+#endif
   uint64_t serial = 0;
   std::atomic<uint64_t> epoch{1};
   int active = 0, cursor = 0;
@@ -196,6 +215,7 @@ class Runtime {
     }
     if (j.arenaJob) { --arena.refs; if (finalStatus!=Succeeded) arena.status=5; }
     j.status.store(finalStatus);
+    signalWork();
     --active;
     for (auto &child : *jobs)
       if (child.id && child.parent == j.id) {
@@ -250,6 +270,10 @@ class Runtime {
     (void)worker;
 #endif
     while (!stopping.load()) {
+      const auto observed=workGeneration.load(std::memory_order_acquire);
+#ifdef JSFX_TASKS_TESTING
+      workerPasses.fetch_add(1);
+#endif
       bool allocate=false, reclaim=false;
       Heap retiredMemory;
       std::shared_ptr<void> retiredLease;
@@ -284,6 +308,7 @@ class Runtime {
         arena.state.mem=arena.memory.get();arena.state.memN=arena.size;
         arena.copied=ok && arena.clone ? arena.size : 0;
         arena.status=ok && !arena.released ? (arena.clone ? 4 : 3) : 5;
+        signalWork();
         continue;
       }
       Job *selected = nullptr;
@@ -300,8 +325,10 @@ class Runtime {
             finish(j);
             continue;
           }
-          if (!ready(j))
+          if (!ready(j)) {
+            if(j.cancel.load()) {j.bodyDone=true;finish(j);}
             continue;
+          }
           if (j.count == 0) {
             j.bodyDone = true;
             finish(j);
@@ -320,7 +347,14 @@ class Runtime {
         }
       }
       if (!selected) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#ifdef JSFX_TASKS_TESTING
+        parkedWorkers.fetch_add(1);
+#endif
+        if(!stopping.load(std::memory_order_acquire))
+          workGeneration.wait(observed,std::memory_order_acquire);
+#ifdef JSFX_TASKS_TESTING
+        parkedWorkers.fetch_sub(1);
+#endif
         continue;
       }
       auto &j = *selected;
@@ -367,6 +401,10 @@ class Runtime {
   }
 
 public:
+#ifdef JSFX_TASKS_TESTING
+  uint64_t testWorkerPasses() const noexcept {return workerPasses.load();}
+  int testParkedWorkers() const noexcept {return parkedWorkers.load();}
+#endif
   // No locks or reclamation: completion stays a wake obligation until released.
   bool hasOutstandingWorkForIdle() const noexcept {
     for (const auto& job : *jobs) if(job.id.load(std::memory_order_acquire)) {
@@ -388,14 +426,14 @@ public:
     if(!allowed) {state->memoryFault=1;currentJob->failed=true;currentJob->cancel=true;}
     return allowed;
   }
-  explicit Runtime(int count=DSPJSFX_VARS_COUNT):variableExtent(count) {
+  explicit Runtime(int count=DSPJSFX_VARS_COUNT,bool useWorkers=DSPJSFX_HAS_TASK_WORKERS):variableExtent(count) {
     if(count<0)throw std::invalid_argument("Negative task variable extent");
 #if DSPJSFX_DYNAMIC_VARIABLES
     for(auto& variables:workerVariables)variables.resize((size_t)count);
     for(auto& job:*jobs){job.variables.resize((size_t)count);job.state.vars=job.variables.data();job.state.varsN=count;}
     arena.variables.resize((size_t)count);arena.state.vars=arena.variables.data();arena.state.varsN=count;
 #endif
-    // Explicitly initialize atomic storage for C++17 too, and commit its pages
+    // Explicitly initialize atomic storage and commit its pages
     // before an audio callback can submit the first task.
     for (auto &job : *jobs)
       for (auto &value : job.values)
@@ -404,10 +442,11 @@ public:
       for (auto &value : buffer.data)
         value.store(0);
     try {
-      for (size_t worker=0;worker<threads.size();++worker)
+      for (size_t worker=0;useWorkers && worker<threads.size();++worker)
         threads[worker] = std::thread([this,worker] { run(worker); });
     } catch (...) {
       stopping.store(true);
+      signalWork();
       for (auto &t : threads)
         if (t.joinable())
           t.join();
@@ -418,6 +457,7 @@ public:
     stopping.store(true);
     for (auto &j : *jobs)
       j.cancel.store(true);
+    signalWork();
     for (auto &t : threads)
       if (t.joinable())
         t.join();
@@ -435,6 +475,7 @@ public:
     for (auto &b : *buffers)
       if (b.id.load() && b.epoch.load() < generation)
         b.released.store(true);
+    signalWork();
   }
   double checkpoint() const {
     if (current != this || !currentJob)
@@ -518,6 +559,7 @@ public:
     j->state.samplesblock = source->samplesblock;
     ++active;
     j->id.store(id);
+    signalWork();
     if (j->epoch.load() != epoch.load()) {
       j->cancel.store(true);
       j->released.store(true);
@@ -571,7 +613,7 @@ public:
       arena.size=int64_t(a[0]);arena.copied=0;arena.refs=0;arena.lastWriter=0;
       arena.pool=a[1];arena.generation=a[2];arena.released=false;arena.epoch=epoch.load();
       for(auto& v:arena.progress) v=0;
-      arena.status=1;arena.id=++serial;return double(arena.id.load());
+      arena.status=1;arena.id=++serial;signalWork();return double(arena.id.load());
     }
     if(!n || arena.id!=handle(a[0]) || arena.released || arena.epoch!=epoch) return -4;
     if(op==21) return arena.status;
@@ -582,6 +624,7 @@ public:
     if(op==26) {
       arena.released=true;
       for(auto& j:*jobs) if(j.id && j.arenaJob && !terminal(j.status)) j.cancel=true;
+      signalWork();
       return 1;
     }
     if(op==23) {
@@ -609,6 +652,7 @@ public:
       arena.state.mem=arena.memory.get();
       if(rebindHeap) rebindHeap(source);
       arena.released=true; // Worker reclaims the old heap and sample lease.
+      signalWork();
       return 1;
 #else
       return -3;
@@ -694,12 +738,14 @@ public:
       for (auto &child : *jobs)
         if (child.id && descendant(child, j->id))
           child.cancel.store(true);
+      signalWork();
       return 1;
     case 4:
       if (!j)
         return 0;
       j->released = true;
       collect();
+      signalWork();
       return 1;
     case 6: { // A join has no body; dependencies retain their handles.
       if (n < 1 || n > Slots)
@@ -748,6 +794,7 @@ public:
       }
       ++active;
       target->id.store(joinId);
+      signalWork();
       if (target->epoch.load() != epoch.load()) {
         target->cancel.store(true);
         target->released.store(true);

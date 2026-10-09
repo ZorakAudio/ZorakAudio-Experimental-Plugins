@@ -10,7 +10,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-from pluginlib import PluginSpec, PluginDiscoveryError, discover_plugins, filter_plugins
+from pluginlib import PluginSpec, PluginDiscoveryError, discover_plugins, filter_plugins, read_plugin_readme
 
 # CI exercises ordinary EEL graphics, mixed Faust, native Legacy and pure Faust.
 CI_SMOKE_SLUGS = {"DDT", "ERBTilt", "HyperrealFast", "ModTilt", "joep_bandjoiner"}
@@ -216,7 +216,7 @@ def write_embedded_text_header(*, text: str, variable_name: str, out_header: Pat
     return out_header
 
 def write_plugin_readme_header(cmake_build: Path, readme_path: Path) -> Path:
-    readme_text = readme_path.read_text(encoding="utf-8", errors="replace")
+    readme_text = read_plugin_readme(readme_path)
     return write_embedded_text_header(
         text=readme_text,
         variable_name="kPluginReadmeMarkdownText",
