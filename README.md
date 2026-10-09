@@ -68,7 +68,13 @@ python scripts/build.py --list
 python scripts/build.py --config Release --tag dev --out dist
 ```
 
-Release artifacts are packaged by category so the output mirrors the repository structure inside `VST3/` and `CLAP/`.
+Full releases provide **Essentials**, **All** (non-Joep) and **JoepVanlier** ZIPs.
+Each contains Windows, macOS and Linux binaries, organized by category under
+the selected operating system's `VST3/` and `CLAP/` folders. Essentials is the
+focused 13-plugin collection; All retains alternate/experimental variants.
+IPC probes and the superseded SaliencePush are excluded from normal builds.
+See [release collections and selection rationale](docs/Release-Collections.md).
+Local builds still produce a platform-local archive.
 
 The normal AOT and JIT builds automatically check/apply the repository's host
 wrapper patches, including when reusing a build directory. CI builds both formats

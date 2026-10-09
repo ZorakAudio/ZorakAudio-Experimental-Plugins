@@ -77,6 +77,7 @@ extern "C" int __wrap_ftruncate(int fd, off_t length)
         errno = EINVAL; // Darwin permits a nonzero sizing operation only once.
         return -1;
     }
-    const auto page = ::sysconf(_SC_PAGESIZE);
+    // Model Apple Silicon even when this test runs on a 4 KB-page Linux host.
+    constexpr off_t page = 16384;
     return __real_ftruncate(fd, ((length + page - 1) / page) * page);
 }

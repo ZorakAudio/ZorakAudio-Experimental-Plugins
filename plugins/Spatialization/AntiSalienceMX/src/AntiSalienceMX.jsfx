@@ -1,0 +1,1413 @@
+desc:Anti-Salience MX v1.1.0
+tags:processing psychoacoustic salience spectral transient spatial diffusion utility
+options:want_all_kb gfx_hz=60 no_meter maxmem=500000 prealloc=250000
+
+in_pin:Source L
+in_pin:Source R
+in_pin:Foreground Ref L
+in_pin:Foreground Ref R
+out_pin:Output L
+out_pin:Output R
+
+// ANTI-SALIENCE MX v1.1.0
+// ------------------------
+// Three strictly ordered layers:
+//   1) Salience Push Core: slow, capped, attenuation-only Form/Edge/Air and Side control.
+//   2) Adaptive Anchor Tax: attenuation-only suppression of surviving perceptual bands.
+//   3) Optional Scatter: a true 0-100% replacement mix for only the targeted residue.
+//
+// Scatter is not the backbone. At Scatter Mix = 0%, no scattered signal reaches the output.
+// The core contains no delay, decorrelation, generated ambience, feedback, or phase motion.
+// All host parameters are statically hidden from REAPER's generic slider bank.
+
+// #TOOLTIP: Hidden policy bias from the original Salience Push design.
+slider1:profile=0<0,4,1{Neutral,Vocals,SFX,Foley,BG}>-Profile
+// #TOOLTIP: Main anti-salience strength. Drives the attenuation-only core and adaptive anchor tax.
+slider2:erasure=68<0,100,1:sqr>-Erasure (%)
+// #TOOLTIP: Controls fast/slow upper-band transient suppression.
+slider3:transient_tame=48<0,100,1:sqr>-Transient Tame (%)
+// #TOOLTIP: Protects source character, gloss, body, and natural spectral hierarchy.
+slider4:identity=72<0,100,1>-Identity Retention (%)
+// #TOOLTIP: How quickly a persistent candidate becomes taxed and how long anchor memory survives.
+slider5:lock_half_life=520<80,2500,10:log=520>-Lock Half-Life (ms)
+// #TOOLTIP: True 0-100% morph from the clean anti-salience core to the selectively scattered version.
+slider6:scatter_mix=0<0,100,1>-Scatter Mix (%)
+// #TOOLTIP: Controls spectral/stereo disagreement and diffuser delay separation.
+slider7:scatter_spread=48<0,100,1>-Scatter Spread (%)
+// #TOOLTIP: Controls recirculation and persistence inside the optional scatter layer.
+slider8:scatter_tail=24<0,100,1:sqr>-Scatter Tail (%)
+// #TOOLTIP: Smooths narrow-band target changes so suppression does not become a new obvious event.
+slider9:novelty_guard=84<0,100,1>-Novelty Guard (%)
+// #TOOLTIP: Slows broadband gain jumps and ducks scatter on sharp onsets.
+slider10:flash_guard=92<0,100,1>-Flash Guard (%)
+// #TOOLTIP: Enables the post-core surviving-anchor detector and per-band tax.
+slider11:adaptive_targeting=1<0,1,1{Off,On}>-Adaptive Targeting
+// #TOOLTIP: Gives recurring anchors longer memory and a lower future tolerance.
+slider12:pe2_memory=1<0,1,1{Off,On}>-PE2 Anchor Memory
+// #TOOLTIP: Taxes bands that dominate coherent source-wide amplitude motion.
+slider13:modulation_debind=1<0,1,1{Off,On}>-Modulation De-Binding
+// #TOOLTIP: Restores only the slow broadband loss of the clean core. It never boosts the scatter branch.
+slider14:level_lock=1<0,1,1{Off,On}>-Core Level Lock
+// #TOOLTIP: Overall dry-to-processed blend after the core/scatter morph.
+slider15:overall_mix=100<0,100,1>-Overall Mix (%)
+// #TOOLTIP: Final output trim before linked peak containment.
+slider16:output_trim=0<-18,12,0.1>-Output Trim (dB)
+// #TOOLTIP: Clickless internal bypass. Scatter continues draining silently.
+slider17:bypass=0<0,1,1{Active,Bypass}>-Bypass
+
+@init
+  ext_noinit=0;
+  eps=0.00000000000000000001;
+  ilog10=1/log(10);
+  NB=8;
+  NX=7;
+
+  // Fixed analysis/control memory. Every array receives 16 slots.
+  XOVER_F=0;
+  XOVER_G=16;
+  LP_M=32;
+  LP_S=48;
+  BAND_M=64;
+  BAND_S=80;
+  ENV_FAST=96;
+  ENV_SLOW=112;
+  ENV_LONG=128;
+  ENV_PREV=144;
+  M_ENV=160;
+  S_ENV=176;
+  ANCHOR_MEM=192;
+  PE2_DEBT=208;
+  CAND_PREV=224;
+  CUT_CUR=240;
+  CUT_RAW=256;
+  SIDE_CUR=272;
+  SIDE_RAW=288;
+  PROFILE_W=304;
+  BODY_PROTECT=320;
+  DISP_ANCHOR=336;
+  DISP_CUT=352;
+  ENV_DELTA=368;
+  UI_HISTORY=512;
+  UI_HISTORY_LEN=96;
+  SC_BUF_BASE=4096;
+
+  function clampv(x,lo,hi) (
+    x<lo ? lo : (x>hi ? hi : x);
+  );
+
+  function clamp01(x) (
+    clampv(x,0,1);
+  );
+
+  function db2amp(x) (
+    pow(10,x/20);
+  );
+
+  function amp2db(x) (
+    20*log(max(x,eps))*ilog10;
+  );
+
+  function denorm(x) (
+    abs(x)<0.000000000000000001 ? 0 : x;
+  );
+
+  function ring_read(base,delay) local(rp,i0,i1,fr,a,b) (
+    rp=sc_wpos-delay;
+    rp<0 ? rp+=sc_buf_len;
+    rp<0 ? rp+=sc_buf_len;
+    i0=floor(rp);
+    fr=rp-i0;
+    i1=i0+1;
+    i1>=sc_buf_len ? i1=0;
+    a=mem[base+i0];
+    b=mem[base+i1];
+    a+(b-a)*fr;
+  );
+
+  function ap_process(x,base,delay,g) local(d,y,w) (
+    d=ring_read(base,delay);
+    y=d-g*x;
+    w=x+g*y;
+    mem[base+sc_wpos]=w;
+    y;
+  );
+
+  function recalc() local(i,fc) (
+    sr=max(8000,srate);
+
+    // Eight broad perceptual regions for the post-core anchor tax.
+    mem[XOVER_F+0]=120;
+    mem[XOVER_F+1]=250;
+    mem[XOVER_F+2]=500;
+    mem[XOVER_F+3]=1000;
+    mem[XOVER_F+4]=2000;
+    mem[XOVER_F+5]=4000;
+    mem[XOVER_F+6]=7500;
+
+    i=0;
+    loop(NX,
+      fc=min(mem[XOVER_F+i],sr*0.45);
+      mem[XOVER_G+i]=1-exp(-2*$pi*fc/sr);
+      i+=1;
+    );
+
+    // Original Salience Push split coefficients.
+    g15=1-exp(-2*$pi*min(1500,sr*0.45)/sr);
+    g32=1-exp(-2*$pi*min(3200,sr*0.45)/sr);
+    g55=1-exp(-2*$pi*min(5500,sr*0.45)/sr);
+
+    // Analysis followers.
+    aLev=1-exp(-1/(0.100*sr));
+    aSrc=1-exp(-1/(0.150*sr));
+    aK=1-exp(-1/(0.050*sr));
+    aFast=1-exp(-1/(0.020*sr));
+    aSlow=1-exp(-1/(0.500*sr));
+    band_fast_a=1-exp(-1/(0.018*sr));
+    band_slow_a=1-exp(-1/(0.340*sr));
+    band_long_a=1-exp(-1/(4.000*sr));
+    meter_a=1-exp(-1/(0.080*sr));
+    control_a=1-exp(-1/(0.050*sr));
+    bypass_a=1-exp(-1/(0.012*sr));
+    level_down_a=1-exp(-1/(0.080*sr));
+    level_up_a=1-exp(-1/(1.300*sr));
+    limiter_rel_a=1-exp(-1/(0.140*sr));
+
+    // Optional scatter network. No PDC: the clean core remains zero-latency.
+    sc_buf_len=max(128,floor(0.035*sr)+16);
+    SC_L1=SC_BUF_BASE;
+    SC_R1=SC_L1+sc_buf_len;
+    SC_L2=SC_R1+sc_buf_len;
+    SC_R2=SC_L2+sc_buf_len;
+    SC_L3=SC_R2+sc_buf_len;
+    SC_R3=SC_L3+sc_buf_len;
+    SC_L4=SC_R3+sc_buf_len;
+    SC_R4=SC_L4+sc_buf_len;
+    ext_tail_size=floor(2.0*sr);
+  );
+
+  function set_profile() local(i) (
+    // Original Neutral policy.
+    pf_formW=0.95;
+    pf_edgeW=1.00;
+    pf_airW=1.00;
+    pf_tameBias=1.00;
+    pf_sideBias=1.00;
+    pf_selfOff=0.0;
+    pf_marginOff=0.0;
+    pf_transOff=0.0;
+    pf_sideOff=0.0;
+    pf_commonCap=1.00;
+    pf_sideCap=1.00;
+    pf_broad=1.00;
+    base_atk=0.22;
+    base_rel=6.0;
+    base_satk=0.35;
+    base_srel=8.0;
+
+    // Neutral post-core salience priors.
+    mem[PROFILE_W+0]=0.20;
+    mem[PROFILE_W+1]=0.30;
+    mem[PROFILE_W+2]=0.48;
+    mem[PROFILE_W+3]=0.72;
+    mem[PROFILE_W+4]=1.00;
+    mem[PROFILE_W+5]=1.18;
+    mem[PROFILE_W+6]=1.16;
+    mem[PROFILE_W+7]=1.02;
+
+    profile_i==1 ? ( // Vocals
+      pf_formW=0.70;
+      pf_edgeW=0.88;
+      pf_airW=0.90;
+      pf_tameBias=0.80;
+      pf_sideBias=0.50;
+      pf_selfOff=2.5;
+      pf_marginOff=-1.5;
+      pf_transOff=1.2;
+      pf_sideOff=1.5;
+      pf_commonCap=0.78;
+      pf_sideCap=0.50;
+      pf_broad=0.75;
+      base_atk=0.28;
+      base_rel=7.5;
+      base_satk=0.45;
+      base_srel=9.5;
+      mem[PROFILE_W+0]=0.10;
+      mem[PROFILE_W+1]=0.18;
+      mem[PROFILE_W+2]=0.32;
+      mem[PROFILE_W+3]=0.62;
+      mem[PROFILE_W+4]=1.12;
+      mem[PROFILE_W+5]=1.34;
+      mem[PROFILE_W+6]=1.10;
+      mem[PROFILE_W+7]=0.72;
+    );
+
+    profile_i==2 ? ( // SFX
+      pf_formW=0.95;
+      pf_edgeW=1.10;
+      pf_airW=1.05;
+      pf_tameBias=1.25;
+      pf_sideBias=1.10;
+      pf_selfOff=-1.0;
+      pf_marginOff=0.0;
+      pf_transOff=-0.8;
+      pf_sideOff=-0.5;
+      pf_commonCap=1.20;
+      pf_sideCap=1.10;
+      pf_broad=1.00;
+      base_atk=0.15;
+      base_rel=4.5;
+      base_satk=0.22;
+      base_srel=6.0;
+      mem[PROFILE_W+0]=0.18;
+      mem[PROFILE_W+1]=0.28;
+      mem[PROFILE_W+2]=0.46;
+      mem[PROFILE_W+3]=0.70;
+      mem[PROFILE_W+4]=0.98;
+      mem[PROFILE_W+5]=1.20;
+      mem[PROFILE_W+6]=1.32;
+      mem[PROFILE_W+7]=1.26;
+    );
+
+    profile_i==3 ? ( // Foley
+      pf_formW=0.82;
+      pf_edgeW=0.95;
+      pf_airW=0.92;
+      pf_tameBias=1.00;
+      pf_sideBias=0.70;
+      pf_selfOff=0.5;
+      pf_marginOff=-0.5;
+      pf_transOff=0.4;
+      pf_sideOff=0.8;
+      pf_commonCap=0.92;
+      pf_sideCap=0.70;
+      pf_broad=0.85;
+      base_atk=0.20;
+      base_rel=6.2;
+      base_satk=0.30;
+      base_srel=7.5;
+      mem[PROFILE_W+0]=0.18;
+      mem[PROFILE_W+1]=0.28;
+      mem[PROFILE_W+2]=0.44;
+      mem[PROFILE_W+3]=0.68;
+      mem[PROFILE_W+4]=0.94;
+      mem[PROFILE_W+5]=1.10;
+      mem[PROFILE_W+6]=1.00;
+      mem[PROFILE_W+7]=0.82;
+    );
+
+    profile_i==4 ? ( // BG
+      pf_formW=1.00;
+      pf_edgeW=1.00;
+      pf_airW=1.12;
+      pf_tameBias=0.75;
+      pf_sideBias=1.35;
+      pf_selfOff=-1.5;
+      pf_marginOff=1.0;
+      pf_transOff=0.8;
+      pf_sideOff=-2.0;
+      pf_commonCap=1.10;
+      pf_sideCap=1.35;
+      pf_broad=1.10;
+      base_atk=0.34;
+      base_rel=8.5;
+      base_satk=0.45;
+      base_srel=10.0;
+      mem[PROFILE_W+0]=0.14;
+      mem[PROFILE_W+1]=0.22;
+      mem[PROFILE_W+2]=0.34;
+      mem[PROFILE_W+3]=0.54;
+      mem[PROFILE_W+4]=0.84;
+      mem[PROFILE_W+5]=1.10;
+      mem[PROFILE_W+6]=1.30;
+      mem[PROFILE_W+7]=1.36;
+    );
+
+    // Low-body protection is invariant across profiles.
+    mem[BODY_PROTECT+0]=0.04;
+    mem[BODY_PROTECT+1]=0.08;
+    mem[BODY_PROTECT+2]=0.15;
+    mem[BODY_PROTECT+3]=0.28;
+    mem[BODY_PROTECT+4]=0.50;
+    mem[BODY_PROTECT+5]=0.72;
+    mem[BODY_PROTECT+6]=0.90;
+    mem[BODY_PROTECT+7]=1.00;
+  );
+
+  function sync_controls() (
+    profile_i=clampv(floor(profile+0.5),0,4);
+    erasure_t=clamp01(erasure/100);
+    tame_t=clamp01(transient_tame/100);
+    identity_t=clamp01(identity/100);
+    half_t=clampv(lock_half_life,80,2500)*0.001;
+    scatter_mix_t=clamp01(scatter_mix/100);
+    scatter_spread_t=clamp01(scatter_spread/100);
+    scatter_tail_t=clamp01(scatter_tail/100);
+    novelty_t=clamp01(novelty_guard/100);
+    flash_t=clamp01(flash_guard/100);
+    adaptive_t=adaptive_targeting>=0.5;
+    pe2_t=pe2_memory>=0.5;
+    modulation_t=modulation_debind>=0.5;
+    level_t=level_lock>=0.5;
+    overall_t=clamp01(overall_mix/100);
+    output_t=db2amp(output_trim);
+    bypass_t=bypass>=0.5;
+    set_profile();
+  );
+
+  function reset_runtime() local(i) (
+    M_lp15=0;
+    M_lp32=0;
+    M_lp55=0;
+    S_lp15=0;
+    S_lp32=0;
+    S_lp55=0;
+    K_lp15=0;
+    K_lp55=0;
+    K_E=0;
+    A_bodyE=0;
+    A_formE=0;
+    A_edgeE=0;
+    A_airE=0;
+    A_srcE=0;
+    M_hiE=0;
+    S_hiE=0;
+    A_click_fastE=0;
+    A_click_slowE=0;
+    common_dB=0;
+    side_dB=0;
+    memset(LP_M,0,16);
+    memset(LP_S,0,16);
+    memset(ENV_FAST,0,16);
+    memset(ENV_SLOW,0,16);
+    memset(ENV_LONG,0,16);
+    memset(ENV_PREV,0,16);
+    memset(M_ENV,0,16);
+    memset(S_ENV,0,16);
+    memset(ANCHOR_MEM,0,16);
+    memset(PE2_DEBT,0,16);
+    memset(CAND_PREV,0,16);
+    memset(CUT_CUR,0,16);
+    memset(CUT_RAW,0,16);
+    memset(SIDE_CUR,0,16);
+    memset(SIDE_RAW,0,16);
+    memset(DISP_ANCHOR,0,16);
+    memset(DISP_CUT,0,16);
+    memset(ENV_DELTA,0,16);
+    memset(SC_BUF_BASE,0,8*sc_buf_len);
+    sc_wpos=0;
+    sc_lpL=0;
+    sc_lpR=0;
+    sc_init=0;
+    input_energy=0;
+    core_energy=0;
+    target_energy=0;
+    scatter_energy=0;
+    scatter_governor=1;
+    level_gain=1;
+    limiter_gain=1;
+    source_age=0;
+    disp_input_lock=0;
+    disp_core_lock=0;
+    disp_final_lock=0;
+    disp_common=0;
+    disp_side=0;
+    disp_ref=0;
+    disp_anchor=0;
+    disp_scatter=0;
+    disp_level_gain=1;
+    disp_in_db=0;
+    disp_out_db=0;
+    disp_limiter=0;
+    dominant_band=0;
+    dominant_cue=0;
+    ui_history_pos=0;
+    ui_history_time=0;
+    i=0;
+    loop(UI_HISTORY_LEN,
+      mem[UI_HISTORY+i]=0;
+      i+=1;
+    );
+  );
+
+  recalc();
+  sync_controls();
+
+  erasure_s=erasure_t;
+  tame_s=tame_t;
+  identity_s=identity_t;
+  half_s=half_t;
+  scatter_mix_s=scatter_mix_t;
+  scatter_spread_s=scatter_spread_t;
+  scatter_tail_s=scatter_tail_t;
+  novelty_s=novelty_t;
+  flash_s=flash_t;
+  adaptive_s=adaptive_t;
+  pe2_s=pe2_t;
+  modulation_s=modulation_t;
+  level_s=level_t;
+  overall_s=overall_t;
+  output_s=output_t;
+  bypass_s=bypass_t;
+
+  reset_runtime();
+  ui_active=0;
+  ui_active_idx=0;
+  ui_last_idx=0;
+  last_sr=sr;
+
+@slider
+  sync_controls();
+
+@block
+  srate!=last_sr ? (
+    recalc();
+    reset_runtime();
+    last_sr=sr;
+  );
+  sync_controls();
+  pdc_delay=0;
+  pdc_bot_ch=0;
+  pdc_top_ch=2;
+
+  // Original core attack/release topology.
+  atkC=max(0.10,base_atk-0.08*tame_t);
+  relC=base_rel+1.5*erasure_t;
+  atkS=base_satk;
+  relS=base_srel+1.5*erasure_t;
+  c_ca=exp(-1/(atkC*sr));
+  c_cr=exp(-1/(relC*sr));
+  c_sa=exp(-1/(atkS*sr));
+  c_sr=exp(-1/(relS*sr));
+
+  // Adaptive anchor memory and cut smoothing.
+  anchor_attack_sec=max(0.055,half_t*(0.24+0.32*novelty_t));
+  anchor_release_sec=2.6+6.8*identity_t+2.2*half_t;
+  anchor_att_a=1-exp(-1/(anchor_attack_sec*sr));
+  anchor_rel_a=1-exp(-1/(anchor_release_sec*sr));
+  pe2_att_a=1-exp(-1/(max(0.20,half_t*0.65)*sr));
+  pe2_rel_a=1-exp(-1/((7.0+15.0*identity_t+4.0*half_t)*sr));
+  cut_attack_sec=0.080+0.34*half_t+0.24*novelty_t+0.20*flash_t;
+  cut_release_sec=3.0+7.0*identity_t+2.2*half_t;
+  cut_att_a=1-exp(-1/(cut_attack_sec*sr));
+  cut_rel_a=1-exp(-1/(cut_release_sec*sr));
+  side_att_a=1-exp(-1/((0.16+0.30*novelty_t+0.20*flash_t)*sr));
+  side_rel_a=1-exp(-1/((4.0+5.0*identity_t)*sr));
+
+  // Scatter topology. Delay lines are fixed per block and only audible through Scatter Mix.
+  spread_curve=scatter_spread_t*scatter_spread_t;
+  sc_d1L=(0.80+2.40*spread_curve)*0.001*sr;
+  sc_d1R=(1.05+2.85*spread_curve)*0.001*sr;
+  sc_d2L=(1.55+4.45*spread_curve)*0.001*sr;
+  sc_d2R=(1.90+5.10*spread_curve)*0.001*sr;
+  sc_d3L=(2.65+7.45*spread_curve)*0.001*sr;
+  sc_d3R=(3.15+8.35*spread_curve)*0.001*sr;
+  sc_d4L=(4.15+11.20*spread_curve)*0.001*sr;
+  sc_d4R=(4.85+12.60*spread_curve)*0.001*sr;
+  sc_fb=0.035+0.665*pow(scatter_tail_t,1.25);
+  sc_g1=sc_fb*0.64;
+  sc_g2=sc_fb*0.76;
+  sc_g3=sc_fb*0.88;
+  sc_g4=sc_fb;
+  sc_theta=(0.06+0.34*scatter_spread_t)*$pi;
+  sc_rot_c=cos(sc_theta);
+  sc_rot_s=sin(sc_theta);
+  sc_damp_fc=9500-4200*scatter_tail_t;
+  sc_damp_a=1-exp(-2*$pi*min(sc_damp_fc,sr*0.42)/sr);
+  sc_param_a=1-exp(-1/((0.090+0.260*novelty_t)*sr));
+
+@sample
+  inL=spl0;
+  inR=spl1;
+  keyL=spl2;
+  keyR=spl3;
+
+  erasure_s+=control_a*(erasure_t-erasure_s);
+  tame_s+=control_a*(tame_t-tame_s);
+  identity_s+=control_a*(identity_t-identity_s);
+  half_s+=control_a*(half_t-half_s);
+  scatter_mix_s+=control_a*(scatter_mix_t-scatter_mix_s);
+  scatter_spread_s+=control_a*(scatter_spread_t-scatter_spread_s);
+  scatter_tail_s+=control_a*(scatter_tail_t-scatter_tail_s);
+  novelty_s+=control_a*(novelty_t-novelty_s);
+  flash_s+=control_a*(flash_t-flash_s);
+  adaptive_s+=control_a*(adaptive_t-adaptive_s);
+  pe2_s+=control_a*(pe2_t-pe2_s);
+  modulation_s+=control_a*(modulation_t-modulation_s);
+  level_s+=control_a*(level_t-level_s);
+  overall_s+=control_a*(overall_t-overall_s);
+  output_s+=control_a*(output_t-output_s);
+  bypass_s+=bypass_a*(bypass_t-bypass_s);
+
+  // ---------------------------------------------------------------------------
+  // LAYER 1: ORIGINAL SALIENCE PUSH CORE
+  // Slow/capped, attenuation-only, broad perceptual bands. No generated signal.
+  // ---------------------------------------------------------------------------
+  M=0.5*(inL+inR);
+  S=0.5*(inL-inR);
+  K0=0.5*(keyL+keyR);
+
+  M_lp15+=g15*(M-M_lp15);
+  M_lp32+=g32*(M-M_lp32);
+  M_lp55+=g55*(M-M_lp55);
+  S_lp15+=g15*(S-S_lp15);
+  S_lp32+=g32*(S-S_lp32);
+  S_lp55+=g55*(S-S_lp55);
+
+  M_body=M_lp15;
+  M_form=M_lp32-M_lp15;
+  M_edge=M_lp55-M_lp32;
+  M_air=M-M_lp55;
+  S_body=S_lp15;
+  S_form=S_lp32-S_lp15;
+  S_edge=S_lp55-S_lp32;
+  S_air=S-S_lp55;
+
+  K_lp15+=g15*(K0-K_lp15);
+  K_lp55+=g55*(K0-K_lp55);
+  K_ref=K_lp55-K_lp15;
+
+  body_inst=M_body*M_body+S_body*S_body;
+  form_inst=M_form*M_form+S_form*S_form;
+  edge_inst=M_edge*M_edge+S_edge*S_edge;
+  air_inst=M_air*M_air+S_air*S_air;
+  src_inst=0.5*(inL*inL+inR*inR);
+  M_hi=M_edge+M_air;
+  S_hi=S_edge+S_air;
+  click_inst=edge_inst+0.60*air_inst;
+
+  A_bodyE+=aLev*(body_inst-A_bodyE);
+  A_formE+=aLev*(form_inst-A_formE);
+  A_edgeE+=aLev*(edge_inst-A_edgeE);
+  A_airE+=aLev*(air_inst-A_airE);
+  A_srcE+=aSrc*(src_inst-A_srcE);
+  M_hiE+=aLev*(M_hi*M_hi-M_hiE);
+  S_hiE+=aLev*(S_hi*S_hi-S_hiE);
+  A_click_fastE+=aFast*(click_inst-A_click_fastE);
+  A_click_slowE+=aSlow*(click_inst-A_click_slowE);
+  K_E+=aK*(K_ref*K_ref-K_E);
+
+  A_ref_dB=10*log(A_formE+A_edgeE+eps)*ilog10;
+  A_hot_dB=10*log((0.35*A_formE+1.00*A_edgeE+1.10*A_airE+eps)/(A_bodyE+0.55*A_formE+eps))*ilog10;
+  A_src_dB=10*log(A_srcE+eps)*ilog10;
+  K_dB=10*log(K_E+eps)*ilog10;
+  delta_click_dB=10*log((A_click_fastE+eps)/(A_click_slowE+eps))*ilog10;
+  side_hi_rel_dB=10*log((S_hiE+eps)/(M_hiE+eps))*ilog10;
+
+  src_w=clamp01((A_src_dB+70)/18);
+  K_w=clamp01((K_dB+60)/12);
+  source_age=src_w>0.08 ? min(sr*6,source_age+1) : max(0,source_age-8);
+  baseline_ready=clamp01(source_age/(sr*1.25));
+
+  rel_margin=clampv(5+9*erasure_s-2*identity_s+pf_marginOff,3,18);
+  self_allow=-6-5*erasure_s+4*identity_s+pf_selfOff;
+  trans_allow=clampv(5.5-2.5*erasure_s+2.0*identity_s+pf_transOff,1,10);
+  side_allow=clampv(2.5-1.5*erasure_s+3.0*identity_s+pf_sideOff,-2,8);
+
+  max_common=clampv((2.5+8.5*erasure_s)*pf_commonCap,0,14);
+  max_side=clampv((1.5+5.0*erasure_s)*pf_sideCap*(1-0.35*identity_s),0,10);
+  trans_w=(0.10+1.20*tame_s)*pf_tameBias;
+  side_w=(0.55+0.70*erasure_s)*(1-0.50*identity_s)*pf_sideBias;
+  formW=clampv((0.55-0.25*identity_s)*pf_formW,0.12,0.85);
+  edgeW=clampv((0.95-0.10*identity_s)*pf_edgeW,0.65,1.15);
+  airW=clampv((1.10-0.35*identity_s)*pf_airW,0.45,1.30);
+  broadW=clampv((0.05+0.08*erasure_s)*(1-0.35*identity_s)*pf_broad,0,0.20);
+
+  ex_self=max(0,A_hot_dB-self_allow);
+  ex_margin=max(0,A_ref_dB-K_dB+rel_margin);
+  ex_trans=max(0,delta_click_dB-trans_allow);
+  ex_side=max(0,side_hi_rel_dB-side_allow);
+
+  core_gate=clamp01(erasure_s*25);
+  level_want=src_w*(K_w*ex_margin+(1-K_w)*ex_self);
+  common_want=min(level_want+src_w*(trans_w*ex_trans),max_common)*core_gate;
+  side_want=min(src_w*(side_w*ex_side),max_side)*core_gate;
+
+  cC=common_want>common_dB ? c_ca : c_cr;
+  common_dB=common_want+cC*(common_dB-common_want);
+  cS=side_want>side_dB ? c_sa : c_sr;
+  side_dB=side_want+cS*(side_dB-side_want);
+
+  common_apply=common_dB*core_gate;
+  side_apply=side_dB*core_gate;
+  g_form=db2amp(-(common_apply*formW));
+  g_edge=db2amp(-(common_apply*edgeW));
+  g_air=db2amp(-(common_apply*airW));
+  g_side=db2amp(-side_apply);
+  g_broad=db2amp(-(common_apply*broadW));
+
+  M_form*=g_form;
+  S_form*=g_form;
+  M_edge*=g_edge;
+  S_edge*=g_edge*g_side;
+  M_air*=g_air;
+  S_air*=g_air*g_side;
+  coreM=(M_body+M_form+M_edge+M_air)*g_broad;
+  coreS=(S_body+S_form+S_edge+S_air)*g_broad;
+  core1L=coreM+coreS;
+  core1R=coreM-coreS;
+
+  // ---------------------------------------------------------------------------
+  // LAYER 2: ADAPTIVE SURVIVING-ANCHOR TAX
+  // Eight-band attenuation-only analysis performed after the original core.
+  // ---------------------------------------------------------------------------
+  coreM=0.5*(core1L+core1R);
+  coreS=0.5*(core1L-core1R);
+  prevLP_M=0;
+  prevLP_S=0;
+  total_fast=0;
+  total_slow=0;
+  total_long=0;
+  sum_delta=0;
+  sum_abs_delta=0;
+  max_band_energy=0;
+  dominant_band_now=0;
+
+  i=0;
+  loop(NX,
+    lpM=mem[LP_M+i]+mem[XOVER_G+i]*(coreM-mem[LP_M+i]);
+    lpS=mem[LP_S+i]+mem[XOVER_G+i]*(coreS-mem[LP_S+i]);
+    mem[LP_M+i]=lpM;
+    mem[LP_S+i]=lpS;
+    bM=lpM-prevLP_M;
+    bS=lpS-prevLP_S;
+    mem[BAND_M+i]=bM;
+    mem[BAND_S+i]=bS;
+    prevLP_M=lpM;
+    prevLP_S=lpS;
+    i+=1;
+  );
+  mem[BAND_M+NB-1]=coreM-prevLP_M;
+  mem[BAND_S+NB-1]=coreS-prevLP_S;
+
+  i=0;
+  loop(NB,
+    bM=mem[BAND_M+i];
+    bS=mem[BAND_S+i];
+    inst=bM*bM+bS*bS;
+    ef=mem[ENV_FAST+i]+band_fast_a*(inst-mem[ENV_FAST+i]);
+    es=mem[ENV_SLOW+i]+band_slow_a*(inst-mem[ENV_SLOW+i]);
+    el=mem[ENV_LONG+i]+band_long_a*(inst-mem[ENV_LONG+i]);
+    delta=ef-mem[ENV_PREV+i];
+    mem[ENV_FAST+i]=ef;
+    mem[ENV_SLOW+i]=es;
+    mem[ENV_LONG+i]=el;
+    mem[ENV_PREV+i]=ef;
+    mem[ENV_DELTA+i]=delta;
+    mem[M_ENV+i]+=band_slow_a*(bM*bM-mem[M_ENV+i]);
+    mem[S_ENV+i]+=band_slow_a*(bS*bS-mem[S_ENV+i]);
+    total_fast+=ef;
+    total_slow+=es;
+    total_long+=el;
+    sum_delta+=delta;
+    sum_abs_delta+=abs(delta);
+    es>max_band_energy ? (
+      max_band_energy=es;
+      dominant_band_now=i;
+    );
+    i+=1;
+  );
+
+  global_ratio_db=10*log((total_fast+eps)/(total_slow+eps))*ilog10;
+  onset_metric=clamp01((global_ratio_db-0.7)/7.0)*src_w;
+  common_mod=sum_abs_delta>eps ? clamp01(abs(sum_delta)/(sum_abs_delta+eps))*src_w : 0;
+
+  raw_target_sum=0;
+  anchor_sum=0;
+  candidate_sum=0;
+  candidate_resid_sum=0;
+  side_candidate_sum=0;
+  cue_spec_sum=0;
+  cue_trans_sum=0;
+  cue_mod_sum=0;
+  cue_side_sum=0;
+
+  i=0;
+  loop(NB,
+    es=mem[ENV_SLOW+i];
+    ef=mem[ENV_FAST+i];
+    el=mem[ENV_LONG+i];
+    prevE=i>0 ? mem[ENV_SLOW+i-1] : mem[ENV_SLOW+i+1];
+    nextE=i<NB-1 ? mem[ENV_SLOW+i+1] : mem[ENV_SLOW+i-1];
+    neigh=i>0&&i<NB-1 ? sqrt(max(eps,prevE*nextE)) : 0.5*(prevE+nextE);
+    local_db=10*log((es+eps)/(neigh+eps))*ilog10;
+    local_score=clamp01((local_db-1.0)/8.5);
+    share=es/(total_slow+eps);
+    share_score=clamp01((share*NB-0.82)/2.35);
+    rel_ratio=(es/(el+eps))/(total_slow/(total_long+eps)+eps);
+    rel_db=10*log(max(eps,rel_ratio))*ilog10;
+    rel_score=clamp01((rel_db-0.7)/7.5)*baseline_ready;
+    spec_score=clamp01(0.46*local_score+0.34*share_score+0.20*rel_score);
+
+    trans_db=10*log((ef+eps)/(es+eps))*ilog10;
+    trans_threshold=4.8-3.0*tame_s;
+    trans_score=clamp01((trans_db-trans_threshold)/7.0)*tame_s;
+
+    delta=mem[ENV_DELTA+i];
+    contribution=sum_abs_delta>eps ? clamp01(abs(delta)/(sum_abs_delta+eps)*NB) : 0;
+    mod_score=common_mod*contribution*modulation_s;
+
+    mE=mem[M_ENV+i];
+    sE=mem[S_ENV+i];
+    side_db=10*log((sE+eps)/(mE+eps))*ilog10;
+    side_score=clamp01((side_db-(1.0+2.5*identity_s))/9.0);
+
+    peak_score=max(spec_score,max(trans_score,mod_score));
+    blend_score=0.56*peak_score+0.26*spec_score+0.11*trans_score+0.07*mod_score;
+    prof=mem[PROFILE_W+i];
+    cand=clamp01(blend_score*(0.62+0.55*prof))*src_w;
+
+    anchor=mem[ANCHOR_MEM+i];
+    aa=cand>anchor ? anchor_att_a : anchor_rel_a;
+    anchor+=aa*(cand-anchor);
+    mem[ANCHOR_MEM+i]=anchor;
+
+    prevcand=mem[CAND_PREV+i];
+    reentry=cand>0.58&&prevcand<=0.58;
+    pe_target=pe2_s>0.5 ? clamp01(max(0,cand-0.50)*1.65+(reentry?0.24:0)) : 0;
+    debt=mem[PE2_DEBT+i];
+    pa=pe_target>debt ? pe2_att_a : pe2_rel_a;
+    debt+=pa*(pe_target-debt);
+    mem[PE2_DEBT+i]=debt;
+    mem[CAND_PREV+i]=cand;
+
+    protect=mem[BODY_PROTECT+i];
+    identity_depth=0.20+0.80*(1-identity_s);
+    maxcut=(0.45+8.80*protect*prof)*erasure_s*identity_depth;
+    drive=clamp01(0.18*cand+0.62*anchor+0.34*debt*pe2_s);
+    rawcut=maxcut*drive*adaptive_s*core_gate;
+    mem[CUT_RAW+i]=rawcut;
+
+    max_side_band=(0.25+4.50*protect*prof)*erasure_s*(0.25+0.75*(1-identity_s));
+    rawside=max_side_band*side_score*adaptive_s*core_gate;
+    mem[SIDE_RAW+i]=rawside;
+
+    raw_target_sum+=rawcut;
+    anchor_sum+=anchor;
+    candidate_sum+=cand;
+    side_candidate_sum+=side_score;
+    cue_spec_sum+=spec_score;
+    cue_trans_sum+=trans_score;
+    cue_mod_sum+=mod_score;
+    cue_side_sum+=side_score;
+    i+=1;
+  );
+
+  target_mean=raw_target_sum/NB;
+  core2L=0;
+  core2R=0;
+  targetL=0;
+  targetR=0;
+  anchor_cut_sum=0;
+  target_focus_sum=0;
+
+  i=0;
+  loop(NB,
+    rawcut=mem[CUT_RAW+i];
+    leftcut=i>0 ? mem[CUT_RAW+i-1] : rawcut;
+    rightcut=i<NB-1 ? mem[CUT_RAW+i+1] : rawcut;
+    neighcut=0.25*leftcut+0.50*rawcut+0.25*rightcut;
+    smooth_amt=0.72*novelty_s;
+    targetcut=rawcut+(neighcut-rawcut)*smooth_amt;
+
+    // Flash Guard limits abrupt simultaneous broadband taxation without removing selectivity.
+    flash_cap=target_mean*(1.65-0.55*flash_s)+1.0+2.0*(1-flash_s);
+    targetcut=min(targetcut,flash_cap);
+    cut=mem[CUT_CUR+i];
+    ca=targetcut>cut ? cut_att_a : cut_rel_a;
+    cut+=ca*(targetcut-cut);
+    mem[CUT_CUR+i]=cut;
+
+    rawside=mem[SIDE_RAW+i];
+    leftside=i>0 ? mem[SIDE_RAW+i-1] : rawside;
+    rightside=i<NB-1 ? mem[SIDE_RAW+i+1] : rawside;
+    targetside=rawside+(0.25*leftside+0.50*rawside+0.25*rightside-rawside)*(0.54*novelty_s);
+    sidecut=mem[SIDE_CUR+i];
+    sa=targetside>sidecut ? side_att_a : side_rel_a;
+    sidecut+=sa*(targetside-sidecut);
+    mem[SIDE_CUR+i]=sidecut;
+
+    effective_cut=cut*core_gate;
+    effective_side=sidecut*core_gate;
+    gain=db2amp(-effective_cut);
+    sidegain=db2amp(-effective_side);
+    bM=mem[BAND_M+i]*gain;
+    bS=mem[BAND_S+i]*gain*sidegain;
+    bandL=bM+bS;
+    bandR=bM-bS;
+    core2L+=bandL;
+    core2R+=bandR;
+
+    cand=mem[CAND_PREV+i];
+    anchor=mem[ANCHOR_MEM+i];
+    debt=mem[PE2_DEBT+i];
+    prof=mem[PROFILE_W+i];
+    protect=mem[BODY_PROTECT+i];
+    focus=clamp01((0.06+0.54*cand+0.50*anchor+0.24*debt*pe2_s)*(0.42+0.58*prof)*(0.22+0.78*protect));
+    targetL+=bandL*focus;
+    targetR+=bandR*focus;
+    target_focus_sum+=focus;
+
+    maxcut=(0.45+8.80*protect*prof)*max(erasure_s,0.0001)*(0.20+0.80*(1-identity_s));
+    cut_norm=clamp01(effective_cut/max(maxcut,0.001));
+    candidate_resid_sum+=cand*(1-0.82*cut_norm);
+    anchor_cut_sum+=effective_cut;
+    mem[DISP_ANCHOR+i]+=meter_a*(anchor-mem[DISP_ANCHOR+i]);
+    mem[DISP_CUT+i]+=meter_a*(clamp01(effective_cut/10)-mem[DISP_CUT+i]);
+    i+=1;
+  );
+
+  // Core-only slow level restoration. The scatter branch is never used by this detector.
+  input_inst=0.5*(inL*inL+inR*inR);
+  core_inst=0.5*(core2L*core2L+core2R*core2R);
+  input_energy+=aSlow*(input_inst-input_energy);
+  core_energy+=aSlow*(core_inst-core_energy);
+  level_target=level_s>0.5&&input_energy>eps ? sqrt((input_energy+eps)/(core_energy+eps)) : 1;
+  level_target=clampv(level_target,0.62,1.55);
+  level_target=1+(level_target-1)*core_gate;
+  la=level_target<level_gain ? level_down_a : level_up_a;
+  level_gain+=la*(level_target-level_gain);
+  level_apply=1+(level_gain-1)*level_s*core_gate;
+  core2L*=level_apply;
+  core2R*=level_apply;
+  targetL*=level_apply;
+  targetR*=level_apply;
+
+  // ---------------------------------------------------------------------------
+  // LAYER 3: OPTIONAL SELECTIVE SCATTER
+  // Only the currently targeted residue is replaced. Untargeted core remains clean.
+  // Scatter Mix = 0% is an exact clean-core output morph point.
+  // ---------------------------------------------------------------------------
+  sc_init<0.5 ? (
+    sc_d1L_cur=sc_d1L;sc_d1R_cur=sc_d1R;sc_d2L_cur=sc_d2L;sc_d2R_cur=sc_d2R;
+    sc_d3L_cur=sc_d3L;sc_d3R_cur=sc_d3R;sc_d4L_cur=sc_d4L;sc_d4R_cur=sc_d4R;
+    sc_g1_cur=sc_g1;sc_g2_cur=sc_g2;sc_g3_cur=sc_g3;sc_g4_cur=sc_g4;
+    sc_rot_c_cur=sc_rot_c;sc_rot_s_cur=sc_rot_s;sc_damp_a_cur=sc_damp_a;sc_init=1;
+  );
+  sc_d1L_cur+=sc_param_a*(sc_d1L-sc_d1L_cur);sc_d1R_cur+=sc_param_a*(sc_d1R-sc_d1R_cur);
+  sc_d2L_cur+=sc_param_a*(sc_d2L-sc_d2L_cur);sc_d2R_cur+=sc_param_a*(sc_d2R-sc_d2R_cur);
+  sc_d3L_cur+=sc_param_a*(sc_d3L-sc_d3L_cur);sc_d3R_cur+=sc_param_a*(sc_d3R-sc_d3R_cur);
+  sc_d4L_cur+=sc_param_a*(sc_d4L-sc_d4L_cur);sc_d4R_cur+=sc_param_a*(sc_d4R-sc_d4R_cur);
+  sc_g1_cur+=sc_param_a*(sc_g1-sc_g1_cur);sc_g2_cur+=sc_param_a*(sc_g2-sc_g2_cur);
+  sc_g3_cur+=sc_param_a*(sc_g3-sc_g3_cur);sc_g4_cur+=sc_param_a*(sc_g4-sc_g4_cur);
+  sc_rot_c_cur+=sc_param_a*(sc_rot_c-sc_rot_c_cur);sc_rot_s_cur+=sc_param_a*(sc_rot_s-sc_rot_s_cur);
+  sc_rot_norm=sqrt(max(eps,sc_rot_c_cur*sc_rot_c_cur+sc_rot_s_cur*sc_rot_s_cur));
+  sc_rot_c_eff=sc_rot_c_cur/sc_rot_norm;sc_rot_s_eff=sc_rot_s_cur/sc_rot_norm;
+  sc_damp_a_cur+=sc_param_a*(sc_damp_a-sc_damp_a_cur);
+
+  feed_gate=clamp01(scatter_mix_s*50);
+  scatter_flash_duck=1-flash_s*onset_metric*0.72;
+  scatter_send_gain=(0.94-0.20*novelty_s)*scatter_flash_duck*feed_gate;
+  scInL=targetL*scatter_send_gain;
+  scInR=targetR*scatter_send_gain;
+
+  sc_lpL+=sc_damp_a_cur*(scInL-sc_lpL);
+  sc_lpR+=sc_damp_a_cur*(scInR-sc_lpR);
+  rotL=sc_rot_c_eff*sc_lpL+sc_rot_s_eff*sc_lpR;
+  rotR=-sc_rot_s_eff*sc_lpL+sc_rot_c_eff*sc_lpR;
+
+  ap1L=ap_process(rotL,SC_L1,sc_d1L_cur,sc_g1_cur);
+  ap1R=ap_process(rotR,SC_R1,sc_d1R_cur,sc_g1_cur);
+  rot2L=sc_rot_c_eff*ap1L-sc_rot_s_eff*ap1R;
+  rot2R=sc_rot_s_eff*ap1L+sc_rot_c_eff*ap1R;
+  ap2L=ap_process(rot2L,SC_L2,sc_d2L_cur,sc_g2_cur);
+  ap2R=ap_process(rot2R,SC_R2,sc_d2R_cur,sc_g2_cur);
+  rot3L=sc_rot_c_eff*ap2L+sc_rot_s_eff*ap2R;
+  rot3R=-sc_rot_s_eff*ap2L+sc_rot_c_eff*ap2R;
+  ap3L=ap_process(rot3L,SC_L3,sc_d3L_cur,sc_g3_cur);
+  ap3R=ap_process(rot3R,SC_R3,sc_d3R_cur,sc_g3_cur);
+  rot4L=sc_rot_c_eff*ap3L-sc_rot_s_eff*ap3R;
+  rot4R=sc_rot_s_eff*ap3L+sc_rot_c_eff*ap3R;
+  diffL=ap_process(rot4L,SC_L4,sc_d4L_cur,sc_g4_cur);
+  diffR=ap_process(rot4R,SC_R4,sc_d4R_cur,sc_g4_cur);
+
+  diffM=0.5*(diffL+diffR);
+  diffS=0.5*(diffL-diffR)*(1+0.82*scatter_spread_s);
+  diffL=diffM+diffS;
+  diffR=diffM-diffS;
+
+  // Novelty-linked Scatter Governor: the optional return cannot quietly become
+  // the new dominant object. It compares raw diffuser energy only with the
+  // targeted core portion; Level Lock is not part of this loop.
+  target_inst=0.5*(targetL*targetL+targetR*targetR);
+  scatter_inst_raw=0.5*(diffL*diffL+diffR*diffR);
+  target_energy+=aSlow*(target_inst-target_energy);
+  scatter_energy+=aSlow*(scatter_inst_raw-scatter_energy);
+  scatter_allow=target_energy*(0.32+0.62*(1-novelty_s))+eps;
+  scatter_govern_target=scatter_energy>scatter_allow ? sqrt(scatter_allow/(scatter_energy+eps)) : 1;
+  scatter_govern_target=clampv(scatter_govern_target,0.18,1);
+  sg_a=scatter_govern_target<scatter_governor ? level_down_a : level_up_a;
+  scatter_governor+=sg_a*(scatter_govern_target-scatter_governor);
+  diffL*=scatter_governor;
+  diffR*=scatter_governor;
+
+  untargetedL=core2L-targetL;
+  untargetedR=core2R-targetR;
+  scatteredL=untargetedL+diffL;
+  scatteredR=untargetedR+diffR;
+
+  // Linear replacement morph: exact clean core at 0%, governed selective
+  // scatter replacement at 100%. The core itself is never delayed.
+  processedL=core2L+(scatteredL-core2L)*scatter_mix_s;
+  processedR=core2R+(scatteredR-core2R)*scatter_mix_s;
+
+  scatter_inst=0.5*(diffL*diffL+diffR*diffR);
+  scatter_activity=clamp01(sqrt((target_energy+scatter_inst+eps)/(core_energy+eps))*0.82)*scatter_mix_s;
+
+  // Model-only lock diagnostics. These estimate trackability, not audibility.
+  self_score=clamp01(ex_self/12);
+  trans_global=clamp01(ex_trans/10);
+  side_global=clamp01(ex_side/10);
+  ref_score=K_w*clamp01(ex_margin/18);
+  anchor_avg=candidate_sum/NB;
+  anchor_resid=candidate_resid_sum/NB;
+  common_norm=clamp01(common_apply/max(max_common,0.25));
+  side_norm=clamp01(side_apply/max(max_side,0.25));
+
+  input_lock=src_w*clamp01(0.24*self_score+0.17*trans_global+0.11*side_global+0.38*anchor_avg+0.10*ref_score);
+  core_lock=src_w*clamp01(0.24*self_score*(1-0.80*common_norm)+0.17*trans_global*(1-0.88*common_norm)+0.11*side_global*(1-0.90*side_norm)+0.38*anchor_resid+0.10*ref_score*(1-0.78*common_norm));
+  scatter_reduction=scatter_mix_s*clamp01(0.30+0.42*scatter_spread_s+0.22*scatter_tail_s)*clamp01(0.30+0.90*target_focus_sum/NB);
+  final_lock=core_lock*(1-0.62*scatter_reduction);
+
+  cue_spec=cue_spec_sum/NB;
+  cue_trans=cue_trans_sum/NB;
+  cue_mod=cue_mod_sum/NB;
+  cue_side=cue_side_sum/NB;
+  dominant_cue_now=0;
+  cue_max=cue_spec;
+  cue_trans>cue_max ? (dominant_cue_now=1;cue_max=cue_trans;);
+  cue_mod>cue_max ? (dominant_cue_now=2;cue_max=cue_mod;);
+  cue_side>cue_max ? (dominant_cue_now=3;cue_max=cue_side;);
+  ref_score>cue_max ? (dominant_cue_now=4;cue_max=ref_score;);
+
+  // Overall blend, processed-branch output and linked safety. True bypass is
+  // applied last, so it ignores Output Trim and cannot be peak-limited.
+  wetmix=clamp01(overall_s);
+  procOutL=inL+(processedL-inL)*wetmix;
+  procOutR=inR+(processedR-inR)*wetmix;
+  procOutL*=output_s;
+  procOutR*=output_s;
+
+  peak=max(abs(procOutL),abs(procOutR));
+  desired_limit=peak>0.98 ? 0.98/max(peak,eps) : 1;
+  desired_limit<limiter_gain ? limiter_gain=desired_limit : limiter_gain+=limiter_rel_a*(1-limiter_gain);
+  procOutL*=limiter_gain;
+  procOutR*=limiter_gain;
+
+  outL=procOutL+(inL-procOutL)*bypass_s;
+  outR=procOutR+(inR-procOutR)*bypass_s;
+
+  disp_input_lock+=meter_a*(input_lock-disp_input_lock);
+  disp_core_lock+=meter_a*(core_lock-disp_core_lock);
+  disp_final_lock+=meter_a*(final_lock-disp_final_lock);
+  disp_common+=meter_a*(common_apply-disp_common);
+  disp_side+=meter_a*(side_apply-disp_side);
+  disp_ref+=meter_a*(K_w-disp_ref);
+  disp_anchor+=meter_a*((anchor_cut_sum/NB)-disp_anchor);
+  disp_scatter+=meter_a*(scatter_activity-disp_scatter);
+  disp_level_gain+=meter_a*(level_apply-disp_level_gain);
+  input_db=10*log(input_inst+eps)*ilog10;
+  output_db=10*log(0.5*(outL*outL+outR*outR)+eps)*ilog10;
+  disp_in_db+=meter_a*(clamp01((input_db+72)/72)-disp_in_db);
+  disp_out_db+=meter_a*(clamp01((output_db+72)/72)-disp_out_db);
+  disp_limiter+=meter_a*((1-limiter_gain)-disp_limiter);
+  dominant_band=dominant_band_now;
+  dominant_cue=dominant_cue_now;
+
+  spl0=denorm(outL);
+  spl1=denorm(outR);
+  spl0!=spl0 ? spl0=0;
+  spl1!=spl1 ? spl1=0;
+
+  sc_wpos+=1;
+  sc_wpos>=sc_buf_len ? sc_wpos=0;
+
+@gfx 1180 900
+  gfx_ext_retina=1;
+  gfx_clear=$x080B10;
+  gfx_getchar();
+
+  ui_w=1180;
+  ui_h=900;
+  ui_sc=min(gfx_w/ui_w,gfx_h/ui_h);
+  ui_sc=max(0.01,ui_sc);
+  ui_ox=(gfx_w-ui_w*ui_sc)*0.5;
+  ui_oy=(gfx_h-ui_h*ui_sc)*0.5;
+  ui_mx=(mouse_x-ui_ox)/ui_sc;
+  ui_my=(mouse_y-ui_oy)/ui_sc;
+  ui_l=(mouse_cap&1)>0;
+  ui_r=(mouse_cap&2)>0;
+  ui_shift=(mouse_cap&8)>0;
+  ui_l_press=ui_l&&!ui_l_prev;
+  ui_r_press=ui_r&&!ui_r_prev;
+  ui_l_release=!ui_l&&ui_l_prev;
+  ui_hover=0;
+  ui_tip=0;
+
+  function rx(x) (ui_ox+x*ui_sc;);
+  function ry(y) (ui_oy+y*ui_sc;);
+  function rw(w) (w*ui_sc;);
+
+  function col(r,g,b,a) (
+    gfx_set(r,g,b,a);
+  );
+
+  function rect(x,y,w,h,fill) (
+    gfx_rect(rx(x),ry(y),rw(w),rw(h),fill);
+  );
+
+  function line(x1,y1,x2,y2) (
+    gfx_line(rx(x1),ry(y1),rx(x2),ry(y2),1);
+  );
+
+  function font(px) (
+    gfx_setfont(1,"Arial",max(8,floor(px*ui_sc+0.5)));
+  );
+
+  function text(x,y,w,h,s,align) local(flags,tw,th) (
+    flags=align==1 ? 5 : (align==2 ? 2 : 0);
+    gfx_measurestr(s,tw,th);
+    gfx_x=align==1 ? rx(x)+(rw(w)-tw)*0.5 : (align==2 ? rx(x+w)-tw : rx(x));
+    gfx_y=ry(y)+(rw(h)-th)*0.5;
+    gfx_drawstr(s,flags,rx(x+w),ry(y+h));
+  );
+
+  function hit(x,y,w,h) (
+    ui_mx>=x&&ui_mx<=x+w&&ui_my>=y&&ui_my<=y+h;
+  );
+
+  function panel(x,y,w,h,title) (
+    col(0.040,0.055,0.074,1);rect(x,y,w,h,1);
+    col(0.145,0.190,0.245,1);rect(x,y,w,h,0);
+    col(0.80,0.87,0.96,1);font(13);text(x+14,y+6,w-28,24,title,0);
+    col(0.13,0.18,0.24,1);line(x+14,y+36,x+w-14,y+36);
+  );
+
+  function meter(x,y,w,h,v,r,g,b) (
+    v=clamp01(v);
+    col(0.014,0.020,0.030,1);rect(x,y,w,h,1);
+    col(0.20,0.26,0.34,1);rect(x,y,w,h,0);
+    col(r,g,b,0.96);rect(x+1,y+1,max(0,(w-2)*v),h-2,1);
+  );
+
+  function ui_snap(v,lo,hi,stepv) (
+    v=clampv(v,lo,hi);
+    stepv>0 ? v=lo+floor((v-lo)/stepv+0.5)*stepv;
+    clampv(v,lo,hi);
+  );
+
+  function ui_notify_idx(idx,end_touch) local(mask) (
+    mask=2^(idx-1);
+    sliderchange(mask);
+    slider_automate(mask);
+    end_touch ? slider_automate(mask,1);
+  );
+
+  function ui_set(idx,v,lo,hi,stepv,end_touch) local(nv,ov) (
+    ov=slider(idx);
+    nv=ui_snap(v,lo,hi,stepv);
+    abs(nv-ov)>0.0000001 ? (
+      slider(idx)=nv;
+      ui_last_idx=idx;
+      ui_notify_idx(idx,end_touch);
+    ) : end_touch ? ui_notify_idx(idx,1);
+    nv;
+  );
+
+  function ui_click_set(idx,v,lo,hi,stepv) (
+    ui_notify_idx(idx,0);
+    ui_set(idx,v,lo,hi,stepv,0);
+    ui_notify_idx(idx,1);
+    ui_last_idx=idx;
+  );
+
+  function ui_force(idx,v) (
+    slider(idx)=v;
+    ui_notify_idx(idx,0);
+    ui_notify_idx(idx,1);
+    ui_last_idx=idx;
+  );
+
+  function hslider(id,idx,x,y,w,label,lo,hi,defv,stepv,fmt,curve,tipid) local(hv,v,n,dx,newn,newv,wheelstep) (
+    hv=hit(x,y,w,45);
+    hv ? (ui_hover=1;ui_tip=tipid;);
+    v=slider(idx);
+    curve==1 ? n=log(max(v,lo)/lo)/log(hi/lo) : n=(v-lo)/max(0.000001,hi-lo);
+    n=clamp01(n);
+
+    col(0.70,0.78,0.89,1);font(10);text(x,y,w*0.66,18,label,0);
+    fmt==1 ? sprintf(#ui_v,"%.0f ms",v) : fmt==2 ? sprintf(#ui_v,"%+.1f dB",v) : sprintf(#ui_v,"%.0f%%",v);
+    col(0.94,0.97,1,1);text(x+w*0.66,y,w*0.34,18,#ui_v,2);
+    col(0.012,0.020,0.030,1);rect(x,y+25,w,13,1);
+    col(0.20,0.27,0.36,1);rect(x,y+25,w,13,0);
+    col(0.46,0.38,1.00,1);rect(x+1,y+26,(w-2)*n,11,1);
+    col(0.92,0.95,1,1);line(x+w*n,y+22,x+w*n,y+41);
+
+    ui_l_press&&hv ? (
+      ui_active=id;
+      ui_active_idx=idx;
+      ui_drag_x=ui_mx;
+      ui_drag_n=n;
+      ui_notify_idx(idx,0);
+      ui_last_idx=idx;
+    );
+    ui_active==id&&ui_l ? (
+      dx=(ui_mx-ui_drag_x)/w*(ui_shift?0.16:1);
+      newn=clamp01(ui_drag_n+dx);
+      curve==1 ? newv=lo*pow(hi/lo,newn) : newv=lo+(hi-lo)*newn;
+      ui_set(idx,newv,lo,hi,stepv,0);
+    );
+    ui_r_press&&hv ? (
+      ui_notify_idx(idx,0);
+      ui_set(idx,defv,lo,hi,stepv,0);
+      ui_notify_idx(idx,1);
+    );
+    hv&&mouse_wheel!=0 ? (
+      wheelstep=stepv>0 ? stepv : (hi-lo)/100;
+      ui_shift ? wheelstep*=0.1;
+      ui_notify_idx(idx,0);
+      ui_set(idx,v+(mouse_wheel>0?wheelstep:-wheelstep),lo,hi,stepv,0);
+      ui_notify_idx(idx,1);
+      mouse_wheel=0;
+    );
+  );
+
+  function toggle(id,idx,x,y,w,label,tipid) local(hv,on) (
+    hv=hit(x,y,w,30);
+    hv ? (ui_hover=1;ui_tip=tipid;);
+    on=slider(idx)>=0.5;
+    col(on?0.12:0.035,on?0.54:0.050,on?0.74:0.070,1);rect(x,y,w,30,1);
+    col(on?0.22:0.20,on?0.72:0.27,on?0.92:0.35,1);rect(x,y,w,30,0);
+    col(0.93,0.96,1,1);font(8);text(x,y,w,30,label,1);
+    ui_l_press&&hv ? ui_click_set(idx,on?0:1,0,1,1);
+    ui_r_press&&hv ? ui_click_set(idx,idx==17?0:1,0,1,1);
+  );
+
+  function preset_button(id,x,y,w,label,tipid) local(hv) (
+    hv=hit(x,y,w,30);
+    hv ? (ui_hover=1;ui_tip=tipid;);
+    col(hv?0.105:0.050,hv?0.120:0.065,hv?0.190:0.095,1);rect(x,y,w,30,1);
+    col(hv?0.42:0.24,hv?0.36:0.29,hv?0.98:0.40,1);rect(x,y,w,30,0);
+    col(0.94,0.96,1,1);font(8);text(x,y,w,30,label,1);
+    ui_l_press&&hv ? (
+      id==1 ? (
+        ui_force(2,36);ui_force(3,34);ui_force(4,88);ui_force(5,1100);ui_force(6,0);ui_force(7,35);ui_force(8,10);ui_force(9,92);ui_force(10,96);
+        ui_force(11,1);ui_force(12,1);ui_force(13,1);ui_force(14,1);ui_force(15,100);ui_force(16,0);ui_force(17,0);
+      ) : id==2 ? (
+        ui_force(2,68);ui_force(3,48);ui_force(4,72);ui_force(5,520);ui_force(6,0);ui_force(7,48);ui_force(8,24);ui_force(9,84);ui_force(10,92);
+        ui_force(11,1);ui_force(12,1);ui_force(13,1);ui_force(14,1);ui_force(15,100);ui_force(16,0);ui_force(17,0);
+      ) : id==3 ? (
+        ui_force(2,72);ui_force(3,58);ui_force(4,62);ui_force(5,420);ui_force(6,32);ui_force(7,62);ui_force(8,38);ui_force(9,84);ui_force(10,92);
+        ui_force(11,1);ui_force(12,1);ui_force(13,1);ui_force(14,1);ui_force(15,100);ui_force(16,0);ui_force(17,0);
+      ) : (
+        ui_force(2,95);ui_force(3,78);ui_force(4,34);ui_force(5,160);ui_force(6,72);ui_force(7,86);ui_force(8,74);ui_force(9,72);ui_force(10,88);
+        ui_force(11,1);ui_force(12,1);ui_force(13,1);ui_force(14,1);ui_force(15,100);ui_force(16,0);ui_force(17,0);
+      );
+    );
+  );
+
+  function profile_name(v) (
+    v<0.5 ? strcpy(#ui_tmp,"NEUTRAL") : v<1.5 ? strcpy(#ui_tmp,"VOCALS") : v<2.5 ? strcpy(#ui_tmp,"SFX") : v<3.5 ? strcpy(#ui_tmp,"FOLEY") : strcpy(#ui_tmp,"BG");
+    #ui_tmp;
+  );
+
+  function cue_name(v) (
+    v<0.5 ? strcpy(#ui_tmp,"SPECTRAL PROMINENCE") : v<1.5 ? strcpy(#ui_tmp,"TRANSIENT PROMINENCE") : v<2.5 ? strcpy(#ui_tmp,"COMMON MODULATION") : v<3.5 ? strcpy(#ui_tmp,"STEREO-SIDE PROMINENCE") : strcpy(#ui_tmp,"REFERENCE MARGIN");
+    #ui_tmp;
+  );
+
+  function band_name(v) (
+    v<0.5 ? strcpy(#ui_tmp,"SUB <120 Hz") : v<1.5 ? strcpy(#ui_tmp,"120-250 Hz") : v<2.5 ? strcpy(#ui_tmp,"250-500 Hz") : v<3.5 ? strcpy(#ui_tmp,"500 Hz-1 kHz") : v<4.5 ? strcpy(#ui_tmp,"1-2 kHz") : v<5.5 ? strcpy(#ui_tmp,"2-4 kHz") : v<6.5 ? strcpy(#ui_tmp,"4-7.5 kHz") : strcpy(#ui_tmp,"AIR >7.5 kHz");
+    #ui_tmp;
+  );
+
+  function param_name(v) (
+    v==1 ? strcpy(#ui_tmp,"PROFILE") : v==2 ? strcpy(#ui_tmp,"ERASURE") : v==3 ? strcpy(#ui_tmp,"TRANSIENT TAME") : v==4 ? strcpy(#ui_tmp,"IDENTITY") : v==5 ? strcpy(#ui_tmp,"LOCK HALF-LIFE") : v==6 ? strcpy(#ui_tmp,"SCATTER MIX") : v==7 ? strcpy(#ui_tmp,"SCATTER SPREAD") : v==8 ? strcpy(#ui_tmp,"SCATTER TAIL") : v==9 ? strcpy(#ui_tmp,"NOVELTY GUARD") : v==10 ? strcpy(#ui_tmp,"FLASH GUARD") : v==11 ? strcpy(#ui_tmp,"ADAPTIVE") : v==12 ? strcpy(#ui_tmp,"PE2 MEMORY") : v==13 ? strcpy(#ui_tmp,"MODULATION") : v==14 ? strcpy(#ui_tmp,"LEVEL LOCK") : v==15 ? strcpy(#ui_tmp,"OVERALL MIX") : v==16 ? strcpy(#ui_tmp,"OUTPUT") : v==17 ? strcpy(#ui_tmp,"BYPASS") : strcpy(#ui_tmp,"NONE");
+    #ui_tmp;
+  );
+
+  function draw_help(tip) (
+    tip==1 ? (strcpy(#help_title,"ERASURE");strcpy(#help_body,"Main strength. The clean backbone remains slow, capped and attenuation-only; it never creates ambience."));
+    tip==2 ? (strcpy(#help_title,"TRANSIENT TAME");strcpy(#help_body,"Raises the fast/slow upper-band transient tax. SFX mode is most assertive; Vocals is gentlest."));
+    tip==3 ? (strcpy(#help_title,"IDENTITY RETENTION");strcpy(#help_body,"Protects body, gloss and natural hierarchy. Lower settings permit stronger broad and adaptive attenuation."));
+    tip==4 ? (strcpy(#help_title,"LOCK HALF-LIFE");strcpy(#help_body,"Short values identify persistent winners quickly. Long values build the anchor tax more slowly and smoothly."));
+    tip==5 ? (strcpy(#help_title,"SCATTER MIX");strcpy(#help_body,"True replacement mix. 0% is the clean anti-salience core; 100% replaces targeted residue with its governed scattered version."));
+    tip==6 ? (strcpy(#help_title,"SCATTER SPREAD");strcpy(#help_body,"Increases diffuser delay separation, stereo disagreement and the width of the replaced residue."));
+    tip==7 ? (strcpy(#help_title,"SCATTER TAIL");strcpy(#help_body,"Controls recirculation and persistence. It has no audible effect while Scatter Mix is 0%; the Scatter Governor still prevents the tail from becoming the new hero."));
+    tip==8 ? (strcpy(#help_title,"NOVELTY GUARD");strcpy(#help_body,"Smooths neighboring anchor taxes and reduces scatter send so the processor does not become the new foreground event."));
+    tip==9 ? (strcpy(#help_title,"FLASH GUARD");strcpy(#help_body,"Slows common gain jumps and ducks the optional scatter branch during sharp broadband onsets."));
+    tip==10 ? (strcpy(#help_title,"ADAPTIVE TARGETING");strcpy(#help_body,"Adds the post-core eight-band surviving-anchor tax. Off leaves the original Salience Push-style backbone only."));
+    tip==11 ? (strcpy(#help_title,"PE2 ANCHOR MEMORY");strcpy(#help_body,"Recurring anchors accrue long-lived debt, lowering tolerance when the same perceptual winner returns."));
+    tip==12 ? (strcpy(#help_title,"MODULATION DE-BINDING");strcpy(#help_body,"Taxes bands that dominate coherent source-wide envelope motion. It remains attenuation-only."));
+    tip==13 ? (strcpy(#help_title,"CORE LEVEL LOCK");strcpy(#help_body,"Slowly restores only clean-core broadband loss. Scatter energy is excluded from the detector and cannot be boosted by it."));
+    tip==14 ? (strcpy(#help_title,"OVERALL MIX");strcpy(#help_body,"Dry-to-processed blend after the core/scatter morph. This is independent from Scatter Mix."));
+    tip==15 ? (strcpy(#help_title,"OUTPUT TRIM");strcpy(#help_body,"Final gain before linked peak containment."));
+    tip==16 ? (strcpy(#help_title,"BYPASS");strcpy(#help_body,"Clickless dry bypass. The hidden scatter state continues draining so reactivation does not resurrect a frozen tail."));
+    tip==20 ? (strcpy(#help_title,"TRANSPARENT");strcpy(#help_body,"Gentle Salience Push core, long memory, no Scatter."));
+    tip==21 ? (strcpy(#help_title,"ANTI-LOCK CORE");strcpy(#help_body,"Strong clean attenuation-only core and adaptive anchor tax, with Scatter held at 0%."));
+    tip==22 ? (strcpy(#help_title,"SCATTERED");strcpy(#help_body,"The Anti-Lock core plus a 32% selective Scatter replacement."));
+    tip==23 ? (strcpy(#help_title,"OBLITERATE");strcpy(#help_body,"Extreme core suppression plus a dominant selective Scatter layer."));
+    tip==30 ? (strcpy(#help_title,"PROFILE");strcpy(#help_body,"Original Salience Push policy families: Neutral, Vocals, SFX, Foley and BG."));
+    tip==0 ? (strcpy(#help_title,"INTERACTION");strcpy(#help_body,"Drag. Shift-drag for fine movement. Wheel steps. Right-click restores defaults. All controls remain hidden automatable host parameters."));
+
+    col(0.74,0.82,0.92,1);font(10);text(28,852,190,18,#help_title,0);
+    col(0.52,0.61,0.73,1);font(9);text(220,850,932,24,#help_body,0);
+  );
+
+  ui_l_release&&ui_active_idx>0 ? (
+    ui_notify_idx(ui_active_idx,1);
+    ui_active=0;
+    ui_active_idx=0;
+  );
+
+  // Header.
+  col(0.91,0.94,1,1);font(24);text(20,10,600,34,"ANTI-SALIENCE MX // v1.1.0",0);
+  col(0.50,0.59,0.72,1);font(10);text(22,46,780,18,"SALIENCE PUSH CORE + ADAPTIVE ANCHOR TAX + OPTIONAL SELECTIVE SCATTER",0);
+
+  disp_final_lock<0.18 ? strcpy(#ui_state,"OBJECT COLLAPSED") : disp_final_lock<0.40 ? strcpy(#ui_state,"UNSTABLE") : disp_final_lock<0.65 ? strcpy(#ui_state,"PARTIAL LOCK") : strcpy(#ui_state,"TRACKABLE");
+  A_src_dB<-68 ? strcpy(#ui_state,"ENGINE IDLE");
+  disp_final_lock<0.18 ? col(0.28,0.86,0.68,1) : disp_final_lock<0.40 ? col(0.30,0.78,0.95,1) : disp_final_lock<0.65 ? col(0.96,0.70,0.28,1) : col(1.00,0.38,0.46,1);
+  font(13);text(836,13,318,24,#ui_state,2);
+  strcpy(#ui_prof,profile_name(floor(profile+0.5)));
+  scatter_mix<0.5 ? strcpy(#ui_scstate,"SCATTER OFF") : sprintf(#ui_scstate,"SCATTER %.0f%%",scatter_mix);
+  sprintf(#ui_header,"%s   //   %s   //   LIMIT %.0f%%",#ui_prof,#ui_scstate,disp_limiter*100);
+  col(0.57,0.66,0.78,1);font(9);text(700,43,454,18,#ui_header,2);
+
+  // Analysis surface.
+  panel(16,78,700,746,"LOCK ANALYSIS / CORE AND SCATTER DIAGNOSTICS");
+  col(0.56,0.64,0.75,1);font(9);text(36,122,170,16,"FINAL LOCK ESTIMATE",0);
+  sprintf(#ui_lock,"%.0f%%",clamp01(disp_final_lock)*100);
+  disp_final_lock<0.18 ? col(0.28,0.86,0.68,1) : disp_final_lock<0.40 ? col(0.30,0.78,0.95,1) : disp_final_lock<0.65 ? col(0.96,0.70,0.28,1) : col(1.00,0.38,0.46,1);
+  font(42);text(36,140,180,54,#ui_lock,0);
+
+  col(0.50,0.58,0.70,1);font(9);text(242,128,120,16,"INPUT",0);
+  sprintf(#ui_inlock,"%.0f%%",clamp01(disp_input_lock)*100);
+  col(0.86,0.90,0.96,1);font(18);text(242,148,120,30,#ui_inlock,0);
+  col(0.50,0.58,0.70,1);font(9);text(382,128,120,16,"CORE",0);
+  sprintf(#ui_corelock,"%.0f%%",clamp01(disp_core_lock)*100);
+  col(0.42,0.84,0.96,1);font(18);text(382,148,120,30,#ui_corelock,0);
+  col(0.50,0.58,0.70,1);font(9);text(522,128,130,16,"SCATTER ACTIVITY",0);
+  sprintf(#ui_scatter,"%.0f%%",clamp01(disp_scatter)*100);
+  col(0.72,0.48,1.00,1);font(18);text(522,148,130,30,#ui_scatter,0);
+  meter(36,204,644,14,disp_final_lock,disp_final_lock<0.4?0.30:0.96,disp_final_lock<0.4?0.78:0.48,disp_final_lock<0.4?0.95:0.36);
+
+  strcpy(#ui_cue,cue_name(dominant_cue));
+  strcpy(#ui_band,band_name(dominant_band));
+  sprintf(#ui_target,"STRONGEST SURVIVOR: %s   //   %s",#ui_cue,#ui_band);
+  col(0.65,0.73,0.84,1);font(9);text(36,228,644,18,#ui_target,0);
+
+  // Original core meters.
+  col(0.68,0.76,0.87,1);font(10);text(36,270,120,16,"COMMON CUT",0);meter(156,272,180,10,disp_common/14,0.30,0.82,0.96);
+  sprintf(#ui_v,"%.1f dB",disp_common);col(0.90,0.93,0.98,1);font(9);text(342,266,58,18,#ui_v,2);
+  col(0.68,0.76,0.87,1);font(10);text(420,270,90,16,"SIDE CUT",0);meter(508,272,116,10,disp_side/10,0.92,0.38,0.86);
+  sprintf(#ui_v,"%.1f",disp_side);col(0.90,0.93,0.98,1);font(9);text(630,266,44,18,#ui_v,2);
+
+  col(0.68,0.76,0.87,1);font(10);text(36,302,120,16,"ANCHOR TAX",0);meter(156,304,180,10,disp_anchor/8,0.50,0.42,1.00);
+  sprintf(#ui_v,"%.1f dB",disp_anchor);col(0.90,0.93,0.98,1);font(9);text(342,298,58,18,#ui_v,2);
+  col(0.68,0.76,0.87,1);font(10);text(420,302,90,16,"REF ACTIVE",0);meter(508,304,116,10,disp_ref,0.42,0.88,0.68);
+  sprintf(#ui_v,"%.0f%%",disp_ref*100);col(0.90,0.93,0.98,1);font(9);text(630,298,44,18,#ui_v,2);
+
+  // Eight-band anchor/cut display.
+  col(0.50,0.59,0.72,1);font(9);text(36,344,250,16,"SURVIVING ANCHOR / APPLIED TAX",0);
+  col(0.018,0.026,0.038,1);rect(36,366,644,152,1);
+  col(0.17,0.23,0.31,1);rect(36,366,644,152,0);
+  ui_bw=70;
+  ui_gap=9;
+  ui_j=0;
+  loop(NB,
+    ui_x=48+ui_j*(ui_bw+ui_gap);
+    ui_anchor=clamp01(mem[DISP_ANCHOR+ui_j]);
+    ui_cut=clamp01(mem[DISP_CUT+ui_j]);
+    col(0.22,0.29,0.39,1);rect(ui_x,382,ui_bw,112,1);
+    col(0.30,0.76,0.96,0.92);rect(ui_x+6,488-ui_anchor*96,24,ui_anchor*96,1);
+    col(0.66,0.42,1.00,0.92);rect(ui_x+40,488-ui_cut*96,24,ui_cut*96,1);
+    sprintf(#ui_b,"%d",ui_j+1);col(0.62,0.70,0.82,1);font(8);text(ui_x,496,ui_bw,16,#ui_b,1);
+    ui_j+=1;
+  );
+
+  // Lock history.
+  ui_now=time_precise();
+  ui_now-ui_history_time>0.075 ? (
+    mem[UI_HISTORY+ui_history_pos]=disp_final_lock;
+    ui_history_pos+=1;
+    ui_history_pos>=UI_HISTORY_LEN ? ui_history_pos=0;
+    ui_history_time=ui_now;
+  );
+  col(0.50,0.59,0.72,1);font(9);text(36,538,160,16,"FINAL LOCK HISTORY",0);
+  col(0.018,0.026,0.038,1);rect(36,560,644,104,1);
+  col(0.17,0.23,0.31,1);rect(36,560,644,104,0);
+  col(0.34,0.78,0.96,0.88);
+  ui_j=0;
+  loop(UI_HISTORY_LEN-1,
+    ui_a=(ui_history_pos+ui_j)-floor((ui_history_pos+ui_j)/UI_HISTORY_LEN)*UI_HISTORY_LEN;
+    ui_b=(ui_history_pos+ui_j+1)-floor((ui_history_pos+ui_j+1)/UI_HISTORY_LEN)*UI_HISTORY_LEN;
+    ui_v1=clamp01(mem[UI_HISTORY+ui_a]);
+    ui_v2=clamp01(mem[UI_HISTORY+ui_b]);
+    line(38+ui_j*(640/(UI_HISTORY_LEN-1)),660-ui_v1*96,38+(ui_j+1)*(640/(UI_HISTORY_LEN-1)),660-ui_v2*96);
+    ui_j+=1;
+  );
+
+  level_db=amp2db(max(0.000001,disp_level_gain));
+  col(0.56,0.64,0.75,1);font(9);text(36,688,72,16,"INPUT",0);meter(104,690,128,10,disp_in_db,0.30,0.82,0.96);
+  col(0.56,0.64,0.75,1);font(9);text(254,688,72,16,"OUTPUT",0);meter(326,690,128,10,disp_out_db,0.44,0.88,0.65);
+  sprintf(#ui_level,"LEVEL LOCK %+.1f dB",level_db);
+  col(0.66,0.74,0.84,1);font(9);text(474,684,200,20,#ui_level,2);
+  col(0.42,0.51,0.63,1);font(9);text(36,722,644,42,"The core is attenuation-only. Scatter is a separate residue-replacement effect and contributes exactly 0% at Scatter Mix = 0%.",0);
+
+  // Right control surface.
+  panel(732,78,432,746,"ANTI-SALIENCE CONTROL SURFACE");
+  col(0.57,0.66,0.78,1);font(9);text(752,118,120,16,"PROFILE",0);
+  ui_pw=74;
+  ui_pgap=7;
+  ui_val=floor(profile+0.5);
+  ui_j=0;
+  loop(5,
+    ui_x=752+ui_j*(ui_pw+ui_pgap);
+    ui_hv=hit(ui_x,140,ui_pw,28);ui_hv?(ui_hover=1;ui_tip=30;);
+    col(ui_val==ui_j?0.11:0.035,ui_val==ui_j?0.52:0.05,ui_val==ui_j?0.74:0.07,1);rect(ui_x,140,ui_pw,28,1);
+    col(0.22,0.31,0.42,1);rect(ui_x,140,ui_pw,28,0);
+    strcpy(#ui_btn,profile_name(ui_j));col(0.93,0.96,1,1);font(7);text(ui_x,140,ui_pw,28,#ui_btn,1);
+    ui_l_press&&ui_hv?ui_click_set(1,ui_j,0,4,1);
+    ui_j+=1;
+  );
+
+  preset_button(1,752,184,94,"TRANSPARENT",20);
+  preset_button(2,852,184,94,"ANTI-LOCK",21);
+  preset_button(3,952,184,94,"SCATTERED",22);
+  preset_button(4,1052,184,94,"OBLITERATE",23);
+
+  col(0.58,0.68,0.80,1);font(9);text(752,228,180,16,"CLEAN CORE",0);
+  hslider(101,2,752,248,394,"ERASURE",0,100,68,1,0,0,1);
+  hslider(102,3,752,298,394,"TRANSIENT TAME",0,100,48,1,0,0,2);
+  hslider(103,4,752,348,394,"IDENTITY RETENTION",0,100,72,1,0,0,3);
+  hslider(104,5,752,398,394,"LOCK HALF-LIFE",80,2500,520,10,1,1,4);
+
+  col(0.72,0.55,0.98,1);font(9);text(752,450,220,16,"OPTIONAL SCATTER LAYER",0);
+  hslider(105,6,752,470,394,"SCATTER MIX",0,100,0,1,0,0,5);
+  hslider(106,7,752,520,192,"SPREAD",0,100,48,1,0,0,6);
+  hslider(107,8,954,520,192,"TAIL",0,100,24,1,0,0,7);
+
+  hslider(108,9,752,572,192,"NOVELTY GUARD",0,100,84,1,0,0,8);
+  hslider(109,10,954,572,192,"FLASH GUARD",0,100,92,1,0,0,9);
+
+  toggle(201,11,752,628,94,"ADAPTIVE",10);
+  toggle(202,12,852,628,94,"PE2 MEMORY",11);
+  toggle(203,13,952,628,94,"MODULATION",12);
+  toggle(204,14,1052,628,94,"LEVEL LOCK",13);
+  toggle(205,17,1052,664,94,"BYPASS",16);
+
+  hslider(301,15,752,704,192,"OVERALL MIX",0,100,100,1,0,0,14);
+  hslider(302,16,954,704,192,"OUTPUT",-18,12,0,0.1,2,0,15);
+
+  strcpy(#ui_last,param_name(ui_last_idx));
+  sprintf(#ui_lastline,"LAST TOUCHED: %s",#ui_last);
+  col(0.55,0.64,0.76,1);font(9);text(752,766,394,18,#ui_lastline,2);
+
+  draw_help(ui_tip);
+
+  ui_sc<0.44 ? (
+    col(0.02,0.03,0.05,0.92);rect(0,0,1180,900,1);
+    col(1,0.55,0.30,1);font(18);text(200,410,780,42,"ENLARGE THE FX WINDOW FOR PRECISE EDITING",1);
+  );
+
+  ui_l_prev=ui_l;
+  ui_r_prev=ui_r;

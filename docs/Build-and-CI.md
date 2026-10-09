@@ -54,6 +54,15 @@ the Darwin name/locking strategy under a syscall contract shim; this is not a
 substitute for the native macOS CI check. Windows/Linux retain their existing
 shared-memory names and normal locking strategy.
 
+The oversized-attachment fixture compares a request against the existing
+attachment's actual backing capacity, rather than assuming a 4 KB allocation.
+Darwin arm64 can round shared-memory backing to 16 KB, so a 16 KB request against
+an originally requested 4 KB segment is not necessarily oversized. The Linux
+Darwin shim models that 16 KB rounding, and the test still requires requests
+beyond the backing capacity to fail without resizing or erasing existing data.
+CI prints the checkout SHA and individual test names to distinguish failures
+from older runs. This fixture correction does not change runtime DSP.
+
 Windows/macOS AOT emission carries the selected optimization level through to
 Clang's machine-code backend. Its IR optimizer is disabled at that final step
 because the tuned LLVM pipeline has already optimized the module. Linux's
@@ -85,14 +94,14 @@ requests. It has these build jobs:
 | Windows JIT Editor | VST3, CLAP with bundled compiler | x86-64 |
 | Linux JIT Editor | VST3, CLAP with bundled compiler | x86-64, Ubuntu 24.04 |
 
-Branch/PR catalog builds use `--smoke`: DDT, ERBTilt, HyperrealFast, ModTilt and
+Branch/PR catalog builds use `--smoke`: AntiSalienceMX, ERBTilt, 3DPanner, ModTilt and
 Saike BandJoiner. This covers ordinary JSFX graphics, mixed JSFX/Faust, native
 Legacy graphics, pure Faust and the automatic Joep Legacy path. Tags matching
 `v*` or `R*` build the entire catalog. **Run workflow** defaults to the entire
 catalog; uncheck **full_catalog** for the representative set. Windows and Linux
 JIT builds and qualification run in every case. Full catalog builds split the
 catalog into four disjoint groups per platform. Tagged releases merge those
-groups only after checking that every group and all catalog plugins are present,
+groups only after checking that every group and all distributable catalog plugins are present,
 without changing plugin bytes, bundle modes, symlinks or signing metadata.
 The merger also requires a nonempty CLAP binary and VST3 binary at each plugin's
 platform-specific bundle path; a manifest entry alone cannot satisfy this gate.
@@ -142,7 +151,15 @@ archives to preserve executable permissions and relative native-library paths.
 
 Catalog archives and usable Windows/Linux JIT Editor archives are separate Actions
 artifacts. Diagnostic artifacts include compiler versions and JIT logs/screenshots.
-Tagged releases publish three catalog archives plus four Windows/Linux JIT archives only
+Full manual/tag builds also upload `catalog-collections`: **Essentials**, **All**
+(non-Joep) and **JoepVanlier**, each containing Windows, macOS and Linux binaries.
+Essentials reuses compiled All payloads; it does not rebuild them. The single
+release policy excludes IPCProbeA/B and retires SaliencePush in favor of the new
+AntiSalienceMX identity. See [release selection and installation](Release-Collections.md).
+Raw platform shards are separate `catalog-shard-*` artifacts; smoke builds cannot
+produce full collections.
+
+Tagged releases publish three all-platform collection ZIPs plus four Windows/Linux JIT archives only
 after all build/qualification jobs pass. `R*` tags are regular releases; `v*` tags
 retain the existing prerelease policy. Branch, PR and manual builds do not publish
 GitHub releases. No additional repository secrets are needed for this unsigned CI.

@@ -11,9 +11,10 @@ import zipfile
 from pathlib import Path
 
 from pluginlib import PluginSpec, PluginDiscoveryError, discover_plugins, filter_plugins, read_plugin_readme
+from release_collections import build_catalog, policy_digest
 
 # CI exercises ordinary EEL graphics, mixed Faust, native Legacy and pure Faust.
-CI_SMOKE_SLUGS = {"DDT", "ERBTilt", "HyperrealFast", "ModTilt", "joep_bandjoiner"}
+CI_SMOKE_SLUGS = {"AntiSalienceMX", "ERBTilt", "3DPanner", "ModTilt", "joep_bandjoiner"}
 
 def is_nested_vst3_payload(path: Path) -> bool:
     """Return True for files inside an outer .vst3 bundle.
@@ -452,6 +453,7 @@ def write_release_manifest(stage_root: Path, built_specs: list[PluginSpec], shar
     manifest = {
         "schemaVersion": 2,
         "package": stage_root.name,
+        "releasePolicySha256": policy_digest(),
         "plugins": [
             {
                 "category": spec.category,
@@ -505,8 +507,8 @@ def main() -> None:
 
     repo_root = Path(__file__).resolve().parents[1]
     try:
-        plugins = discover_plugins(repo_root)
-    except PluginDiscoveryError as exc:
+        plugins = build_catalog(discover_plugins(repo_root), repo_root)
+    except (PluginDiscoveryError, ValueError) as exc:
         die(str(exc))
 
     if args.list:

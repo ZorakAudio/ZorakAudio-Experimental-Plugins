@@ -49,8 +49,9 @@ jobs:
       - name: Compiler, deferred-worker and idle IPC contracts
         if: matrix.shard == 0
         run: |
+          git rev-parse HEAD
           python tests/tasks/test_tasks.py
-          python tests/runtime/test_performance_contracts.py
+          python tests/runtime/test_performance_contracts.py -v
           python tests/tasks/test_corpus_matrix.py
       - name: Configure universal2 macOS catalog
         if: runner.os == 'macOS'
@@ -84,7 +85,7 @@ jobs:
       - name: Upload catalog archives
         uses: actions/upload-artifact@v4
         with:
-          name: catalog-${{ runner.os }}-${{ matrix.shard }}
+          name: catalog-shard-${{ runner.os }}-${{ matrix.shard }}
           path: dist/**/*.zip
           if-no-files-found: error
       - name: Upload compiler diagnostics
@@ -138,13 +139,12 @@ jobs:
             build/ci/jit-editor
           if-no-files-found: ignore
 
-  release:
-    name: Publish tagged release
-    needs: [build, jit_editor]
+  collections:
+    name: Assemble all-platform collections
+    needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
+    timeout-minutes: 30
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.full_catalog)
     steps:
       - uses: actions/checkout@v4
         with:
@@ -154,12 +154,31 @@ jobs:
           python-version: '3.11'
       - uses: actions/download-artifact@v4
         with:
-          pattern: catalog-*
+          pattern: catalog-shard-*
           path: build/catalog-shards
-      - name: Assemble complete catalogs and verify all plugins are present
+      - name: Assemble JoepVanlier, Essentials and All for all three platforms
         env:
-          TAG: ${{ github.ref_name }}
-        run: python scripts/merge_catalog_archives.py --input build/catalog-shards --output dist/catalog --tag "$TAG"
+          TAG: ${{ env.BUILD_TAG }}
+        run: python scripts/merge_catalog_archives.py --input build/catalog-shards --output dist/catalog --tag "$TAG" --collections
+      - name: Upload the three ready-to-install collection ZIPs
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-collections
+          path: dist/catalog/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish tagged release
+    needs: [collections, jit_editor]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: catalog-collections
+          path: dist/catalog
       - uses: actions/download-artifact@v4
         with:
           name: jit-editor-Windows
@@ -184,7 +203,7 @@ jobs:
           fi
           files=(dist/catalog/**/ZorakAudio-Experimental-Plugins-"$TAG"-*.zip dist/jit-editor/*.zip dist/jit-editor/*.tar.gz)
           if [[ ${#files[@]} -ne 7 ]]; then
-            echo 'Expected three catalog archives and four Windows/Linux JIT Editor archives'
+            echo 'Expected three all-platform collection ZIPs and four Windows/Linux JIT Editor archives'
             exit 2
           fi
           for attempt in 1 2 3; do

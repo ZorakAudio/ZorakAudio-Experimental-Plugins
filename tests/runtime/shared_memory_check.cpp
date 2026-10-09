@@ -80,14 +80,21 @@ int main(int argc, char** argv)
     DspJsfxSharedMemorySegment moved;
     moved = std::move(attached);
     assert(!attached.isOpen() && moved.isOpen());
+    // A fresh attachment observes the established backing; the creator's view
+    // can still be the original requested length on POSIX.
+    const auto backedBytes = moved.size();
     moved.close();
 
-    // A larger request must reject rather than resize/reset an existing layout.
+    // Reject requests beyond ACTUAL backing, including OS page padding. Darwin
+    // arm64 can back a 4096-byte request with a 16384-byte page, so bytes * 4
+    // is a valid attachment there, not an oversized request.
     DspJsfxSharedMemorySegment oversized;
-    assert(!oversized.openOrCreate(stem, bytes * 4, &created));
+    assert(backedBytes >= bytes);
+    assert(!oversized.openOrCreate(stem, backedBytes + 1, &created));
     assert(!oversized.isOpen());
     assert(*static_cast<std::uint64_t*>(owner.data()) == 7);
     assert(oversized.openOrCreate(stem, bytes, &created) && !created);
+    assert(oversized.size() == backedBytes);
     oversized.finishInitialization();
     oversized.close();
     assert(!oversized.openOrCreate(stem, 0, &created) && !created);
