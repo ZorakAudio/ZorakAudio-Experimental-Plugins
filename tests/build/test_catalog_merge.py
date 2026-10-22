@@ -19,15 +19,15 @@ import build as builder
 import merge_catalog_archives as merger
 
 class CatalogMergeTests(unittest.TestCase):
-    def fixture(self, root, missing=None, duplicate=False, platform='linux', missing_payload=False, empty_payload=False, policy_hash=None):
-        specs = build_catalog(discover_plugins(ROOT))
+    def fixture(self, root, missing=None, duplicate=False, platform='linux', missing_payload=False, empty_payload=False, policy_hash=None, policy_root=ROOT):
+        specs = build_catalog(discover_plugins(ROOT), policy_root)
         package = 'ZorakAudio-Experimental-Plugins-test-' + platform
         for index in range(4):
             if index == missing: continue
             with zipfile.ZipFile(root / f'{index}.zip', 'w') as archive:
                 records = [dict(slug=spec.slug) for position, spec in enumerate(specs) if position % 4 == index]
                 if duplicate and index == 1: records.append(dict(slug=specs[0].slug))
-                archive.writestr(package + '/manifest.json', json.dumps(dict(package=package, releasePolicySha256=policy_digest() if policy_hash is None else policy_hash, buildShard=dict(index=index,count=4),plugins=records)))
+                archive.writestr(package + '/manifest.json', json.dumps(dict(package=package, releasePolicySha256=policy_digest(policy_root) if policy_hash is None else policy_hash, buildShard=dict(index=index,count=4),plugins=records)))
                 for spec in (s for position, s in enumerate(specs) if position % 4 == index):
                     prefix = f'{package}/{{format}}/{spec.install_rel_dir.as_posix()}/{spec.slug}'
                     if platform == 'macos':
@@ -97,13 +97,13 @@ class CatalogMergeTests(unittest.TestCase):
         all_specs = discover_plugins(ROOT)
         selected = collections_for(all_specs)
         eligible = build_catalog(all_specs)
-        self.assertFalse({'IPCProbeA','IPCProbeB','SaliencePush'} & {s.slug for s in eligible})
+        self.assertFalse({'IPCProbeA','IPCProbeB','SaliencePush','SampleFaust'} & {s.slug for s in eligible})
         essential = {s.slug for s in selected['Essentials']}
         self.assertIn('AntiSalienceMX', essential)
-        self.assertIn('SampleFaust', essential)
+        self.assertIn('Sample', essential)
         self.assertIn('EasyExpanderFaust', essential)
         self.assertEqual(essential & {'3DPanner','HyperrealFast','HyperrealFaust','HyperrealHybrid'}, {'3DPanner'})
-        self.assertFalse({'Sample','EasyExpander'} & essential)
+        self.assertFalse({'SampleFaust','EasyExpander'} & essential)
         joep = {s.slug for s in selected['JoepVanlier']}
         nonjoep = {s.slug for s in selected['All']}
         self.assertFalse(joep & nonjoep)
@@ -117,7 +117,8 @@ class CatalogMergeTests(unittest.TestCase):
         self.assertIn('AntiSalienceMX',output.getvalue())
         self.assertNotIn('IPCProbe',output.getvalue())
         self.assertNotIn('SaliencePush',output.getvalue())
-        for name in ('IPCProbeA','IPCProbeB','SaliencePush'):
+        self.assertNotIn('SampleFaust',output.getvalue())
+        for name in ('IPCProbeA','IPCProbeB','SaliencePush','SampleFaust'):
             with self.subTest(plugin=name), patch.object(sys,'argv',['build.py','--only',name]), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
                     builder.main()
@@ -230,5 +231,72 @@ class CatalogMergeTests(unittest.TestCase):
                 receipt=json.loads(archive.read(package+'/manifest.json'))
                 self.assertEqual(receipt['releasePolicySha256'],policy_digest(source))
                 self.assertEqual(receipt['plugins'][0]['purpose'],'Purpose from the original release')
+
+    def test_sample_withdrawal_curates_original_builds_without_rewriting_receipts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            source=root/'original';source.mkdir()
+            old=load_policy()
+            del old['buildExcluded']['SampleFaust']
+            old['essentials'][0]={'slug':'SampleFaust','purpose':'Old selection'}
+            old['essentialsExcluded']['Sample']='Old comparison build'
+            (source/'release-collections.json').write_text(json.dumps(old),encoding='utf-8')
+            for platform in PLATFORMS:
+                folder=root/'shards'/platform;folder.mkdir(parents=True)
+                self.fixture(folder,platform=platform,policy_root=source)
+            with patch.object(merger,'discover_plugins',return_value=discover_plugins(ROOT)), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                result=assemble_collections(root/'shards',root/'published','test',
+                    repo_root=source,collection_policy_root=ROOT,
+                    selected_collections=['Essentials','All'])
+            self.assertEqual(set(result),{'Essentials','All'})
+            self.assertEqual(len(list((root/'published').glob('*.zip'))),2)
+            for collection in result:
+                with zipfile.ZipFile(result[collection]['archive']) as archive:
+                    package=Path(result[collection]['archive']).stem
+                    manifest=json.loads(archive.read(package+'/manifest.json'))
+                    self.assertEqual(manifest['sourceReleasePolicySha256'],policy_digest(source))
+                    self.assertEqual(manifest['releasePolicySha256'],policy_digest(ROOT))
+                    self.assertNotIn('SampleFaust',{r['slug'] for r in manifest['plugins']})
+                    self.assertIn('Sample',{r['slug'] for r in manifest['plugins']})
+                    self.assertFalse(any('SampleFaust' in name for name in archive.namelist()))
+                    for platform in PLATFORMS:
+                        prefix=package+'/'+platform
+                        receipt=json.loads(archive.read(prefix+'/manifest.json'))
+                        self.assertIn({'slug':'Sample'},receipt['plugins'])
+                        stem=prefix+'/CLAP/Spectral/Sample.clap'
+                        payload=stem+('/Contents/MacOS/Sample' if platform=='macos' else '')
+                        self.assertEqual(archive.read(payload),b'ELF fixture bytes Sample')
+                        if platform=='macos':
+                            link=prefix+'/VST3/Spectral/Sample.vst3/Contents/Frameworks/link'
+                            self.assertEqual(archive.getinfo(link).external_attr >> 16,0o120777)
+
+    def test_curation_cannot_add_plugins_missing_from_original_builds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            source=root/'original';source.mkdir()
+            old=load_policy()
+            old['buildExcluded']['Sample']='Not built in the original release'
+            old['essentials']=old['essentials'][1:]
+            (source/'release-collections.json').write_text(json.dumps(old),encoding='utf-8')
+            with patch.object(merger,'discover_plugins',return_value=discover_plugins(ROOT)):
+                with self.assertRaisesRegex(ValueError,'absent from original builds: Sample'):
+                    assemble_collections(root/'shards',root/'published','test',
+                        repo_root=source,collection_policy_root=ROOT)
+            self.assertFalse((root/'published').exists())
+
+    def test_original_selection_cannot_republish_withdrawn_sample_faust(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            source=root/'original';source.mkdir()
+            old=load_policy()
+            del old['buildExcluded']['SampleFaust']
+            old['essentials'][0]={'slug':'SampleFaust','purpose':'Old selection'}
+            old['essentialsExcluded']['Sample']='Old comparison build'
+            (source/'release-collections.json').write_text(json.dumps(old),encoding='utf-8')
+            with patch.object(merger,'discover_plugins',return_value=discover_plugins(ROOT)):
+                with self.assertRaisesRegex(ValueError,'Current release policy excludes SampleFaust'):
+                    assemble_collections(root/'shards',root/'published','test',repo_root=source)
+            self.assertFalse((root/'published').exists())
 
 if __name__=='__main__': unittest.main()

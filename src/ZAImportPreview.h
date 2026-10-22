@@ -9,6 +9,7 @@ struct ImportPreviewSource
 {
     AudioFileData audio;
     SourceFingerprint fingerprint;
+    std::vector<SourceFingerprint> members;
     extractor::Analysis features;
     extractor::WaveformPyramid waveform;
 };
@@ -54,13 +55,16 @@ private:
     std::thread thread;
 };
 
-class WaveformPreview final : public juce::Component
+class WaveformPreview final : public juce::Component, private juce::Timer
 {
 public:
+    friend struct ImportPreviewTestAccess;
     using SegmentSelectCallback = std::function<void (int)>;
     using SegmentBoundaryCallback = std::function<void (int, bool, int)>;
     using SegmentDragFinishedCallback = std::function<void()>;
     using SegmentCreatedCallback = std::function<void (int, int)>;
+
+    ~WaveformPreview() override { stopTimer(); }
 
     void setCallbacks (SegmentSelectCallback selectCb,
                        SegmentBoundaryCallback boundaryCb,
@@ -90,7 +94,7 @@ public:
         segmentationPreview = segmentationIn; status = std::move (statusIn);
         reviewSpans = std::move (reviewIn);
         setSegments (std::move (segmentsIn));
-        if (newSource) { cursorSample = -1; resetZoomToFull(); } else clampZoomRange();
+        if (newSource) { stopTimer(); draggingSegment = -1; creatingSegment = false; cursorSample = -1; resetZoomToFull(); } else clampZoomRange();
         repaint();
     }
 
@@ -110,13 +114,29 @@ public:
     int getCursorSample() const { return cursorSample; }
     void clearReviewFocus() { focusStart = focusEnd = -1; repaint(); }
     void setReviewFocus (int start, int end) { focusStart = start; focusEnd = end; reveal (start, end); repaint(); }
+    // Navigation follows the event without discarding a carefully chosen zoom.
     void reveal (int start, int end)
     {
+        const int span = getVisibleEndSample() - getVisibleStartSample();
         if (start >= getVisibleStartSample() && end <= getVisibleEndSample()) return;
-        const int span = juce::jmax (end - start + 2 * (int) (sampleRate * 0.15), getVisibleEndSample() - getVisibleStartSample());
-        visibleStartSample = juce::jmax (0, start - (span - (end - start)) / 2);
+        visibleStartSample = start - (int) (span * 0.08);
         visibleEndSample = visibleStartSample + span; clampZoomRange(); repaint();
     }
+    void fitSelection (int start, int end)
+    {
+        const int margin = juce::jmax ((int) (sampleRate * 0.025), (end - start) / 8);
+        visibleStartSample = start - margin; visibleEndSample = end + margin; clampZoomRange(); repaint();
+    }
+    void fitAll() { resetZoomToFull(); }
+    void zoomBy (float amount) { zoomAtX ((float) xFromSample (cursorSample >= getVisibleStartSample() && cursorSample <= getVisibleEndSample() ? cursorSample : (getVisibleStartSample() + getVisibleEndSample()) / 2), amount); }
+    void panBy (int direction) { panZoomedView (-4.0f * direction); }
+    void setCursorSample (int sample)
+    {
+        cursorSample = juce::jlimit (0, originalBuffer().getNumSamples(), sample);
+        if (cursorSample < getVisibleStartSample() || cursorSample > getVisibleEndSample()) reveal (cursorSample, cursorSample);
+        repaint();
+    }
+    std::pair<int, int> visibleRange() const { return {getVisibleStartSample(), getVisibleEndSample()}; }
 
     void paint (juce::Graphics& g) override
     {
@@ -134,6 +154,7 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        stopTimer(); dragScrollRemainder = 0.0; grabKeyboardFocus();
         draggingSegment = -1;
         draggingStart = false;
         creatingSegment = false;
@@ -212,24 +233,15 @@ public:
             return;
         }
 
-        if (creatingSegment)
-        {
-            createEndSample = sampleFromX (e.position.x);
-            repaint();
-            return;
-        }
-
-        if (draggingSegment < 0 || ! onSegmentBoundaryMoved)
-            return;
-
-        int sample = sampleFromX (e.position.x);
-        if (snapping && ! e.mods.isAltDown() && sourceData != nullptr)
-            sample = extractor::snapBoundary (audioView (sourceData->audio.buffer, sampleRate), sample, juce::jmax (1, (int) (sampleRate * 0.003)));
-        onSegmentBoundaryMoved (draggingSegment, draggingStart, sample);
+        if (! creatingSegment && (draggingSegment < 0 || ! onSegmentBoundaryMoved)) return;
+        dragX = e.position.x; dragAlt = e.mods.isAltDown();
+        updateDraggedEdge();
+        if (! isTimerRunning()) startTimerHz (60);
     }
 
     void mouseUp (const juce::MouseEvent&) override
     {
+        stopTimer();
         const bool wasCreating = creatingSegment;
         const bool wasScrolling = scrollingZoom;
         const bool wasDragging = draggingSegment >= 0;
@@ -277,6 +289,31 @@ public:
     }
 
 private:
+    void updateDraggedEdge()
+    {
+        const auto wave = getSourceWaveBounds();
+        int sample = sampleFromX (juce::jlimit ((float) wave.getX(), (float) wave.getRight(), dragX));
+        if (snapping && ! dragAlt && sourceData != nullptr)
+            sample = extractor::snapBoundary (audioView (sourceData->audio.buffer, sampleRate), sample, juce::jmax (1, (int) (sampleRate * 0.003)));
+        cursorSample = sample;
+        if (creatingSegment) { createEndSample = sample; repaint(); }
+        else if (draggingSegment >= 0 && onSegmentBoundaryMoved) onSegmentBoundaryMoved (draggingSegment, draggingStart, sample);
+    }
+    void timerCallback() override
+    {
+        if ((! creatingSegment && draggingSegment < 0) || ! isEnabled()) { stopTimer(); return; }
+        const auto wave = getSourceWaveBounds();
+        const float zone = juce::jmin (32.0f, wave.getWidth() * 0.1f);
+        if (zone <= 0.0f) return;
+        const float speed = dragX < wave.getX() + zone ? -juce::jlimit (0.0f, 1.0f, (wave.getX() + zone - dragX) / zone)
+                          : dragX > wave.getRight() - zone ? juce::jlimit (0.0f, 1.0f, (dragX - wave.getRight() + zone) / zone) : 0.0f;
+        const int span = getVisibleEndSample() - getVisibleStartSample(), old = visibleStartSample;
+        const double distance = span * (double) speed * 0.012 + (speed == 0.0f ? 0.0 : dragScrollRemainder);
+        const int delta = (int) distance;
+        dragScrollRemainder = speed == 0.0f ? 0.0 : distance - delta;
+        visibleStartSample += delta; visibleEndSample = visibleStartSample + span; clampZoomRange();
+        if (visibleStartSample != old) { updateDraggedEdge(); repaint(); }
+    }
     int getKeptPanelHeightForTotal (int totalHeight) const noexcept
     {
         if (! segmentationPreview)
@@ -496,7 +533,7 @@ private:
                 if (zoom > 1.01)
                     text << "  |  zoom " << juce::String (zoom, 1) << "x";
             }
-            text << "  |  wheel zoom, Shift+wheel/MMB-drag pan, Ctrl+drag new, Tab/Shift+Tab nav, Space play/pause, Delete remove, Ctrl+Z undo";
+            text << "  |  F fit / 0 all / ? keys";
         }
         if (drawSegments && status.isNotEmpty())
             text << "  |  " << status;
@@ -722,6 +759,9 @@ private:
     int createStartSample = 0;
     int createEndSample = 0;
     bool scrollingZoom = false;
+    double dragScrollRemainder = 0.0;
+    float dragX = 0.0f;
+    bool dragAlt = false;
     float scrollDragStartX = 0.0f;
     int scrollDragStartSample = 0;
     int scrollDragVisibleSpan = 0;
@@ -734,6 +774,12 @@ private:
 class ResettableSlider final : public juce::Slider
 {
 public:
+    juce::Label caption;
+    void resized() override
+    {
+        juce::Slider::resized(); caption.setBounds (0, 0, juce::jmax (1, getWidth() - 86), 20);
+        for (auto* child : getChildren()) if (auto* label = dynamic_cast<juce::Label*> (child); label != nullptr && label != &caption) label->setEditable (true, true, false);
+    }
     void setResetValue (double v)
     {
         resetValue = v;
@@ -756,11 +802,14 @@ private:
 };
 
 class ImportPreviewComponent final : public juce::Component,
+                                     public juce::FileDragAndDropTarget,
+                                     private juce::ListBoxModel,
                                      private juce::Slider::Listener,
                                      private juce::Timer,
                                      private juce::KeyListener
 {
 public:
+    friend struct ImportPreviewTestAccess;
     using ApplyCallback = std::function<void (ImportRules)>;
     using AuditionCallback = std::function<void (juce::AudioBuffer<float>, double)>;
     using StopAuditionCallback = std::function<void()>;
@@ -773,6 +822,10 @@ public:
           action (actionIn), rules (std::move (initialRules)), onApply (std::move (cb)),
           onAudition (std::move (auditionCb)), onStopAudition (std::move (stopCb)), onPauseAudition (std::move (pauseCb))
     {
+       #if JUCE_WINDOWS
+        extractorLookAndFeel.setDefaultSansSerifTypefaceName ("Segoe UI");
+       #endif
+        setLookAndFeel (&extractorLookAndFeel);
         defaultRules = makeDefaultRulesForAction (action);
         if (rules.sourceBindings.empty())
         {
@@ -784,7 +837,7 @@ public:
         title.setFont (juce::Font (17.0f, juce::Font::bold));
         title.setJustificationType (juce::Justification::centredLeft);
         addAndMakeVisible (title);
-        addAndMakeVisible (sourceSelector);
+        addChildComponent (sourceSelector);
         sourceSelector.onChange = [this]
         {
             if (updatingUi) return;
@@ -798,21 +851,31 @@ public:
         setWantsKeyboardFocus (true);
         setMouseClickGrabsKeyboardFocus (true);
 
-        configureSlider (sensitivity, "Fewer / more cuts", 0, 1, 0.01, rules.cutSensitivity, 0.5);
-        configureSlider (gestures, "Events / whole gestures", 0, 1, 0.01, rules.wholeGestures, 0.65);
-        configureSlider (tails, "Tail preservation", 0, 1, 0.01, rules.tailPreservation, 0.65);
-        configureSlider (silenceDb, "Silence threshold dBFS", -90, -6, 0.5, rules.silenceThresholdDb, -50);
-        configureSlider (threshold, "Relative RMS multiplier", 0, 2, 0.01, rules.silenceThresholdRatio, 0.1);
-        configureSlider (minSilence, "Min quiet gap ms", 1, 5000, 1, rules.minSilenceMs, 100, 100);
-        configureSlider (minSegment, "Min detected segment ms", 1, 10000, 1, rules.minSegmentMs, 25, 250);
-        configureSlider (preRoll, "Pre-roll ms", 0, 500, 1, rules.preRollMs, 5, 20);
-        configureSlider (postRoll, "Post-roll ms", 0, 1000, 1, rules.postRollMs, 15, 25);
-        configureSlider (fade, "Fade ms", 0, 100, 0.5, rules.edgeFadeMs, 5, 10);
-        configureSlider (rmsReject, "Reject below dB RMS", -120, -12, 0.5, rules.minRmsDb, -65);
+        configureSlider (sensitivity, "Sensitivity", 0, 1, 0.01, rules.cutSensitivity, 0.5);
+        configureSlider (gestures, "Grouping", 0, 1, 0.01, rules.wholeGestures, 0.65);
+        configureSlider (tails, "Tail length", 0, 1, 0.01, rules.tailPreservation, 0.65);
+        configureSlider (silenceDb, "Silence threshold", -90, -6, 0.5, rules.silenceThresholdDb, -50);
+        configureSlider (threshold, "RMS multiplier", 0, 2, 0.01, rules.silenceThresholdRatio, 0.1);
+        configureSlider (minSilence, "Quiet gap", 1, 5000, 1, rules.minSilenceMs, 100, 100);
+        configureSlider (minSegment, "Minimum event", 1, 10000, 1, rules.minSegmentMs, 25, 250);
+        configureSlider (preRoll, "Before event", 0, 500, 1, rules.preRollMs, 5, 20);
+        configureSlider (postRoll, "After event", 0, 1000, 1, rules.postRollMs, 15, 25);
+        configureSlider (fade, "Edge fade", 0, 100, 0.5, rules.edgeFadeMs, 5, 10);
+        configureSlider (rmsReject, "Reject below", -120, -12, 0.5, rules.minRmsDb, -65);
         configureSlider (matchThreshold, "Example match threshold", 0.4, 0.95, 0.01, rules.matchThreshold, 0.7);
-        configureSlider (segmentStart, "Start seconds", 0, 1, 0.000001, 0, 0);
-        configureSlider (segmentEnd, "End seconds", 0, 1, 0.000001, 1, 1);
-        setupToggle (assisted, "Assisted detector", rules.assistedExtraction, true);
+        configureSlider (segmentStart, "Start", 0, 1, 0.000001, 0, 0);
+        configureSlider (segmentEnd, "End", 0, 1, 0.000001, 1, 1);
+        detector.addItem ("Adaptive gestures", 4);
+        detector.addItem ("Adaptive boundaries (previous)", 3);
+        detector.addItem ("Assisted (original)", 2);
+        detector.addItem ("Silence / RMS", 1);
+        detector.setTooltip ("Adaptive boundaries improves new proposals. Original preserves the older detector. Protected regions stay unchanged.");
+        controls.addAndMakeVisible (detector);
+        detector.onChange = [this]
+        {
+            if (updatingUi) return;
+            captureUndo(); updateRulesFromUi(); ++rules.segmentationRevision; refreshPreview (true);
+        };
         setupToggle (adaptive, "Adaptive background", rules.adaptiveBackground, true);
         setupToggle (relative, "Relative RMS gate (legacy)", rules.useRelativeRmsThreshold, true);
         setupToggle (trim, "Trim leading / trailing silence", rules.trimEdges, false);
@@ -827,10 +890,10 @@ public:
         autoplay.setButtonText ("Auto-play selected");
         autoplay.onClick = [this] { if (autoplay.getToggleState()) auditionSelection (false); }; controls.addAndMakeVisible (autoplay);
 
-        setupButton (previous, "Prev", [this] { selectAdjacent (-1); });
-        setupButton (next, "Next", [this] { selectAdjacent (1); });
-        setupButton (play, "Play / pause", [this] { toggleAudition(); });
-        setupButton (stop, "Stop", [this] { stopAuditionNow(); });
+        setupButton (previous, "Prev", [this] { selectAdjacent (-1); }, true);
+        setupButton (next, "Next", [this] { selectAdjacent (1); }, true);
+        setupButton (play, "Play / pause", [this] { toggleAudition(); }, true);
+        setupButton (stop, "Stop", [this] { stopAuditionNow(); }, true);
         setupButton (remove, "Delete / restore", [this] { deleteSelection(); });
         setupButton (reanalyse, "Re-analyse", [this]
         {
@@ -864,6 +927,50 @@ public:
             storeCurrentSnapshot(); updateWaveform(); updateControls();
         }, true);
         release.setTooltip ("Make only the selected region replaceable by automatic analysis again. Undo restores its lock.");
+        setupButton (undoButton, "Undo", [this] { restoreHistory (false); }, true);
+        setupButton (redoButton, "Redo", [this] { restoreHistory (true); }, true);
+        setupButton (shortcuts, "Keys ?", [this] { toggleKeyHelp(); }, true);
+        keyHelp.setMultiLine (true); keyHelp.setReadOnly (true); keyHelp.setCaretVisible (false);
+        keyHelp.setFont (juce::Font (14.0f)); keyHelp.setScrollbarsShown (true);
+        keyHelp.setText ("QUICK EDITING  /  ? or Esc closes this guide\n\n"
+                         "Left / Right or Shift+Tab / Tab   Previous / next kept event\n"
+                         "Page Up / Page Down   Previous / next source\n"
+                         "Space   Play / pause      Esc   Stop\n"
+                         "C   Play selection with surrounding context\n"
+                         "A   Toggle auto-play on selection      N   Toggle edge snapping\n\n"
+                         "Enter   Confirm + advance      Delete   Delete / restore + advance\n"
+                         "S   Split at cursor (middle if cursor is outside)      M   Merge next\n"
+                         "[ / ]   Set start / end to cursor\n"
+                         ", / .   Nudge start -/+ 1 ms      ; / '   Nudge end -/+ 1 ms\n"
+                         "Hold Shift for 10 ms nudges\n"
+                         "Ctrl+Left / Right   Move cursor 10 ms (Shift: 1 ms)\n"
+                         "Home / End   Cursor to selection start / end\n"
+                         "Ctrl+Home / End   Cursor to file start / end\n\n"
+                         "F   Fit selection      0   Fit whole source      + / -   Zoom\n"
+                         "Alt+Left / Right   Pan view      Wheel   Zoom at pointer\n"
+                         "Shift+wheel or middle-drag   Pan view\n"
+                         "Drag an edge to either side to scroll continuously\n"
+                         "Ctrl+drag   Create a region      Alt+drag   Bypass snapping\n\n"
+                         "R   Next review      E   Add example      X   Wrong event\n"
+                         "U   Unlock selected      P   Examples / Profile\n"
+                         "Ctrl+R   Re-analyse automatic regions (keeps protected edits)\n"
+                         "Ctrl+Z   Undo      Ctrl+Shift+Z or Ctrl+Y   Redo\n\n"
+                         "Shortcuts pause while you type a number or use a dropdown.\n"
+                         "Apply is always an explicit button click.");
+        addChildComponent (keyHelp);
+        previous.setTooltip ("Previous kept event: Left or Shift+Tab"); next.setTooltip ("Next kept event: Right or Tab");
+        play.setTooltip ("Play / pause selected event: Space"); stop.setTooltip ("Stop audition: Esc");
+        undoButton.setTooltip ("Undo: Ctrl+Z"); redoButton.setTooltip ("Redo: Ctrl+Shift+Z or Ctrl+Y");
+        shortcuts.setTooltip ("Show all keyboard and mouse shortcuts: ?");
+        confirm.setTooltip ("Confirm and advance: Enter"); remove.setTooltip ("Delete / restore and advance: Delete");
+        addExample.setTooltip ("Add a positive example: E"); wrongEvent.setTooltip ("Add a negative example: X");
+        context.setTooltip ("Play with surrounding context: C"); review.setTooltip ("Next uncertain event or possible miss: R");
+        profiles.setTooltip ("Manage examples and profiles: P");
+        release.setTooltip (release.getTooltip() + " Shortcut: U.");
+        reanalyse.setTooltip (reanalyse.getTooltip() + " Shortcut: Ctrl+R.");
+        snap.setTooltip ("Toggle snapping: N. Hold Alt during dragging to bypass it."); autoplay.setTooltip ("Toggle automatic audition on navigation: A");
+        segmentStart.setTooltip ("Start time. [ sets it to the cursor; comma / period nudges it by 1 ms, Shift by 10 ms.");
+        segmentEnd.setTooltip ("End time. ] sets it to the cursor; semicolon / apostrophe nudges it by 1 ms, Shift by 10 ms.");
         addAndMakeVisible (selectionInfo); selectionInfo.setJustificationType (juce::Justification::centredLeft);
         addAndMakeVisible (profileInfo); profileInfo.setJustificationType (juce::Justification::centredLeft);
         profileInfo.setFont (juce::Font (12.0f));
@@ -901,6 +1008,7 @@ public:
             captureUndo();
             auto replacement = defaultRules;
             replacement.sourceBindings = rules.sourceBindings;
+            replacement.joinSegmentationInputs = rules.joinSegmentationInputs;
             replacement.manualSegmentsByInput = rules.manualSegmentsByInput;
             replacement.manualSegmentSampleRates = rules.manualSegmentSampleRates;
             replacement.snapshotRevisions = rules.snapshotRevisions;
@@ -914,6 +1022,9 @@ public:
             rules = std::move (replacement); syncUiFromRules(); refreshPreview (true);
         };
         for (auto* component : segmentationControls()) component->setVisible (isSegmentationMode());
+        for (auto* component : { &addExample, &wrongEvent, &profiles, &release, &context }) controls.addAndMakeVisible (*component);
+        controls.addAndMakeVisible (profileInfo); addAndMakeVisible (remove);
+        initialiseStudioControls();
         syncSourceSelector(); syncUiFromRules();
         installKeys (*this);
         setSize (1180, 760);
@@ -932,61 +1043,103 @@ public:
         worker.reset(); auditionWorker.reset();
         removeKeys (*this);
         controlsViewport.setViewedComponent (nullptr, false);
+        setLookAndFeel (nullptr);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (juce::Colour (0xff111920));
+        g.setColour (juce::Colour (0xff1b2731)); g.fillRoundedRectangle (controlsViewport.getBounds().toFloat().expanded (6, 4), 7.0f);
+    }
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        if (! draggingFiles) return;
+        auto area = getLocalBounds().reduced (8).toFloat();
+        g.setColour (juce::Colour (0xef172b38)); g.fillRoundedRectangle (area, 8);
+        g.setColour (juce::Colour (0xff6dd5f0)); g.drawRoundedRectangle (area, 8, 2);
+        g.setFont (juce::Font (20)); g.drawText ("Drop recordings to extend this timeline", area.toNearestInt(), juce::Justification::centred);
     }
 
     void resized() override
     {
-        auto area = getLocalBounds().reduced (12);
-        title.setBounds (area.removeFromTop (26));
-        sourceSelector.setBounds (area.removeFromTop (28)); area.removeFromTop (6);
+        auto area = getLocalBounds().reduced (14);
+        auto heading = area.removeFromTop (28);
+        shortcuts.setBounds (heading.removeFromRight (62)); heading.removeFromRight (5);
+        redoButton.setBounds (heading.removeFromRight (52)); heading.removeFromRight (5);
+        undoButton.setBounds (heading.removeFromRight (52)); title.setBounds (heading);
+        area.removeFromTop (5);
+        auto sourceRow = area.removeFromTop (30);
+        sourcesButton.setBounds (sourceRow.removeFromRight (94)); sourceRow.removeFromRight (6);
+        addFilesButton.setBounds (sourceRow.removeFromRight (70)); sourceRow.removeFromRight (8);
+        sourceCaption.setBounds (sourceRow); area.removeFromTop (12);
         auto footer = area.removeFromBottom (32);
         cancel.setBounds (footer.removeFromRight (82)); footer.removeFromRight (6);
-        apply.setBounds (footer.removeFromRight (82)); footer.removeFromRight (6);
-        reset.setBounds (footer.removeFromRight (112)); footer.removeFromRight (8);
-        outputMode.setBounds (footer.removeFromLeft (juce::jmin (215, footer.getWidth())));
-        status.setBounds (area.removeFromBottom (38)); area.removeFromBottom (4);
-        const int controlWidth = getWidth() < 900 ? 240 : 288;
-        controlsViewport.setBounds (area.removeFromLeft (controlWidth)); area.removeFromLeft (8);
-        auto panel = juce::Rectangle<int> (0, 0, controlWidth - 18, 1400);
-        auto layoutSlider = [&] (juce::Component& c) { if (c.isVisible()) { c.setBounds (panel.removeFromTop (43)); panel.removeFromTop (2); } };
-        auto layoutToggle = [&] (juce::Component& c) { if (c.isVisible()) c.setBounds (panel.removeFromTop (25)); };
-        layoutToggle (assisted); layoutToggle (adaptive);
-        layoutSlider (sensitivity); layoutSlider (gestures); layoutSlider (tails);
-        layoutToggle (useExamples); layoutToggle (matchesOnly); layoutSlider (matchThreshold);
-        for (auto* c : { &silenceDb, &threshold, &minSilence, &minSegment, &preRoll, &postRoll, &fade, &rmsReject }) layoutSlider (*c);
-        for (auto* c : { &relative, &trim, &strip, &reject, &normalize, &snap, &autoplay }) layoutToggle (*c);
-        layoutSlider (segmentStart); layoutSlider (segmentEnd);
-        auto buttonRow = [&] (juce::TextButton& a, juce::TextButton& b)
+        apply.setBounds (footer.removeFromRight (82));
+        outputMode.setBounds (footer.removeFromLeft (juce::jmin (205, footer.getWidth())));
+        status.setBounds (area.removeFromBottom (27)); area.removeFromBottom (6);
+        auto side = area.removeFromLeft (getWidth() < 900 ? 224 : 272); area.removeFromLeft (16);
+        auto tabs = side.removeFromTop (27); const int tabWidth = (tabs.getWidth() - 9) / 4;
+        for (int i = 0; i < 4; ++i) { sectionTabs[(size_t) i].setBounds (tabs.removeFromLeft (tabWidth)); tabs.removeFromLeft (3); }
+        side.removeFromTop (9); controlsViewport.setBounds (side);
+        updateStudioVisibility();
+        auto panel = juce::Rectangle<int> (0, 0, side.getWidth() - 12, 1600);
+        auto row = [&] (juce::Component& control, int height) { if (control.isVisible()) { control.setBounds (panel.removeFromTop (height)); panel.removeFromTop (5); } };
+        if (section == 0)
         {
-            if (! a.isVisible()) return;
-            auto row = panel.removeFromTop (29); panel.removeFromTop (5);
-            a.setBounds (row.removeFromLeft ((row.getWidth() - 6) / 2)); row.removeFromLeft (6); b.setBounds (row);
-        };
-        buttonRow (previous, next); buttonRow (play, stop); buttonRow (remove, reanalyse);
-        removeSource.setBounds (panel.removeFromTop (29));
-        controls.setSize (controlWidth - 18, panel.getY() + 8);
-        for (auto* slider : { &sensitivity, &gestures, &tails, &silenceDb, &threshold, &minSilence, &minSegment, &preRoll, &postRoll,
-                              &fade, &rmsReject, &matchThreshold, &segmentStart, &segmentEnd })
-            slider->setTextBoxStyle (juce::Slider::TextBoxBelow, false, controlWidth - 22, 19);
+            row (presetSelector, 28);
+            for (auto* control : { &sensitivity, &gestures, &tails, &minSegment }) row (*control, 40);
+            row (advancedButton, 26);
+            if (advancedOpen)
+            {
+                row (detector, 28); row (adaptive, 24); row (silenceDb, 42); row (minSilence, 42);
+                row (relative, 24); row (threshold, 42);
+            }
+            row (reanalyse, 32);
+        }
+        else if (section == 1)
+        {
+            for (auto* control : { &segmentStart, &segmentEnd, &preRoll, &postRoll, &fade }) row (*control, 42);
+            row (snap, 24); row (autoplay, 24); row (context, 30); row (release, 30);
+        }
+        else if (section == 2)
+        {
+            row (profileInfo, 42); row (addExample, 32); row (wrongEvent, 32); row (profiles, 32);
+            row (useExamples, 24); row (matchesOnly, 24); row (matchThreshold, 42);
+        }
+        else
+        {
+            row (normalize, 25); row (reject, 25); row (rmsReject, 42);
+            if (! isSegmentationMode()) { row (trim, 25); row (strip, 25); row (silenceDb, 42); row (threshold, 42); row (minSilence, 42); row (preRoll, 42); row (postRoll, 42); row (fade, 42); }
+            row (removeSource, 30); row (reset, 30);
+        }
+        controls.setSize (side.getWidth() - 12, panel.getY());
         if (isSegmentationMode())
         {
-            const int columns = area.getWidth() < 520 ? 3 : 5;
-            const int width = (area.getWidth() - (columns - 1) * 5) / columns;
-            int column = 0; auto row = area.removeFromTop (29);
-            for (auto* button : { &confirm, &addExample, &wrongEvent, &split, &merge, &review, &context, &profiles, &release })
-            {
-                if (column == columns) { area.removeFromTop (5); row = area.removeFromTop (29); column = 0; }
-                button->setBounds (row.removeFromLeft (width)); row.removeFromLeft (5); ++column;
-            }
-            area.removeFromTop (4);
-            profileInfo.setBounds (area.removeFromTop (22));
-            selectionInfo.setBounds (area.removeFromTop (38));
+            auto transport = area.removeFromTop (29); const int tw = (transport.getWidth() - 15) / 4;
+            for (auto* button : { &previous, &next, &play, &stop }) { button->setBounds (transport.removeFromLeft (tw)); transport.removeFromLeft (5); }
+            area.removeFromTop (6);
+            auto actions = area.removeFromTop (29); const int aw = (actions.getWidth() - 16) / 5;
+            for (auto* button : { &confirm, &remove, &split, &merge, &review }) { button->setBounds (actions.removeFromLeft (aw)); actions.removeFromLeft (4); }
+            area.removeFromTop (6); selectionInfo.setBounds (area.removeFromTop (38));
         }
-        waveform.setBounds (area);
+        waveform.setBounds (area); keyHelp.setBounds (area);
+        sourcePanel.setBounds (area);
+        auto fileArea = sourcePanel.getLocalBounds().reduced (12);
+        sourcesDescription.setBounds (fileArea.removeFromTop (40)); fileArea.removeFromTop (6);
+        auto mode = fileArea.removeFromTop (28);
+        combineFiles.setBounds (mode.removeFromLeft (juce::jmin (180, mode.getWidth() / 2))); mode.removeFromLeft (5);
+        separateFiles.setBounds (mode.removeFromLeft (juce::jmin (180, mode.getWidth()))); fileArea.removeFromTop (8);
+        auto fileButtons = fileArea.removeFromBottom (29);
+        closeSources.setBounds (fileButtons.removeFromRight (70));
+        replaceFiles.setBounds (fileButtons.removeFromLeft (120)); fileButtons.removeFromLeft (6);
+        appendFiles.setBounds (fileButtons.removeFromLeft (100)); fileArea.removeFromBottom (7);
+        sourceList.setBounds (fileArea);
+        sourcePanel.setVisible (sourcesOpen && ! keyHelp.isVisible()); sourcePanel.toFront (false);
+        keyHelp.toFront (false);
     }
 
 private:
-    struct UndoState { ImportRules rules; int source = 0, selected = -1; };
+    struct UndoState { ImportRules rules; int source = 0, selected = -1; std::vector<juce::File> files; };
     struct PreviewResult
     {
         std::shared_ptr<const ImportPreviewSource> source, processed;
@@ -996,7 +1149,8 @@ private:
     };
     bool isSegmentationMode() const { return action == ImportAction::SegmentLongFile || action == ImportAction::SegmentThenMegaTexture; }
     bool validSelection() const { return selected >= 0 && selected < (int) previewSegments.size(); }
-    bool isCurrentInputDisabled() const { return isInputIndexDisabled (rules, fileIndex); }
+    bool joined() const { return isSegmentationMode() && rules.joinSegmentationInputs && files.size() > 1; }
+    bool isCurrentInputDisabled() const { return ! joined() && isInputIndexDisabled (rules, fileIndex); }
     bool allInputsDisabled() const
     {
         for (int i = 0; i < (int) files.size(); ++i) if (! isInputIndexDisabled (rules, i)) return false;
@@ -1010,9 +1164,9 @@ private:
     }
     std::vector<juce::Component*> segmentationControls()
     {
-        return { &assisted, &adaptive, &sensitivity, &gestures, &tails, &useExamples, &matchesOnly, &matchThreshold,
+        return { &detector, &adaptive, &sensitivity, &gestures, &tails, &useExamples, &matchesOnly, &matchThreshold,
                  &segmentStart, &segmentEnd, &snap, &autoplay, &previous, &next, &play, &stop, &remove, &reanalyse,
-                 &confirm, &addExample, &wrongEvent, &split, &merge, &review, &context, &profiles, &release, &profileInfo, &selectionInfo };
+                 &confirm, &addExample, &wrongEvent, &split, &merge, &review, &context, &profiles, &release, &profileInfo, &selectionInfo, &undoButton, &redoButton, &shortcuts };
     }
     void setupButton (juce::TextButton& button, const juce::String& text, std::function<void()> callback, bool main = false)
     {
@@ -1036,8 +1190,18 @@ private:
     {
         slider.setRange (low, high, step); slider.setValue (initial, juce::dontSendNotification);
         slider.setSliderStyle (juce::Slider::LinearHorizontal);
-        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 260, 19);
-        slider.setTextValueSuffix ("  " + label); slider.setTooltip (label);
+        slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 80, 20);
+        slider.caption.setText (label, juce::dontSendNotification);
+        slider.caption.setFont (juce::Font (12.5f)); slider.caption.setColour (juce::Label::textColourId, juce::Colour (0xffb5c6d4));
+        slider.caption.setInterceptsMouseClicks (false, false); slider.addAndMakeVisible (slider.caption);
+        slider.setTooltip (label);
+        const bool percent = &slider == &sensitivity || &slider == &gestures || &slider == &tails || &slider == &matchThreshold;
+        const bool seconds = &slider == &segmentStart || &slider == &segmentEnd;
+        const bool decibels = &slider == &silenceDb || &slider == &rmsReject;
+        const juce::String suffix = percent ? "%" : seconds ? " s" : decibels ? " dB" : &slider == &threshold ? "x" : " ms";
+        slider.textFromValueFunction = [percent, seconds, suffix] (double value) { return juce::String (percent ? value * 100.0 : value, seconds ? 3 : percent ? 0 : 1) + suffix; };
+        slider.valueFromTextFunction = [percent] (const juce::String& value) { return value.getDoubleValue() / (percent ? 100.0 : 1.0); };
+        slider.updateText();
         slider.setResetValue (resetValue);
         if (midpoint > low && midpoint < high) slider.setSkewFactorFromMidPoint (midpoint);
         slider.addListener (this); controls.addAndMakeVisible (slider);
@@ -1067,7 +1231,8 @@ private:
     void sliderDragEnded (juce::Slider*) override { sliderUndoCaptured = false; editingBoundary = false; }
     void updateRulesFromUi()
     {
-        rules.assistedExtraction = assisted.getToggleState(); rules.adaptiveBackground = adaptive.getToggleState();
+        rules.assistedExtraction = detector.getSelectedId() != 1;
+        rules.boundaryDetectorVersion = juce::jmax (1, detector.getSelectedId() - 1); rules.adaptiveBackground = adaptive.getToggleState();
         rules.cutSensitivity = sensitivity.getValue(); rules.wholeGestures = gestures.getValue(); rules.tailPreservation = tails.getValue();
         rules.silenceThresholdDb = silenceDb.getValue(); rules.silenceThresholdRatio = (float) threshold.getValue();
         rules.minSilenceMs = minSilence.getValue(); rules.minSegmentMs = minSegment.getValue();
@@ -1081,7 +1246,7 @@ private:
     void syncUiFromRules()
     {
         updatingUi = true;
-        assisted.setToggleState (rules.assistedExtraction, juce::dontSendNotification); adaptive.setToggleState (rules.adaptiveBackground, juce::dontSendNotification);
+        detector.setSelectedId (rules.assistedExtraction ? (rules.boundaryDetectorVersion + 1) : 1, juce::dontSendNotification); adaptive.setToggleState (rules.adaptiveBackground, juce::dontSendNotification);
         sensitivity.setValue (rules.cutSensitivity, juce::dontSendNotification); gestures.setValue (rules.wholeGestures, juce::dontSendNotification); tails.setValue (rules.tailPreservation, juce::dontSendNotification);
         silenceDb.setValue (rules.silenceThresholdDb, juce::dontSendNotification); threshold.setValue (rules.silenceThresholdRatio, juce::dontSendNotification);
         minSilence.setValue (rules.minSilenceMs, juce::dontSendNotification); minSegment.setValue (rules.minSegmentMs, juce::dontSendNotification);
@@ -1093,7 +1258,7 @@ private:
         matchThreshold.setValue (rules.matchThreshold, juce::dontSendNotification);
         if (rules.segmentationOutput >= 0) outputMode.setSelectedId (rules.segmentationOutput + 1, juce::dontSendNotification);
         updatingUi = false;
-        syncSourceSelector(); updateControls();
+        syncSourceSelector(); updateControls(); resized();
     }
     void syncSourceSelector()
     {
@@ -1105,11 +1270,15 @@ private:
             if (isInputIndexDisabled (rules, i)) label += "  [removed]";
             sourceSelector.addItem (juce::String (i + 1) + ". " + label, i + 1);
         }
+        if (joined()) fileIndex = 0;
+        sourceCaption.setText (joined() ? juce::String ((int) files.size()) + " recordings / one timeline" : (files.empty() ? "Drop audio here to begin" : files[(size_t) juce::jlimit (0, (int) files.size() - 1, fileIndex)].getFileName()), juce::dontSendNotification);
+        sourcesButton.setButtonText ("Files (" + juce::String ((int) files.size()) + ")"); sourceList.updateContent();
         fileIndex = files.empty() ? -1 : juce::jlimit (0, (int) files.size() - 1, fileIndex);
         sourceSelector.setSelectedId (fileIndex + 1, juce::dontSendNotification); updatingUi = false;
     }
     void updateControls()
     {
+        undoButton.setEnabled (! undo.empty()); redoButton.setEnabled (! redo.empty());
         const bool ready = source != nullptr && ! loading && ! isCurrentInputDisabled();
         const auto range = selectionRange(); const bool canEdit = ready && range && range->second > range->first;
         waveform.setEnabled (ready);
@@ -1132,9 +1301,7 @@ private:
         for (auto* slider : { &sensitivity, &gestures, &tails }) slider->setEnabled (rules.assistedExtraction);
         play.setButtonText (auditionActive ? (auditionPaused ? "Resume" : "Pause") : (auditionPending ? "Preparing..." : "Play"));
         const int positives = rules.exampleProfile.positives(); const int negatives = (int) rules.exampleProfile.examples.size() - positives;
-        profileInfo.setText ("Examples: " + juce::String (positives) + " positive / " + juce::String (negatives) + " negative"
-                             + (rules.useExamples ? "  |  enabled" : "  |  disabled") + "  |  dashed edges need review; solid = locked/strong",
-                             juce::dontSendNotification);
+        profileInfo.setText (juce::String (positives) + " positive / " + juce::String (negatives) + " negative examples\n" + (rules.useExamples ? "Matching enabled" : "Matching disabled"), juce::dontSendNotification);
         if (canEdit)
         {
             const double sr = source->audio.sampleRate;
@@ -1156,6 +1323,7 @@ private:
         }
         else selectionInfo.setText (loading ? "Analysing..." : "Select a region or use Ctrl+drag to mark a complete event.", juce::dontSendNotification);
         waveform.setSelectedSegment (selected);
+        updateStudioVisibility();
     }
     void storeCurrentSnapshot()
     {
@@ -1165,15 +1333,15 @@ private:
     }
     void captureUndo()
     {
-        storeCurrentSnapshot(); undo.push_back ({ rules, fileIndex, selected });
+        storeCurrentSnapshot(); undo.push_back ({ rules, fileIndex, selected, files });
         if (undo.size() > 64) undo.erase (undo.begin()); redo.clear();
     }
     void restoreHistory (bool forward)
     {
         auto& from = forward ? redo : undo; auto& to = forward ? undo : redo;
         if (from.empty()) return;
-        stopAuditionNow(); to.push_back ({ rules, fileIndex, selected });
-        auto state = from.back(); from.pop_back(); rules = std::move (state.rules); fileIndex = state.source; selected = state.selected;
+        stopAuditionNow(); to.push_back ({ rules, fileIndex, selected, files });
+        auto state = from.back(); from.pop_back(); rules = std::move (state.rules); files = std::move (state.files); source.reset(); fileIndex = state.source; selected = state.selected;
         reviewFocus.reset(); reviewCursorSample = -1; syncUiFromRules(); refreshPreview (false);
     }
     void changeSource (int index)
@@ -1197,22 +1365,44 @@ private:
         if (fileIndex < 0 || fileIndex >= (int) files.size())
         { loading = false; previewError = "No input files."; status.setText (previewError, juce::dontSendNotification); updateControls(); return; }
         const auto id = generation->load(); auto token = generation; const int index = fileIndex;
+        const auto inputFiles = files; const bool combine = joined();
         const auto file = files[(size_t) index]; const auto snapshot = rules; const bool segmentation = isSegmentationMode();
         const bool force = forcePending;
         const auto cached = source;
         juce::Component::SafePointer<ImportPreviewComponent> safe (this);
-        worker->submit ([safe, id, token, index, file, snapshot, segmentation, force, cached]
+        worker->submit ([safe, id, token, index, file, snapshot, segmentation, force, cached, inputFiles, combine]
         {
             const extractor::Cancel cancelJob = [token, id] { return token->load() != id; };
             if (cancelJob()) return;
             auto result = std::make_shared<PreviewResult>();
             try
             {
+                if (combine)
+                {
+                    std::vector<SourceFingerprint> current;
+                    for (const auto& input : inputFiles) { if (cancelJob()) return; current.push_back (fingerprintForFile (input)); }
+                    bool reusable = cached && cached->members.size() == current.size();
+                    for (size_t i = 0; reusable && i < current.size(); ++i) reusable = sourceFingerprintMatches (cached->members[i], current[i]);
+                    if (reusable) result->source = cached;
+                    else
+                    {
+                        auto data = std::make_shared<ImportPreviewSource>();
+                        auto read = readJoinedSegmentationAudio (inputFiles, snapshot, result->error, cancelJob);
+                        if (read)
+                        {
+                            data->audio = std::move (*read); data->members = std::move (current); data->fingerprint = data->members.front();
+                            data->features = extractor::analyse (audioView (data->audio.buffer, data->audio.sampleRate), cancelJob);
+                            if (data->waveform.build (audioView (data->audio.buffer, data->audio.sampleRate), cancelJob)) result->source = std::move (data);
+                        }
+                    }
+                }
+                else
+                {
                 const auto actual = fingerprintForFile (file);
                 if (! file.existsAsFile()) result->error = "Missing source: " + file.getFullPathName() + ". Restore the file or remove this source.";
                 else if (index < (int) snapshot.sourceBindings.size() && ! sourceFingerprintMatches (snapshot.sourceBindings[(size_t) index], actual))
                     result->error = "Source changed since its cuts were saved. Start a fresh import for this changed file.";
-                else if (cached && sourceFingerprintMatches (cached->fingerprint, actual))
+                else if (cached && cached->members.empty() && sourceFingerprintMatches (cached->fingerprint, actual))
                     result->source = cached;
                 else
                 {
@@ -1227,6 +1417,7 @@ private:
                         if (data->waveform.build (audioView (data->audio.buffer, data->audio.sampleRate), cancelJob)) result->source = std::move (data);
                     }
                 }
+                }
                 if (result->source && ! cancelJob())
                 {
                     const auto& src = *result->source;
@@ -1237,7 +1428,9 @@ private:
                         // review queue still needs to expose possible missed spans.
                         if (! force && snapshot.assistedExtraction && result->reviewSpans.empty())
                         {
-                            result->reviewSpans = extractor::detect (src.features, extractionSettings (snapshot), cancelJob).reviewSpans;
+                            result->reviewSpans = (snapshot.boundaryDetectorVersion >= 2
+                        ? extractor::detectAdaptive (audioView (src.audio.buffer, src.audio.sampleRate), src.features, extractionSettings (snapshot), cancelJob, snapshot.boundaryDetectorVersion)
+                        : extractor::detect (src.features, extractionSettings (snapshot), cancelJob)).reviewSpans;
                             result->reviewSpans.erase (std::remove_if (result->reviewSpans.begin(), result->reviewSpans.end(), [&] (const extractor::Region& r)
                             { for (const auto& s : result->segments) if (s.startSample < r.end && s.endSample > r.start) return true; return false; }), result->reviewSpans.end());
                         }
@@ -1267,11 +1460,12 @@ private:
         if (source)
         {
             if ((int) rules.sourceBindings.size() <= fileIndex) rules.sourceBindings.resize ((size_t) fileIndex + 1);
-            rules.sourceBindings[(size_t) fileIndex] = source->fingerprint;
+            if (joined()) rules.sourceBindings = source->members;
+            else rules.sourceBindings[(size_t) fileIndex] = source->fingerprint;
             storeCurrentSnapshot();
             int kept = 0, locked = 0;
             for (const auto& s : previewSegments) { if (s.enabled) ++kept; if (s.locked) ++locked; }
-            status.setText (files[(size_t) fileIndex].getFileName() + "  |  " + juce::String (source->audio.buffer.getNumSamples() / source->audio.sampleRate, 2)
+            status.setText ((joined() ? juce::String ("Combined recording") : files[(size_t) fileIndex].getFileName()) + "  |  " + juce::String (source->audio.buffer.getNumSamples() / source->audio.sampleRate, 2)
                             + " s  |  " + juce::String (kept) + " kept / " + juce::String (locked) + " protected  |  "
                             + juce::String ((int) reviewSpans.size()) + " possible missed spans", juce::dontSendNotification);
             if (! validSelection())
@@ -1281,7 +1475,7 @@ private:
             }
         }
         else { selected = -1; status.setText (previewError, juce::dontSendNotification); }
-        updateWaveform(); updateControls();
+        syncSourceSelector(); updateWaveform(); updateControls();
         if (reviewAcrossSources) nextReview();
         else if (autoplay.getToggleState()) auditionSelection (false);
     }
@@ -1302,20 +1496,20 @@ private:
         if (! source || loading || fileIndex < 0 || fileIndex >= (int) files.size()) return;
         int kept = 0, locked = 0;
         for (const auto& s : previewSegments) { if (s.enabled && s.length() > 0) ++kept; if (s.locked) ++locked; }
-        status.setText (files[(size_t) fileIndex].getFileName() + "  |  " + juce::String (source->audio.buffer.getNumSamples() / source->audio.sampleRate, 2)
+        status.setText ((joined() ? juce::String ("Combined recording") : files[(size_t) fileIndex].getFileName()) + "  |  " + juce::String (source->audio.buffer.getNumSamples() / source->audio.sampleRate, 2)
                         + " s  |  " + juce::String (kept) + " kept / " + juce::String (locked) + " protected  |  "
                         + juce::String ((int) reviewSpans.size()) + " possible missed spans", juce::dontSendNotification);
     }
     void selectAdjacent (int direction)
     {
         if (previewSegments.empty() || loading) return;
-        stopAuditionNow(); reviewFocus.reset(); waveform.clearReviewFocus(); int index = selected;
+        stopAuditionNow(); reviewFocus.reset(); waveform.clearReviewFocus(); int index = selected < 0 ? (direction > 0 ? -1 : 0) : selected;
         for (int guard = 0; guard < (int) previewSegments.size(); ++guard)
         {
             index = (index + direction + (int) previewSegments.size()) % (int) previewSegments.size();
             if (previewSegments[(size_t) index].enabled && previewSegments[(size_t) index].length() > 0)
             {
-                selected = index; updateControls(); waveform.reveal (previewSegments[(size_t) index].startSample, previewSegments[(size_t) index].endSample);
+                selected = index; waveform.setCursorSample (previewSegments[(size_t) index].startSample); updateControls(); waveform.reveal (previewSegments[(size_t) index].startSample, previewSegments[(size_t) index].endSample);
                 if (autoplay.getToggleState()) auditionSelection (false); return;
             }
         }
@@ -1447,7 +1641,7 @@ private:
             waveform.setReviewFocus (item.start, item.end); updateControls();
             if (autoplay.getToggleState()) auditionSelection (false); return;
         }
-        if (++reviewVisitedSources >= (int) files.size())
+        if (joined() || ++reviewVisitedSources >= (int) files.size())
         {
             reviewAcrossSources = false; reviewCursorSample = -1;
             status.setText ("Review pass complete. Protected decisions were skipped; Next Review starts another pass.", juce::dontSendNotification); return;
@@ -1582,25 +1776,221 @@ private:
         component.removeKeyListener (this);
         for (int i = 0; i < component.getNumChildComponents(); ++i) if (auto* child = component.getChildComponent (i)) removeKeys (*child);
     }
+    void toggleKeyHelp()
+    {
+        keyHelp.setVisible (! keyHelp.isVisible()); shortcuts.setToggleState (keyHelp.isVisible(), juce::dontSendNotification);
+        if (keyHelp.isVisible()) { keyHelp.toFront (true); keyHelp.grabKeyboardFocus(); } else waveform.grabKeyboardFocus();
+    }
+    void nudgeBoundary (bool start, int direction, bool coarse)
+    {
+        if (! source || ! validSelection() || loading || isCurrentInputDisabled()) return;
+        const auto& s = previewSegments[(size_t) selected];
+        const int sample = (start ? s.startSample : s.endSample) + direction * juce::jmax (1, (int) std::llround (source->audio.sampleRate * (coarse ? 0.01 : 0.001)));
+        editBoundary (selected, start, sample); editingBoundary = false;
+        waveform.setCursorSample (start ? previewSegments[(size_t) selected].startSample : previewSegments[(size_t) selected].endSample);
+    }
     bool shortcut (const juce::KeyPress& key)
     {
         if (! isSegmentationMode()) return false;
-        if (dynamic_cast<juce::TextEditor*> (juce::Component::getCurrentlyFocusedComponent()) != nullptr) return false;
-        const auto mods = key.getModifiers(); const int code = key.getKeyCode(); const bool control = mods.isCtrlDown() || mods.isCommandDown();
-        if (control && (code == 'Z' || code == 'z')) { restoreHistory (mods.isShiftDown()); return true; }
+        const auto mods = key.getModifiers(); const int code = key.getKeyCode();
+        const bool control = mods.isCtrlDown() || mods.isCommandDown(), shift = mods.isShiftDown();
+        const bool helpKey = code == '?' || key.getTextCharacter() == '?' || (code == '/' && shift);
+        if (keyHelp.isVisible())
+        {
+            if (helpKey || code == juce::KeyPress::escapeKey) { toggleKeyHelp(); return true; }
+            return false;
+        }
+        if (sourcesOpen)
+        {
+            if (code == juce::KeyPress::escapeKey) { sourcesOpen = false; resized(); waveform.grabKeyboardFocus(); return true; }
+            return false;
+        }
+        auto* focused = juce::Component::getCurrentlyFocusedComponent();
+        if (dynamic_cast<juce::TextEditor*> (focused) != nullptr || dynamic_cast<juce::ComboBox*> (focused) != nullptr) return false;
+        const auto press = [] (juce::Button& button) { if (button.isEnabled() && button.onClick) button.onClick(); };
+        if (helpKey) { toggleKeyHelp(); return true; }
+        if (code == juce::KeyPress::escapeKey) { stopAuditionNow(); return true; }
+        if (control && (code == 'Z' || code == 'z')) { restoreHistory (shift); return true; }
+        if (control && (code == 'Y' || code == 'y')) { restoreHistory (true); return true; }
+        if (code == juce::KeyPress::pageUpKey || code == juce::KeyPress::pageDownKey)
+        { if (! files.empty() && ! joined()) { reviewAcrossSources = false; changeSource (juce::jlimit (0, (int) files.size() - 1, fileIndex + (code == juce::KeyPress::pageUpKey ? -1 : 1))); } return true; }
         if (loading) return false;
-        if (code == juce::KeyPress::spaceKey) { toggleAudition(); return true; }
-        if (code == juce::KeyPress::tabKey && ! control) { selectAdjacent (mods.isShiftDown() ? -1 : 1); return true; }
-        if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) { deleteSelection(); return true; }
-        if (! control && (code == 'S' || code == 's')) { splitSelection(); return true; }
-        if (! control && (code == 'M' || code == 'm')) { mergeSelection(); return true; }
-        if (! control && (code == 'E' || code == 'e')) { addSelectedExample (false); return true; }
-        if (! control && (code == 'R' || code == 'r')) { reviewVisitedSources = 0; nextReview(); return true; }
-        if (code == juce::KeyPress::returnKey && ! control) { confirmSelection(); return true; }
+        if (control && (code == 'R' || code == 'r')) { press (reanalyse); return true; }
+        if (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey)
+        {
+            const int direction = code == juce::KeyPress::leftKey ? -1 : 1;
+            if (mods.isAltDown()) waveform.panBy (direction);
+            else if (control && source) waveform.setCursorSample (juce::jmax (0, waveform.getCursorSample()) + direction * (int) std::llround (source->audio.sampleRate * (shift ? 0.001 : 0.01)));
+            else selectAdjacent (direction);
+            return true;
+        }
+        if (code == juce::KeyPress::homeKey || code == juce::KeyPress::endKey)
+        { const auto r = selectionRange(); if (source && (control || r)) waveform.setCursorSample (code == juce::KeyPress::homeKey ? (control ? 0 : r->first) : (control ? source->audio.buffer.getNumSamples() : r->second)); return true; }
+        if (control) return false;
+        if (code == juce::KeyPress::spaceKey) { press (play); return true; }
+        if (code == juce::KeyPress::tabKey) { selectAdjacent (shift ? -1 : 1); return true; }
+        if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) { press (remove); return true; }
+        if (code == juce::KeyPress::returnKey) { press (confirm); return true; }
+        if (code == ',' || code == '<' || code == '.' || code == '>') { nudgeBoundary (true, code == ',' || code == '<' ? -1 : 1, shift); return true; }
+        if (code == ';' || code == ':' || code == '\'' || code == '"') { nudgeBoundary (false, code == ';' || code == ':' ? -1 : 1, shift); return true; }
+        if (code == '[' || code == ']')
+        { if (validSelection() && source && ! isCurrentInputDisabled() && waveform.getCursorSample() >= 0) { editBoundary (selected, code == '[', waveform.getCursorSample()); editingBoundary = false; } return true; }
+        if (code == '+' || code == '=' || code == '-') { waveform.zoomBy (code == '-' ? -0.3f : 0.3f); return true; }
+        if (code == '0') { waveform.fitAll(); return true; }
+        if (code == 'F' || code == 'f') { if (const auto r = selectionRange()) waveform.fitSelection (r->first, r->second); return true; }
+        if (code == 'S' || code == 's') { press (split); return true; }
+        if (code == 'M' || code == 'm') { press (merge); return true; }
+        if (code == 'E' || code == 'e') { press (addExample); return true; }
+        if (code == 'X' || code == 'x') { press (wrongEvent); return true; }
+        if (code == 'U' || code == 'u') { press (release); return true; }
+        if (code == 'P' || code == 'p') { press (profiles); return true; }
+        if (code == 'C' || code == 'c') { press (context); return true; }
+        if (code == 'R' || code == 'r') { press (review); return true; }
+        if (code == 'A' || code == 'a') { autoplay.setToggleState (! autoplay.getToggleState(), juce::dontSendNotification); press (autoplay); return true; }
+        if (code == 'N' || code == 'n') { snap.setToggleState (! snap.getToggleState(), juce::dontSendNotification); press (snap); return true; }
         return false;
     }
     bool keyPressed (const juce::KeyPress& key) override { return shortcut (key); }
     bool keyPressed (const juce::KeyPress& key, juce::Component*) override { return shortcut (key); }
+
+    void initialiseStudioControls()
+    {
+        section = isSegmentationMode() ? 0 : 3;
+        const char* names[] = { "Detect", "Edges", "Match", "Output" };
+        for (int i = 0; i < 4; ++i)
+        {
+            auto& button = sectionTabs[(size_t) i]; button.setButtonText (names[i]); addAndMakeVisible (button);
+            button.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff176080));
+            button.setColour (juce::TextButton::textColourOnId, juce::Colour (0xffeffcff));
+            button.setEnabled (isSegmentationMode() || i == 3);
+            button.onClick = [this, i] { section = i; controlsViewport.setViewPosition (0, 0); resized(); };
+        }
+        sourceCaption.setFont (juce::Font (14)); sourceCaption.setColour (juce::Label::textColourId, juce::Colour (0xffbed0df)); addAndMakeVisible (sourceCaption);
+        addFilesButton.setButtonText ("Add..."); addFilesButton.setTooltip ("Append recordings, or drop audio files anywhere on this window."); addAndMakeVisible (addFilesButton);
+        addFilesButton.onClick = [this] { chooseSources (false); };
+        sourcesButton.onClick = [this] { sourcesOpen = ! sourcesOpen; stopAuditionNow(); resized(); }; addAndMakeVisible (sourcesButton);
+        sourcePanel.setOpaque (true); addChildComponent (sourcePanel);
+        sourceList.setModel (this); sourceList.setRowHeight (30); sourcePanel.addAndMakeVisible (sourceList);
+        sourcesDescription.setText ("Files are used in the order below. One timeline joins them directly; original audio stays on disk.", juce::dontSendNotification);
+        sourcesDescription.setFont (juce::Font (12.5f)); sourcePanel.addAndMakeVisible (sourcesDescription);
+        for (auto* button : { &combineFiles, &separateFiles, &replaceFiles, &appendFiles, &closeSources }) sourcePanel.addAndMakeVisible (*button);
+        combineFiles.setButtonText ("One timeline"); separateFiles.setButtonText ("Separate files");
+        for (auto* button : { &combineFiles, &separateFiles })
+        {
+            button->setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff176080));
+            button->setColour (juce::TextButton::textColourOnId, juce::Colour (0xffeffcff));
+        }
+        combineFiles.setTooltip ("Join recordings and start new cuts. Undo restores your previous mode and edits."); separateFiles.setTooltip ("Analyse each file independently. Starts new cuts; Undo restores the combined timeline.");
+        combineFiles.onClick = [this] { setJoinedMode (true); }; separateFiles.onClick = [this] { setJoinedMode (false); };
+        replaceFiles.setButtonText ("Replace..."); appendFiles.setButtonText ("Add files..."); closeSources.setButtonText ("Close");
+        replaceFiles.onClick = [this] { chooseSources (true); }; appendFiles.onClick = [this] { chooseSources (false); };
+        closeSources.onClick = [this] { sourcesOpen = false; resized(); waveform.grabKeyboardFocus(); };
+        presetSelector.addItem ("Balanced", 1); presetSelector.addItem ("Short hits", 2); presetSelector.addItem ("Whole gestures", 3); presetSelector.setTextWhenNothingSelected ("Custom settings");
+        presetSelector.setSelectedId (1, juce::dontSendNotification); controls.addAndMakeVisible (presetSelector);
+        presetSelector.onChange = [this]
+        {
+            if (updatingUi || presetSelector.getSelectedId() == 0) return;
+            captureUndo(); const int preset = presetSelector.getSelectedId();
+            rules.assistedExtraction = true; rules.boundaryDetectorVersion = 3;
+            rules.cutSensitivity = preset == 2 ? 0.7 : 0.5; rules.wholeGestures = preset == 3 ? 1.0 : preset == 2 ? 0.15 : 0.65;
+            rules.tailPreservation = preset == 3 ? 0.75 : preset == 2 ? 0.5 : 0.65;
+            rules.minSegmentMs = preset == 3 ? 80 : 25; rules.minSilenceMs = preset == 3 ? 160 : preset == 2 ? 60 : 100;
+            ++rules.segmentationRevision; syncUiFromRules(); refreshPreview (true);
+        };
+        advancedButton.setButtonText ("Advanced detection..."); controls.addAndMakeVisible (advancedButton);
+        advancedButton.onClick = [this] { advancedOpen = ! advancedOpen; advancedButton.setButtonText (advancedOpen ? "Close advanced" : "Advanced detection..."); resized(); };
+        controls.addAndMakeVisible (reset);
+        remove.setVisible (isSegmentationMode());
+        confirm.setButtonText ("Keep + next"); remove.setButtonText ("Delete"); split.setButtonText ("Split"); merge.setButtonText ("Merge"); review.setButtonText ("Review");
+        sensitivity.setTooltip ("Higher sensitivity accepts weaker attacks. Changes automatic regions; protected edits remain.");
+        gestures.setTooltip ("Group nearby actions. At 100%, keep complete gestures separated by quiet gaps.");
+        tails.setTooltip ("Retain more or less of the event decay.");
+        updateStudioVisibility();
+    }
+    void updateStudioVisibility()
+    {
+        int preset = 0;
+        const auto close = [] (double a, double b) { return std::abs (a - b) < 0.00001; };
+        if (rules.assistedExtraction && rules.boundaryDetectorVersion == 3)
+        {
+            if (close (rules.cutSensitivity, .5) && close (rules.wholeGestures, .65) && close (rules.tailPreservation, .65) && close (rules.minSegmentMs, 25) && close (rules.minSilenceMs, 100)) preset = 1;
+            if (close (rules.cutSensitivity, .7) && close (rules.wholeGestures, .15) && close (rules.tailPreservation, .5) && close (rules.minSegmentMs, 25) && close (rules.minSilenceMs, 60)) preset = 2;
+            if (close (rules.cutSensitivity, .5) && close (rules.wholeGestures, 1) && close (rules.tailPreservation, .75) && close (rules.minSegmentMs, 80) && close (rules.minSilenceMs, 160)) preset = 3;
+        }
+        presetSelector.setSelectedId (preset, juce::dontSendNotification);
+        std::set<juce::Component*> visible;
+        const auto show = [&] (std::initializer_list<juce::Component*> items) { for (auto* item : items) visible.insert (item); };
+        if (section == 0)
+        {
+            show ({ &presetSelector, &sensitivity, &gestures, &tails, &minSegment, &advancedButton, &reanalyse });
+            if (advancedOpen) { show ({ &detector, &adaptive, &minSilence }); if (! rules.assistedExtraction || ! rules.adaptiveBackground) show ({ &silenceDb }); if (! rules.assistedExtraction) show ({ &relative, &threshold }); }
+        }
+        else if (section == 1) show ({ &segmentStart, &segmentEnd, &preRoll, &postRoll, &fade, &snap, &autoplay, &context, &release });
+        else if (section == 2) show ({ &profileInfo, &addExample, &wrongEvent, &profiles, &useExamples, &matchesOnly, &matchThreshold });
+        else { show ({ &normalize, &reject, &rmsReject, &reset }); if (! joined()) show ({ &removeSource }); if (! isSegmentationMode()) show ({ &trim, &strip, &silenceDb, &threshold, &minSilence, &preRoll, &postRoll, &fade }); }
+        for (auto* child : controls.getChildren()) child->setVisible (visible.count (child) != 0);
+        for (int i = 0; i < 4; ++i) sectionTabs[(size_t) i].setToggleState (section == i, juce::dontSendNotification);
+        combineFiles.setToggleState (rules.joinSegmentationInputs, juce::dontSendNotification); separateFiles.setToggleState (! rules.joinSegmentationInputs, juce::dontSendNotification);
+        combineFiles.setEnabled (isSegmentationMode()); separateFiles.setEnabled (isSegmentationMode());
+        sourcesDescription.setText (joined() ? "One timeline / " + juce::String ((int) files.size()) + " files in this order. No inserted gaps or fades." : "Select a recording to inspect it. Use One timeline to combine all files and start fresh cuts.", juce::dontSendNotification);
+    }
+    int getNumRows() override { return (int) files.size(); }
+    void paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool selectedRow) override
+    {
+        if (row < 0 || row >= (int) files.size()) return;
+        g.fillAll (juce::Colour (selectedRow ? 0xff204359 : row % 2 ? 0xff1a2630 : 0xff17232c));
+        g.setFont (juce::Font (13)); g.setColour (juce::Colour (0xffd4e0eb));
+        g.drawText (juce::String (row + 1) + "   " + files[(size_t) row].getFileName(), 10, 0, width - 20, height, juce::Justification::centredLeft, true);
+    }
+    void listBoxItemClicked (int row, const juce::MouseEvent&) override
+    {
+        if (! joined() && row >= 0 && row < (int) files.size()) { changeSource (row); sourcesOpen = false; resized(); waveform.grabKeyboardFocus(); }
+    }
+    void setJoinedMode (bool combine)
+    {
+        if (rules.joinSegmentationInputs == combine || ! isSegmentationMode()) return;
+        captureUndo(); stopAuditionNow(); rules.joinSegmentationInputs = combine;
+        rules.manualSegmentsByInput.clear(); rules.manualSegmentSampleRates.clear(); rules.snapshotRevisions.clear(); rules.disabledInputIndices.clear();
+        ++rules.segmentationRevision; fileIndex = 0; selected = -1; source.reset(); syncUiFromRules(); refreshPreview (true);
+    }
+    void addSources (std::vector<juce::File> incoming, bool replace)
+    {
+        incoming = filterSupportedExistingFiles (incoming); if (incoming.empty()) return;
+        std::vector<juce::File> additions;
+        for (const auto& file : incoming) if (replace || std::find (files.begin(), files.end(), file) == files.end()) additions.push_back (file);
+        if (additions.empty()) return;
+        captureUndo(); stopAuditionNow();
+        if (replace)
+        {
+            files.clear(); rules.sourceBindings.clear(); rules.manualSegmentsByInput.clear(); rules.manualSegmentSampleRates.clear(); rules.snapshotRevisions.clear(); rules.disabledInputIndices.clear(); selected = -1;
+        }
+        for (const auto& file : additions) { files.push_back (file); SourceFingerprint binding; binding.path = file.getFullPathName(); rules.sourceBindings.push_back (binding); }
+        if (rules.joinSegmentationInputs) fileIndex = 0; else if (replace) fileIndex = 0;
+        source.reset(); processed.reset(); ++rules.segmentationRevision; sourcesOpen = false; syncUiFromRules(); refreshPreview (true);
+    }
+    void chooseSources (bool replace)
+    {
+        chooser = std::make_unique<juce::FileChooser> (replace ? "Replace recordings" : "Add recordings", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3;*.m4a;*.caf;*.w64");
+        juce::Component::SafePointer<ImportPreviewComponent> safe (this);
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::canSelectMultipleItems,
+            [safe, replace] (const juce::FileChooser& chooser)
+            { if (safe != nullptr) { std::vector<juce::File> files; for (const auto& file : chooser.getResults()) files.push_back (file); safe->addSources (std::move (files), replace); } });
+    }
+    bool isInterestedInFileDrag (const juce::StringArray& paths) override { return containsSupportedFileExtension (paths); }
+    void fileDragEnter (const juce::StringArray&, int, int) override { draggingFiles = true; repaint(); }
+    void fileDragExit (const juce::StringArray&) override { draggingFiles = false; repaint(); }
+    void filesDropped (const juce::StringArray& paths, int, int) override
+    {
+        draggingFiles = false; repaint(); std::vector<juce::File> files; for (const auto& path : paths) files.emplace_back (path); addSources (std::move (files), false);
+    }
+    struct SourcePanel : juce::Component { void paint (juce::Graphics& g) override { g.fillAll (juce::Colour (0xff17232c)); } } sourcePanel;
+    std::array<juce::TextButton, 4> sectionTabs;
+    juce::Label sourceCaption, sourcesDescription;
+    juce::TextButton sourcesButton, addFilesButton, advancedButton, combineFiles, separateFiles, replaceFiles, appendFiles, closeSources;
+    juce::ComboBox presetSelector;
+    juce::ListBox sourceList;
+    int section = 0;
+    bool advancedOpen = false, sourcesOpen = false, draggingFiles = false;
 
     std::vector<juce::File> files;
     ImportAction action;
@@ -1609,13 +1999,24 @@ private:
     AuditionCallback onAudition;
     StopAuditionCallback onStopAudition;
     PauseAuditionCallback onPauseAudition;
+    struct ExtractorLookAndFeel : juce::LookAndFeel_V4
+    {
+        juce::Slider::SliderLayout getSliderLayout (juce::Slider& slider) override
+        {
+            juce::Slider::SliderLayout layout;
+            layout.sliderBounds = { 0, 22, slider.getWidth(), juce::jmax (1, slider.getHeight() - 22) };
+            layout.textBoxBounds = { juce::jmax (0, slider.getWidth() - 80), 0, 80, 20 };
+            return layout;
+        }
+    } extractorLookAndFeel;
     juce::Label title, selectionInfo, profileInfo, status;
-    juce::ComboBox sourceSelector, outputMode;
+    juce::ComboBox sourceSelector, outputMode, detector;
+    juce::TextEditor keyHelp;
     juce::Viewport controlsViewport;
     juce::Component controls;
     ResettableSlider sensitivity, gestures, tails, silenceDb, threshold, minSilence, minSegment, preRoll, postRoll, fade, rmsReject, matchThreshold, segmentStart, segmentEnd;
-    juce::ToggleButton assisted, adaptive, relative, trim, strip, reject, normalize, useExamples, matchesOnly, snap, autoplay;
-    juce::TextButton previous, next, play, stop, remove, reanalyse, removeSource, confirm, addExample, wrongEvent, split, merge, review, context, profiles, release, apply, cancel, reset;
+    juce::ToggleButton adaptive, relative, trim, strip, reject, normalize, useExamples, matchesOnly, snap, autoplay;
+    juce::TextButton previous, next, play, stop, remove, reanalyse, removeSource, confirm, addExample, wrongEvent, split, merge, review, context, profiles, release, apply, cancel, reset, undoButton, redoButton, shortcuts;
     WaveformPreview waveform;
     std::unique_ptr<juce::FileChooser> chooser;
     std::shared_ptr<const ImportPreviewSource> source, processed;
@@ -1663,7 +2064,7 @@ static inline void showImportPreviewDialog (juce::Component& parent, std::vector
     content->setSize (bounds.getWidth(), bounds.getHeight());
     juce::DialogWindow::LaunchOptions opts;
     opts.dialogTitle = segmentation ? "Sample Extractor" : "Import / Preprocess";
-    opts.dialogBackgroundColour = juce::Colour (0xff20272d); opts.escapeKeyTriggersCloseButton = true;
+    opts.dialogBackgroundColour = juce::Colour (0xff20272d); opts.escapeKeyTriggersCloseButton = ! segmentation;
     opts.useNativeTitleBar = true; opts.resizable = true; opts.content.setOwned (content);
     if (auto* window = opts.launchAsync())
     {

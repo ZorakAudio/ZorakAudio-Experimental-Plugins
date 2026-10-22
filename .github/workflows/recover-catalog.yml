@@ -7,6 +7,10 @@ on:
         description: Completed catalog release run ID whose twelve build artifacts should be reused
         type: string
         required: true
+      current_selection:
+        description: Recurate Essentials and All using this branch's release policy (reuse original plugin bytes)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -75,10 +79,19 @@ jobs:
           run-id: ${{ inputs.source_run_id }}
           pattern: catalog-shard-*
           path: build/catalog-shards
-      - name: Assemble the three original collections
+      - name: Assemble reviewed collections from original builds
         env:
           TAG: ${{ steps.source.outputs.tag }}
-        run: python scripts/merge_catalog_archives.py --input build/catalog-shards --output dist/catalog --tag "$TAG" --catalog-root build/catalog-source --collections
+          CURRENT_SELECTION: ${{ inputs.current_selection }}
+        shell: python
+        run: |
+          import os, subprocess, sys
+          flags = []
+          if os.environ['CURRENT_SELECTION'] == 'true':
+              flags = ['--collection-policy-root', '.', '--collection', 'Essentials', '--collection', 'All']
+          subprocess.check_call([sys.executable, '-u', 'scripts/merge_catalog_archives.py',
+              '--input', 'build/catalog-shards', '--output', 'dist/catalog',
+              '--tag', os.environ['TAG'], '--catalog-root', 'build/catalog-source', '--collections', *flags])
       - name: Upload ready-to-install ZIPs for review and release upload
         uses: actions/upload-artifact@v4
         with:

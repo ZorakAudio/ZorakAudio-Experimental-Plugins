@@ -3540,6 +3540,16 @@ public:
     return vm ? vm->syncStringVarUtf8(name, text) : false;
   }
 
+  #if defined(ZA_SAMPLE_GFX_TEST_RUNNER) && ZA_SAMPLE_GFX_TEST_RUNNER
+  // Called only by the graphics worker after executeFrame(). Test readers use
+  // a processor-owned copy, and never access the live EEL VM across threads.
+  double readUiScalarForTest(const char* name)
+  {
+    auto* value = vm ? vm->get_var(name) : nullptr;
+    return value ? double(*value) : std::numeric_limits<double>::quiet_NaN();
+  }
+  #endif
+
   bool readStringVarUtf8(const char* name, juce::String& out)
   {
     return vm ? vm->readStringVarUtf8(name, out) : false;

@@ -5,6 +5,7 @@
 #endif
 
 #include "DspJsfxSamplePoolStorage.h"
+#include "SampleLevelAnalysis.h"
 
 #include <array>
 #include <atomic>
@@ -65,6 +66,7 @@ struct DspJsfxSamplePoolEntry
     std::uint32_t previewCount = 0;
     float peak = 0.0f;
     float rms = 0.0f;
+    SampleLevels levels {}; // opt-in, worker-built, immutable with this entry
 };
 struct DspJsfxSamplePoolGeneration
 {
@@ -121,6 +123,7 @@ public:
     bool hasPendingAdoption() const noexcept { return storage_.hasPending(); }
     void setBudgetMB(double mb) noexcept;
     void setTargetSampleRate(double sampleRate) noexcept;
+    void setLevelAnalysis(bool enabled) noexcept { levelAnalysis_.store(enabled, std::memory_order_release); }
     void setCompletionCallback(CompletionCallback callback);
     int mode() const noexcept { return mode_.load(std::memory_order_acquire); }
     double budgetMB() const noexcept { return static_cast<double>(budgetBytes_.load(std::memory_order_acquire)) / (1024.0 * 1024.0); }
@@ -145,6 +148,7 @@ public:
     int sampleRate(std::uint64_t sampleId) const noexcept;
     double peak(std::uint64_t sampleId) const noexcept;
     double rms(std::uint64_t sampleId) const noexcept;
+    double level(std::uint64_t sampleId, int field) const noexcept;
     bool name(std::uint64_t sampleId, std::string& out) const;
     double read(std::uint64_t sampleId, int channel, double frame) const noexcept;
     double readInterp(std::uint64_t sampleId, int channel, double phase) const noexcept;
@@ -162,6 +166,7 @@ private:
         std::uint64_t budgetBytes = 0;
         double targetSampleRate = 0.0; // <= 0 keeps native source rates
         std::uint64_t requestId = 0;
+        bool levelAnalysis = false;
     };
     static std::shared_ptr<DspJsfxSamplePoolGeneration> buildGeneration(const Request& request);
     void ensureWorker();
@@ -175,6 +180,8 @@ private:
     std::atomic<int> mode_ { kSamplePoolModeResident };
     std::atomic<std::uint64_t> budgetBytes_ { 0 }; // 0 = unlimited in resident mode
     std::atomic<double> targetSampleRate_ { 0.0 };
+    std::atomic<bool> levelAnalysis_ { false };
+    std::atomic<int> lastCommittedLevelAnalysis_ { -1 };
     std::atomic<int> state_ { kSamplePoolEmpty };
     std::atomic<int> selected_ { 0 };
     std::atomic<int> failed_ { 0 };

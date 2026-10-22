@@ -11,10 +11,12 @@ This major release brings together instruments and effects that explore how soun
 | Collection | What's inside |
 | --- | --- |
 | **Essentials** | **13 selected instruments and effects.** The flagships and a focused toolkit for shaping sound. Start here. |
-| **All** | **36 ZorakAudio plugins.** The complete non-Joep collection, including specialist tools and alternate designs. |
+| **All** | **35 ZorakAudio plugins.** The complete non-Joep collection, including specialist tools and alternate designs. |
 | **JoepVanlier** | **50 native builds from Joep Vanlier / Saike's JSFX catalog.** Available as a separate collection for use in VST3/CLAP hosts. |
 
 Each ZIP includes **all three operating systems**. Essentials is included in All; choose one, then add JoepVanlier if you want it.
+
+**Sample correction:** the corrected Essentials and All downloads include the original **Sample**. **Sample Faust is withdrawn** following reports of display/EQ faults and clicks that trigger host auto-mute. If you installed Sample Faust from the initial download, replace that instance with Sample; the two have separate plugin identities.
 
 ## File Loader — turn long takes into playable material
 
@@ -22,9 +24,12 @@ Each ZIP includes **all three operating systems**. Essentials is included in All
 
 The shared File Loader includes **auto-segmentation** with waveform previews and auditioning. Adjust detection to preserve whole gestures and tails, split or merge cuts, and guide extraction with examples of wanted and unwanted events. Load the results as separate samples or assemble a continuous texture—all in memory, leaving the original recordings untouched.
 
-[![File Loader auto-segmentation: previewing and refining cuts in Sample](https://raw.githubusercontent.com/ZorakAudio/ZorakAudio-Experimental-Plugins/main/docs/media/auto-segmentation.gif)](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/raw/refs/heads/main/docs/media/auto-segmentation.mp4)
+![File Loader auto-segmentation: previewing and refining cuts in Sample](https://raw.githubusercontent.com/ZorakAudio/ZorakAudio-Experimental-Plugins/main/docs/media/auto-segmentation.gif)
 
-*30-second preview. Click for the longer demonstration with audio (3:06).*
+**Full 3 Minute Demo**
+
+https://github.com/user-attachments/assets/d15eab72-3372-47ec-acd7-47a6c4b6bb06
+
 
 [File Loader and sample-extraction workflow](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/blob/main/docs/FileImportRecipes.md).
 
@@ -34,7 +39,7 @@ Click a name for its manual, or open **?** inside the plugin.
 
 | Plugin | What makes it worth exploring |
 | --- | --- |
-| [Sample](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/blob/main/plugins/Spectral/SampleFaust/README.md) | **Make a folder of recordings playable.** A multisampler with coherent sample selection, tape, hybrid and granular playback, expressive envelopes, cleanup and harmonic character. Load a bank and perform. |
+| [Sample](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/blob/main/plugins/Spectral/Sample/README.md) | **Make a folder of recordings playable.** A multisampler with coherent sample selection, tape, hybrid and granular playback, expressive envelopes, cleanup and harmonic character. Load a bank and perform. |
 | [Corpus](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/blob/main/plugins/Spectral/Corpus/README.md) | **Explore a recording as an instrument.** Acoustic analysis organizes its material into a navigable map; MIDI, drawn paths and coherence controls guide new sequences through its textures. |
 | [Hyperreal 3D Panner](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/blob/main/plugins/Spatialization/3DPanner/README.md) | **Place sound in a scene.** Artistic and Physical renderers combine direction, distance, elevation, obstruction and room cues for headphone spatialization. Drag sources, shape their motion, and explore listener geometry. |
 | [Anti-Salience MX](https://github.com/ZorakAudio/ZorakAudio-Experimental-Plugins/blob/main/plugins/Spatialization/AntiSalienceMX/README.md) | **Shape what commands attention.** Adaptive processing targets persistent tonal and transient cues to help a layer recede, with identity protection, optional foreground guidance and selective spatial scatter. |

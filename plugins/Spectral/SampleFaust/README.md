@@ -1,9 +1,12 @@
 # Sample Faust
 
-An optional native build of Sample with its five character bands implemented
-in FAUST. The transistor and asymmetric diode formulas, harmonic enrichment,
-parameters and interactive editor retain Sample's behavior. See
-[Sample's manual](../Sample/README.md) for controls and loading.
+**Withdrawn — use [Sample](../Sample/README.md).** This build has reported
+display corruption, nonfunctional EQ and clicks that trigger host auto-mute.
+It is excluded from release builds and downloads, including explicit build
+selections. Source and the earlier measurements are retained for investigation;
+those measurements do not establish that this version is safe to use.
+
+The remaining documentation describes the experimental FAUST character variant.
 
 ## What it is
 Sample is a **load-and-go psycho multisampler**.
@@ -114,8 +117,9 @@ and buffer size. The isolated character kernel's speedup is not a promise of
 the same improvement for the complete sampler. See
 [the integration measurements](../../../docs/Sample-Faust-Character-Integration.md).
 
-Build locally with `python scripts/build.py --only SampleFaust`. FAUST with its
-LLVM backend is required at build time; no compiler or JIT runs in the plugin.
+Release builds reject `python scripts/build.py --only SampleFaust` while this
+variant is withdrawn. FAUST with its LLVM backend was required at build time;
+no compiler or JIT runs in the compiled plugin.
 The embedded `@faust` source targets this repository's native compiler and is
 not a stock REAPER JSFX effect.
 

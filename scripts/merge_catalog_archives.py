@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 import tempfile
 import zipfile
 from pluginlib import discover_plugins
-from release_collections import build_catalog, collections_for, load_policy, policy_digest, policy_receipt_digests, PLATFORMS
+from release_collections import build_catalog, collections_for, load_policy, policy_digest, policy_receipt_digests, PLATFORMS, COLLECTIONS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -130,27 +130,48 @@ def selected_member(name, package, specs):
     return False
 
 
-def assemble_collections(input_dir, output_dir, tag, repo_root=ROOT):
+def assemble_collections(input_dir, output_dir, tag, repo_root=ROOT,
+                        collection_policy_root=None, selected_collections=None):
     """Validate all shards, then publish three ZIPs containing all three OSes.
 
     Collection selection never recompiles DSP. Signed bundles, executable modes,
     symlinks and resource metadata are copied verbatim from validated builds.
     """
+    # Validate builds against their ORIGINAL policy. A separately supplied
+    # policy may only curate already-built plugins; it cannot change their DSP.
     specs = discover_plugins(repo_root)
-    collections = collections_for(specs, repo_root)
-    policy = load_policy(repo_root)
+    policy_root = repo_root if collection_policy_root is None else collection_policy_root
+    collections = collections_for(specs, policy_root)
+    available = {spec.slug for spec in build_catalog(specs, repo_root)}
+    requested = tuple(COLLECTIONS if selected_collections is None else selected_collections)
+    if not requested or len(requested) != len(set(requested)) or set(requested) - set(COLLECTIONS):
+        raise ValueError('Choose distinct supported collections')
+    collections = {name: collections[name] for name in requested}
+    unavailable = {spec.slug for selected in collections.values() for spec in selected} - available
+    if unavailable:
+        raise ValueError('Collection policy requires plugins absent from original builds: ' +
+                         ', '.join(sorted(unavailable)))
+    # Recovery of an old selection must not re-publish currently withdrawn
+    # plugins. Recuration can still reuse their siblings' original build bytes.
+    blocked = {spec.slug for selected in collections.values() for spec in selected} & set(load_policy(ROOT)['buildExcluded'])
+    if blocked:
+        raise ValueError('Current release policy excludes ' + ', '.join(sorted(blocked)) +
+                         '; use --collection-policy-root with the reviewed current selection')
+    policy = load_policy(policy_root)
     purposes = {item['slug']: item['purpose'] for item in policy['essentials']}
     output_dir.mkdir(parents=True, exist_ok=True)
     results = {}
     with tempfile.TemporaryDirectory(prefix='catalog-verified-', dir=output_dir) as directory:
         verified = merge(input_dir, Path(directory), tag, report=False, repo_root=repo_root)
         for collection, selected in collections.items():
+            print(f'Assembling {collection}: {len(selected)} plugins per platform', flush=True)
             package = f'ZorakAudio-Experimental-Plugins-{tag}-{collection}-all-platforms'
             target = output_dir / (package + '.zip')
             temporary = Path(directory) / target.name
             platform_receipts = {}
             with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as output:
                 for platform in PLATFORMS:
+                    print(f'  Copying {platform} bundles', flush=True)
                     with zipfile.ZipFile(verified[platform]['archive']) as source:
                         receipt_name = next(name for name in source.namelist() if name.count('/') == 1 and name.endswith('/manifest.json'))
                         receipt = json.loads(source.read(receipt_name))
@@ -173,7 +194,8 @@ def assemble_collections(input_dir, output_dir, tag, repo_root=ROOT):
                         output.writestr(package + '/' + platform + '/manifest.json',
                                         json.dumps(platform_receipts[platform], indent=2) + '\n')
                 manifest = dict(schemaVersion=3, package=package, collection=collection,
-                                releasePolicySha256=policy_digest(repo_root),
+                                releasePolicySha256=policy_digest(policy_root),
+                                sourceReleasePolicySha256=policy_digest(repo_root),
                                 platforms=list(PLATFORMS), pluginCount=len(selected),
                                 plugins=[dict(slug=spec.slug, name=spec.name, category=spec.category,
                                               installPath=spec.install_rel_dir.as_posix(),
@@ -211,10 +233,18 @@ if __name__ == '__main__':
                         help='Catalog sources/policy checkout; use the original build commit when recovering older artifacts')
     parser.add_argument('--platform', action='append', choices=('windows','macos','linux'))
     parser.add_argument('--collections', action='store_true', help='Publish JoepVanlier, Essentials and All; requires all three platforms')
+    parser.add_argument('--collection-policy-root', type=Path,
+                        help='Use a reviewed selection policy from this checkout; original build receipts still use --catalog-root')
+    parser.add_argument('--collection', action='append', choices=COLLECTIONS,
+                        help='With --collections, assemble only these collections (repeatable)')
     args = parser.parse_args()
     if args.collections:
         if args.platform:
             parser.error('--collections requires all three platforms; do not use --platform')
-        assemble_collections(args.input, args.output, args.tag, repo_root=args.catalog_root)
+        assemble_collections(args.input, args.output, args.tag, repo_root=args.catalog_root,
+                            collection_policy_root=args.collection_policy_root,
+                            selected_collections=args.collection)
     else:
+        if args.collection_policy_root or args.collection:
+            parser.error('--collection-policy-root and --collection require --collections')
         merge(args.input, args.output, args.tag, args.platform or PLATFORMS, repo_root=args.catalog_root)

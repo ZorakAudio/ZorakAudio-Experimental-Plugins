@@ -339,6 +339,79 @@ int main(int argc, char **argv) try {
             require(std::abs(read("color_tilt_db") - 5) < 0.1 &&
                         std::abs(read("output_harmonics_amt") - 0.3) < 0.01,
                     "Color/Harmonics host edits did not reach DSP");
+            // Exercise normal EQ dragging, not only the solo command. The
+            // legacy native renderer can accept solo while dropping gain/freq.
+            {
+                const double graphHeight = std::clamp(
+                    double(view->getHeight() - 362), 230.0, 380.0);
+                const double graphX = view->getWidth() - proc + 10;
+                const double graphWidth = proc - 40;
+                const juce::Point<float> point{
+                    float(graphX + std::log(950.0 / 20) / std::log(1000.0) * graphWidth),
+                    float(170 + graphHeight * 0.5)};
+                view->mouseDown(event(*view, point, juce::ModifierKeys::leftButtonModifier));
+                pump(150);
+                for (int step = 1; step <= 12; ++step) {
+                    view->mouseDrag(event(*view, point + juce::Point<float>(step * 3.0f, step * -5.0f),
+                                          juce::ModifierKeys::leftButtonModifier));
+                    pump(35);
+                }
+                view->mouseUp(event(*view, point + juce::Point<float>(36, -60), 0));
+                pump(300);
+                std::cout << "EQ drag: gain 0 -> " << actual(33)
+                          << "; frequency 950 -> " << actual(36) << std::endl;
+                view->mouseMove(event(*view, {400, 30}, 0));
+                pump(100);
+                save(*editor, directory, "sample-eq-drag.png");
+                require(actual(33) > 3 && actual(36) > 950,
+                        "EQ normal drag failed");
+                set(33, 0);
+                set(36, 950);
+                pump(200);
+            }
+            // Use the actual Truth menu and host-owned sliders above slider64.
+            {
+                const double innerWidth = std::max(160.0, right - 28);
+                const int columns = innerWidth >= 270 ? 3 : 2;
+                const int rows = (15 + columns - 1) / columns;
+                const double gap = std::clamp(std::floor(innerWidth * 0.016), 10.0, 16.0);
+                const double cellWidth = (innerWidth - gap * (columns - 1)) / columns;
+                const double areaHeight = std::max(140.0, double(view->getHeight() - 296));
+                const double cellHeight = std::min(112.0, std::floor((areaHeight - 16 * (rows - 1)) / rows));
+                const double radius = std::clamp(std::min(cellWidth * 0.18, cellHeight * 0.24), 18.0, 22.0);
+                const juce::Point<float> truth{
+                    float(44 + left + mid + (8 % columns) * (cellWidth + gap) + cellWidth * 0.5),
+                    float(270 + (8 / columns) * (cellHeight + 16) + radius + 6)};
+                const double originalTruth = actual(10);
+                view->mouseDown(event(*view, truth, juce::ModifierKeys::leftButtonModifier |
+                                                   juce::ModifierKeys::ctrlModifier));
+                until([&] { return view->getNumChildComponents() && view->getChildComponent(0)->isVisible(); },
+                      "Truth matching menu did not open");
+                auto* menu = view->getChildComponent(0);
+                save(*editor, directory, "sample-matching-menu.png");
+                // Legacy is initially highlighted; Up wraps to Loudness.
+                menu->keyPressed(juce::KeyPress(juce::KeyPress::upKey));
+                menu->keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+                view->mouseUp(event(*view, truth, 0));
+                until([&] { return actual(65) == 3; }, "Truth menu did not select Loudness");
+                const double oldTarget = actual(66);
+                view->mouseDown(event(*view, truth, juce::ModifierKeys::leftButtonModifier |
+                                                   juce::ModifierKeys::shiftModifier));
+                pump(150);
+                view->mouseDrag(event(*view, truth + juce::Point<float>(0, -40),
+                                     juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::shiftModifier));
+                pump(200);
+                view->mouseUp(event(*view, truth + juce::Point<float>(0, -40), 0));
+                until([&] { return actual(66) > oldTarget; }, "Truth target drag did not reach host");
+                require(actual(10) == originalTruth, "Matching menu/target changed original Truth");
+                save(*editor, directory, "sample-loudness-target.png");
+                view->mouseDown(event(*view, truth, juce::ModifierKeys::rightButtonModifier |
+                                                   juce::ModifierKeys::ctrlModifier));
+                pump(150);
+                view->mouseUp(event(*view, truth, 0));
+                until([&] { return actual(65) == 0; }, "Truth reset did not restore Legacy");
+                std::cout << "PASS Truth menu, Loudness target drag, Legacy reset; original Truth retained" << std::endl;
+            }
             if (native) {
                 until(
                     [&] {

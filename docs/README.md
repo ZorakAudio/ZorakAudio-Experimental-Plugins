@@ -28,7 +28,7 @@ files also supply the bodies of new tagged releases. See
 | --- | --- |
 | Accepted FAUST migrations, rejected boundaries and sleep grants | [FAUST qualification](FAUST-Qualification.md) |
 | Original CMD design with block FAUST | [CMD](CMD-Original-FAUST-Integration.md) |
-| Optional Sample character variant | [Sample Faust](Sample-Faust-Character-Integration.md) |
+| Withdrawn Sample character experiment and historical results | [Sample Faust](Sample-Faust-Character-Integration.md) |
 | Hyperreal default, alternate models, idle and matched comparisons | [Hyperreal](Hyperreal-Panner.md) |
 | Historical long-recording preparation timings and model checks | [Corpus preparation](validation/Corpus-Preparation.md) |
 | JoepVanlier native coverage | [Joep checkpoint](JoepVanlier-Native-Compatibility.md) |

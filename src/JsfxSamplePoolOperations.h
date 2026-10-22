@@ -1,10 +1,71 @@
 // SPDX-License-Identifier: Zlib
 #pragma once
 #include "DspJsfxSamplePool.h"
+#if DSPJSFX_HAS_SPECTRAL_PITCH
+#include "DspJsfxSpectralPitch.h"
+#endif
 namespace za::jsfx {
 template<class Owner> class SamplePoolOperations {
     DspJsfxSamplePool* getSamplePoolForHandle(double handle) {return static_cast<Owner*>(this)->getSamplePoolForHandle(handle);}
+#if DSPJSFX_HAS_SPECTRAL_PITCH
+    std::unique_ptr<SpectralSamplePitch> spectralPitch;
+#endif
 public:
+#if DSPJSFX_HAS_SPECTRAL_PITCH
+    void prepareSamplePitch() {
+        spectralPitch=std::make_unique<SpectralSamplePitch>();
+        spectralPitch->prepare();
+    }
+    double rt_sample_pitch_read2(DSPJSFX_State* state, double handle, double sample,
+            double start, double frames, double pitch, double age, double voice,
+            double character, double* outL, double* outR) noexcept {
+        double l=0,r=0;bool ok=false;
+        if (state && spectralPitch && std::isfinite(handle) && std::isfinite(sample)
+            && std::isfinite(start) && std::isfinite(frames) && std::isfinite(age)
+            && std::isfinite(voice) && voice>=0 && voice<64 && age>=0 && age<2147483647
+            && sample>=1 && sample<=2147483647 && start>=0 && frames>=1) {
+            if (auto* pool=getSamplePoolForHandle(handle)) {
+                const double rate=pool->sampleRate(std::uint64_t(sample))/state->srate;
+                auto read=[&](double at,double& a,double& b){pool->read2(std::uint64_t(sample),at,&a,&b,true);};
+                ok=spectralPitch->read(int(voice),pool->generation(),sample,start,frames,rate,
+                        state->srate,pitch,character,int(age),read,l,r);
+            }
+        }
+        if(outL)jsfxCellStore(outL,l);if(outR)jsfxCellStore(outR,r);return ok?1.:0.;
+    }
+#endif
+#if DSPJSFX_HAS_SPECTRAL_PITCH
+    double rt_sample_pitch_read2_ex(DSPJSFX_State* state, double handle, double sample,
+            double start, double frames, double pitch, double age, double stream,
+            double character, double playbackRate, double* outL, double* outR) noexcept {
+        double l=0,r=0;bool ok=false;
+        if(state && spectralPitch && std::isfinite(handle) && std::isfinite(sample)
+            && std::isfinite(start) && std::isfinite(frames) && std::isfinite(age)
+            && std::isfinite(stream) && stream>=0 && stream<9007199254740992.
+            && age>=0 && age<2147483647 && sample>=1 && sample<=2147483647 && start>=0 && frames>=1) {
+            if(auto* pool=getSamplePoolForHandle(handle)) {
+                const double rate=pool->sampleRate(std::uint64_t(sample))/state->srate;
+                auto read=[&](double at,double& a,double& b){pool->read2(std::uint64_t(sample),at,&a,&b,true);};
+                const auto token=std::floor(stream/64.);
+                const int slot=int(stream-token*64.);
+                ok=spectralPitch->read(slot,pool->generation(),sample,start,frames,rate,state->srate,
+                    pitch,character,int(age),read,l,r,playbackRate,token);
+            }
+        }
+        if(outL)jsfxCellStore(outL,l);if(outR)jsfxCellStore(outR,r);return ok?1.:0.;
+    }
+#endif
+    double rt_sample_pool_set_level_analysis(double poolHandle, double enabled) noexcept
+    {
+        if (auto* pool = getSamplePoolForHandle(poolHandle)) { pool->setLevelAnalysis(enabled != 0.0); return 1.0; }
+        return 0.0;
+    }
+    double rt_sample_level(double poolHandle, double sampleId, double field) noexcept
+    {
+        if (auto* pool = getSamplePoolForHandle(poolHandle))
+            return pool->level((std::uint64_t)std::llround(sampleId), (int)std::llround(field));
+        return 0.0;
+    }
     double rt_sample_pool_set_deferred (double poolHandle, double deferred) noexcept
     {
         if (auto* pool = getSamplePoolForHandle (poolHandle))

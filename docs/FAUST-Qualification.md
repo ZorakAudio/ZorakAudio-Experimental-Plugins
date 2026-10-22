@@ -10,7 +10,7 @@ This document consolidates the catalog, Sample/Corpus, export-pruning and percep
 | EasyExpander Faust | Separate native detector/gain example | Matched continuously active full-recording comparison: 15.821 s original / 3.476 s FAUST, 4.55×; 58,558,936 float values byte-identical |
 | ERB Tilt | Native manifest selects a fixed 16-band FAUST source; original EEL retained | One complete recording run: 42.4718 / 15.7052 s, 2.70×; maximum error 5.55e-17 |
 | Spectral Stabilizer | Native manifest selects a fixed 12-band FAUST source; original EEL retained | One complete recording run: 66.4130 / 17.7605 s, 3.74×; maximum error 1.86e-9 |
-| Sample | Cached EEL remains the default; Sample Faust is optional | Optional variant saves 1.7–8.2% in repeated active whole-plugin tests; [detailed report](Sample-Faust-Character-Integration.md) |
+| Sample | Original cached EEL in Essentials and All; Sample Faust withdrawn | Reported GFX/EQ faults and clicks triggering host auto-mute; earlier timing fixtures did not qualify the failing workflow; [historical report](Sample-Faust-Character-Integration.md) |
 | Corpus | Maintained EEL audio and deferred analysis; FAUST audio candidates remain experimental | No qualified production full-block audio migration |
 | Hyperreal default | Original model optimized in EEL; separate FAUST designs exist | [Current variants and matched-model evidence](Hyperreal-Panner.md) |
 

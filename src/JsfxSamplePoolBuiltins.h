@@ -1,6 +1,32 @@
 // SPDX-License-Identifier: Zlib
 #pragma once
 // Include once after defining JSFX_SAMPLE_POOL_OWNER(state).
+#if DSPJSFX_HAS_SPECTRAL_PITCH
+extern "C" double jsfx_sample_pitch_read2(DSPJSFX_State* state, double pool, double sample,
+        double start, double frames, double pitch, double age, double voice, double character,
+        double* outL, double* outR) {
+    if (auto* owner=JSFX_SAMPLE_POOL_OWNER(state))
+        return owner->rt_sample_pitch_read2(state,pool,sample,start,frames,pitch,age,voice,character,outL,outR);
+    if(outL)jsfxCellStore(outL,0.);if(outR)jsfxCellStore(outR,0.);return 0.;
+}
+extern "C" double jsfx_sample_pitch_read2_ex(DSPJSFX_State* state, double pool, double sample,
+        double start, double frames, double pitch, double age, double stream, double character,
+        double playbackRate, double* outL, double* outR) {
+    if(auto* owner=JSFX_SAMPLE_POOL_OWNER(state))
+        return owner->rt_sample_pitch_read2_ex(state,pool,sample,start,frames,pitch,age,stream,character,playbackRate,outL,outR);
+    if(outL)jsfxCellStore(outL,0.);if(outR)jsfxCellStore(outR,0.);return 0.;
+}
+#endif
+extern "C" double jsfx_sample_pool_set_level_analysis(DSPJSFX_State* state, double pool, double enabled)
+{
+    if (auto* owner = JSFX_SAMPLE_POOL_OWNER(state)) return owner->rt_sample_pool_set_level_analysis(pool, enabled);
+    return 0.0;
+}
+extern "C" double jsfx_sample_level(DSPJSFX_State* state, double pool, double sampleId, double field)
+{
+    if (auto* owner = JSFX_SAMPLE_POOL_OWNER(state)) return owner->rt_sample_level(pool, sampleId, field);
+    return 0.0;
+}
 extern "C" double jsfx_sample_pool_from_slot (DSPJSFX_State* state, double slot, double nameHandle)
 {
     if (auto* owner = JSFX_SAMPLE_POOL_OWNER(state))

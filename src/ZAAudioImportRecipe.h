@@ -162,6 +162,8 @@ struct ImportRules
     std::vector<uint64_t> snapshotRevisions;
     uint64_t segmentationRevision = 1;
     bool assistedExtraction = false; // legacy recipes retain their old detector
+    bool joinSegmentationInputs = false; // older recipes keep independent source coordinates
+    int boundaryDetectorVersion = 1; // missing property replays the original assisted detector
     bool adaptiveBackground = true;
     double cutSensitivity = 0.5, wholeGestures = 0.65, tailPreservation = 0.65;
     bool useExamples = false;
@@ -525,6 +527,8 @@ static inline juce::ValueTree rulesToValueTree (const ImportRules& r)
     t.setProperty ("outputSampleRate", r.outputSampleRate, nullptr);
     t.setProperty ("previewSeconds", r.previewSeconds, nullptr);
     t.setProperty ("assistedExtraction", r.assistedExtraction, nullptr);
+    t.setProperty ("joinSegmentationInputs", r.joinSegmentationInputs, nullptr);
+    t.setProperty ("boundaryDetectorVersion", r.boundaryDetectorVersion, nullptr);
     t.setProperty ("adaptiveBackground", r.adaptiveBackground, nullptr);
     t.setProperty ("cutSensitivity", r.cutSensitivity, nullptr);
     t.setProperty ("wholeGestures", r.wholeGestures, nullptr);
@@ -635,6 +639,8 @@ static inline ImportRules rulesFromValueTree (const juce::ValueTree& t)
     const double previewSeconds = (double) t.getProperty ("previewSeconds", r.previewSeconds);
     if (std::isfinite (previewSeconds) && previewSeconds > 0.0) r.previewSeconds = previewSeconds;
     r.assistedExtraction = (bool) t.getProperty ("assistedExtraction", false);
+    r.joinSegmentationInputs = (bool) t.getProperty ("joinSegmentationInputs", false);
+    r.boundaryDetectorVersion = juce::jlimit (1, 3, (int) t.getProperty ("boundaryDetectorVersion", 1));
     r.adaptiveBackground = (bool) t.getProperty ("adaptiveBackground", true);
     auto readUnit = [&] (const char* name, double fallback)
     {
@@ -1239,7 +1245,9 @@ static inline std::vector<SegmentRegion> segmentsForInput (const ImportRules& ru
     };
     if (rules.assistedExtraction && cached != nullptr)
     {
-        auto detection = extractor::detect (*cached, extractionSettings (rules), cancel);
+        auto detection = rules.boundaryDetectorVersion >= 2
+                       ? extractor::detectAdaptive (audioView (b, sr), *cached, extractionSettings (rules), cancel, rules.boundaryDetectorVersion)
+                       : extractor::detect (*cached, extractionSettings (rules), cancel);
         for (const auto& r : detection.regions) proposals.push_back (makeRegion (r));
         if (reviewSpans != nullptr) *reviewSpans = std::move (detection.reviewSpans);
     }
@@ -1274,7 +1282,7 @@ static inline std::vector<SegmentRegion> segmentsForInput (const ImportRules& ru
     for (auto& candidate : proposals)
     {
         if (extractor::cancelled (cancel)) return {};
-        if (rules.assistedExtraction)
+        if (rules.assistedExtraction && rules.boundaryDetectorVersion < 2)
         {
             const int radius = juce::jmax (1, (int) std::llround (sr * 0.002));
             candidate.startSample = extractor::snapBoundary (audioView (b, sr), candidate.startSample, radius);
@@ -1526,6 +1534,46 @@ static inline std::optional<AudioFileData> readAudioFile (const juce::File& file
     data.sampleRate = outRate;
     data.sourceName = file.getFileNameWithoutExtension();
     return data;
+}
+
+// Input order is the timeline order. No gaps, crossfades, normalization or
+// transient trimming. Preview and renderer share this path and coordinate rate.
+static inline std::optional<AudioFileData> readJoinedSegmentationAudio (const std::vector<juce::File>& files, const ImportRules& rules,
+                                                                      juce::String& error, const extractor::Cancel& cancel = {})
+{
+    std::vector<AudioFileData> parts; int64_t length = 0; double rate = 0.0; int channels = 1;
+    for (size_t i = 0; i < files.size(); ++i)
+    {
+        if (extractor::cancelled (cancel)) return std::nullopt;
+        const auto fp = fingerprintForFile (files[i]);
+        if (! files[i].existsAsFile() || (i < rules.sourceBindings.size() && ! sourceFingerprintMatches (rules.sourceBindings[i], fp)))
+        { error = "Missing or changed source: " + files[i].getFileName(); return std::nullopt; }
+        auto part = readAudioFile (files[i], 0, rate, 0.0, error, cancel);
+        if (! part) return std::nullopt;
+        if (part->buffer.getNumChannels() > 2) { error = "Combine supports mono/stereo recordings. Edit multichannel files separately."; return std::nullopt; }
+        rate = part->sampleRate;
+        channels = juce::jmax (channels, part->buffer.getNumChannels());
+        length += part->buffer.getNumSamples();
+        if (length > std::numeric_limits<int>::max() / 4) { error = "Combined recording is too long for in-memory editing."; return std::nullopt; }
+        parts.push_back (std::move (*part));
+    }
+    if (parts.empty()) { error = "Add an audio recording first."; return std::nullopt; }
+    AudioFileData result; result.sampleRate = rate; result.sourceName = "Combined recording";
+    result.buffer.setSize (channels, (int) length); int offset = 0;
+    for (const auto& part : parts)
+    {
+        if (extractor::cancelled (cancel)) return std::nullopt;
+        for (int channel = 0; channel < channels; ++channel) result.buffer.copyFrom (channel, offset, part.buffer, juce::jmin (channel, part.buffer.getNumChannels() - 1), 0, part.buffer.getNumSamples());
+        offset += part.buffer.getNumSamples();
+    }
+    return result;
+}
+static inline std::vector<juce::File> filesForImportRules (const std::vector<juce::File>& fallback, const ImportRules& rules)
+{
+    if (rules.sourceBindings.empty()) return fallback;
+    std::vector<juce::File> files;
+    for (const auto& binding : rules.sourceBindings) files.emplace_back (binding.path);
+    return files;
 }
 
  static inline juce::String paddedImportIndex (int index)
@@ -1816,6 +1864,8 @@ static inline ImportRules makeDefaultRulesForAction (ImportAction action)
     rules.segmentBySilence = (action == ImportAction::SegmentLongFile
                               || action == ImportAction::SegmentThenMegaTexture);
     rules.assistedExtraction = rules.segmentBySilence;
+    rules.boundaryDetectorVersion = 3;
+    rules.joinSegmentationInputs = rules.segmentBySilence;
     rules.trimEdges = true;
     rules.rejectNearDuplicates = (action == ImportAction::BuildMegaTexture);
     rules.preferNovelSamples = (action == ImportAction::BuildMegaTexture);
@@ -2004,11 +2054,11 @@ static inline RenderResult renderImportActionImpl (const std::vector<juce::File>
         int idx = 1;
         for (int fileIndex = 0; fileIndex < (int) files.size(); ++fileIndex)
         {
-            if (isInputIndexDisabled (rules, fileIndex))
-                continue;
+            if (rules.joinSegmentationInputs && files.size() > 1 && fileIndex > 0) break;
+            if (! (rules.joinSegmentationInputs && files.size() > 1) && isInputIndexDisabled (rules, fileIndex)) continue;
 
             const auto& f = files[(size_t) fileIndex];
-            auto data = readAudioFile (f, 0, 0.0, 0.0, error);
+            auto data = rules.joinSegmentationInputs && files.size() > 1 ? readJoinedSegmentationAudio (files, rules, error) : readAudioFile (f, 0, 0.0, 0.0, error);
             if (! data.has_value()) { result.message = error; result.renderedAudio.clear(); return result; }
 
             auto segments = segmentsForInput (rules, fileIndex, data->buffer, data->sampleRate);
@@ -2045,11 +2095,11 @@ static inline RenderResult renderImportActionImpl (const std::vector<juce::File>
     {
         for (int fileIndex = 0; fileIndex < (int) files.size(); ++fileIndex)
         {
-            if (isInputIndexDisabled (rules, fileIndex))
-                continue;
+            if (rules.joinSegmentationInputs && files.size() > 1 && fileIndex > 0) break;
+            if (! (rules.joinSegmentationInputs && files.size() > 1) && isInputIndexDisabled (rules, fileIndex)) continue;
 
             const auto& f = files[(size_t) fileIndex];
-            auto data = readAudioFile (f, 0, 0.0, 0.0, error);
+            auto data = rules.joinSegmentationInputs && files.size() > 1 ? readJoinedSegmentationAudio (files, rules, error) : readAudioFile (f, 0, 0.0, 0.0, error);
             if (! data.has_value()) { result.message = error; result.renderedAudio.clear(); return result; }
 
             auto segments = segmentsForInput (rules, fileIndex, data->buffer, data->sampleRate);

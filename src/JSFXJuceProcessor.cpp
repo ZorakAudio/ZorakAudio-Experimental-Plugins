@@ -1,6 +1,7 @@
 #include "JsfxGfxInput.h"
 #include "JsfxGfxMenus.h"
 #include "JsfxSliderDeclarations.h"
+#include "SampleBankUiState.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_gui_extra/juce_gui_extra.h>
@@ -590,6 +591,9 @@ public:
         // These become DSP-JSFX file slots that can be bound to user-selected files at runtime.
         fileDecls = parseJsfxFilenameDecls (kJsfxSourceText);
         initFileRuntime();
+#if DSPJSFX_HAS_SPECTRAL_PITCH
+        prepareSamplePitch();
+#endif
         initSmartIdleConfig();
 
         // Build slider-alias -> state var index map.
@@ -1430,7 +1434,16 @@ public:
             writeExternalJsfxVar (index, value); // Keep the optional WDL correctness oracle in step.
         }
    #endif
-        const bool gfxWritesApplied = nativeCommandsChanged | applyQueuedGfxStateWrites() | applyQueuedGfxMemSpanWrites();
+        bool sampleBankUiRestored=false;
+       #if defined(DSPJSFX_SAMPLE_BANK_UI) && DSPJSFX_SAMPLE_BANK_UI
+        sampleBankUiRestored=sampleBankUi.apply(st,[&](int i,double value){
+            st.mem[i]=value;
+           #if defined(ZA_JSFX_CORRECTNESS_CHECK) && ZA_JSFX_CORRECTNESS_CHECK
+            if(correctnessRuntime)correctnessRuntime->applyExternalMemWrite(i,value);
+           #endif
+        },[&](int i,double value){writeExternalJsfxVar(i,value);});
+       #endif
+        const bool gfxWritesApplied = sampleBankUiRestored | nativeCommandsChanged | applyQueuedGfxStateWrites() | applyQueuedGfxMemSpanWrites();
 
         st.currentBlockSize = processSamples;
         st.currentSampleRate = st.srate;
@@ -1596,6 +1609,9 @@ public:
 
         const bool hadOutgoingMidi=flushMidiFromState(midiMessages,oversamplingFactor,numSamples);
         finishIdleBlock(idleBlock,numCh>0?hostOutPtrs.data():nullptr,activityOutputChannels,numSamples,processSamples,hadOutgoingMidi,dspSliderActivity);
+       #if defined(DSPJSFX_SAMPLE_BANK_UI) && DSPJSFX_SAMPLE_BANK_UI
+        sampleBankUi.publish(st);
+       #endif
         updateGfxSnapshotIfNeeded (processSamples);
         jsfxRuntime.endBlock (st);
     }
@@ -1703,6 +1719,9 @@ public:
             }
         }
 
+       #if defined(DSPJSFX_SAMPLE_BANK_UI) && DSPJSFX_SAMPLE_BANK_UI
+        tree.addChild(sampleBankUi.makeTree(),-1,nullptr);
+       #endif
         std::unique_ptr<juce::XmlElement> xml (tree.createXml());
         copyXmlToBinary (*xml, destData);
     }
@@ -1730,6 +1749,39 @@ public:
             if (smartIdleState.isValid())
                 tree.removeChild (smartIdleState, nullptr);
 
+           #if defined(DSPJSFX_SAMPLE_LEVEL_MATCHING) && DSPJSFX_SAMPLE_LEVEL_MATCHING
+            // Missing means a project predating matching modes, even when loaded
+            // over a live non-Legacy instance. Independent of future factory defaults.
+            const double matchingDefaults[] = {0.0, -23.0, -18.4, 6.0, -3.0};
+            for (int i = 0; i < 5; ++i)
+            {
+                const auto id = "slider" + juce::String(65 + i);
+                if (!tree.getChildWithProperty("id", id).isValid())
+                {
+                    juce::ValueTree parameter("PARAM");
+                    parameter.setProperty("id", id, nullptr);
+                    parameter.setProperty("value", matchingDefaults[i], nullptr);
+                    tree.addChild(parameter, -1, nullptr);
+                }
+            }
+           #endif
+           #if defined(DSPJSFX_SAMPLE_LAYERS) && DSPJSFX_SAMPLE_LAYERS
+            // A missing selector belongs to an older Sample project. Restore
+            // Original + one centred layer even over a live Coherent instance.
+            const double layerDefaults[] = {0,1,0,-9,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1};
+            for(int i=0;i<30;++i) {
+                const auto id="slider"+juce::String(70+i);
+                if(!tree.getChildWithProperty("id",id).isValid()) {
+                    juce::ValueTree parameter("PARAM");parameter.setProperty("id",id,nullptr);
+                    parameter.setProperty("value",layerDefaults[i],nullptr);tree.addChild(parameter,-1,nullptr);
+                }
+            }
+           #endif
+           #if defined(DSPJSFX_SAMPLE_BANK_UI) && DSPJSFX_SAMPLE_BANK_UI
+            auto sampleUi=tree.getChildWithName("SAMPLE_BANK_UI");
+            if(sampleUi.isValid())tree.removeChild(sampleUi,nullptr);
+            sampleBankUi.stage(sampleUi);
+           #endif
             apvts->replaceState (tree);
             requestEmergencyMidiCleanup();
 
@@ -2143,7 +2195,7 @@ public:
         }
 
         if ((int) paths.size() > limit)
-            out << za::text::utf8 ("\n… +") << juce::String ((int) paths.size() - limit) << " more";
+            out << za::text::utf8 ("\nÃ¢â‚¬Â¦ +") << juce::String ((int) paths.size() - limit) << " more";
 
         return out;
     }
@@ -2182,10 +2234,10 @@ public:
         switch (stt)
         {
             case FileState::Unassigned:   return "(none)";
-            case FileState::Loading:      return za::text::utf8 ("Loading… ") + summary;
+            case FileState::Loading:      return za::text::utf8 ("LoadingÃ¢â‚¬Â¦ ") + summary;
             case FileState::ReadyActive:
             case FileState::PendingDirect: return summary;
-            case FileState::ReadyPending: return za::text::utf8 ("Ready… ") + summary;
+            case FileState::ReadyPending: return za::text::utf8 ("ReadyÃ¢â‚¬Â¦ ") + summary;
             case FileState::PendingClear: return "(clearing)";
             case FileState::Error:        return "Error: " + summary;
             default:                      break;
@@ -3043,6 +3095,39 @@ public:
     }
    #endif
    #if ZA_SAMPLE_GFX_TEST_RUNNER
+   #if ZA_SAMPLE_GFX_TEST_RUNNER && ! DSPJSFX_HAS_NATIVE_GFX
+    inline static constexpr const char* bankUiDiagnosticNames[] = {
+        "ui_show_play", "ui_show_env", "ui_show_eq", "ui_layers_grid", "ui_layers_tight", "ui_mix_visible", "ui_mix_cols", "ui_mix_card_w", "ui_mix_card_h", "ui_mix_cards_x", "ui_mix_cards_y", "ui_mix_fader_y", "ui_mix_fader_h", "ui_layers_setup_y", "ui_layers_preset_w", "ui_layers_footer_y",
+        "ui_show_layers", "ui_layers_open", "ui_layers_details", "ui_layers_pan", "ui_layers_x", "ui_layers_y", "ui_layers_w", "ui_layers_macros_x", "ui_layers_macros_y", "ui_layers_macro_w", "ui_layers_tools_y", "ui_layers_rows_y", "ui_layers_row_h",
+        "bank_ui_metric", "bank_ui_order", "bank_ui_min", "bank_ui_max",
+        "bank_ui_axis_lo", "bank_ui_axis_hi", "bank_ui_tick_step",
+        "bank_ui_cache_metric", "bank_ui_cache_count", "bank_ui_recache_count",
+        "ui_active", "ui_prev_down", "menu_choice", "ui_hover_id",
+        "bank_filter_line_visible", "bank_filter_line_y", "bank_filter_mode", "bank_filter_metric", "bank_filter_cut",
+        "gfx_w", "gfx_h", "ui_extra_selected", "extra_x", "extra_y", "extra_w", "extra_h",
+        "mid_x", "mid_y", "mid_w", "mid_h", "proc_x", "proc_y", "proc_w", "proc_h", "graph_x", "graph_y", "graph_w", "graph_h",
+        "left_y", "ui_tip_x", "ui_tip_y", "ui_tip_w", "ui_tip_h", "ui_tip_lines", "ui_layout", "ui_compact", "ui_narrow", "ui_compact_page", "ui_secondary_page", "ui_body_y", "ui_body_visible", "ui_content_h", "ui_scroll", "ui_scroll_max", "ui_tab_y", "ui_tab_start", "ui_tab_width", "ui_tab_w",
+        "right_x", "right_y", "right_w", "right_h", "knob_panel_top", "cell_w", "cell_h", "kb_r", "knob_col_gap", "knob_row_gap", "right_inner_x", "axis_x", "axis_w", "order_x", "order_w", "filter_x", "filter_above_x", "filter_below_x", "map_x", "map_y", "map_w", "map_h", "bank_action_x", "bank_detail_y", "proc_graph_x", "proc_graph_y", "proc_graph_w", "proc_graph_h", "proc_cards_y", "proc_inner_x", "proc_inner_w", "eq_extra_y", "adsr_y", "adsr_h", "track_w", "track_gap", "ui_extra_field_w"
+    };
+    std::mutex bankUiDiagnosticMutex;
+    std::array<double, std::size(bankUiDiagnosticNames)> bankUiDiagnostics {};
+    void captureEelBankUi (jsfx_gfx::Interpreter& vm)
+    {
+        std::array<double, std::size(bankUiDiagnosticNames)> values {};
+        for (size_t i=0; i<values.size(); ++i)
+            values[i]=vm.readUiScalarForTest(bankUiDiagnosticNames[i]);
+        const std::lock_guard<std::mutex> lock(bankUiDiagnosticMutex);
+        bankUiDiagnostics=values;
+    }
+    double eelBankUiValue (const char* name)
+    {
+        const std::lock_guard<std::mutex> lock(bankUiDiagnosticMutex);
+        for (size_t i=0; i<bankUiDiagnostics.size(); ++i)
+            if (std::strcmp(name,bankUiDiagnosticNames[i])==0) return bankUiDiagnostics[i];
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+   #endif
+
     void sampleCopyStats (uint64_t& count, double& total, double& maximum) const noexcept
     {
         count = sampleCopyCount.load (std::memory_order_relaxed);
@@ -5361,6 +5446,9 @@ private:
     }
 
     za::jsfx::StateVariables stateVariables;
+   #if defined(DSPJSFX_SAMPLE_BANK_UI) && DSPJSFX_SAMPLE_BANK_UI
+    za::jsfx::SampleBankUiState sampleBankUi{[](const char* name){return findGeneratedStateVarIndexIgnoreCase(name);}};
+   #endif
     const za::jsfx::HostVariableBindings hostVariableBindings{[](const char* name){return findGeneratedStateVarIndexIgnoreCase(name);}};
     DSPJSFX_State st {};
 #if DSPJSFX_HAS_FAUST
@@ -7126,7 +7214,7 @@ private:
             [safeThis, slot, filesForApply = std::move (files), action] (za::fileimport::ImportRules acceptedRules) mutable
             {
                 if (safeThis != nullptr)
-                    safeThis->renderImportActionForFileSlotAsync (slot, std::move (filesForApply), action, acceptedRules);
+                    safeThis->renderImportActionForFileSlotAsync (slot, za::fileimport::filesForImportRules (filesForApply, acceptedRules), action, acceptedRules);
             },
             [safeThis] (juce::AudioBuffer<float> buffer, double sampleRate) mutable
             {
@@ -7181,7 +7269,7 @@ private:
             [safeThis, slot, filesForApply = std::move (files), action] (za::fileimport::ImportRules acceptedRules) mutable
             {
                 if (safeThis != nullptr)
-                    safeThis->renderImportActionForFileSlotAsync (slot, std::move (filesForApply), action, acceptedRules);
+                    safeThis->renderImportActionForFileSlotAsync (slot, za::fileimport::filesForImportRules (filesForApply, acceptedRules), action, acceptedRules);
             },
             [safeThis] (juce::AudioBuffer<float> buffer, double sampleRate) mutable
             {
@@ -8529,7 +8617,7 @@ public:
             [safeThis, slot, filesForApply = std::move (files), action] (za::fileimport::ImportRules acceptedRules) mutable
             {
                 if (safeThis != nullptr)
-                    safeThis->renderImportActionAsync (slot, std::move (filesForApply), action, acceptedRules);
+                    safeThis->renderImportActionAsync (slot, za::fileimport::filesForImportRules (filesForApply, acceptedRules), action, acceptedRules);
             },
             [safeThis] (juce::AudioBuffer<float> buffer, double sampleRate) mutable
             {
@@ -8922,6 +9010,8 @@ public:
     {
         fixed,
         responsive,
+        flow,
+        fit,
         scale,
         scaleUp,
         scaleDown
@@ -9074,6 +9164,8 @@ public:
     {
         switch (gfxResizePolicy)
         {
+            case ResizePolicy::flow:
+            case ResizePolicy::fit:
             case ResizePolicy::scale:
             case ResizePolicy::scaleDown:
                 return false;
@@ -9088,7 +9180,7 @@ public:
 
     bool usesResponsiveGfxSize() const noexcept
     {
-        return gfxResizePolicy == ResizePolicy::responsive;
+        return gfxResizePolicy == ResizePolicy::responsive || gfxResizePolicy == ResizePolicy::flow || gfxResizePolicy == ResizePolicy::fit;
     }
 
     void paint (juce::Graphics& g) override
@@ -9505,6 +9597,12 @@ private:
         if (token == "responsive" || token == "resize" || token == "resizable" || token == "native")
             return ResizePolicy::responsive;
 
+        if (token == "flow" || token == "adaptive")
+            return ResizePolicy::flow;
+
+        if (token == "fit" || token == "responsive_fit")
+            return ResizePolicy::fit;
+
         if (token == "scale" || token == "scaled" || token == "scale_both" || token == "scaled_both")
             return ResizePolicy::scale;
 
@@ -9588,10 +9686,27 @@ private:
     {
         FramePlacement out;
 
-        if (gfxResizePolicy == ResizePolicy::responsive)
+        if (gfxResizePolicy == ResizePolicy::responsive || gfxResizePolicy == ResizePolicy::flow)
         {
             out.renderW = juce::jmax (1, viewW);
             out.renderH = juce::jmax (1, viewH);
+            return out;
+        }
+
+        if (gfxResizePolicy == ResizePolicy::fit)
+        {
+            // Retain a usable minimum design canvas, then let the script use
+            // the remaining width/height. Unlike fixed-aspect scaling, short
+            // wide windows keep their full bank graph instead of side gutters.
+            const float shrink = juce::jmax (0.0001f, juce::jmin (1.0f,
+                juce::jmin ((float) juce::jmax (1, viewW) / (float) declaredCanvasWidth(),
+                            (float) juce::jmax (1, viewH) / (float) declaredCanvasHeight())));
+            out.renderW = juce::jmax (declaredCanvasWidth(), (int) std::ceil ((float) juce::jmax (1, viewW) / shrink));
+            out.renderH = juce::jmax (declaredCanvasHeight(), (int) std::ceil ((float) juce::jmax (1, viewH) / shrink));
+            out.scale = juce::jmin ((float) juce::jmax (1, viewW) / (float) out.renderW,
+                                   (float) juce::jmax (1, viewH) / (float) out.renderH);
+            out.offsetX = ((float) viewW - (float) out.renderW * out.scale) * 0.5f;
+            out.offsetY = ((float) viewH - (float) out.renderH * out.scale) * 0.5f;
             return out;
         }
 
@@ -9618,6 +9733,8 @@ private:
 
             case ResizePolicy::fixed:
             case ResizePolicy::responsive:
+            case ResizePolicy::flow:
+            case ResizePolicy::fit:
             default:
                 out.scale = 1.0f;
                 break;
@@ -10377,6 +10494,9 @@ private:
                                       + ": " + interp->getLastError());
             return;
         }
+       #if ZA_SAMPLE_GFX_TEST_RUNNER && ! DSPJSFX_HAS_NATIVE_GFX
+        processor.captureEelBankUi (*interp);
+       #endif
         if (profiling) diffStart = juce::Time::getMillisecondCounterHiRes();
 
         // file_mem() is a host-side bulk write into EEL RAM. Publish it even
@@ -10985,6 +11105,20 @@ extern "C" bool za_sample_gfx_snapshot (juce::AudioProcessor* base, const char* 
     return slot >= 0;
 #endif
 }
+// Test-only scalar/heap read from the same pinned publication as the editor.
+extern "C" double za_sample_gfx_heap_value(juce::AudioProcessor* base,const char* pointer,int offset)
+{
+    auto& p=*static_cast<JSFXJuceProcessor*>(base);
+    int index=-1;const auto* snapshot=p.beginGfxSnapshotRead(index);
+    if(!snapshot)return std::numeric_limits<double>::quiet_NaN();
+    int slot=-1;for(const auto& var:DSPJSFX_VARS)if(std::strcmp(var.name,pointer)==0){slot=var.index;break;}
+    double value=std::numeric_limits<double>::quiet_NaN();
+    if(slot>=0&&slot<snapshot->varsCount){
+        const auto address=int64_t(snapshot->vars[size_t(slot)])+offset;
+        for(const auto& span:snapshot->memSpans)if(address>=span.base&&address<span.base+span.count){value=span.data[size_t(address-span.base)];break;}
+    }
+    p.endGfxSnapshotRead(index);return value;
+}
 extern "C" uint64_t za_sample_gfx_frames()
 {
    #if DSPJSFX_HAS_NATIVE_GFX
@@ -11004,7 +11138,7 @@ extern "C" double za_sample_gfx_ui (juce::AudioProcessor* base, const char* name
    #if DSPJSFX_HAS_NATIVE_GFX
     return static_cast<JSFXJuceProcessor*> (base)->nativeGfxUiValue (name);
    #else
-    juce::ignoreUnused (base, name); return 0;
+    return static_cast<JSFXJuceProcessor*> (base)->eelBankUiValue (name);
    #endif
 }
 extern "C" bool za_sample_gfx_faulted (juce::AudioProcessor* base)

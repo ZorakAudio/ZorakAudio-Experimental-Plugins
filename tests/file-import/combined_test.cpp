@@ -1,0 +1,29 @@
+#include <juce_audio_utils/juce_audio_utils.h>
+#include "ZAAudioImportRecipe.h"
+#include <iostream>
+#include <stdexcept>
+using namespace za::fileimport;
+static void check(bool v,const char*message){if(!v)throw std::runtime_error(message);}
+static void pump(int ms){juce::MessageManager::getInstance()->runDispatchLoopUntil(ms);}
+namespace za::fileimport {struct ImportPreviewTestAccess{
+static void ready(ImportPreviewComponent&c){for(int i=0;i<1200&&(c.loading||c.pendingPreview);++i)pump(10);check(c.source&&!c.loading,"Combined preview failed");}
+static void run(ImportPreviewComponent&c,std::vector<juce::File> files){
+ ready(c);check(c.joined()&&c.files.size()==2,"New multi-file import did not combine");auto length=c.source->audio.buffer.getNumSamples();check(length==96000,"Combined preview inserted or lost audio");
+ for(int i=0;i<4;++i){c.sectionTabs[size_t(i)].onClick();check(c.section==i,"Sidebar tab failed");if(i==0){std::cout<<"default controls="<<c.controls.getHeight()<<" viewport="<<c.controlsViewport.getHeight()<<" advanced="<<c.advancedOpen<<std::endl;check(c.controls.getHeight()<=c.controlsViewport.getHeight(),"Default panel requires scrolling");}}
+ c.section=0;c.resized();check(c.sensitivity.isVisible()&&!c.detector.isVisible()&&!c.matchThreshold.isVisible(),"Advanced controls leaked onto basic page");
+ c.advancedButton.onClick();check(c.detector.isVisible(),"Advanced detection is unreachable");c.advancedButton.onClick();check(!c.detector.isVisible(),"Advanced section did not close");
+ // Place a protected cut across the original file seam, then append another file.
+ c.previewSegments.clear();SegmentRegion cut;cut.startSample=47000;cut.endSample=49000;cut.locked=true;cut.enabled=true;c.previewSegments.push_back(cut);c.selected=0;c.edited();
+ juce::StringArray paths;paths.add(files[2].getFullPathName());c.filesDropped(paths,0,0);ready(c);check(c.files.size()==3&&c.source->audio.buffer.getNumSamples()==144000,"File drop did not extend timeline");bool kept=false;for(const auto&r:c.previewSegments)if(r.locked&&r.startSample==47000&&r.endSample==49000)kept=true;check(kept,"Appending audio changed protected coordinates");
+ auto accepted=c.rules;auto actual=filesForImportRules({files[0],files[1]},accepted);check(actual.size()==3,"Apply omitted dropped source");accepted.edgeFadeMs=0;accepted.normalizeClipsRms=false;storeSegmentSnapshot(accepted,0,{cut},48000);auto rendered=renderImportAction(actual,ImportAction::SegmentLongFile,accepted);check(rendered.ok&&rendered.renderedAudio.size()==1,"Combined render failed");check(rendered.renderedAudio[0].buffer.getNumSamples()==2000,"Rendered seam region changed length");for(int ch=0;ch<2;++ch)for(int i=0;i<2000;++i)check(rendered.renderedAudio[0].buffer.getSample(ch,i)==c.source->audio.buffer.getSample(ch,47000+i),"Rendered cut differs from preview across seam");
+ auto saved=recipeFromValueTree(recipeToValueTree(rendered.recipe));auto replay=renderImportAction(actual,saved.action,saved.rules);check(replay.ok&&replay.renderedAudio.size()==1,"Combined recipe replay failed");for(int ch=0;ch<2;++ch)for(int i=0;i<2000;++i)check(replay.renderedAudio[0].buffer.getSample(ch,i)==rendered.renderedAudio[0].buffer.getSample(ch,i),"Combined recipe replay changed audio");
+ c.restoreHistory(false);ready(c);check(c.files.size()==2&&c.source->audio.buffer.getNumSamples()==length,"Undo did not restore file list/timeline");c.restoreHistory(true);ready(c);check(c.files.size()==3,"Redo did not restore added file");
+ c.setJoinedMode(false);ready(c);check(!c.joined()&&c.rules.manualSegmentsByInput.size()<=1,"Separate mode retained combined coordinates");c.restoreHistory(false);ready(c);check(c.joined(),"Undo did not restore combined mode");
+ c.setJoinedMode(false);ready(c);c.reset.onClick();ready(c);check(!c.rules.joinSegmentationInputs,"Reset controls changed source coordinate mode");c.restoreHistory(false);ready(c);c.restoreHistory(false);ready(c);
+ auto tree=rulesToValueTree(c.rules);tree.removeProperty("joinSegmentationInputs",nullptr);check(!rulesFromValueTree(tree).joinSegmentationInputs,"Older multi-file recipes changed mode");
+ tree.setProperty("boundaryDetectorVersion",2,nullptr);check(rulesFromValueTree(tree).boundaryDetectorVersion==2,"Saved v2 detector was migrated");
+ auto bad=c.rules;bad.sourceBindings.back().quickHash^=17;juce::String error;check(!readJoinedSegmentationAudio(c.files,bad,error),"Changed constituent source was silently accepted");
+ c.sourceCaption.grabKeyboardFocus();std::cout<<"PASS combined source, drop append, cross-file cuts, exact preview/render/replay, source fingerprint checks, mode undo/redo and commercial sidebar routing\n";
+}
+};}
+int main(int argc,char**argv)try{check(argc==2,"Output directory required");juce::ScopedJuceInitialiser_GUI gui;juce::File out(argv[1]);out.createDirectory();std::vector<juce::File> files;for(int n=0;n<3;++n){auto file=out.getChildFile("source-"+juce::String(n)+".wav");file.deleteFile();int rate=n==2?44100:48000,channels=n==2?1:2;juce::AudioBuffer<float>b(channels,rate);for(int ch=0;ch<channels;++ch)for(int i=0;i<rate;++i)b.setSample(ch,i,float(.2*std::sin((i+n*200)*.04)));auto stream=file.createOutputStream();juce::WavAudioFormat fmt;std::unique_ptr<juce::AudioFormatWriter>w(fmt.createWriterFor(stream.release(),rate,unsigned(channels),24,{},0));check(w&&w->writeFromAudioSampleBuffer(b,0,rate),"Fixture failed");w.reset();files.push_back(file);}auto rules=makeDefaultRulesForAction(ImportAction::SegmentLongFile);ImportPreviewComponent c({files[0],files[1]},ImportAction::SegmentLongFile,rules,[](ImportRules){},[](juce::AudioBuffer<float>,double){},[]{},[](bool){});c.setSize(720,520);c.addToDesktop(juce::ComponentPeer::windowHasTitleBar);c.setTopLeftPosition(-16000,-16000);c.setVisible(true);ImportPreviewTestAccess::run(c,files);return 0;}catch(const std::exception&e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}

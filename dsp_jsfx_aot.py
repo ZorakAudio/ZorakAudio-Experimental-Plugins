@@ -1413,7 +1413,7 @@ HOST_TRACK_FUNCTIONS: Set[str] = {
 }
 
 SAMPLE_POOL_SETUP_FUNCTIONS: Set[str] = {
-    "sample_pool_adopt", "sample_pool_from_slot", "sample_pool_set_mode", "sample_pool_set_deferred", "sample_pool_set_budget_mb", "sample_pool_commit",
+    "sample_pool_set_level_analysis", "sample_level", "sample_pool_adopt", "sample_pool_from_slot", "sample_pool_set_mode", "sample_pool_set_deferred", "sample_pool_set_budget_mb", "sample_pool_commit",
 }
 SAMPLE_POOL_QUERY_FUNCTIONS: Set[str] = {
     "sample_pool_state", "sample_pool_selected", "sample_pool_loaded", "sample_pool_failed",
@@ -1421,7 +1421,7 @@ SAMPLE_POOL_QUERY_FUNCTIONS: Set[str] = {
     "sample_channels", "sample_srate", "sample_peak", "sample_rms", "sample_preview_bins",
 }
 SAMPLE_POOL_READ_FUNCTIONS: Set[str] = {
-    "sample_read", "sample_read_interp", "sample_read2", "sample_read2_interp",
+    "sample_read", "sample_read_interp", "sample_read2", "sample_read2_interp", "sample_pitch_read2", "sample_pitch_read2_ex",
     "sample_preview_read", "sample_name",
 }
 SAMPLE_POOL_EXPORT_FUNCTIONS: Set[str] = {"sample_export_mem", "sample_export_mem2"}
@@ -1430,7 +1430,7 @@ LEGACY_FILE_FUNCTIONS: Set[str] = {
     "file_open", "file_open_multi", "file_close", "file_rewind", "file_seek", "file_avail",
     "file_text", "file_riff", "file_var", "file_mem", "file_multi_count", "file_multi_select",
 }
-COMM_IMPURE_FUNCTIONS: Set[str] = COMM_SETUP_FUNCTIONS | COMM_BLOCK_FUNCTIONS | COMM_MISC_FUNCTIONS | HOST_TRACK_FUNCTIONS | GMEM_SETUP_FUNCTIONS | GMEM_BULK_FUNCTIONS | GMEM_QUERY_FUNCTIONS | SAMPLE_POOL_SETUP_FUNCTIONS | SAMPLE_POOL_EXPORT_FUNCTIONS
+COMM_IMPURE_FUNCTIONS: Set[str] = COMM_SETUP_FUNCTIONS | COMM_BLOCK_FUNCTIONS | COMM_MISC_FUNCTIONS | HOST_TRACK_FUNCTIONS | GMEM_SETUP_FUNCTIONS | GMEM_BULK_FUNCTIONS | GMEM_QUERY_FUNCTIONS | SAMPLE_POOL_SETUP_FUNCTIONS | SAMPLE_POOL_EXPORT_FUNCTIONS | {"sample_pitch_read2", "sample_pitch_read2_ex"}
 COMM_SEND_FUNCTIONS: Set[str] = {"msg_send", "msg_sendto", "msg_send_buf", "msg_sendto_buf"}
 COMM_RECV_FUNCTIONS: Set[str] = {"msg_recv", "msg_recv_buf"}
 COMM_DISCOVERY_FUNCTIONS: Set[str] = {"msg_peer_count", "msg_peer_id", "msg_peer_name", "msg_peer_uid", "msg_peer_caps", "msg_peer_alive"}
@@ -1522,9 +1522,10 @@ def detect_sample_pool_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str,
     uses_export_mem = False
     uses_raw_sample_read = False
     uses_legacy_file_io = False
+    uses_spectral_pitch = False
 
     def rec(n: Node) -> None:
-        nonlocal uses_sample_pool, uses_export_mem, uses_raw_sample_read, uses_legacy_file_io
+        nonlocal uses_sample_pool, uses_export_mem, uses_raw_sample_read, uses_legacy_file_io, uses_spectral_pitch
         if isinstance(n, (Num, StrLit, Var)):
             return
         if isinstance(n, Index):
@@ -1539,6 +1540,8 @@ def detect_sample_pool_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str,
             fn = n.fn
             if fn in SAMPLE_POOL_FUNCTIONS:
                 uses_sample_pool = True
+            if fn in ("sample_pitch_read2", "sample_pitch_read2_ex"):
+                uses_spectral_pitch = True
             if fn in SAMPLE_POOL_EXPORT_FUNCTIONS:
                 uses_export_mem = True
             if fn in {"sample_read", "sample_read_interp", "sample_read2", "sample_read2_interp"}:
@@ -1575,6 +1578,7 @@ def detect_sample_pool_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str,
         "uses_raw_sample_read": uses_raw_sample_read,
         "uses_export_mem": uses_export_mem,
         "uses_legacy_file_io": uses_legacy_file_io,
+        "uses_spectral_pitch": uses_spectral_pitch,
     }
 
 
@@ -1640,6 +1644,29 @@ def validate_builtin_sections(programs: Dict[str, List[Node]]) -> None:
     for section, nodes in programs.items():
         for node in nodes:
             rec(section, node)
+
+
+def validate_spectral_pitch_contexts(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> None:
+    # Standard builds execute graphics in EEL, so these sections are otherwise
+    # absent from LLVM emission. Follow only reachable helpers; merely defining
+    # an audio helper must not make it a graphics call.
+    readers = {"sample_pitch_read2", "sample_pitch_read2_ex"}
+    for section in ("gfx", "serialize"):
+        visited: Set[str] = set()
+        def visit(value: Any) -> None:
+            if isinstance(value, Call):
+                if value.fn in readers:
+                    raise SyntaxError(f"{value.fn}() is only valid in @init, @slider, @block, or @sample at {value.span.line}:{value.span.col}")
+                if value.fn in fn_defs and value.fn not in visited:
+                    visited.add(value.fn)
+                    visit(fn_defs[value.fn].body)
+            if isinstance(value, Node):
+                for child in vars(value).values():
+                    visit(child)
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    visit(child)
+        visit(programs.get(section, []))
 
 
 def detect_midi_usage(programs: Dict[str, List[Node]], fn_defs: Dict[str, FunctionDef]) -> Dict[str, bool]:
@@ -2443,6 +2470,17 @@ def prepare_jsfx_pipeline(jsfx_text: str,
         else:
             programs[sec] = []
 
+    if re.search(r"\bsample_pitch_read2(?:_ex)?\s*\(", jsfx_text):
+        validation_programs = dict(programs)
+        for sec in ("gfx", "serialize"):
+            if sec in sections and sec not in validation_programs:
+                code, start_line = sections[sec]
+                validation_programs[sec] = (parse_program(code, start_line) if parse_program is not None
+                                             else Parser(code, base_line=start_line).parse_program())
+        validation_functions, validation_programs = extract_function_defs(validation_programs)
+        validation_programs, validation_functions = lower_user_functions(validation_programs, validation_functions, compact_receiver_math=native_gfx_legacy)
+        validate_spectral_pitch_contexts(validation_programs, validation_functions)
+
     fn_defs, programs = extract_function_defs(programs)
     programs, fn_defs = lower_user_functions(programs, fn_defs, compact_receiver_math=native_gfx_legacy)
     validate_builtin_sections(programs)
@@ -3033,6 +3071,12 @@ def _summarize_loop_mutations(node: Node, user_fn_names: Set[str]) -> _LoopMutat
                 out.writes_unknown_state = True
                 return
 
+            if fn in ("sample_pitch_read2", "sample_pitch_read2_ex"):
+                for a in n.args[-2:]:
+                    _note_mutated_lvalue(a, out)
+                out.writes_unknown_state = True
+                return
+
             if fn in ("sample_read2", "sample_read2_interp"):
                 for a in n.args[3:5]:
                     _note_mutated_lvalue(a, out)
@@ -3456,6 +3500,13 @@ def _collect_section_rw(node: Node, user_fn_names: Set[str], out: _SectionRWInfo
             for a in node.args[3:]:
                 _collect_section_rw(a, user_fn_names, out)
             out.writes_mem = True
+            out.writes_unknown_state = True
+            return
+        if fn in ("sample_pitch_read2", "sample_pitch_read2_ex"):
+            for a in node.args[:-2]:
+                _collect_section_rw(a, user_fn_names, out)
+            for a in node.args[-2:]:
+                _collect_section_lvalue_rw(a, user_fn_names, out)
             out.writes_unknown_state = True
             return
         if fn in ("sample_read2", "sample_read2_interp"):
@@ -5690,7 +5741,7 @@ class LLVMModuleEmitter:
                     fdecl = get_decl("jsfx_sample_pool_from_slot", 2)
                     return builder.call(fdecl, [st, self.emit_expr(builder, st, n.args[0]), self.emit_expr(builder, st, n.args[1])])
 
-                if fn in ("sample_pool_set_mode", "sample_pool_set_deferred", "sample_pool_set_budget_mb"):
+                if fn in ("sample_pool_set_level_analysis", "sample_pool_set_mode", "sample_pool_set_deferred", "sample_pool_set_budget_mb"):
                     if len(n.args) != 2:
                         raise ValueError(f"{fn} expects 2 args")
                     rt_name = "jsfx_" + fn
@@ -5703,6 +5754,11 @@ class LLVMModuleEmitter:
                     rt_name = "jsfx_" + fn
                     fdecl = get_decl(rt_name, 1)
                     return builder.call(fdecl, [st, self.emit_expr(builder, st, n.args[0])])
+
+                if fn == "sample_level":
+                    if len(n.args) != 3:
+                        raise ValueError("sample_level expects 3 args")
+                    return builder.call(get_decl("jsfx_sample_level", 3), [st] + [self.emit_expr(builder, st, a) for a in n.args])
 
                 if fn == "sample_get":
                     if len(n.args) != 2:
@@ -5723,6 +5779,18 @@ class LLVMModuleEmitter:
                     rt_name = "jsfx_" + fn
                     fdecl = get_decl(rt_name, 4)
                     return builder.call(fdecl, [st] + [self.emit_expr(builder, st, a) for a in n.args])
+
+                if fn in ("sample_pitch_read2", "sample_pitch_read2_ex"):
+                    count = 11 if fn.endswith("_ex") else 10
+                    if len(n.args) != count:
+                        raise ValueError(f"{fn} expects {count} args")
+                    rt_name = "jsfx_" + fn
+                    fdecl = self._buildins.get(rt_name)
+                    if fdecl is None:
+                        fnty = ir.FunctionType(self.double, [self.state_ptr] + [self.double]*(count-2) + [self.double.as_pointer()]*2)
+                        fdecl = self._function(self.module, fnty, name=rt_name)
+                        self._buildins[rt_name] = fdecl
+                    return self._call_with_outputs(builder, st, n.args, fdecl, {count-2, count-1}, fn)
 
                 if fn in ("sample_read2", "sample_read2_interp"):
                     if len(n.args) != 5:
@@ -6865,12 +6933,16 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append(f"#define DSPJSFX_USES_GMEM {uses_gmem}")
     lines.append(f"#define DSPJSFX_USES_MSG {uses_msg}")
     lines.append(f"#define DSPJSFX_USES_MSG_BUFFERS {uses_msg_buffers}")
+    lines.append(f"#define DSPJSFX_HAS_SPECTRAL_PITCH {1 if sample_pool_meta.get('uses_spectral_pitch') else 0}")
     lines.append(f"#define DSPJSFX_USES_SAMPLE_POOL {uses_sample_pool}")
     lines.append(f"#define DSPJSFX_USES_RAW_SAMPLE_READ {uses_raw_sample_read}")
     lines.append(f"#define DSPJSFX_USES_SAMPLE_EXPORT_MEM {uses_sample_export_mem}")
     lines.append(f"#define DSPJSFX_USES_LEGACY_FILE_IO {uses_legacy_file_io}")
     lines.append("#define DSPJSFX_COMM_API_VERSION 1")
-    lines.append("#define DSPJSFX_SAMPLE_POOL_API_VERSION 1")
+    lines.append("#define DSPJSFX_SAMPLE_POOL_API_VERSION 2")
+    lines.append(f"#define DSPJSFX_SAMPLE_LEVEL_MATCHING {1 if 'sample_match_compat_v1' in user_vars else 0}")
+    lines.append(f"#define DSPJSFX_SAMPLE_BANK_UI {1 if 'bank_ui_state_revision' in user_vars else 0}")
+    lines.append(f"#define DSPJSFX_SAMPLE_LAYERS {1 if 'sample_layers_schema' in user_vars else 0}")
     lines.append(f"#define DSPJSFX_ACCEPTS_MIDI_INPUT {accepts_midi_input}")
     lines.append(f"#define DSPJSFX_PRODUCES_MIDI_OUTPUT {produces_midi_output}")
     lines.append(f"#define DSPJSFX_HAS_SAMPLE_SECTION {1 if meta.get('has_sample_section', False) else 0}")
@@ -7155,11 +7227,15 @@ def _emit_header(meta: Dict[str, Any]) -> str:
     lines.append("double jsfx_sample_srate(DSPJSFX_State* st, double pool, double sampleId);")
     lines.append("double jsfx_sample_peak(DSPJSFX_State* st, double pool, double sampleId);")
     lines.append("double jsfx_sample_rms(DSPJSFX_State* st, double pool, double sampleId);")
+    lines.append("double jsfx_sample_level(DSPJSFX_State* st, double pool, double sampleId, double field);")
+    lines.append("double jsfx_sample_pool_set_level_analysis(DSPJSFX_State* st, double pool, double enabled);")
     lines.append("double jsfx_sample_name(DSPJSFX_State* st, double pool, double sampleId, double* outStr);")
     lines.append("double jsfx_sample_read(DSPJSFX_State* st, double pool, double sampleId, double channel, double frame);")
     lines.append("double jsfx_sample_read_interp(DSPJSFX_State* st, double pool, double sampleId, double channel, double phase);")
     lines.append("double jsfx_sample_read2(DSPJSFX_State* st, double pool, double sampleId, double phase, double* outL, double* outR);")
     lines.append("double jsfx_sample_read2_interp(DSPJSFX_State* st, double pool, double sampleId, double phase, double* outL, double* outR);")
+    lines.append("double jsfx_sample_pitch_read2(DSPJSFX_State* st, double pool, double sampleId, double start, double frames, double pitch, double age, double voice, double character, double* outL, double* outR);")
+    lines.append("double jsfx_sample_pitch_read2_ex(DSPJSFX_State* st, double pool, double sampleId, double start, double frames, double pitch, double age, double voice, double character, double playbackRate, double* outL, double* outR);")
     lines.append("double jsfx_sample_preview_bins(DSPJSFX_State* st, double pool, double sampleId);")
     lines.append("double jsfx_sample_preview_read(DSPJSFX_State* st, double pool, double sampleId, double bin, double* minValue, double* maxValue, double* rmsValue);")
     lines.append("double jsfx_sample_export_mem(DSPJSFX_State* st, double pool, double sampleId, double dstBase, double srcFrame, double frameCount);")

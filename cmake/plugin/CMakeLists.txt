@@ -273,6 +273,12 @@ target_include_directories(${PLUGIN_SLUG}
     "${ZA_ROOT}/src"
 )
 
+if(ZA_JSFX_AOT_HEADER_TEXT MATCHES "#define DSPJSFX_HAS_SPECTRAL_PITCH 1")
+  target_include_directories(${PLUGIN_SLUG} PRIVATE
+    "${ZA_ROOT}/libs/signalsmith-stretch/include"
+    "${ZA_ROOT}/libs/signalsmith-linear/include")
+endif()
+
 target_compile_definitions(${PLUGIN_SLUG}
   PRIVATE
     ZA_PLUGIN_NAME="${PLUGIN_NAME}"

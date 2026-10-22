@@ -16,6 +16,9 @@ extern "C" bool za_native_gfx_snapshot(juce::AudioProcessor*,const char*,double*
 extern "C" void za_sample_gfx_load_bank(juce::AudioProcessor*,const char* const*,int);
 extern "C" void za_native_gfx_faults(juce::AudioProcessor*,uint32_t*,uint32_t*);
 extern "C" int za_native_gfx_heap_copy(juce::AudioProcessor*,const char*,double*,int);
+#include "corpus_diagnostics.h"
+#include "corpus_pitch_check.h"
+#include "corpus_duration_check.h"
 using Clock=std::chrono::steady_clock;
 static double seconds(Clock::duration d){return std::chrono::duration<double>(d).count();}
 static double cpu(){
@@ -105,6 +108,12 @@ int main(int argc,char** argv)try{
    std::cout<<"Playback and editor check passed"<<std::endl;
  }
  std::cout<<"GRAPH completed="<<value("cg_completed")<<" disabled="<<value("cg_disabled")<<" pe_read_errors="<<value("pe_read_errors")<<" spectral_read_errors="<<value("invalid_audio")<<std::endl;
+ if(option("--compare-triggers") && ready)corpusCompare(p.get(),audio,midi,value,std::string(argv[2])+".triggers.csv");
+ if(option("--check-mono") && ready)corpusMono(p.get(),audio,midi,value);
+ if(option("--check-duration") && ready)corpusDurationCheck(p.get(),audio,midi,value,std::string(argv[2])+".duration.csv");
+ if(option("--check-pitch-tame") && ready)corpusPitchCheck(p.get(),audio,midi,value,std::string(argv[2])+".pitch-tame.csv");
+ for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--pitch-screenshots" && ready)corpusPitchCapture(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));
+ for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--screenshots" && ready)corpusCapture(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));
  if((option("--reload-at-index") || option("--reload-at-pe") || option("--reload-at-copy")) && !reloaded)throw std::runtime_error("Requested reload point was never reached");
  return ready && !dspFault && !gfxFault && value("pe_read_errors")==0 ?0:1;
 }catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 1;}

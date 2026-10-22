@@ -231,7 +231,7 @@ Current examples separate functionality from experiments:
 
 - **CMD:** original algorithm, full-block FAUST; [numerical/performance report](CMD-Original-FAUST-Integration.md). CMD Flow is archived, not the default.
 - **EasyExpander Faust:** mixed detector/gain example; use current matched sleep settings when benchmarking.
-- **Sample Faust:** optional variant, retains character formulas and state handoffs with conservative EEL fallback; [whole-plugin results](Sample-Faust-Character-Integration.md). An isolated kernel gain does not describe the whole sampler.
+- **Sample Faust:** withdrawn following reported GFX/EQ faults and clicks triggering host auto-mute. Use the original Sample; [historical results and withdrawal](Sample-Faust-Character-Integration.md).
 - **Corpus:** arena task graph for analysis. Its FAUST experiments do not establish that conversion improves the maintained engine; [revised audit](FAUST-Qualification.md).
 - **Hyperreal default:** faithful EEL Fast optimization, not a FAUST conversion; [promotion report](Hyperreal-Panner.md). Redesigned FAUST renderers are separate algorithm experiments.
 

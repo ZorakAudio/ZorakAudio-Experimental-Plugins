@@ -112,11 +112,15 @@ inline void registerBuiltins()
         NSEEL_addfunc_varparm_ex ("sample_srate", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_peak", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_rms", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_level", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pool_set_level_analysis", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_name", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_read", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_read_interp", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_read2", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_read2_interp", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pitch_read2", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
+        NSEEL_addfunc_varparm_ex ("sample_pitch_read2_ex", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_preview_bins", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_preview_read", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);
         NSEEL_addfunc_varparm_ex ("sample_export_mem", 0, 0, NSEEL_PProc_THIS, &eel_return_zero, nullptr);

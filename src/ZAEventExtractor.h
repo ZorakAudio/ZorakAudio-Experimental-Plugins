@@ -456,6 +456,190 @@ inline Detection detect (const Analysis& a, const Settings& settings, const Canc
     return out;
 }
 
+// Boundary detector v2. Keep detect() and the v1 profile features unchanged so
+// old import recipes remain reproducible. Runs on the import worker, never DSP.
+inline Detection detectAdaptive (AudioView audio, const Analysis& a, const Settings& s, const Cancel& cancel = {}, int detectorVersion = 2)
+{
+    Detection out;
+    if (! audio.valid() || a.frames.empty() || a.hop <= 0) return out;
+    const int hop = std::max (1, (int) std::llround (audio.rate * 0.002));
+    const int count = (audio.samples - 1) / hop + 1;
+    std::vector<float> power ((size_t) count), energy ((size_t) count), floor ((size_t) count);
+    for (int f = 0; f < count; ++f)
+    {
+        if ((f & 255) == 0 && cancelled (cancel)) return {};
+        const int first = f * hop, last = std::min (audio.samples, first + hop);
+        double sum = 0.0;
+        for (int ch = 0; ch < audio.channels; ++ch)
+            for (int i = first; i < last; ++i) { const double v = audio.at (ch, i); sum += v * v; }
+        power[(size_t) f] = (float) (sum / ((last - first) * (double) audio.channels));
+    }
+    // 6 ms RMS prevents a low-frequency cycle/zero crossing from looking like
+    // an event boundary. Edges themselves retain 2 ms resolution.
+    for (int f = 0; f < count; ++f)
+    {
+        double sum = 0.0; int n = 0;
+        for (int j = std::max (0, f - 1); j <= std::min (count - 1, f + 1); ++j) { sum += power[(size_t) j]; ++n; }
+        energy[(size_t) f] = db (sum / n);
+        floor[(size_t) f] = a.frames[(size_t) a.frameAt (f * hop)].noiseDb;
+    }
+    // A future-looking quantile alone can label an early sustained sound as
+    // background. Seed from the opening 100 ms too, then constrain upward drift
+    // while activity is present. Do not change the v1 feature/profile cache.
+    std::vector<float> opening (energy.begin(), energy.begin() + std::min (count, std::max (1, (int) (audio.rate * 0.1 / hop))));
+    const auto quantile = opening.begin() + opening.size() / 5;
+    std::nth_element (opening.begin(), quantile, opening.end());
+    float tracked = std::min (floor.front(), *quantile);
+    for (int f = 0; f < count; ++f)
+    {
+        tracked = std::min (floor[(size_t) f], tracked + (energy[(size_t) f] < tracked + 5.0f ? 0.002f : 0.0001f));
+        floor[(size_t) f] = tracked;
+    }
+    const auto frame = [&] (double ms) { return std::max (1, (int) std::llround (audio.rate * ms / (1000.0 * hop))); };
+    const auto entry = [&] (int f) { return s.adaptive ? std::max (-100.0f, floor[(size_t) f] + 12.0f - 6.0f * s.sensitivity) : s.silenceDb; };
+    const auto exit = [&] (int f) { return entry (f) - (3.0f + 4.0f * s.tails); };
+    const int quiet = frame (s.quietMs * (0.65 + 0.65 * s.tails));
+    const int minimum = frame (s.minimumMs), spacing = std::max (minimum, frame (40 + 110 * s.gesture));
+    const int pre = (int) std::llround (s.preMs * audio.rate / 1000.0), post = (int) std::llround (s.postMs * audio.rate / 1000.0);
+    struct Span { int first, last; };
+    std::vector<Span> spans;
+    int begin = -1, lastActive = -1;
+    for (int f = 0; f < count; ++f)
+    {
+        if ((f & 255) == 0 && cancelled (cancel)) return {};
+        if (begin < 0 && energy[(size_t) f] > entry (f)) begin = f;
+        if (begin >= 0)
+        {
+            if (energy[(size_t) f] > exit (f)) lastActive = f;
+            if (f - lastActive >= quiet || f == count - 1)
+            {
+                if (lastActive >= begin && lastActive - begin + 1 >= minimum) spans.push_back ({begin, lastActive + 1});
+                begin = lastActive = -1;
+            }
+        }
+    }
+    // Brief, much quieter returns close to an event are often its noisy tail,
+    // not new samples. Group those before looking for internal attack resets.
+    std::vector<Span> grouped;
+    const auto peakOf = [&] (Span span) { return *std::max_element (energy.begin() + span.first, energy.begin() + span.last); };
+    float preceding = -120.0f;
+    for (const auto span : spans)
+    {
+        const float peak = peakOf (span);
+        if (! grouped.empty() && span.first - grouped.back().last <= frame (s.quietMs + 140.0 * s.gesture)
+            && span.last - span.first < frame (60.0 + 100.0 * s.gesture)
+            && peak < preceding - (8.0f + 16.0f * s.sensitivity)) grouped.back().last = span.last;
+        else { grouped.push_back (span); preceding = peak; }
+    }
+    // An onset needs both a locally prominent rise and a real dip from the
+    // preceding event. Spectral change alone must not chop a sustained gesture.
+    for (const auto span : grouped)
+    {
+        if (cancelled (cancel)) return {};
+        std::vector<int> cuts { span.first };
+        const float grouping = std::max (0.0f, (s.gesture - 0.65f) / 0.35f);
+        const int look = frame (45 + (detectorVersion >= 3 ? 240 * grouping : 0)), ahead = frame (14);
+        int peakCursor = span.first; float precedingPeak = -120.0f;
+        for (int f = span.first + spacing; f < span.last - minimum; ++f)
+        {
+            if ((f & 255) == 0 && cancelled (cancel)) return {};
+            const int lo = std::max (cuts.back() + minimum, f - look);
+            int valley = lo;
+            for (int j = lo + 1; j < f; ++j) if (energy[(size_t) j] < energy[(size_t) valley]) valley = j;
+            float after = energy[(size_t) f], before = -120.0f;
+            for (int j = f; j < std::min (span.last, f + ahead); ++j) after = std::max (after, energy[(size_t) j]);
+            while (peakCursor < valley) precedingPeak = std::max (precedingPeak, energy[(size_t) peakCursor++]);
+            before = precedingPeak;
+            if (detectorVersion >= 3 && grouping > 0.25f)
+            {
+                before = -120.0f;
+                for (int j = std::max (cuts.back(), valley - frame (600)); j < valley; ++j) before = std::max (before, energy[(size_t) j]);
+            }
+            const float rise = after - energy[(size_t) valley], dip = before - energy[(size_t) valley];
+            const int feature = a.frameAt (f * hop);
+            const float novelty = bandDistance (a.frames[(size_t) std::max (0, feature - 2)], a.frames[(size_t) std::min ((int) a.frames.size() - 1, feature + 1)]);
+            // A timbral reset supports a weaker attack, but does not by itself
+            // split a scrape, vowel or steady noisy texture into tiny events.
+            const float requiredRise = 6.0f + 8.0f * s.gesture - 4.0f * s.sensitivity - 2.0f * novelty;
+            if (rise < requiredRise || dip < 6.0f + 12.0f * s.gesture || after < entry (f) + 2.0f) continue;
+            // Ignore little rebounds inside a decaying, textured impact. A new
+            // event either returns near the preceding peak, or rises from a
+            // genuinely quiet gap. Require the dip to persist, not one RMS bin.
+            if ((detectorVersion < 3 || grouping <= 0.25f) && after < before - (3.0f + 10.0f * s.sensitivity + 4.0f * (1.0f - s.gesture))) continue;
+            int dipFirst = valley, dipLast = valley;
+            const float dipLevel = std::min (before, after) - (4.0f + 4.0f * s.gesture);
+            while (dipFirst > lo && energy[(size_t) (dipFirst - 1)] < dipLevel) --dipFirst;
+            while (dipLast + 1 < f + ahead && dipLast + 1 < span.last && energy[(size_t) (dipLast + 1)] < dipLevel) ++dipLast;
+            const double gestureGap = detectorVersion >= 3 ? 180.0 * grouping * grouping : 0.0;
+            if (dipLast - dipFirst + 1 < frame (6.0 + 14.0 * s.gesture + gestureGap)) continue;
+            // Skip broad plateaus: take the last low point just before the rise.
+            const float base = energy[(size_t) valley];
+            while (valley + 1 < f && energy[(size_t) (valley + 1)] <= base + 1.5f) ++valley;
+            if (valley - cuts.back() < spacing || span.last - valley < minimum) continue;
+            cuts.push_back (valley); peakCursor = valley; precedingPeak = -120.0f; f = valley + spacing - 1;
+        }
+        cuts.push_back (span.last);
+        for (size_t k = 1; k < cuts.size(); ++k)
+        {
+            const int lo = cuts[k - 1], hi = cuts[k];
+            float peak = -120.0f;
+            for (int f = lo; f < hi; ++f) peak = std::max (peak, energy[(size_t) f]);
+            // Find the actual audible decay, rather than attaching the entire
+            // quiet-gap wait or a fixed tail extension to every proposal.
+            int first = lo, last = hi - 1;
+            const auto tailGate = [&] (int f) { return std::max (exit (f), peak - (28.0f + 18.0f * s.tails)); };
+            while (first < last && energy[(size_t) first] < tailGate (first)) ++first;
+            while (last > first && energy[(size_t) last] < tailGate (last)) --last;
+            if (last - first + 1 < minimum) continue;
+            // Look back into the attack to keep soft starts and apply user pads.
+            const int lower = k == 1 ? std::max (0, first - frame (80)) : lo;
+            while (first > lower && energy[(size_t) (first - 1)] > exit (first - 1)) --first;
+            const int leftLimit = k == 1 ? 0 : lo * hop;
+            const int rightLimit = k + 1 == cuts.size() ? audio.samples : hi * hop;
+            Region r;
+            r.start = std::max (leftLimit, first * hop - pre);
+            r.end = std::min (rightLimit, (last + 1) * hop + post);
+            r.startQuality = boundaryQuality (a, r.start, true); r.endQuality = boundaryQuality (a, r.end, false);
+            r.event = unit (0.65f + (peak - entry (first)) / 60.0f);
+            r.reason = k > 1 ? Reason::Attack : Reason::Quiet;
+            if (1000.0 * (r.end - r.start) / audio.rate > s.maximumMs) { r.reason = Reason::LongSpan; r.event = 0.5f; }
+            if (! out.regions.empty() && out.regions.back().end > r.start)
+            {
+                // Both padded edges must stay outside the adjacent audible core.
+                auto& previous = out.regions.back();
+                const int cut = std::clamp (r.start + pre, previous.start + 1, previous.end);
+                previous.end = cut; r.start = cut;
+                previous.endQuality = boundaryQuality (a, cut, false);
+            }
+            if (r.end > r.start) out.regions.push_back (r);
+        }
+    }
+    // Keep uncertain omissions visible in the existing review workflow, without
+    // letting a fragment become a playable sample automatically.
+    int weakStart = -1; size_t region = 0;
+    for (int f = 0; f <= count; ++f)
+    {
+        if ((f & 255) == 0 && cancelled (cancel)) return {};
+        const int sample = std::min (audio.samples, f * hop);
+        while (region < out.regions.size() && out.regions[region].end <= sample) ++region;
+        const bool covered = region < out.regions.size() && out.regions[region].start <= sample;
+        const bool audible = f < count && energy[(size_t) f] > std::max (-90.0f, floor[(size_t) f] + 3.0f);
+        if (audible && ! covered) { if (weakStart < 0) weakStart = f; }
+        else if (weakStart >= 0)
+        {
+            if (f - weakStart >= minimum) out.reviewSpans.push_back ({weakStart * hop, sample, 0.3f, 0.4f, 0.4f, Reason::PossibleMiss});
+            weakStart = -1;
+        }
+    }
+    if (out.regions.empty() && out.reviewSpans.empty())
+    {
+        const float loudest = *std::max_element (energy.begin(), energy.end());
+        if (loudest > s.silenceDb) out.reviewSpans.push_back ({0, audio.samples, 0.2f, 0.3f, 0.3f, Reason::LongSpan});
+    }
+    return out;
+}
+
+
 struct TemplateFrame
 {
     std::array<float, bandCount> bands {};

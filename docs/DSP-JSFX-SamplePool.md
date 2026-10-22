@@ -65,6 +65,35 @@ rms    = sample_rms(pool, id);
 ok     = sample_name(pool, id, #name);
 ```
 
+## Opt-in source level analysis (API v2)
+
+`sample_pool_set_level_analysis(pool, 1)` enables additional measurements on the
+existing loader worker. Set it before committing; the option participates in
+request deduplication. It defaults to off for existing clients. Both decoded
+files and in-memory import results are analyzed before their immutable generation
+is published. Original PCM, `sample_peak`, and `sample_rms` are unchanged.
+
+`sample_level(pool, id, field)` reads cached scalar metadata without scanning PCM:
+
+| Field | Measurement |
+| --- | --- |
+| 0 / 1 | Whole-file playback RMS, stereo / mono source |
+| 2 / 3 | Playback loudness, stereo / mono source |
+| 4 / 5 | Estimated true-peak amplitude, stereo / mono source |
+| 6 / 7 | Loudness method: 0 invalid/silent, 1 integrated, 2 event estimate |
+
+Playback stereo uses the first two channels and duplicates one-channel sources.
+Mono source averages the first two channels and duplicates that result. Thus
+mono cancellation does not invalidate a usable stereo measurement. Loudness uses
+BS.1770 K-weighting and channel-energy summation. Sounds below 750 ms use gated
+20 ms event blocks (absolute -70 LUFS, relative -20 LU); energy blends to standard
+400 ms / 100 ms-hop integrated gating between 750 and 1250 ms. Method 2 is a
+sampler estimate, not standards-compliant integrated LUFS. True peak uses the
+BS.1770-5 Annex 2 four-phase FIR, includes sample peaks, and flushes its tail.
+These are source measurements, not post-pitch, post-effects or summed-bus limits.
+Nonfinite inputs produce invalid metadata; check the method/energy before
+deriving a gain. Missing entries/invalid fields return zero.
+
 ## Audio reads
 
 ```eel

@@ -1,6 +1,8 @@
 # Sample Faust character integration
 
-Implemented locally as an optional **Sample Faust** native plugin. The maintained cached Sample remains the default. The generated entry is `plugins/Spectral/Sample/src/SampleFaust.jsfx`; its independent manifest is `plugins/Spectral/SampleFaust/plugin.json`. Neither Corpus nor sleep policy was changed in this integration.
+**Withdrawn from builds and downloads. Use the original Sample.** Reported display corruption, nonfunctional EQ and clicks triggering host auto-mute invalidate this variant's release qualification. The measurements below are historical results for their specified fixtures; they do not cover the failing user workflow or establish that this version is safe to use.
+
+The generated entry is `plugins/Spectral/Sample/src/SampleFaust.jsfx`; its independent manifest is `plugins/Spectral/SampleFaust/plugin.json`. Source is retained for investigation. Neither Corpus nor sleep policy was changed in this integration.
 
 ## Complete-plugin CPU measurements
 
@@ -59,7 +61,7 @@ Regenerate with:
 python tests/faust/sample_character_candidate.py --output plugins/Spectral/Sample/src/SampleFaust.jsfx
 ```
 
-Build with `python scripts/build.py --only SampleFaust`; this requires FAUST's LLVM backend at build time. On this machine the Visual Studio generator could not locate its compiler, so the packaging build uses the installed Clang/Ninja toolchain via `ZA_CMAKE_GENERATOR=Ninja`. The embedded source requires this repository's native compiler; it is not a stock REAPER JSFX effect.
+The earlier build used `python scripts/build.py --only SampleFaust` with FAUST's LLVM backend and the Clang/Ninja toolchain. The release policy now rejects that selection while the variant is withdrawn. The embedded source requires this repository's native compiler; it is not a stock REAPER JSFX effect.
 
 See `docs/JSFX-Faust-Sections.md` for the explicit block, named-stream, condition and quantum API. Raw results and test logs are retained under `docs/validation/sample-faust-character`. Test-host fixture identity is separate from the actual Sample Faust product identity.
 

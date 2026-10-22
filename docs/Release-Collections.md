@@ -9,7 +9,7 @@ support still requires a platform port.
 | Collection | Plugins | Intended use |
 | --- | ---: | --- |
 | Essentials | 13 | Focused non-Joep toolkit with one selected identity per overlapping product family. |
-| All | 36 | Every distributable non-Joep plugin, including alternate and experimental variants. |
+| All | 35 | Every distributable non-Joep plugin, including alternate and experimental variants. |
 | JoepVanlier | 50 | The separate vendored Saike/Joep catalog, with upstream notices. |
 
 Essentials is a subset of All. Choose one; installing both adds the same plugin
@@ -20,7 +20,7 @@ plugins, not the separately distributed JIT Editor or developer IPC probes.
 
 | Plugin | Reason to include it |
 | --- | --- |
-| Sample Faust | Flagship load-and-play multisampler; faithful original character formulas and editor. |
+| Sample | Flagship load-and-play multisampler using the original processing and editor. |
 | Corpus | Flagship corpus/granular instrument with deferred preparation and analysis. |
 | Hyperreal 3D Panner (`3DPanner`) | Canonical original physical model with the faithful optimized renderer. |
 | Anti-Salience MX | Background placement, adaptive surviving-anchor suppression and optional selective scatter. |
@@ -43,14 +43,13 @@ promise of the same ratio for every preset, host or platform. See
 [FAUST qualification](FAUST-Qualification.md) and
 [the sleep audit](validation/EasyExpander-Sleep-Audit.md).
 
-Sample Faust saved **1.7%, 7.8% and 8.2%** in repeated active whole-plugin
-comparisons at 48 kHz/64, 48 kHz/256 and 96 kHz/1024. All 58,368,000 compared float
-values matched the cached original, including tested handoffs. It keeps that
-original path as fallback. With character disabled, single pairs instead showed
-0.7–3.5% more CPU from staged execution overhead. Essentials selects the faster
-active character implementation requested for the flagship; **All retains Sample
-for workloads where the original is cheaper**. The much larger isolated-kernel
-speedup is not the full-plugin speedup. See [the detailed report](Sample-Faust-Character-Integration.md).
+**Essentials and All select the original Sample. Sample Faust is withdrawn**
+following reports of display corruption, nonfunctional EQ and clicks that trigger
+host auto-mute. Earlier narrow numerical/performance tests did not qualify the
+complete released user workflow. Source and [historical measurements](Sample-Faust-Character-Integration.md)
+are retained for investigation. Sample and Sample Faust have separate plugin
+identities: install Sample and replace the instance; renaming the FAUST binary
+does not turn it into Sample or migrate its saved state.
 
 `3DPanner` already uses the faithful optimized original renderer also distributed
 as HyperrealFast. Essentials uses `3DPanner`'s established identity. HyperrealFast
@@ -63,7 +62,7 @@ See [the panner report](Hyperreal-Panner.md).
 
 Essentials omits ADS, RTT, RED, VAR, Alias, BedRock, Contour, Texture, TexturePM,
 TextureXY, TSEQ, SpectralStabilizer, 3DPannerManager, DDT, DOT, DPT, PsychoConvolver
-and Roomalizer, plus the unselected Sample, EasyExpander and Hyperreal variants.
+and Roomalizer, plus the unselected EasyExpander and Hyperreal variants.
 These remain in All. This is curation for focus and overlap, not a new claim that
 each excluded plugin is broken or objectively inferior.
 
@@ -73,6 +72,9 @@ smoke and full/sharded builds. Their source stays available for developer work.
 AntiSalienceMX. Its source also stays available. Anti-Salience MX has a new ID and
 different parameters; it does not silently replace SaliencePush in saved sessions.
 Keep older installed binaries when a project uses them.
+
+**SampleFaust is excluded from all release builds**, including explicit `--only`
+selection, and from both non-Joep collections. Use the original Sample instead.
 
 ## Install and build
 

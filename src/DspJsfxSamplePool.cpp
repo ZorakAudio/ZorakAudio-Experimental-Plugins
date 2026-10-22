@@ -207,11 +207,13 @@ bool DspJsfxSamplePool::commitFromPaths(const std::vector<juce::String>& paths, 
     const int currentMode = mode_.load(std::memory_order_acquire);
     const auto currentBudget = budgetBytes_.load(std::memory_order_acquire);
     const double currentTargetRate = targetSampleRate_.load(std::memory_order_acquire);
+    const bool currentLevelAnalysis = levelAnalysis_.load(std::memory_order_acquire);
     const double committedTargetRate = lastCommittedTargetSampleRate_.load(std::memory_order_acquire);
 
     if (sourceGeneration != 0
         && lastCommittedSourceGeneration_.load(std::memory_order_acquire) == sourceGeneration
         && lastCommittedMode_.load(std::memory_order_acquire) == currentMode
+        && lastCommittedLevelAnalysis_.load(std::memory_order_acquire) == int(currentLevelAnalysis)
         && lastCommittedBudgetBytes_.load(std::memory_order_acquire) == currentBudget
         && lastCommittedSourceKind_.load(std::memory_order_acquire) == 0
         && std::abs(committedTargetRate - currentTargetRate) <= 0.5)
@@ -223,6 +225,7 @@ bool DspJsfxSamplePool::commitFromPaths(const std::vector<juce::String>& paths, 
     req.paths = paths;
     req.sourceGeneration = sourceGeneration;
     req.mode = currentMode;
+    req.levelAnalysis = currentLevelAnalysis;
     req.budgetBytes = currentBudget;
     req.targetSampleRate = currentTargetRate;
     req.requestId = nextRequestId_.fetch_add(1, std::memory_order_acq_rel);
@@ -241,6 +244,7 @@ bool DspJsfxSamplePool::commitFromPaths(const std::vector<juce::String>& paths, 
 
     lastCommittedSourceGeneration_.store(sourceGeneration, std::memory_order_release);
     lastCommittedMode_.store(currentMode, std::memory_order_release);
+    lastCommittedLevelAnalysis_.store(int(currentLevelAnalysis), std::memory_order_release);
     lastCommittedBudgetBytes_.store(currentBudget, std::memory_order_release);
     lastCommittedSourceKind_.store(0, std::memory_order_release);
     lastCommittedTargetSampleRate_.store(currentTargetRate, std::memory_order_release);
@@ -254,11 +258,13 @@ bool DspJsfxSamplePool::commitFromMemory(std::shared_ptr<const DspJsfxSamplePool
     const int currentMode = mode_.load(std::memory_order_acquire);
     const auto currentBudget = budgetBytes_.load(std::memory_order_acquire);
     const double currentTargetRate = targetSampleRate_.load(std::memory_order_acquire);
+    const bool currentLevelAnalysis = levelAnalysis_.load(std::memory_order_acquire);
     const double committedTargetRate = lastCommittedTargetSampleRate_.load(std::memory_order_acquire);
 
     if (sourceGeneration != 0
         && lastCommittedSourceGeneration_.load(std::memory_order_acquire) == sourceGeneration
         && lastCommittedMode_.load(std::memory_order_acquire) == currentMode
+        && lastCommittedLevelAnalysis_.load(std::memory_order_acquire) == int(currentLevelAnalysis)
         && lastCommittedBudgetBytes_.load(std::memory_order_acquire) == currentBudget
         && lastCommittedSourceKind_.load(std::memory_order_acquire) == 1
         && std::abs(committedTargetRate - currentTargetRate) <= 0.5)
@@ -270,6 +276,7 @@ bool DspJsfxSamplePool::commitFromMemory(std::shared_ptr<const DspJsfxSamplePool
     req.memorySources = std::move(sources);
     req.sourceGeneration = sourceGeneration;
     req.mode = currentMode;
+    req.levelAnalysis = currentLevelAnalysis;
     req.budgetBytes = currentBudget;
     req.targetSampleRate = currentTargetRate;
     req.requestId = nextRequestId_.fetch_add(1, std::memory_order_acq_rel);
@@ -289,6 +296,7 @@ bool DspJsfxSamplePool::commitFromMemory(std::shared_ptr<const DspJsfxSamplePool
 
     lastCommittedSourceGeneration_.store(sourceGeneration, std::memory_order_release);
     lastCommittedMode_.store(currentMode, std::memory_order_release);
+    lastCommittedLevelAnalysis_.store(int(currentLevelAnalysis), std::memory_order_release);
     lastCommittedBudgetBytes_.store(currentBudget, std::memory_order_release);
     lastCommittedSourceKind_.store(1, std::memory_order_release);
     lastCommittedTargetSampleRate_.store(currentTargetRate, std::memory_order_release);
@@ -384,6 +392,15 @@ double DspJsfxSamplePool::rms(std::uint64_t sampleId) const noexcept
     ReaderScope reading(storage_);
     if (auto* e = entryFor(reading.generation, sampleId))
         return static_cast<double>(e->rms);
+    return 0.0;
+}
+
+double DspJsfxSamplePool::level(std::uint64_t sampleId, int field) const noexcept
+{
+    ReaderScope reading(storage_);
+    if (const auto* e = entryFor(reading.generation, sampleId))
+        if (field >= 0 && field < static_cast<int>(e->levels.size()))
+            return e->levels[static_cast<std::size_t>(field)];
     return 0.0;
 }
 
@@ -637,6 +654,7 @@ std::shared_ptr<DspJsfxSamplePoolGeneration> DspJsfxSamplePool::buildGeneration(
 
             entry.peak = peak;
             entry.rms = keptItems > 0 ? static_cast<float>(std::sqrt(sumSq / static_cast<double>(keptItems))) : 0.0f;
+            if (request.levelAnalysis) entry.levels = analyzeSampleLevels(gen->audio.data() + entry.offsetItems, entry.frames, entry.channels, entry.sampleRate);
             buildPreviewForEntry(*gen, entry);
             gen->names.push_back(src.name.empty() ? std::string("memory sample") : src.name);
             gen->entries.push_back(entry);
@@ -794,6 +812,7 @@ std::shared_ptr<DspJsfxSamplePoolGeneration> DspJsfxSamplePool::buildGeneration(
 
         entry.peak = peak;
         entry.rms = totalItems > 0 ? static_cast<float>(std::sqrt(sumSq / static_cast<double>(totalItems))) : 0.0f;
+        if (request.levelAnalysis) entry.levels = analyzeSampleLevels(gen->audio.data() + entry.offsetItems, entry.frames, entry.channels, entry.sampleRate);
         buildPreviewForEntry(*gen, entry);
         gen->names.push_back(file.getFileName().toStdString());
         gen->entries.push_back(entry);

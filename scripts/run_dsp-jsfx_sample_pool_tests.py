@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -58,3 +59,12 @@ if __name__ == "__main__":
 
     expect_ok(base("sample_pool_probe.jsfx"), "sample pool probe compiles")
     expect_fail(base("invalid_export_sample.jsfx"), "sample_export_mem rejected in @sample", "sample_export_mem() is only valid in @block")
+
+    compiler = shutil.which("clang++") or shutil.which("g++")
+    if compiler is None:
+        raise SystemExit("The source level analysis test requires clang++ or g++")
+    level_test = out / ("level_analysis.exe" if sys.platform == "win32" else "level_analysis")
+    expect_ok([compiler, "-std=c++17", "-O2", "-I" + str(repo_root / "src"),
+               str(tests / "level_analysis.cpp"), "-o", str(level_test)],
+              "source level analysis test compiles")
+    expect_ok([str(level_test)], "source level reference and edge cases")

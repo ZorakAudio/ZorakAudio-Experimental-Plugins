@@ -6,6 +6,7 @@ slider1:0<0,65536,256>RAM Budget (MB, 0=unlimited)
 @init
 SAMPLE_MODE_RESIDENT = 0;
 pool = sample_pool_from_slot(0, "probe");
+sample_pool_set_level_analysis(pool, 1);
 sample_pool_set_mode(pool, SAMPLE_MODE_RESIDENT);
 sample_pool_set_budget_mb(pool, slider1);
 sample_pool_commit(pool);
@@ -26,6 +27,10 @@ ram = sample_pool_ram_mb(pool);
 id = sample_get(pool, 0);
 frames = sample_len(pool, id);
 chans = sample_channels(pool, id);
+playback_rms = sample_level(pool, id, 0);
+playback_loudness = sample_level(pool, id, 2);
+playback_peak = sample_level(pool, id, 4);
+playback_loudness_method = sample_level(pool, id, 6);
 
 @sample
 id > 0 && frames > 1 ? (

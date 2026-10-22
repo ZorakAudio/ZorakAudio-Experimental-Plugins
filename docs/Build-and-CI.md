@@ -150,6 +150,25 @@ incomplete artifacts stop recovery before packaging.
 The local equivalent can pass `--catalog-root` with a separate checkout of the
 original build commit, while running the corrected merger from the current checkout.
 
+To change **collection membership only** after a build, keep `--catalog-root`
+pointing at its original sources/policy and supply `--collection-policy-root .`
+for the reviewed current selection. Original build receipts still must match
+the original policy; a changed selection never changes plugin bytes or adds a
+plugin absent from those builds. For the Sample Faust withdrawal:
+
+```sh
+python scripts/merge_catalog_archives.py --input build/catalog-recovery/R2026.10.09-02/shards --output dist/catalog/R2026.10.09-02-sample-correction --tag R2026.10.09-02 --catalog-root build/sample-release-correction/source-catalog --collection-policy-root . --collections --collection Essentials --collection All
+```
+
+These two ZIPs replace the matching release assets; JoepVanlier is unchanged.
+The root receipts record both source-build and current-selection policy hashes.
+The **Recover catalog packages** workflow provides the same operation: enable
+**current_selection** when dispatching it from the branch containing the reviewed
+policy (enabled by default). This builds only the corrected Essentials and All
+archives. Turning it off preserves the original selection for all three,
+but recovery refuses any plugin excluded by the current release policy. It still
+does not compile plugins or publish the assets.
+
 Every catalog and JIT job uses the shared setup action to apply and verify the
 JUCE and CLAP wrapper patches before installing the native toolchain or compiling.
 A patch conflict fails the job immediately; each job also verifies the patches

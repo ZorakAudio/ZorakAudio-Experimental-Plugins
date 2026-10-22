@@ -1,8 +1,13 @@
+// v76 Native Layers mixer: side-by-side strips, 2x2 compact cards, stable instrument panels.
+// v75 Layers and Coherent pitch: appended controls, centred optional pan, local quick presets, no personal defaults.
 // za_native_gfx: {"interactive":true,"locals":["auto_release_amt","clean_decrust_amt","color_pivot_hz","color_tilt_db","color_tilt_norm","dynamics_expand_amt","edge_melt_amt","focus_peak_amt","formant_shift_semi","i","output_harmonics_amt","pitch_parallel_mix","posteq_b1_char","posteq_b1_drive","posteq_b2_char","posteq_b2_drive","posteq_b3_char","posteq_b3_drive","posteq_char_active","posteq_gfx_heartbeat","posteq_hpf_char","posteq_hpf_drive","posteq_lpf_char","posteq_lpf_drive","sm","space_room_amt","space_room_char","sumw","v71_profile","v71_thrill"],"commands":["posteq_solo_target"],"persist":["hub_ui_open","hub_ui_anchor"],"views":[{"base":"sample_meta_base","count":"sample_count","stride":"sm_stride","fields":[11,15,8,14],"max":16384,"generation":"slot_signature_loaded"},{"base":"voice_base","count":"max_voices","stride":"vc_stride","fields":[0],"max":16},{"base":"posteq_spec_env_base","count":96,"max":96},{"base":"posteq_post_env_base","count":96,"max":96},{"base":"hub_log_base","count":1200,"max":1200}]}
 desc:Load-and-Go Psycho MultiSampler (tape + hybrid + granular v71-integrated-engines)
 tags:instrument sampler ui
-// #GFX_RESIZE: responsive
+// #GFX_RESIZE: flow
 
+// v74 ResponsiveLayout: full-size controls and text; wide/medium/narrow layouts, pinned bank, explicit section tabs, compact value controls and bounded tooltips.
+// v73 LoudnessDefault: new instances use Loudness; saved modes and explicit old-state Legacy migration are retained.
+// v72 LevelMatching: None/RMS/Loudness modes retain the original Truth slider; worker-cached stereo/mono analysis, bounded gain and explicit old-state migration.
 // v69 CoherentAudit: visible-only spectrum, block-pinned immutable banks, host/shadow timing, and zero-latency DeCrust bypass with faded live latency changes.
 // v68 DSPAudit: sample-accurate MIDI, independent EQ drives, stable pool adoption, cached onset anchors, and stereo-safe analysis.
 // v67 InterfaceRetirement: removes obsolete shared-instance ordering and motion-CC modulation; preserves parameter IDs and the Auto Smooth timing clock.
@@ -95,6 +100,15 @@ filename:0,sample.wav
 // #HELP: ## Post-Processing
 // #HELP: The Post-Processing panel is a final-output EQ editor with pre/post spectrum overlay, draggable HPF/LPF cutoffs, and three free parametric bands. Drag bands horizontally for frequency and vertically for gain; wheel adjusts Q; Shift+Wheel on HPF/LPF changes slope; Ctrl+click/drag temporarily solos the selected band/cut for auditioning.
 // #HELP:
+// #HELP: ## Window size
+// #HELP: Drag the plugin window corner to resize. The interface rearranges at smaller sizes with readable text and full-size controls. Wide windows show all three sound panels; medium windows keep Playback beside Envelope/EQ; narrow windows use labelled Playback, Envelope and EQ tabs. The full sample-bank graph stays visible. Short sound panels have a scrollbar; wheel over empty panel space to scroll. Related controls use editable value fields in compact layouts.
+// #HELP:
+// #HELP: ## Layers mixer
+// #HELP: Open Layers. Tap Voices 1–4 or Single/Double/Triple/Loose for this instance. Every included layer exposes level, pitch and delay directly. Normal windows use level faders; compact windows use a two-column grid. Click/drag/wheel controls; Shift gives fine mouse adjustment; right-click resets. Pan is optional and starts centred. Wide windows keep Playback and Envelope beside the mixer; the right EQ tab restores the equalizer. The whole-bank graph remains visible. Short windows and optional controls can scroll.
+// #HELP:
+// #HELP: ## Source level matching
+// #HELP: Ctrl+click Truth selects Legacy, None, RMS, or Loudness; Ctrl+right-click restores Legacy. New instances default to Loudness. Saved matching modes are retained; older projects with no matching mode restore Legacy exactly. The original Truth slider and automation retain their IDs. RMS/Loudness use whole-file stereo/mono measurements cached by the background Sample Pool loader; Shift+drag Truth adjusts the selected target. Host parameters expose maximum boost and a source peak ceiling. Truth blends the new correction in dB; None bypasses automatic gain matching while preserving creative grain behavior. Settings are latched per note. Loudness uses BS.1770 K-weighting, a short-event estimate for hits below 750 ms, an energy blend through 1.25 seconds, and integrated gating for longer audio. Matching precedes velocity, Liveliness, granular gain, and processing; the source ceiling is not an output limiter. Missing mode parameters in older states always restore Legacy, independently of future factory defaults.
+// #HELP:
 // #HELP: ## Tone and feel
 // #HELP: Color is now ERB Tilt: positive brightens, negative darkens around a pivot. Alt+Color sets Pivot; Shift+Color toggles auto-infer pivot. Focus softens/clarifies. Shift+drag Focus adjusts hidden Peak Pack: negative can flatten detected spectral maxima, positive can push resonant maxima. Shift+drag Pitch adjusts hidden formant/resonance shift. Shift+drag Grain adjusts hidden Edge Melt for Granular-only grain-border smoothing. Width spreads safely. Liveliness adds variation; Shift+drag/wheel sets Thrill, a separate 0-15% Accent Engine injection defaulting to 0. Truth moves from matched behavior toward raw sample individuality. Dynamics adds density with protection; Shift+drag/wheel Dynamics sets Universal Contour aggression for joint tail, resonance and eligible breath cleanup, with full bypass at 0. Shift+drag Output adds clean parallel Harmonics.
 // #HELP:
@@ -172,7 +186,46 @@ slider61:1<0,1,0.001>--Hidden Pitch Mix
 slider62:0<0,242,1>--Hidden EQ Character Pack
 slider63:0<0,812990017200,1>--Legacy EQ Drive Import (retained)
 slider64:6<0,60,0.1>--Hidden Source Expand Depth (dB)
+slider65:3<0,3,1{Legacy,None,RMS,Loudness}>--Level Match Mode
+slider66:-23<-36,-9,0.1>--Loudness Target (LUFS / short-event estimate)
+slider67:-18.4<-36,-9,0.1>--RMS Target (dBFS)
+slider68:6<0,24,0.1>--Matching Maximum Boost (dB)
+slider69:-3<-18,0,0.1>--Matching Source Peak Ceiling (dBTP)
+
+// Appended controls retain all existing parameter IDs, ranges and defaults.
+slider70:1<0,1,1{Original,Coherent}>--Pitch engine
+slider71:1<1,4,1>--Layers
+slider72:0<0,1,1{Different samples,Same sample}>--Layer sources
+slider73:-9<-24,0,0.1>--Layer support level (dB)
+slider74:0<0,12,0.1>--Layer pitch spread (st)
+slider75:0<0,30,0.1>--Layer timing spread (ms)
+slider76:0<0,100,1>--Layer pan spread (%)
+slider77:1<0,1,1{Independent,Shared}>--Layer attack
+slider78:0<0,2,1{Free,Unison,Chord}>--Layer pitch layout
+slider79:0<0,3,1{Minor,Major,Fifth,Octave}>--Layer voicing
+slider80:0<-24,24,0.1>--Layer 1 pitch trim (st)
+slider81:0<-24,24,0.1>--Layer 2 pitch trim (st)
+slider82:0<-24,24,0.1>--Layer 3 pitch trim (st)
+slider83:0<-24,24,0.1>--Layer 4 pitch trim (st)
+slider84:0<-24,12,0.1>--Layer 1 level trim (dB)
+slider85:0<-24,12,0.1>--Layer 2 level trim (dB)
+slider86:0<-24,12,0.1>--Layer 3 level trim (dB)
+slider87:0<-24,12,0.1>--Layer 4 level trim (dB)
+slider88:0<-30,60,0.1>--Layer 1 delay trim (ms)
+slider89:0<-30,60,0.1>--Layer 2 delay trim (ms)
+slider90:0<-30,60,0.1>--Layer 3 delay trim (ms)
+slider91:0<-30,60,0.1>--Layer 4 delay trim (ms)
+slider92:0<-100,100,1>--Layer 1 pan trim (%)
+slider93:0<-100,100,1>--Layer 2 pan trim (%)
+slider94:0<-100,100,1>--Layer 3 pan trim (%)
+slider95:0<-100,100,1>--Layer 4 pan trim (%)
+slider96:1<0,1,1{Off,On}>--Layer 1 enabled
+slider97:1<0,1,1{Off,On}>--Layer 2 enabled
+slider98:1<0,1,1{Off,On}>--Layer 3 enabled
+slider99:1<0,1,1{Off,On}>--Layer 4 enabled
 @init
+// Host compatibility marker: missing mode in older state always restores Legacy.
+sample_match_compat_v1 = 1;
 za_char_drive0=-1;
 za_char_drive1=-1;
 za_char_drive2=-1;
@@ -4480,6 +4533,135 @@ function build_grain_corpus() local(total_frames i sm frames sr lenms target sha
   corpus_dirty = 0;
 );
 
+function amp2db(value)(20*log(max(value,0.000000001))*LOG10_INV;);
+// Cached full-file descriptors; filtering never reloads or rewrites PCM.
+function bank_metric_value(sid metric) local(sm v)
+(
+  sm=sample_meta_base+sid*SM_STRIDE;
+  metric==1?v=amp2db(sm[SM_UI_PEAK])
+  :metric==2?v=amp2db(sm[SM_UI_RMS])
+  :metric==3?v=amp2db(max(sm[SM_UI_PEAK],.000000001)/max(sm[SM_UI_RMS],.000000001))
+  :metric==4?v=sm[SM_LENMS]
+  :metric==5?v=sm[SM_UI_HF]
+  :metric==6?v=sm[SM_UI_ROLLOFF]
+  :v=sm[SM_UI_CENTROID];v;
+);
+
+function bank_source_eligible(sid) local(sm v)
+(
+  sm=sample_meta_base+sid*SM_STRIDE;
+  sm[SM_UI_EXCLUDED]<.5 && (bank_filter_mode==0 ? 1 : (
+    v=bank_metric_value(sid,bank_filter_metric);
+    bank_filter_mode==1 ? v>=bank_filter_cut : v<=bank_filter_cut;
+  ));
+);
+
+function bank_sample_allowed(sid)
+(
+  bank_audition_active==1 ? sid==bank_audition_sid : bank_source_eligible(sid);
+);
+
+function ui_bank_value(sid)(bank_metric_value(sid,bank_ui_metric););
+
+// A single exact integer command carries the complete filter update. It cannot
+// expose a new metric paired with the previous metric's threshold to audio.
+// 0.001 native units, -1000..10,000,000; maximum command remains below 2^53.
+function ui_bank_filter_request(mode metric value) local(payload)
+(
+  bank_filter_ticket=(bank_filter_ticket+1)%8192;
+  payload=floor((clamp(value,-1000,10000000)+1000)*1000+.5)*32+metric*4+mode;
+  bank_filter_request=bank_filter_ticket*549755813888+payload;
+);
+
+function ui_bank_metric_name()
+(
+  bank_ui_metric == 1 ? sprintf(#bank_metric_label,"Peak dBFS")
+  : bank_ui_metric == 2 ? sprintf(#bank_metric_label,"RMS dBFS")
+  : bank_ui_metric == 3 ? sprintf(#bank_metric_label,"Crest dB")
+  : bank_ui_metric == 4 ? sprintf(#bank_metric_label,"Length ms")
+  : bank_ui_metric == 5 ? sprintf(#bank_metric_label,"Energy >6kHz %%")
+  : bank_ui_metric == 6 ? sprintf(#bank_metric_label,"95%% roll-off Hz")
+  : sprintf(#bank_metric_label,"Centroid Hz");
+);
+
+function ui_bank_format(value)
+(
+  bank_ui_metric == 0 || bank_ui_metric == 6 ? sprintf(#bank_value_label,"%.2f kHz",value/1000)
+  : bank_ui_metric == 1 || bank_ui_metric == 2 ? sprintf(#bank_value_label,"%.1f dBFS",value)
+  : bank_ui_metric == 3 ? sprintf(#bank_value_label,"%.1f dB",value)
+  : bank_ui_metric == 4 ? sprintf(#bank_value_label,"%.0f ms",value)
+  : sprintf(#bank_value_label,"%.1f%%",value);
+);
+
+function ui_bank_recache() local(i j gap tmp q1 q3 spread n span minspan pad rawstep magnitude ratio step)
+(
+  // This scratch is graphics-private. Source metadata and voice memory remain read-only.
+  ui_bank_sort_base = AUDIO_BASE + 128;
+  i=0;while(i<sample_count)(ui_bank_sort_base[i]=i;i+=1;);
+  gap=floor(sample_count/2);
+  while(gap>0)(i=gap;while(i<sample_count)(tmp=ui_bank_sort_base[i];j=i;
+    while(j>=gap && ui_bank_value(ui_bank_sort_base[j-gap])>ui_bank_value(tmp))(
+      ui_bank_sort_base[j]=ui_bank_sort_base[j-gap];j-=gap;
+    );ui_bank_sort_base[j]=tmp;i+=1;);gap=floor(gap/2););
+  n=max(0,sample_count-1);
+  bank_ui_min=sample_count>0?ui_bank_value(ui_bank_sort_base[0]):0;
+  bank_ui_max=sample_count>0?ui_bank_value(ui_bank_sort_base[n]):1;
+  bank_ui_median=sample_count>0?ui_bank_value(ui_bank_sort_base[floor(n*.5)]):0;
+  q1=sample_count>0?ui_bank_value(ui_bank_sort_base[floor(n*.25)]):0;
+  q3=sample_count>0?ui_bank_value(ui_bank_sort_base[floor(n*.75)]):0;
+  spread=q3-q1;bank_ui_lo=q1-1.5*spread;bank_ui_hi=q3+1.5*spread;
+  // Fit the complete bank, including grey/excluded samples and all outliers.
+  // A meaningful minimum span handles one sample or identical measurements.
+  span=bank_ui_max-bank_ui_min;
+  minspan=(bank_ui_metric==0 || bank_ui_metric==6)?max(10,abs(bank_ui_median)*.02)
+    :bank_ui_metric==4?max(1,abs(bank_ui_median)*.02):bank_ui_metric==5?.5:1;
+  pad=max(span*.06,(minspan-span)*.5);
+  bank_ui_axis_lo=bank_ui_min-pad;bank_ui_axis_hi=bank_ui_max+pad;
+  bank_ui_metric!=1 && bank_ui_metric!=2?bank_ui_axis_lo=max(0,bank_ui_axis_lo);
+  bank_ui_metric==5?bank_ui_axis_hi=min(100,bank_ui_axis_hi);
+  // Readable bounds without anchoring positive measurements to zero or dBFS
+  // measurements to full scale. Never use percentiles to cut off real data.
+  rawstep=max(.000000001,(bank_ui_axis_hi-bank_ui_axis_lo)/4);
+  magnitude=10^floor(log(rawstep)/log(10));ratio=rawstep/magnitude;
+  step=(ratio<=1.5?1:ratio<=2.25?2:ratio<=3.5?2.5:ratio<=7.5?5:10)*magnitude;
+  bank_ui_axis_lo=floor(bank_ui_axis_lo/step+.000000001)*step;
+  bank_ui_axis_hi=ceil(bank_ui_axis_hi/step-.000000001)*step;
+  bank_ui_axis_hi=max(bank_ui_axis_hi,bank_ui_axis_lo+step);
+  bank_ui_tick_step=(bank_ui_axis_hi-bank_ui_axis_lo)/2;
+  bank_ui_recache_count+=1;ui_bank_cache_ready=1;
+  bank_ui_cache_count=sample_count;bank_ui_cache_metric=bank_ui_metric;bank_ui_cache_signature=slot_signature_loaded;
+);
+
+function ui_bank_sid(rank)
+(
+  bank_ui_order==1?ui_bank_sort_base[rank]:(bank_ui_order==2?ui_bank_sort_base[sample_count-1-rank]:rank);
+);
+
+function ui_bank_y(value)
+(
+  map_y+map_h-10-(map_h-20)*clamp01((value-bank_ui_axis_lo)/max(.000000001,bank_ui_axis_hi-bank_ui_axis_lo));
+);
+
+function ui_bank_tick_label(value) local(decimals scaled kilo)
+(
+  kilo=(bank_ui_metric==0 || bank_ui_metric==6) && abs(value)>=1000;
+  scaled=kilo?value/1000:value;
+  // Match the actual tick, including half/quarter dB and sub-percent ranges.
+  // EEL sprintf does not support C's dynamic precision (%.*f).
+  decimals=abs(scaled-floor(scaled+.5))<.0000001?0
+    :abs(scaled*10-floor(scaled*10+.5))<.000001?1
+    :abs(scaled*100-floor(scaled*100+.5))<.00001?2:3;
+  decimals==0?sprintf(#ui_buf,"%.0f",scaled):decimals==1?sprintf(#ui_buf,"%.1f",scaled)
+    :decimals==2?sprintf(#ui_buf,"%.2f",scaled):sprintf(#ui_buf,"%.3f",scaled);
+  kilo?strcat(#ui_buf,"k");bank_ui_metric==5?strcat(#ui_buf,"%");
+);
+
+function ui_bank_request(op sid)
+(
+  bank_ui_ticket=(bank_ui_ticket+1)%1024;
+  bank_ui_request=bank_ui_ticket*65536+op*16384+sid+1;
+);
+
 function corpus_consider_candidate(vix v idx want_region gsize lively truth spice stage fallback_sid) local(
   gc csid cpos clen creg cphase crms cbright cedge csharp csal cevent sm sr lo hi span
   lastidx lastgc hasprev prms pbr pedge psid ppos pevent pphase pregion descer phaseerr histpen regionpen saltarget salpen nearwin nearpen runpen regresspen crosspen score runlim force_cross sameevent
@@ -4490,7 +4672,7 @@ function corpus_consider_candidate(vix v idx want_region gsize lively truth spic
   (idx >= 0 && idx < corpus_count) ? (
     gc = grain_corpus_base + idx * GC_STRIDE;
     csid = gc[GC_SID] | 0;
-    (csid >= 0 && csid < sample_count) ? (
+    (csid >= 0 && csid < sample_count && bank_sample_allowed(csid)) ? (
       cpos = gc[GC_POS];
       clen = max(1, gc[GC_LEN]);
       creg = gc[GC_REGION] | 0;
@@ -4866,6 +5048,7 @@ function choose_random_sample(note velnorm) local(
 
     i = 0;
     while (i < sample_count) (
+      bank_filter_mode==0 || bank_source_eligible(i) ? (
       sm = sample_meta_base + i * SM_STRIDE;
       brighterr = abs(sm[SM_BRIGHT] - bright_t);
       sharperr  = abs(sm[SM_SHARP] - sharp_t);
@@ -4873,6 +5056,7 @@ function choose_random_sample(note velnorm) local(
       score += recent_penalty(i) * rep_scale / max(RECENT_LEN, 1);
       weight = 0.15 + exp(-score * temp);
       totalw += weight;
+      );
       i += 1;
     );
 
@@ -4884,6 +5068,7 @@ function choose_random_sample(note velnorm) local(
       sid = sample_count - 1;
       i = 0;
       while (i < sample_count) (
+        bank_filter_mode==0 || bank_source_eligible(i) ? (
         sm = sample_meta_base + i * SM_STRIDE;
         brighterr = abs(sm[SM_BRIGHT] - bright_t);
         sharperr  = abs(sm[SM_SHARP] - sharp_t);
@@ -4894,6 +5079,7 @@ function choose_random_sample(note velnorm) local(
         accum >= pick ? (
           sid = i;
           i = sample_count;
+        ) : i += 1;
         ) : i += 1;
       );
       sid;
@@ -4923,7 +5109,7 @@ function choose_walk_sample(note velnorm) local(
 
       i = 0;
       while (i < sample_count) (
-        i != walk_last_sid ? (
+        i != walk_last_sid && (bank_filter_mode==0 || bank_source_eligible(i)) ? (
           sm = sample_meta_base + i * SM_STRIDE;
 
           dlast = sample_descriptor_distance(lastsm, sm, 0);
@@ -4961,7 +5147,7 @@ function choose_walk_sample(note velnorm) local(
         sid = walk_last_sid;
         i = 0;
         while (i < sample_count) (
-          i != walk_last_sid ? (
+          i != walk_last_sid && (bank_filter_mode==0 || bank_source_eligible(i)) ? (
             sm = sample_meta_base + i * SM_STRIDE;
 
             dlast = sample_descriptor_distance(lastsm, sm, 0);
@@ -5005,7 +5191,7 @@ function choose_region_donor(src_sid region_mode wideness vix) local(
   brighterr sharperr transerr lenerr pitcherr regionerr histpen walkerr score weight
 )
 (
-  (sample_count <= 1 || src_sid < 0) ? src_sid : (
+  (sample_count <= 1 || src_sid < 0 || bank_audition_active) ? src_sid : (
     src = sample_meta_base + src_sid * SM_STRIDE;
     region_mode ? (
       src_lo = clamp(src[SM_TAILSTART], 0, max(0, src[SM_FRAMES] - 2));
@@ -5022,7 +5208,7 @@ function choose_region_donor(src_sid region_mode wideness vix) local(
 
     i = 0;
     while (i < sample_count) (
-      i != src_sid ? (
+      i != src_sid && bank_sample_allowed(i) ? (
         sm = sample_meta_base + i * SM_STRIDE;
         region_mode ? (
           lo = clamp(sm[SM_TAILSTART], 0, max(0, sm[SM_FRAMES] - 2));
@@ -5067,7 +5253,7 @@ function choose_region_donor(src_sid region_mode wideness vix) local(
       sid = src_sid;
       i = 0;
       while (i < sample_count) (
-        i != src_sid ? (
+        i != src_sid && bank_sample_allowed(i) ? (
           sm = sample_meta_base + i * SM_STRIDE;
           region_mode ? (
             lo = clamp(sm[SM_TAILSTART], 0, max(0, sm[SM_FRAMES] - 2));
@@ -6715,8 +6901,42 @@ function analyze_sample(sm) local(j anchor classic_anchor gauss_anchor)
 );
 
 
+// v75 Layers: note-local setup, grouped release/stealing and bounded native pitch.
+function layers_pitch_trim(i)(i==0?slider80:i==1?slider81:i==2?slider82:slider83;);
+function layers_gain_trim(i)(i==0?slider84:i==1?slider85:i==2?slider86:slider87;);
+function layers_delay_trim(i)(i==0?slider88:i==1?slider89:i==2?slider90:slider91;);
+function layers_pan_trim(i)(i==0?slider92:i==1?slider93:i==2?slider94:slider95;);
+function layers_on(i)(i==0?slider96:i==1?slider97:i==2?slider98:slider99;);
+function layers_pitch(i) local(v)(
+  (slider78|0)==2?((slider79|0)==0?v=(i==0?0:i==1?3:i==2?7:12):(slider79|0)==1?v=(i==0?0:i==1?4:i==2?7:12):(slider79|0)==2?v=(i==0?0:i==1?7:i==2?12:19):v=(i==0?0:i==1?-12:i==2?12:24);)
+  :(slider78|0)==1?v=0:v=(i==0?0:i==1?-slider74:i==2?slider74*.5:-slider74*.25);
+  clamp(v+layers_pitch_trim(i),-48,48);
+);
+function layers_gain(i)(clamp((i==0?0:slider73-(i==1?0:i==2?6:9))+layers_gain_trim(i),-48,12););
+function layers_delay(i)(clamp((i==0?0:i==1?.5:i==2?1:.75)*slider75+layers_delay_trim(i),0,90););
+function layers_pan(i)(clamp((i==0?0:i==1?-1:i==2?1:-.5)*slider76+layers_pan_trim(i),-100,100)*.01;);
+function layers_seen(sid)(sid==layer_used0 || sid==layer_used1 || sid==layer_used2 || sid==layer_used3;);
+function layers_release_slot(owner handle) local(slot)(
+  handle>0?(slot=(handle-1)-floor((handle-1)/64)*64;spectral_owner_base[slot]==owner?spectral_owner_base[slot]=0;);
+);
+function layers_release_spectral(v) local(k gb)(
+  layers_release_slot(v,v[VC_SPECTRAL]);v[VC_SPECTRAL]=0;k=0;
+  while(k<NUM_GRAINS)(gb=v+VC_GBASE+k*VG_STRIDE;layers_release_slot(gb,gb[VG_SPECTRAL]);gb[VG_SPECTRAL]=0;k+=1;);
+);
+function layers_grain_slot(gb) local(k owner found)(
+  found=-1;k=16;
+  while(k<64 && found<0)(owner=spectral_owner_base[k];owner<=0 || owner[0]<=0?(found=k;spectral_owner_base[k]=gb;);k+=1;);
+  found>=0?(spectral_serial=(spectral_serial+1)%1048576;found+64*spectral_serial+1;):0;
+);
+function layers_spectral_read(handle ptr start frames semi age character speed) local(ok)(
+  ok=sample_pitch_read2_ex(bank_pool,ptr,start,max(1,frames),semi,floor(age),handle-1,character,clamp(speed,.0625,4),readL,readR);
+  mono_source?(readL=.5*(readL+readR);readR=readL;);
+  !ok?layers_spectral_faults+=1;ok;
+);
+
 function reset_voices() local(i j v)
 (
+  memset(spectral_owner_base,0,64);
   i = 0;
   while (i < MAX_VOICES) (
     v = voice_base + i * VC_STRIDE;
@@ -9804,6 +10024,7 @@ function denorm_flush_silent_tail_state()
 function reset_bank_state() local(i)
 (
   sample_count = 0;
+  bank_excluded_count = 0;bank_audition_active=0;bank_ui_state_revision+=1;
   bank_selected_count = 0;
   bank_scan_count = 0;
   bank_skipped_count = 0;
@@ -9888,6 +10109,18 @@ function load_one_pool_sample(sample_index) local(
       sm[SM_FRAMES]   = frames;
       sm[SM_LASTUSED] = -1000000;
       sm[SM_PEAK]     = sample_peak(bank_pool, sid);
+      sm[SM_UI_PEAK] = sample_peak(bank_pool,sid);
+      sm[SM_UI_RMS] = sample_level(bank_pool,sid,0);
+      sm[SM_UI_CENTROID] = sample_level(bank_pool,sid,8);
+      sm[SM_UI_HF] = sample_level(bank_pool,sid,9);
+      sm[SM_UI_ROLLOFF] = sample_level(bank_pool,sid,10);
+      sm[SM_UI_IDENTITY] = sample_level(bank_pool,sid,11);
+      bank_exclusion_base[sample_count*2] != sm[SM_UI_IDENTITY] ? (
+        bank_exclusion_base[sample_count*2]=sm[SM_UI_IDENTITY];bank_exclusion_base[sample_count*2+1]=0;
+      );
+      sm[SM_UI_EXCLUDED]=bank_exclusion_base[sample_count*2+1]>.5?1:0;
+      bank_excluded_count+=sm[SM_UI_EXCLUDED];
+
       sm[SM_RMS]      = sample_rms(bank_pool, sid);
       el = 0; er = 0; j = 0;
       // One whole-file decision avoids sign changes from a per-frame max channel.
@@ -10138,7 +10371,8 @@ function configure_memory_layout(selected_count) local(cap) (
   cap > SAMPLE_POOL_HARD_MAX ? cap = SAMPLE_POOL_HARD_MAX;
   sample_pool_capacity = cap;
 
-  sample_meta_base = 0;
+  bank_exclusion_base = 0;
+  sample_meta_base = 32768;
   corpus_capacity = clamp(max(GRAIN_CORPUS_MIN, (selected_count | 0) * 64), GRAIN_CORPUS_MIN, GRAIN_CORPUS_HARD_MAX) | 0;
   grain_corpus_base = sample_meta_base + sample_pool_capacity * SM_STRIDE + 32;
   voice_base = grain_corpus_base + corpus_capacity * GC_STRIDE + 64;
@@ -10159,7 +10393,8 @@ function configure_memory_layout(selected_count) local(cap) (
   analysis_copy_base = midi_queue_base + MIDI_QUEUE_CAP * 3;
   analysis_channel_base = analysis_copy_base + SM_STRIDE;
   analysis_filter_base = analysis_channel_base + sample_pool_capacity + 1;
-  weight_ap1_l_base = analysis_filter_base + 1025 + 64;
+  spectral_owner_base=analysis_filter_base+1025;
+  weight_ap1_l_base = spectral_owner_base + 128;
   weight_ap1_r_base = weight_ap1_l_base + AP_BUF_LEN;
   weight_ap2_l_base = weight_ap1_r_base + AP_BUF_LEN;
   weight_ap2_r_base = weight_ap2_l_base + AP_BUF_LEN;
@@ -10359,7 +10594,7 @@ function poll_slot(force) local(sig)
   force || sig != slot_signature_loaded ? schedule_rescan(sig, force);
 );
 
-function choose_sample(note velnorm) local(sid)
+function choose_sample_unfiltered(note velnorm) local(sid)
 (
   sample_count <= 0 ? 0 : (
     selection_mode == 1 ? (
@@ -10371,6 +10606,21 @@ function choose_sample(note velnorm) local(sid)
     ) : (
       choose_random_sample(note, velnorm);
     );
+  );
+);
+
+function choose_sample(note velnorm) local(sid tries scan)
+(
+  bank_ui_starting ? bank_audition_sid : (
+    layer_source_override>=0 && layer_dispatching?sid=layer_source_override:sid=choose_sample_unfiltered(note,velnorm);
+    bank_playable_count<sample_count ? (
+      tries=0;while(tries<sample_count && !bank_sample_allowed(sid))(sid=choose_sample_unfiltered(note,velnorm);tries+=1;);
+      !bank_sample_allowed(sid)?(sid=0;while(sid<sample_count-1 && !bank_sample_allowed(sid))(sid+=1;););
+    );
+    layer_dispatching && layer_distinct && bank_playable_count>layer_used_count && layers_seen(sid)?(
+      tries=0;while(tries<8 && layers_seen(sid))(sid=choose_sample_unfiltered(note,velnorm);tries+=1;);
+      !bank_sample_allowed(sid) || layers_seen(sid)?(scan=0;while(scan<sample_count && (!bank_sample_allowed(scan)||layers_seen(scan)))(scan+=1;);scan<sample_count?sid=scan;);
+    );sid;
   );
 );
 
@@ -10605,7 +10855,32 @@ function fade_same_note_releases_for_retrigger(note chan skip_idx) local(i v)
   );
 );
 
-function start_voice(note vel chan) local(
+// Cached source analysis is immutable with the pool generation. No PCM scan,
+// filtering, allocation or deferred task occurs here. Invalid/silent input gets
+// unity compensation; creative processing remains downstream of source matching.
+function sample_match_db(sm mode mono ltarget rtarget boost ceiling) local(id rms measured peak method desired)
+(
+  desired = 0;
+  mode >= 2 ? (
+    id = sm[SM_PTR];
+    rms = sample_level(bank_pool, id, mono);
+    peak = sample_level(bank_pool, id, 4 + mono);
+    rms > 0.0000001 && peak > 0.0000001 ? (
+      mode == 2 ? (
+        measured = 20 * log(rms) / log(10);
+        desired = rtarget - measured;
+      ) : (
+        measured = sample_level(bank_pool, id, 2 + mono);
+        method = sample_level(bank_pool, id, 6 + mono);
+        method > 0 && measured > -70 ? desired = ltarget - measured;
+      );
+      (mode == 2 || method > 0) ? desired = clamp(min(min(desired, boost), ceiling - 20 * log(peak) / log(10)), -120, boost);
+    );
+  );
+  desired;
+);
+
+function start_voice_original(note vel chan) local(
   velnorm sid sm donor donor_sm voice_idx v source_rng_on
   srcsr norm gain env0 lively playmode gran_voice ggrain_amt voice_stretch voice_stretch_norm
   driftcents raw_rate base_rate attack_rate pitch_protect pitch_abs head_hold_src head_hold_out
@@ -10617,7 +10892,8 @@ function start_voice(note vel chan) local(
   voice_attack_samps voice_release_samps voice_attack_coef voice_release_coef
 )
 (
-  sample_count <= 0 ? 0 : (
+  !bank_ui_starting && bank_audition_active ? (reset_voices();bank_audition_active=0;);
+  sample_count <= 0 || (!bank_ui_starting && bank_playable_count<=0) ? 0 : (
     velnorm = vel / 127;
     source_rng_on = hub_rng_on;
     hub_rng_on = 0;
@@ -10661,10 +10937,24 @@ function start_voice(note vel chan) local(
     attack_anchor = onset_mode_active ? sm[SM_GAUSS_ATTACK] : sm[SM_CLASSIC_ATTACK];
     srcsr = sm[SM_SR];
     norm  = sm[SM_NORM];
-    gain  = (0.10 + 0.90 * (velnorm ^ 1.35)) * lerp(norm, 1, truth_mix);
+    v[VC_MATCHMODE] = clamp(slider65 | 0, 0, 3);
+    v[VC_MATCHTRUTH] = truth_mix;
+    v[VC_MATCHMONO] = mono_source;
+    v[VC_MATCHLTARGET] = clamp(slider66, -36, -9);
+    v[VC_MATCHRTARGET] = clamp(slider67, -36, -9);
+    v[VC_MATCHBOOST] = clamp(slider68, 0, 24);
+    v[VC_MATCHCEILING] = clamp(slider69, -18, 0);
+    v[VC_MATCHDB] = 0;
+    v[VC_MATCHMODE] == 0 ? (
+      // Preserve operation order, linear Truth blend and cap in Legacy.
+      gain  = (0.10 + 0.90 * (velnorm ^ 1.35)) * lerp(norm, 1, truth_mix);
+    ) : (
+      v[VC_MATCHDB] = sample_match_db(sm, v[VC_MATCHMODE], v[VC_MATCHMONO], v[VC_MATCHLTARGET], v[VC_MATCHRTARGET], v[VC_MATCHBOOST], v[VC_MATCHCEILING]);
+      gain = (0.10 + 0.90 * (velnorm ^ 1.35)) * db2amp(v[VC_MATCHDB] * (1 - truth_mix));
+    );
     gain_jit_db = (hub_random(1) - 0.5) * lively * 0.8;
     gain *= db2amp(gain_jit_db);
-    gain  = min(gain, 2.0);
+    v[VC_MATCHMODE] == 0 ? gain = min(gain, 2.0);
 
     transrich = clamp01(sm[SM_FLAGS]);
     transprot = 0;
@@ -10846,8 +11136,318 @@ function start_voice(note vel chan) local(
   );
 );
 
+function start_voice_single(note vel chan) local(
+  velnorm sid sm donor donor_sm voice_idx v source_rng_on
+  srcsr norm gain env0 lively playmode gran_voice ggrain_amt voice_stretch voice_stretch_norm
+  driftcents raw_rate base_rate attack_rate pitch_protect pitch_abs head_hold_src head_hold_out
+  transrich transprot translock hold_ms trans_hold_src trans_hold_out attack_preroll
+  attack_anchor attack_norm pre_avail pre_keep align_guard align_jit
+  j jmax pre startpos softskip gain_jit_db
+  bodystart bodyend tailstart donor_tail min_body_span remain voice_hold_samps
+  gesture_len gesture_depth
+  voice_attack_samps voice_release_samps voice_attack_coef voice_release_coef voice_coherent
+)
+(
+  !bank_ui_starting && bank_audition_active ? (reset_voices();bank_audition_active=0;);
+  sample_count <= 0 || (!bank_ui_starting && bank_playable_count<=0) ? 0 : (
+    velnorm = vel / 127;
+    source_rng_on = hub_rng_on;
+    hub_rng_on = 0;
+    sid = choose_sample(note, velnorm);
+    hub_rng_on = source_rng_on;
+    sm = sample_meta_base + sid * SM_STRIDE;
+
+    hub_starting ? (
+      seam_bridge_env = 0; seam_bridge_idx = -1; seam_bridge_phase = -1;
+    ) : prepare_release_attack_bridge(note, chan);
+
+    voice_idx = alloc_voice();
+    last_start_voice_idx = voice_idx;
+    hub_cancel_voice(voice_idx, 16);
+    v = voice_base + voice_idx * VC_STRIDE;
+    layers_release_spectral(v);
+
+    j = 0;
+    while (j < VC_STRIDE) (
+      v[j] = 0;
+      j += 1;
+    );
+    grain_hist_clear_voice(voice_idx);
+
+    note_counter += 1;
+    last_note = note;
+    last_sid = sid;
+
+    lively = clamp01(slider9);
+    playmode = playback_mode;
+    gran_voice = playmode == 3 ? 1 : 0;
+    ggrain_amt = gran_voice ? max(0.18, granular_amt) : granular_amt;
+    playmode == 0 ? voice_stretch = 1 : voice_stretch = stretch_ratio;
+    voice_stretch = max(1, voice_stretch);
+    voice_stretch_norm = clamp01((voice_stretch - 1) / 3);
+
+    voice_attack_samps = auto_smooth_ar ? max(1, floor(auto_smooth_next_attack_samps)) : attack_samps;
+    voice_release_samps = auto_smooth_ar ? max(1, floor(auto_smooth_next_release_samps)) : release_samps;
+    voice_attack_coef = voice_attack_samps <= 1 ? 1 : (1 - exp(-6.90775527898214 / max(1, voice_attack_samps)));
+    voice_release_coef = voice_release_samps <= 1 ? 0 : exp(-6.90775527898214 / max(1, voice_release_samps));
+
+    attack_anchor = onset_mode_active ? sm[SM_GAUSS_ATTACK] : sm[SM_CLASSIC_ATTACK];
+    srcsr = sm[SM_SR];
+    norm  = sm[SM_NORM];
+    v[VC_MATCHMODE] = clamp(slider65 | 0, 0, 3);
+    v[VC_MATCHTRUTH] = truth_mix;
+    v[VC_MATCHMONO] = mono_source;
+    v[VC_MATCHLTARGET] = clamp(slider66, -36, -9);
+    v[VC_MATCHRTARGET] = clamp(slider67, -36, -9);
+    v[VC_MATCHBOOST] = clamp(slider68, 0, 24);
+    v[VC_MATCHCEILING] = clamp(slider69, -18, 0);
+    v[VC_MATCHDB] = 0;
+    v[VC_MATCHMODE] == 0 ? (
+      // Preserve operation order, linear Truth blend and cap in Legacy.
+      gain  = (0.10 + 0.90 * (velnorm ^ 1.35)) * lerp(norm, 1, truth_mix);
+    ) : (
+      v[VC_MATCHDB] = sample_match_db(sm, v[VC_MATCHMODE], v[VC_MATCHMONO], v[VC_MATCHLTARGET], v[VC_MATCHRTARGET], v[VC_MATCHBOOST], v[VC_MATCHCEILING]);
+      gain = (0.10 + 0.90 * (velnorm ^ 1.35)) * db2amp(v[VC_MATCHDB] * (1 - truth_mix));
+    );
+    gain_jit_db = (hub_random(1) - 0.5) * lively * 0.8;
+    gain *= db2amp(gain_jit_db);
+    v[VC_MATCHMODE] == 0 ? gain = min(gain, 2.0);
+
+    transrich = clamp01(sm[SM_FLAGS]);
+    transprot = 0;
+    transient_mode == 1 ? transprot = 1
+    : transient_mode == 2 ? transprot = 0
+    : transprot = clamp01((transrich - 0.38) / 0.44);
+    translock = transprot >= 0.22 ? 1 : 0;
+
+    driftcents = (hub_random(1) - 0.5) * (0.25 + lively * lively * 10.0);
+
+    onset_mode_active ? (
+      attack_norm = curve_norm(slider2, 0.1, 500, CURVE_TIME);
+      pre_avail = max(0, attack_anchor);
+      pre_keep = floor(pre_avail * attack_norm);
+
+      translock ? (
+        align_guard = min(pre_avail, max(0, floor(srcsr * (0.00020 + 0.00035 * transprot))));
+        align_jit = floor(lively * (1 - transprot) * max(1, min(6, 1 + pre_avail * 0.035)));
+        startpos = floor(attack_anchor - pre_keep - align_guard + (hub_random(1) - 0.5) * align_jit);
+      ) : (
+        pre  = min(pre_avail, floor(2 + attack_norm * min(64, 8 + pre_avail * 0.18)));
+        jmax = floor((0.35 + lively * 2.05) * max(2, min(18, 2 + pre_avail * 0.08)));
+        softskip = max(0, -slider7) * min(16, 2 + pre_avail * 0.06);
+        startpos = floor(attack_anchor - max(pre_keep, pre) + (hub_random(1) - 0.5) * jmax + softskip);
+      );
+    ) : (
+      translock ? (
+        attack_preroll = min(attack_anchor, max(0, floor(srcsr * (0.00035 + 0.00045 * transprot))));
+        jmax = floor(lively * (1 - transprot) * min(4, 1 + attack_anchor * 0.02));
+        startpos = floor(attack_anchor - attack_preroll + (hub_random(1) - 0.5) * jmax);
+      ) : (
+        pre  = min(attack_anchor, 8 + lively * 8);
+        jmax = floor((0.25 + lively * 1.75) * min(16, 2 + attack_anchor * 0.08));
+        softskip = max(0, -slider7) * min(16, 2 + attack_anchor * 0.06);
+        startpos = floor(attack_anchor - pre + (hub_random(1) - 0.5) * jmax + softskip);
+      );
+    );
+
+    startpos = clamp(startpos, 0, max(0, sm[SM_FRAMES] - 2));
+    // Coherent decouples intentional pitch from the source clock. Tiny Lively
+    // drift remains in the direct clock when intentional pitch is zero.
+    voice_coherent=(slider70|0)>0 && abs(pitch_semi)>.0001 && sm[SM_LENMS]>=12;
+    raw_rate = (srcsr / srate) * midi_ratio(voice_coherent?0:pitch_semi) * cents_ratio(driftcents);
+    base_rate = raw_rate / voice_stretch;
+
+    // v14 PitchSnap: transient-pinned attack rate. Stretch never slows the
+    // protected head, and large pitch shifts are eased on transient-rich hits
+    // so impacts keep their snap instead of becoming smeared clicks.
+    pitch_abs = clamp01(abs(pitch_semi) / 12);
+    pitch_protect = transient_mode == 2 ? 0 : clamp01(transprot * (0.28 + 0.72 * pitch_abs));
+    transient_mode == 1 ? pitch_protect = clamp01(pitch_protect * 1.15 + transprot * 0.08);
+    attack_rate = voice_coherent?raw_rate:(srcsr / srate) * midi_ratio(pitch_semi * (1 - pitch_protect)) * cents_ratio(driftcents);
+
+    hold_ms = translock ? (lerp(5.5, 15.5, transprot) + voice_stretch_norm * lerp(2.0, 9.5, transprot) + pitch_abs * transprot * 5.0) : 0;
+    hold_ms = min(hold_ms, sm[SM_LENMS] * 0.30);
+    trans_hold_src = translock ? min(max(0, sm[SM_FRAMES] - 2 - startpos), floor(srcsr * hold_ms * 0.001)) : 0;
+    head_hold_src = translock ? clamp(sm[SM_HEADEND] - startpos + floor(srcsr * 0.0015), 0, max(0, sm[SM_FRAMES] - 2 - startpos)) : 0;
+    head_hold_src = min(head_hold_src, floor(srcsr * lerp(0.010, 0.034, transprot)));
+    trans_hold_src = max(trans_hold_src, head_hold_src);
+    trans_hold_out = translock ? clamp(floor(trans_hold_src / max(abs(attack_rate), 0.000001)), 0, 8192) : 0;
+
+    bodystart = clamp(sm[SM_HEADEND], 0, max(0, sm[SM_FRAMES] - 2));
+    tailstart = clamp(sm[SM_TAILSTART], bodystart + 1, max(bodystart + 1, sm[SM_FRAMES] - 2));
+    remain = max(1, tailstart - bodystart);
+    min_body_span = min(max(48, floor(max(srcsr * (0.020 + 0.016 * lively), hybrid_grain_samps * 0.85))), remain);
+    remain < min_body_span ? (
+      bodystart = max(sm[SM_HEADEND], tailstart - min_body_span);
+      bodystart = clamp(bodystart, 0, max(0, tailstart - 1));
+    );
+    bodyend = max(bodystart + 1, tailstart);
+    voice_hold_samps = max(0, hold_samps);
+
+    donor = choose_region_donor(sid, 1, tail_borrow * (0.55 + 0.45 * lively), voice_idx);
+    donor < 0 ? donor = sid;
+    donor_sm = sample_meta_base + donor * SM_STRIDE;
+    donor_tail = clamp(donor_sm[SM_TAILSTART], 0, max(0, donor_sm[SM_FRAMES] - 2));
+
+    v[VC_ACTIVE] = 1;
+    v[VC_NOTE]   = note;
+    v[VC_CHAN]   = chan;
+    v[VC_KEYTOKEN] = note_on_seq_base[note_gate_idx(note, chan)];
+    v[VC_SAMPLE] = sid;
+    v[VC_POS]    = startpos;
+    v[VC_RATE]   = base_rate;
+    v[VC_BASE]   = gain * (gran_voice ? 1.55 : 1);
+    abs(layer_gain_db)>.0000001?v[VC_BASE]*=db2amp(layer_gain_db);
+    v[VC_LAYER_INDEX]=layer_current;v[VC_LAYER_GROUP]=layer_group_id;
+    v[VC_LAYER_PAN]=layer_pan_value;v[VC_LAYER_DELAY]=max(0,floor(layer_delay_ms*.001*srate+.5));
+    v[VC_LAYER_FEATURE]=(slider70|0)>0 || layer_dispatching || abs(layer_pitch_offset)>.0000001;
+    v[VC_LAYER_PITCH]=pitch_semi;v[VC_LAYER_AGE]=0;
+    v[VC_LAYER_FADE]=layer_dispatching && !layer_first && slider77>.5 ? max(1,floor(clamp((sm[SM_HEADEND]-startpos)/max(.000001,base_rate),srate*.002,srate*.035))):0;
+    v[VC_COHERENT]=voice_coherent;v[VC_SPECTRAL_START]=startpos;v[VC_SP_AGE]=0;v[VC_SP_EXPECTED]=startpos;
+    v[VC_SPECTRAL_RATE]=base_rate/max(.000001,srcsr/srate);
+    v[VC_SPECTRAL_PITCH]=pitch_semi+12*log(max(.000001,v[VC_SPECTRAL_RATE]))/log(2);
+    voice_coherent && !gran_voice?(spectral_serial=(spectral_serial+1)%1048576;v[VC_SPECTRAL]=voice_idx+64*spectral_serial+1;spectral_owner_base[voice_idx]=v;);
+    env0 = (voice_attack_samps <= 1 || (translock && voice_attack_samps <= floor(0.010 * srate))) ? 1 : 0;
+    (playmode >= 2 && ggrain_amt > 0.0001 && seam_bridge_env > 0.0005) ? (
+      // Attack begins from the current Release level, matching the Phase Plant-style
+      // release-point -> equivalent-attack-point retrigger behavior. This overrides
+      // the usual fast Punch/Gaussian env=1 shortcut, except for a true 1-sample attack.
+      env0 = voice_attack_samps <= 1 ? 1 : min(0.985, seam_bridge_env);
+    );
+    v[VC_ENV]    = env0;
+    v[VC_ASTEP]  = voice_attack_coef;
+    v[VC_DSTEP]  = decay_coef;
+    v[VC_RSTEP]  = voice_release_coef;
+    v[VC_HLEFT]  = voice_hold_samps;
+    v[VC_STAGE]  = env0 >= 1 ? (voice_hold_samps > 0 ? ENV_HOLD : ENV_DECAY) : ENV_ATTACK;
+    v[VC_AGE]    = note_counter;
+    v[VC_EPHASE] = 0;
+    v[VC_ESTART] = env0;
+    v[VC_ALEN]   = voice_attack_samps;
+    v[VC_DLEN]   = decay_samps;
+    v[VC_RLEN]   = voice_release_samps;
+    v[VC_ACURVE] = attack_slope_pct;
+    v[VC_DCURVE] = decay_slope_pct;
+    v[VC_RCURVE] = release_slope_pct;
+    (playmode >= 2 && ggrain_amt > 0.0001 && seam_bridge_env > 0.0005 && env0 < 1 && !env_slope_is_classic(attack_slope_pct, ENV_RISE)) ? (
+      // For non-classic slopes, continue from the equivalent Attack curve point
+      // instead of spending a full Attack time above the inherited Release level.
+      v[VC_ESTART] = 0; // inherited level is represented by phase, not added twice
+      v[VC_EPHASE] = env_slope_inv(env0, env_segment_slope(attack_slope_pct, ENV_RISE)) * max(1, voice_attack_samps);
+    );
+
+    v[VC_GMODE]    = (playmode >= 2 && ggrain_amt > 0.0001) ? 1 : 0;
+    v[VC_OHOP]     = hybrid_hop_samps;
+    v[VC_GSIZE]    = gran_voice ? max(hybrid_hop_samps + 1, floor(hybrid_grain_samps * lerp(1.0, 2.20, granular_event_stretch))) : hybrid_grain_samps;
+    // Hybrid waits until transient protection clears because the direct head is audible.
+    // Granular has no audible direct head, so its HybridCore grain layer starts immediately.
+    v[VC_GTIMER]   = gran_voice ? (-floor(max(1, hybrid_hop_samps) * 3)) : max(1, trans_hold_out + 1);
+    v[VC_NEXTSRC]  = max(bodystart, min(startpos, bodyend - 1));
+    (playmode >= 2 && ggrain_amt > 0.0001 && seam_bridge_env > 0.0005 && seam_bridge_phase >= 0) ? (
+      // The new Hybrid body cursor starts at the matching normalized body phase
+      // of the releasing voice, while the direct head still uses Gaussian/onset alignment.
+      v[VC_NEXTSRC] = clamp(bodystart + seam_bridge_phase * max(1, bodyend - bodystart - 1), bodystart, max(bodystart, bodyend - 1));
+      v[VC_GTIMER] = min(v[VC_GTIMER], max(1, floor(hybrid_hop_samps * 0.25)));
+    );
+    v[VC_SRCHOP]   = max(0.25, abs(base_rate) * hybrid_hop_samps);
+    v[VC_CANSPAWN] = (playmode >= 2 && ggrain_amt > 0.0001) ? 1 : 0;
+    v[VC_TLEFT]    = gran_voice ? 0 : trans_hold_out;
+    v[VC_TPROT]    = transprot;
+    v[VC_DONOR]    = donor;
+    v[VC_DONORPOS] = donor_tail;
+    v[VC_BODYSTART]= bodystart;
+    v[VC_TAILSTART]= tailstart;
+    v[VC_BODYEND]  = bodyend;
+    v[VC_GMIX]     = ggrain_amt;
+    v[VC_TAILMIX]  = tail_borrow;
+    v[VC_MODE]     = playmode;
+    v[VC_STRETCH]  = voice_stretch;
+    v[VC_THOLD]    = max(1, trans_hold_out);
+    v[VC_RHLEFT]   = 0;
+    v[VC_RHLEN]    = max(1, release_handoff_samps);
+    v[VC_RAWRATE]  = raw_rate;
+    v[VC_ATKRATE]  = attack_rate;
+    v[VC_HEADSAFE] = sm[SM_HEADEND];
+    v[VC_GENV]     = 0.36;
+    v[VC_GENVDELTA]= 0;
+    v[VC_AUDIOTRIG] = 0;
+    v[VC_AUDIOENV]  = 1;
+    v[VC_AUTOVEL]   = velnorm;
+    v[VC_PRATIO]    = max(0.000001, midi_ratio(pitch_semi));
+    v[VC_PDRYPOS]   = startpos;
+    v[VC_PDRYRATE]  = voice_coherent?base_rate:base_rate / max(0.000001, v[VC_PRATIO]);
+
+    gesture_len = floor(srate * lerp(0.22, 1.20, hub_random(1)) * lerp(0.82, 1.22, stretch_norm) * (gran_voice ? lerp(1.0, 2.75, granular_event_stretch) : 1));
+    gesture_len = max(64, gesture_len);
+    gesture_depth = lively * (0.38 + 0.62 * ggrain_amt) * (gran_voice ? 1.0 : 0.32);
+    v[VC_GPHASE]  = hub_random(1);
+    v[VC_GLEN]    = gesture_len;
+    v[VC_GDEPTH]  = gesture_depth;
+    v[VC_GACCENT] = hub_random(1);
+    v[VC_LGSID]   = -1;
+    v[VC_LGPOS]   = 0;
+    v[VC_LGLO]    = 0;
+    v[VC_LGHI]    = 1;
+    v[VC_LGREG]   = -1;
+    v[VC_LGRUN]   = 0;
+    v[VC_LGCIDX]  = -1;
+
+    !hub_starting ? (
+      apply_release_attack_bridge(voice_idx);
+      fade_same_note_releases_for_retrigger(note, chan, voice_idx);
+    );
+
+    sm[SM_LASTUSED] = note_counter;
+    push_recent(sid);
+
+    walk_prev_sid = walk_last_sid;
+    walk_last_sid = sid;
+    walk_steps += 1;
+  );
+);
+
+function start_voice(note vel chan) local(saved_pitch n k v root_sid first free oldest oldest_v group j was_active)(
+  ((slider70|0)==0 || abs(pitch_semi)<.0001) && (hub_starting || bank_ui_starting || ((slider71|0)==1 && abs(slider80)<.00001 && abs(slider84)<.00001 && abs(slider88)<.00001 && abs(slider92)<.00001 && slider96>.5))?(
+    layer_dispatching=0;layer_source_override=-1;layers_release_spectral(voice_base+alloc_voice()*VC_STRIDE);start_voice_original(note,vel,chan);
+  ):(
+  saved_pitch=pitch_semi;n=hub_starting || bank_ui_starting?1:clamp(slider71|0,1,4);
+  layer_dispatching=n>1;layer_distinct=slider72<.5;layer_used0=-1;layer_used1=-1;layer_used2=-1;layer_used3=-1;layer_used_count=0;layer_source_override=-1;
+  layer_group_serial=(layer_group_serial+1)%1048576;layer_group_id=layer_dispatching?layer_group_serial:0;
+  // Reserve a whole group, stealing an oldest group rather than leaving its
+  // supporting layers behind. Single Original keeps the original allocator.
+  layer_dispatching?(
+    free=0;j=0;while(j<MAX_VOICES)(free+=voice_base[j*VC_STRIDE+VC_ACTIVE]<=0;j+=1;);
+    while(free<n)(oldest=100000000000;oldest_v=-1;j=0;
+      while(j<MAX_VOICES)(v=voice_base+j*VC_STRIDE;v[VC_ACTIVE]>0 && v[VC_AGE]<oldest?(oldest=v[VC_AGE];oldest_v=v;);j+=1;);
+      oldest_v>=0?(group=oldest_v[VC_LAYER_GROUP];j=0;while(j<MAX_VOICES)(v=voice_base+j*VC_STRIDE;v[VC_ACTIVE]>0 && (v==oldest_v || group>0 && v[VC_LAYER_GROUP]==group)?(layers_release_spectral(v);hub_cancel_voice(j,16);v[VC_ACTIVE]=0;free+=1;);j+=1;);):free=n;
+    );
+  );
+  root_sid=-1;first=1;k=0;
+  while(k<n)(
+    (hub_starting || bank_ui_starting || layers_on(k)>.5)?(
+      layer_current=k;layer_first=first;
+      layer_pitch_offset=hub_starting || bank_ui_starting?0:layers_pitch(k);
+      layer_gain_db=hub_starting || bank_ui_starting?0:layers_gain(k);
+      layer_pan_value=hub_starting || bank_ui_starting?0:layers_pan(k);
+      layer_delay_ms=hub_starting || bank_ui_starting?0:layers_delay(k);
+      pitch_semi=abs(layer_pitch_offset)>.0000001?clamp(saved_pitch+layer_pitch_offset,-48,48):saved_pitch;
+      layer_source_override=!layer_distinct && root_sid>=0?root_sid:-1;
+      start_voice_single(note,vel,chan);layers_started_total+=1;
+      last_start_voice_idx>=0?(v=voice_base+last_start_voice_idx*VC_STRIDE;v[VC_ACTIVE]>0?(
+        first?(root_sid=v[VC_SAMPLE];layer_group_root=last_start_voice_idx;);first=0;
+        k==0?layer_used0=v[VC_SAMPLE]:k==1?layer_used1=v[VC_SAMPLE]:k==2?layer_used2=v[VC_SAMPLE]:layer_used3=v[VC_SAMPLE];layer_used_count+=1;
+      ););
+    );k+=1;
+  );
+  layers_last_count=layer_used_count;
+  layer_dispatching && !first?last_start_voice_idx=layer_group_root;
+  pitch_semi=saved_pitch;layer_dispatching=0;layer_source_override=-1;layer_gain_db=0;layer_pan_value=0;layer_delay_ms=0;layer_pitch_offset=0;
+  );
+);
+
 function release_voice_internal(v) local(donor donor_sm donor_tail body_start body_end release_src sid sm auto_len rel_len rel_coef stage_now attack_interrupt base_rel_len)
 (
+  v[VC_LAYER_DELAY]>0?(layers_release_spectral(v);v[VC_ACTIVE]=0;v[VC_STAGE]=ENV_OFF;);
   (v[VC_ACTIVE] > 0 && v[VC_STAGE] != ENV_RELEASE) ? (
     stage_now = v[VC_STAGE] | 0;
     attack_interrupt = stage_now == ENV_ATTACK ? 1 : 0;
@@ -11085,8 +11685,74 @@ function release_audio_trigger_voices(hard) local(i v)
 );
 
 // The editor owns interaction state. Do not run DSP @init on the graphics worker.
+function bank_handle_ui() local(code op sid sm index statekey payload pv limit)
+(
+  layers_preview_request!=layers_preview_seen?(
+    layers_preview_seen=layers_preview_request;release_all_voices_transport(1);bank_audition_active=0;bank_audition_left=0;
+    layers_preview_request%4==1 && bank_playable_count>0?(
+      auto_smooth_prepare_note_on(event_clock_samps);start_voice(60,100,15);limit=1;index=0;
+      while(index<MAX_VOICES)(pv=voice_base+index*VC_STRIDE;pv[VC_ACTIVE]>0?(sm=sample_meta_base+pv[VC_SAMPLE]*SM_STRIDE;limit=max(limit,pv[VC_LAYER_DELAY]+sm[SM_FRAMES]/max(.000001,abs(pv[VC_RATE]))+release_samps););index+=1;);
+      bank_audition_active=2;bank_audition_left=limit;
+    );
+  );
+  bank_ui_restore_requested && !rescan_pending && !force_rescan_flag && sample_count>0 ? (
+    bank_excluded_count=0;index=0;
+    while(index<sample_count)(
+      sm=sample_meta_base+index*SM_STRIDE;
+      bank_exclusion_base[index*2]!=sm[SM_UI_IDENTITY] ? (bank_exclusion_base[index*2]=sm[SM_UI_IDENTITY];bank_exclusion_base[index*2+1]=0;);
+      sm[SM_UI_EXCLUDED]=bank_exclusion_base[index*2+1]>.5?1:0;bank_excluded_count+=sm[SM_UI_EXCLUDED];index+=1;
+    );bank_ui_restore_requested=0;bank_ui_state_revision+=1;
+  );
+  bank_filter_request!=bank_filter_request_seen ? (
+    bank_filter_request_seen=bank_filter_request;
+    // EEL's % converts to 32-bit integers. Split the large exact payload
+    // with floor/subtraction; only the five-bit subcode uses %.
+    payload=bank_filter_request-floor(bank_filter_request/549755813888)*549755813888;
+    code=payload-floor(payload/32)*32;
+    bank_filter_mode=clamp(code%4,0,2);
+    bank_filter_metric=clamp(floor(code/4),0,6);
+    bank_filter_cut=floor(payload/32)/1000-1000;
+    bank_ui_state_revision+=1;
+  );
+  bank_ui_request != bank_ui_request_seen ? (
+    bank_ui_request_seen=bank_ui_request;
+    code=bank_ui_request%65536;op=floor(code/16384);sid=(code%16384)-1;
+    sid>=0 && sid<sample_count ? (
+      sm=sample_meta_base+sid*SM_STRIDE;
+      op==1 ? (
+        sm[SM_UI_EXCLUDED]=1-sm[SM_UI_EXCLUDED];
+        bank_exclusion_base[sid*2+1]=sm[SM_UI_EXCLUDED];
+        bank_excluded_count += sm[SM_UI_EXCLUDED]>0.5?1:-1;bank_ui_state_revision+=1;
+      ) : op==0 ? (
+        release_all_voices_transport(1);
+        bank_audition_sid=sid;bank_audition_active=1;bank_ui_starting=1;
+        auto_smooth_prepare_note_on(event_clock_samps);
+        start_voice(60,100,15);
+        bank_ui_starting=0;
+        bank_audition_left=max(1,floor(sm[SM_LENMS]*.001*srate*(playback_mode==0?1:stretch_ratio)/((slider70|0)>0 && abs(slider12)>.0001?1:max(.125,2^(slider12/12)))));
+      ) : (
+        release_all_voices_transport(1);bank_audition_active=0;bank_audition_left=0;
+      );
+    );
+  );
+  // Recount only after a bank, exclusion, restore or threshold change.
+  // Inactive filtering leaves the original source-selection/RNG path intact.
+  bank_filter_count_revision!=bank_ui_state_revision || bank_filter_count_sources!=sample_count ? (
+    bank_playable_count=0;index=0;
+    while(index<sample_count)(bank_playable_count+=bank_source_eligible(index);index+=1;);
+    bank_filter_count_revision=bank_ui_state_revision;bank_filter_count_sources=sample_count;
+  );
+  bank_audition_active && bank_audition_left>0 ? (
+    bank_audition_left-=samplesblock;
+    bank_audition_left<=0 ? release_voice(60,15);
+  );
+);
+
 function ui_graphics_init()
 (
+bank_ui_selected=0;
+// Expanded-row state is initialized only in @gfx, not mirrored from audio @init.
+posteq_char_selected=2;
 ui_active = -1;
 ui_down_y = 0;
 ui_down_val = 0;
@@ -11270,6 +11936,33 @@ function ui_v71_profile_menu() local(i choice)
   0;
 );
 
+function ui_match_mode_name(mode)
+(
+  mode == 1 ? strcpy(#ui_match_label, "None")
+  : mode == 2 ? strcpy(#ui_match_label, "RMS")
+  : mode == 3 ? strcpy(#ui_match_label, "Loudness")
+  : strcpy(#ui_match_label, "Legacy");
+);
+
+function ui_match_mode_menu() local(i choice)
+(
+  strcpy(#ui_match_menu, "");
+  i = 0;
+  loop(4,
+    i > 0 ? strcat(#ui_match_menu, "|");
+    i == (slider65 | 0) ? strcat(#ui_match_menu, "!");
+    ui_match_mode_name(i);strcat(#ui_match_menu, #ui_match_label);
+    i += 1;
+  );
+  gfx_x = mouse_x;gfx_y = mouse_y;
+  choice = gfx_showmenu(#ui_match_menu);
+  choice > 0 ? (
+    slider65 = choice - 1;
+    sliderchange(slider65);slider_automate(slider65, 0);slider_automate(slider65, 1);
+  );
+  0;
+);
+
 function ui_v71_finish_touches()
 (
   !mouse_down ? (
@@ -11278,6 +11971,7 @@ function ui_v71_finish_touches()
     ui_v71_touch27 ? (slider_automate(MASK_S27, 1); ui_v71_touch27 = 0;);
     ui_v71_touch9 ? (slider_automate(MASK_S9, 1); ui_v71_touch9 = 0;);
     ui_v71_profile_hold = 0;
+    ui_match_mode_hold = 0;
   );
 );
 
@@ -11684,6 +12378,174 @@ function ui_vslider(id x y w h val vmin vmax curve_mode defval wheel_step) local
   val;
 );
 
+function ui_parameter_write(n value)(
+  n==2?(slider2=value;sliderchange(slider2);slider_automate(slider2,0);ui_extra_touched=2;)
+  : n==3?(slider3=value;sliderchange(slider3);slider_automate(slider3,0);ui_extra_touched=3;)
+  : n==4?(slider4=value;sliderchange(slider4);slider_automate(slider4,0);ui_extra_touched=4;)
+  : n==5?(slider5=value;sliderchange(slider5);slider_automate(slider5,0);ui_extra_touched=5;)
+  : n==6?(slider6=value;sliderchange(slider6);slider_automate(slider6,0);ui_extra_touched=6;)
+  : n==7?(slider7=value;sliderchange(slider7);slider_automate(slider7,0);ui_extra_touched=7;)
+  : n==8?(slider8=value;sliderchange(slider8);slider_automate(slider8,0);ui_extra_touched=8;)
+  : n==9?(slider9=value;sliderchange(slider9);slider_automate(slider9,0);ui_extra_touched=9;)
+  : n==10?(slider10=value;sliderchange(slider10);slider_automate(slider10,0);ui_extra_touched=10;)
+  : n==11?(slider11=value;sliderchange(slider11);slider_automate(slider11,0);ui_extra_touched=11;)
+  : n==12?(slider12=value;sliderchange(slider12);slider_automate(slider12,0);ui_extra_touched=12;)
+  : n==14?(slider14=value;sliderchange(slider14);slider_automate(slider14,0);ui_extra_touched=14;)
+  : n==15?(slider15=value;sliderchange(slider15);slider_automate(slider15,0);ui_extra_touched=15;)
+  : n==18?(slider18=value;sliderchange(slider18);slider_automate(slider18,0);ui_extra_touched=18;)
+  : n==19?(slider19=value;sliderchange(slider19);slider_automate(slider19,0);ui_extra_touched=19;)
+  : n==22?(slider22=value;sliderchange(slider22);slider_automate(slider22,0);ui_extra_touched=22;)
+  : n==25?(slider25=value;sliderchange(slider25);slider_automate(slider25,0);ui_extra_touched=25;)
+  : n==26?(slider26=value;sliderchange(slider26);slider_automate(slider26,0);ui_extra_touched=26;)
+  : n==27?(slider27=value;sliderchange(slider27);slider_automate(slider27,0);ui_extra_touched=27;)
+  : n==28?(slider28=value;sliderchange(slider28);slider_automate(slider28,0);ui_extra_touched=28;)
+  : n==29?(slider29=value;sliderchange(slider29);slider_automate(slider29,0);ui_extra_touched=29;)
+  : n==30?(slider30=value;sliderchange(slider30);slider_automate(slider30,0);ui_extra_touched=30;)
+  : n==32?(slider32=value;sliderchange(slider32);slider_automate(slider32,0);ui_extra_touched=32;)
+  : n==33?(slider33=value;sliderchange(slider33);slider_automate(slider33,0);ui_extra_touched=33;)
+  : n==34?(slider34=value;sliderchange(slider34);slider_automate(slider34,0);ui_extra_touched=34;)
+  : n==35?(slider35=value;sliderchange(slider35);slider_automate(slider35,0);ui_extra_touched=35;)
+  : n==36?(slider36=value;sliderchange(slider36);slider_automate(slider36,0);ui_extra_touched=36;)
+  : n==37?(slider37=value;sliderchange(slider37);slider_automate(slider37,0);ui_extra_touched=37;)
+  : n==38?(slider38=value;sliderchange(slider38);slider_automate(slider38,0);ui_extra_touched=38;)
+  : n==39?(slider39=value;sliderchange(slider39);slider_automate(slider39,0);ui_extra_touched=39;)
+  : n==40?(slider40=value;sliderchange(slider40);slider_automate(slider40,0);ui_extra_touched=40;)
+  : n==41?(slider41=value;sliderchange(slider41);slider_automate(slider41,0);ui_extra_touched=41;)
+  : n==42?(slider42=value;sliderchange(slider42);slider_automate(slider42,0);ui_extra_touched=42;)
+  : n==43?(slider43=value;sliderchange(slider43);slider_automate(slider43,0);ui_extra_touched=43;)
+  : n==44?(slider44=value;sliderchange(slider44);slider_automate(slider44,0);ui_extra_touched=44;)
+  : n==45?(slider45=value;sliderchange(slider45);slider_automate(slider45,0);ui_extra_touched=45;)
+  : n==46?(slider46=value;sliderchange(slider46);slider_automate(slider46,0);ui_extra_touched=46;)
+  : n==47?(slider47=value;sliderchange(slider47);slider_automate(slider47,0);ui_extra_touched=47;)
+  : n==48?(slider48=value;sliderchange(slider48);slider_automate(slider48,0);ui_extra_touched=48;)
+  : n==49?(slider49=value;sliderchange(slider49);slider_automate(slider49,0);ui_extra_touched=49;)
+  : n==50?(slider50=value;sliderchange(slider50);slider_automate(slider50,0);ui_extra_touched=50;)
+  : n==51?(slider51=value;sliderchange(slider51);slider_automate(slider51,0);ui_extra_touched=51;)
+  : n==52?(slider52=value;sliderchange(slider52);slider_automate(slider52,0);ui_extra_touched=52;)
+  : n==53?(slider53=value;sliderchange(slider53);slider_automate(slider53,0);ui_extra_touched=53;)
+  : n==54?(slider54=value;sliderchange(slider54);slider_automate(slider54,0);ui_extra_touched=54;)
+  : n==55?(slider55=value;sliderchange(slider55);slider_automate(slider55,0);ui_extra_touched=55;)
+  : n==60?(slider60=value;sliderchange(slider60);slider_automate(slider60,0);ui_extra_touched=60;)
+  : n==61?(slider61=value;sliderchange(slider61);slider_automate(slider61,0);ui_extra_touched=61;)
+  : n==65?(slider65=value;sliderchange(slider65);slider_automate(slider65,0);ui_extra_touched=65;)
+  : n==66?(slider66=value;sliderchange(slider66);slider_automate(slider66,0);ui_extra_touched=66;)
+  : n==67?(slider67=value;sliderchange(slider67);slider_automate(slider67,0);ui_extra_touched=67;)
+  : n==68?(slider68=value;sliderchange(slider68);slider_automate(slider68,0);ui_extra_touched=68;)
+  : n==69?(slider69=value;sliderchange(slider69);slider_automate(slider69,0);ui_extra_touched=69;)
+  : n==70?(slider70=value;sliderchange(slider70);slider_automate(slider70,0);ui_extra_touched=70;)
+  : n==71?(slider71=value;sliderchange(slider71);slider_automate(slider71,0);ui_extra_touched=71;)
+  : n==72?(slider72=value;sliderchange(slider72);slider_automate(slider72,0);ui_extra_touched=72;)
+  : n==73?(slider73=value;sliderchange(slider73);slider_automate(slider73,0);ui_extra_touched=73;)
+  : n==74?(slider74=value;sliderchange(slider74);slider_automate(slider74,0);ui_extra_touched=74;)
+  : n==75?(slider75=value;sliderchange(slider75);slider_automate(slider75,0);ui_extra_touched=75;)
+  : n==76?(slider76=value;sliderchange(slider76);slider_automate(slider76,0);ui_extra_touched=76;)
+  : n==77?(slider77=value;sliderchange(slider77);slider_automate(slider77,0);ui_extra_touched=77;)
+  : n==78?(slider78=value;sliderchange(slider78);slider_automate(slider78,0);ui_extra_touched=78;)
+  : n==79?(slider79=value;sliderchange(slider79);slider_automate(slider79,0);ui_extra_touched=79;)
+  : n==80?(slider80=value;sliderchange(slider80);slider_automate(slider80,0);ui_extra_touched=80;)
+  : n==81?(slider81=value;sliderchange(slider81);slider_automate(slider81,0);ui_extra_touched=81;)
+  : n==82?(slider82=value;sliderchange(slider82);slider_automate(slider82,0);ui_extra_touched=82;)
+  : n==83?(slider83=value;sliderchange(slider83);slider_automate(slider83,0);ui_extra_touched=83;)
+  : n==84?(slider84=value;sliderchange(slider84);slider_automate(slider84,0);ui_extra_touched=84;)
+  : n==85?(slider85=value;sliderchange(slider85);slider_automate(slider85,0);ui_extra_touched=85;)
+  : n==86?(slider86=value;sliderchange(slider86);slider_automate(slider86,0);ui_extra_touched=86;)
+  : n==87?(slider87=value;sliderchange(slider87);slider_automate(slider87,0);ui_extra_touched=87;)
+  : n==88?(slider88=value;sliderchange(slider88);slider_automate(slider88,0);ui_extra_touched=88;)
+  : n==89?(slider89=value;sliderchange(slider89);slider_automate(slider89,0);ui_extra_touched=89;)
+  : n==90?(slider90=value;sliderchange(slider90);slider_automate(slider90,0);ui_extra_touched=90;)
+  : n==91?(slider91=value;sliderchange(slider91);slider_automate(slider91,0);ui_extra_touched=91;)
+  : n==92?(slider92=value;sliderchange(slider92);slider_automate(slider92,0);ui_extra_touched=92;)
+  : n==93?(slider93=value;sliderchange(slider93);slider_automate(slider93,0);ui_extra_touched=93;)
+  : n==94?(slider94=value;sliderchange(slider94);slider_automate(slider94,0);ui_extra_touched=94;)
+  : n==95?(slider95=value;sliderchange(slider95);slider_automate(slider95,0);ui_extra_touched=95;)
+  : n==96?(slider96=value;sliderchange(slider96);slider_automate(slider96,0);ui_extra_touched=96;)
+  : n==97?(slider97=value;sliderchange(slider97);slider_automate(slider97,0);ui_extra_touched=97;)
+  : n==98?(slider98=value;sliderchange(slider98);slider_automate(slider98,0);ui_extra_touched=98;)
+  : n==99?(slider99=value;sliderchange(slider99);slider_automate(slider99,0);ui_extra_touched=99;);
+);
+function ui_extra_label(n)
+(
+  n==2?sprintf(#extra_label,"Attack") : n==3?sprintf(#extra_label,"Decay") : n==4?sprintf(#extra_label,"Sustain") : n==5?sprintf(#extra_label,"Release")
+  : n==6?sprintf(#extra_label,"Tilt") : n==7?sprintf(#extra_label,"Focus") : n==8?sprintf(#extra_label,"Width") : n==9?sprintf(#extra_label,"Lively")
+  : n==10?sprintf(#extra_label,"Truth") : n==11?sprintf(#extra_label,"Output") : n==12?sprintf(#extra_label,"Pitch") : n==14?sprintf(#extra_label,"Stretch")
+  : n==15?sprintf(#extra_label,"Weight") : n==18?sprintf(#extra_label,"Grain") : n==19?sprintf(#extra_label,"Spice") : n==22?sprintf(#extra_label,"Dynamics")
+  : n==25?sprintf(#extra_label,"Clean") : n==26?sprintf(#extra_label,"Room Tame") : n==27?sprintf(#extra_label,"Mix")
+  : n==28?sprintf(#extra_label,"Attack curve") : n==29?sprintf(#extra_label,"Decay curve") : n==30?sprintf(#extra_label,"Release curve")
+  : n==47?sprintf(#extra_label,"Formant") : n==48?sprintf(#extra_label,"Tail Grace") : n==49?sprintf(#extra_label,"Peak Pack")
+  : n==50?sprintf(#extra_label,"Contour") : n==51?sprintf(#extra_label,"Edge Melt") : n==52?sprintf(#extra_label,"DeCrust")
+  : n==53?sprintf(#extra_label,"Space") : n==54?sprintf(#extra_label,"Space char") : n==55?sprintf(#extra_label,"Harmonics")
+  : n==59?sprintf(#extra_label,"Thrill") : n==60?sprintf(#extra_label,"Pivot") : n==61?sprintf(#extra_label,"Pitch Mix")
+  : n==66 || n==67?sprintf(#extra_label,"Target") : n==68?sprintf(#extra_label,"Max boost") : n==69?sprintf(#extra_label,"Peak ceiling")
+  : n>=35 && n<=39?sprintf(#extra_label,"Frequency") : n>=40 && n<=42 || n==45 || n==46?sprintf(#extra_label,"Q")
+  : n==43 || n==44?sprintf(#extra_label,"Slope") : sprintf(#extra_label,"Gain");
+);
+
+// Shared typography: labels 13px, values/buttons 12px, graph axes 11px.
+function ui_text_buf(x y w centered) local(tw th n limit)
+(
+  limit=max(1,w-8);
+  sprintf(#ui_text_fit,"%s",#ui_buf);
+  gfx_measurestr(#ui_text_fit,tw,th);
+  n=strlen(#ui_buf);
+  while(tw>limit && n>0)(
+    n-=1;strncpy(#ui_text_fit,#ui_buf,n);strcat(#ui_text_fit,"...");
+    gfx_measurestr(#ui_text_fit,tw,th);
+  );
+  gfx_x=x+(centered?max(4,(w-tw)*.5):4);gfx_y=y;
+  gfx_drawstr(#ui_text_fit);
+);
+
+function ui_knob_readout(x y w) local(tw th rr gg bb)
+(
+  gfx_setfont(1,"Arial",12,0);
+  gfx_measurestr(#ui_buf,tw,th);
+  rr=gfx_r;gg=gfx_g;bb=gfx_b;
+  gfx_r=.035;gfx_g=.045;gfx_b=.058;gfx_a=1;
+  gfx_rect(x-min(w-4,tw+6)*.5,y-th*.5-1,min(w-4,tw+6),th+2,1);
+  gfx_r=rr;gfx_g=gg;gfx_b=bb;
+  ui_text_buf(x-w*.5,y-th*.5,w,1);
+);
+
+function ui_compact_field(id x y w value lo hi def) local(hot v)
+(
+  v=value;hot=pt_in(x-w*.5,y-17,w,34);
+  hot || ui_active==id?ui_hover_id=id;
+  mouse_pressed && hot && ui_active<0?(ui_active=id;ui_down_y=mouse_y;ui_down_val=value;);
+  ui_active==id?(
+    mouse_down?v=clamp(ui_down_val+(ui_down_y-mouse_y)*(hi-lo)/(ui_shift?1600:240),lo,hi):ui_active=-1;
+  );
+  hot && !ui_wheel_used && abs(ui_wheel)>=1?(v=clamp(v+(ui_wheel>0?1:-1)*(hi-lo)*.005*(ui_shift?.1:1),lo,hi);ui_wheel_used=1;);
+  mouse_rpressed && hot?v=def;
+  gfx_r=.045;gfx_g=.075;gfx_b=.10;gfx_a=1;gfx_rect(x-w*.5,y-17,w,34,1);
+  gfx_r=hot?.30:.17;gfx_g=hot?.58:.28;gfx_b=hot?.8:.37;gfx_rect(x-w*.5,y-17,w,34,0);
+  v;
+);
+
+function ui_extra(n x y value lo hi def scale unit) local(v unittext)
+(
+  v=ui_compact?ui_compact_field(700+n,x,y,max(64,ui_extra_field_w),value,lo,hi,def):ui_knob(700+n,x,y,17,value,lo,hi,def,(n==43 || n==44)?.25:.012);
+  !ui_compact && ui_active==700+n && mouse_down && ui_shift ? v=curve_denorm(clamp01(ui_down_val-(mouse_y-ui_down_y)/900),lo,hi,CURVE_LINEAR);
+  n==43 || n==44 ? v=floor(v+.5);
+  abs(v-value)>.00000001?(n==59?ui_v71_set_thrill(v):ui_parameter_write(n,v););
+  ui_extra_label(n);
+  gfx_setfont(1,"Arial",12,0);gfx_r=.88;gfx_g=.95;gfx_b=1;gfx_a=1;
+  n==43 || n==44?sprintf(#ui_buf,"%d",((v|0)==0?6:(v|0)==1?12:(v|0)*12)):unit==3?sprintf(#ui_buf,"%.0f",v*scale):(unit==1 || unit==6?sprintf(#ui_buf,"%.0f%%",v*scale):sprintf(#ui_buf,"%.1f",v*scale));
+  ui_compact?(gfx_x=x-ui_extra_field_w*.5+6;gfx_y=y+1;gfx_drawstr(#ui_buf);):ui_knob_readout(x,y,56);
+  gfx_setfont(1,"Arial",ui_compact?12:13,0);gfx_r=.70;gfx_g=.81;gfx_b=.91;gfx_a=1;
+  sprintf(#ui_buf,"%s",#extra_label);
+  ui_compact?ui_text_buf(x-ui_extra_field_w*.5+2,y-13,ui_extra_field_w-4,0):ui_text_buf(x-42,y+25,84,1);
+  ui_hover_id==700+n?(
+    sprintf(#tip_title,"%s",#extra_label);
+    n==59?sprintf(#tip_body,"Independent accent injection: 0 to 15%%. Drag or wheel; right-click restores the default.")
+    : n==48?sprintf(#tip_body,"Sample-tail release protection. This is separate from Release time and Release curve.")
+    : n==68?sprintf(#tip_body,"Caps positive source matching gain in RMS/Loudness mode.")
+    : n==69?sprintf(#tip_body,"Source matching peak ceiling. This is not an output limiter.")
+    : n==60?sprintf(#tip_body,"Tilt pivot in Hz. Auto pivot is a separate visible button.")
+    : sprintf(#tip_body,"Drag to edit; Shift gives fine control; wheel steps; right-click resets.");
+  );
+  v;
+);
+
 function ui_shift_wheel_slope(id val defval) local(step_amt)
 (
   (ui_hover_id == id && ui_shift && !ui_wheel_used && abs(ui_wheel) >= 1) ? (
@@ -11716,10 +12578,7 @@ function draw_curve_line(x1 y1 x2 y2 mode) local(i steps t u px py nx ny)
 
 function draw_center_buf(x y w) local(tw th)
 (
-  gfx_measurestr(#ui_buf, tw, th);
-  gfx_x = x + max(0, (w - tw) * 0.5);
-  gfx_y = y;
-  gfx_drawstr(#ui_buf);
+  ui_text_buf(x,y,w,1);
 );
 
 
@@ -11895,40 +12754,205 @@ function proc_draw_node(cx cy r hot active label_id) local(tw th)
   gfx_drawstr(#ui_buf);
 );
 
-function draw_tooltip_box() local(tw1 th1 tw2 th2 tw th pad bx by bw bh)
+function draw_tooltip_box() local(tw1 th1 tw th pad bx by bw bh maxw pos start n ch lines lh)
 (
-  strlen(#tip_title) > 0 ? (
-    pad = 10;
-
-    gfx_setfont(1, "Arial", 13, 0);
-    gfx_measurestr(#tip_title, tw1, th1);
-    gfx_setfont(1, "Arial", 12, 0);
-    gfx_measurestr(#tip_body, tw2, th2);
-
-    tw = max(tw1, tw2);
-    th = th1 + th2 + 7;
-    bw = tw + pad * 2;
-    bh = th + pad * 2;
-
-    bx = clamp(mouse_x + 18, 8, gfx_w - bw - 8);
-    by = clamp(mouse_y + 18, 8, gfx_h - bh - 8);
-
-    gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.55;
-    gfx_rect(bx + 3, by + 5, bw, bh, 1);
-    ui_inner_panel(bx, by, bw, bh);
-    gfx_r = 0.36; gfx_g = 0.68; gfx_b = 1.0; gfx_a = 0.55;
-    gfx_rect(bx, by, bw, bh, 0);
-
-    gfx_setfont(1, "Arial", 13, 0);
-    gfx_r = 0.92; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
-    gfx_x = bx + pad; gfx_y = by + pad - 1;
-    gfx_drawstr(#tip_title);
-
-    gfx_setfont(1, "Arial", 12, 0);
-    gfx_r = 0.70; gfx_g = 0.80; gfx_b = 0.92; gfx_a = 1;
-    gfx_x = bx + pad; gfx_y = by + pad + th1 + 4;
-    gfx_drawstr(#tip_body);
+  ui_tip_w=0;ui_tip_h=0;ui_tip_lines=0;
+  strlen(#tip_title)>0?(
+    pad=10;maxw=min(440,max(120,gfx_w-40));
+    gfx_setfont(1,"Arial",13,0);gfx_measurestr(#tip_title,tw1,th1);
+    gfx_setfont(1,"Arial",12,0);gfx_measurestr("Ag",tw,lh);lh=max(14,lh);
+    strcpy(#tip_wrapped,"");strcpy(#tip_line,"");pos=0;n=strlen(#tip_body);lines=0;ui_tip_text_w=0;
+    while(pos<n)(
+      start=pos;while(pos<n && str_getchar(#tip_body,pos)!=32 && str_getchar(#tip_body,pos)!=10)(pos+=1;);
+      strcpy_substr(#tip_word,#tip_body,start,pos-start);
+      sprintf(#tip_test,"%s%s%s",#tip_line,strlen(#tip_line)>0?" ":"",#tip_word);gfx_measurestr(#tip_test,tw,th);
+      tw>maxw && strlen(#tip_line)>0?(
+        strcat(#tip_wrapped,#tip_line);strcat(#tip_wrapped,"\n");gfx_measurestr(#tip_line,tw,th);ui_tip_text_w=max(ui_tip_text_w,tw);lines+=1;strcpy(#tip_line,#tip_word);
+      ):strcpy(#tip_line,#tip_test);
+      pos<n && str_getchar(#tip_body,pos)==10?(strcat(#tip_wrapped,#tip_line);strcat(#tip_wrapped,"\n");gfx_measurestr(#tip_line,tw,th);ui_tip_text_w=max(ui_tip_text_w,tw);lines+=1;strcpy(#tip_line,""););
+      pos+=1;
+    );
+    strlen(#tip_line)>0?(strcat(#tip_wrapped,#tip_line);gfx_measurestr(#tip_line,tw,th);ui_tip_text_w=max(ui_tip_text_w,tw);lines+=1;);
+    bw=min(gfx_w-16,max(tw1,ui_tip_text_w)+pad*2);bh=pad*2+th1+5+max(1,lines)*lh;
+    bx=clamp(mouse_x+18,8,max(8,gfx_w-bw-8));by=clamp(mouse_y+18,8,max(8,gfx_h-bh-8));
+    ui_tip_x=bx;ui_tip_y=by;ui_tip_w=bw;ui_tip_h=bh;ui_tip_lines=lines;
+    gfx_r=0;gfx_g=0;gfx_b=0;gfx_a=.55;gfx_rect(bx+3,by+5,bw,bh,1);ui_inner_panel(bx,by,bw,bh);
+    gfx_r=.36;gfx_g=.68;gfx_b=1;gfx_a=.55;gfx_rect(bx,by,bw,bh,0);
+    gfx_setfont(1,"Arial",13,0);gfx_r=.92;gfx_g=.96;gfx_b=1;gfx_a=1;gfx_x=bx+pad;gfx_y=by+pad-1;gfx_drawstr(#tip_title);
+    gfx_setfont(1,"Arial",12,0);gfx_r=.7;gfx_g=.8;gfx_b=.92;gfx_x=bx+pad;gfx_y=by+pad+th1+4;gfx_drawstr(#tip_wrapped);
   );
+);
+
+function ui_layers_click(n value)(ui_parameter_write(n,value);
+  n==70?slider_automate(slider70,1)
+  : n==71?slider_automate(slider71,1)
+  : n==72?slider_automate(slider72,1)
+  : n==73?slider_automate(slider73,1)
+  : n==74?slider_automate(slider74,1)
+  : n==75?slider_automate(slider75,1)
+  : n==76?slider_automate(slider76,1)
+  : n==77?slider_automate(slider77,1)
+  : n==78?slider_automate(slider78,1)
+  : n==79?slider_automate(slider79,1)
+  : n==80?slider_automate(slider80,1)
+  : n==81?slider_automate(slider81,1)
+  : n==82?slider_automate(slider82,1)
+  : n==83?slider_automate(slider83,1)
+  : n==84?slider_automate(slider84,1)
+  : n==85?slider_automate(slider85,1)
+  : n==86?slider_automate(slider86,1)
+  : n==87?slider_automate(slider87,1)
+  : n==88?slider_automate(slider88,1)
+  : n==89?slider_automate(slider89,1)
+  : n==90?slider_automate(slider90,1)
+  : n==91?slider_automate(slider91,1)
+  : n==92?slider_automate(slider92,1)
+  : n==93?slider_automate(slider93,1)
+  : n==94?slider_automate(slider94,1)
+  : n==95?slider_automate(slider95,1)
+  : n==96?slider_automate(slider96,1)
+  : n==97?slider_automate(slider97,1)
+  : n==98?slider_automate(slider98,1)
+  : n==99?slider_automate(slider99,1);ui_extra_touched=0;);
+function ui_layers_label(n)(
+ n==71?sprintf(#layers_label,"Layers"):n==73?sprintf(#layers_label,"Support level"):n==74?sprintf(#layers_label,"Pitch spread"):n==75?sprintf(#layers_label,"Timing spread"):n==76?sprintf(#layers_label,"Pan spread")
+ :n>=80 && n<=83?sprintf(#layers_label,"Pitch"):n>=84 && n<=87?sprintf(#layers_label,"Level"):n>=88 && n<=91?sprintf(#layers_label,"Delay"):sprintf(#layers_label,"Pan");
+);
+// Native direct sliders: one click sets the position; drag, wheel and Shift
+// fine adjustment work without text entry or a double-click gesture.
+// v76 Mixer layout: readable native controls, fixed grouping, no idle parameter writes.
+function ui_mix_text(x y w size align) local(tw th)(gfx_setfont(1,"Arial",size,0);gfx_r=.86;gfx_g=.93;gfx_b=.99;gfx_a=1;align==2?(gfx_measurestr(#ui_buf,tw,th);gfx_x=x+max(0,w-tw);gfx_y=y;gfx_drawstr(#ui_buf);):ui_text_buf(x,y,w,align););
+function ui_mix_button(id x y w h active)(ui_tab_button(id,x,y,w,h,active););
+function ui_mix_tip(title body)(sprintf(#tip_title,"%s",title);sprintf(#tip_body,"%s",body););
+function ui_layers_slider(n x y w value lo hi step offset def) local(id hot v frac touched labelw)
+(
+ id=2000+n;hot=pt_in(x,y+12,w,22);v=value;touched=0;
+ mouse_pressed && hot && ui_active<0?(ui_active=id;ui_down_x=mouse_x;ui_down_val=value;);
+ ui_active==id?(mouse_down?(v=ui_shift?ui_down_val+(mouse_x-ui_down_x)*(hi-lo)/max(1,w)*.1:lo+(mouse_x-x)/max(1,w)*(hi-lo);touched=1;):ui_active=-1;);
+ hot && !ui_wheel_used && abs(ui_wheel)>=1?(v+=((ui_wheel>0?1:-1)*step*(ui_shift?.1:1));ui_wheel_used=1;touched=1;);
+ mouse_rpressed && hot?(v=def;touched=1;);
+ touched?(v=clamp(v,lo,hi);n==71?v=floor(v+.5):v=floor(v/(ui_shift?step*.1:step)+.5)*(ui_shift?step*.1:step);abs(v-value)>.00000001?ui_parameter_write(n,v-offset););
+ n==73?sprintf(#layers_label,"Support"):n==74?sprintf(#layers_label,"Spread"):n==75?sprintf(#layers_label,"Timing"):ui_layers_label(n);
+ sprintf(#ui_buf,"%s",#layers_label);gfx_setfont(1,"Arial",12,0);gfx_r=.59;gfx_g=.72;gfx_b=.83;gfx_a=1;ui_text_buf(x,y,max(10,w-42),0);
+ n==71?sprintf(#ui_buf,"%d",v):n==74?sprintf(#ui_buf,"%.1fst",v):n==75 || n>=88 && n<=91?sprintf(#ui_buf,"%.0fms",v):n==76 || n>=92 && n<=95?sprintf(#ui_buf,"%+.0f%%",v):n>=80 && n<=83?sprintf(#ui_buf,"%+.1f",v):sprintf(#ui_buf,"%+.1f",v);
+ ui_mix_text(x+w-42,y,42,12,2);
+ frac=clamp01((v-lo)/max(.000001,hi-lo));gfx_r=.11;gfx_g=.18;gfx_b=.23;gfx_a=1;gfx_rect(x,y+23,w,3,1);gfx_r=.17;gfx_g=.68;gfx_b=.94;gfx_rect(x,y+23,w*frac,3,1);gfx_r=.69;gfx_g=.87;gfx_b=.99;gfx_rect(x+w*frac-3,y+19,6,11,1);
+ pt_in(x,y,w,33)?(ui_hover_id=id;ui_mix_tip(#layers_label,"Click / drag / wheel. Shift: fine. Right-click: reset. Applies to new triggers."););
+ v;
+);
+function ui_mix_add(id x y w h) local(hot clicked)(
+ hot=pt_in(x,y,w,h);clicked=0;
+ mouse_pressed && hot && ui_active<0?ui_active=id;
+ ui_active==id && !mouse_down?(clicked=hot;ui_active=-1;);
+ hot?ui_hover_id=id;clicked;
+);
+function ui_layers_fader(n x y w h value offset) local(id hot v frac touched tick ty)
+(
+ id=2000+n;hot=pt_in(x,y,w,h);v=value;touched=0;
+ mouse_pressed && hot && ui_active<0?(ui_active=id;ui_down_y=mouse_y;ui_down_val=value;);
+ ui_active==id?(mouse_down?(v=ui_shift?ui_down_val+(ui_down_y-mouse_y)*60/max(1,h)*.1:-48+clamp01((y+h-mouse_y)/max(1,h))*60;touched=1;):ui_active=-1;);
+ hot && !ui_wheel_used && abs(ui_wheel)>=1?(v+=(ui_wheel>0?.5:-.5)*(ui_shift?.1:1);ui_wheel_used=1;touched=1;);
+ mouse_rpressed && hot?(v=offset;touched=1;);
+ touched?(v=clamp(v,-48,12);v=floor(v/(ui_shift?.05:.5)+.5)*(ui_shift?.05:.5);abs(v-value)>.000001?ui_parameter_write(n,v-offset););
+ tick=-36;while(tick<=12)(ty=y+h-(tick+48)/60*h;gfx_r=.18;gfx_g=.28;gfx_b=.35;gfx_a=1;gfx_line(x+w*.5-13,ty,x+w*.5+13,ty);tick+=12;);
+ gfx_r=.055;gfx_g=.09;gfx_b=.12;gfx_rect(x+w*.5-4,y,8,h,1);frac=clamp01((v+48)/60);gfx_r=.13;gfx_g=.52;gfx_b=.72;gfx_rect(x+w*.5-3,y+h-h*frac,6,h*frac,1);
+ ty=y+h-h*frac;gfx_r=.06;gfx_g=.12;gfx_b=.16;gfx_rect(x+w*.5-17,ty-5,34,10,1);gfx_r=.67;gfx_g=.86;gfx_b=.98;gfx_rect(x+w*.5-16,ty-4,32,8,1);gfx_r=.15;gfx_g=.49;gfx_b=.68;gfx_line(x+w*.5-13,ty,x+w*.5+13,ty);
+ pt_in(x,y-18,w,h+36)?(ui_hover_id=id;ui_mix_tip("Layer level","Click / drag / wheel the fader. Shift: fine. Right-click: reset to this layer's base level."););
+ v;
+);
+function ui_layers_preset(kind)(
+ ui_layers_click(71,kind==0?1:kind==1?2:3);
+ ui_layers_click(73,-9);
+ ui_layers_click(74,kind==3?3:0);
+ ui_layers_click(75,kind==3?12:0);
+ ui_layers_click(76,0);
+ ui_layers_click(77,1);
+ ui_layers_click(78,0);
+ ui_layers_click(79,0);
+ ui_layers_click(80,0);
+ ui_layers_click(81,0);
+ ui_layers_click(82,0);
+ ui_layers_click(83,0);
+ ui_layers_click(84,0);
+ ui_layers_click(85,0);
+ ui_layers_click(86,0);
+ ui_layers_click(87,0);
+ ui_layers_click(88,0);
+ ui_layers_click(89,0);
+ ui_layers_click(90,0);
+ ui_layers_click(91,0);
+ ui_layers_click(92,0);
+ ui_layers_click(93,0);
+ ui_layers_click(94,0);
+ ui_layers_click(95,0);
+ ui_layers_click(96,1);
+ ui_layers_click(97,1);
+ ui_layers_click(98,1);
+ ui_layers_click(99,1);
+ ui_layers_details=0;ui_layers_pan=0;
+);
+function ui_layers_draw(x y w h) local(inner unit line i bx by cw ch cols n active included offset val cy fh fx fy fw modew gap)
+(
+ ui_panel(x,y,w,h);inner=w-24;gap=8;cols=ui_layers_grid?2:4;n=clamp(slider71|0,1,4);
+ sprintf(#ui_buf,"LAYERS");ui_mix_text(x+12,y+9,90,16,0);
+ layers_spectral_fallbacks>0?sprintf(#ui_buf,"%d %s | grain fallback",n,n==1?"voice":"voices"):sprintf(#ui_buf,"%d %s",n,n==1?"voice":"voices");gfx_setfont(1,"Arial",12,0);gfx_r=.56;gfx_g=.7;gfx_b=.82;gfx_a=1;ui_text_buf(x+100,y+12,max(10,w-244),0);
+ ui_mix_button(2800,x+w-136,y+6,74,24,0)?layers_preview_request=(floor(layers_preview_request/4)+1)%65536*4+1;
+ sprintf(#ui_buf,"Preview");ui_mix_text(x+w-136,y+12,74,12,1);
+ ui_mix_button(2801,x+w-56,y+6,44,24,0)?layers_preview_request=(floor(layers_preview_request/4)+1)%65536*4+2;
+ sprintf(#ui_buf,"Stop");ui_mix_text(x+w-56,y+12,44,12,1);
+ // One compact setup row: four local starting points, then pitch and source choices.
+ line=y+(ui_layers_tight?30:38);unit=(inner-20)/8;ui_layers_setup_y=line;ui_layers_preset_w=unit;
+ i=0;while(i<4)(bx=x+12+i*(unit+4);ui_mix_button(2810+i,bx,line,unit,24,0)?ui_layers_preset(i);
+ i==0?sprintf(#ui_buf,"Single"):i==1?sprintf(#ui_buf,"Double"):i==2?sprintf(#ui_buf,"Triple"):sprintf(#ui_buf,"Loose");ui_mix_text(bx,line+6,unit,12,1);i+=1;);
+ bx=x+12+4*(unit+4);fw=unit*2;
+ ui_mix_button(2820,bx,line,fw,24,slider70>.5)?ui_layers_click(70,1-(slider70|0));sprintf(#ui_buf,slider70>.5?"Coherent":"Original");ui_mix_text(bx,line+6,fw,12,1);
+ pt_in(bx,line,fw,24)?(ui_hover_id=2820;ui_mix_tip("Pitch engine","Click to switch Original / Coherent. Existing projects retain Original. Applies to new triggers."););
+ bx+=fw+4;ui_mix_button(2822,bx,line,fw,24,0)?ui_layers_click(72,1-(slider72|0));sprintf(#ui_buf,slider72>.5?"Same source":"Different");ui_mix_text(bx,line+6,fw,12,1);
+ pt_in(bx,line,fw,24)?(ui_hover_id=2822;ui_mix_tip("Layer sources","Click to choose Different eligible sources or Same source for the layer group."););
+ // Small macros above the mixer. Count is a one-click segmented selector.
+ line=y+(ui_layers_tight?61:73);unit=(inner-30)/4;ui_layers_macros_x=x+12;ui_layers_macros_y=line;ui_layers_macro_w=unit;
+ sprintf(#ui_buf,"Voices");gfx_setfont(1,"Arial",12,0);gfx_r=.59;gfx_g=.72;gfx_b=.83;gfx_a=1;ui_text_buf(x+12,line,unit,0);
+ i=0;while(i<4)(bx=x+12+i*(unit/4);ui_mix_button(2880+i,bx,line+17,unit/4-2,19,n==i+1)?ui_layers_click(71,i+1);sprintf(#ui_buf,"%d",i+1);ui_mix_text(bx,line+20,unit/4-2,12,1);i+=1;);
+ ui_layers_slider(73,x+12+unit+10,line,unit,slider73,-24,0,.5,0,-9);
+ ui_layers_slider(74,x+12+2*(unit+10),line,unit,slider74,0,12,.1,0,0);
+ ui_layers_slider(75,x+12+3*(unit+10),line,unit,slider75,0,30,1,0,0);
+ // Every basic layer control stays visible; the narrow variant uses a 2x2 grid.
+ line=y+(ui_layers_tight?104:116);cw=(inner-(cols-1)*gap)/cols;
+ ch=ui_layers_grid?(ui_layers_pan?124:90):min(376,max(246,h-150-(ui_layers_pan?40:0)-((slider78|0)==2?30:0)));
+ ui_mix_cols=cols;ui_mix_card_w=cw;ui_mix_card_h=ch;ui_mix_cards_x=x+12;ui_mix_cards_y=line;ui_mix_fader_y=64;ui_mix_fader_h=ch-148-(ui_layers_pan?34:0);
+ i=0;while(i<ui_mix_visible)(bx=x+12+(i%cols)*(cw+gap);by=line+floor(i/cols)*(ch+gap);included=i<n;active=included && layers_on(i)>.5;
+   gfx_r=included?.042:.029;gfx_g=included?.072:.046;gfx_b=included?.097:.061;gfx_a=1;gfx_rect(bx,by,cw,ch,1);
+   gfx_r=included?.19:.105;gfx_g=included?.31:.17;gfx_b=included?.40:.23;gfx_rect(bx,by,cw,ch,0);
+   ui_mix_button(2860+i,bx+7,by+7,18,18,active)?(included?ui_layers_click(96+i,1-(layers_on(i)>.5)):(ui_layers_click(71,i+1);ui_layers_click(96+i,1);));
+   active?(gfx_r=.38;gfx_g=.77;gfx_b=.98;gfx_a=1;gfx_line(bx+11,by+16,bx+14,by+19);gfx_line(bx+14,by+19,bx+22,by+11););
+   i==0?sprintf(#ui_buf,"Main"):sprintf(#ui_buf,"Layer %d",i+1);ui_mix_text(bx+31,by+10,cw-37,13,0);
+   included?(
+     ui_layers_grid?(
+       offset=layers_gain(i)-layers_gain_trim(i);ui_layers_slider(84+i,bx+10,by+27,cw-20,layers_gain(i),-48,12,.5,offset,offset);
+       offset=layers_pitch(i)-layers_pitch_trim(i);ui_layers_slider(80+i,bx+10,by+57,(cw-30)*.5,layers_pitch(i),-48,48,.1,offset,offset);
+       offset=layers_delay(i)-layers_delay_trim(i);ui_layers_slider(88+i,bx+20+(cw-30)*.5,by+57,(cw-30)*.5,layers_delay(i),0,90,1,offset,offset);
+       ui_layers_pan?(offset=layers_pan(i)*100-layers_pan_trim(i);ui_layers_slider(92+i,bx+10,by+91,cw-20,layers_pan(i)*100,-100,100,1,offset,offset););
+     ):(
+       sprintf(#ui_buf,"%+.1f dB",layers_gain(i));ui_mix_text(bx+4,by+37,cw-8,15,1);
+       offset=layers_gain(i)-layers_gain_trim(i);ui_layers_fader(84+i,bx+8,by+64,cw-16,ui_mix_fader_h,layers_gain(i),offset);
+       offset=layers_pitch(i)-layers_pitch_trim(i);ui_layers_slider(80+i,bx+9,by+ch-72-(ui_layers_pan?34:0),cw-18,layers_pitch(i),-48,48,.1,offset,offset);
+       offset=layers_delay(i)-layers_delay_trim(i);ui_layers_slider(88+i,bx+9,by+ch-37-(ui_layers_pan?34:0),cw-18,layers_delay(i),0,90,1,offset,offset);
+       ui_layers_pan?(offset=layers_pan(i)*100-layers_pan_trim(i);ui_layers_slider(92+i,bx+9,by+ch-37,cw-18,layers_pan(i)*100,-100,100,1,offset,offset););
+     );
+   ):(
+     ui_mix_add(2890+i,bx+8,by+35,cw-16,ch-43)?(ui_layers_click(71,i+1);ui_layers_click(96+i,1););
+     sprintf(#ui_buf,"+ Add layer");ui_mix_text(bx+8,by+ch*.5,cw-16,13,1);
+   );i+=1;
+ );
+ line+=ceil(ui_mix_visible/cols)*(ch+gap)+2;ui_layers_footer_y=line;ui_layers_tools_y=line;
+ fw=min(110,(inner-84)*.34);ui_mix_button(2870,x+12,line,fw,23,slider77>.5)?ui_layers_click(77,1-(slider77|0));sprintf(#ui_buf,"Shared attack");ui_mix_text(x+12,line+5,fw,12,1);
+ bx=x+12+fw+6;modew=(inner-fw-78)/3;
+ i=0;while(i<3)(ui_mix_button(2840+i,bx+i*(modew+3),line,modew,23,(slider78|0)==i)?ui_layers_click(78,i);i==0?sprintf(#ui_buf,"Free"):i==1?sprintf(#ui_buf,"Unison"):sprintf(#ui_buf,"Chord");ui_mix_text(bx+i*(modew+3),line+5,modew,12,1);i+=1;);
+ ui_mix_button(2831,x+w-72,line,60,23,ui_layers_pan)?(ui_layers_pan=1-ui_layers_pan;ui_scroll=0;);sprintf(#ui_buf,"Pan");ui_mix_text(x+w-72,line+5,60,12,1);
+ pt_in(x+w-72,line,60,23)?(ui_hover_id=2831;ui_mix_tip("Optional pan","Show or hide pan controls. Opening them leaves all pan values centred."););
+ line+=30;
+ (slider78|0)==2?(fw=(inner-12)/4;i=0;while(i<4)(bx=x+12+i*(fw+4);ui_mix_button(2850+i,bx,line,fw,23,(slider79|0)==i)?ui_layers_click(79,i);i==0?sprintf(#ui_buf,"Minor"):i==1?sprintf(#ui_buf,"Major"):i==2?sprintf(#ui_buf,"Fifth"):sprintf(#ui_buf,"Octave");ui_mix_text(bx,line+5,fw,12,1);i+=1;);line+=30;);
+ ui_layers_pan?ui_layers_slider(76,x+12,line,min(180,inner),slider76,0,100,1,0,0);
 );
 
 function hub_plan_voice(v p duration continuing) local(sm attacklen relen need loopok deadline scale bodybudget wasloop oldgmode oldgmix oldtail oldmode oldcan horizon wetneed dryneed protect wastransition intended wantloop)
@@ -12408,8 +13432,8 @@ function hub_log_text(x y width) local(tw th n)
 
 function hub_log_header() local(x y w h)
 (
-  w = 100; h = 30;
-  x = max(450, gfx_w - 352); y = 24;
+  w=92;h=24;
+  x=gfx_w-104;y=2;
   ui_tab_button(1700, x, y, w, h, hub_ui_open) ? (
     hub_ui_open = !hub_ui_open;
     // A previous drag must not remain captured beneath the diagnostic panel.
@@ -12560,6 +13584,8 @@ SAMPLE_POOL_MIN = 64;
 SAMPLE_POOL_HARD_MAX = 16384;
 MAX_SAMPLES = SAMPLE_POOL_HARD_MAX;
 MAX_VOICES  = 16;
+sample_layers_schema=1;layer_dispatching=0;layer_source_override=-1;layer_current=0;layer_first=1;layer_group_id=0;layer_group_serial=0;layers_started_total=0;layers_last_count=0;layers_active=0;
+layer_gain_db=0;layer_pan_value=0;layer_delay_ms=0;layer_pitch_offset=0;spectral_serial=0;layers_spectral_faults=0;layers_spectral_fallbacks=0;layers_preview_request=0;layers_preview_seen=0;
 MIDI_QUEUE_CAP = 4096;
 NOTE_GATE_CELLS = 2048;
 RECENT_LEN  = 8;
@@ -12617,7 +13643,14 @@ SM_HUB_LOOPLO = SM_GAUSS_ATTACK + 1;
 SM_HUB_LOOPHI = SM_HUB_LOOPLO + 1;
 SM_HUB_LOOPXF = SM_HUB_LOOPLO + 2;
 SM_HUB_LOOPQUALITY = SM_HUB_LOOPLO + 3;
-SM_STRIDE = SM_HUB_LOOPQUALITY + 1;
+SM_UI_RMS = SM_HUB_LOOPQUALITY + 1;
+SM_UI_PEAK = SM_UI_RMS + 1;
+SM_UI_CENTROID = SM_UI_PEAK + 1;
+SM_UI_HF = SM_UI_CENTROID + 1;
+SM_UI_ROLLOFF = SM_UI_HF + 1;
+SM_UI_EXCLUDED = SM_UI_ROLLOFF + 1;
+SM_UI_IDENTITY = SM_UI_EXCLUDED + 1;
+SM_STRIDE = SM_UI_IDENTITY + 1;
 
 VC_ACTIVE    = 0;
 VC_NOTE      = 1;
@@ -12704,7 +13737,12 @@ VG_LIFE      = 12;
 VG_LPL       = 13;
 VG_LPR       = 14;
 VG_DRYRATE   = 15;
-VG_STRIDE    = 16;
+VG_SPECTRAL  = 16;
+VG_SP_START = 17;
+VG_SP_RATE = 18;
+VG_SP_PITCH = 19;
+VG_SP_AGE = 20;
+VG_STRIDE    = 21;
 NUM_GRAINS   = 32;
 HYBRID_GRAINS = 12;
 
@@ -12781,7 +13819,21 @@ VC_HUB_TLEFT = VC_HUB_BASE + 36;
 VC_HUB_TFROM = VC_HUB_BASE + 37;
 VC_HUB_TTO = VC_HUB_BASE + 38;
 VC_HUB_TWEIGHT = VC_HUB_BASE + 39;
-VC_STRIDE = VC_HUB_BASE + 40;
+VC_MATCHMODE = VC_HUB_BASE + 40;
+VC_MATCHTRUTH = VC_MATCHMODE + 1;
+VC_MATCHMONO = VC_MATCHMODE + 2;
+VC_MATCHLTARGET = VC_MATCHMODE + 3;
+VC_MATCHRTARGET = VC_MATCHMODE + 4;
+VC_MATCHBOOST = VC_MATCHMODE + 5;
+VC_MATCHCEILING = VC_MATCHMODE + 6;
+VC_MATCHDB = VC_MATCHMODE + 7;
+VC_LAYER_INDEX=VC_MATCHMODE+8;
+VC_LAYER_GROUP=VC_LAYER_INDEX+1;VC_LAYER_PAN=VC_LAYER_INDEX+2;VC_LAYER_DELAY=VC_LAYER_INDEX+3;
+VC_LAYER_FEATURE=VC_LAYER_INDEX+4;VC_LAYER_PITCH=VC_LAYER_INDEX+5;VC_LAYER_AGE=VC_LAYER_INDEX+6;VC_LAYER_FADE=VC_LAYER_INDEX+7;
+VC_COHERENT=VC_LAYER_INDEX+8;VC_SPECTRAL=VC_LAYER_INDEX+9;VC_SPECTRAL_START=VC_LAYER_INDEX+10;
+VC_SPECTRAL_RATE=VC_LAYER_INDEX+11;VC_SPECTRAL_PITCH=VC_LAYER_INDEX+12;
+VC_SP_AGE=VC_LAYER_INDEX+13;VC_SP_EXPECTED=VC_LAYER_INDEX+14;
+VC_STRIDE = VC_LAYER_INDEX + 15;
 HM_ACTIVE = 0;
 HM_ID = 1;
 HM_TARGET = 2;
@@ -12944,6 +13996,8 @@ SAMPLE_POOL_PARTIAL = 4;
 SAMPLE_POOL_FAILED = 5;
 
 bank_pool = sample_pool_from_slot(0, "main");
+// Opt in only this client; existing pool consumers retain their old loading cost.
+sample_pool_set_level_analysis(bank_pool, 1);
 sample_pool_set_deferred(bank_pool, 1);
 bank_budget_mb = max(0, slider24);
 sample_pool_set_mode(bank_pool, bank_budget_mb > 0 ? SAMPLE_MODE_BUDGETED : SAMPLE_MODE_RESIDENT);
@@ -13375,6 +14429,27 @@ file_var(0, space_room_char);
 file_var(0, output_harmonics_amt);
 file_var(0, push_pop_amt);
 file_var(0, dynamics_expand_depth_db);
+// New UI state is appended, so the old serialization prefix is unchanged.
+bank_ui_schema=1;file_var(0,bank_ui_schema);
+bank_ui_schema==1?(
+  file_var(0,bank_ui_metric);file_var(0,bank_ui_order);
+  bank_ui_saved_count=sample_count;file_var(0,bank_ui_saved_count);
+  bank_ui_saved_count=clamp(bank_ui_saved_count|0,0,16384);
+  file_mem(0,bank_exclusion_base,bank_ui_saved_count*2);
+);
+bank_filter_available=file_avail(0);
+bank_filter_available<0 || bank_filter_available>=4?(
+  bank_filter_schema=1;file_var(0,bank_filter_schema);
+  bank_filter_schema==1?(
+    file_var(0,bank_filter_mode);file_var(0,bank_filter_metric);file_var(0,bank_filter_cut);
+    bank_filter_mode=clamp(bank_filter_mode|0,0,2);bank_filter_metric=clamp(bank_filter_metric|0,0,6);
+    bank_filter_cut=clamp(bank_filter_cut,-1000,10000000);bank_ui_state_revision+=1;
+  );
+):(
+  // Old JSFX presets have no appended filter block, including reuse of an
+  // instance which previously had a filter. Explicitly restore Off at EOF.
+  bank_filter_mode=0;bank_filter_metric=0;bank_filter_cut=0;bank_ui_state_revision+=1;
+);
 
 @slider
 attack_samps = max(1, floor(slider2 * srate * 0.001));
@@ -13705,6 +14780,7 @@ onset_mode_active = onset_mode_target;
 v71_sync_controls();
 
 @block
+layers_active=count_active_voices();
 v71_sync_controls();
 st_running ? st_block();
 // Native wrapper publishes actual GFX visibility, also off during offline
@@ -13812,6 +14888,8 @@ while (midirecv(offset, msg1, msg23)) (
   );
 );
 
+bank_handle_ui();
+
 @sample
 while (midi_queue_read < midi_queue_count && midi_queue_base[midi_queue_read * 3] <= block_sample_index) (
   qb = midi_queue_base + midi_queue_read * 3;
@@ -13873,13 +14951,15 @@ space_late_bus_l = 0;
 space_late_bus_r = 0;
 denorm_guard = denorm_guard_tick();
 pitch_parallel_active = (pitch_parallel_mix < 0.999 && abs(pitch_semi) > 0.0001) ? 1 : 0;
+pitch_parallel_legacy=pitch_parallel_active;
 
 i = 0;
 while (i < MAX_VOICES) (
   v = voice_base + i * VC_STRIDE;
 
-  v[VC_ACTIVE] > 0 ? (
+  v[VC_ACTIVE] > 0 && v[VC_LAYER_DELAY]>0?(v[VC_LAYER_DELAY]-=1;active_voice_seen=1;):v[VC_ACTIVE] > 0 ? (
     active_voice_seen = 1;
+    pitch_parallel_active=v[VC_LAYER_FEATURE]>0?(pitch_parallel_mix<.999 && abs(v[VC_LAYER_PITCH])>.0001):pitch_parallel_legacy;
     hub_pre_voice(v);
     sid = v[VC_SAMPLE] | 0;
     sm  = sample_meta_base + sid * SM_STRIDE;
@@ -13941,6 +15021,14 @@ while (i < MAX_VOICES) (
     // Advance pitched and unpitched source clocks independently, even while
     // Pitch Mix is fully wet. Each branch owns its own EOF and boundary fade.
     pos = v[VC_POS]; ppos = v[VC_PDRYPOS];
+    v[VC_COHERENT]>0?(
+      v[VC_HUB_LOOP]>0?(
+        layers_release_spectral(v);v[VC_COHERENT]=0;
+        v[VC_RATE]*=v[VC_PRATIO];v[VC_RAWRATE]*=v[VC_PRATIO];v[VC_ATKRATE]*=v[VC_PRATIO];layers_spectral_fallbacks+=1;
+      ):(
+        abs(pos-v[VC_SP_EXPECTED])>.1?(v[VC_SPECTRAL_START]=pos;v[VC_SP_AGE]=0;);
+      );
+    );
     held_body_only = v[VC_GMODE] > 0 && (stage != ENV_RELEASE || hybrid_body_release);
     body_cutoff = max(body_start + 1, tailstart);
     body_blend_len = min(max(2, body_cutoff - body_start), max(2, sm[SM_SR] * 0.020));
@@ -13961,7 +15049,9 @@ while (i < MAX_VOICES) (
         pitchDryRawL = readL; pitchDryRawR = readR; got_pitch_dry_raw = 1;
       );
     ) : (pos >= 0 && pos < frames - 1) ? (
-      got_raw = sample_frame2(ptr, nch, pos);
+      v[VC_COHERENT]>0?(
+        got_raw=layers_spectral_read(v[VC_SPECTRAL],ptr,v[VC_SPECTRAL_START],frames-v[VC_SPECTRAL_START],v[VC_SPECTRAL_PITCH],v[VC_SP_AGE],sm[SM_PITCHCONF],v[VC_SPECTRAL_RATE]);
+      ):got_raw = sample_frame2(ptr, nch, pos);
       source_end_fade = clamp01((frames - 1 - pos) / endfade_src);
       source_end_fade = source_end_fade * source_end_fade * (3 - 2 * source_end_fade);
       rawL = readL * source_end_fade; rawR = readR * source_end_fade;
@@ -13974,8 +15064,9 @@ while (i < MAX_VOICES) (
       pitchDryRawL = readL * pdry_end_fade; pitchDryRawR = readR * pdry_end_fade;
       pdry_end_fade <= 0.0003 ? got_pitch_dry_raw = 0;
     );
+    v[VC_LAYER_AGE]+=1;v[VC_SP_AGE]+=1;
     play_rate = v[VC_RATE]; dry_play_rate = v[VC_PDRYRATE];
-    (tleft > 0 && v[VC_TPROT] > 0) ? (
+    (tleft > 0 && v[VC_TPROT] > 0 && v[VC_COHERENT]<=0) ? (
       holdn = clamp01(tleft / max(1, v[VC_THOLD]));
       holdn = holdn * holdn * (3 - 2 * holdn);
       play_rate = lerp(play_rate, v[VC_ATKRATE], holdn * v[VC_TPROT]);
@@ -13983,6 +15074,7 @@ while (i < MAX_VOICES) (
     );
     v[VC_POS] = v[VC_HUB_LOOP] > 0 ? pos + play_rate : min(frames, pos + play_rate);
     v[VC_PDRYPOS] = v[VC_HUB_LOOP] > 0 ? ppos + dry_play_rate : min(frames, ppos + dry_play_rate);
+    v[VC_SP_EXPECTED]=v[VC_POS];
     granular_voice ? (
       got_raw = 0; got_pitch_dry_raw = 0;
       rawL = 0; rawR = 0;
@@ -14445,7 +15537,12 @@ while (i < MAX_VOICES) (
             );
 
             norm_match = clamp(gsm[SM_NORM] / max(sm[SM_NORM], 0.000001), 0.45, 2.10);
-            ggain *= lerp(norm_match, 1, truth_mix);
+            v[VC_MATCHMODE] == 0 ? (
+              ggain *= lerp(norm_match, 1, truth_mix);
+            ) : (
+              donor_match_db = sample_match_db(gsm, v[VC_MATCHMODE], v[VC_MATCHMONO], v[VC_MATCHLTARGET], v[VC_MATCHRTARGET], v[VC_MATCHBOOST], v[VC_MATCHCEILING]);
+              ggain *= db2amp((donor_match_db - v[VC_MATCHDB]) * (1 - v[VC_MATCHTRUTH]));
+            );
             ggain *= 1 + gesture_drive * (0.08 + 0.10 * v[VC_GMIX]);
 
             // v33 EnvTrajectory: preserve learned corpus prosody. Previous
@@ -14480,6 +15577,16 @@ while (i < MAX_VOICES) (
             );
           );
 
+          layers_release_slot(gb,gb[VG_SPECTRAL]);gb[VG_SPECTRAL]=0;
+          v[VC_COHERENT]>0?(
+            spectral_grain_speed=grate/max(.000001,gsm[SM_SR]/srate);
+            spectral_grain_span=min(gframes-1-prefill_src,max(1,spawn_gsize*abs(grate)));
+            spectral_grain_span>=gsm[SM_SR]*.012 && spectral_grain_speed>=.0625 && spectral_grain_speed<=4?gb[VG_SPECTRAL]=layers_grain_slot(gb);
+            gb[VG_SPECTRAL]>0?(
+              gb[VG_SP_START]=prefill_src;gb[VG_SP_RATE]=spectral_grain_speed;
+              gb[VG_SP_PITCH]=v[VC_LAYER_PITCH]+12*log(max(.000001,spectral_grain_speed))/log(2);gb[VG_SP_AGE]=0;
+            ):(grate*=v[VC_PRATIO];layers_spectral_fallbacks+=1;);
+          );
           gb[VG_ACTIVE] = 1;
           gb[VG_AGE] = prefill_age;
           gb[VG_SRC] = prefill_src;
@@ -14495,7 +15602,7 @@ while (i < MAX_VOICES) (
           gb[VG_LIFE] = 0;
           gb[VG_LPL] = 0;
           gb[VG_LPR] = 0;
-          gb[VG_DRYRATE] = grate / max(0.000001, v[VC_PRATIO]);
+          gb[VG_DRYRATE] = gb[VG_SPECTRAL]>0?grate:grate / max(0.000001, v[VC_PRATIO]);
           grain_hist_push(i, gsid, gsrc, ghist_lo, ghist_hi);
           granular_voice ? (
             prev_lgsid = v[VC_LGSID] | 0;
@@ -14569,7 +15676,9 @@ while (i < MAX_VOICES) (
               (gwet_valid || gdry_valid) ? (
                 gl = 0; gr = 0; gdry_l = 0; gdry_r = 0;
                 gwet_valid ? (
-                  sample_frame2(gptr, gnch, srcp); gl = readL; gr = readR;
+                  gb[VG_SPECTRAL]>0?(
+                    layers_spectral_read(gb[VG_SPECTRAL],gptr,gb[VG_SP_START],min(gframes-gb[VG_SP_START],max(1,gsize*abs(gb[VG_RATE]))),gb[VG_SP_PITCH],gb[VG_SP_AGE],gsm[SM_PITCHCONF],gb[VG_SP_RATE]);gb[VG_SP_AGE]+=1;
+                  ):sample_frame2(gptr, gnch, srcp); gl = readL; gr = readR;
                 );
                 gdry_valid ? (
                   sample_frame2(gptr, gnch, dry_srcp); gdry_l = readL; gdry_r = readR;
@@ -14891,6 +16000,11 @@ while (i < MAX_VOICES) (
     (g > 0 && got_sig) ? (
       voice_out_l = l * g;
       voice_out_r = r * g;
+      v[VC_LAYER_FADE]>0?(
+        layer_fade=clamp01(v[VC_LAYER_AGE]/v[VC_LAYER_FADE]);layer_fade=layer_fade*layer_fade*(3-2*layer_fade);
+        voice_out_l*=layer_fade;voice_out_r*=layer_fade;
+      );
+      abs(v[VC_LAYER_PAN])>.000001?(voice_out_l*=sqrt(1-v[VC_LAYER_PAN]);voice_out_r*=sqrt(1+v[VC_LAYER_PAN]););
       outL += voice_out_l;
       outR += voice_out_r;
 
@@ -15219,10 +16333,11 @@ v71_total_delay > 0 ? (
 // voice that ends before its FFT output emerges. Native smart idle reads it.
 za_keep_awake = (dc_switch_gain < 1 || dc_switch_target < 1 || dc_output_warm_left > 0 || sc_running || sa_running || st_running || v71_profile_gain != v71_profile_target);
 
-@gfx 1380 760
+@gfx 1100 700
 // Color/Harmonics coefficients are updated by @slider/@block after slider edits.
 
 !ui_graphics_initialized ? ui_graphics_init();
+!ui_workspace_ready?(ui_workspace_ready=1;ui_extra_selected=-1;ui_extra_pinned=0;ui_extra_hover_prev=-1;posteq_char_selected=2;);
 ui_refresh_controls();
 slot_signature_loaded != ui_bank_signature ? (ui_bank_signature = slot_signature_loaded; ui_rescan_flash = 1;);
 posteq_gfx_heartbeat = (posteq_gfx_heartbeat + 1) % 1000000;
@@ -15262,188 +16377,43 @@ while (bg_i < gfx_h) (
   bg_i += 1;
 );
 
-// Header
-x0 = 10; y0 = 10;
-header_h = 84;
-ui_panel(x0, y0, gfx_w - 20, header_h);
-
-ui_draw_header_logo(x0 + 44, y0 + 42, 23);
-
-gfx_setfont(1, "Arial", 25, 0);
-gfx_x = x0 + 88; gfx_y = y0 + 19;
-gfx_r = 0.92; gfx_g = 0.97; gfx_b = 1.0; gfx_a = 1;
-gfx_drawstr("LOAD-AND-GO");
-gfx_setfont(1, "Arial", 17, 0);
-gfx_x = x0 + 286; gfx_y = y0 + 25;
-gfx_r = 0.50; gfx_g = 0.64; gfx_b = 0.78; gfx_a = 1;
-gfx_drawstr("MULTISAMPLER");
-pt_in(x0, y0, gfx_w - 20, header_h) ? ui_hover_id = 1001;
-
-gfx_setfont(1, "Arial", 14, 0);
-gfx_x = x0 + 88; gfx_y = y0 + 55;
-gfx_r = 0.63; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
-gfx_drawstr("Auto-polls slot 0, rescans on change, bank-wide triggering.");
-
-lamp_x = gfx_w - 238;
-lamp_y = y0 + 27;
-status_on = bank_loaded ? 1 : 0;
-bank_partial = bank_loaded && bank_selected_count > 0 && sample_count < bank_selected_count;
-ui_led(lamp_x, lamp_y + 11, status_on && !bank_partial, bank_partial ? 0.95 : 0.18, bank_partial ? 0.68 : 0.90, bank_partial ? 0.20 : 0.44);
-gfx_setfont(1, "Arial", 14, 0);
-gfx_r = 0.86; gfx_g = 0.92; gfx_b = 0.98; gfx_a = 1;
-gfx_x = lamp_x + 22; gfx_y = lamp_y + 1;
-bank_partial ? sprintf(#ui_buf, "Bank partial") : (bank_loaded ? sprintf(#ui_buf, "Bank ready") : sprintf(#ui_buf, "No bank"));
-gfx_drawstr(#ui_buf);
-
-gfx_r = 0.62; gfx_g = 0.70; gfx_b = 0.82; gfx_a = 1;
-gfx_x = lamp_x + 22; gfx_y = lamp_y + 25;
-bank_partial ? (
-  bank_memory_limited ? sprintf(#ui_buf, "Loaded %d/%d | %.0f MB", sample_count, bank_selected_count, pool_ram_mb) : (
-    bank_cap_limited ? sprintf(#ui_buf, "Loaded %d/%d | pool max %d", sample_count, bank_selected_count, sample_pool_capacity) : sprintf(#ui_buf, "Loaded %d/%d | %.0f MB", sample_count, bank_selected_count, pool_ram_mb)
-  )
-) : (
-  bank_loaded ? sprintf(#ui_buf, "Loaded %d/%d | %.0f MB", sample_count, max(bank_selected_count, sample_count), pool_ram_mb) : (
-    rescan_pending ? (
-      rescan_force ? sprintf(#ui_buf, "Rescan now") : sprintf(#ui_buf, "Rescan queued")
-    ) : sprintf(#ui_buf, "Auto-rescan live")
-  )
+// v76: stable instrument panels, compact bank, and a dedicated layer mixer.
+!ui_responsive_ready?(ui_responsive_ready=1;ui_compact_page=0;ui_secondary_page=1;ui_scroll=0;ui_layout_seen=-1;ui_layers_open=0;ui_layers_pan=0;);
+ui_layout=(gfx_w>=1180 && gfx_h>=700)?0:gfx_w>=900?1:2;ui_compact=ui_layout>0;ui_narrow=ui_layout==2;
+ui_layout_seen!=ui_layout?(ui_layout_seen=ui_layout;ui_scroll=0;ui_active=-1;);
+ui_show_layers=ui_layout==0?ui_layers_open:ui_layout==1?ui_secondary_page==3:ui_compact_page==3;
+ui_layers_tight=ui_narrow && gfx_h<540;ui_bank_compact=1;left_x=8;left_y=ui_narrow && gfx_h<540?28:34;left_w=gfx_w-16;left_h=ui_layers_tight?108:ui_narrow?120:gfx_h<600?120:136;
+ui_tab_y=left_y+left_h+6;ui_body_y=ui_tab_y+34;ui_body_visible=max(60,gfx_h-ui_body_y-4);
+ui_layers_grid=ui_narrow || ui_body_visible<410;ui_layers_tight=ui_narrow && gfx_h<540;ui_mix_visible=ui_layers_grid && (slider71|0)<=2?2:4;
+ui_layers_min=ui_layers_grid?(ui_layers_tight?104:116)+ceil(ui_mix_visible/2)*((ui_layers_pan?124:90)+8)+25+(ui_layers_pan?40:0)+((slider78|0)==2?30:0):396+(ui_layers_pan?40:0)+((slider78|0)==2?30:0);
+ui_page_min=ui_compact_page==1?308:ui_compact_page==2?312:(ui_extra_selected<0?230:ui_extra_selected==8?314:294);
+ui_content_h=ui_show_layers?max(ui_body_visible,ui_layers_min):ui_narrow?max(ui_body_visible,ui_page_min):ui_compact?max(ui_body_visible,max(ui_secondary_page==2?312:308,ui_extra_selected==8?338:318)):ui_body_visible;
+ui_scroll_max=max(0,ui_content_h-ui_body_visible);ui_scroll=clamp(ui_scroll,0,ui_scroll_max);
+ui_scrollbar_w=ui_scroll_max>0?14:0;panel_total_w=gfx_w-20-ui_scrollbar_w;
+ui_show_play=ui_narrow?(ui_compact_page==0):1;
+ui_show_env=ui_layout==0?1:ui_layout==1?(ui_secondary_page==1):(ui_compact_page==1);
+ui_show_eq=ui_layout==0?!ui_layers_open:ui_layout==1?ui_secondary_page==2:ui_compact_page==2;
+!ui_compact?(
+  mid_x=8;mid_y=ui_body_y;mid_w=floor(panel_total_w*.24);
+  right_x=mid_x+mid_w+10;right_y=mid_y;right_w=floor(panel_total_w*.43)-10;
+  proc_x=right_x+right_w+10;proc_y=mid_y;proc_w=gfx_w-proc_x-8-ui_scrollbar_w;
+):ui_narrow?(
+  mid_x=8;right_x=8;proc_x=8;mid_w=panel_total_w+4;right_w=mid_w;proc_w=mid_w;
+  mid_y=ui_body_y-ui_scroll;right_y=mid_y;proc_y=mid_y;
+):(
+  right_x=8;right_w=floor((panel_total_w-4)*.54);right_y=ui_body_y-ui_scroll;
+  mid_x=right_x+right_w+10;mid_w=gfx_w-mid_x-8-ui_scrollbar_w;mid_y=right_y;
+  proc_x=mid_x;proc_w=mid_w;proc_y=right_y;
 );
-gfx_drawstr(#ui_buf);
-
-pt_in(lamp_x - 8, lamp_y - 2, 180, 48) ? ui_hover_id = 1002;
-hub_log_header();
-!hub_ui_open ? (
-
-// Panels - responsive layout
-panel_gap = 10;
-panel_total_w = gfx_w - 20;
-panel_total_h = gfx_h - 112;
-
-left_x = 10; left_y = 104;
-left_w = clamp(floor(panel_total_w * 0.19), 215, 290);
-mid_w  = clamp(floor(panel_total_w * 0.27), 300, 410);
-proc_w = clamp(floor(panel_total_w * 0.24), 250, 360);
-right_w = panel_total_w - left_w - mid_w - proc_w - panel_gap * 3;
-right_min_w = 330;
-proc_min_w = 235;
-
-right_w < right_min_w ? (
-  deficit = right_min_w - right_w;
-  take_proc = min(deficit * 0.55, max(0, proc_w - proc_min_w));
-  proc_w -= take_proc;
-  deficit -= take_proc;
-  take_mid = min(deficit * 0.70, max(0, mid_w - 260));
-  mid_w -= take_mid;
-  deficit -= take_mid;
-  take_left = min(deficit, max(0, left_w - 190));
-  left_w -= take_left;
-  right_w = panel_total_w - left_w - mid_w - proc_w - panel_gap * 3;
-);
-
-right_w > 410 ? (
-  excess = right_w - 410;
-  proc_w += min(excess, max(0, 360 - proc_w));
-  right_w = panel_total_w - left_w - mid_w - proc_w - panel_gap * 3;
-);
-
-mid_x = left_x + left_w + panel_gap; mid_y = left_y;
-right_x = mid_x + mid_w + panel_gap; right_y = left_y;
-proc_x = right_x + right_w + panel_gap; proc_y = left_y;
-left_h = panel_total_h;
-mid_h = panel_total_h;
-right_h = panel_total_h;
-proc_h = panel_total_h;
-
-ui_panel(left_x, left_y, left_w, left_h);
-ui_panel(mid_x, mid_y, mid_w, mid_h);
-ui_panel(right_x, right_y, right_w, right_h);
-ui_panel(proc_x, proc_y, proc_w, proc_h);
-
-// Left panel: bank overview
-gfx_setfont(1, "Arial", 16, 0);
-gfx_r = 0.88; gfx_g = 0.94; gfx_b = 1.0; gfx_a = 1;
-gfx_x = left_x + 18; gfx_y = left_y + 16;
-gfx_drawstr("BANK OVERVIEW");
-gfx_r = 0.10; gfx_g = 0.58; gfx_b = 1.0; gfx_a = 0.90; gfx_circle(left_x + 10, left_y + 25, 4, 1);
-gfx_r = 0.26; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.35; gfx_line(left_x + 18, left_y + 39, left_x + left_w - 18, left_y + 39);
-
-gfx_setfont(1, "Arial", 14, 0);
-bank_selected_count > 0 && sample_count < bank_selected_count ? sprintf(#ui_buf, "%d/%d samples loaded", sample_count, bank_selected_count) : sprintf(#ui_buf, "%d samples loaded", sample_count);
-gfx_x = left_x + 14; gfx_y = left_y + 42; gfx_r = bank_partial ? 0.95 : 0.70; gfx_g = bank_partial ? 0.76 : 0.78; gfx_b = bank_partial ? 0.42 : 0.88;
-gfx_drawstr(#ui_buf);
-
-sprintf(#ui_buf, "%d voices active", count_active_voices());
-gfx_x = left_x + 14; gfx_y = left_y + 62; gfx_drawstr(#ui_buf);
-
-(last_sid >= 0) ? (
-  selection_mode == 2 ? sprintf(#ui_buf, "Last sample %d | Walk", last_sid + 1) : (
-    sequence_mode ? sprintf(#ui_buf, "Last sample %d | Seq", last_sid + 1) : sprintf(#ui_buf, "Last sample %d | Random", last_sid + 1)
-  );
-) : (
-  selection_mode == 2 ? sprintf(#ui_buf, "Last sample -- | Walk") : (
-    sequence_mode ? sprintf(#ui_buf, "Last sample -- | Seq") : sprintf(#ui_buf, "Last sample -- | Random")
-  );
-);
-gfx_x = left_x + 14; gfx_y = left_y + 82; gfx_drawstr(#ui_buf);
-pt_in(left_x + 10, left_y + 8, left_w - 20, 84) ? ui_hover_id = 1100;
-
-meter_x = left_x + 14; meter_y = left_y + 122; meter_w = left_w - 28; meter_h = 12;
-ui_hmeter(meter_x, meter_y, meter_w, meter_h, bank_pitchiness, 0.16, 0.62, 1.00);
-gfx_r = 0.74; gfx_g = 0.80; gfx_b = 0.88; gfx_a = 1;
-gfx_x = meter_x; gfx_y = meter_y - 20;
-gfx_drawstr("Pitch confidence");
-pt_in(meter_x, meter_y - 22, meter_w, meter_h + 26) ? ui_hover_id = 1101;
-
-meter_y2 = meter_y + 52;
-ui_hmeter(meter_x, meter_y2, meter_w, meter_h, bank_brightness, 0.20, 0.86, 0.58);
-gfx_r = 0.74; gfx_g = 0.80; gfx_b = 0.88; gfx_a = 1;
-gfx_x = meter_x; gfx_y = meter_y2 - 20;
-gfx_drawstr("Average brightness");
-pt_in(meter_x, meter_y2 - 22, meter_w, meter_h + 26) ? ui_hover_id = 1102;
-
-meter_y3 = meter_y2 + 52;
-ui_hmeter(meter_x, meter_y3, meter_w, meter_h, bank_sharpness, 0.64, 0.40, 1.00);
-gfx_r = 0.74; gfx_g = 0.80; gfx_b = 0.88; gfx_a = 1;
-gfx_x = meter_x; gfx_y = meter_y3 - 20;
-gfx_drawstr("Average attack focus");
-pt_in(meter_x, meter_y3 - 22, meter_w, meter_h + 26) ? ui_hover_id = 1103;
-
-map_x = left_x + 14; map_y = left_y + 250; map_w = left_w - 28; map_h = max(80, left_h - 266);
-ui_inner_panel(map_x, map_y, map_w, map_h);
-gfx_x = map_x; gfx_y = map_y - 22; gfx_r = 0.74; gfx_g = 0.80; gfx_b = 0.88;
-gfx_drawstr("Sample map");
-pt_in(map_x, map_y, map_w, map_h) ? (
-  sample_count > 0 ? (
-    hov_bw = map_w / max(sample_count, 1);
-    hov_sid = clamp(floor((mouse_x - map_x) / max(hov_bw, 0.000001)), 0, sample_count - 1);
-    ui_hover_id = 5000 + hov_sid;
-  ) : ui_hover_id = 1200;
-);
-
-sample_count > 0 ? (
-  bw = map_w / max(sample_count, 1);
-  i = 0;
-  while (i < sample_count) (
-    sm = sample_meta_base + i * SM_STRIDE;
-    rootn = clamp01((sm[SM_ROOT] - ROOT_LOW) / max(ROOT_HIGH - ROOT_LOW, 1));
-    bright = sm[SM_BRIGHT];
-    sharp = sm[SM_SHARP];
-    bh = 10 + (map_h - 20) * clamp01(0.15 + bright * 0.85);
-    bx = map_x + i * bw;
-    by = map_y + map_h - bh - 4;
-    gfx_r = lerp(0.10, 0.95, rootn);
-    gfx_g = lerp(0.78, 0.48, rootn) * (0.78 + 0.22 * sharp);
-    gfx_b = lerp(0.35, 0.05, rootn) * (0.80 + 0.20 * (1 - bright));
-    gfx_a = (i == last_sid) ? 1 : 0.82;
-    gfx_rect(bx + 1, by, max(1, bw - 2), bh, 1);
-    i += 1;
-  );
-) : (
-  gfx_r = 0.48; gfx_g = 0.54; gfx_b = 0.62; gfx_a = 1;
-  gfx_x = map_x + 12; gfx_y = map_y + 12;
-  gfx_drawstr("Drop a multi-file selection onto slot 0.");
-);
-
+mid_h=ui_content_h;right_h=ui_content_h;proc_h=ui_content_h;
+ui_actual_mx=mouse_x;ui_actual_my=mouse_y;
+// Panels may draw above the viewport while scrolling. Mask their input there;
+// their pixels are covered by the pinned bank/header after drawing the body.
+ui_body_drag=ui_active>=0 && ui_active<4900 && !(ui_active>=810 && ui_active<=819) && ui_active!=1700;
+(ui_compact||ui_show_layers) && !ui_body_drag && !pt_in(0,ui_body_y,gfx_w-ui_scrollbar_w,ui_body_visible)?(mouse_x=-100000;mouse_y=-100000;);
+!hub_ui_open?(
+ui_show_layers?(ui_layers_x=ui_layout==0?proc_x:ui_layout==1?mid_x:8;ui_layers_y=ui_body_y-ui_scroll;ui_layers_w=ui_layout==0?proc_w:ui_layout==1?mid_w:gfx_w-16-ui_scrollbar_w;ui_layers_draw(ui_layers_x,ui_layers_y,ui_layers_w,ui_content_h););
+ui_show_env?(ui_panel(mid_x,mid_y,mid_w,mid_h);
 // Mid panel: AHDSR graph and controls
 gfx_setfont(1, "Arial", 16, 0);
 gfx_r = 0.88; gfx_g = 0.94; gfx_b = 1.0; gfx_a = 1;
@@ -15462,12 +16432,13 @@ ui_button(206, auto_ar_btn_x, auto_ar_btn_y, auto_ar_btn_w, auto_ar_btn_h) ? (
   sliderchange(MASK_S57);
   ui_value_changed = 1;
 );
-gfx_setfont(1, "Arial", 11, 0);
+gfx_setfont(1, "Arial", 13, 0);
+gfx_r=.86;gfx_g=.94;gfx_b=1;gfx_a=1;
 (slider57 | 0) ? sprintf(#ui_buf, "AUTO A/R") : sprintf(#ui_buf, "MANUAL A/R");
 draw_center_buf(auto_ar_btn_x, auto_ar_btn_y + 7, auto_ar_btn_w);
 pt_in(auto_ar_btn_x, auto_ar_btn_y, auto_ar_btn_w, auto_ar_btn_h) ? ui_hover_id = 1302;
 
-graph_x = mid_x + 16; graph_y = mid_y + 48; graph_w = mid_w - 32; graph_h = 190;
+graph_x = mid_x + 16; graph_y = mid_y + 48; graph_w = mid_w - 32; graph_h = ui_compact?80:125;
 ui_inner_panel(graph_x, graph_y, graph_w, graph_h);
 grid_i = 1;
 while (grid_i < 8) (
@@ -15517,15 +16488,12 @@ for_y = graph_y + graph_h - 18 - (graph_h - 36) * sustain_level;
 gfx_r = 0.26; gfx_g = 0.52; gfx_b = 0.74; gfx_a = 0.6;
 gfx_line(graph_x + 14, for_y, graph_x + graph_w - 14, for_y);
 
-gfx_setfont(1, "Arial", 14, 0);
+gfx_setfont(1, "Arial", 13, 0);
 gfx_r = 0.74; gfx_g = 0.80; gfx_b = 0.88; gfx_a = 1;
-(slider57 | 0) ? sprintf(#ui_buf, "AUTO 25ms A/R %.0f%%/%.0f%%   H %.0f ms   D %.0f ms   S %.0f%%", auto_smooth_attack_share * 100, auto_smooth_release_share * 100, slider20, slider3, slider4 * 100) : sprintf(#ui_buf, "A %.1f ms   H %.0f ms   D %.0f ms   S %.0f%%   R %.0f ms", slider2, slider20, slider3, slider4 * 100, slider5);
-gfx_x = graph_x; gfx_y = graph_y + graph_h + 8;
-gfx_drawstr(#ui_buf);
 pt_in(graph_x, graph_y, graph_w, graph_h) ? ui_hover_id = 1301;
 
-adsr_y = mid_y + 290;
-adsr_h = max(120, mid_h - 310);
+adsr_y = ui_compact?graph_y+graph_h+36:mid_y+210;
+adsr_h = ui_compact?max(58,mid_h-250):max(70,mid_h-350);
 track_count = 5;
 adsr_inner_w = mid_w - 40;
 track_w = clamp(floor((adsr_inner_w - 14 * (track_count - 1)) / track_count), 20, 28);
@@ -15534,57 +16502,70 @@ track_x = mid_x + 20;
 
 nv = ui_vslider(201, track_x, adsr_y, track_w, adsr_h, slider2, 0.1, 500, CURVE_TIME, 3, 0.020); abs(nv - slider2) > 0.0000001 ? (slider2 = nv; gfx_slider_mask |= MASK_S2;);
 nv = ui_shift_wheel_slope(201, slider28, 100); abs(nv - slider28) > 0.0000001 ? (slider28 = nv; gfx_slider_mask |= MASK_S28;);
-gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("A");
-(slider57 | 0) ? sprintf(#ui_buf, "%.0f%%", auto_smooth_attack_share * 100) : sprintf(#ui_buf, "%.1f", slider2); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; sprintf(#ui_buf,"Attack"); draw_center_buf(track_x-track_gap*.5,adsr_y+adsr_h+12,track_w+track_gap);
+(slider57 | 0) ? sprintf(#ui_buf, "%.0f%%", auto_smooth_attack_share * 100) : sprintf(#ui_buf, "%.1fms", slider2); gfx_r = 0.76; gfx_g = 0.84; gfx_b = 0.93; draw_center_buf(track_x-track_gap*.5,adsr_y-24,track_w+track_gap);
 
 track_x += track_w + track_gap;
 nv = ui_vslider(205, track_x, adsr_y, track_w, adsr_h, slider20, 0, 2000, CURVE_LINEAR, 20, 0.015); abs(nv - slider20) > 0.0000001 ? (slider20 = nv; gfx_slider_mask |= MASK_S20;);
-gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("H");
-sprintf(#ui_buf, "%.0f", slider20); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; sprintf(#ui_buf,"Hold"); draw_center_buf(track_x-track_gap*.5,adsr_y+adsr_h+12,track_w+track_gap);
+sprintf(#ui_buf, "%.0fms", slider20); gfx_r = 0.76; gfx_g = 0.84; gfx_b = 0.93; draw_center_buf(track_x-track_gap*.5,adsr_y-24,track_w+track_gap);
 
 track_x += track_w + track_gap;
 nv = ui_vslider(202, track_x, adsr_y, track_w, adsr_h, slider3, 1, 5000, CURVE_TIME, 110, 0.020); abs(nv - slider3) > 0.0000001 ? (slider3 = nv; gfx_slider_mask |= MASK_S3;);
 nv = ui_shift_wheel_slope(202, slider29, -100); abs(nv - slider29) > 0.0000001 ? (slider29 = nv; gfx_slider_mask |= MASK_S29;);
-gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("D");
-sprintf(#ui_buf, "%.0f", slider3); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; sprintf(#ui_buf,"Decay"); draw_center_buf(track_x-track_gap*.5,adsr_y+adsr_h+12,track_w+track_gap);
+sprintf(#ui_buf, "%.0fms", slider3); gfx_r = 0.76; gfx_g = 0.84; gfx_b = 0.93; draw_center_buf(track_x-track_gap*.5,adsr_y-24,track_w+track_gap);
 
 track_x += track_w + track_gap;
 nv = ui_vslider(203, track_x, adsr_y, track_w, adsr_h, slider4, 0, 1, CURVE_SUSTAIN, 0.82, 0.018); abs(nv - slider4) > 0.0000001 ? (slider4 = nv; gfx_slider_mask |= MASK_S4;);
-gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("S");
-sprintf(#ui_buf, "%.0f%%", slider4 * 100); gfx_x = track_x + (track_w - 28) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; sprintf(#ui_buf,"Sustain"); draw_center_buf(track_x-track_gap*.5,adsr_y+adsr_h+12,track_w+track_gap);
+sprintf(#ui_buf, "%.0f%%", slider4 * 100); gfx_r = 0.76; gfx_g = 0.84; gfx_b = 0.93; draw_center_buf(track_x-track_gap*.5,adsr_y-24,track_w+track_gap);
 
 track_x += track_w + track_gap;
 nv = ui_vslider(204, track_x, adsr_y, track_w, adsr_h, slider5, 5, 5000, CURVE_TIME, 180, 0.020); abs(nv - slider5) > 0.0000001 ? (slider5 = nv; gfx_slider_mask |= MASK_S5;);
 nv = ui_shift_wheel_slope(204, slider30, -100); abs(nv - slider30) > 0.0000001 ? (slider30 = nv; gfx_slider_mask |= MASK_S30;);
-gfx_x = track_x + (track_w - 7) * 0.5; gfx_y = adsr_y + adsr_h + 12; gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; gfx_drawstr("R");
-(slider57 | 0) ? sprintf(#ui_buf, "%.0f%%", auto_smooth_release_share * 100) : ((ui_shift && (ui_hover_id == 204 || ui_active == 204)) ? sprintf(#ui_buf, "G%.2f", auto_release_amt) : sprintf(#ui_buf, "%.0f", slider5)); gfx_x = track_x + (track_w - 18) * 0.5; gfx_y = adsr_y - 20; gfx_r = 0.70; gfx_g = 0.78; gfx_b = 0.88; gfx_drawstr(#ui_buf);
+gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1; sprintf(#ui_buf,"Release"); draw_center_buf(track_x-track_gap*.5,adsr_y+adsr_h+12,track_w+track_gap);
+(slider57 | 0) ? sprintf(#ui_buf, "%.0f%%", auto_smooth_release_share * 100) : ((ui_shift && (ui_hover_id == 204 || ui_active == 204)) ? sprintf(#ui_buf, "G%.2f", auto_release_amt) : sprintf(#ui_buf, "%.0fms", slider5)); gfx_r = 0.76; gfx_g = 0.84; gfx_b = 0.93; draw_center_buf(track_x-track_gap*.5,adsr_y-24,track_w+track_gap);
 
+// Always-visible envelope curvature and tail protection.
+env_extra_y=mid_y+mid_h-(ui_compact?24:65);env_extra_step=(mid_w-24)/4;ui_extra_field_w=env_extra_step-8;
+ui_extra(28,mid_x+12+env_extra_step*.5,env_extra_y,slider28,-100,100,100,1,6);
+ui_extra(29,mid_x+12+env_extra_step*1.5,env_extra_y,slider29,-100,100,-100,1,6);
+ui_extra(30,mid_x+12+env_extra_step*2.5,env_extra_y,slider30,-100,100,-100,1,6);
+ui_extra(48,mid_x+12+env_extra_step*3.5,env_extra_y,slider48,0,1,1,100,1);
+
+
+);
+ui_show_play?(ui_panel(right_x,right_y,right_w,right_h);
+(!ui_narrow)?(
 // Right panel: playback controls
 gfx_setfont(1, "Arial", 16, 0);
 gfx_r = 0.88; gfx_g = 0.94; gfx_b = 1.0; gfx_a = 1;
-gfx_x = right_x + 18; gfx_y = right_y + 16;
+gfx_x = right_x + 18; gfx_y = right_y + (ui_compact?6:16);
 gfx_drawstr("PLAYBACK");
 gfx_r = 0.10; gfx_g = 0.58; gfx_b = 1.0; gfx_a = 0.90; gfx_circle(right_x + 10, right_y + 25, 4, 1);
-gfx_r = 0.26; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.35; gfx_line(right_x + 18, right_y + 39, right_x + right_w - 18, right_y + 39);
+gfx_r = 0.26; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.35; gfx_line(right_x+18,right_y+(ui_compact?26:39),right_x+right_w-18,right_y+(ui_compact?26:39));
 
+
+);
 right_inner_x = right_x + 14;
 right_inner_w = max(160, right_w - 28);
 pt_in(right_x, right_y, right_w, 150) ? ui_hover_id = 1400;
 
-btn_gap_x = 10;
-btn_gap_y = 8;
-btn_w = floor((right_inner_w - btn_gap_x) * 0.5);
-btn_h = 30;
-btn_y1 = right_y + 42;
-btn_y2 = btn_y1 + btn_h + btn_gap_y;
-btn_y3 = btn_y2 + btn_h + btn_gap_y;
+btn_gap_x = 6;
+btn_gap_y = 0;
+btn_w = floor((right_inner_w - btn_gap_x*4) / 5);
+btn_h = 28;
+btn_y1 = right_y + (ui_narrow?8:ui_compact?32:42);
+btn_y2 = btn_y1;
+btn_y3 = btn_y1;
 
 mode_btn_x = right_inner_x;
 trans_btn_x = right_inner_x + btn_w + btn_gap_x;
-seq_btn_x = right_inner_x;
-mono_btn_x = right_inner_x + btn_w + btn_gap_x;
-onset_btn_x = right_inner_x;
-onset_btn_w = right_inner_w;
+seq_btn_x = right_inner_x + 2*(btn_w + btn_gap_x);
+mono_btn_x = right_inner_x + 3*(btn_w + btn_gap_x);
+onset_btn_x = right_inner_x + 4*(btn_w + btn_gap_x);
+onset_btn_w = btn_w;
 
 ui_button(403, mode_btn_x, btn_y1, btn_w, btn_h) ? (
   slider17 = ((slider17 | 0) + 1) % 4;
@@ -15607,7 +16588,7 @@ ui_button(405, onset_btn_x, btn_y3, onset_btn_w, btn_h) ? (
   gfx_slider_mask |= MASK_S23;
 );
 
-gfx_setfont(1, "Arial", 11, 0);
+gfx_setfont(1, "Arial", 13, 0);
 gfx_r = 0.92; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
 
 (slider17 | 0) == 3 ? sprintf(#ui_buf, "Granular") : (slider17 | 0) == 2 ? sprintf(#ui_buf, "Hybrid") : ((slider17 | 0) == 1 ? sprintf(#ui_buf, "Tape") : sprintf(#ui_buf, "Raw"));
@@ -15625,18 +16606,18 @@ draw_center_buf(mono_btn_x, btn_y2 + 9, btn_w);
 (slider23 | 0) ? sprintf(#ui_buf, "Gaussian Onset") : sprintf(#ui_buf, "Classic Onset");
 draw_center_buf(onset_btn_x, btn_y3 + 9, onset_btn_w);
 
-knob_panel_top = btn_y3 + btn_h + 18;
-knob_panel_bottom = right_y + right_h - 18;
+knob_panel_top = btn_y3 + btn_h + (ui_compact?8:14);
+knob_panel_bottom = right_y + right_h - 162;
 knob_area_h = max(140, knob_panel_bottom - knob_panel_top);
 knob_count = 15;
-knob_cols = right_inner_w >= 270 ? 3 : 2;
+knob_cols = 5;
 knob_rows = floor((knob_count + knob_cols - 1) / knob_cols);
 knob_col_gap = clamp(floor(right_inner_w * 0.016), 10, 16);
-knob_row_gap = 16;
+knob_row_gap = ui_compact?4:8;
 cell_w = (right_inner_w - knob_col_gap * max(0, knob_cols - 1)) / knob_cols;
 cell_h = floor((knob_area_h - knob_row_gap * max(0, knob_rows - 1)) / max(1, knob_rows));
-cell_h = min(cell_h, 112);
-kb_r = clamp(min(cell_w * 0.18, cell_h * 0.24), 18, knob_cols >= 6 ? 24 : 22);
+cell_h = ui_narrow?56:ui_compact?(ui_body_visible>=410?76:56):min(cell_h,112);
+kb_r = ui_narrow?19:ui_compact?(ui_body_visible>=410?22:19):clamp(min(cell_w * 0.18, cell_h * 0.24),18,22);
 
 // Pitch / hidden Formant / hidden Pitch Mix
 // Shift+drag adjusts formant/resonance. Alt+drag adjusts the latency-aligned
@@ -15685,12 +16666,12 @@ pitch_mix_alt_use ? (
   nv = ui_knob(307, kc, ky, kb_r, slider12, -24, 24, 0, 0.021);
   abs(nv - slider12) > 0.0000001 ? (slider12 = nv; gfx_slider_mask |= MASK_S12;);
 );
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-pitch_mix_alt_use ? sprintf(#ui_buf, "Mix %.0f%%", pitch_parallel_mix * 100) : pitch_alt_use ? sprintf(#ui_buf, "F%+.1f", formant_shift_semi) : (
-  abs(formant_shift_semi) > 0.05 || pitch_parallel_mix < 0.995 ? sprintf(#ui_buf, "P%+.2f/M%.0f", slider12, pitch_parallel_mix * 100) : sprintf(#ui_buf, "%+.2f", slider12)
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+pitch_mix_alt_use ? sprintf(#ui_buf, "%.0f%%", pitch_parallel_mix * 100) : pitch_alt_use ? sprintf(#ui_buf, "%+.1f", formant_shift_semi) : (
+  sprintf(#ui_buf, "%+.1f", slider12)
 );
-gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 pitch_mix_alt_use ? sprintf(#ui_buf, "Pitch Mix") : pitch_alt_use ? sprintf(#ui_buf, "Formant") : (abs(formant_shift_semi) > 0.05 || pitch_parallel_mix < 0.995 ? sprintf(#ui_buf, "Pitch+Alt") : sprintf(#ui_buf, "Pitch")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Stretch
@@ -15699,9 +16680,9 @@ cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
 nv = ui_knob(308, kc, ky, kb_r, slider14, 1, 4, 1, 0.018); abs(nv - slider14) > 0.0000001 ? (slider14 = nv; gfx_slider_mask |= MASK_S14;);
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.2fx", slider14); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+sprintf(#ui_buf, "%.2fx", slider14); ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Stretch"); draw_center_buf(cell_x, label_y, cell_w);
 
 // Grain / hidden Edge Melt
@@ -15731,10 +16712,10 @@ grain_input_alt_use ? (
   nv = ui_knob(310, kc, ky, kb_r, slider18, 0, 1, 0.55, 0.018);
   abs(nv - slider18) > 0.0000001 ? (slider18 = nv; gfx_slider_mask |= MASK_S18;);
 );
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-grain_input_alt_use ? sprintf(#ui_buf, "M%.2f", edge_melt_amt) : (edge_melt_amt > 0.04 ? sprintf(#ui_buf, "%.2f/M%.1f", slider18, edge_melt_amt) : sprintf(#ui_buf, "%.2f", slider18));
-gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+grain_input_alt_use ? sprintf(#ui_buf, "M%.2f", edge_melt_amt) : sprintf(#ui_buf, "%.2f", slider18);
+ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 grain_input_alt_use ? sprintf(#ui_buf, "Edge Melt") : (edge_melt_amt > 0.04 ? sprintf(#ui_buf, "Grain/Melt") : sprintf(#ui_buf, "Grain")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Borrow
@@ -15743,9 +16724,9 @@ cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
 nv = ui_knob(311, kc, ky, kb_r, slider19, 0, 1, 0.35, 0.018); abs(nv - slider19) > 0.0000001 ? (slider19 = nv; gfx_slider_mask |= MASK_S19;);
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.2f", slider19); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+sprintf(#ui_buf, "%.2f", slider19); ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Spice"); draw_center_buf(cell_x, label_y, cell_w);
 
 // Color is now ERB Tilt EQ. Normal drag = Tilt dB. Alt+drag = Pivot. Shift+click = Auto Pivot toggle.
@@ -15813,16 +16794,16 @@ color_pivot_alt_use ? (
 
   );
 );
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
 color_pivot_alt_use ? (
   color_pivot_hz < 0 ? sprintf(#ui_buf, "Pv Auto") : sprintf(#ui_buf, "Pv %.0f", abs(color_pivot_hz));
 ) : color_auto_alt_use ? (
   color_pivot_hz < 0 ? sprintf(#ui_buf, "Auto On") : sprintf(#ui_buf, "Auto Off");
 ) : (
-  color_pivot_hz < 0 ? sprintf(#ui_buf, "T%+.1f/A", slider6) : sprintf(#ui_buf, "T%+.1f", slider6);
+  color_pivot_hz < 0 ? sprintf(#ui_buf, "%+.1f", slider6) : sprintf(#ui_buf, "%+.1f", slider6);
 );
-gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 color_pivot_alt_use ? sprintf(#ui_buf, "Pivot") : (color_auto_alt_use ? sprintf(#ui_buf, "Auto Pivot") : sprintf(#ui_buf, "Tilt")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Focus / hidden Peak Pack
@@ -15850,10 +16831,10 @@ focus_peak_alt_use ? (
 ) : (
   nv = ui_knob(302, kc, ky, kb_r, slider7, -1, 1, 0, 0.020); abs(nv - slider7) > 0.0000001 ? (slider7 = nv; gfx_slider_mask |= MASK_S7;);
 );
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-focus_peak_alt_use ? sprintf(#ui_buf, "Pk%+.2f", focus_peak_amt) : (abs(focus_peak_amt) > 0.04 ? sprintf(#ui_buf, "%.2f/Pk%+.1f", slider7, focus_peak_amt) : sprintf(#ui_buf, "%.2f", slider7));
-gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+focus_peak_alt_use ? sprintf(#ui_buf, "Pk%+.2f", focus_peak_amt) : sprintf(#ui_buf, "%.2f", slider7);
+ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 focus_peak_alt_use ? sprintf(#ui_buf, "Peak Pack") : (abs(focus_peak_amt) > 0.04 ? sprintf(#ui_buf, "Focus/Peak") : sprintf(#ui_buf, "Focus")); draw_center_buf(cell_x, label_y, cell_w);
 
 // Width
@@ -15862,9 +16843,9 @@ cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
 nv = ui_knob(303, kc, ky, kb_r, slider8, 0, 1, 0.18, 0.018); abs(nv - slider8) > 0.0000001 ? (slider8 = nv; gfx_slider_mask |= MASK_S8;);
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.2f", slider8); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+sprintf(#ui_buf, "%.2f", slider8); ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Width"); draw_center_buf(cell_x, label_y, cell_w);
 
 // Liveliness / Thrill
@@ -15872,7 +16853,7 @@ sprintf(#ui_buf, "Width"); draw_center_buf(cell_x, label_y, cell_w);
 grid_idx = 7;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
-kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 15, ky + kb_r + 12);
+kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
 ui_v71_lively_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
 ui_v71_thrill_use = ui_active == 339 || (ui_active != 304 && ui_shift && ui_v71_lively_hot);
 ui_v71_thrill_use ? (
@@ -15888,8 +16869,8 @@ ui_v71_thrill_use ? (
 );
 gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
 ui_v71_thrill_use ? sprintf(#ui_buf, "%.1f%%", v71_thrill * 15) : sprintf(#ui_buf, "%.2f", slider9);
-gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 14, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 ui_v71_thrill_use ? sprintf(#ui_buf, "Thrill") : (v71_thrill > 0 ? sprintf(#ui_buf, "Lively +") : sprintf(#ui_buf, "Lively"));
 draw_center_buf(cell_x, label_y, cell_w);
 
@@ -15898,11 +16879,36 @@ grid_idx = 8;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
-nv = ui_knob(305, kc, ky, kb_r, slider10, 0, 1, 0.30, 0.018); abs(nv - slider10) > 0.0000001 ? (slider10 = nv; gfx_slider_mask |= MASK_S10;);
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.2f", slider10); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
-sprintf(#ui_buf, "Truth"); draw_center_buf(cell_x, label_y, cell_w);
+ui_match_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
+mouse_pressed && ui_match_hot && ui_ctrl && ui_active < 0 ? (
+  ui_match_mode_hold = 1;ui_match_mode_menu();
+);
+mouse_rpressed && ui_match_hot && ui_ctrl ? (
+  slider65 = 0;sliderchange(slider65);slider_automate(slider65, 0);slider_automate(slider65, 1);
+);
+ui_match_saved_press = mouse_pressed;ui_match_saved_rpress = mouse_rpressed;
+ui_match_mode_hold || (ui_match_hot && ui_ctrl) ? (mouse_pressed = 0;mouse_rpressed = 0;ui_match_hot ? ui_wheel_used = 1;);
+ui_match_target_use = (slider65 | 0) >= 2 && (ui_active == 340 || (ui_active != 305 && ui_shift && ui_match_hot));
+ui_match_target_use ? (
+  ui_match_target = (slider65 | 0) == 2 ? slider67 : slider66;
+  nv = ui_knob(340, kc, ky, kb_r, ui_match_target, -36, -9, (slider65 | 0) == 2 ? -18.4 : -23, 0.01);
+  abs(nv - ui_match_target) > 0.0000001 ? (
+    (slider65 | 0) == 2 ? (slider67 = nv;sliderchange(slider67);slider_automate(slider67, 0);ui_match_target_touch = 67;)
+    : (slider66 = nv;sliderchange(slider66);slider_automate(slider66, 0);ui_match_target_touch = 66;);
+  );
+) : (
+  nv = ui_knob(305, kc, ky, kb_r, slider10, 0, 1, 0.30, 0.018); abs(nv - slider10) > 0.0000001 ? (slider10 = nv; gfx_slider_mask |= MASK_S10;);
+);
+!mouse_down && ui_match_target_touch > 0 ? (
+  ui_match_target_touch == 67 ? slider_automate(slider67, 1) : slider_automate(slider66, 1);
+  ui_match_target_touch = 0;
+);
+mouse_pressed = ui_match_saved_press;mouse_rpressed = ui_match_saved_rpress;
+ui_match_hot && ui_ctrl ? ui_hover_id = 341;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+ui_match_target_use ? sprintf(#ui_buf, "%.1f", (slider65 | 0) == 2 ? slider67 : slider66) : sprintf(#ui_buf, "%.2f", slider10); ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+ui_match_target_use ? sprintf(#ui_buf, "Target") : ((slider65 | 0) == 0 ? sprintf(#ui_buf, "Truth") : ((slider65 | 0) == 1 ? sprintf(#ui_buf, "Truth/None") : ((slider65 | 0) == 2 ? sprintf(#ui_buf, "Truth/RMS") : sprintf(#ui_buf, "Truth/Loud")))); draw_center_buf(cell_x, label_y, cell_w);
 
 // Weight
 grid_idx = 9;
@@ -15910,9 +16916,9 @@ cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
 kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
 nv = ui_knob(309, kc, ky, kb_r, slider15, 0, 1, 0, 0.018); abs(nv - slider15) > 0.0000001 ? (slider15 = nv; gfx_slider_mask |= MASK_S15;);
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-sprintf(#ui_buf, "%.2f", slider15); gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+sprintf(#ui_buf, "%.2f", slider15); ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Weight"); draw_center_buf(cell_x, label_y, cell_w);
 
 // Clean / hidden DeCrust
@@ -15941,10 +16947,10 @@ clean_decrust_alt_use ? (
 ) : (
   nv = ui_knob(313, kc, ky, kb_r, slider25, 0, 1, 0, 0.018); abs(nv - slider25) > 0.0000001 ? (slider25 = nv; gfx_slider_mask |= MASK_S25;);
 );
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-clean_decrust_alt_use ? sprintf(#ui_buf, "DC %.2f", clean_decrust_amt) : (clean_decrust_amt > 0.04 ? sprintf(#ui_buf, "%.2f/DC%.1f", slider25, clean_decrust_amt) : sprintf(#ui_buf, "%.2f", slider25));
-gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+clean_decrust_alt_use ? sprintf(#ui_buf, "DC %.2f", clean_decrust_amt) : sprintf(#ui_buf, "%.2f", slider25);
+ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 clean_decrust_alt_use ? sprintf(#ui_buf, "DeCrust") : (clean_decrust_amt > 0.04 ? sprintf(#ui_buf, "Clean/Crust") : sprintf(#ui_buf, "Clean")); draw_center_buf(cell_x, label_y, cell_w);
 
 
@@ -15994,10 +17000,10 @@ room_space_char_alt_use ? (
 ) : (
   nv = ui_knob(314, kc, ky, kb_r, slider26, 0, 1, 0, 0.018); abs(nv - slider26) > 0.0000001 ? (slider26 = nv; gfx_slider_mask |= MASK_S26;);
 );
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-room_space_char_alt_use ? sprintf(#ui_buf, "Ch %.2f", space_room_char) : (room_space_amt_alt_use ? sprintf(#ui_buf, "Sp %.2f", space_room_amt) : (space_room_amt > 0.04 ? sprintf(#ui_buf, "%.2f/Sp%.1f", slider26, space_room_amt) : sprintf(#ui_buf, "%.2f", slider26)));
-gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+room_space_char_alt_use ? sprintf(#ui_buf, "Ch %.2f", space_room_char) : (room_space_amt_alt_use ? sprintf(#ui_buf, "Sp %.2f", space_room_amt) : sprintf(#ui_buf, "%.2f", slider26));
+ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 room_space_char_alt_use ? sprintf(#ui_buf, "Space Char") : (room_space_amt_alt_use ? sprintf(#ui_buf, "Space") : (space_room_amt > 0.04 ? sprintf(#ui_buf, "Room/Space") : sprintf(#ui_buf, "Room"))); draw_center_buf(cell_x, label_y, cell_w);
 
 // Anti-Salience: overall Mix; Ctrl+click selects one of 21 profiles.
@@ -16005,7 +17011,7 @@ room_space_char_alt_use ? sprintf(#ui_buf, "Space Char") : (room_space_amt_alt_u
 grid_idx = 12;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
-kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 15, ky + kb_r + 12);
+kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
 ui_v71_mix_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
 mouse_pressed && ui_v71_mix_hot && ui_ctrl && ui_active < 0 ? (
   ui_v71_profile_hold = 1;
@@ -16031,8 +17037,8 @@ ui_shift = ui_v71_saved_shift;
 ui_v71_mix_hot && ui_ctrl ? ui_hover_id = 334;
 gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
 sprintf(#ui_buf, "%.0f%%", slider27);
-gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 14, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 sprintf(#ui_buf, "Anti-Salience"); draw_center_buf(cell_x, label_y, cell_w);
 
 // Dynamics / Universal Contour
@@ -16040,7 +17046,7 @@ sprintf(#ui_buf, "Anti-Salience"); draw_center_buf(cell_x, label_y, cell_w);
 grid_idx = 13;
 cell_x = right_inner_x + (grid_idx % knob_cols) * (cell_w + knob_col_gap);
 cell_y = knob_panel_top + floor(grid_idx / knob_cols) * (cell_h + knob_row_gap);
-kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 15, ky + kb_r + 12);
+kc = cell_x + cell_w * 0.5; ky = cell_y + kb_r + 6; label_y = min(cell_y + cell_h - 12, ky + kb_r + 12);
 dyn_hot = ((mouse_x - kc) * (mouse_x - kc) + (mouse_y - ky) * (mouse_y - ky)) <= kb_r * kb_r;
 dyn_expand_alt_use = ui_active == 319 || (ui_active != 312 && ui_shift && dyn_hot);
 dyn_expand_alt_use ? (
@@ -16056,8 +17062,8 @@ dyn_expand_alt_use ? (
 );
 gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
 dyn_expand_alt_use ? sprintf(#ui_buf, "%.0f%%", dynamics_expand_amt * 100) : sprintf(#ui_buf, "%.2f", slider22);
-gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 14, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 dyn_expand_alt_use ? sprintf(#ui_buf, "Contour") : (dynamics_expand_amt > 0 ? sprintf(#ui_buf, "Dynamics +") : sprintf(#ui_buf, "Dynamics"));
 draw_center_buf(cell_x, label_y, cell_w);
 
@@ -16089,13 +17095,91 @@ output_harm_alt_use ? (
 ) : (
   nv = ui_knob(306, kc, ky, kb_r, slider11, -24, 12, -9, 0.018); abs(nv - slider11) > 0.0000001 ? (slider11 = nv; gfx_slider_mask |= MASK_S11;);
 );
-gfx_setfont(1, "Arial", 10, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
-output_harm_alt_use ? sprintf(#ui_buf, "H%.2f", output_harmonics_amt) : (output_harmonics_amt > 0.04 ? sprintf(#ui_buf, "%.1f/H%.1f", slider11, output_harmonics_amt) : sprintf(#ui_buf, "%.1f", slider11));
-gfx_measurestr(#ui_buf, tw, th); gfx_x = kc - tw * 0.5; gfx_y = ky - th * 0.5; gfx_drawstr(#ui_buf);
-gfx_setfont(1, "Arial", 11, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
+gfx_setfont(1, "Arial", 12, 0); gfx_r = 0.88; gfx_g = 0.93; gfx_b = 0.98; gfx_a = 1;
+output_harm_alt_use ? sprintf(#ui_buf, "H%.2f", output_harmonics_amt) : sprintf(#ui_buf, "%.1f", slider11);
+ui_knob_readout(kc,ky,cell_w-12);
+gfx_setfont(1, "Arial", 13, 0); gfx_r = 0.86; gfx_g = 0.90; gfx_b = 0.96; gfx_a = 1;
 output_harm_alt_use ? sprintf(#ui_buf, "Harmonics") : (output_harmonics_amt > 0.04 ? sprintf(#ui_buf, "Out/Harm") : sprintf(#ui_buf, "Out")); draw_center_buf(cell_x, label_y, cell_w);
 
 
+// Related controls expand below the complete primary grid; nothing covers it.
+extra_x=right_x+12;extra_y=ui_compact?right_y+(ui_narrow?226:ui_body_visible>=410?320:250):right_y+right_h-142;extra_w=right_w-24;extra_h=ui_compact?(ui_extra_selected==8?88:68):130;ui_extra_field_w=(extra_w-20)/4-8;
+extra_hover=-1;
+pt_in(right_inner_x,knob_panel_top,right_inner_w,knob_area_h)?(
+  extra_col=clamp(floor((mouse_x-right_inner_x)/(cell_w+knob_col_gap)),0,knob_cols-1);
+  extra_row=clamp(floor((mouse_y-knob_panel_top)/(cell_h+knob_row_gap)),0,knob_rows-1);
+  extra_hover=extra_row*knob_cols+extra_col;
+  extra_hover>=15?extra_hover=-1;
+);
+extra_hover!=ui_extra_hover_prev?(ui_extra_hover_prev=extra_hover;ui_extra_hover_since=ui_now;);
+extra_hover>=0?(
+  ui_extra_last_inside=ui_now;
+  mouse_pressed?(ui_extra_selected=extra_hover;ui_extra_pinned=1;);
+  !ui_extra_pinned && ui_now-ui_extra_hover_since>.35?ui_extra_selected=extra_hover;
+);
+pt_in(extra_x,extra_y,extra_w,extra_h)?ui_extra_last_inside=ui_now;
+!ui_extra_pinned && extra_hover<0 && ui_now-ui_extra_last_inside>.5 && ui_active<0?ui_extra_selected=-1;
+(!ui_compact || ui_extra_selected>=0)?(
+ui_inner_panel(extra_x,extra_y,extra_w,extra_h);
+gfx_setfont(1,"Arial",12,0);gfx_r=.75;gfx_g=.86;gfx_b=.96;gfx_a=1;
+gfx_x=extra_x+10;gfx_y=extra_y+8;
+ui_extra_selected<0?(sprintf(#ui_buf,"Select a knob, or pause over it, to expand related controls.");ui_text_buf(extra_x+6,extra_y+8,extra_w-16,0);):(
+  ui_extra_selected==0?sprintf(#ui_buf,"PITCH / FORMANT / PARALLEL MIX")
+  : ui_extra_selected==1?sprintf(#ui_buf,"STRETCH") : ui_extra_selected==2?sprintf(#ui_buf,"GRAIN / EDGE MELT")
+  : ui_extra_selected==3?sprintf(#ui_buf,"SPICE") : ui_extra_selected==4?sprintf(#ui_buf,"TILT / PIVOT")
+  : ui_extra_selected==5?sprintf(#ui_buf,"FOCUS / PEAK PACK") : ui_extra_selected==6?sprintf(#ui_buf,"WIDTH")
+  : ui_extra_selected==7?sprintf(#ui_buf,"LIVELY / THRILL") : ui_extra_selected==8?sprintf(#ui_buf,"TRUTH / SOURCE MATCHING")
+  : ui_extra_selected==9?sprintf(#ui_buf,"WEIGHT") : ui_extra_selected==10?sprintf(#ui_buf,"CLEAN / DECRUST")
+  : ui_extra_selected==11?sprintf(#ui_buf,"ROOM / SPACE") : ui_extra_selected==12?sprintf(#ui_buf,"ANTI-SALIENCE / PROFILE")
+  : ui_extra_selected==13?sprintf(#ui_buf,"DYNAMICS / CONTOUR") : sprintf(#ui_buf,"OUTPUT / HARMONICS");
+  ui_text_buf(extra_x+6,extra_y+8,extra_w-70,0);
+  ui_button(899,extra_x+extra_w-54,extra_y+5,46,22)?(ui_extra_selected=-1;ui_extra_pinned=0;ui_extra_last_inside=ui_now;);
+  gfx_setfont(1,"Arial",12,0);gfx_r=.86;gfx_g=.94;gfx_b=1;gfx_a=1;sprintf(#ui_buf,"Close");draw_center_buf(extra_x+extra_w-54,extra_y+11,46);
+  ex_step=(extra_w-20)/4;ex1=extra_x+10+ex_step*.5;ex2=ex1+ex_step;ex3=ex2+ex_step;ex4=ex3+ex_step;ey=extra_y+(ui_compact?(ui_extra_selected==8?58:44):67);
+  ui_extra_selected==0?(
+    ui_extra(12,ex1,ey,slider12,-24,24,0,1,0);ui_extra(47,ex2,ey,slider47,-12,12,0,1,0);ui_extra(61,ex3,ey,slider61,0,1,1,100,1);
+  ):ui_extra_selected==1?ui_extra(14,ex1,ey,slider14,1,4,1,1,0)
+  :ui_extra_selected==2?(
+    ui_extra(18,ex1,ey,slider18,0,1,.55,100,1);ui_extra(51,ex2,ey,slider51,0,1,0,100,1);
+  ):ui_extra_selected==3?ui_extra(19,ex1,ey,slider19,0,1,.35,100,1)
+  :ui_extra_selected==4?(
+    ui_extra(6,ex1,ey,slider6,-18,18,0,1,2);ui_extra(60,ex2,ey,abs(slider60),20,20000,1000,1,3);
+    ui_button(898,ex3-40,ey-12,80,24)?ui_parameter_write(60,-slider60);
+    gfx_setfont(1,"Arial",12,0);gfx_r=.86;gfx_g=.94;gfx_b=1;gfx_a=1;
+    sprintf(#ui_buf,slider60<0?"Auto: on":"Auto: off");draw_center_buf(ex3-40,ey-5,80);
+  ):ui_extra_selected==5?(
+    ui_extra(7,ex1,ey,slider7,-1,1,0,1,0);ui_extra(49,ex2,ey,slider49,-1,1,0,1,0);
+  ):ui_extra_selected==6?ui_extra(8,ex1,ey,slider8,0,1,.18,100,1)
+  :ui_extra_selected==7?(
+    ui_extra(9,ex1,ey,slider9,0,1,.22,100,1);ui_extra(59,ex2,ey,v71_thrill,0,1,0,15,1);
+  ):ui_extra_selected==8?(
+    ui_extra(10,ex1,ey+8,slider10,0,1,.30,100,1);
+    mbw=(extra_w-100)/4;mi=0;while(mi<4)(
+      ui_tab_button(880+mi,extra_x+8+mi*(mbw+4),extra_y+26,mbw,22,(slider65|0)==mi)?ui_parameter_write(65,mi);
+      gfx_r=.86;gfx_g=.94;gfx_b=1;gfx_a=1;mi==0?sprintf(#ui_buf,"Legacy"):mi==1?sprintf(#ui_buf,"None"):mi==2?sprintf(#ui_buf,"RMS"):sprintf(#ui_buf,"Loudness");draw_center_buf(extra_x+8+mi*(mbw+4),extra_y+33,mbw);mi+=1;
+    );
+    (slider65|0)>=2?(
+      (slider65|0)==2?ui_extra(67,ex2,ey+8,slider67,-36,-9,-18.4,1,2):ui_extra(66,ex2,ey+8,slider66,-36,-9,-23,1,2);
+      ui_extra(68,ex3,ey+8,slider68,0,24,6,1,2);ui_extra(69,ex4,ey+8,slider69,-18,0,-3,1,2);
+    );
+  ):ui_extra_selected==9?ui_extra(15,ex1,ey,slider15,0,1,0,100,1)
+  :ui_extra_selected==10?(
+    ui_extra(25,ex1,ey,slider25,0,1,0,100,1);ui_extra(52,ex2,ey,slider52,0,1,0,100,1);
+  ):ui_extra_selected==11?(
+    ui_extra(26,ex1,ey,slider26,0,1,0,100,1);ui_extra(53,ex2,ey,slider53,0,1,0,100,1);ui_extra(54,ex3,ey,slider54,0,1,.5,100,1);
+  ):ui_extra_selected==12?(
+    ui_extra(27,ex1,ey,slider27,0,100,0,1,1);
+    ui_button(897,ex2-30,ey-13,extra_w-ex_step*1.5-22,28)?ui_v71_profile_menu();ui_v71_profile_name(v71_profile);sprintf(#ui_buf,"%s",#ui_v71_profile_label);gfx_r=.86;gfx_g=.94;gfx_b=1;gfx_a=1;draw_center_buf(ex2-30,ey-4,extra_w-ex_step*1.5-22);
+  ):ui_extra_selected==13?(
+    ui_extra(22,ex1,ey,slider22,0,1,0,100,1);ui_extra(50,ex2,ey,slider50,0,1,0,100,1);
+  ):(ui_extra(11,ex1,ey,slider11,-24,12,-9,1,2);ui_extra(55,ex2,ey,slider55,0,1,0,100,1););
+);
+
+
+); // related controls are drawn only when selected in compact layouts
+
+);
+ui_show_eq?(ui_panel(proc_x,proc_y,proc_w,proc_h);
 // Post-Processing panel: free-band spectrum EQ
 PROC_EQ_HPF_ID = 530;
 PROC_EQ_B1_ID = 531;
@@ -16108,28 +17192,28 @@ post_hot = pt_in(proc_x, proc_y, proc_w, proc_h);
 post_hot ? ui_hover_id = 1500;
 gfx_setfont(1, "Arial", 16, 0);
 gfx_r = 0.88; gfx_g = 0.94; gfx_b = 1.0; gfx_a = 1;
-gfx_x = proc_x + 18; gfx_y = proc_y + 16;
+gfx_x = proc_x + 18; gfx_y = proc_y + (ui_compact?6:16);
 gfx_drawstr("POST-PROCESSING");
 gfx_r = 0.10; gfx_g = 0.58; gfx_b = 1.0; gfx_a = 0.90; gfx_circle(proc_x + 10, proc_y + 25, 4, 1);
-gfx_r = 0.26; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.35; gfx_line(proc_x + 18, proc_y + 39, proc_x + proc_w - 18, proc_y + 39);
+gfx_r = 0.26; gfx_g = 0.62; gfx_b = 1.0; gfx_a = 0.35; gfx_line(proc_x+18,proc_y+(ui_compact?25:39),proc_x+proc_w-18,proc_y+(ui_compact?25:39));
 
 proc_inner_x = proc_x + 12;
 proc_inner_w = max(150, proc_w - 24);
 
-gfx_setfont(1, "Arial", 11, 0);
+gfx_setfont(1, "Arial", 13, 0);
 gfx_r = 0.62; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
-gfx_x = proc_inner_x + 8; gfx_y = proc_y + 45;
-gfx_drawstr("Pre/Post spectrum | drag bands | Ctrl+drag solo | wheel Q | band character below");
+gfx_x = proc_inner_x + 8; gfx_y = proc_y + (ui_compact?28:45);
+gfx_drawstr("Pre/Post spectrum | drag bands | Ctrl+drag solo");
 (posteq_solo_target > 0 || posteq_solo_mix > 0.001) ? (
   gfx_r = 1.00; gfx_g = 0.78; gfx_b = 0.20; gfx_a = 0.95;
-  gfx_x = proc_inner_x + proc_inner_w - 100; gfx_y = proc_y + 45;
+  gfx_x = proc_inner_x + proc_inner_w - 100; gfx_y = proc_y + (ui_compact?28:45);
   gfx_drawstr("SOLO");
 );
 
 proc_graph_x = proc_inner_x + 8;
-proc_graph_y = proc_y + 66;
+proc_graph_y = proc_y + (ui_compact?44:66);
 proc_graph_w = max(100, proc_inner_w - 16);
-proc_graph_h = max(230, min(380, proc_h - 250));
+proc_graph_h = ui_compact?max(96,min(150,proc_h-224)):max(135,min(210,proc_h-310));
 proc_cards_y = proc_graph_y + proc_graph_h + 10;
 proc_cards_h = 58;
 proc_char_y = proc_cards_y + proc_cards_h + 8;
@@ -16366,7 +17450,7 @@ while (grid_i < 8) (
   gxv = proc_freq_x(gf, proc_graph_x, proc_graph_w);
   gfx_r = 0.16; gfx_g = 0.26; gfx_b = 0.34; gfx_a = 0.34;
   gfx_line(gxv, proc_graph_y + 8, gxv, proc_graph_y + proc_graph_h - 8);
-  gfx_setfont(1, "Arial", 9, 0);
+  gfx_setfont(1,"Arial",ui_compact?12:11,0);
   gfx_r = 0.48; gfx_g = 0.56; gfx_b = 0.64; gfx_a = 0.92;
   gf >= 1000 ? sprintf(#ui_buf, "%dk", floor(gf / 1000)) : sprintf(#ui_buf, "%.0f", gf);
   gfx_measurestr(#ui_buf, tw, th);
@@ -16380,18 +17464,18 @@ while (grid_i <= 18) (
   gyv = proc_db_y(grid_i, proc_graph_y, proc_graph_h);
   gfx_r = grid_i == 0 ? 0.38 : 0.16; gfx_g = grid_i == 0 ? 0.48 : 0.26; gfx_b = grid_i == 0 ? 0.56 : 0.34; gfx_a = grid_i == 0 ? 0.62 : 0.26;
   gfx_line(proc_graph_x + 8, gyv, proc_graph_x + proc_graph_w - 8, gyv);
-  gfx_setfont(1, "Arial", 9, 0);
+  gfx_setfont(1,"Arial",ui_compact?12:11,0);
   gfx_r = 0.48; gfx_g = 0.56; gfx_b = 0.64; gfx_a = 0.92;
   (grid_i % 6 == 0) ? (
     sprintf(#ui_buf, "%+d", grid_i);
-    gfx_x = proc_graph_x + 4; gfx_y = gyv - 5;
+    gfx_x = proc_graph_x + 4; gfx_y = clamp(gyv-6,proc_graph_y+3,proc_graph_y+proc_graph_h-14);
     gfx_drawstr(#ui_buf);
   );
   grid_i += 3;
 );
 
 // Pre/Post legend.
-gfx_setfont(1, "Arial", 9, 0);
+gfx_setfont(1,"Arial",ui_compact?12:11,0);
 gfx_r = 0.20; gfx_g = 0.36; gfx_b = 0.78; gfx_a = 0.95;
 gfx_x = proc_graph_x + proc_graph_w - 72; gfx_y = proc_graph_y + 22;
 gfx_drawstr("pre");
@@ -16446,31 +17530,28 @@ while (ci < 5) (
   ui_value_pill(cxv, card_y, card_w, card_h);
   card_id = ci == 0 ? PROC_EQ_HPF_ID : ci == 1 ? PROC_EQ_B1_ID : ci == 2 ? PROC_EQ_B2_ID : ci == 3 ? PROC_EQ_B3_ID : PROC_EQ_LPF_ID;
   pt_in(cxv, card_y, card_w, card_h) ? ui_hover_id = card_id;
-  gfx_setfont(1, "Arial", 9, 0);
+  gfx_setfont(1, "Arial", 12, 0);
   gfx_r = 0.54; gfx_g = 0.64; gfx_b = 0.74; gfx_a = 1;
   ci == 0 ? sprintf(#ui_buf, "HPF") : ci == 1 ? sprintf(#ui_buf, "BAND 1") : ci == 2 ? sprintf(#ui_buf, "BAND 2") : ci == 3 ? sprintf(#ui_buf, "BAND 3") : sprintf(#ui_buf, "LPF");
   draw_center_buf(cxv, card_y + 7, card_w);
-  gfx_setfont(1, "Arial", 9, 0);
+  gfx_setfont(1, "Arial", 12, 0);
   gfx_r = 0.88; gfx_g = 0.94; gfx_b = 1.0; gfx_a = 1;
-  ci == 0 ? (slider38 <= 22 ? sprintf(#ui_buf, "off") : sprintf(#ui_buf, "%.0f Hz", slider38))
-  : ci == 1 ? sprintf(#ui_buf, "%.0fHz %+.1f", slider35, slider32)
-  : ci == 2 ? sprintf(#ui_buf, "%.0fHz %+.1f", slider36, slider33)
-  : ci == 3 ? sprintf(#ui_buf, "%.0fHz %+.1f", slider37, slider34)
-  : (slider39 >= 19000 ? sprintf(#ui_buf, "off") : sprintf(#ui_buf, "%.0f Hz", slider39));
-  draw_center_buf(cxv, card_y + 27, card_w);
-  gfx_r = 0.62; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
-  ci == 0 ? sprintf(#ui_buf, "Q%.2f +%.1fdB", slider45, posteq_cut_res_gain_db(slider45))
-  : ci == 1 ? sprintf(#ui_buf, "Q %.2f", slider40)
-  : ci == 2 ? sprintf(#ui_buf, "Q %.2f", slider41)
-  : ci == 3 ? sprintf(#ui_buf, "Q %.2f", slider42)
-  : sprintf(#ui_buf, "Q%.2f +%.1fdB", slider46, posteq_cut_res_gain_db(slider46));
-  draw_center_buf(cxv, card_y + 43, card_w);
+  card_freq=ci==0?slider38:ci==1?slider35:ci==2?slider36:ci==3?slider37:slider39;
+  (ci==0 && slider38<=22)||(ci==4 && slider39>=19000)?sprintf(#ui_buf,"Off")
+    : card_freq>=1000?sprintf(#ui_buf,"%.2fkHz",card_freq/1000):sprintf(#ui_buf,"%.0fHz",card_freq);
+  draw_center_buf(cxv, card_y + 23, card_w);
+  gfx_setfont(1,"Arial",ui_compact?12:11,0);gfx_r=.70;gfx_g=.80;gfx_b=.91;gfx_a=1;
+  ci==0?sprintf(#ui_buf,"Q%.2f / %d",slider45,proc_cut_slope_db(slider43))
+    :ci==1?sprintf(#ui_buf,"%+.1fdB Q%.1f",slider32,slider40)
+    :ci==2?sprintf(#ui_buf,"%+.1fdB Q%.1f",slider33,slider41)
+    :ci==3?sprintf(#ui_buf,"%+.1fdB Q%.1f",slider34,slider42)
+    :sprintf(#ui_buf,"Q%.2f / %d",slider46,proc_cut_slope_db(slider44));
+  draw_center_buf(cxv, card_y + 42, card_w);
   sel_topo = posteq_char_mode(ci);
   sel_drv = posteq_char_drive(ci);
   sel_topo > 0 && sel_drv > 0.0001 ? (
     gfx_r = sel_topo == 2 ? 1.00 : 0.92; gfx_g = sel_topo == 2 ? 0.50 : 0.72; gfx_b = sel_topo == 2 ? 0.22 : 0.24; gfx_a = 1;
-    sel_topo == 2 ? sprintf(#ui_buf, "DIO +%.0f", sel_drv) : sprintf(#ui_buf, "TRN +%.0f", sel_drv);
-    draw_center_buf(cxv, card_y + 55, card_w);
+    gfx_circle(cxv+card_w-6,card_y+8,2,1);
   );
   ci == posteq_char_selected ? (gfx_r = 1.00; gfx_g = 0.70; gfx_b = 0.18; gfx_a = 0.95; gfx_rect(cxv-1, card_y-1, card_w+2, card_h+2, 0););
   ci += 1;
@@ -16483,6 +17564,7 @@ proc_char_h > 58 ? (
   ui_inner_panel(proc_inner_x, proc_char_y, proc_inner_w, proc_char_h);
   gfx_setfont(1, "Arial", 10, 0);
   gfx_r = 0.62; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
+  !ui_compact?(
   gfx_x = proc_inner_x + 8; gfx_y = proc_char_y + 7;
   posteq_char_selected == 0 ? sprintf(#ui_buf, "HPF CHARACTER")
   : posteq_char_selected == 1 ? sprintf(#ui_buf, "BAND 1 CHARACTER")
@@ -16490,25 +17572,26 @@ proc_char_h > 58 ? (
   : posteq_char_selected == 3 ? sprintf(#ui_buf, "BAND 3 CHARACTER")
   : sprintf(#ui_buf, "LPF CHARACTER");
   gfx_drawstr(#ui_buf);
+  );
 
   char_topo = posteq_char_mode(posteq_char_selected);
   char_drive = posteq_char_drive(posteq_char_selected);
 
-  btn_y = proc_char_y + 24;
+  btn_y = proc_char_y + (ui_compact?4:24);
   btn_w = max(42, floor((proc_inner_w - 24) / 3));
   btn_x = proc_inner_x + 8;
   ui_button(560, btn_x, btn_y, btn_w, 22) ? (char_topo = 0;);
   ui_button(561, btn_x + btn_w + 4, btn_y, btn_w, 22) ? (char_topo = 1;);
   ui_button(562, btn_x + (btn_w + 4) * 2, btn_y, btn_w, 22) ? (char_topo = 2;);
-  gfx_setfont(1, "Arial", 9, 0);
+  gfx_setfont(1,"Arial",ui_compact?12:11,0);
   gfx_r = char_topo == 0 ? 1.0 : 0.56; gfx_g = char_topo == 0 ? 0.88 : 0.68; gfx_b = char_topo == 0 ? 0.56 : 0.82; gfx_a = 1; sprintf(#ui_buf, "CLEAN"); draw_center_buf(btn_x, btn_y + 7, btn_w);
   gfx_r = char_topo == 1 ? 1.0 : 0.56; gfx_g = char_topo == 1 ? 0.78 : 0.68; gfx_b = char_topo == 1 ? 0.24 : 0.82; gfx_a = 1; sprintf(#ui_buf, "TRANS"); draw_center_buf(btn_x + btn_w + 4, btn_y + 7, btn_w);
   gfx_r = char_topo == 2 ? 1.0 : 0.56; gfx_g = char_topo == 2 ? 0.48 : 0.68; gfx_b = char_topo == 2 ? 0.22 : 0.82; gfx_a = 1; sprintf(#ui_buf, "DIODE"); draw_center_buf(btn_x + (btn_w + 4) * 2, btn_y + 7, btn_w);
 
   drive_y = btn_y + 34;
   drive_x = proc_inner_x + 64;
-  drive_w = proc_inner_w - 104;
-  gfx_setfont(1, "Arial", 9, 0);
+  drive_w = proc_inner_w - 130;
+  gfx_setfont(1,"Arial",ui_compact?12:11,0);
   gfx_r = 0.56; gfx_g = 0.66; gfx_b = 0.78; gfx_a = 1; gfx_x = proc_inner_x + 10; gfx_y = drive_y - 2; gfx_drawstr("DRIVE");
   gfx_r = 0.02; gfx_g = 0.04; gfx_b = 0.06; gfx_a = 1; gfx_rect(drive_x, drive_y, drive_w, 10, 1);
   gfx_r = 0.18; gfx_g = 0.30; gfx_b = 0.40; gfx_a = 1; gfx_rect(drive_x, drive_y, drive_w, 10, 0);
@@ -16516,7 +17599,7 @@ proc_char_h > 58 ? (
   gfx_r = char_topo == 2 ? 0.95 : 0.85; gfx_g = char_topo == 2 ? 0.36 : 0.56; gfx_b = char_topo == 2 ? 0.16 : 0.15; gfx_a = char_topo > 0 ? 0.95 : 0.25;
   gfx_rect(drive_x + 1, drive_y + 1, max(0, drive_fill - 2), 8, 1);
   gfx_r = 0.92; gfx_g = 0.96; gfx_b = 1.0; gfx_a = 1;
-  gfx_x = drive_x + drive_w + 6; gfx_y = drive_y - 2; sprintf(#ui_buf, "+%.1fdB", char_drive); gfx_drawstr(#ui_buf);
+  sprintf(#ui_buf, "+%.1f dB", char_drive); ui_text_buf(drive_x+drive_w+2,drive_y-2,62,0);
 
   drive_hot = pt_in(drive_x, drive_y - 8, drive_w, 26);
   mouse_pressed && drive_hot && ui_active < 0 ? ui_active = 563;
@@ -16530,6 +17613,21 @@ proc_char_h > 58 ? (
     ui_wheel_used = 1;
   );
   mouse_rpressed && drive_hot && !ui_shift && !ui_alt ? char_drive = 0;
+
+  // Selected filter controls are explicit; modifier gestures still work.
+  eq_extra_y=drive_y+(ui_compact?38:43);eq_extra_step=(proc_inner_w-16)/4;ui_extra_field_w=eq_extra_step-8;
+  eq_ex1=proc_inner_x+8+eq_extra_step*.5;eq_ex2=eq_ex1+eq_extra_step;eq_ex3=eq_ex2+eq_extra_step;eq_ex4=eq_ex3+eq_extra_step;
+  posteq_char_selected==0?(
+    ui_extra(38,eq_ex1,eq_extra_y,slider38,20,1000,20,1,3);ui_extra(45,eq_ex2,eq_extra_y,slider45,.35,4,.707,1,0);
+    ui_extra(43,eq_ex3,eq_extra_y,slider43,0,4,1,1,0);
+  ):posteq_char_selected==4?(
+    ui_extra(39,eq_ex1,eq_extra_y,slider39,1000,20000,20000,1,3);ui_extra(46,eq_ex2,eq_extra_y,slider46,.35,4,.707,1,0);
+    ui_extra(44,eq_ex3,eq_extra_y,slider44,0,4,1,1,0);
+  ):posteq_char_selected==1?(
+    ui_extra(35,eq_ex1,eq_extra_y,slider35,20,20000,120,1,3);ui_extra(32,eq_ex2,eq_extra_y,slider32,-18,18,0,1,2);ui_extra(40,eq_ex3,eq_extra_y,slider40,.35,8,1.15,1,0);
+  ):posteq_char_selected==2?(
+    ui_extra(36,eq_ex1,eq_extra_y,slider36,20,20000,950,1,3);ui_extra(33,eq_ex2,eq_extra_y,slider33,-18,18,0,1,2);ui_extra(41,eq_ex3,eq_extra_y,slider41,.35,8,1.15,1,0);
+  ):(ui_extra(37,eq_ex1,eq_extra_y,slider37,20,20000,6500,1,3);ui_extra(34,eq_ex2,eq_extra_y,slider34,-18,18,0,1,2);ui_extra(42,eq_ex3,eq_extra_y,slider42,.35,8,1.15,1,0););
 
   // Commit selected-band character to live per-filter variables first, then
   // mirror the complete independent state into the hidden host sliders. This
@@ -16552,7 +17650,255 @@ proc_char_h > 58 ? (
 );
 
 
-) : hub_log_draw();
+);
+mouse_x=ui_actual_mx;mouse_y=ui_actual_my;
+// Cover scrolled panel pixels, then draw the pinned, whole-bank overview.
+gfx_r=.025;gfx_g=.043;gfx_b=.059;gfx_a=1;gfx_rect(0,0,gfx_w,ui_body_y,1);
+ui_panel(left_x,left_y,left_w,left_h);
+gfx_setfont(1,"Arial",ui_bank_compact?13:15,0);gfx_r=.88;gfx_g=.94;gfx_b=1;gfx_a=1;
+gfx_x=left_x+12;gfx_y=left_y+13;gfx_drawstr(ui_bank_compact?"BANK":"SAMPLE BANK");
+axis_x=left_x+(ui_bank_compact?60:162);axis_w=ui_bank_compact?136:154;order_x=axis_x+axis_w+8;order_w=ui_bank_compact?96:130;
+ui_button(810,axis_x,left_y+8,axis_w,27);
+mouse_pressed && pt_in(axis_x,left_y+8,axis_w,27) && (ui_active==810 || ui_active<0)?(
+  ui_active=-1;gfx_x=axis_x;gfx_y=left_y+36;
+  sprintf(#bank_axis_menu,"%sSpectral centroid|%sPeak|%sRMS|%sCrest factor|%sLength|%sEnergy above 6 kHz|%s95%% roll-off",bank_ui_metric==0?"!":"",bank_ui_metric==1?"!":"",bank_ui_metric==2?"!":"",bank_ui_metric==3?"!":"",bank_ui_metric==4?"!":"",bank_ui_metric==5?"!":"",bank_ui_metric==6?"!":"");
+  menu_choice=gfx_showmenu(#bank_axis_menu);menu_choice>0?bank_ui_metric=menu_choice-1;
+  mouse_pressed=0;mouse_down=0;ui_prev_down=0;ui_active=-1;
+);
+ui_bank_metric_name();gfx_setfont(1,"Arial",12,0);gfx_r=.86;gfx_g=.94;gfx_b=1;gfx_a=1;sprintf(#ui_buf,"%s",#bank_metric_label);ui_text_buf(axis_x,left_y+16,axis_w,1);
+ui_button(811,order_x,left_y+8,order_w,27);
+mouse_pressed && pt_in(order_x,left_y+8,order_w,27) && (ui_active==811 || ui_active<0)?(
+  ui_active=-1;gfx_x=order_x;gfx_y=left_y+36;
+  sprintf(#bank_order_menu,"%sBank order|%sValue ascending|%sValue descending",bank_ui_order==0?"!":"",bank_ui_order==1?"!":"",bank_ui_order==2?"!":"");menu_choice=gfx_showmenu(#bank_order_menu);menu_choice>0?bank_ui_order=menu_choice-1;
+  mouse_pressed=0;mouse_down=0;ui_prev_down=0;ui_active=-1;
+);
+gfx_r=.86;gfx_g=.94;gfx_b=1;gfx_a=1;
+bank_ui_order==1?sprintf(#ui_buf,ui_bank_compact?"Ascending":"Value ascending"):bank_ui_order==2?sprintf(#ui_buf,ui_bank_compact?"Descending":"Value descending"):sprintf(#ui_buf,"Bank order");ui_text_buf(order_x,left_y+16,order_w,1);
+!ui_bank_cache_ready && bank_filter_mode>0?bank_ui_metric=bank_filter_metric;
+!ui_bank_cache_ready || bank_ui_cache_count!=sample_count || bank_ui_cache_metric!=bank_ui_metric || bank_ui_cache_signature!=slot_signature_loaded?ui_bank_recache();
+filter_x=ui_bank_compact?order_x+order_w+12:left_x+690;filter_step=ui_bank_compact?64:80;
+filter_off_w=ui_bank_compact?58:78;filter_side_w=ui_bank_compact?58:72;filter_above_x=filter_x+(ui_bank_compact?64:86);filter_below_x=filter_x+(ui_bank_compact?128:166);
+ui_button(815,filter_x,left_y+8,filter_off_w,27)?ui_bank_filter_request(0,bank_filter_metric,bank_filter_cut);
+ui_button(816,filter_above_x,left_y+8,filter_side_w,27)?ui_bank_filter_request(1,bank_ui_metric,bank_filter_mode>0 && bank_filter_metric==bank_ui_metric?bank_filter_cut:bank_ui_median);
+ui_button(817,filter_below_x,left_y+8,filter_side_w,27)?ui_bank_filter_request(2,bank_ui_metric,bank_filter_mode>0 && bank_filter_metric==bank_ui_metric?bank_filter_cut:bank_ui_median);
+fi=0;while(fi<3)(fx=fi==0?filter_x:fi==1?filter_above_x:filter_below_x;fw=fi==0?filter_off_w:filter_side_w;
+  bank_filter_mode==fi?(gfx_r=1;gfx_g=.69;gfx_b=.24;gfx_a=1;gfx_line(fx+2,left_y+34,fx+fw-2,left_y+34););
+  gfx_r=bank_filter_mode==fi?1:.72;gfx_g=bank_filter_mode==fi?.8:.82;gfx_b=bank_filter_mode==fi?.46:.9;gfx_a=1;
+  fi==0?sprintf(#ui_buf,ui_bank_compact?"Off":"Filter off"):fi==1?sprintf(#ui_buf,"Above"):sprintf(#ui_buf,"Below");draw_center_buf(fx,left_y+16,fw);fi+=1;
+);
+count_x=ui_bank_compact?filter_below_x+filter_side_w+8:left_x+466;
+gfx_r=bank_playable_count>0?.62:1;gfx_g=bank_playable_count>0?.74:.62;gfx_b=bank_playable_count>0?.85:.28;
+ui_bank_compact?sprintf(#ui_buf,"%d/%d playable",bank_playable_count,sample_count):sprintf(#ui_buf,"%d / %d playable | %d voices",bank_playable_count,sample_count,count_active_voices());ui_text_buf(count_x,left_y+16,ui_bank_compact?left_x+left_w-count_x-4:214,0);
+map_x=left_x+(ui_bank_compact?44:54);map_y=left_y+40;map_w=left_w-(ui_bank_compact?56:340);map_h=left_h-68;
+ui_inner_panel(map_x,map_y,map_w,map_h);
+filter_hot=0;
+bank_filter_line_visible=bank_filter_mode>0 && bank_filter_metric==bank_ui_metric;
+bank_filter_line_visible?(
+  bank_filter_line_y=ui_bank_y(bank_filter_cut);
+  filter_hot=!ui_ctrl && pt_in(map_x-7,bank_filter_line_y-6,map_w+14,12);
+  filter_hot?ui_hover_id=818;
+  mouse_pressed && filter_hot && ui_active<0?(ui_active=818;mouse_pressed=0;);
+  ui_active==818?(
+    ui_hover_id=818;
+    mouse_down?(
+      filter_value=bank_ui_axis_lo+clamp01((map_y+map_h-(ui_bank_compact?10:18)-mouse_y)/max(1,map_h-(ui_bank_compact?20:32)))*(bank_ui_axis_hi-bank_ui_axis_lo);
+      abs(filter_value-bank_filter_cut)>.0005?ui_bank_filter_request(bank_filter_mode,bank_filter_metric,filter_value);
+    ):(ui_active=-1;);
+  );
+);
+bank_tick_count=map_h<48?2:3;i=0;while(i<bank_tick_count)(
+  v=bank_ui_axis_lo+(bank_ui_axis_hi-bank_ui_axis_lo)*i/(bank_tick_count-1);by=ui_bank_y(v);
+  gfx_r=.16;gfx_g=.26;gfx_b=.34;gfx_a=.65;gfx_line(map_x,by,map_x+map_w,by);
+  gfx_setfont(1,"Arial",12,0);gfx_r=.58;gfx_g=.70;gfx_b=.81;gfx_a=1;
+  ui_bank_tick_label(v);
+  gfx_measurestr(#ui_buf,tw,th);gfx_x=map_x-tw-8;gfx_y=by-5;gfx_drawstr(#ui_buf);i+=1;
+);
+bank_ui_hover=-1;
+sample_count>0?(
+  bank_ui_selected=clamp(bank_ui_selected,0,sample_count-1);
+  bank_ui_columns=min(sample_count,max(1,floor(map_w/2)));
+  col=0;while(col<bank_ui_columns)(
+    begin_rank=floor(col*sample_count/bank_ui_columns);end_rank=floor((col+1)*sample_count/bank_ui_columns);
+    on_hi=-1;off_hi=-1;on_lo=-1;off_lo=-1;high_sid=-1;low_sid=-1;
+    rank=begin_rank;while(rank<end_rank)(sid=ui_bank_sid(rank);sm=sample_meta_base+sid*SM_STRIDE;v=ui_bank_value(sid);
+      high_sid<0 || v>ui_bank_value(high_sid)?high_sid=sid;
+      low_sid<0 || v<ui_bank_value(low_sid)?low_sid=sid;
+      !bank_source_eligible(sid)?(
+        off_hi<0 || v>ui_bank_value(off_hi)?off_hi=sid;off_lo<0 || v<ui_bank_value(off_lo)?off_lo=sid;
+      ):(on_hi<0 || v>ui_bank_value(on_hi)?on_hi=sid;on_lo<0 || v<ui_bank_value(on_lo)?on_lo=sid;);
+      rank+=1;
+    );
+    bx=map_x+col*map_w/bank_ui_columns;bw=map_w/bank_ui_columns;
+    pass=0;while(pass<2)(sid=pass==0?on_hi:off_hi;low=pass==0?on_lo:off_lo;
+      sid>=0?(
+        sm=sample_meta_base+sid*SM_STRIDE;bright=sm[SM_BRIGHT];
+        pass==1?(gfx_r=.30;gfx_g=.34;gfx_b=.38;):(gfx_r=lerp(.16,.95,bright);gfx_g=lerp(.78,.58,bright);gfx_b=lerp(.42,.12,bright););
+        gfx_a=pass==1?.65:.95;by=ui_bank_y(ui_bank_value(sid));
+        bar_w=max(.7,bw*.76);on_hi>=0 && off_hi>=0?bar_w*=.48;
+        bar_x=bx+bw*.12+(pass==1 && on_hi>=0?bw*.40:0);
+        gfx_rect(bar_x,by,bar_w,max(1,ui_bank_y(bank_ui_axis_lo)-by),1);
+        low!=sid?(
+          gfx_r=.04;gfx_g=.07;gfx_b=.10;gfx_a=.45;gfx_rect(bar_x,by,bar_w,max(1,ui_bank_y(ui_bank_value(low))-by),1);
+          gfx_r=pass==1?.4:.75;gfx_g=pass==1?.44:.83;gfx_b=pass==1?.48:.9;gfx_a=1;
+          gfx_line(bar_x,ui_bank_y(ui_bank_value(low)),bar_x+bar_w,ui_bank_y(ui_bank_value(low)));
+        );
+      );pass+=1;
+    );
+    pt_in(bx,map_y-8,bw,map_h+12)?(
+      best_dist=100000;rank=begin_rank;
+      while(rank<end_rank)(sid=ui_bank_sid(rank);dist=abs(mouse_y-ui_bank_y(ui_bank_value(sid)));dist<best_dist?(bank_ui_hover=sid;best_dist=dist;);rank+=1;);
+    );
+    rank=begin_rank;while(rank<end_rank)(sid=ui_bank_sid(rank);v=ui_bank_value(sid);sm=sample_meta_base+sid*SM_STRIDE;
+      !bank_source_eligible(sid)?(gfx_r=.38;gfx_g=.42;gfx_b=.46;):(gfx_r=.25;gfx_g=.76;gfx_b=1;);gfx_a=1;
+      v>bank_ui_hi+.00001?(py=ui_bank_y(v)-3;gfx_triangle(bx+bw*.5,py-5,bx+bw*.5-3,py,bx+bw*.5+3,py););
+      v<bank_ui_lo-.00001?(py=ui_bank_y(v)+3;gfx_triangle(bx+bw*.5,py+5,bx+bw*.5-3,py,bx+bw*.5+3,py););
+      sid==bank_ui_selected?(
+        !bank_source_eligible(sid)?(gfx_r=.42;gfx_g=.46;gfx_b=.50;):(gfx_r=.82;gfx_g=.91;gfx_b=1;);gfx_a=.8;
+        gfx_line(bx+bw*.5,map_y+8,bx+bw*.5,map_y+map_h-12);
+      );rank+=1;
+    );col+=1;
+  );
+  bank_ui_hover>=0?(
+    ui_active!=818 && !filter_hot?ui_hover_id=5000+bank_ui_hover;
+    mouse_pressed && ui_active<0 && !filter_hot?(bank_ui_selected=bank_ui_hover;ui_bank_request(ui_ctrl?1:0,bank_ui_selected););
+  );
+  selected=bank_ui_hover>=0?bank_ui_hover:bank_ui_selected;
+  sm=sample_meta_base+selected*SM_STRIDE;
+  ui_bank_compact?(
+  bank_detail_x=left_x+10;bank_detail_y=left_y+left_h-24;
+  gfx_setfont(1,"Arial",12,0);gfx_r=.8;gfx_g=.9;gfx_b=1;gfx_a=1;ui_bank_format(ui_bank_value(selected));
+  bank_filter_mode>0?(
+ saved_metric=bank_ui_metric;bank_ui_metric=bank_filter_metric;ui_bank_metric_name();ui_bank_format(bank_filter_cut);
+ sprintf(#ui_buf,"%s %s %s",#bank_metric_label,bank_filter_mode==1?">=":"<=",#bank_value_label);bank_ui_metric=saved_metric;ui_bank_metric_name();
+ ui_button(819,bank_detail_x,bank_detail_y,left_w-240,22)?bank_ui_metric=bank_filter_metric;gfx_r=1;gfx_g=.78;gfx_b=.42;gfx_a=1;
+):(sprintf(#ui_buf,"%d%s  |  %s",selected+1,sm[SM_UI_EXCLUDED]>.5?" excluded":!bank_source_eligible(selected)?" filtered":"",#bank_value_label););
+ui_text_buf(bank_detail_x,bank_detail_y+5,left_w-240,0);
+  bank_action_x=left_x+left_w-222;
+  ui_button(812,bank_action_x,bank_detail_y,70,22)?ui_bank_request(0,bank_ui_selected);
+  ui_button(813,bank_action_x+76,bank_detail_y,70,22)?ui_bank_request(1,bank_ui_selected);
+  ui_button(814,bank_action_x+152,bank_detail_y,58,22)?ui_bank_request(2,bank_ui_selected);
+  gfx_r=.85;gfx_g=.93;gfx_b=1;gfx_a=1;sprintf(#ui_buf,"Audition");draw_center_buf(bank_action_x,bank_detail_y+5,70);sprintf(#ui_buf,"Exclude");draw_center_buf(bank_action_x+76,bank_detail_y+5,70);sprintf(#ui_buf,"Stop");draw_center_buf(bank_action_x+152,bank_detail_y+5,58);
+  ):(
+  bank_detail_x=map_x+map_w+18;bank_detail_w=left_x+left_w-bank_detail_x-16;
+  gfx_setfont(1,"Arial",13,0);gfx_r=.86;gfx_g=.93;gfx_b=1;gfx_a=1;
+  sprintf(#ui_buf,"Sample %d%s",selected+1,sm[SM_UI_EXCLUDED]>.5?" / EXCLUDED":!bank_source_eligible(selected)?" / FILTERED":"");ui_text_buf(bank_detail_x-4,map_y+3,bank_detail_w+4,0);
+  ui_bank_format(ui_bank_value(selected));sprintf(#ui_buf,"%s  %s",#bank_metric_label,#bank_value_label);ui_text_buf(bank_detail_x-4,map_y+23,bank_detail_w+4,0);
+  gfx_setfont(1,"Arial",12,0);gfx_r=.61;gfx_g=.74;gfx_b=.85;
+  sprintf(#ui_buf,"Peak %+.1f dBFS   RMS %+.1f dBFS",amp2db(max(sm[SM_UI_PEAK],.000000001)),amp2db(max(sm[SM_UI_RMS],.000000001)));ui_text_buf(bank_detail_x-4,map_y+39,bank_detail_w+4,0);
+  sprintf(#ui_buf,"%.0f ms   Centroid %.2f kHz",sm[SM_LENMS],sm[SM_UI_CENTROID]/1000);ui_text_buf(bank_detail_x-4,map_y+55,bank_detail_w+4,0);
+  sprintf(#ui_buf,"Above 6kHz %.1f%%   Crest %.1f dB",sm[SM_UI_HF],amp2db(max(sm[SM_UI_PEAK],.000000001)/max(sm[SM_UI_RMS],.000000001)));ui_text_buf(bank_detail_x-4,map_y+71,bank_detail_w+4,0);
+  ui_button(812,bank_detail_x,map_y+85,72,25)?ui_bank_request(0,bank_ui_selected);
+  ui_button(813,bank_detail_x+80,map_y+85,72,25)?ui_bank_request(1,bank_ui_selected);
+  ui_button(814,bank_detail_x+160,map_y+85,60,25)?ui_bank_request(2,bank_ui_selected);
+  gfx_setfont(1,"Arial",12,0);gfx_r=.85;gfx_g=.93;gfx_b=1;gfx_a=1;
+  sprintf(#ui_buf,"Audition");draw_center_buf(bank_detail_x,map_y+92,72);
+  sprintf(#ui_buf,"Exclude");draw_center_buf(bank_detail_x+80,map_y+92,72);
+  sprintf(#ui_buf,"Stop");draw_center_buf(bank_detail_x+160,map_y+92,60);
+  );
+):(
+  gfx_x=map_x+16;gfx_y=map_y+20;gfx_r=.6;gfx_g=.7;gfx_b=.8;gfx_a=1;gfx_drawstr("Load a sample bank from slot 0 to begin.");
+);
+
+// Draw the threshold over the bars; its handles remain easy to grab.
+bank_filter_line_visible?(
+  gfx_r=1;gfx_g=.69;gfx_b=.24;gfx_a=.95;
+  gfx_line(map_x,bank_filter_line_y,map_x+map_w,bank_filter_line_y);
+  gfx_rect(map_x-5,bank_filter_line_y-5,7,10,1);gfx_rect(map_x+map_w-2,bank_filter_line_y-5,7,10,1);
+  gfx_triangle(map_x+10,bank_filter_line_y, map_x+16,bank_filter_line_y+(bank_filter_mode==1?-6:6),map_x+22,bank_filter_line_y);
+);
+
+
+!ui_compact?(
+ ui_tab_start=proc_x;ui_tab_width=proc_w;ui_tab_w=(proc_w-6)*.5;
+ ui_tab_button(4950,proc_x,ui_tab_y,ui_tab_w,28,ui_layers_open)?(ui_layers_open=1;ui_scroll=0;);
+ sprintf(#ui_buf,"Layers");ui_mix_text(proc_x,ui_tab_y+8,ui_tab_w,13,1);
+ ui_tab_button(4951,proc_x+ui_tab_w+6,ui_tab_y,ui_tab_w,28,!ui_layers_open)?(ui_layers_open=0;ui_scroll=0;);
+ sprintf(#ui_buf,"EQ");ui_mix_text(proc_x+ui_tab_w+6,ui_tab_y+8,ui_tab_w,13,1);
+);
+ui_compact?(
+  ui_tab_start=ui_narrow?8:mid_x;ui_tab_width=ui_narrow?gfx_w-16:mid_w;
+  ui_tab_count=ui_narrow?4:3;ui_tab_w=(ui_tab_width-6*(ui_tab_count-1))/ui_tab_count;
+  ti=0;while(ti<ui_tab_count)(page_id=ui_narrow?(ti==0?0:ti==1?3:ti-1):(ti==0?3:ti);tx=ui_tab_start+ti*(ui_tab_w+6);selected_page=ui_narrow?ui_compact_page:ui_secondary_page;
+    ui_tab_button(4901+page_id,tx,ui_tab_y,ui_tab_w,28,selected_page==page_id)?(
+      ui_narrow?ui_compact_page=page_id:ui_secondary_page=page_id;ui_scroll=0;ui_active=-1;posteq_solo_target=0;
+    );
+    gfx_setfont(1,"Arial",13,0);gfx_r=.88;gfx_g=.95;gfx_b=1;gfx_a=1;page_id==0?sprintf(#ui_buf,"Playback"):page_id==3?sprintf(#ui_buf,"Layers"):page_id==1?sprintf(#ui_buf,"Envelope"):sprintf(#ui_buf,"EQ");draw_center_buf(tx,ui_tab_y+8,ui_tab_w);ti+=1;
+  );
+  !ui_narrow?(gfx_setfont(1,"Arial",12,0);gfx_r=.65;gfx_g=.77;gfx_b=.88;sprintf(#ui_buf,"PLAYBACK  |  All 15 controls");ui_text_buf(8,ui_tab_y+8,right_w,0););
+);
+  ui_scroll_max>0?(
+    sx=gfx_w-12;sy=ui_body_y;sh=ui_body_visible;thumb_h=max(24,sh*ui_body_visible/ui_content_h);thumb_y=sy+(sh-thumb_h)*ui_scroll/ui_scroll_max;
+    mouse_pressed && pt_in(sx-3,sy,14,sh) && ui_active<0?(ui_active=4900;ui_scroll_grab=mouse_y-thumb_y;ui_scroll_grab=clamp(ui_scroll_grab,0,thumb_h););
+    ui_active==4900?(mouse_down?ui_scroll=clamp((mouse_y-sy-ui_scroll_grab)/max(1,sh-thumb_h)*ui_scroll_max,0,ui_scroll_max):ui_active=-1;);
+    gfx_r=.07;gfx_g=.12;gfx_b=.16;gfx_a=1;gfx_rect(sx,sy,8,sh,1);gfx_r=.28;gfx_g=.49;gfx_b=.64;gfx_rect(sx,thumb_y,8,thumb_h,1);
+    pt_in(0,ui_body_y,gfx_w,ui_body_visible) && !ui_wheel_used && abs(ui_wheel)>=1?(ui_scroll=clamp(ui_scroll-(ui_wheel>0?36:-36),0,ui_scroll_max);ui_wheel_used=1;);
+  );
+) : (mouse_x=ui_actual_mx;mouse_y=ui_actual_my;hub_log_draw(););
+ui_bank_compact?(
+// Compact branding leaves space for controls, rather than a large banner.
+x0=8;y0=2;header_h=24;ui_panel(x0,y0,gfx_w-16,header_h);
+gfx_setfont(1,"Arial",16,0);gfx_r=.9;gfx_g=.96;gfx_b=1;gfx_a=1;gfx_x=20;gfx_y=8;gfx_drawstr("SAMPLE");
+gfx_setfont(1,"Arial",12,0);gfx_r=.65;gfx_g=.77;gfx_b=.87;
+sprintf(#ui_buf,"%d / %d samples  |  %.0f MB",sample_count,max(sample_count,bank_selected_count),pool_ram_mb);ui_text_buf(112,10,max(80,gfx_w-270),0);
+lamp_x=gfx_w-122;lamp_y=4;ui_led(lamp_x,lamp_y+12,bank_loaded,.18,.9,.44);
+pt_in(8,4,100,24)?ui_hover_id=1001;
+
+):(
+// Header
+x0 = 10; y0 = 10;
+header_h = 62;
+ui_panel(x0, y0, gfx_w - 20, header_h);
+
+ui_draw_header_logo(x0 + 44, y0 + 31, 19);
+
+gfx_setfont(1, "Arial", 22, 0);
+gfx_x = x0 + 88; gfx_y = y0 + 10;
+gfx_r = 0.92; gfx_g = 0.97; gfx_b = 1.0; gfx_a = 1;
+gfx_drawstr("LOAD-AND-GO");
+gfx_setfont(1, "Arial", 17, 0);
+gfx_x = x0 + 286; gfx_y = y0 + 15;
+gfx_r = 0.50; gfx_g = 0.64; gfx_b = 0.78; gfx_a = 1;
+gfx_drawstr("MULTISAMPLER");
+pt_in(x0, y0, gfx_w - 20, header_h) ? ui_hover_id = 1001;
+
+gfx_setfont(1, "Arial", 14, 0);
+gfx_x = x0 + 88; gfx_y = y0 + 40;
+gfx_r = 0.63; gfx_g = 0.72; gfx_b = 0.84; gfx_a = 1;
+gfx_drawstr("Auto-polls slot 0, rescans on change, bank-wide triggering.");
+
+lamp_x = gfx_w - 238;
+lamp_y = y0 + 12;
+status_on = bank_loaded ? 1 : 0;
+bank_partial = bank_loaded && bank_selected_count > 0 && sample_count < bank_selected_count;
+ui_led(lamp_x, lamp_y + 11, status_on && !bank_partial, bank_partial ? 0.95 : 0.18, bank_partial ? 0.68 : 0.90, bank_partial ? 0.20 : 0.44);
+gfx_setfont(1, "Arial", 14, 0);
+gfx_r = 0.86; gfx_g = 0.92; gfx_b = 0.98; gfx_a = 1;
+gfx_x = lamp_x + 22; gfx_y = lamp_y + 1;
+bank_partial ? sprintf(#ui_buf, "Bank partial") : (bank_loaded ? sprintf(#ui_buf, "Bank ready") : sprintf(#ui_buf, "No bank"));
+gfx_drawstr(#ui_buf);
+
+gfx_r = 0.62; gfx_g = 0.70; gfx_b = 0.82; gfx_a = 1;
+gfx_x = lamp_x + 22; gfx_y = lamp_y + 25;
+bank_partial ? (
+  bank_memory_limited ? sprintf(#ui_buf, "Loaded %d/%d | %.0f MB", sample_count, bank_selected_count, pool_ram_mb) : (
+    bank_cap_limited ? sprintf(#ui_buf, "Loaded %d/%d | pool max %d", sample_count, bank_selected_count, sample_pool_capacity) : sprintf(#ui_buf, "Loaded %d/%d | %.0f MB", sample_count, bank_selected_count, pool_ram_mb)
+  )
+) : (
+  bank_loaded ? sprintf(#ui_buf, "Loaded %d/%d | %.0f MB", sample_count, max(bank_selected_count, sample_count), pool_ram_mb) : (
+    rescan_pending ? (
+      rescan_force ? sprintf(#ui_buf, "Rescan now") : sprintf(#ui_buf, "Rescan queued")
+    ) : sprintf(#ui_buf, "Auto-rescan live")
+  )
+);
+gfx_drawstr(#ui_buf);
+
+pt_in(lamp_x - 8, lamp_y - 2, 180, 48) ? ui_hover_id = 1002;
+
+
+);
+hub_log_header();
+
+
 ui_rescan_flash > 0 ? ui_rescan_flash = max(0, ui_rescan_flash - 0.035);
 ui_rescan_flash > 0 ? (
   gfx_r = 0.35; gfx_g = 0.74; gfx_b = 0.98; gfx_a = ui_rescan_flash * 0.65;
@@ -16593,7 +17939,19 @@ ui_hover_id >= 5000 ? (
   hov_sid = ui_hover_id - 5000;
   sm = sample_meta_base + hov_sid * SM_STRIDE;
   sprintf(#tip_title, "Sample %d", hov_sid + 1);
-  sprintf(#tip_body, "Root %.0f | Br %.2f | Focus %.2f | Len %.0f ms", sm[SM_ROOT], sm[SM_BRIGHT], sm[SM_SHARP], sm[SM_LENMS]);
+  ui_bank_format(ui_bank_value(hov_sid));sprintf(#tip_body,"%s | %s. Click auditions this source; Ctrl+click excludes/includes.",#bank_metric_label,#bank_value_label);
+);
+ui_hover_id==815 || ui_hover_id==816 || ui_hover_id==817 ? (
+  sprintf(#tip_title,"Playback filter");
+  sprintf(#tip_body,"Above/Below applies the displayed measure, including the cutoff. Drag the amber line to adjust. Off restores all manually included samples. Existing voices finish naturally.");
+);
+ui_hover_id==818 ? (
+  sprintf(#tip_title,"Playback cutoff");
+  sprintf(#tip_body,"Drag vertically to set the threshold. Grey samples remain visible but cannot be selected by new notes or as donors. Clicking a grey sample still auditions it alone.");
+);
+ui_hover_id==819 ? (
+  sprintf(#tip_title,"Active filter");
+  sprintf(#tip_body,"Click to inspect the filter's axis. Viewing another measure keeps this filter unchanged. Above/Below applies a new filter to the displayed measure.");
 );
 ui_hover_id == 1300 ? (
   sprintf(#tip_title, "Envelope");
@@ -16663,9 +18021,12 @@ ui_hover_id == 339 ? (
   sprintf(#tip_title, "Thrill");
   sprintf(#tip_body, "%.1f%% Accent Engine injection (0-15%%). Separate from Lively. At 0 its analysis and processing are bypassed. Shift+right-click resets.", v71_thrill * 15);
 );
-ui_hover_id == 305 ? (
-  sprintf(#tip_title, "Truth");
-  sprintf(#tip_body, "%.2f matched to raw.", slider10);
+(ui_hover_id == 305 || ui_hover_id == 340 || ui_hover_id == 341) ? (
+  ui_match_mode_name(slider65 | 0);
+  sprintf(#tip_title, "Truth | %s", #ui_match_label);
+  (slider65 | 0) == 0 ? sprintf(#tip_body, "Legacy: exact original gain matching. Ctrl+click selects Legacy/None/RMS/Loudness; Ctrl+right-click restores Legacy. Truth automation is unchanged.")
+  : (slider65 | 0) == 1 ? sprintf(#tip_body, "None: no automatic source gain matching. Truth still controls creative grain behavior. Ctrl+click selects mode.")
+  : sprintf(#tip_body, "%s target %.1f. Truth: 0=matched, 1=original gain. Shift+drag adjusts target; Ctrl+click selects mode. Boost %.1f dB, source peak %.1f dBTP. Applies to new notes; Loudness uses an event estimate for short hits.", #ui_match_label, (slider65 | 0) == 2 ? slider67 : slider66, slider68, slider69);
 );
 ui_hover_id == 306 ? (
   sprintf(#tip_title, "Output");
@@ -16799,5 +18160,90 @@ draw_tooltip_box();
 gfx_slider_mask ? sliderchange(gfx_slider_mask);
 hidden_state_dirty ? flush_hidden_state_sliders();
 ui_v71_finish_touches();
+
+!mouse_down && ui_extra_touched>0?(
+  ui_extra_touched==2?slider_automate(slider2,1)
+  : ui_extra_touched==3?slider_automate(slider3,1)
+  : ui_extra_touched==4?slider_automate(slider4,1)
+  : ui_extra_touched==5?slider_automate(slider5,1)
+  : ui_extra_touched==6?slider_automate(slider6,1)
+  : ui_extra_touched==7?slider_automate(slider7,1)
+  : ui_extra_touched==8?slider_automate(slider8,1)
+  : ui_extra_touched==9?slider_automate(slider9,1)
+  : ui_extra_touched==10?slider_automate(slider10,1)
+  : ui_extra_touched==11?slider_automate(slider11,1)
+  : ui_extra_touched==12?slider_automate(slider12,1)
+  : ui_extra_touched==14?slider_automate(slider14,1)
+  : ui_extra_touched==15?slider_automate(slider15,1)
+  : ui_extra_touched==18?slider_automate(slider18,1)
+  : ui_extra_touched==19?slider_automate(slider19,1)
+  : ui_extra_touched==22?slider_automate(slider22,1)
+  : ui_extra_touched==25?slider_automate(slider25,1)
+  : ui_extra_touched==26?slider_automate(slider26,1)
+  : ui_extra_touched==27?slider_automate(slider27,1)
+  : ui_extra_touched==28?slider_automate(slider28,1)
+  : ui_extra_touched==29?slider_automate(slider29,1)
+  : ui_extra_touched==30?slider_automate(slider30,1)
+  : ui_extra_touched==32?slider_automate(slider32,1)
+  : ui_extra_touched==33?slider_automate(slider33,1)
+  : ui_extra_touched==34?slider_automate(slider34,1)
+  : ui_extra_touched==35?slider_automate(slider35,1)
+  : ui_extra_touched==36?slider_automate(slider36,1)
+  : ui_extra_touched==37?slider_automate(slider37,1)
+  : ui_extra_touched==38?slider_automate(slider38,1)
+  : ui_extra_touched==39?slider_automate(slider39,1)
+  : ui_extra_touched==40?slider_automate(slider40,1)
+  : ui_extra_touched==41?slider_automate(slider41,1)
+  : ui_extra_touched==42?slider_automate(slider42,1)
+  : ui_extra_touched==43?slider_automate(slider43,1)
+  : ui_extra_touched==44?slider_automate(slider44,1)
+  : ui_extra_touched==45?slider_automate(slider45,1)
+  : ui_extra_touched==46?slider_automate(slider46,1)
+  : ui_extra_touched==47?slider_automate(slider47,1)
+  : ui_extra_touched==48?slider_automate(slider48,1)
+  : ui_extra_touched==49?slider_automate(slider49,1)
+  : ui_extra_touched==50?slider_automate(slider50,1)
+  : ui_extra_touched==51?slider_automate(slider51,1)
+  : ui_extra_touched==52?slider_automate(slider52,1)
+  : ui_extra_touched==53?slider_automate(slider53,1)
+  : ui_extra_touched==54?slider_automate(slider54,1)
+  : ui_extra_touched==55?slider_automate(slider55,1)
+  : ui_extra_touched==60?slider_automate(slider60,1)
+  : ui_extra_touched==61?slider_automate(slider61,1)
+  : ui_extra_touched==65?slider_automate(slider65,1)
+  : ui_extra_touched==66?slider_automate(slider66,1)
+  : ui_extra_touched==67?slider_automate(slider67,1)
+  : ui_extra_touched==68?slider_automate(slider68,1)
+  : ui_extra_touched==69?slider_automate(slider69,1)
+  : ui_extra_touched==70?slider_automate(slider70,1)
+  : ui_extra_touched==71?slider_automate(slider71,1)
+  : ui_extra_touched==72?slider_automate(slider72,1)
+  : ui_extra_touched==73?slider_automate(slider73,1)
+  : ui_extra_touched==74?slider_automate(slider74,1)
+  : ui_extra_touched==75?slider_automate(slider75,1)
+  : ui_extra_touched==76?slider_automate(slider76,1)
+  : ui_extra_touched==77?slider_automate(slider77,1)
+  : ui_extra_touched==78?slider_automate(slider78,1)
+  : ui_extra_touched==79?slider_automate(slider79,1)
+  : ui_extra_touched==80?slider_automate(slider80,1)
+  : ui_extra_touched==81?slider_automate(slider81,1)
+  : ui_extra_touched==82?slider_automate(slider82,1)
+  : ui_extra_touched==83?slider_automate(slider83,1)
+  : ui_extra_touched==84?slider_automate(slider84,1)
+  : ui_extra_touched==85?slider_automate(slider85,1)
+  : ui_extra_touched==86?slider_automate(slider86,1)
+  : ui_extra_touched==87?slider_automate(slider87,1)
+  : ui_extra_touched==88?slider_automate(slider88,1)
+  : ui_extra_touched==89?slider_automate(slider89,1)
+  : ui_extra_touched==90?slider_automate(slider90,1)
+  : ui_extra_touched==91?slider_automate(slider91,1)
+  : ui_extra_touched==92?slider_automate(slider92,1)
+  : ui_extra_touched==93?slider_automate(slider93,1)
+  : ui_extra_touched==94?slider_automate(slider94,1)
+  : ui_extra_touched==95?slider_automate(slider95,1)
+  : ui_extra_touched==96?slider_automate(slider96,1)
+  : ui_extra_touched==97?slider_automate(slider97,1)
+  : ui_extra_touched==98?slider_automate(slider98,1)
+  : ui_extra_touched==99?slider_automate(slider99,1);ui_extra_touched=0;);
 ui_prev_down = mouse_down;
 ui_prev_rdown = mouse_rdown;
