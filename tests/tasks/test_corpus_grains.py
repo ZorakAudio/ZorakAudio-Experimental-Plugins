@@ -32,7 +32,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     source = source_path.read_text(encoding='utf-8')
     sliders = '\n'.join(line for line in source.splitlines()
-                        if any(line.startswith(f'slider{i}:') for i in range(65, 76)))
+                        if any(line.startswith(f'slider{i}:') for i in range(65, 81)))
     helpers = '\n'.join(function(source, name) for name in (
         'cp_clamp', 'cp_01', 'cp_db', 'cp_amp', 'cp_fold', 'cp_g', 'cp_s', 'cp_e', 'cp_v',
         'gr_prepare', 'gr_window', 'gr_accumulate', 'gr_level',
@@ -236,7 +236,7 @@ int main(){
     assert(std::isfinite(l) && std::isfinite(r));assert(l>=.85-1e-12 && l<=1 && r>=.7 && r<=.85+1e-12);
     assert(l-r<=previousDifference+1e-12);previousDifference=l-r;}
   assert(get(s,"source_mix")==1 && near(double(s.spl[0]),double(s.spl[1])));
-  for(int id=65;id<=75;++id){set(s,"test_id",id);set(s,"test_op",7);int ends=gestureEnds;jsfx_block(&s);
+  for(int id=65;id<=80;++id){set(s,"test_id",id);set(s,"test_op",7);int ends=gestureEnds;jsfx_block(&s);
     assert(lastChanged==id-1 && lastAutomated==id-1 && gestureEnds==ends+1);assert(near(double(s.sliders[id-1]),.37));}
   std::cout<<"PASS windows; overlap bounds/continuity; stereo rendering; note isolation; event release; Original reference; replay; mono fold/glide; high slider automation\n";
   // Actual per-voice pitch engine and mixer, with phase-aligned tonal evidence.

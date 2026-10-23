@@ -1,4 +1,4 @@
-desc:Corpus v1.9.9 - Duration-Relative ADSR
+desc:Corpus v2.0.0 - Child Cloud / Grain Smear
 tags:instrument sampler granular synthesis ui
 // #GFX_RESIZE: responsive
 // #FILE: Corpus sources {Slot 0: use Open Multiple, as in Sample v71. A single long file is valid.}
@@ -46,7 +46,7 @@ options:maxmem=25165824 gfx_hz=30
 // #HELP: Child walkers share the structural trajectory but own independent Micro lineages; Follow is not a grain-for-grain clone.
 // #HELP: Trajectory Solver adds up to 12 synchronized one-dimensional descriptor lanes (Target / Maximum / Minimum) over event progress. Curves are painted freehand with the mouse; there are no editable control points.
 // #HELP: Descriptor lanes use cached 53-axis evidence and bounded successor lookahead; no FFT or corpus analysis runs from playback.
-// #HELP: Transient Diffusion is a separate post-selection renderer and a real host parameter (slider45), so copy/paste, presets and automation use normal JSFX parameter state. Zero is exact bypass. Nonzero uses a stereo-linked bounded all-pass cascade plus a dry-derived crest guard; it does not change corpus selection.
+// #HELP: Transient Diffusion is a separate post-selection renderer and a real host parameter (slider45), so copy/paste, presets and automation use normal JSFX parameter state. Zero is exact bypass. Grain uses eight windowed unity-speed grains with identical L/R timing; high amounts create a diffuse cloud without adding stereo width. Classic retains the former all-pass renderer. Selection is unchanged, and event deadlines still cap the result.
 // #HELP: Grain Tame attenuates overly loud fragments before they are mixed: a cached RMS/peak estimate sets a fixed gain per new voice, and a stereo-linked gentle soft peak guard catches missed spikes. No quiet-grain makeup, pumping envelope or live PCM analysis is used. Zero bypasses exactly; one gives full taming. Source auditions stay original and REPEAT preserves the recorded gain/guard.
 // #HELP: Pitch behavior selects Tape (speed/duration pitching) or Coherent (texture-aware spectral resynthesis at the original excerpt timing). Coherent transposes the low/mid body while progressively shifting upper noisy frequencies less. Cached tonal confidence sets the crossover; attacks favor texture retention. Stereo phase relationships are linked. Native engines are prepared before playback; bounded lookahead stays within the chosen excerpt, avoiding MIDI latency. Zero pitch bypasses exactly and very short spans retain Tape. REPEAT captures pitch, texture confidence and duration. This is a perceptual effect: upper frequencies do not all transpose by the full requested interval.
 // #HELP: Source channels at the top selects Original or Mono for every loaded recording. Mono averages L/R before grain panning, without editing files. Playback glides to the new mode; analysis rebuilds automatically when current events finish. Child spread can still create a stereo cloud from mono sources.
@@ -56,7 +56,7 @@ options:maxmem=25165824 gfx_hz=30
 // #HELP: Amplitude can use curved ADSR or a custom smooth freehand MSEG curve. Fixed one-shots traverse the whole curve; Gated/Natural hold at the sustain marker then traverse the release segment.
 // #HELP: Right-click resets both ordinary and newer cloud/coherence controls to their documented defaults.
 // #HELP: Explore is the performance surface: child cloud, lifecycle, ADSR, overlap/coherence and descriptor map are reachable without changing pages.
-// #HELP: Up to 12 non-recursive child walkers can act as Follow, Resonance, Debris, Contrast, Shadow, Fill-gaps, or Mixed companions. Child Level is total-cloud intent and is energy-compensated as count rises.
+// #HELP: Up to 12 non-recursive child walkers can act as Follow, Resonance, Debris, Contrast, Shadow, Body bed (formerly Fill-gaps), or Mixed companions. Count, mode, density and timing spread are real saved/automatable host parameters 76-79; Level, Similarity and Width retain their existing parameters. Child Level is total-cloud intent and is energy-compensated as count rises.
 // #HELP: Auto Micro uses short internal probes but merges them into variable-duration acoustic units before hierarchy learning.
 // #HELP: All panes scroll. Small windows use tabs; no minimum-size blocker.
 // #HELP: Sample Hub CC118/119 v1 packets: Play/Retrigger/Continue/Choke/End supported.
@@ -152,6 +152,16 @@ slider72:0<-1,1,0.001>--Release curve
 slider73:0<0,1,1{Tape,Coherent}>--Pitch behavior
 slider74:1<0,1,0.001>--Grain tame
 slider75:1<0,1,1{Absolute,Relative}>--Duration CC envelope timing
+// #NATIVE_DEFAULT: slider76=0 legacy=-1
+slider76:0<-1,12,1>--Child count
+// #NATIVE_DEFAULT: slider77=0 legacy=0
+slider77:0<0,6,1>--Child mode
+// #NATIVE_DEFAULT: slider78=0.6 legacy=0.6
+slider78:0.6<0,1,0.001>--Child grain density
+// #NATIVE_DEFAULT: slider79=0.2 legacy=0.2
+slider79:0.2<0,1,0.001>--Child timing spread
+// #NATIVE_DEFAULT: slider80=1 legacy=0
+slider80:1<0,1,1>--Smear engine (0=Classic; 1=Grain)
 
 // v1.9.0: PE is fitted once during loading, with generation gated until ready.
 // Region and EC errors have independent support. Pruning uses cached evidence.
@@ -198,14 +208,12 @@ function gr_level(group mode) local(p sum power overlap target) (
   ) : 1;
 );
 
-// ---------- v1.8 Transient Diffusion ----------
-// Constant-cost render stage only. No corpus analysis is performed here and no
-// computation is moved to @gfx. Three stereo-linked Schroeder all-pass sections
-// smear transient timing; a dry-derived crest guard prevents new short-term peak
-// overshoot and supplies bounded fallback attenuation when diffusion alone is not
-// enough. slider45==0 is an exact signal bypass. slider45 is host-owned so
-// REAPER copy/paste, presets and automation do not depend on custom @serialize.
-// Nonzero automation is glided over ~4 ms before changing the all-pass coefficients.
+// ---------- Stereo-linked Transient Smear ----------
+// Classic keeps the old short all-pass renderer. Grain uses eight windowed
+// unity-speed reads over a fixed causal history, with shared channel timing.
+// Buffers and window table are prepared ahead of playback; no allocation,
+// FFT, new library/runtime capability, or corpus selection is involved here.
+// slider45 remains the amount, slider80 chooses the renderer. Exact zero bypass.
 function td_stage(l r stage n g) local(p off dl dr yl yr) (
   p=floor(td_pos_base[stage]);p>=n ? p=0;
   off=stage*1024+p;dl=td_buf_l[off];dr=td_buf_r[off];
@@ -222,13 +230,85 @@ function td_prepare() local(n) (
   td_slow_a=1-exp(-1/max(1,srate*0.018));
   td_peak_rel=exp(-1/max(1,srate*0.015));
   td_param_a=1-exp(-1/max(1,srate*0.004)); // automation-safe coefficient glide
+  td_energy_a=1-exp(-1/max(1,srate*0.025));
+  n=0;loop(1024,td_window[n]=0.5-0.5*cos(2*$pi*n/1023);n+=1;);
   td_srate=srate;
 );
 function td_clear() (
-  memset(td_buf_l,0,6144);memset(td_pos_base,0,3);
-  td_fast=0;td_slow=0;td_dry_peak=0;td_mix=0;td_transient=0;td_guard_gain=1;td_amount_rt=0;
+  memset(td_buf_l,0,65536);memset(td_pos_base,0,64);
+  td_write=0;td_seed=89101112;td_input_power=0;td_wet_power=0;td_level=1;td_tail_left=0;td_was_active=0;td_history=0;
+  td_fast=0;td_slow=0;td_dry_peak=0;td_mix=0;td_transient=0;td_guard_gain=1;td_amount_rt=slider80<0.5 ? 0 : cp_01(slider45);
   td_block_trans=0;td_block_mix=0;td_block_guard=0;td_block_inpeak=0;td_block_outpeak=0;
 );
+// Eight asynchronous, unity-speed grains disperse phase through changing
+// source offsets, not modulated read speeds. The exact same heads/windows are
+// applied to L/R: mono stays mono and no artificial stereo width is added.
+function td_reset_grains() (
+  memset(td_heads,0,32);td_write=0;td_history=0;td_seed=89101112;
+  td_input_power=0;td_wet_power=0;td_level=1;td_tail_left=0;
+  td_fast=0;td_slow=0;td_mix=0;td_amount_rt=cp_01(slider45);
+);
+function td_random() local(hi lo nextseed) (
+  hi=floor(td_seed/127773);lo=td_seed-hi*127773;nextseed=16807*lo-2836*hi;
+  nextseed<=0 ? nextseed+=2147483647;td_seed=nextseed;nextseed/2147483647;
+);
+function td_grain(l r amount) local(i q len age delay pos u ix f win sumw power wl wr spread) (
+  td_buf_l[td_write]=l;td_buf_r[td_write]=r;wl=0;wr=0;power=0;
+  len=max(8,floor(srate*(0.007+0.033*amount*amount)));
+  spread=min(30000,max(1,floor(srate*(0.0003+0.095*amount*amount))));
+  i=0;loop(8,q=td_heads+i*4;
+    q[1]<8 ? (q[1]=len;q[0]=floor(len*i/8);q[2]=floor(td_random()*spread););
+    age=q[0];age>=q[1] ? (q[0]=0;age=0;q[1]=len;q[2]=floor(td_random()*spread););
+    u=age*1023/max(1,q[1]-1);ix=min(1022,floor(u));f=u-ix;
+    win=td_window[ix]+(td_window[ix+1]-td_window[ix])*f;
+    pos=(td_write-q[2]+32768)%32768;
+    q[2]<=td_history ? (wl+=td_buf_l[pos]*win;wr+=td_buf_r[pos]*win;);power+=win*win;
+    q[0]=age+1;i+=1;
+  );
+  td_write=(td_write+1)%32768;td_history=min(32767,td_history+1);
+  sumw=1/sqrt(max(0.5,power));wl*=sumw;wr*=sumw;
+  td_input_power+=((l*l+r*r)*0.5-td_input_power)*td_energy_a;
+  td_wet_power+=((wl*wl+wr*wr)*0.5-td_wet_power)*td_energy_a;
+  td_level+=(cp_clamp(sqrt((td_input_power+0.0000000001)/(td_wet_power+0.0000000001)),0.5,2)-td_level)*td_energy_a;
+  td_work_l=wl*td_level;td_work_r=wr*td_level;
+);
+function td_process(l r amount mode endgain) local(haze peak ceiling d desired) (
+  mode>=0.5 && endgain<=0 ? (td_out_l=l;td_out_r=r;td_mix=0;td_was_active=0;) : (
+  mode>=0.5 && !td_was_active ? (td_reset_grains();td_was_active=1;);
+  td_amount_rt+=(cp_01(amount)-td_amount_rt)*td_param_a;td_amt=cp_01(td_amount_rt);
+  td_dry_l=l;td_dry_r=r;td_abs=max(abs(l),abs(r));
+  td_fast=max(td_abs,td_fast*td_fast_rel);td_slow+=(td_abs-td_slow)*td_slow_a;
+  td_gate=cp_01((td_fast-0.00002)/0.0015);
+  td_transient=cp_01((td_fast-td_slow*1.12)/max(0.000001,td_fast*0.82))*td_gate;
+  mode<0.5 ? (
+    td_target_mix=td_amt*td_transient;
+    td_target_mix>td_mix ? td_mix+=(td_target_mix-td_mix)*0.45 : td_mix+=(td_target_mix-td_mix)*0.015;
+    td_dry_peak=max(td_abs,td_dry_peak*td_peak_rel);td_g=0.30+0.30*td_amt;
+    td_stage(l,r,0,td_len0,td_g);td_wet_l=td_work_l;td_wet_r=td_work_r;
+    td_stage(td_wet_l,td_wet_r,1,td_len1,min(0.64,td_g+0.04));td_wet_l=td_work_l;td_wet_r=td_work_r;
+    td_stage(td_wet_l,td_wet_r,2,td_len2,max(0.20,td_g-0.03));td_wet_l=td_work_l;td_wet_r=td_work_r;
+    td_mix_now=cp_01(td_mix);td_proc_l=l*(1-td_mix_now)+td_wet_l*td_mix_now;td_proc_r=r*(1-td_mix_now)+td_wet_r*td_mix_now;
+    td_proc_peak=max(abs(td_proc_l),abs(td_proc_r));td_guard_gain=1;td_ceiling=max(0.000000001,td_dry_peak*1.001);
+    td_proc_peak>td_ceiling ? td_guard_gain=min(td_guard_gain,td_ceiling/td_proc_peak);
+    td_transient>0.15 ? (td_goal=max(0.000000001,td_dry_peak*(1-0.28*td_amt*td_transient));td_proc_peak>td_goal ? td_guard_gain=min(td_guard_gain,td_goal/td_proc_peak););
+  ) : (
+    td_grain(l,r,td_amt);
+    haze=cp_01((td_amt-0.20)/0.80);haze=haze*haze*(3-2*haze);
+    td_abs>0.00000002 ? td_tail_left=max(1,floor(srate*0.14)) : td_tail_left=max(0,td_tail_left-1);
+    td_target_mix=td_amt*td_amt*(0.30*td_transient+0.70*haze)*(td_tail_left>0);
+    td_target_mix>td_mix ? td_mix+=(td_target_mix-td_mix)*0.45 : td_mix+=(td_target_mix-td_mix)*0.015;
+    td_mix_now=cp_01(td_mix);td_proc_l=l*(1-td_mix_now)+td_work_l*td_mix_now*endgain;td_proc_r=r*(1-td_mix_now)+td_work_r*td_mix_now*endgain;
+    // Linked soft guard catches cloud peaks; no dry-peak follower can erase
+    // the diffuse grains after their source transient has already decayed.
+    peak=max(abs(td_proc_l),abs(td_proc_r));ceiling=max(0.90,td_abs);td_guard_gain=1;
+    peak>ceiling && td_mix_now>0.01 ? (d=peak-ceiling;desired=ceiling+0.10*d/(0.10+d);td_guard_gain=desired/peak;);
+  );
+  td_guard_gain=cp_clamp(td_guard_gain,0,1);td_out_l=td_proc_l*td_guard_gain;td_out_r=td_proc_r*td_guard_gain;
+  td_block_trans=max(td_block_trans,td_transient);td_block_mix=max(td_block_mix,td_mix_now);td_block_guard=max(td_block_guard,1-td_guard_gain);
+  td_block_inpeak=max(td_block_inpeak,td_abs);td_block_outpeak=max(td_block_outpeak,max(abs(td_out_l),abs(td_out_r)));
+  );
+);
+
 function cp_frames(x) (x<0 ? x+4294967296 : x;);
 function cp_rng() local(hi lo nx) (
   hi=floor(rng_state/127773); lo=rng_state-hi*127773;
@@ -289,13 +369,13 @@ function pe_excerpt(id start frames) local(g first last d p a b den total gs ge 
 // v1.5 bounded multi-child performance layer. The old 0..3 Morphology slider is
 // retained only as a project-compatibility fallback until the new child count is
 // explicitly touched. New events snapshot their child plan at trigger time.
-function cp_child_legacy() (xc_params[12]<=0.000001 && floor(slider36)>0;);
+function cp_child_legacy() (slider76<0 && floor(slider36)>0;);
 function cp_child_count() local(n m) (
-  cp_child_legacy() ? (m=floor(slider36);m==3 ? 2 : 1) : (n=floor(xc_params[12]*12+0.5);cp_clamp(n,0,12));
+  cp_child_legacy() ? (m=floor(slider36);m==3 ? 2 : 1) : (n=floor(slider76+0.5);cp_clamp(n,0,12));
 );
 function cp_child_mode() local(m legacy) (
   legacy=cp_child_legacy();
-  legacy ? (m=floor(slider36);m==1 ? 1 : (m==2 ? 2 : (m==3 ? 6 : 0))) : cp_clamp(floor(xc_params[13]*6+0.5),0,6);
+  legacy ? (m=floor(slider36);m==1 ? 1 : (m==2 ? 2 : (m==3 ? 6 : 0))) : cp_clamp(floor(slider77+0.5),0,6);
 );
 // Internal walker kinds: 0 primary, 1 resonance, 2 debris, 3 follow,
 // 4 contrast, 5 shadow, 6 fill. Mixed cycles a deterministic balanced roster.
@@ -3249,7 +3329,7 @@ function cp_index_work(work) local(s id frames sr nch cells i b w pos l r energy
 );
 function cp_build(work) (
   cp_index_work(work);
-  build_phase==0 ? freembuf(max(postings+posting_count+64,pe_memory_end));
+  build_phase==0 ? freembuf(max(postings+posting_count+64,max(pe_memory_end,max(gr_memory_end,td_memory_end))));
 );
 // Four constant-time status reads detect a loader transition on the first
 // available callback, even if the periodic poll has not expired. No PCM access.
@@ -3469,10 +3549,10 @@ function cp_child(wi kind parent when childidx childcount) local(w p d e inherit
   actiongain=kind==1 ? 0.90 : (kind==2 ? 0.72 : (kind==3 ? 0.82 : (kind==4 ? 0.66 : (kind==5 ? 0.70 : 0.78))));
   w[8]=e[26]*actiongain*countscale;
   panpos=childcount>1 ? -1+2*(childidx-1)/max(1,childcount-1) : 0;
-  panpos+=(jitter-0.5)*0.30*w[44];w[9]=cp_clamp(panpos,-1,1)*slider53;
+  panpos+=(jitter-0.5)*0.30*w[44];w[9]=cp_clamp(panpos,-1,1)*e[61];
   signv=(floor(childidx)%2)*2-1;
   d=0;loop(8,
-    inherited=slider38*p[16+d]+(1-slider38)*0.5;
+    inherited=e[60]*p[16+d]+(1-e[60])*0.5;
     // Give contrast/shadow/fill children a small identity offset at birth while
     // still respecting the parent inheritance control and later coherence costs.
     kind==4 && (d==1 || d==2 || d==3) ? inherited=cp_01(inherited+signv*(d==2 ? -0.10 : 0.12));
@@ -3604,7 +3684,7 @@ function cp_start(velocity note chan when duration ext attackpct releasepct seed
     ei>=0 ? (
       e=cp_e(ei);memset(e,0,64);event_serial+=1;
       e[0]=1;e[1]=event_serial;e[2]=note;e[3]=chan;e[4]=ext;e[5]=when;e[8]=slider28;e[13]=cp_01(velocity);
-      e[14]=1000000000000;e[15]=0;e[18]=1;e[25]=cp_child_mode();e[26]=slider37;e[45]=cp_child_count();e[46]=e[25];e[47]=cp_01(xc_params[14]);e[48]=cp_01(xc_params[15]);
+      e[14]=1000000000000;e[15]=0;e[18]=1;e[25]=cp_child_mode();e[26]=slider37;e[45]=cp_child_count();e[46]=e[25];e[47]=cp_01(slider78);e[48]=cp_01(slider79);e[60]=cp_01(slider38);e[61]=cp_01(slider53);
       cp_env_curves(e);memcpy(amp_evt(ei),amp_curve_base,40);e[49]=max(1,slider25*srate/1000);e[50]=max(1,slider47*srate);
       a=max(0,slider26*srate/1000);de=max(0,slider27*srate/1000);r=max(1,slider29*srate/1000);e[19]=r;
       mode=duration>0 || slider10<0.5 || (note<0 && slider10<1.5);
@@ -4176,7 +4256,13 @@ function h_action(arg) local(sub id level cls p c lo n list member) (
     );
     id==7 ? (h_ui_level<1 ? h_preview(0,h_ui_m) : h_preview(1,h_ui_x););
     id>=1024 && id<5120 ? (
-      xc_param_id=floor((id-1024)/256);xc_params[xc_param_id]=((id-1024)%256)/255;
+      xc_param_id=floor((id-1024)/256);xc_param_value=((id-1024)%256)/255;
+      xc_param_id<12 ? xc_params[xc_param_id]=xc_param_value : (
+        xc_param_id==12 ? (slider76=floor(xc_param_value*12+0.5);sliderchange(slider76););
+        xc_param_id==13 ? (slider77=floor(xc_param_value*6+0.5);sliderchange(slider77););
+        xc_param_id==14 ? (slider78=xc_param_value;sliderchange(slider78););
+        xc_param_id==15 ? (slider79=xc_param_value;sliderchange(slider79););
+      );
       xc_param_id==7 ? xc_map_ready=0;
     );
     // Backward compatibility for a pending v1.8.0 UI packet. New UI edits slider45 directly.
@@ -4566,7 +4652,8 @@ traj_history_base=18330584;amp_event_base=18331416;record_amp_curve=18331736;tra
 focus_ep_vec=18400000;focus_ep_conf=18820000;focus_coords=19240000;focus_class=19280000;focus_cfg=19292000;
 focus_global=19292300;focus_tmp_mean=19292600;focus_tmp_weight=19292664;focus_tmp_u=19292728;focus_tmp_v=19292792;focus_tmp_y=19292856;focus_tmp_used=19292920;focus_memory_end=19293000;
 // v1.8 bounded transient-diffusion delay arena. DSP-owned; never exposed to GFX.
-td_buf_l=19300000;td_buf_r=19303072;td_pos_base=19306144;td_memory_end=19306160;
+td_buf_l=24010000;td_buf_r=td_buf_l+32768;td_pos_base=td_buf_l+65536;
+td_heads=td_pos_base+8;td_window=td_pos_base+64;td_memory_end=td_window+1024;
 xc_config_schema!=1500 ? (
   memset(xc_params,0,16);xc_params[0]=1;xc_params[1]=0.8;xc_params[2]=0.65;xc_params[3]=0.65;
   xc_params[4]=1;xc_params[5]=1;xc_params[6]=1;xc_params[7]=0.65;xc_params[8]=0.75;xc_params[9]=0.7;
@@ -4575,7 +4662,7 @@ xc_config_schema!=1500 ? (
 );
 traj_schema!=1610 ? (memset(traj_runtime_base,0,64);memset(traj_history_base,0,832);tr_clear_all();amp_defaults();traj_runtime_base[0]=1;traj_epoch=0;traj_schema=1610;);tr_brush_active=0;tr_brush_lane=-1;tr_brush_pair=0;
 fc_schema!=1700 ? (fc_cfg_defaults();fc_cfg_key=0;fc_schema=1700;);fc_ready=0;fc_phase=0;fc_epoch=-1;fc_built_key=-1;
-map_stratum_page=0;state_schema==703 ? (map_stratum_page=cp_clamp(floor(slider45),0,255);slider45=td_schema==1800 ? cp_01(td_amount) : 0;sliderchange(pow(2,44));state_schema=704;td_amount=0;);td_schema=1810;td_srate=-1;td_enabled=0;td_prepare();td_clear();td_idle_cleared=1;
+map_stratum_page=0;state_schema==703 ? (map_stratum_page=cp_clamp(floor(slider45),0,255);slider45=td_schema==1800 ? cp_01(td_amount) : 0;sliderchange(pow(2,44));state_schema=704;td_amount=0;);td_schema=1810;td_srate=-1;td_enabled=0;td_prepare();td_clear();td_idle_cleared=1;td_mode=floor(slider80);
 td_last_mix=0;td_last_trans=0;td_last_guard=0;td_last_inpeak=0;td_last_outpeak=0;
 
 
@@ -4715,7 +4802,13 @@ function ui_notify(id value automate) local(mask) (
   id==72 ? (sliderchange(slider72);automate ? slider_automate(slider72,0);) :
   id==73 ? (sliderchange(slider73);automate ? slider_automate(slider73,0);) :
   id==74 ? (sliderchange(slider74);automate ? slider_automate(slider74,0);) :
-  id==75 ? (sliderchange(slider75);automate ? slider_automate(slider75,0);) : (
+  id==75 ? (sliderchange(slider75);automate ? slider_automate(slider75,0);) :
+  id==76 ? (sliderchange(slider76);automate ? slider_automate(slider76,0);) :
+  id==77 ? (sliderchange(slider77);automate ? slider_automate(slider77,0);) :
+  id==78 ? (sliderchange(slider78);automate ? slider_automate(slider78,0);) :
+  id==79 ? (sliderchange(slider79);automate ? slider_automate(slider79,0);) :
+  id==80 ? (sliderchange(slider80);automate ? slider_automate(slider80,0);) :
+  (
     mask=pow(2,id-1);sliderchange(mask);automate ? slider_automate(mask,0);
   );
 );
@@ -4730,7 +4823,13 @@ function ui_end_gesture(id) (
   id==72 ? slider_automate(slider72,1) :
   id==73 ? slider_automate(slider73,1) :
   id==74 ? slider_automate(slider74,1) :
-  id==75 ? slider_automate(slider75,1) : slider_automate(pow(2,id-1),1);
+  id==75 ? slider_automate(slider75,1) :
+  id==76 ? slider_automate(slider76,1) :
+  id==77 ? slider_automate(slider77,1) :
+  id==78 ? slider_automate(slider78,1) :
+  id==79 ? slider_automate(slider79,1) :
+  id==80 ? slider_automate(slider80,1) :
+  slider_automate(pow(2,id-1),1);
 );
 // ACKed FIFO prevents path knots/actions being overwritten between audio blocks.
 function ui_enqueue(op arg) local(pos prev) (
@@ -4863,6 +4962,11 @@ function ui_slider_tip(id) (
  id==73 ? strcpy(#ui_tip_body,"Tape uses speed-linked pitch. Coherent uses prepared stereo spectral engines at the excerpt's original timing. Tonal bodies get a wider conventional pitch range; rough/noisy grains and attacks preserve more upper texture. Source lookahead compensates spectral latency. Zero pitch is exact bypass. Changes affect new grains; REPEAT preserves the recorded character. Right-click restores Tape.");
  id==74 ? strcpy(#ui_tip_body,"Tame each generated grain before mixing. Cached excerpt RMS/peak measurements attenuate unusually loud fragments; a gentle stereo-linked soft peak guard catches missed spikes. Quiet grains are never boosted. Zero is exact bypass; full strength is the default. Changes affect new grains; REPEAT keeps its recorded gain and guard. Auditions stay original.");
  id==75 ? strcpy(#ui_tip_body,"Incoming duration CCs: Relative scales inherited ADSR proportions from the One-shot window to the requested duration; Absolute keeps millisecond times. Hub Attack/Release percentages override either mode. Fit includes Release inside the deadline; Free/Tail place it after. Continue retains the original timing choice. Ordinary notes are unchanged; custom curves already follow event duration.");
+ id==76 ? strcpy(#ui_tip_body,"Number of independent companions, 0-12. Saved and automatable. New notes capture the plan; current notes keep their cloud. Explicit zero disables legacy Morphology too.");
+ id==77 ? strcpy(#ui_tip_body,"Companion grain-selection character. All modes use independent Micro walks and the same event envelope. The visible cards explain each mode; Mixed cycles a fixed roster.");
+ id==78 ? strcpy(#ui_tip_body,"Companion grain density. Higher values shorten the hops for more overlap. Body bed receives extra overlap. Saved, automatable and captured by new notes.");
+ id==79 ? strcpy(#ui_tip_body,"Variation in companion start and hop timing. Zero is orderly; high values spread timing while keeping the same grain playback speed. Captured per event; Fixed seed stays reproducible.");
+ id==80 ? strcpy(#ui_tip_body,"Grain: long windowed micro-grains create increasingly dense phase smearing, with identical processing in both channels. Classic: the previous short all-pass transient softener. Fresh instances use Grain; older projects retain Classic until changed.");
  ui_tip(#ui_tip_body);
 );
 function ui_control(id x y w label lo hi def fmt) local(value hot n dx nv step) (
@@ -4893,7 +4997,7 @@ function ui_control(id x y w label lo hi def fmt) local(value hot n dx nv step) 
 function ui_choice_default(id) local(v) (
   v=floor(slider(id));
   id==56 ? v=5; id==10 ? v=0; id==17 ? v=0; id==23 ? v=1; id==22 ? v=1;
-  id==6 ? v=1; id==21 ? v=1; id==12 ? v=0; id==20 ? v=1; id==49 ? v=1;id==65 || id==68 ? v=1;id==69 || id==73 ? v=0;id==75 ? v=1;v;
+  id==6 ? v=1; id==21 ? v=1; id==12 ? v=0; id==20 ? v=1; id==49 ? v=1;id==65 || id==68 ? v=1;id==69 || id==73 ? v=0;id==75 || id==80 ? v=1;v;
 );
 function ui_choice(id x y w label options) local(n i c selected hot) (
   selected=floor(slider(id));i=0;n=0;strcpy(#ui_choice_value,"");
@@ -5273,18 +5377,18 @@ function ui_td_set(value) (
 );
 function ui_td_control(x y w) local(value hot) (
   value=cp_01(slider45);hot=ui_hit(x,y,w,70);ui_td_drag ? value=ui_td_value;
-  ui_box(x,y,w,70,0.078,0.10,0.132);ui_text(x+10,y+5,w-16,14,"TRANSIENT DIFFUSION",0.64,0.73,0.81);
+  ui_box(x,y,w,70,0.078,0.10,0.132);ui_text(x+10,y+5,w-16,14,"TRANSIENT SMEAR",0.64,0.73,0.81);
   sprintf(#ui_val,"%.0f %%",value*100);ui_text(x+10,y+25,w-16,21,#ui_val,0.90,0.95,0.96);
   ui_box(x+10,y+59,w-20,3,0.14,0.20,0.25);ui_box(x+10,y+59,(w-20)*value,3,0.31,0.73,0.65);
   hot && ui_lpress ? (ui_td_drag=1;ui_td_start=value;ui_td_value=value;ui_td_mouse=mouse_x-mouse_y;);
   ui_down && ui_td_drag ? (ui_td_value=cp_01(ui_td_start+((mouse_x-mouse_y)-ui_td_mouse)/240*((mouse_cap&8)>0 ? 0.12 : 1));ui_td_set(ui_td_value););
   hot && ui_rpress ? (ui_td_set(0);slider_automate(pow(2,44),1);ui_td_drag=0;);
   hot && ui_wheel!=0 && (mouse_cap&16) ? (ui_td_set(cp_01(value+ui_wheel/120*((mouse_cap&8)>0 ? 0.001 : 0.01)));slider_automate(pow(2,44),1);ui_wheel=0;);
-  hot ? ui_tip("Post-selection transient softening. Zero is exact bypass. Nonzero uses three stable stereo-linked all-pass sections only when transient evidence is present, then a dry-derived crest guard prevents new short-term peak overshoot. It never changes which corpus region was selected.");
+  hot ? ui_tip("Grain starts gently, then grows into a dense phase-scattered cloud above the middle of the range. Eight overlapping grains use shared L/R timing and unity-speed reads: no stereo widening or pitch wobble is added. Classic retains the former short all-pass softening. Zero is exact bypass. Event endings still cap the cloud.");
 );
 function ui_td_status(x y w) local(applied detector guard) (
   applied=cp_01(ui_x[83]);detector=cp_01(ui_x[84]);guard=cp_01(ui_x[85]);
-  sprintf(#ui_txt,"Applied %.0f%%   transient evidence %.0f%%   crest guard %.0f%%",applied*100,detector*100,guard*100);
+  sprintf(#ui_txt,"Wet %.0f%%   onset %.0f%%   peak guard %.0f%% / %s",applied*100,detector*100,guard*100,slider80>=0.5 ? "Grain / mono preserved" : "Classic");
   ui_text(x,y,w,14,#ui_txt,0.68,0.83,0.86);
 );
 function ui_xset(id value) (
@@ -5635,24 +5739,55 @@ function ui_structure(w) local(h x y bw n i k p c xx yy cols cw row state level 
   );
 );
 function ui_child_action_name(mode) (
-  mode==0 ? strcpy(#ui_child_action,"Follow") : (mode==1 ? strcpy(#ui_child_action,"Resonance") : (mode==2 ? strcpy(#ui_child_action,"Debris") : (mode==3 ? strcpy(#ui_child_action,"Contrast") : (mode==4 ? strcpy(#ui_child_action,"Shadow") : (mode==5 ? strcpy(#ui_child_action,"Fill gaps") : strcpy(#ui_child_action,"Mixed"))))));
+  mode==0 ? strcpy(#ui_child_action,"Follow") : (mode==1 ? strcpy(#ui_child_action,"Resonance") : (mode==2 ? strcpy(#ui_child_action,"Debris") : (mode==3 ? strcpy(#ui_child_action,"Contrast") : (mode==4 ? strcpy(#ui_child_action,"Shadow") : (mode==5 ? strcpy(#ui_child_action,"Body bed") : strcpy(#ui_child_action,"Mixed"))))));
 );
-function ui_child_count_control(x y w) local(n legacy hot) (
-  legacy=ui_x[60]<=0.000001 && floor(slider36)>0;n=legacy ? (floor(slider36)==3 ? 2 : 1) : cp_clamp(floor(ui_x[60]*12+0.5),0,12);ui_box(x,y,w,40,0.078,0.10,0.132);hot=ui_hit(x,y,w,40);
-  ui_text(x+10,y+4,w-92,14,"CHILDREN",0.64,0.73,0.81);sprintf(#ui_txt,"%d",n);ui_text(x+w-87,y+8,31,20,#ui_txt,0.91,0.96,0.96);
-  ui_btn(x+w-52,y+4,22,30,"-",0,"Reduce the number of non-recursive companion walkers. Zero leaves only the primary walker.") && n>0 ? (n-=1;ui_xset(12,n/12);ui_notify(36,0,1););
-  ui_btn(x+w-26,y+4,22,30,"+",0,"Add a companion walker. Up to 12 are allowed; total child level is energy-compensated as count rises.") && n<12 ? (n+=1;ui_xset(12,n/12);ui_notify(36,0,1););
-  hot && ui_rpress ? (ui_xset(12,0);ui_notify(36,0,1);n=0;);
-  ui_hit(x,y,w-56,40) ? ui_tip("Primary + up to 12 child walkers. Children never create children. Each child owns an independent Micro walk. Right-click resets Children to 0.");n;
+function ui_child_description(mode) (
+  mode==0 ? (strcpy(#ui_child_short,"Same motion, new grains");strcpy(#ui_child_detail,"Follows the main sound's movement with an independent grain path. Softer attacks and a steady body; it does not duplicate the primary grain sequence."));
+  mode==1 ? (strcpy(#ui_child_short,"Weighted body + tails");strcpy(#ui_child_detail,"Favors low-frequency weight, body and tails while avoiding sharp attacks. A selection bias, rather than an added resonator or a tuned oscillator."));
+  mode==2 ? (strcpy(#ui_child_short,"Rough, restless detail");strcpy(#ui_child_detail,"Favors motion, crest and detail at a lower energy target. Grain length still follows the source and excerpt ceiling; Debris does not guarantee tiny grains."));
+  mode==3 ? (strcpy(#ui_child_short,"Alternate tone + motion");strcpy(#ui_child_detail,"Alternates companions around the main brightness, weight and motion targets. Similarity and identity locks can narrow that contrast."));
+  mode==4 ? (strcpy(#ui_child_short,"Calmer, softer support");strcpy(#ui_child_detail,"Favors quieter, calmer body and tail material with fewer attacks. Shadow changes grain selection; it does not low-pass or pitch-shift the source."));
+  mode==5 ? (strcpy(#ui_child_short,"Dense supporting layer");strcpy(#ui_child_detail,"The former Fill gaps mode: overlaps body/detail more densely. It creates a supporting bed rather than detecting and filling literal gaps in the primary."));
+  mode==6 ? (strcpy(#ui_child_short,"A varied ensemble");strcpy(#ui_child_detail,"Assigns Follow, Resonance, Body bed, Debris, Shadow and Contrast in that order. One child is Follow; more children introduce the other characters."));
 );
-function ui_child_action_choice(x y w) local(mode choice legacy m hot) (
-  legacy=ui_x[60]<=0.000001 && floor(slider36)>0;m=floor(slider36);mode=legacy ? (m==1 ? 1 : (m==2 ? 2 : (m==3 ? 6 : 0))) : cp_clamp(floor(ui_x[61]*6+0.5),0,6);ui_child_action_name(mode);sprintf(#ui_txt,"CHILD ACTION: %s",#ui_child_action);hot=ui_hit(x,y,w,40);
-  ui_btn(x,y,w,40,#ui_txt,0,"Follow shares the structural trajectory but uses an independent Micro walk; other actions bias that independent walk. Right-click resets to Follow.") ? (
-    gfx_x=mouse_x;gfx_y=mouse_y;choice=gfx_showmenu("Follow|Resonance|Debris|Contrast|Shadow|Fill gaps|Mixed");
-    choice>0 ? (ui_xset(13,(choice-1)/6);ui_notify(36,0,1););
-  );
-  hot && ui_rpress ? (ui_xset(13,0);ui_notify(36,0,1);mode=0;);mode;
+function ui_child_count_set(count) (ui_notify(76,cp_clamp(floor(count),0,12),1);ui_end_gesture(76););
+function ui_child_mode_set(mode) (
+  slider76<0 ? ui_child_count_set(cp_child_count());
+  ui_notify(77,mode,1);ui_end_gesture(77);
 );
+function ui_child_cloud(x y w) local(start count mode cols cw rows i xx yy selected cy k px py spread scatter dots nrows row nrow j id) (
+  start=y;count=cp_child_count();mode=cp_child_mode();
+  ui_text(x,y,w,18,"CHILD CLOUD",0.78,0.91,0.89);y+=30;
+  ui_box(x,y,w,76,0.055,0.085,0.107);ui_border(x,y,w,76,0.19,0.34,0.38);
+  ui_text(x+12,y+8,w-138,14,count>0 ? "INDEPENDENT COMPANIONS" : "PRIMARY ONLY / CLOUD OFF",0.64,0.78,0.81);
+  sprintf(#ui_txt,"%d",count);ui_text(x+w-112,y+12,44,27,#ui_txt,0.84,0.97,0.94);
+  ui_btn(x+w-66,y+10,24,32,"-",0,"One fewer companion; the primary always remains.") && count>0 ? ui_child_count_set(count-1);
+  ui_btn(x+w-36,y+10,24,32,"+",0,"One more independent companion, up to twelve. New notes capture the count.") && count<12 ? ui_child_count_set(count+1);
+  dots=min(w-28,300);i=0;loop(12,px=x+16+i*dots/12;ui_circle(px,y+56,4,i<count ? 0.35 : 0.17,i<count ? 0.81 : 0.27,i<count ? 0.69 : 0.31,1);i+=1;);
+  ui_hit(x,y,w-76,76) && ui_rpress ? ui_child_count_set(0);
+  ui_hit(x,y,w,76) ? ui_tip("Primary plus 0-12 independent companions. The count and mode are saved host parameters. Changes shape the next note; existing clouds finish their captured plan. Right-click the count area to turn the cloud off.");y+=86;
+  cols=max(1,min(4,floor((w+8)/216)));cw=(w-(cols-1)*8)/cols;rows=ceil(7/cols);
+  i=0;loop(7,xx=x+(i%cols)*(cw+8);yy=y+floor(i/cols)*70;selected=i==mode;
+    ui_box(xx,yy,cw,62,selected ? 0.08 : 0.06,selected ? 0.20 : 0.09,selected ? 0.21 : 0.12);
+    ui_border(xx,yy,cw,62,selected ? 0.35 : 0.18,selected ? 0.79 : 0.27,selected ? 0.68 : 0.31);
+    ui_child_action_name(i);ui_child_description(i);ui_text(xx+10,yy+7,cw-20,16,#ui_child_action,0.86,0.95,0.93);ui_text(xx+10,yy+33,cw-20,13,#ui_child_short,0.61,0.76,0.79);
+    ui_hit(xx,yy,cw,62) ? (ui_tip(#ui_child_detail);ui_lpress ? ui_child_mode_set(i);ui_rpress ? ui_child_mode_set(0););i+=1;
+  );y+=rows*70;
+  ui_child_description(mode);ui_wrap(x,y,w,#ui_child_detail,3);y+=64;
+  // The diagram previews the control plan, not a claim of live grain positions.
+  ui_box(x,y,w,74,0.035,0.055,0.071);cy=y+37;spread=cp_01(slider53);scatter=cp_01(slider79);
+  ui_line(x+18,cy,x+w-18,cy,0.17,0.30,0.32,1);ui_circle(x+w/2,cy,6,0.93,0.78,0.43,1);
+  i=1;loop(count,k=count>1 ? -1+2*(i-1)/(count-1) : 0;px=x+w/2+k*(w*0.40)*spread;py=cy+((i%2)*2-1)*(10+18*scatter);
+    ui_line(x+w/2,cy,px,py,0.21,0.46,0.44,0.8);ui_circle(px,py,4,0.35,0.81,0.69,1);i+=1;);
+  ui_text(x+8,y+3,w-16,13,"CLOUD PREVIEW / gold = primary",0.57,0.72,0.76);y+=84;
+  cols=max(1,min(3,floor((w+8)/204)));nrows=ceil(5/cols);i=0;row=0;
+  loop(nrows,nrow=min(cols,5-i);cw=(w-(nrow-1)*8)/nrow;j=0;loop(nrow,
+    id=i==0 ? 37 : (i==1 ? 78 : (i==2 ? 53 : (i==3 ? 38 : 79)));
+    i==0 ? strcpy(#ui_txt,"CLOUD LEVEL");i==1 ? strcpy(#ui_txt,"GRAIN DENSITY");i==2 ? strcpy(#ui_txt,"STEREO WIDTH");i==3 ? strcpy(#ui_txt,"SIMILARITY");i==4 ? strcpy(#ui_txt,"TIMING SPREAD");
+    ui_control(id,x+j*(cw+8),y+row*78,cw,#ui_txt,0,1,i==0 ? 0.25 : (i==1 ? 0.60 : (i==2 ? 0.30 : (i==3 ? 0.85 : 0.20))),0);i+=1;j+=1;);row+=1;);
+  y+=nrows*78;ui_text(x,y,w,13,"Saved + automatable / new notes capture the cloud",0.55,0.72,0.76);y+=29;y-start;
+);
+
 // ---------- v1.6.1 freehand trajectory / MSEG editor ----------
 function ui_curve_pair_arg(a b) (cp_clamp(floor(a*255+0.5),0,255)*256+cp_clamp(floor(b*255+0.5),0,255););
 function ui_curve_eval_samples(data interp u) local(x i q ym y0 y1 yp q2 q3 z) (
@@ -5765,11 +5900,9 @@ function ui_explore(w include_inspector) local(x y bw mh c3 c2 i p active count 
   ui_heading(x,y,bw,"EXPLORE","performance / trajectories / descriptor space");y+=39;
   ui_text(x,y,bw,16,"PITCH / TIMING",0.64,0.82,0.84);y+=24;
   ui_control(8,x,y,c2,"GENERATED PITCH",-24,24,0,2);ui_choice(73,x+c2+8,y,c2,"Behavior","Tape|Coherent");y+=82;
-  ui_text(x,y,bw,16,"PERFORMANCE / CLOUD",0.64,0.82,0.84);y+=24;
   ui_choice(10,x,y,bw,"Lifecycle","One-shot|Gated|Natural / learned ending with time cap");y+=43;
-  ui_child_count_control(x,y,c2);ui_child_action_choice(x+c2+8,y,c2);y+=48;
-  ui_control(37,x,y,c3,"CHILD LEVEL",0,1,0.25,0);ui_xcontrol(14,x+c3+8,y,c3,"CLOUD DENSITY");ui_control(53,x+2*(c3+8),y,c3,"CHILD SPREAD",0,1,0.3,0);y+=78;
-  ui_control(38,x,y,c3,"CHILD INHERIT",0,1,0.85,0);ui_xcontrol(15,x+c3+8,y,c3,"TIMING SCATTER");ui_control(30,x+2*(c3+8),y,c3,"FLOW / OVERLAP",0,1,0.55,0);y+=88;
+  y+=ui_child_cloud(x,y,bw)+12;
+  ui_control(30,x,y,bw,"WALK FLOW / OVERLAP",0,1,0.55,0);y+=88;
 
   ui_text(x,y,bw,16,"AMPLITUDE ENVELOPE",0.64,0.82,0.84);y+=24;ui_amp_mode_buttons(x,y,bw);y+=44;
   ui_amp[0]<0.5 ? (
@@ -5786,7 +5919,7 @@ function ui_explore(w include_inspector) local(x y bw mh c3 c2 i p active count 
   y+=ui_grains(x,y,bw)+16;
 
   ui_text(x,y,bw,16,"TRANSIENT RENDERING",0.64,0.82,0.84);y+=24;
-  ui_td_control(x,y,bw);y+=76;ui_td_status(x,y,bw);y+=30;
+  ui_choice(80,x,y,bw,"Smear character","Classic|Grain");y+=43;ui_td_control(x,y,bw);y+=76;ui_td_status(x,y,bw);y+=30;
 
   ui_text(x,y,bw,16,"TRAJECTORY SOLVER",0.64,0.82,0.84);y+=24;
   ui_btn(x,y,112,32,"+ ADD LANE",0,"Add a descriptor trajectory lane using the current X descriptor. Up to 12 synchronized lanes are supported.") ? (
@@ -5882,6 +6015,7 @@ function ui_controls(w) local(x bw) (
   ui_choice(23,x,ui_ky,bw,"Source level","Raw|Match active");ui_ky+=43;
   ui_choice(69,x,ui_ky,bw,"Source channels","Original|Mono");ui_ky+=43;
   ui_choice(10,x,ui_ky,bw,"Lifecycle","One-shot|Gated|Natural / learned ending with time cap");ui_ky+=43;
+  ui_control_row_end();ui_ky+=ui_child_cloud(x,ui_ky,bw)+12;
   ui_control_section("AMPLITUDE ENVELOPE");ui_amp_mode_buttons(x,ui_ky,bw);ui_ky+=44;
   ui_knob(25,"ONE-SHOT / ms",20,30000,800,3);ui_knob(26,"ATTACK / ms",0,2000,5,3);ui_knob(27,"DECAY / ms",0,5000,100,3);
   ui_knob(28,"SUSTAIN LEVEL",0,1,0.75,0);ui_knob(29,"RELEASE / ms",0,5000,180,3);ui_knob(46,"TRAJECTORY PRESSURE",0,1,0.75,0);
@@ -5890,16 +6024,15 @@ function ui_controls(w) local(x bw) (
   );
   ui_choice(75,x,ui_ky,bw,"Duration CC ADSR","Absolute|Relative");ui_ky+=43;
   ui_control_section("GRAIN TEXTURE");ui_ky+=ui_grains(x,ui_ky,bw)+12;
+  ui_control_section("TRANSIENT SMEAR");ui_choice(80,x,ui_ky,bw,"Smear character","Classic|Grain");ui_ky+=43;
+  ui_td_control(x,ui_ky,bw);ui_ky+=76;ui_td_status(x,ui_ky,bw);ui_ky+=30;
   ui_control_section("MATERIAL / VARIATION");
   ui_knob(1,"FORCE TARGET",0,1,0.5,0);ui_knob(31,"BRIGHTNESS",0,1,0.5,0);ui_knob(32,"LF WEIGHT",0,1,0.5,0);
   ui_knob(33,"ROUGHNESS",0,1,0.5,0);ui_knob(2,"TEXTURE VARIATION",0,1,0.35,0);ui_knob(58,"BEHAVIOUR VARIATION",0,1,0.35,0);
   ui_knob(59,"STRUCTURE VARIATION",0,1,0.25,0);ui_knob(57,"BEHAVIOUR INFLUENCE",0,1,0.8,0);ui_knob(34,"NOVELTY",0,1,0.65,0);
   ui_knob(3,"COHERENCE",0,1,0.8,0);ui_knob(35,"IDENTITY STABILITY",0,1,0.8,0);ui_knob(30,"FLOW / OVERLAP",0,1,0.55,0);
-  ui_control_section("STRUCTURE / CHILD CLOUD");
-  ui_knob(62,"DURATION SCALE",0.25,4,1,4);ui_knob(4,"DETAIL DENSITY",0,1,0.4,0);ui_knob(37,"CHILD LEVEL",0,1,0.25,0);
-  ui_knob(38,"CHILD INHERITANCE",0,1,0.85,0);ui_knob(53,"CHILD SPREAD",0,1,0.3,0);
-  ui_control_row_end();ui_child_count_control(x,ui_ky,(bw-8)/2);ui_child_action_choice(x+(bw+8)/2,ui_ky,(bw-8)/2);ui_ky+=48;
-  ui_xcontrol(14,x,ui_ky,(bw-8)/2,"CLOUD DENSITY");ui_xcontrol(15,x+(bw+8)/2,ui_ky,(bw-8)/2,"TIMING SCATTER");ui_ky+=78;
+  ui_control_section("STRUCTURE");
+  ui_knob(62,"DURATION SCALE",0.25,4,1,4);ui_knob(4,"DETAIL DENSITY",0,1,0.4,0);ui_control_row_end();
   ui_btn(x,ui_ky,bw,32,ui_advanced ? "- ADVANCED" : "+ ADVANCED",ui_advanced,"Show analysis, map, seed, pool and protocol controls. Ordinary loading does not require these.") ? ui_advanced=1-ui_advanced;ui_ky+=44;
   ui_advanced ? (
     ui_control_section("AUTOMATIC ANALYSIS");
@@ -6114,7 +6247,7 @@ function ui_help_view(w) local(x y bw) (
   ui_heading(x,y,bw,"HELP","");ui_btn(x+bw-40,y,40,29,"X",0,"Close contextual help.") ? ui_help=0;y+=44;
   ui_page==4 ? strcpy(#ui_help_text,"Load recordings in slot 0. Corpus scouts each source, infers grain windows and low-salience thresholds, and builds Micro > Meso > Macro automatically. Auto selects a supported hierarchy for each new note. Low-salience Micro material stays playable; Meso models sparsity/density without muting. Only high-confidence Macro REST regions schedule silence. Gold-star unique classes stay in the normal population and can be filtered with UNIQUE. EC Focus optionally refines a selected Meso class along Essence or local PC1/PC2/PC3 without changing the broad class itself. Its four axis buttons are explicit; click/drag the member dots to audition originals, Shift-click a dot to re-synthesize, drag the lower strip to preview a retained interval, and use FOCUS ON only when that interval should constrain generation. Generation pins are explicit; clicking to audition never silently pins a class.") : (
     ui_page==0 ? strcpy(#ui_help_text,"Explore plots actual grains on two acoustic descriptors. Click-drag across points to hear overlapping source grains; Shift-click sets an identity anchor. Ctrl-drag moves a focus. Turn Draw on, drag a path, then release. The blue path commits atomically and guides subsequent choices. Amber is the actual primary walk. Use Path Axes to return to a saved paths coordinates. A held note traverses the full path forward and back; a one-shot fits it to the declared duration. Corpus cannot follow into material it does not contain. Explicit locks remain stronger than the path.") : (
-      ui_page==2 ? strcpy(#ui_help_text,"Drag controls; Shift gives fine adjustment. Right-click restores that controls new default. Plain wheel scrolls the pane; Alt-wheel edits a hovered control. The existing performance sliders support Last Touched automation. Grain Shape, Softness, Balance and Overlap Level are host-backed parameters. Changes shape future grains; REPEAT retains the recorded grain settings. Additional Coherence/Grammar settings remain serialized controls. Transient Diffusion is now a real host-backed slider and can be automated/Last-Touched normally. Its renderer is constant-cost DSP, never GFX-side analysis. Output defaults to 0 dB. Match active uses one bounded source gain, preserving dynamics within that recording. Low-salience detection biases selection without deleting quiet material; only Macro REST schedules intentional silence. Rebuilds are automatic and wait for active model users to finish.") : strcpy(#ui_help_text,"Inspector opens only the evidence you request. Selected Grain shows exact source region and excludes or locks. Live Walk exposes real emitted slices and path error. Selected Class shows member distributions, comparisons and observed successors. Analysis explains inferred grain resolution and quiet thresholds. System contains actual failures, limits and protocol/replay states. A low distance is acoustic similarity, not proof of semantic equivalence.");
+      ui_page==2 ? strcpy(#ui_help_text,"Drag controls; Shift gives fine adjustment. Right-click restores that controls new default. Plain wheel scrolls the pane; Alt-wheel edits a hovered control. The existing performance sliders support Last Touched automation. Grain Shape, Softness, Balance and Overlap Level are host-backed parameters. Changes shape future grains; REPEAT retains the recorded grain settings. Child count, mode, density and timing spread are saved/automatable host parameters. Remaining private Coherence/Grammar settings still require their separate state path. Transient Diffusion is now a real host-backed slider and can be automated/Last-Touched normally. Its renderer is constant-cost DSP, never GFX-side analysis. Output defaults to 0 dB. Match active uses one bounded source gain, preserving dynamics within that recording. Low-salience detection biases selection without deleting quiet material; only Macro REST schedules intentional silence. Rebuilds are automatic and wait for active model users to finish.") : strcpy(#ui_help_text,"Inspector opens only the evidence you request. Selected Grain shows exact source region and excludes or locks. Live Walk exposes real emitted slices and path error. Selected Class shows member distributions, comparisons and observed successors. Analysis explains inferred grain resolution and quiet thresholds. System contains actual failures, limits and protocol/replay states. A low distance is acoustic similarity, not proof of semantic equivalence.");
     );
   );y+=ui_wrap(x,y,bw,#ui_help_text,24)+28;
   ui_wrap(x,y,bw,"Evidence is a closed-by-default side drawer. Descriptor names and member counts remain fixed while auditioning. Choose Core, Spectral, Temporal, Tonal, Spatial, Context or Learned axes; tonal/pulse evidence is confidence-gated. Right-click a descriptor bin to apply a browser filter. The underlying source audio is never deleted.",10);
@@ -6181,13 +6314,14 @@ load_block_serial+=1;
 xc_config_schema<1500 ? (xc_params[12]=0;xc_params[13]=0;xc_params[14]=0.60;xc_params[15]=0.20;xc_config_schema=1500;);
 traj_schema<1600 ? (tr_clear_all();amp_defaults();traj_epoch=0;traj_schema=1610;) : (traj_schema<1610 ? (tr_migrate_freehand();traj_schema=1610;););
 td_schema<1810 ? td_schema=1810;td_srate!=srate ? (td_prepare();td_clear(););
+td_mode!=floor(slider80) ? (td_clear();td_mode=floor(slider80););
 slider45>0.000001 ? (!td_enabled ? (td_clear();td_enabled=1;);) : (td_enabled=0;td_mix=0;);
 td_last_mix=td_block_mix;td_last_trans=td_block_trans;td_last_guard=td_block_guard;td_last_inpeak=td_block_inpeak;td_last_outpeak=td_block_outpeak;
 td_block_mix=0;td_block_trans=0;td_block_guard=0;td_block_inpeak=0;td_block_outpeak=0;
 last_block_rms=meter_n>0 ? sqrt(meter_sum/max(1,meter_n)) : 0;last_block_peak=meter_peak_block;last_block_rest=meter_n>0 ? meter_rest_sum/meter_n : 0;last_block_gap=meter_n>0 ? meter_gap_sum/meter_n : 0;last_block_lowsal=meter_n>0 ? meter_lowsal_sum/meter_n : 0;last_block_voices=meter_n>0 ? meter_voice_sum/meter_n : 0;last_block_hole=meter_n>0 ? meter_hole_sum/meter_n : 0;last_block_sourcehole=meter_n>0 ? meter_sourcehole_sum/meter_n : 0;last_block_coverage=meter_n>0 ? meter_coverage_sum/meter_n : 0;meter_sum=0;meter_peak_block=0;meter_n=0;meter_rest_sum=0;meter_gap_sum=0;meter_lowsal_sum=0;meter_voice_sum=0;meter_hole_sum=0;meter_sourcehole_sum=0;meter_coverage_sum=0;
 block_start_clock=clock;steps_this_block=0;output_target=cp_amp(slider7);
 cp_collect();
-voice_list_n<=0 && cp_hold_count()==0 && td_mix<=0.0001 ? (!td_idle_cleared ? (td_clear();td_idle_cleared=1;);) : td_idle_cleared=0;
+voice_list_n<=0 && cp_hold_count()==0 ? (!td_idle_cleared ? (td_clear();td_idle_cleared=1;);) : td_idle_cleared=0;
 env_i=0;loop(8,env_e=cp_e(env_i);env_e[33]=clock;env_e[34]=0;env_i+=1;);
 slider24!=cmd_seen ? (cmd_seen=slider24;cp_action(floor(slider24+0.5)););
 playing=(play_state&1)>0;
@@ -6278,13 +6412,13 @@ za_keep_awake=cg_stage>0 || cg_retiring || xc_task_retiring || voice_list_n>0 ||
 @sample
 source_mix+=(cp_01(slider69)-source_mix)*source_mix_a;
 abs(source_mix-cp_01(slider69))<0.000000000001 ? source_mix=cp_01(slider69);
-out_l=0;out_r=0;sample_coverage=0;sample_lowvoices=0;sample_startedvoices=0;vi=0;
+out_l=0;out_r=0;td_scene_end=clock;sample_coverage=0;sample_lowvoices=0;sample_startedvoices=0;vi=0;
 while(vi<voice_list_n) (
   vv=cp_v(voice_list[vi]);alive=vv[0]>0 && clock<vv[14];
   vv[26]>=0 ? (ev=cp_e(vv[26]);alive=alive && ev[0]>0 && ev[1]==vv[17];);
   alive ? (
     clock>=vv[2] ? (
-      age=clock-vv[2];duration=vv[3]-vv[2];
+      age=clock-vv[2];duration=vv[3]-vv[2];td_scene_end=max(td_scene_end,min(vv[3],vv[14]));
       env=min(1,age/max(1,vv[9]));env=min(env,(vv[3]-clock)/max(1,vv[10]));
       // Event envelope owns generated release/stop timing. Do not pre-fade an
       // event merely because its known deadline clips this grain's natural end.
@@ -6324,29 +6458,8 @@ vi=0;while(vi<voice_list_n)(
 // regions and envelopes remain unchanged; only the mixed transient rendering is
 // softened. At zero the branch is not evaluated and out_l/out_r are untouched.
 td_enabled && slider45>0.000001 ? (
-  td_amount_rt+=(slider45-td_amount_rt)*td_param_a;td_amt=cp_01(td_amount_rt);
-  td_dry_l=out_l;td_dry_r=out_r;td_abs=max(abs(td_dry_l),abs(td_dry_r));
-  td_fast=max(td_abs,td_fast*td_fast_rel);td_slow+=(td_abs-td_slow)*td_slow_a;
-  td_gate=cp_01((td_fast-0.00002)/0.0015);
-  td_transient=cp_01((td_fast-td_slow*1.12)/max(0.000001,td_fast*0.82))*td_gate;
-  td_target_mix=td_amt*td_transient;
-  td_target_mix>td_mix ? td_mix+=(td_target_mix-td_mix)*0.45 : td_mix+=(td_target_mix-td_mix)*0.015;
-  td_dry_peak=max(td_abs,td_dry_peak*td_peak_rel);
-  td_g=0.30+0.30*td_amt;
-  td_stage(td_dry_l,td_dry_r,0,td_len0,td_g);td_wet_l=td_work_l;td_wet_r=td_work_r;
-  td_stage(td_wet_l,td_wet_r,1,td_len1,min(0.64,td_g+0.04));td_wet_l=td_work_l;td_wet_r=td_work_r;
-  td_stage(td_wet_l,td_wet_r,2,td_len2,max(0.20,td_g-0.03));td_wet_l=td_work_l;td_wet_r=td_work_r;
-  td_mix_now=cp_01(td_mix);td_proc_l=td_dry_l*(1-td_mix_now)+td_wet_l*td_mix_now;td_proc_r=td_dry_r*(1-td_mix_now)+td_wet_r*td_mix_now;
-  td_proc_peak=max(abs(td_proc_l),abs(td_proc_r));td_guard_gain=1;
-  td_ceiling=max(0.000000001,td_dry_peak*1.001);
-  td_proc_peak>td_ceiling ? td_guard_gain=min(td_guard_gain,td_ceiling/td_proc_peak);
-  td_transient>0.15 ? (
-    td_goal=max(0.000000001,td_dry_peak*(1-0.28*td_amt*td_transient));
-    td_proc_peak>td_goal ? td_guard_gain=min(td_guard_gain,td_goal/td_proc_peak);
-  );
-  td_guard_gain=cp_clamp(td_guard_gain,0,1);out_l=td_proc_l*td_guard_gain;out_r=td_proc_r*td_guard_gain;
-  td_block_trans=max(td_block_trans,td_transient);td_block_mix=max(td_block_mix,td_mix_now);td_block_guard=max(td_block_guard,1-td_guard_gain);
-  td_block_inpeak=max(td_block_inpeak,td_abs);td_block_outpeak=max(td_block_outpeak,max(abs(out_l),abs(out_r)));
+  td_process(out_l,out_r,slider45,slider80,cp_01((td_scene_end-clock)/max(1,srate*0.003)));
+  out_l=td_out_l;out_r=td_out_r;
 );
 output_smooth+=(output_target-output_smooth)*0.002;
 out_l*=output_smooth;out_r*=output_smooth;output_peak=max(abs(out_l),abs(out_r));

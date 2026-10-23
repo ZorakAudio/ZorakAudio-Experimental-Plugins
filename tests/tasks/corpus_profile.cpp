@@ -19,6 +19,7 @@ extern "C" int za_native_gfx_heap_copy(juce::AudioProcessor*,const char*,double*
 #include "corpus_diagnostics.h"
 #include "corpus_pitch_check.h"
 #include "corpus_duration_check.h"
+#include "corpus_cloud_check.h"
 using Clock=std::chrono::steady_clock;
 static double seconds(Clock::duration d){return std::chrono::duration<double>(d).count();}
 static double cpu(){
@@ -110,6 +111,8 @@ int main(int argc,char** argv)try{
  std::cout<<"GRAPH completed="<<value("cg_completed")<<" disabled="<<value("cg_disabled")<<" pe_read_errors="<<value("pe_read_errors")<<" spectral_read_errors="<<value("invalid_audio")<<std::endl;
  if(option("--compare-triggers") && ready)corpusCompare(p.get(),audio,midi,value,std::string(argv[2])+".triggers.csv");
  if(option("--check-mono") && ready)corpusMono(p.get(),audio,midi,value);
+ if(option("--check-cloud") && ready)corpusCloudCheck(p.get(),audio,midi,value,std::string(argv[2])+".cloud.csv");
+ for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--cloud-screenshots" && ready)corpusCloudCapture(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));
  if(option("--check-duration") && ready)corpusDurationCheck(p.get(),audio,midi,value,std::string(argv[2])+".duration.csv");
  if(option("--check-pitch-tame") && ready)corpusPitchCheck(p.get(),audio,midi,value,std::string(argv[2])+".pitch-tame.csv");
  for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--pitch-screenshots" && ready)corpusPitchCapture(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));

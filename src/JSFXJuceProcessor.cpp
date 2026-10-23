@@ -1,6 +1,7 @@
 #include "JsfxGfxInput.h"
 #include "JsfxGfxMenus.h"
 #include "JsfxSliderDeclarations.h"
+#include "JsfxNativeDefaults.h"
 #include "SampleBankUiState.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -568,6 +569,8 @@ public:
         // Tooltips:  // #TOOLTIP: ... (immediately above a slider line)
         // Help:      // #HELP: ...    (deprecated; the embedded README.md now drives the ? panel)
         sliderDecls = parseJsfxSliderDecls (kJsfxSourceText, nullptr);
+        nativeSliderDefaults = za::jsfx::parseNativeSliderDefaults(kJsfxSourceText, sliderDecls);
+        za::jsfx::applyNativeSliderDefaults(nativeSliderDefaults, sliderDecls);
         sliderStringUsed.fill (false);
         for (auto& text : stringSliderTexts)
             text = {};
@@ -608,6 +611,11 @@ public:
             if (DSPJSFX_VARS[vi].name != nullptr)
                 varIndexByName.emplace (juce::String (DSPJSFX_VARS[vi].name).toLowerCase().toStdString(),
                                         DSPJSFX_VARS[vi].index);
+
+        for (const auto& rule : nativeSliderDefaults)
+            if (rule.reseedVariable.isNotEmpty())
+                if (auto it = varIndexByName.find(rule.reseedVariable.toLowerCase().toStdString()); it != varIndexByName.end())
+                    nativeDefaultReseedSlots.push_back(it->second);
 
         for (const auto& s : sliderDecls)
         {
@@ -1384,6 +1392,10 @@ public:
 
         const int numSamples = buffer.getNumSamples();
         applyOversamplingFactorChangeIfNeeded (numSamples);
+        // Restore missing legacy controls before the first rendered sample.
+        // Reseeding is a saved-state action; ordinary parameter edits retain ramps.
+        if (pendingNativeDefaultReseed.exchange(false, std::memory_order_acq_rel))
+            for (const int slot : nativeDefaultReseedSlots) st.vars[slot] = 1.0;
         const int oversamplingFactor = getActiveOversamplingFactor();
         const int processSamples = safeOversampledBlockSize (numSamples, oversamplingFactor);
         int activityInputChannels = 0;
@@ -1782,7 +1794,12 @@ public:
             if(sampleUi.isValid())tree.removeChild(sampleUi,nullptr);
             sampleBankUi.stage(sampleUi);
            #endif
+            za::jsfx::restoreMissingNativeSliderDefaults(nativeSliderDefaults, tree);
             apvts->replaceState (tree);
+            // Explicit Off states need the same immediate restoration as old
+            // states: do not carry a previous instance's smoothing history.
+            if (tree.hasType("PARAMS") && !nativeDefaultReseedSlots.empty())
+                pendingNativeDefaultReseed.store(true, std::memory_order_release);
             requestEmergencyMidiCleanup();
 
             loadPersistentFileUiState();
@@ -5736,6 +5753,9 @@ std::array<GfxSnapshot, 3> gfxSnaps {};
     std::atomic<bool> pendingParameterWakeEvent { false };
     std::atomic<bool> uiAsyncWakePending { false };
     std::atomic<bool> processorShuttingDown { false };
+    std::vector<za::jsfx::NativeSliderDefault> nativeSliderDefaults;
+    std::vector<int> nativeDefaultReseedSlots;
+    std::atomic<bool> pendingNativeDefaultReseed { false };
     std::atomic<bool> pendingOversamplingParameterChange { false };
     std::atomic<bool> pendingFileReloadForEngineRate { false };
     std::atomic<bool> pendingSamplePoolRecommitForEngineRate { false };

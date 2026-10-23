@@ -16,6 +16,74 @@ The custom canvas owns the hidden slider parameters and their saved/automation v
 
 **MIDI lifecycle** selects One-shot, Gated or Natural. Attack/Decay/Sustain/Release shape playback; Pitch changes generated tuning, Velocity influence scales note response, and Output is the final trim. Analysis quality and grain budget trade preparation detail for work and memory. Pool RAM budget controls residency. Changing source/configuration cancels obsolete analysis rather than publishing it as the current model.
 
+## Child cloud
+
+The cloud is a single responsive section in Explore and Controls: a companion
+count, visible mode cards with explanations, a plan preview, and Level, Grain
+Density, Stereo Width, Similarity and Timing Spread. Gold marks the primary;
+green marks independent companions. The preview shows settings, not live grain
+positions. Zero companions leaves the primary alone. Children never recurse.
+
+Count (76), Mode (77), Density (78) and Timing Spread (79) are now real host
+parameters. Level (37), Similarity (38) and Width (53) keep their existing IDs.
+Presets, copy/paste, project recall and automation use ordinary parameter state;
+they no longer depend on private cells/custom serialization. New notes capture
+the complete cloud plan, including width and similarity. Existing clouds retain
+their captured settings. Level is compensated by 1/sqrt(child count), with a
+small mode-dependent trim; it is not a loudness guarantee for correlated grains.
+
+| Mode | Actual behavior |
+| --- | --- |
+| Follow | Independent grains following the same structural movement; softer attacks and a body bias. |
+| Resonance | Favors LF weight, body and tails; adds no resonator or oscillator. |
+| Debris | Favors motion, crest and detail at a lower energy target; does not guarantee short grains. |
+| Contrast | Alternates brightness, weight and motion offsets across companions. |
+| Shadow | Favors calmer, lower-energy body/tail material with fewer attacks; adds no low-pass or pitch shift. |
+| Body bed | Formerly Fill gaps: denser body/detail overlap, not a literal gap detector. |
+| Mixed | Cycles Follow, Resonance, Body bed, Debris, Shadow, Contrast; one child is Follow. |
+
+All modes are soft selection biases. Available recordings, scope, identity
+locks and hierarchy still determine what can be realized. Siblings discourage
+exact/near duplicate grain choices but can fall back in a tiny corpus.
+
+Fresh instances start with zero children. Older native states missing Count
+restore an internal -1 sentinel, retaining legacy Morphology's one/two-child
+plan until an explicit count is chosen; explicit zero always disables it.
+Missing Mode/Density/Timing restore Follow/60%/20%. The source opts into the
+existing #NATIVE_DEFAULT host rules; no shared runtime behavior is changed.
+Private child choices from an older native state were never stored and cannot
+be recovered if already lost.
+
+## Transient smear
+
+**Smear character: Grain** uses eight overlapping, Hann-windowed micro-grains
+with independently chosen causal offsets. Their read speeds stay at unity;
+phase scattering comes from changing excerpt offsets at silent window edges,
+not pitch modulation. Windows grow from about 7 to 40 ms and offset spread from
+0.3 to 95.3 ms. Grain timing, weights and linked gain are identical for L/R:
+true mono remains mono, and the renderer adds no stereo decorrelation.
+
+The amount retains parameter45. The lower range is deliberately gentle;
+above the middle, transient softening grows into a continuous granular haze.
+An independent deterministic random stream leaves source choices untouched.
+Short-term RMS compensation is bounded from 0.5 to 2; a linked soft guard catches
+cloud peaks without the old dry-peak clamp erasing delayed grains. The scene's
+active voice end times cap the cloud with a short final fade. No feedback or
+unbounded tail is used. Zero is an exact bypass.
+
+**Classic** retains the former three short stereo-linked all-pass sections and
+crest guard. Dry/all-pass phase interference can sound comb-like even in mono;
+the classic algorithm itself uses identical channel coefficients. A mono
+source can still produce stereo earlier in the engine when child Width is on.
+Smear character saves as parameter80. Fresh instances use Grain; old native
+projects restore Classic until changed. Both options are visible in Controls
+and Explore, alongside the amount.
+
+This is entirely Corpus DSP: fixed buffers, bounded eight-head reads, no new
+native builtin/library, FFT or audio-thread allocation. The delay/window arena
+ends at cell24076624, below the25165824-cell heap. Seven adoption-preservation
+ranges total207904cells, below the262144-cell runtime limit.
+
 ## Duration CC envelope timing
 
 **Duration CC ADSR: Relative** (the default) makes Sampler MIDI Hub's default
@@ -154,6 +222,15 @@ Use this repository's AOT build and native Legacy graphics mode, selected by
 are transient and are not saved in presets.
 
 ## Validation and rebuilding
+
+`python tests/tasks/test_corpus_cloud.py` compiles the actual cloud/smear functions
+in Native Legacy mode. It checks true mono, linked scaled stereo, exact zero,
+five sample rates, gentle low amounts, strong high amounts, diffuse impulse
+energy, end gating, per-event cloud snapshots, Mixed ordering and legacy Off.
+The supplied-file profiler's `--check-cloud` checks project state/migration,
+all seven actual modes, true-mono render isolation, selection-plan identity,
+and writes a four-amount listening comparison. `--cloud-screenshots DIRECTORY`
+captures the native cloud and smear controls.
 
 `python tests/tasks/test_corpus_grains.py` compiles the actual grain functions
 and mixer in Native Legacy mode and checks window bounds, overlap continuity,

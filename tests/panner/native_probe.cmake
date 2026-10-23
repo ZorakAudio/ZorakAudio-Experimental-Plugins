@@ -1,0 +1,8 @@
+include_guard(GLOBAL)
+function(add_proximity_native_probe)
+    add_executable(panner_proximity_native "${ZA_ROOT}/tests/panner/proximity_native.cpp")
+    target_link_libraries(panner_proximity_native PRIVATE 3DPanner juce::juce_audio_utils)
+    target_include_directories(panner_proximity_native PRIVATE "${ZA_ROOT}/src")
+    target_compile_definitions(panner_proximity_native PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+endfunction()
+cmake_language(DEFER CALL add_proximity_native_probe)

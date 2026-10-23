@@ -1,8 +1,10 @@
-desc:Hyperreal 3D Panner V7.1.2 (Legacy Distance Preservation)
+desc:Hyperreal 3D Panner V7.3.0 (Artistic Proximity)
 
 // #HELP: Headphone-focused 3D panner using softened perceptual placement, microdelay, head shadow, pinna cues, distance loss, occlusion, and room cues.
 // #HELP: Drag the orange source in the stage canvas. Default canvas drag uses the POV range limiter for fast near-center placement. Mouse wheel changes Distance.
 // #HELP: Spatial Throw controls directional cue intensity. Output Trim sets the final level.
+// #HELP: Artistic MODEL drawer: Proximity strengthens near/far cues and distances preserved stereo/beds. 0% retains the original sound.
+// #HELP: Anti-Salience adds linked, attenuation-only density/onset restraint at distance. No makeup gain or extra reverb.
 // #HELP: Solid orange = visual object position. Ghost orange = effective cue position after Throw / Cue Curve compression.
 // #HELP: Cyan wall markers are EARLY BOUNCES: first reflection hits used for out-of-head placement.
 // #HELP: Automation Safe caps aggressive throw and lengthens smoothing for drawn automation.
@@ -10,7 +12,7 @@ desc:Hyperreal 3D Panner V7.1.2 (Legacy Distance Preservation)
 // #HELP: Hover any canvas cue, snap chip, Automation Safe button, or quick-control lane for inline guidance. Tooltips use exact hit zones and dock away from controls.
 // #HELP: Elevation controls artistic height cues or Physical source height (-90..+90 degrees). Middle-drag or Shift-wheel adjusts it.
 // #HELP: SceneVerb Lite uses local Late Field, Space Size and Protect controls. Late Field at 0% bypasses the late field.
-// #HELP: V7.1.2 keeps Artistic distance in metres with its original saved-value mapping. Physical alone displays feet.
+// #HELP: FT / M switches Imperial feet and Metric metres in the visual only. Saved distances and automation keep their original meaning.
 // #HELP: V7.1.1 repairs EEL2 compilation: decimal constants and dependency-ordered helpers.
 // #HELP: V7.1.0 adds listener FOLLOW gestures, center precision, feet readouts and elevation range/pole fixes.
 // #HELP: V7 repairs lifecycle, stability and automation. MODEL selects Artistic or Physical; all control is local.
@@ -127,10 +129,39 @@ slider41:0<-180,180,0.1>-Listener Yaw (deg)
 slider42:0<-90,90,0.1>-Listener Pitch (deg)
 // #TOOLTIP: Tilt the listener sideways. FOLLOW Alt-drag or Alt-wheel.
 slider43:0<-180,180,0.1>-Listener Roll (deg)
-// #TOOLTIP: Room ceiling height. Physical displays feet; Artistic displays metres. Stored automation remains metres.
+// #TOOLTIP: Room ceiling height. FT / M changes the displayed units; saved height and automation retain their original meaning.
 slider44:4<2,24,0.01>-Room Height (m)
-// #TOOLTIP: Listener height above the floor. Physical displays feet; Artistic displays metres. Stored automation remains metres.
+// #TOOLTIP: Listener height above the floor. FT / M changes the displayed units; saved height and automation retain their original meaning.
 slider45:1.6<0.4,2.2,0.01>-Ear Height (m)
+
+// V7.2 additions: append IDs; existing saved values keep their distance mapping.
+// Native: new instances start at 75%; missing saved values restore to Legacy.
+// Standalone JSFX retains its zero default; host-native rules are comments there.
+// #NATIVE_DEFAULT: slider46=0.75 legacy=0 reseed=seed_pending
+// #NATIVE_DEFAULT: slider47=0.65 legacy=0.65
+// #TOOLTIP: Artistic only. Near-source ear contrast plus stronger distant level/presence cues across Mono, Stereo, Bed and Dual. 0% preserves V7.1.2.
+slider46:0<0,1,0.001>-Proximity
+// #TOOLTIP: Artistic only, with Proximity enabled. Stereo-linked, capped attenuation for dense loud sources and foreground attack/presence at distance. No gain restoration.
+slider47:0.65<0,1,0.001>-Distance Anti-Salience
+
+// Display preference only. Append the parameter; no audio calculation reads it.
+// #NATIVE_DEFAULT: slider48=0 legacy=0
+// #TOOLTIP: Display-only units: 0 = Imperial feet, 1 = Metric metres. Use FT / M in the header. Positions, timing and saved distance values are unchanged.
+slider48:0<0,1,1>-Display Units (Feet/Metres)
+
+// V7.3 optional Artistic perspectives. New and missing saved controls are neutral.
+// #NATIVE_DEFAULT: slider49=0 legacy=0
+// #TOOLTIP: Artistic source-facing angle relative to the listener: 0 faces you, +/-90 side-on, +/-180 away. Position stays fixed. Needs Directivity.
+slider49:0<-180,180,0.1>-Source Facing (deg)
+// #NATIVE_DEFAULT: slider50=0 legacy=0
+// #TOOLTIP: Artistic frequency-dependent source beaming. 0% is the original omnidirectional emission; higher values darken off-axis direct sound and weight each early-reflection direction. Generic approximation, not measured voice directivity.
+slider50:0<0,1,0.001>-Source Directivity
+// #NATIVE_DEFAULT: slider51=0 legacy=0
+// #TOOLTIP: Artistic blend to head/body POV. 100% is head-locked and independent of external Distance, Facing, Proximity and room cues. 0% is the original external path.
+slider51:0<0,1,0.001>-Internal POV
+// #NATIVE_DEFAULT: slider52=0.5 legacy=0.5
+// #TOOLTIP: Internal POV only. 0% is clear head-locked sound; 100% adds a darker body-transmission approximation and reduces stereo side. No synthesized vibration or anatomical calibration.
+slider52:0.5<0,1,0.001>-Body Tone
 
 // V6 control model:
 //   Lateral + Depth Front/Rear = visual object coordinate.
@@ -151,6 +182,16 @@ slider45:1.6<0.4,2.2,0.01>-Ear Height (m)
 function p3d_clamp(x, lo, hi) (
   x < lo ? lo : (x > hi ? hi : x);
 );
+
+// Generic source radiation: smooth, positive frequency-dependent lobes.
+// These authored curves are not a measured voice/instrument directivity dataset.
+function p73_gain(c,loss,amount) (10^(-loss*(1-p3d_clamp(c,-1,1))*.5*amount/20););
+function p73_cos_to(x,y,fx,fy) local(n) (
+  n=sqrt(x*x+y*y);n>.000001 ? p3d_clamp((x*fx+y*fy)/n,-1,1) : 0;
+);
+
+// Pure display conversion; never write the converted length into audio controls.
+function p722_display_m(m) (slider48<.5 ? m/.3048 : m;);
 
 function p3d_wrap_deg(a) (
   while (a > 180) ( a -= 360; );
@@ -265,7 +306,7 @@ function p71_follow_draw() local(i a b x y z hx hy hz wx wy lo hi cy sy cp sp cr
   gfx_x=ui71_left_x-5*ui_s;gfx_y=ui71_left_y+8*ui_s;gfx_printf("L");
   gfx_x=ui71_right_x-5*ui_s;gfx_y=ui71_right_y+8*ui_s;gfx_printf("R");
   p71_head(0,0,ui71_head_scale*1.6);gfx_set(.64,.77,1,1);p71_line(0,0,0,ui71_hx,ui71_hy,ui71_hz);
-  gfx_setfont(4,"Arial",fs4,'b');gfx_set(.85,.93,1,1);gfx_x=canvas_x+14*ui_s;gfx_y=canvas_y+12*ui_s;gfx_printf("LISTENER FOLLOW | %.2f ft",p7_center_r/.3048);
+  gfx_setfont(4,"Arial",fs4,'b');gfx_set(.85,.93,1,1);gfx_x=canvas_x+14*ui_s;gfx_y=canvas_y+12*ui_s;gfx_printf("LISTENER FOLLOW | %.2f",p722_display_m(p7_center_r));slider48<.5 ? gfx_printf(" ft") : gfx_printf(" m");
   gfx_setfont(4,"Arial",fs4);gfx_x=canvas_x+14*ui_s;gfx_y=canvas_y+33*ui_s;gfx_printf("Yaw %+.0f  Pitch %+.0f  Roll %+.0f | Pan %+.2f",slider41,slider42,slider43,p71_pan_angle(slider6,slider8,slider17));
   gfx_set(.73,.82,.91,1);gfx_x=canvas_x+14*ui_s;gfx_y=chip_y-39*ui_s;gfx_printf("Drag: look | Alt: roll | Ctrl: source");
   gfx_x=canvas_x+14*ui_s;gfx_y=chip_y-20*ui_s;gfx_printf("Wheel: range | Shift-wheel: height");
@@ -502,6 +543,86 @@ function p3d_far01_from_m(m) local(v den) (
   v > 1 ? v = 1;
   v;
 );
+
+// Artistic proximity controls. The near region ends at 1 m; the far cue
+// reaches full strength at the actual Distance maximum (10 m), rather than
+// the historical far01 curve's 120 m endpoint. This is a creative cue law,
+// not a replacement near-field HRTF measurement or a calibrated SPL model.
+function p72_far_from_m(m) local(f) (
+  f=p3d_clamp(log(max(1,m))/log(10),0,1);
+  f*f*(3-2*f);
+);
+p72_sm_amount=0;p72_sm_anti=.65;p72_sm_far=0;
+p72_sm_direct=1;p72_sm_bed=1;p72_sm_near_l=1;p72_sm_near_r=1;
+p72_sm_low=1;p72_sm_presence=1;p72_sm_air=1;
+p72_low_l=0;p72_low_r=0;p72_form_l=0;p72_form_r=0;
+p72_edge_l=0;p72_edge_r=0;
+p72_src_fast=0;p72_src_slow=0;p72_src_peak=0;
+p72_out_power=0;p72_guard=1;p72_last_reduction_db=0;
+p72_low_k=1-exp(-2*$pi*min(250,.40*srate)/srate);
+p72_form_k=1-exp(-2*$pi*min(1500,.40*srate)/srate);
+p72_edge_k=1-exp(-2*$pi*min(5500,.45*srate)/srate);
+p72_fast_k=1-exp(-1/(.008*srate));
+p72_slow_k=1-exp(-1/(.250*srate));
+p72_peak_decay=exp(-1/(.100*srate));
+p72_attack_k=1-exp(-1/(.035*srate));
+p72_release_k=1-exp(-1/(.700*srate));
+
+// V7.3 Artistic source-facing and internal paths; scalar histories only.
+p73_sm_beam=0;p73_sm_internal=0;p73_sm_body=.5;p73_was_beam_active=0;p73_was_inside_active=0;
+p73_er_ap_x_l=0;p73_er_ap_y_l=0;p73_er_ap_x_r=0;p73_er_ap_y_r=0;
+p73_low_k=1-exp(-2*$pi*min(450,.4*srate)/srate);
+p73_mid_k=1-exp(-2*$pi*min(2200,.4*srate)/srate);
+p73_body_dc_k=1-exp(-2*$pi*25/srate);
+p73_body_low_k=1-exp(-2*$pi*min(700,.4*srate)/srate);
+p73_body_mid_k=1-exp(-2*$pi*min(2400,.4*srate)/srate);
+p73_sm_direct_low=1;p73_t_direct_low=1;
+p73_sm_direct_mid=1;p73_t_direct_mid=1;
+p73_sm_direct_high=1;p73_t_direct_high=1;
+p73_sm_er1_low=1;p73_t_er1_low=1;
+p73_sm_er1_mid=1;p73_t_er1_mid=1;
+p73_sm_er1_high=1;p73_t_er1_high=1;
+p73_sm_er2_low=1;p73_t_er2_low=1;
+p73_sm_er2_mid=1;p73_t_er2_mid=1;
+p73_sm_er2_high=1;p73_t_er2_high=1;
+p73_sm_er3_low=1;p73_t_er3_low=1;
+p73_sm_er3_mid=1;p73_t_er3_mid=1;
+p73_sm_er3_high=1;p73_t_er3_high=1;
+p73_sm_er4_low=1;p73_t_er4_low=1;
+p73_sm_er4_mid=1;p73_t_er4_mid=1;
+p73_sm_er4_high=1;p73_t_er4_high=1;
+p73_sm_er5_low=1;p73_t_er5_low=1;
+p73_sm_er5_mid=1;p73_t_er5_mid=1;
+p73_sm_er5_high=1;p73_t_er5_high=1;
+p73_sm_er6_low=1;p73_t_er6_low=1;
+p73_sm_er6_mid=1;p73_t_er6_mid=1;
+p73_sm_er6_high=1;p73_t_er6_high=1;
+p73_sm_er7_low=1;p73_t_er7_low=1;
+p73_sm_er7_mid=1;p73_t_er7_mid=1;
+p73_sm_er7_high=1;p73_t_er7_high=1;
+p73_sm_er8_low=1;p73_t_er8_low=1;
+p73_sm_er8_mid=1;p73_t_er8_mid=1;
+p73_sm_er8_high=1;p73_t_er8_high=1;
+p73_sm_vertical_low=1;p73_t_vertical_low=1;
+p73_sm_vertical_mid=1;p73_t_vertical_mid=1;
+p73_sm_vertical_high=1;p73_t_vertical_high=1;
+p73_dir_l_lo=0;p73_dir_l_mi=0;
+p73_dir_r_lo=0;p73_dir_r_mi=0;
+p73_side_lo=0;p73_side_mi=0;
+p73_bed_l_lo=0;p73_bed_l_mi=0;
+p73_bed_r_lo=0;p73_bed_r_mi=0;
+p73_er1_lo=0;p73_er1_mi=0;
+p73_er2_lo=0;p73_er2_mi=0;
+p73_er3_lo=0;p73_er3_mi=0;
+p73_er4_lo=0;p73_er4_mi=0;
+p73_er5_lo=0;p73_er5_mi=0;
+p73_er6_lo=0;p73_er6_mi=0;
+p73_er7_lo=0;p73_er7_mi=0;
+p73_er8_lo=0;p73_er8_mi=0;
+p73_ceil_lo=0;p73_ceil_mi=0;
+p73_floor_lo=0;p73_floor_mi=0;
+p73_body_dc_l=0;p73_body_lo_l=0;p73_body_mi_l=0;
+p73_body_dc_r=0;p73_body_lo_r=0;p73_body_mi_r=0;
 
 // Rate-sized buffers: all memory is allocated and cleared in @init.
 er_bufsize = 16;
@@ -3943,6 +4064,23 @@ last_dist_m = dist_m;
 tgt_far01 = p3d_far01_from_m(dist_m);
 last_far01 = tgt_far01;
 
+// Artistic-only proximity law. Near cues are attenuation-only ear contrast;
+// beyond 1 m the direct/preserved field recedes relative to existing bounces.
+p72_t_amount=p3d_clamp(slider46,0,1);
+p72_t_anti=p3d_clamp(slider47,0,1);
+p72_t_far=p72_far_from_m(dist_m);
+p72_t_direct=10^(-6*p72_t_amount*p72_t_far/20);
+p72_t_bed=1+p72_t_amount*(1/(1+.18*dist_m+.0035*dist_m*dist_m)-1);
+p72_near=p72_t_amount*p3d_clamp((1-dist_m)/.8,0,1);
+p72_r_l=max(.12,sqrt(dist_m*dist_m+.00765625+.175*dist_m*tgt_cue_side));
+p72_r_r=max(.12,sqrt(dist_m*dist_m+.00765625-.175*dist_m*tgt_cue_side));
+p72_r_min=min(p72_r_l,p72_r_r);
+p72_t_near_l=1+p72_near*(p72_r_min/p72_r_l-1);
+p72_t_near_r=1+p72_near*(p72_r_min/p72_r_r-1);
+p72_t_low=10^(-2*p72_t_amount*p72_t_far/20);
+p72_t_presence=10^(-4.5*p72_t_amount*p72_t_far/20);
+p72_t_air=10^(-6*p72_t_amount*p72_t_far/20);
+
 // Direct gain vs distance/occlusion. Allow real far-field attenuation below the old -18 dB floor.
 _direct_g = 1 / (1 + 0.18*dist_m + 0.0035*dist_m*dist_m);
 _direct_g *= 1 - 0.28*tgt_occ;
@@ -3997,6 +4135,60 @@ len_fl = sqrt(((-2 - src_nx)*hw)*((-2 - src_nx)*hw) + (((2 - src_ny)*hd)*((2 - s
 len_fr = sqrt((((2 - src_nx)*hw))*(((2 - src_nx)*hw)) + (((2 - src_ny)*hd)*((2 - src_ny)*hd)));
 len_bl = sqrt(((-2 - src_nx)*hw)*((-2 - src_nx)*hw) + (((-2 - src_ny)*hd)*((-2 - src_ny)*hd)));
 len_br = sqrt((((2 - src_nx)*hw))*(((2 - src_nx)*hw)) + (((-2 - src_ny)*hd)*((-2 - src_ny)*hd)));
+
+// Facing is relative to the source-to-listener line, independent of position.
+// Reflect the listener into the same room images as the existing ER delays;
+// their departure vectors determine each wall/corner's source radiation gain.
+p73_t_beam=p3d_clamp(slider50,0,1);
+p73_t_internal=p3d_clamp(slider51,0,1);p73_t_body=p3d_clamp(slider52,0,1);
+p73_t_beam>0 || p73_sm_beam>.000000001 ? (
+p73_a=p3d_clamp(slider49,-180,180)*$pi/180;
+p73_x=src_nx*hw;p73_y=src_ny*hd;p73_r=sqrt(p73_x*p73_x+p73_y*p73_y);
+p73_r>.000001 ? (p73_lx=-p73_x/p73_r;p73_ly=-p73_y/p73_r;) : (p73_lx=-raw_side;p73_ly=-raw_front;);
+p73_fx=p73_lx*cos(p73_a)+p73_ly*sin(p73_a);
+p73_fy=p73_ly*cos(p73_a)-p73_lx*sin(p73_a);
+p73_c_direct=cos(p73_a);
+p73_c_er1=p73_cos_to(-2*hw-p73_x,-p73_y,p73_fx,p73_fy);
+p73_c_er2=p73_cos_to(2*hw-p73_x,-p73_y,p73_fx,p73_fy);
+p73_c_er3=p73_cos_to(-p73_x,2*hd-p73_y,p73_fx,p73_fy);
+p73_c_er4=p73_cos_to(-p73_x,-2*hd-p73_y,p73_fx,p73_fy);
+p73_c_er5=p73_cos_to(-2*hw-p73_x,2*hd-p73_y,p73_fx,p73_fy);
+p73_c_er6=p73_cos_to(2*hw-p73_x,2*hd-p73_y,p73_fx,p73_fy);
+p73_c_er7=p73_cos_to(-2*hw-p73_x,-2*hd-p73_y,p73_fx,p73_fy);
+p73_c_er8=p73_cos_to(2*hw-p73_x,-2*hd-p73_y,p73_fx,p73_fy);
+// Vertical cue taps use the horizontal radiator's broadside response.
+p73_c_vertical=0;
+p73_t_direct_low=p73_gain(p73_c_direct,1.5,p73_t_beam);
+p73_t_direct_mid=p73_gain(p73_c_direct,9,p73_t_beam);
+p73_t_direct_high=p73_gain(p73_c_direct,18,p73_t_beam);
+p73_t_er1_low=p73_gain(p73_c_er1,1.5,p73_t_beam);
+p73_t_er1_mid=p73_gain(p73_c_er1,9,p73_t_beam);
+p73_t_er1_high=p73_gain(p73_c_er1,18,p73_t_beam);
+p73_t_er2_low=p73_gain(p73_c_er2,1.5,p73_t_beam);
+p73_t_er2_mid=p73_gain(p73_c_er2,9,p73_t_beam);
+p73_t_er2_high=p73_gain(p73_c_er2,18,p73_t_beam);
+p73_t_er3_low=p73_gain(p73_c_er3,1.5,p73_t_beam);
+p73_t_er3_mid=p73_gain(p73_c_er3,9,p73_t_beam);
+p73_t_er3_high=p73_gain(p73_c_er3,18,p73_t_beam);
+p73_t_er4_low=p73_gain(p73_c_er4,1.5,p73_t_beam);
+p73_t_er4_mid=p73_gain(p73_c_er4,9,p73_t_beam);
+p73_t_er4_high=p73_gain(p73_c_er4,18,p73_t_beam);
+p73_t_er5_low=p73_gain(p73_c_er5,1.5,p73_t_beam);
+p73_t_er5_mid=p73_gain(p73_c_er5,9,p73_t_beam);
+p73_t_er5_high=p73_gain(p73_c_er5,18,p73_t_beam);
+p73_t_er6_low=p73_gain(p73_c_er6,1.5,p73_t_beam);
+p73_t_er6_mid=p73_gain(p73_c_er6,9,p73_t_beam);
+p73_t_er6_high=p73_gain(p73_c_er6,18,p73_t_beam);
+p73_t_er7_low=p73_gain(p73_c_er7,1.5,p73_t_beam);
+p73_t_er7_mid=p73_gain(p73_c_er7,9,p73_t_beam);
+p73_t_er7_high=p73_gain(p73_c_er7,18,p73_t_beam);
+p73_t_er8_low=p73_gain(p73_c_er8,1.5,p73_t_beam);
+p73_t_er8_mid=p73_gain(p73_c_er8,9,p73_t_beam);
+p73_t_er8_high=p73_gain(p73_c_er8,18,p73_t_beam);
+p73_t_vertical_low=p73_gain(p73_c_vertical,1.5,p73_t_beam);
+p73_t_vertical_mid=p73_gain(p73_c_vertical,9,p73_t_beam);
+p73_t_vertical_high=p73_gain(p73_c_vertical,18,p73_t_beam);
+);
 
 ms_scale = 1000/343;
 base_ms = 0.8 + 1.4*tgt_depth + 1.4*tgt_far01 + 0.6*tgt_room;
@@ -4257,6 +4449,41 @@ p7_t_qw*p7_sm_qw+p7_t_qx*p7_sm_qx+p7_t_qy*p7_sm_qy+p7_t_qz*p7_sm_qz<0 ? (p7_t_qw
 
 // Initialize from saved targets before processing the first sample.
 seed_pending ? (
+  p73_sm_beam=p73_t_beam;p73_sm_internal=p73_t_internal;p73_sm_body=p73_t_body;
+  p73_sm_direct_low=p73_t_direct_low;
+  p73_sm_direct_mid=p73_t_direct_mid;
+  p73_sm_direct_high=p73_t_direct_high;
+  p73_sm_er1_low=p73_t_er1_low;
+  p73_sm_er1_mid=p73_t_er1_mid;
+  p73_sm_er1_high=p73_t_er1_high;
+  p73_sm_er2_low=p73_t_er2_low;
+  p73_sm_er2_mid=p73_t_er2_mid;
+  p73_sm_er2_high=p73_t_er2_high;
+  p73_sm_er3_low=p73_t_er3_low;
+  p73_sm_er3_mid=p73_t_er3_mid;
+  p73_sm_er3_high=p73_t_er3_high;
+  p73_sm_er4_low=p73_t_er4_low;
+  p73_sm_er4_mid=p73_t_er4_mid;
+  p73_sm_er4_high=p73_t_er4_high;
+  p73_sm_er5_low=p73_t_er5_low;
+  p73_sm_er5_mid=p73_t_er5_mid;
+  p73_sm_er5_high=p73_t_er5_high;
+  p73_sm_er6_low=p73_t_er6_low;
+  p73_sm_er6_mid=p73_t_er6_mid;
+  p73_sm_er6_high=p73_t_er6_high;
+  p73_sm_er7_low=p73_t_er7_low;
+  p73_sm_er7_mid=p73_t_er7_mid;
+  p73_sm_er7_high=p73_t_er7_high;
+  p73_sm_er8_low=p73_t_er8_low;
+  p73_sm_er8_mid=p73_t_er8_mid;
+  p73_sm_er8_high=p73_t_er8_high;
+  p73_sm_vertical_low=p73_t_vertical_low;
+  p73_sm_vertical_mid=p73_t_vertical_mid;
+  p73_sm_vertical_high=p73_t_vertical_high;
+  p72_sm_amount=p72_t_amount;p72_sm_anti=p72_t_anti;p72_sm_far=p72_t_far;
+  p72_sm_direct=p72_t_direct;p72_sm_bed=p72_t_bed;
+  p72_sm_near_l=p72_t_near_l;p72_sm_near_r=p72_t_near_r;
+  p72_sm_low=p72_t_low;p72_sm_presence=p72_t_presence;p72_sm_air=p72_t_air;
   sm_cue_side=tgt_cue_side;
   sm_cue_front=tgt_cue_front;
   sm_depth=tgt_depth;
@@ -4395,6 +4622,77 @@ er_a6 += (er_t_a6-er_a6)*coeff_k;
 er_a7 += (er_t_a7-er_a7)*coeff_k;
 er_a8 += (er_t_a8-er_a8)*coeff_k;
 
+
+// New controls use the same sample-rate-independent motion smoothing.
+p72_sm_amount+=(p72_t_amount-p72_sm_amount)*smooth_k;
+p72_sm_anti+=(p72_t_anti-p72_sm_anti)*smooth_k;
+p72_sm_far+=(p72_t_far-p72_sm_far)*smooth_k;
+p72_sm_direct+=(p72_t_direct-p72_sm_direct)*smooth_k;
+p72_sm_bed+=(p72_t_bed-p72_sm_bed)*smooth_k;
+p72_sm_near_l+=(p72_t_near_l-p72_sm_near_l)*smooth_k;
+p72_sm_near_r+=(p72_t_near_r-p72_sm_near_r)*smooth_k;
+p72_sm_low+=(p72_t_low-p72_sm_low)*coeff_k;
+p72_sm_presence+=(p72_t_presence-p72_sm_presence)*coeff_k;
+p72_sm_air+=(p72_t_air-p72_sm_air)*coeff_k;
+p72_active=p72_sm_amount>0.000000001;
+
+// Smooth radiation gains rather than wrapped angles: +/-180 is continuous.
+p73_sm_beam+=(p73_t_beam-p73_sm_beam)*smooth_k;
+p73_sm_internal+=(p73_t_internal-p73_sm_internal)*smooth_k;
+p73_sm_body+=(p73_t_body-p73_sm_body)*smooth_k;
+p73_beam_active=p73_sm_beam>.000000001 || p73_t_beam>0;
+!p73_beam_active ? p73_sm_beam=0;
+!p73_beam_active && p73_was_beam_active ? (
+  p73_dir_l_lo=0;p73_dir_l_mi=0;
+  p73_dir_r_lo=0;p73_dir_r_mi=0;
+  p73_side_lo=0;p73_side_mi=0;
+  p73_bed_l_lo=0;p73_bed_l_mi=0;
+  p73_bed_r_lo=0;p73_bed_r_mi=0;
+  p73_er1_lo=0;p73_er1_mi=0;
+  p73_er2_lo=0;p73_er2_mi=0;
+  p73_er3_lo=0;p73_er3_mi=0;
+  p73_er4_lo=0;p73_er4_mi=0;
+  p73_er5_lo=0;p73_er5_mi=0;
+  p73_er6_lo=0;p73_er6_mi=0;
+  p73_er7_lo=0;p73_er7_mi=0;
+  p73_er8_lo=0;p73_er8_mi=0;
+  p73_ceil_lo=0;p73_ceil_mi=0;
+  p73_floor_lo=0;p73_floor_mi=0;
+  p73_er_ap_x_l=0;p73_er_ap_y_l=0;p73_er_ap_x_r=0;p73_er_ap_y_r=0;
+);
+p73_was_beam_active=p73_beam_active;
+p73_beam_active ? (
+p73_sm_direct_low+=(p73_t_direct_low-p73_sm_direct_low)*smooth_k;
+p73_sm_direct_mid+=(p73_t_direct_mid-p73_sm_direct_mid)*smooth_k;
+p73_sm_direct_high+=(p73_t_direct_high-p73_sm_direct_high)*smooth_k;
+p73_sm_er1_low+=(p73_t_er1_low-p73_sm_er1_low)*smooth_k;
+p73_sm_er1_mid+=(p73_t_er1_mid-p73_sm_er1_mid)*smooth_k;
+p73_sm_er1_high+=(p73_t_er1_high-p73_sm_er1_high)*smooth_k;
+p73_sm_er2_low+=(p73_t_er2_low-p73_sm_er2_low)*smooth_k;
+p73_sm_er2_mid+=(p73_t_er2_mid-p73_sm_er2_mid)*smooth_k;
+p73_sm_er2_high+=(p73_t_er2_high-p73_sm_er2_high)*smooth_k;
+p73_sm_er3_low+=(p73_t_er3_low-p73_sm_er3_low)*smooth_k;
+p73_sm_er3_mid+=(p73_t_er3_mid-p73_sm_er3_mid)*smooth_k;
+p73_sm_er3_high+=(p73_t_er3_high-p73_sm_er3_high)*smooth_k;
+p73_sm_er4_low+=(p73_t_er4_low-p73_sm_er4_low)*smooth_k;
+p73_sm_er4_mid+=(p73_t_er4_mid-p73_sm_er4_mid)*smooth_k;
+p73_sm_er4_high+=(p73_t_er4_high-p73_sm_er4_high)*smooth_k;
+p73_sm_er5_low+=(p73_t_er5_low-p73_sm_er5_low)*smooth_k;
+p73_sm_er5_mid+=(p73_t_er5_mid-p73_sm_er5_mid)*smooth_k;
+p73_sm_er5_high+=(p73_t_er5_high-p73_sm_er5_high)*smooth_k;
+p73_sm_er6_low+=(p73_t_er6_low-p73_sm_er6_low)*smooth_k;
+p73_sm_er6_mid+=(p73_t_er6_mid-p73_sm_er6_mid)*smooth_k;
+p73_sm_er6_high+=(p73_t_er6_high-p73_sm_er6_high)*smooth_k;
+p73_sm_er7_low+=(p73_t_er7_low-p73_sm_er7_low)*smooth_k;
+p73_sm_er7_mid+=(p73_t_er7_mid-p73_sm_er7_mid)*smooth_k;
+p73_sm_er7_high+=(p73_t_er7_high-p73_sm_er7_high)*smooth_k;
+p73_sm_er8_low+=(p73_t_er8_low-p73_sm_er8_low)*smooth_k;
+p73_sm_er8_mid+=(p73_t_er8_mid-p73_sm_er8_mid)*smooth_k;
+p73_sm_er8_high+=(p73_t_er8_high-p73_sm_er8_high)*smooth_k;
+p73_sm_vertical_low+=(p73_t_vertical_low-p73_sm_vertical_low)*smooth_k;
+p73_sm_vertical_mid+=(p73_t_vertical_mid-p73_sm_vertical_mid)*smooth_k;
+p73_sm_vertical_high+=(p73_t_vertical_high-p73_sm_vertical_high)*smooth_k;
+);
 
 // --- smooth derived ---
 sm_direct_g += (tgt_direct_g - sm_direct_g) * smooth_k;
@@ -4747,6 +5045,18 @@ elev_hi_r = dir_r - elev_air_lp_r;
   dir_r = dir_r + elev_body_r*(elev_body_g-1) + elev_hi_r*(elev_air_g-1);
 );
 
+// Source radiation belongs to the emitter; the listener's direction is unchanged.
+p73_beam_active ? (
+  p73_dir_l_lo+=(dir_l-p73_dir_l_lo)*p73_low_k;
+  p73_dir_l_mi+=(dir_l-p73_dir_l_mi)*p73_mid_k;
+  dir_l=dir_l*p73_sm_direct_high+p73_dir_l_lo*(p73_sm_direct_low-p73_sm_direct_mid)+p73_dir_l_mi*(p73_sm_direct_mid-p73_sm_direct_high);
+);
+p73_beam_active ? (
+  p73_dir_r_lo+=(dir_r-p73_dir_r_lo)*p73_low_k;
+  p73_dir_r_mi+=(dir_r-p73_dir_r_mi)*p73_mid_k;
+  dir_r=dir_r*p73_sm_direct_high+p73_dir_r_lo*(p73_sm_direct_low-p73_sm_direct_mid)+p73_dir_r_mi*(p73_sm_direct_mid-p73_sm_direct_high);
+);
+
 // apply distance gain after spectral cues
 dir_l *= sm_direct_g;
 dir_r *= sm_direct_g;
@@ -4760,14 +5070,24 @@ rear_wide = 1 + 0.32*rear;
 front_focus = 1 - 0.20*front;
 side_wide = 1 + 0.18*side;
 
+p73_er_delta_l=0;p73_er_delta_r=0;
+
 // Tap 1: left wall
 rd = sm_er1_d;
 rdi = floor(rd); rdf = rd - rdi;
 idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp1 = (1-er_a1)*tap + er_a1*er_lp1;
+p73_er1=er_lp1;
+p73_beam_active ? (
+  p73_er1_lo+=(er_lp1-p73_er1_lo)*p73_low_k;
+  p73_er1_mi+=(er_lp1-p73_er1_mi)*p73_mid_k;
+  p73_er1=er_lp1*p73_sm_er1_high+p73_er1_lo*(p73_sm_er1_low-p73_sm_er1_mid)+p73_er1_mi*(p73_sm_er1_mid-p73_sm_er1_high);
+);
 er_l += er_lp1 * 0.45 * 1.22 * front_focus;
+p73_beam_active ? (p73_er_delta_l += (p73_er1-er_lp1) * 0.45 * 1.22 * front_focus;);
 er_r += er_lp1 * 0.45 * 0.74 * front_focus;
+p73_beam_active ? (p73_er_delta_r += (p73_er1-er_lp1) * 0.45 * 0.74 * front_focus;);
 
 // Tap 2: right wall
 rd = sm_er2_d;
@@ -4775,8 +5095,16 @@ rdi = floor(rd); rdf = rd - rdi;
 idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp2 = (1-er_a2)*tap + er_a2*er_lp2;
+p73_er2=er_lp2;
+p73_beam_active ? (
+  p73_er2_lo+=(er_lp2-p73_er2_lo)*p73_low_k;
+  p73_er2_mi+=(er_lp2-p73_er2_mi)*p73_mid_k;
+  p73_er2=er_lp2*p73_sm_er2_high+p73_er2_lo*(p73_sm_er2_low-p73_sm_er2_mid)+p73_er2_mi*(p73_sm_er2_mid-p73_sm_er2_high);
+);
 er_l += er_lp2 * 0.45 * 0.74 * front_focus;
+p73_beam_active ? (p73_er_delta_l += (p73_er2-er_lp2) * 0.45 * 0.74 * front_focus;);
 er_r += er_lp2 * 0.45 * 1.22 * front_focus;
+p73_beam_active ? (p73_er_delta_r += (p73_er2-er_lp2) * 0.45 * 1.22 * front_focus;);
 
 // Tap 3: front wall
 rd = sm_er3_d;
@@ -4784,8 +5112,16 @@ rdi = floor(rd); rdf = rd - rdi;
 idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp3 = (1-er_a3)*tap + er_a3*er_lp3;
+p73_er3=er_lp3;
+p73_beam_active ? (
+  p73_er3_lo+=(er_lp3-p73_er3_lo)*p73_low_k;
+  p73_er3_mi+=(er_lp3-p73_er3_mi)*p73_mid_k;
+  p73_er3=er_lp3*p73_sm_er3_high+p73_er3_lo*(p73_sm_er3_low-p73_sm_er3_mid)+p73_er3_mi*(p73_sm_er3_mid-p73_sm_er3_high);
+);
 er_l += er_lp3 * 0.34 * (0.98 + 0.05*side);
+p73_beam_active ? (p73_er_delta_l += (p73_er3-er_lp3) * 0.34 * (0.98 + 0.05*side););
 er_r += er_lp3 * 0.34 * (0.98 + 0.05*side);
+p73_beam_active ? (p73_er_delta_r += (p73_er3-er_lp3) * 0.34 * (0.98 + 0.05*side););
 
 // Tap 4: back wall
 rd = sm_er4_d;
@@ -4793,8 +5129,16 @@ rdi = floor(rd); rdf = rd - rdi;
 idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp4 = (1-er_a4)*tap + er_a4*er_lp4;
+p73_er4=er_lp4;
+p73_beam_active ? (
+  p73_er4_lo+=(er_lp4-p73_er4_lo)*p73_low_k;
+  p73_er4_mi+=(er_lp4-p73_er4_mi)*p73_mid_k;
+  p73_er4=er_lp4*p73_sm_er4_high+p73_er4_lo*(p73_sm_er4_low-p73_sm_er4_mid)+p73_er4_mi*(p73_sm_er4_mid-p73_sm_er4_high);
+);
 er_l += er_lp4 * 0.26 * rear_wide * 1.04;
+p73_beam_active ? (p73_er_delta_l += (p73_er4-er_lp4) * 0.26 * rear_wide * 1.04;);
 er_r += er_lp4 * 0.26 * rear_wide * 1.04;
+p73_beam_active ? (p73_er_delta_r += (p73_er4-er_lp4) * 0.26 * rear_wide * 1.04;);
 
 // Tap 5: front-left corner
 rd = sm_er5_d;
@@ -4802,8 +5146,16 @@ rdi = floor(rd); rdf = rd - rdi;
 idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp5 = (1-er_a5)*tap + er_a5*er_lp5;
+p73_er5=er_lp5;
+p73_beam_active ? (
+  p73_er5_lo+=(er_lp5-p73_er5_lo)*p73_low_k;
+  p73_er5_mi+=(er_lp5-p73_er5_mi)*p73_mid_k;
+  p73_er5=er_lp5*p73_sm_er5_high+p73_er5_lo*(p73_sm_er5_low-p73_sm_er5_mid)+p73_er5_mi*(p73_sm_er5_mid-p73_sm_er5_high);
+);
 er_l += er_lp5 * 0.20 * 1.16;
+p73_beam_active ? (p73_er_delta_l += (p73_er5-er_lp5) * 0.20 * 1.16;);
 er_r += er_lp5 * 0.20 * 0.86;
+p73_beam_active ? (p73_er_delta_r += (p73_er5-er_lp5) * 0.20 * 0.86;);
 
 // Tap 6: front-right corner
 rd = sm_er6_d;
@@ -4811,8 +5163,16 @@ rdi = floor(rd); rdf = rd - rdi;
 idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp6 = (1-er_a6)*tap + er_a6*er_lp6;
+p73_er6=er_lp6;
+p73_beam_active ? (
+  p73_er6_lo+=(er_lp6-p73_er6_lo)*p73_low_k;
+  p73_er6_mi+=(er_lp6-p73_er6_mi)*p73_mid_k;
+  p73_er6=er_lp6*p73_sm_er6_high+p73_er6_lo*(p73_sm_er6_low-p73_sm_er6_mid)+p73_er6_mi*(p73_sm_er6_mid-p73_sm_er6_high);
+);
 er_l += er_lp6 * 0.20 * 0.86;
+p73_beam_active ? (p73_er_delta_l += (p73_er6-er_lp6) * 0.20 * 0.86;);
 er_r += er_lp6 * 0.20 * 1.16;
+p73_beam_active ? (p73_er_delta_r += (p73_er6-er_lp6) * 0.20 * 1.16;);
 
 // Tap 7: back-left corner
 rd = sm_er7_d;
@@ -4820,8 +5180,16 @@ rdi = floor(rd); rdf = rd - rdi;
 idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp7 = (1-er_a7)*tap + er_a7*er_lp7;
+p73_er7=er_lp7;
+p73_beam_active ? (
+  p73_er7_lo+=(er_lp7-p73_er7_lo)*p73_low_k;
+  p73_er7_mi+=(er_lp7-p73_er7_mi)*p73_mid_k;
+  p73_er7=er_lp7*p73_sm_er7_high+p73_er7_lo*(p73_sm_er7_low-p73_sm_er7_mid)+p73_er7_mi*(p73_sm_er7_mid-p73_sm_er7_high);
+);
 er_l += er_lp7 * 0.13 * 1.14 * rear_wide;
+p73_beam_active ? (p73_er_delta_l += (p73_er7-er_lp7) * 0.13 * 1.14 * rear_wide;);
 er_r += er_lp7 * 0.13 * 0.82 * rear_wide;
+p73_beam_active ? (p73_er_delta_r += (p73_er7-er_lp7) * 0.13 * 0.82 * rear_wide;);
 
 // Tap 8: back-right corner
 rd = sm_er8_d;
@@ -4829,8 +5197,16 @@ rdi = floor(rd); rdf = rd - rdi;
 idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
 tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
 er_lp8 = (1-er_a8)*tap + er_a8*er_lp8;
+p73_er8=er_lp8;
+p73_beam_active ? (
+  p73_er8_lo+=(er_lp8-p73_er8_lo)*p73_low_k;
+  p73_er8_mi+=(er_lp8-p73_er8_mi)*p73_mid_k;
+  p73_er8=er_lp8*p73_sm_er8_high+p73_er8_lo*(p73_sm_er8_low-p73_sm_er8_mid)+p73_er8_mi*(p73_sm_er8_mid-p73_sm_er8_high);
+);
 er_l += er_lp8 * 0.13 * 0.82 * rear_wide;
+p73_beam_active ? (p73_er_delta_l += (p73_er8-er_lp8) * 0.13 * 0.82 * rear_wide;);
 er_r += er_lp8 * 0.13 * 1.14 * rear_wide;
+p73_beam_active ? (p73_er_delta_r += (p73_er8-er_lp8) * 0.13 * 1.14 * rear_wide;);
 
 // --- Elevation vertical early-reflection bias ---
 // Uses existing ER buffer; upward favors a ceiling-like tap, downward favors a floor-like tap.
@@ -4846,6 +5222,12 @@ elev_er_amt = elev_cue_s * sm_room * (0.25 + 0.75*sm_ext);
   idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
   tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
   elev_er_lp1 = (1-er_a3)*tap + er_a3*elev_er_lp1;
+p73_ceil=elev_er_lp1;
+p73_beam_active ? (
+  p73_ceil_lo+=(elev_er_lp1-p73_ceil_lo)*p73_low_k;
+  p73_ceil_mi+=(elev_er_lp1-p73_ceil_mi)*p73_mid_k;
+  p73_ceil=elev_er_lp1*p73_sm_vertical_high+p73_ceil_lo*(p73_sm_vertical_low-p73_sm_vertical_mid)+p73_ceil_mi*(p73_sm_vertical_mid-p73_sm_vertical_high);
+);
   ceil_g = elev_er_amt * (0.055 + 0.145*max(0, sm_elev));
 
   rd = floor_ms * srate * 0.001;
@@ -4853,10 +5235,18 @@ elev_er_amt = elev_cue_s * sm_room * (0.25 + 0.75*sm_ext);
   idx0 = (er_wpos - rdi) & er_mask; idx1 = (er_wpos - rdi - 1) & er_mask;
   tap = erbuf[idx0]*(1-rdf) + erbuf[idx1]*rdf;
   elev_er_lp2 = (1-er_a4)*tap + er_a4*elev_er_lp2;
+p73_floor=elev_er_lp2;
+p73_beam_active ? (
+  p73_floor_lo+=(elev_er_lp2-p73_floor_lo)*p73_low_k;
+  p73_floor_mi+=(elev_er_lp2-p73_floor_mi)*p73_mid_k;
+  p73_floor=elev_er_lp2*p73_sm_vertical_high+p73_floor_lo*(p73_sm_vertical_low-p73_sm_vertical_mid)+p73_floor_mi*(p73_sm_vertical_mid-p73_sm_vertical_high);
+);
   floor_g = elev_er_amt * (0.050 + 0.140*max(0, -sm_elev));
 
   er_l += elev_er_lp1*ceil_g + elev_er_lp2*floor_g*0.92;
+  p73_beam_active ? (  p73_er_delta_l += (p73_ceil-elev_er_lp1)*ceil_g + (p73_floor-elev_er_lp2)*floor_g*0.92;);
   er_r += elev_er_lp1*ceil_g + elev_er_lp2*floor_g*0.92;
+  p73_beam_active ? (  p73_er_delta_r += (p73_ceil-elev_er_lp1)*ceil_g + (p73_floor-elev_er_lp2)*floor_g*0.92;);
 );
 
 // ER decorrelation
@@ -4881,6 +5271,21 @@ axis_lock > 0 ? (
   er_r = er_r*(1-axis_er) + er_mid*axis_er;
 );
 
+// Keep the original ER history independent of optional radiation. Filtering
+// only a parallel difference lets Off/old-state restoration bypass it exactly.
+p73_beam_active ? (
+p73_dy_l=-apL*p73_er_delta_l+p73_er_ap_x_l+apL*p73_er_ap_y_l;
+p73_er_ap_x_l=p73_er_delta_l;p73_er_ap_y_l=p73_dy_l;
+p73_dy_r=-apR*p73_er_delta_r+p73_er_ap_x_r+apR*p73_er_ap_y_r;
+p73_er_ap_x_r=p73_er_delta_r;p73_er_ap_y_r=p73_dy_r;
+axis_lock>0 ? (
+  p73_dy_mid=(p73_dy_l+p73_dy_r)*.5;
+  p73_dy_l=p73_dy_l*(1-axis_er)+p73_dy_mid*axis_er;
+  p73_dy_r=p73_dy_r*(1-axis_er)+p73_dy_mid*axis_er;
+);
+p73_beam_active ? (er_l+=p73_dy_l;er_r+=p73_dy_r;);
+);
+
 // Distance / occlusion push more energy into the room.
 // V6.2.2 moderates the occlusion room boost so the opposite ear does not
 // read reflections as a second blocker position.
@@ -4893,6 +5298,13 @@ er_r *= sm_er_g * er_push;
 // 1 Stereo Emitter: spatialized mid + preserved side around one object.
 // 2 Ambience Bed: keeps the stereo field broad; placement acts as a bias/anchor.
 // 3 Dual Emitter: treats L/R difference as two linked emitters using stronger side preservation.
+// Keep the original arithmetic path at Proximity=0. Physical never reads
+// these Artistic-only gains. Beds do not receive point-source near-ear ILD.
+p72_active ? (
+  p72_near_weight=mode_w0+.5*(mode_w1+mode_w3);
+  dir_l*=p72_sm_direct*(1+(p72_sm_near_l-1)*p72_near_weight);
+  dir_r*=p72_sm_direct*(1+(p72_sm_near_r-1)*p72_near_weight);
+);
 core_l = dir_l + er_l;
 core_r = dir_r + er_r;
 
@@ -4903,17 +5315,76 @@ side_env_g < 0 ? side_env_g = 0;
 // All four artistic transfer functions remain warm during mode automation.
 side_g1=side_env_g*(0.22+0.66*sm_width+0.16*sm_ext)*sm_direct_g;
 side_g3=side_env_g*(0.42+0.82*sm_width+0.22*sm_ext)*sm_direct_g;
+p72_active ? (side_g1*=p72_sm_direct;side_g3*=p72_sm_direct;);
+p73_side=side_air_state;
+p73_beam_active ? (
+  p73_side_lo+=(side_air_state-p73_side_lo)*p73_low_k;
+  p73_side_mi+=(side_air_state-p73_side_mi)*p73_mid_k;
+  p73_side=side_air_state*p73_sm_direct_high+p73_side_lo*(p73_sm_direct_low-p73_sm_direct_mid)+p73_side_mi*(p73_sm_direct_mid-p73_sm_direct_high);
+);
+p73_bed_l=bed_air_l;
+p73_beam_active ? (
+  p73_bed_l_lo+=(bed_air_l-p73_bed_l_lo)*p73_low_k;
+  p73_bed_l_mi+=(bed_air_l-p73_bed_l_mi)*p73_mid_k;
+  p73_bed_l=bed_air_l*p73_sm_direct_high+p73_bed_l_lo*(p73_sm_direct_low-p73_sm_direct_mid)+p73_bed_l_mi*(p73_sm_direct_mid-p73_sm_direct_high);
+);
+p73_bed_r=bed_air_r;
+p73_beam_active ? (
+  p73_bed_r_lo+=(bed_air_r-p73_bed_r_lo)*p73_low_k;
+  p73_bed_r_mi+=(bed_air_r-p73_bed_r_mi)*p73_mid_k;
+  p73_bed_r=bed_air_r*p73_sm_direct_high+p73_bed_r_lo*(p73_sm_direct_low-p73_sm_direct_mid)+p73_bed_r_mi*(p73_sm_direct_mid-p73_sm_direct_high);
+);
 anchor=sm_bed_anchor;
 pan_bias=p3d_clamp(az_sin*anchor*(0.10+0.25*(1-sm_far)),-0.65,0.65);
 bed_g=max(0.42,0.86-0.26*sm_far-0.16*sm_occ);
-bed_l=bed_air_l*bed_g*(pan_bias>=0 ? 1-0.28*pan_bias : 1-0.12*pan_bias);
-bed_r=bed_air_r*bed_g*(pan_bias>=0 ? 1+0.12*pan_bias : 1+0.28*pan_bias);
+bed_l=p73_bed_l*bed_g*(pan_bias>=0 ? 1-0.28*pan_bias : 1-0.12*pan_bias);
+bed_r=p73_bed_r*bed_g*(pan_bias>=0 ? 1+0.12*pan_bias : 1+0.28*pan_bias);
+p72_active ? (bed_l*=p72_sm_direct*p72_sm_bed;bed_r*=p72_sm_direct*p72_sm_bed;);
 bed_mid=(bed_l+bed_r)*0.5;
 bed_l=bed_mid+(bed_l-bed_mid)*sm_in_width;
 bed_r=bed_mid+(bed_r-bed_mid)*sm_in_width;
 core_amt=0.10+0.38*anchor; bed_amt=1-0.22*anchor;
-art_l=core_l*(mode_w0+mode_w1+mode_w3)+side_air_state*(side_g1*mode_w1+side_g3*mode_w3)+(bed_l*bed_amt+core_l*core_amt)*mode_w2;
-art_r=core_r*(mode_w0+mode_w1+mode_w3)-side_air_state*(side_g1*mode_w1+side_g3*mode_w3)+(bed_r*bed_amt+core_r*core_amt)*mode_w2;
+art_l=core_l*(mode_w0+mode_w1+mode_w3)+p73_side*(side_g1*mode_w1+side_g3*mode_w3)+(bed_l*bed_amt+core_l*core_amt)*mode_w2;
+art_r=core_r*(mode_w0+mode_w1+mode_w3)-p73_side*(side_g1*mode_w1+side_g3*mode_w3)+(bed_r*bed_amt+core_r*core_amt)*mode_w2;
+// Linked source analysis uses both input channels, so antiphase beds and
+// one-sided signals cannot disappear from the density/onset detector.
+p72_src_power=.5*(in_l*in_l+in_r*in_r);
+p72_src_fast+=(p72_src_power-p72_src_fast)*p72_fast_k;
+p72_src_slow+=(p72_src_power-p72_src_slow)*p72_slow_k;
+p72_src_peak=max(max(abs(in_l),abs(in_r)),p72_src_peak*p72_peak_decay);
+p72_density=p3d_clamp((sqrt(max(0,p72_src_slow))/(p72_src_peak+.000000000001)-.12)/.60,0,1);
+p72_onset=p3d_clamp((p72_src_fast-p72_src_slow)/(p72_src_slow+.000000000001),0,1);
+p72_strength=p72_sm_amount*p72_sm_far;
+p72_adapt=p72_strength*p72_sm_anti;
+// Complementary broad bands, identical in both ears. No independent L/R
+// compression, generated ambience, feedback, stereo collapse or makeup gain.
+// Histories stay warm at 0% for clickless enable after silence or automation.
+p72_low_l+=(art_l-p72_low_l)*p72_low_k;
+p72_low_r+=(art_r-p72_low_r)*p72_low_k;
+p72_form_l+=(art_l-p72_form_l)*p72_form_k;
+p72_form_r+=(art_r-p72_form_r)*p72_form_k;
+p72_edge_l+=(art_l-p72_edge_l)*p72_edge_k;
+p72_edge_r+=(art_r-p72_edge_r)*p72_edge_k;
+p72_presence_g=p72_sm_presence*(1-p72_adapt*(.25*p72_density+.15*p72_onset));
+p72_air_g=p72_sm_air*(1-.20*p72_adapt*p72_onset);
+p72_active ? (
+  art_l+=p72_low_l*(p72_sm_low-1)+(p72_edge_l-p72_form_l)*(p72_presence_g-1)+(art_l-p72_edge_l)*(p72_air_g-1);
+  art_r+=p72_low_r*(p72_sm_low-1)+(p72_edge_r-p72_form_r)*(p72_presence_g-1)+(art_r-p72_edge_r)*(p72_air_g-1);
+);
+// Slow linked RMS restraint is bounded to 12 dB before strength weighting.
+// The reference falls from -15 to -27 dBFS as the source recedes; it is an
+// artistic mix reference, not an estimate of acoustic SPL or source power.
+// It never raises quiet sources; Output Trim stays a true final trim.
+p72_out_power+=(max(art_l*art_l,art_r*art_r)-p72_out_power)*p72_slow_k;
+p72_rms_ref=.18-.135*p72_sm_far;
+p72_guard_t=max(.2511886432,min(1,p72_rms_ref/sqrt(max(.000000000000000001,p72_out_power))));
+p72_guard_t=1+p72_sm_far*p72_sm_anti*(p72_guard_t-1);
+p72_guard+=(p72_guard_t-p72_guard)*(p72_guard_t<p72_guard ? p72_attack_k : p72_release_k);
+// Apply the smoothed enable outside the slow release as well: disabling
+// must not leave a residual gain step when the exact legacy path takes over.
+p72_guard_effective=1+p72_sm_amount*(p72_guard-1);
+p72_active ? (art_l*=p72_guard_effective;art_r*=p72_guard_effective;);
+p72_last_reduction_db=-20*log(max(.000000000001,p72_guard_effective))/log(10);
 out_l=art_l; out_r=art_r;
 
 // Real L/R emitter feeds precede direct attenuation and occlusion.
@@ -5045,6 +5516,42 @@ sceneverb_active ? (
   sceneverb_side_damp_l=0; sceneverb_side_damp_r=0;
   sv_was_active=0;
 );
+// A separate head-locked path, not an external source at an invented distance.
+// Stereo/Bed/Dual retain side information; Mono remains a centered point.
+// Body Tone is an authored transmission approximation, not actual bone/tissue
+// stimulation. Stable feed-forward poles; no resonant boost or added reverb.
+p73_inside_mix=p73_sm_internal*(1-p7_blend);
+p73_inside_active=p73_inside_mix>.000000001;
+p73_inside_active ? (
+p73_inside_side=input_side*sm_in_width*(mode_w1+mode_w2+mode_w3)*(1-.65*p73_sm_body);
+p73_inside_l=input_mid+p73_inside_side;p73_inside_r=input_mid-p73_inside_side;
+p73_body_dc_l+=(p73_inside_l-p73_body_dc_l)*p73_body_dc_k;
+p73_body_hp_l=p73_inside_l-p73_body_dc_l;
+p73_body_lo_l+=(p73_body_hp_l-p73_body_lo_l)*p73_body_low_k;
+p73_body_mi_l+=(p73_body_hp_l-p73_body_mi_l)*p73_body_mid_k;
+p73_body_l=.65*p73_body_lo_l+.30*p73_body_mi_l+.05*p73_body_hp_l;
+p73_inside_l+=(p73_body_l-p73_inside_l)*p73_sm_body;
+p73_body_dc_r+=(p73_inside_r-p73_body_dc_r)*p73_body_dc_k;
+p73_body_hp_r=p73_inside_r-p73_body_dc_r;
+p73_body_lo_r+=(p73_body_hp_r-p73_body_lo_r)*p73_body_low_k;
+p73_body_mi_r+=(p73_body_hp_r-p73_body_mi_r)*p73_body_mid_k;
+p73_body_r=.65*p73_body_lo_r+.30*p73_body_mi_r+.05*p73_body_hp_r;
+p73_inside_r+=(p73_body_r-p73_inside_r)*p73_sm_body;
+// Linear crossfade avoids a coherent +3 dB equal-power boost. At 100%,
+// external geometry/occlusion/distance/anti-salience and all room returns vanish.
+// Physical remains its original path; intermediate model blends stay smooth.
+p73_inside_mix>.000000001 ? (
+  p73_inside_mix>1-.000000001 ? (out_l=p73_inside_l;out_r=p73_inside_r;) : (
+    out_l+=(p73_inside_l-out_l)*p73_inside_mix;out_r+=(p73_inside_r-out_r)*p73_inside_mix;
+  );
+);
+
+) : p73_was_inside_active ? (
+  p73_body_dc_l=0;p73_body_lo_l=0;p73_body_mi_l=0;
+  p73_body_dc_r=0;p73_body_lo_r=0;p73_body_mi_r=0;
+);
+p73_was_inside_active=p73_inside_active;
+
 // True final trim: detector, excitation and stored tails are independent of trim.
 out_l*=sm_trim; out_r*=sm_trim;
 
@@ -5429,7 +5936,9 @@ ui7_row_h=max(21*ui_s,ui7_row_h);
 ui7_bar_x=ui7_x+132*ui_s;ui7_bar_w=ui7_w-211*ui_s;
 ui7_start_y=ui7_y+63*ui_s;
 ui7_hover=0;
-ui7_inside && mouse_y>=ui7_start_y && mouse_y<ui7_start_y+10*ui7_row_h ? ui7_hover=floor((mouse_y-ui7_start_y)/ui7_row_h)+1;
+ui7_rows=slider36<.5 ? 7 : 10;
+ui7_inside && mouse_y>=ui7_start_y && mouse_y<ui7_start_y+ui7_rows*ui7_row_h ? ui7_hover=floor((mouse_y-ui7_start_y)/ui7_row_h)+1;
+slider36<.5 && ui7_hover>1 ? ui7_hover+=9;
 !ui_prev_l && mouse_l && ui7_tab_hot ? (ui7_open=1-ui7_open;ui_sceneverb_drawer_open=0;ui_mode=0;);
 !ui_prev_l && mouse_l && hover_sceneverb_tab ? (ui7_open=0;ui7_inside=0;);
 ui7_open && ui7_inside ? (
@@ -5450,6 +5959,12 @@ ui7_open && ui7_inside ? (
     ui7_hover==8 ? (slider43=0;sliderchange(-1.0););
     ui7_hover==9 ? (slider44=4;sliderchange(-1.0););
     ui7_hover==10 ? (slider45=1.6;sliderchange(-1.0););
+    ui7_hover==11 ? (slider46=0;sliderchange(-1.0););
+    ui7_hover==12 ? (slider47=.65;sliderchange(-1.0););
+    ui7_hover==13 ? (slider49=0;sliderchange(-1.0););
+    ui7_hover==14 ? (slider50=0;sliderchange(-1.0););
+    ui7_hover==15 ? (slider51=0;sliderchange(-1.0););
+    ui7_hover==16 ? (slider52=.5;sliderchange(-1.0););
   );
   mouse_wheel!=0 && ui7_hover>0 ? (
     ui7_hover==1 ? (slider36=min(1,max(0,floor(slider36+.5)+(mouse_wheel>0 ? 1 : -1)));sliderchange(-1.0););
@@ -5463,6 +5978,12 @@ ui7_open && ui7_inside ? (
     ui7_hover==9 ? (slider44=min(24,max(2,slider44+mouse_wheel/120*(slider36>=.5 ? 0.0762 : 0.2)*(mouse_shift ? .25 : 1)));sliderchange(-1.0););
     ui7_hover==10 ? (slider45=min(2.2,max(0.4,slider45+mouse_wheel/120*(slider36>=.5 ? 0.0254 : 0.03)*(mouse_shift ? .25 : 1)));sliderchange(-1.0););
   );
+  mouse_wheel!=0 && ui7_hover==11 ? (slider46=p3d_clamp(slider46+mouse_wheel/120*.035*(mouse_shift ? .25 : 1),0,1);sliderchange(-1.0););
+  mouse_wheel!=0 && ui7_hover==12 ? (slider47=p3d_clamp(slider47+mouse_wheel/120*.035*(mouse_shift ? .25 : 1),0,1);sliderchange(-1.0););
+  mouse_wheel!=0 && ui7_hover==13 ? (slider49=p3d_clamp(slider49+mouse_wheel/120*5*(mouse_shift ? .25 : 1),-180,180);sliderchange(-1.0););
+  mouse_wheel!=0 && ui7_hover==14 ? (slider50=p3d_clamp(slider50+mouse_wheel/120*.035*(mouse_shift ? .25 : 1),0,1);sliderchange(-1.0););
+  mouse_wheel!=0 && ui7_hover==15 ? (slider51=p3d_clamp(slider51+mouse_wheel/120*.035*(mouse_shift ? .25 : 1),0,1);sliderchange(-1.0););
+  mouse_wheel!=0 && ui7_hover==16 ? (slider52=p3d_clamp(slider52+mouse_wheel/120*.035*(mouse_shift ? .25 : 1),0,1);sliderchange(-1.0););
   mouse_wheel=0;
 );
 mouse_l && ui7_drag>0 ? (
@@ -5474,6 +5995,12 @@ mouse_l && ui7_drag>0 ? (
   ui7_drag==8 ? (slider43=-180+ui7_n*360;sliderchange(-1.0););
   ui7_drag==9 ? (slider44=2+ui7_n*22;sliderchange(-1.0););
   ui7_drag==10 ? (slider45=0.4+ui7_n*1.8000000000000003;sliderchange(-1.0););
+  ui7_drag==11 ? (slider46=ui7_n;sliderchange(-1.0););
+  ui7_drag==12 ? (slider47=ui7_n;sliderchange(-1.0););
+  ui7_drag==13 ? (slider49=-180+ui7_n*360;sliderchange(-1.0););
+  ui7_drag==14 ? (slider50=ui7_n;sliderchange(-1.0););
+  ui7_drag==15 ? (slider51=ui7_n;sliderchange(-1.0););
+  ui7_drag==16 ? (slider52=ui7_n;sliderchange(-1.0););
  );
 !mouse_l ? ui7_drag=0;
 ui7_inside || ui7_tab_hot ? (
@@ -5503,6 +6030,12 @@ inside_sceneverb_drawer ? (
 ui71_button_w=148*ui_s;ui71_button_h=28*ui_s;
 ui71_button_x=gfx_w-pad-ui71_button_w;ui71_button_y=10*ui_s;
 ui71_button_hot=mouse_x>=ui71_button_x && mouse_x<=ui71_button_x+ui71_button_w && mouse_y>=ui71_button_y && mouse_y<=ui71_button_y+ui71_button_h;
+ui722_units_w=76*ui_s;ui722_units_h=ui71_button_h;
+ui722_units_x=ui71_button_x-ui722_units_w-8*ui_s;ui722_units_y=ui71_button_y;
+ui722_units_hot=mouse_x>=ui722_units_x && mouse_x<=ui722_units_x+ui722_units_w && mouse_y>=ui722_units_y && mouse_y<=ui722_units_y+ui722_units_h;
+!ui_prev_l && mouse_l && ui722_units_hot ? (slider48=slider48<.5 ? 1 : 0;ui_mode=0;sliderchange(-1.0););
+!ui_prev_r && mouse_r && ui722_units_hot ? (slider48=0;ui_mode=0;sliderchange(-1.0););
+ui722_units_hot ? mouse_wheel=0;
 !ui_prev_l && mouse_l && ui71_button_hot && slider36>=.5 ? (ui71_follow=1-ui71_follow;ui_mode=0;);
 ui71_active=ui71_follow && slider36>=.5;
 ui71_hot=ui71_active && mouse_x>=canvas_x && mouse_x<=canvas_x+canvas_w && mouse_y>=canvas_y && mouse_y<chip_y-5*ui_s && !ui7_inside && !inside_sceneverb_drawer;
@@ -5529,7 +6062,7 @@ ui71_hot && mouse_wheel!=0 ? (
   slider7=p3d_clamp(slider7+mouse_wheel/120*.025,0,1);
   mouse_wheel=0;sliderchange(-1.0);
 );
-ui71_hot || ui71_drag || ui71_button_hot ? (
+ui71_hot || ui71_drag || ui71_button_hot || ui722_units_hot ? (
   hover_pov=0;hover_adv=0;hover_bar=0;hover_tip_bar=0;hover_safe=0;hover_source_btn=0;hover_chip=0;
   inside_canvas=0;inside_room=0;near_src=0;hover_sv_preset=0;hover_sv_bar=0;
 );
@@ -5637,6 +6170,7 @@ tip_hot ? (
   ui7_inside ? tip_id=ui7_hover>0 ? 400+ui7_hover : 400;
   ui71_hot && !ui7_inside && !inside_sceneverb_drawer ? tip_id=421;
   ui71_button_hot ? tip_id=420;
+  ui722_units_hot ? tip_id=422;
 );
 // Small hover delay: prevents flashing while passing over dense controls.
 tip_id == tooltip_last_id ? (
@@ -5791,7 +6325,7 @@ mouse_wheel != 0 ? (
 );
 
 (!ui_prev_l && mouse_l) ? (
-  ui7_inside || ui7_tab_hot || ui71_hot || ui71_drag || ui71_button_hot ? (noop=0;) : hover_sceneverb_tab ? (
+  ui7_inside || ui7_tab_hot || ui71_hot || ui71_drag || ui71_button_hot || ui722_units_hot ? (noop=0;) : hover_sceneverb_tab ? (
     ui_sceneverb_drawer_open = 1 - ui_sceneverb_drawer_open;
   ) : hover_sv_preset > 0 ? (
     // Macro presets: pick source type + three sane macro values. Late Field > 0 activates SceneVerb.
@@ -6157,7 +6691,7 @@ fs1 < 12 ? fs1 = 12; fs2 < 10 ? fs2 = 10; fs3 < 9 ? fs3 = 9; fs4 < 14 ? fs4 = 14
 // title
 gfx_setfont(1,"Arial",fs1,'b');
 gfx_set(txt_r,txt_g,txt_b,1);
-gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V7.1.2");
+gfx_x = pad; gfx_y = pad*0.45; gfx_printf("Hyperreal 3D Panner V7.3.0");
 
 gfx_setfont(2,"Arial",fs2);
 gfx_set(mut_r,mut_g,mut_b,1);
@@ -6432,6 +6966,27 @@ gfx_set(1,0.88,0.55,0.35 + 0.20*(1-ui_dist_vis));
 gfx_circle(src_draw_x, src_draw_y, dot_r + 1.8*ui_s, 0, 1);
 gfx_set(0.12,0.12,0.13,1); gfx_circle(src_draw_x, src_draw_y, 2.6*ui_s, 1, 1);
 
+// A small arrow shows the emitter's facing; it does not move the source.
+slider36<.5 && slider50>.001 && slider51<.999 ? (
+  ui73_dx=cx-src_draw_x;ui73_dy=cy-src_draw_y;
+  ui73_n=sqrt(ui73_dx*ui73_dx+ui73_dy*ui73_dy);
+  ui73_n>.001 ? (ui73_dx/=ui73_n;ui73_dy/=ui73_n;) : (ui73_dx=0;ui73_dy=1;);
+  ui73_a=slider49*$pi/180;
+  ui73_fx=ui73_dx*cos(ui73_a)-ui73_dy*sin(ui73_a);
+  ui73_fy=ui73_dy*cos(ui73_a)+ui73_dx*sin(ui73_a);
+  ui73_len=(24+14*slider50)*ui_s;
+  // Keep the arrow inside the stage so it cannot overwrite FRONT/L/R labels.
+  ui73_fx>.000001 ? ui73_len=min(ui73_len,(cx+room_hw-8*ui_s-src_draw_x)/ui73_fx);
+  ui73_fx<-.000001 ? ui73_len=min(ui73_len,(cx-room_hw+8*ui_s-src_draw_x)/ui73_fx);
+  ui73_fy>.000001 ? ui73_len=min(ui73_len,(cy+room_hd-8*ui_s-src_draw_y)/ui73_fy);
+  ui73_fy<-.000001 ? ui73_len=min(ui73_len,(cy-room_hd+8*ui_s-src_draw_y)/ui73_fy);
+  ui73_len=max(0,ui73_len);
+  ui73_x=src_draw_x+ui73_fx*ui73_len;ui73_y=src_draw_y+ui73_fy*ui73_len;
+  gfx_set(1,.92,.68,.95*(1-slider51));gfx_line(src_draw_x,src_draw_y,ui73_x,ui73_y);
+  gfx_line(ui73_x,ui73_y,ui73_x-(ui73_fx*7+ui73_fy*4)*ui_s,ui73_y-(ui73_fy*7-ui73_fx*4)*ui_s);
+  gfx_line(ui73_x,ui73_y,ui73_x-(ui73_fx*7-ui73_fy*4)*ui_s,ui73_y-(ui73_fy*7+ui73_fx*4)*ui_s);
+);
+
 // listener
 gfx_set(0.60,0.66,0.76,1);
 gfx_circle(cx, cy, head_r, 0, 1);
@@ -6439,6 +6994,12 @@ gfx_circle(cx-21*ui_s, cy, 5.1*ui_s, 0, 1);
 gfx_circle(cx+21*ui_s, cy, 5.1*ui_s, 0, 1);
 ui_head_yaw=slider36>=.5 ? slider41*$pi/180 : 0;
 gfx_line(cx+sin(ui_head_yaw)*head_r,cy-cos(ui_head_yaw)*head_r,cx+sin(ui_head_yaw)*(head_r+9*ui_s),cy-cos(ui_head_yaw)*(head_r+9*ui_s));
+
+slider36<.5 && slider51>.001 ? (
+  gfx_set(.75,.59,1,slider51*.8);gfx_circle(cx,cy,head_r+5*ui_s,0,1);
+  gfx_setfont(4,"Arial",fs4,'b');gfx_x=canvas_x+14*ui_s;gfx_y=chip_y-23*ui_s;
+  gfx_printf("INTERNAL %.0f%% | head/body",slider51*100);
+);
 
 // legend / readout on canvas
 gfx_setfont(4,"Arial",fs4);
@@ -6474,6 +7035,12 @@ gfx_set(.12,.20,.29,1);gfx_rect(ui71_button_x,ui71_button_y,ui71_button_w,ui71_b
 gfx_set(.60,.80,1,1);gfx_roundrect(ui71_button_x,ui71_button_y,ui71_button_w,ui71_button_h,6*ui_s,0);
 gfx_setfont(4,"Arial",fs4,'b');gfx_x=ui71_button_x+10*ui_s;gfx_y=ui71_button_y+6*ui_s;
 slider36<.5 ? gfx_printf("FOLLOW: Physical") : ui71_active ? gfx_printf("View: FOLLOW") : gfx_printf("View: PLAN");
+
+// Quick display-only Imperial / Metric selector, available in both renderers.
+gfx_set(.12,.20,.29,1);gfx_rect(ui722_units_x,ui722_units_y,ui722_units_w,ui722_units_h);
+gfx_set(.60,.80,1,ui722_units_hot ? 1 : .8);gfx_roundrect(ui722_units_x,ui722_units_y,ui722_units_w,ui722_units_h,6*ui_s,0);
+gfx_setfont(4,"Arial",fs4,'b');gfx_x=ui722_units_x+10*ui_s;gfx_y=ui722_units_y+6*ui_s;
+slider48<.5 ? gfx_printf("FT / m") : gfx_printf("ft / M");
 
 // chips
 gfx_setfont(4,"Arial",fs4,'b');
@@ -6553,7 +7120,7 @@ gfx_setfont(3,"Arial",fs3);
 gfx_set(0.88,0.91,0.96,1);
 gfx_x = c1x + 14*ui_s; gfx_y = c1y + 36*ui_s; slider36>=.5 ? gfx_printf("Pan     %+.2f deg",p71_pan_angle(slider6,slider8,slider17)) : gfx_printf("Visual  %+.1f deg",last_visual_az);
 gfx_x = c1x + 14*ui_s; gfx_y = c1y + 54*ui_s; slider36>=.5 ? gfx_printf("Height  %+.1f deg",slider21*90) : gfx_printf("Cue     %+.1f deg",last_cue_az);
-gfx_x = c1x + 14*ui_s; gfx_y = c1y + 72*ui_s; slider36>=.5 ? gfx_printf("Range   %.1f ft",ui712_distance_m/.3048) : gfx_printf("Range   %.1f m",ui712_distance_m);
+gfx_x = c1x + 14*ui_s; gfx_y = c1y + 72*ui_s; slider36<.5 && slider51>=.999 ? gfx_printf("Range   Internal head/body") : (gfx_printf("Range   %.1f",p722_display_m(ui712_distance_m));slider48<.5 ? gfx_printf(" ft") : gfx_printf(" m"););
 gfx_x = c1x + 14*ui_s; gfx_y = c1y + 90*ui_s;
 last_source_warn ? gfx_set(warn_r,warn_g,warn_b,1) : gfx_set(0.88,0.91,0.96,1);
 gfx_printf("Input r %.2f", last_input_corr);
@@ -6591,7 +7158,7 @@ gfx_set(0.92,0.94,0.97,1); gfx_x = c2x+14*ui_s; gfx_y = b3y-label_lift; gfx_prin
 gfx_set(0.18,0.20,0.24,1); gfx_rect(barx,b3y,barw,barh); gfx_roundrect(barx,b3y,barw,barh,6*ui_s,1);
 gfx_set(0.78,0.81,0.90,1); gfx_rect(barx,b3y,barw*ui_dist_vis,barh);
 gfx_set(1,1,1, hover_bar==3 ? 0.95 : 0.70); gfx_circle(barx + barw*ui_dist_vis, b3y + barh*0.5, 4.0*ui_s, 1, 1);
-gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b3y-1*ui_s; slider36>=.5 ? gfx_printf("%.1fft",ui712_distance_m/.3048) : gfx_printf("%.1fm",ui712_distance_m);
+gfx_set(mut_r,mut_g,mut_b,1); gfx_x = valx; gfx_y = b3y-1*ui_s; gfx_printf("%.1f",p722_display_m(ui712_distance_m));slider48<.5 ? gfx_printf("ft") : gfx_printf("m");
 
 // 4 Throw
 gfx_set(0.92,0.94,0.97,1); gfx_x = c2x+14*ui_s; gfx_y = b4y-label_lift; gfx_printf("Spatial Throw");
@@ -6702,7 +7269,7 @@ gfx_set(mut_r,mut_g,mut_b,1); gfx_x = adv_valx; gfx_y = adv5y - 2*ui_s; gfx_prin
 gfx_setfont(4,"Arial",fs4);
 gfx_set(mut_r,mut_g,mut_b,1);
 gfx_x = pad; gfx_y = gfx_h - foot_h + 7*ui_s;
-slider36<.5 ? gfx_printf("V7.1.2 Artistic | original distance mapping in metres.") : (gfx_printf("Physical %.2f ft | Pan %+.2f deg",p7_center_r/.3048,p71_pan_angle(slider6,slider8,slider17)); p7_boundary ? gfx_printf(" | outside room / room cues fading"); p7_height_limited ? gfx_printf(" | limited source HF for height cues"););
+slider36<.5 ? (slider51>.001 ? gfx_printf("Artistic | Internal %.0f%% | Body %.0f%%",slider51*100,slider52*100) : gfx_printf("Artistic | Proximity %.0f%% | restraint %.1f dB",slider46*100,p72_last_reduction_db)) : (gfx_printf("Physical %.2f",p722_display_m(p7_center_r));slider48<.5 ? gfx_printf(" ft") : gfx_printf(" m");gfx_printf(" | Pan %+.2f deg",p71_pan_angle(slider6,slider8,slider17)); p7_boundary ? gfx_printf(" | outside room / room cues fading"); p7_height_limited ? gfx_printf(" | limited source HF for height cues"););
 
 // --- SceneVerb Lite side tab + drawer overlay ---
 gfx_set(ui_sceneverb_drawer_open ? 0.16 : 0.12, ui_sceneverb_drawer_open ? 0.28 : 0.16, ui_sceneverb_drawer_open ? 0.38 : 0.22, 0.98);
@@ -6773,13 +7340,47 @@ ui7_open ? (
   gfx_set(.55,.78,1,1);gfx_roundrect(ui7_x,ui7_y,ui7_w,ui7_h,12*ui_s,0);
   gfx_setfont(2,"Arial",fs2,'b');gfx_x=ui7_x+14*ui_s;gfx_y=ui7_y+12*ui_s;gfx_printf("Spatial Model");
   gfx_setfont(4,"Arial",fs4);gfx_set(.72,.78,.86,1);
-  gfx_x=ui7_x+14*ui_s;gfx_y=ui7_y+34*ui_s;gfx_printf("Physical settings below. Right-click resets.");
+  gfx_x=ui7_x+14*ui_s;gfx_y=ui7_y+34*ui_s;slider36<.5 ? gfx_printf("Distance, facing and head/body POV.") : gfx_printf("Physical settings. Right-click resets.");
   ui7_yy=ui7_start_y+0*ui7_row_h;
   gfx_set(.88,.92,.98,1);gfx_x=ui7_x+14*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("Render Model");
   gfx_set(.17,.21,.28,1);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w,8*ui_s);
   gfx_set(.45,.72,1,ui7_hover==1 ? 1 : .8);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w*(slider36-(0))/(1),8*ui_s);
   gfx_x=ui7_bar_x+ui7_bar_w+8*ui_s;gfx_y=ui7_yy+4*ui_s;
   slider36<.5 ? gfx_printf("Artistic") : gfx_printf("Physical");
+  slider36<.5 ? (
+    ui7_yy=ui7_start_y+ui7_row_h;
+    gfx_set(.88,.92,.98,1);gfx_x=ui7_x+14*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("Proximity");
+    gfx_set(.17,.21,.28,1);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w,8*ui_s);
+    gfx_set(.45,.72,1,ui7_hover==11 ? 1 : .8);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w*slider46,8*ui_s);
+    gfx_x=ui7_bar_x+ui7_bar_w+8*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("%.0f%%",slider46*100);
+    ui7_yy+=ui7_row_h;
+    gfx_set(.88,.92,.98,1);gfx_x=ui7_x+14*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("Anti-Salience");
+    gfx_set(.17,.21,.28,1);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w,8*ui_s);
+    gfx_set(.45,.72,1,ui7_hover==12 ? 1 : .8);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w*slider47,8*ui_s);
+    gfx_x=ui7_bar_x+ui7_bar_w+8*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("%.0f%%",slider47*100);
+    ui7_yy+=ui7_row_h;
+    gfx_set(.88,.92,.98,1);gfx_x=ui7_x+14*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("Facing");
+    gfx_set(.17,.21,.28,1);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w,8*ui_s);
+    gfx_set(.45,.72,1,ui7_hover==13 ? 1 : .8);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w*(slider49-(-180))/360,8*ui_s);
+    gfx_x=ui7_bar_x+ui7_bar_w+8*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("%+.0f deg",slider49);
+    ui7_yy+=ui7_row_h;
+    gfx_set(.88,.92,.98,1);gfx_x=ui7_x+14*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("Directivity");
+    gfx_set(.17,.21,.28,1);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w,8*ui_s);
+    gfx_set(.45,.72,1,ui7_hover==14 ? 1 : .8);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w*(slider50-(0))/1,8*ui_s);
+    gfx_x=ui7_bar_x+ui7_bar_w+8*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("%.0f%%",slider50*100);
+    ui7_yy+=ui7_row_h;
+    gfx_set(.88,.92,.98,1);gfx_x=ui7_x+14*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("Internal POV");
+    gfx_set(.17,.21,.28,1);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w,8*ui_s);
+    gfx_set(.45,.72,1,ui7_hover==15 ? 1 : .8);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w*(slider51-(0))/1,8*ui_s);
+    gfx_x=ui7_bar_x+ui7_bar_w+8*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("%.0f%%",slider51*100);
+    ui7_yy+=ui7_row_h;
+    gfx_set(.88,.92,.98,1);gfx_x=ui7_x+14*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("Body Tone");
+    gfx_set(.17,.21,.28,1);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w,8*ui_s);
+    gfx_set(.45,.72,1,ui7_hover==16 ? 1 : .8);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w*(slider52-(0))/1,8*ui_s);
+    gfx_x=ui7_bar_x+ui7_bar_w+8*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("%.0f%%",slider52*100);
+    gfx_set(.72,.78,.86,1);gfx_x=ui7_x+14*ui_s;gfx_y=ui7_yy+ui7_row_h+9*ui_s;gfx_printf("Facing: 0 toward you, 180 away.");
+    gfx_x=ui7_x+14*ui_s;gfx_y+=20*ui_s;gfx_printf("Internal 100%%: head/body; room removed.");
+  ) : (
   ui7_yy=ui7_start_y+1*ui7_row_h;
   gfx_set(.88,.92,.98,1);gfx_x=ui7_x+14*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("Pinna Profile");
   gfx_set(.17,.21,.28,1);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w,8*ui_s);
@@ -6827,17 +7428,18 @@ ui7_open ? (
   gfx_set(.17,.21,.28,1);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w,8*ui_s);
   gfx_set(.45,.72,1,ui7_hover==9 ? 1 : .8);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w*(slider44-(2))/(22),8*ui_s);
   gfx_x=ui7_bar_x+ui7_bar_w+8*ui_s;gfx_y=ui7_yy+4*ui_s;
-  slider36>=.5 ? gfx_printf("%.2fft",slider44/.3048) : gfx_printf("%.2fm",slider44);
+  gfx_printf("%.2f",p722_display_m(slider44));slider48<.5 ? gfx_printf("ft") : gfx_printf("m");
   ui7_yy=ui7_start_y+9*ui7_row_h;
   gfx_set(.88,.92,.98,1);gfx_x=ui7_x+14*ui_s;gfx_y=ui7_yy+4*ui_s;gfx_printf("Ear Height");
   gfx_set(.17,.21,.28,1);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w,8*ui_s);
   gfx_set(.45,.72,1,ui7_hover==10 ? 1 : .8);gfx_rect(ui7_bar_x,ui7_yy+8*ui_s,ui7_bar_w*(slider45-(0.4))/(1.8000000000000003),8*ui_s);
   gfx_x=ui7_bar_x+ui7_bar_w+8*ui_s;gfx_y=ui7_yy+4*ui_s;
-  slider36>=.5 ? gfx_printf("%.2fft",slider45/.3048) : gfx_printf("%.2fm",slider45);
+  gfx_printf("%.2f",p722_display_m(slider45));slider48<.5 ? gfx_printf("ft") : gfx_printf("m");
+  );
   gfx_set(.68,.77,.87,1);gfx_x=ui7_x+14*ui_s;gfx_y=ui7_y+ui7_h-35*ui_s;
-  gfx_printf("Headphones | KEMAR fit: -40 to +90 deg");
+  slider36<.5 ? gfx_printf("Generic radiation / body approximations") : gfx_printf("Headphones | KEMAR fit: -40 to +90 deg");
   gfx_x=ui7_x+14*ui_s;gfx_y=ui7_y+ui7_h-18*ui_s;
-  p7_boundary && slider36>=.5 ? gfx_printf("Outside room: %.2f ft. Room cues fade.",p7_center_r/.3048) : gfx_printf("Travel off keeps direct sound near picture sync.");
+  slider36<.5 ? (slider51>.001 ? gfx_printf("External contribution: %.0f%%",(1-slider51)*100) : gfx_printf("Adaptive restraint: %.1f dB",p72_last_reduction_db)) : (p7_boundary ? (gfx_printf("Outside room: %.2f",p722_display_m(p7_center_r));slider48<.5 ? gfx_printf(" ft") : gfx_printf(" m");gfx_printf(". Room cues fade.")) : gfx_printf("Travel off keeps direct sound near picture sync."));
 );
 
 // --- hover tooltip card ---
@@ -6905,8 +7507,15 @@ ui7_open ? (
   tip_id == 408 ? gfx_printf("Listener Roll") :
   tip_id == 409 ? gfx_printf("Room Height") :
   tip_id == 410 ? gfx_printf("Ear Height") :
+  tip_id == 411 ? gfx_printf("Proximity") :
+  tip_id == 412 ? gfx_printf("Distance Anti-Salience") :
   tip_id == 420 ? gfx_printf("Listener View") :
   tip_id == 421 ? gfx_printf("Listener Mouse Controls") :
+  tip_id == 413 ? gfx_printf("Source Facing") :
+  tip_id == 414 ? gfx_printf("Source Directivity") :
+  tip_id == 415 ? gfx_printf("Internal POV") :
+  tip_id == 416 ? gfx_printf("Body Tone") :
+  tip_id == 422 ? gfx_printf("Display Units") :
   tip_id == 20 ? gfx_printf("Source Object") :
   tip_id == 21 ? gfx_printf("Cue Ghost") :
   tip_id == 22 ? gfx_printf("Room Bounces") :
@@ -6964,7 +7573,7 @@ ui7_open ? (
     gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("0%%: compensate range level; retain ear cues.");
     gfx_x=tip_tx;gfx_y=tip_l3;gfx_printf("Physical only. Right-click: 100%%.");
   ) :   tip_id == 404 ? (
-    gfx_x=tip_tx;gfx_y=tip_l1;slider36>=.5 ? gfx_printf("On: include sound travel at 1125 ft/s.") : gfx_printf("On: include sound travel at 343 m/s.");
+    gfx_x=tip_tx;gfx_y=tip_l1;slider48<.5 ? gfx_printf("On: include sound travel at 1125 ft/s.") : gfx_printf("On: include sound travel at 343 m/s.");
     gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("Off: retain ear timing and reflection delays.");
     gfx_x=tip_tx;gfx_y=tip_l3;gfx_printf("Physical only. Right-click: Off.");
   ) :   tip_id == 405 ? (
@@ -6986,15 +7595,43 @@ ui7_open ? (
   ) :   tip_id == 409 ? (
     gfx_x=tip_tx;gfx_y=tip_l1;gfx_printf("Ceiling height above the room floor.");
     gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("Room cues fade as sources leave its bounds.");
-    gfx_x=tip_tx;gfx_y=tip_l3;slider36>=.5 ? gfx_printf("Physical only. Right-click: 13.12 feet.") : gfx_printf("Physical only. Right-click: 4 metres.");
+    gfx_x=tip_tx;gfx_y=tip_l3;slider48<.5 ? gfx_printf("Physical only. Right-click: 13.12 feet.") : gfx_printf("Physical only. Right-click: 4 metres.");
   ) :   tip_id == 410 ? (
     gfx_x=tip_tx;gfx_y=tip_l1;gfx_printf("Listener height above the room floor.");
     gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("Changes floor and ceiling reflection paths.");
-    gfx_x=tip_tx;gfx_y=tip_l3;slider36>=.5 ? gfx_printf("Physical only. Right-click: 5.25 feet.") : gfx_printf("Physical only. Right-click: 1.6 metres.");
+    gfx_x=tip_tx;gfx_y=tip_l3;slider48<.5 ? gfx_printf("Physical only. Right-click: 5.25 feet.") : gfx_printf("Physical only. Right-click: 1.6 metres.");
+  ) :   tip_id == 411 ? (
+    gfx_x=tip_tx;gfx_y=tip_l1;gfx_printf("Strengthens close/far cues in Artistic.");
+    gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("Includes preserved stereo and ambience beds.");
+    gfx_x=tip_tx;gfx_y=tip_l3;gfx_printf("0%%: original sound. Try 75%%. Right-click: 0%%.");
+  ) :   tip_id == 412 ? (
+    gfx_x=tip_tx;gfx_y=tip_l1;gfx_printf("Tames dense loudness and sharp presence far away.");
+    gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("Linked attenuation; no boost or extra reverb.");
+    gfx_x=tip_tx;gfx_y=tip_l3;gfx_printf("Needs Proximity. Right-click: 65%%.");
+  ) :   tip_id == 413 ? (
+    gfx_x=tip_tx;gfx_y=tip_l1;gfx_printf("0 faces you; +/-90 side-on; +/-180 away.");
+    gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("Rotates emission; the source stays in place.");
+    gfx_x=tip_tx;gfx_y=tip_l3;gfx_printf("Needs Directivity. Right-click: toward you.");
+  ) :   tip_id == 414 ? (
+    gfx_x=tip_tx;gfx_y=tip_l1;gfx_printf("Beaming reduces off-axis highs more than lows.");
+    gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("Each wall/corner gets its own departure angle.");
+    gfx_x=tip_tx;gfx_y=tip_l3;gfx_printf("Generic source model. Right-click: Off.");
+  ) :   tip_id == 415 ? (
+    gfx_x=tip_tx;gfx_y=tip_l1;gfx_printf("Blend external placement with head/body sound.");
+    gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("100%% removes external distance and room cues.");
+    gfx_x=tip_tx;gfx_y=tip_l3;gfx_printf("Independent of Facing. Right-click: external.");
+  ) :   tip_id == 416 ? (
+    gfx_x=tip_tx;gfx_y=tip_l1;gfx_printf("Clear internal sound toward darker body tone.");
+    gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("No measured anatomy or physical vibration.");
+    gfx_x=tip_tx;gfx_y=tip_l3;gfx_printf("Needs Internal POV. Right-click: 50%%.");
   ) :   tip_id == 420 ? (
     gfx_x=tip_tx;gfx_y=tip_l1;gfx_printf("Physical only: switch PLAN / FOLLOW.");
     gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("The camera trails listener yaw; no audio effect.");
     gfx_x=tip_tx;gfx_y=tip_l3;gfx_printf("FOLLOW shows pitch, roll and source height.");
+  ) :   tip_id == 422 ? (
+    gfx_x=tip_tx;gfx_y=tip_l1;gfx_printf("Click: Imperial feet / Metric metres.");
+    gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("Labels only; positions and sound stay the same.");
+    gfx_x=tip_tx;gfx_y=tip_l3;gfx_printf("Saved per instance. Right-click: feet.");
   ) :   tip_id == 421 ? (
     gfx_x=tip_tx;gfx_y=tip_l1;gfx_printf("Drag: look | Alt-drag: roll | Shift: fine.");
     gfx_x=tip_tx;gfx_y=tip_l2;gfx_printf("Ctrl-drag: source direction and elevation.");
@@ -7072,7 +7709,7 @@ ui7_open ? (
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Canvas Y also edits this.");
   ) : tip_id == 103 ? (
     gfx_x = tip_tx; gfx_y = tip_l1;
-    slider36>=.5 ? gfx_printf("Physical range: %.2f ft",ui712_distance_m/.3048) : gfx_printf("Perceptual range: %.2f m | far %.0f%%",ui712_distance_m,ui712_far01*100);
+    gfx_printf("Range: %.2f",p722_display_m(ui712_distance_m));slider48<.5 ? gfx_printf(" ft") : gfx_printf(" m");slider36<.5 ? gfx_printf(" | far %.0f%%",ui712_far01*100);
     gfx_x = tip_tx; gfx_y = tip_l2;
     slider36>=.5 ? gfx_printf("Range stays fixed; room fades outside bounds.") : gfx_printf("Grey rings/dashes show distance only.");
     gfx_x = tip_tx; gfx_y = tip_l3; gfx_printf("Does not mean source Size.");

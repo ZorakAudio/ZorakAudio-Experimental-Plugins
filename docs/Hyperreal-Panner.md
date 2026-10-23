@@ -9,6 +9,151 @@ The default **Hyperreal 3D Panner** uses the original Artistic and fitted-KEMAR 
 | HyperrealFaust | Designed FAUST Artistic and Physical voicings | Separate alternative, changes both models |
 | HyperrealHybrid | Original Artistic plus designed FAUST Physical | Separate alternative; Physical changes substantially |
 
+## V7.3 source facing and internal head/body POV
+
+Artistic appends Source Facing (slider49, -180..180 degrees), Source
+Directivity (slider50, 0..1), Internal POV (slider51, 0..1) and Body Tone
+(slider52, 0..1). Defaults and missing native-state values are 0, 0, 0 and .5.
+The existing saved-state reseed also seeds their targets, so old states do not
+inherit active perspective controls. Previous parameter IDs are unchanged.
+
+Facing is relative to the source-to-listener line: 0 toward the listener,
++/-90 side-on and +/-180 away. This rotates radiation without moving position.
+Generic authored three-band lobes have gains `10^(-L * (1-cos(theta))/2 * D/20)`
+with L = 1.5/9/18 dB for low/mid/high and Directivity D. Complementary one-pole
+bands at 450/2200 Hz colour direct left/right, preserved side and the bed.
+Each of the eight image-source wall/corner paths uses its own source departure
+vector; vertical cue taps use the horizontal radiator's broadside response.
+Radiation gains are smoothed rather than wrapped angles. Original ER histories
+remain untouched; a parallel difference carries optional reflected radiation.
+There is no added convolution, delay allocation, measured source dataset,
+power normalization or automatic makeup gain. These are generic artistic
+patterns, not validated human/instrument radiation profiles.
+
+Internal POV linearly crossfades after the external late field and before final
+trim to a separate head-locked input path. At 100% all external geometric,
+distance, source-facing and room processing is absent. Mono is centered;
+Stereo/Bed/Dual retain controlled side. Body Tone reduces side by up to 65%
+and blends in a 25 Hz high-pass followed by a positive sum of 700 Hz/2400 Hz
+low-pass paths (weights .65/.30) plus .05 of the high-passed signal. Histories
+run during its fade; unused paths skip their filters and clear histories at Off.
+No resonant boost, anatomy simulation or physical bone vibration
+is claimed. Already embedded room/binaural cues cannot be removed by this path.
+Physical is unaffected; no heavyweight renderer is added.
+
+Run `python tests/panner/test_source_perspective.py` for synthetic comparisons
+against pinned V7.2.2, beaming spectra, direct/reflected departure responses,
+internal-path independence, stereo preservation, automation, rates, tails and
+trim. Native `tests/panner/test_native.py` also exercises saved-state fallback
+and the actual controls. No private audio is used by these checks.
+
+V7.3 qualification passed 71 checks / 125 synthetic renders, including exact
+V7.2.2 output at neutral controls across all four source modes, three distances
+and Proximity Off/75%; beaming spectra; separate reflected departure responses;
+internal independence; stereo/antiphase preservation; rate/partition stability;
+automation, trim, silence/tails and unchanged Physical output. Actual native
+editor click/wheel/reset, saved-state cold/active restoration and explicit-value
+preservation, units, resize and reprepare checks also passed.
+
+A five-trial interleaved offline kernel probe at 48 kHz / 256 processing four
+seconds of stereo wet-bed audio measured medians of .202992 s (V7.2.2) and
+.215349 s (V7.3 with the new controls Off), a 6.1% increase for that workload.
+Unused radiation/body filters skip work. This is a complete DSP-kernel timing,
+not a DAW callback, a live deadline guarantee or a general CPU-meter prediction.
+
+
+Design references: [directional sources and reflected propagation](https://www.microsoft.com/en-us/research/publication/directional-sources-and-listeners-in-interactive-sound-propagation/),
+[measured voice directivity](https://pmc.ncbi.nlm.nih.gov/articles/PMC8329840/),
+and [own-voice air/bone transmission](https://pubmed.ncbi.nlm.nih.gov/20707445/).
+The proposed curves are authored approximations, not fitted results from those
+studies. A measured-source profile would be needed for source-specific fidelity.
+
+## V7.2.2 display units
+
+Display Units (slider48, 0 = feet, 1 = metres) is appended as a UI-only
+preference. FT / M in the header switches it; right-click selects feet. Both
+new instances and older native states missing the preference default to feet.
+The selected unit is saved per instance. The conversion is exactly
+`display_feet = internal_metres / 0.3048`; selecting metres displays the original
+value. No converted length is written into slider7, slider44 or slider45.
+Distance mapping, room geometry, timing, automation, drag/wheel response and
+all audio processing are unchanged. Range/height/FOLLOW readouts and related
+tooltips use the same selection in both renderers.
+
+Native qualification confirmed feet/metres button rendering, click/right-click,
+saved metric preference, feet fallback for older states, and preservation of
+every prior saved parameter. Audio remained bit-identical while switching units
+live across all four Artistic source modes and near/far distances. The existing
+legacy-state, editor, resize and reprepare checks also passed. The @slider,
+@block and @sample code is identical to V7.2.1.
+
+
+## V7.2 Artistic proximity additions
+
+V7.2.1 starts new native instances at Artistic Proximity 75% (slider46)
+and Distance Anti-Salience 65% (slider47). Explicit saved values always win.
+Older states missing slider46 restore it to 0%; missing slider47 restores 65%.
+The native host applies this before APVTS replacement and requests an audio-thread
+reseed before the first block, so an old state loaded over an already active
+instance does not briefly retain the new processing. Resaving persists those
+explicit legacy values. The source opts into this via #NATIVE_DEFAULT metadata;
+other plugins without the metadata retain their defaults and state behavior.
+Standalone JSFX retains its 0% declaration because REAPER does not execute the
+native host migration. Existing parameter IDs and distance values are unchanged.
+
+Native qualification passed factory/default queries, old-state restoration before
+prepare and over an actively processed distant stereo bed, exact legacy audio
+from the first block, resaved legacy Off over an active instance, explicit Off
+and custom value preservation, resave/reopen, plus editor interaction/resize/
+reprepare. The DSP implementation is unchanged from the V7.2.0 qualification.
+The panner's anti-salience processing is separate from Anti-Salience MX; it uses
+no foreground reference, persistent eight-band anchor memory, modulation
+de-binding, scatter network or level-lock restoration. MODEL exposes
+the two new controls when Artistic is selected; Physical keeps its previous
+controls and audio design. The separate generated variants were not changed.
+
+Proximity has bounded geometric ear contrast below 1 m and a smooth log-range
+far weight from 1 to 10 m. At full strength and maximum range the extra direct
+attenuation is 6 dB. Existing reflections remain; preserved side content takes
+the same extra direct attenuation, while the bed additionally follows the
+existing direct distance law instead of retaining its previous loud bypass.
+Complementary broad bands reduce proximity body, presence and air. There is
+no generated room, feedback or gain restoration in the added stage.
+
+Source energy is measured from both input channels before summing, so stereo
+cancellation cannot blind density/onset detection. A shared detector uses the
+louder Artistic output ear for RMS restraint. The 8 ms/250 ms source followers,
+35 ms gain attack and 700 ms release keep their time constants across sample rates. The RMS mix
+reference falls from 0.18 to 0.045 linear amplitude as the source recedes, with
+a maximum 12 dB attenuation before the two controls weight its application.
+The smoothed enable also weights the gain after its release so disabling
+cannot leave a residual gain step at exact bypass. Output Trim remains last.
+
+Run `python tests/panner/test_proximity.py` for synthetic complete-Artistic
+DSP qualification. It compiles both the retained V7.1.2 reference and the
+maintained source using the same compiler; no private recordings are loaded.
+The suite covers exact legacy bypass, all four source modes, monotonic distance,
+dense low-crest textures, low/mid/high tones, impulses, modulated material,
+wet stereo, antiphase and one-sided sources, silence, low levels and overload,
+rate changes, block partitioning, enable/distance automation, tail drain,
+final trim and near-ear contrast. Numerical checks are not listening validation
+or a guarantee that every distant sound will externalize for every listener.
+The original measurements below describe the unmodified original-model path.
+
+After a native Windows build, `python tests/panner/test_native.py` checks the
+actual editor controls, wheel/reset gestures, parameter persistence, resizing
+and sample-rate reprepare. It restores the temporary CMake probe configuration.
+Synthetic qualification for this revision passed 57 checks / 92 renders;
+the actual native editor/state/resize checks also passed. The full-scale
+dense texture at maximum range was 11.2–12.2 dB lower than the
+original in Mono/Stereo/Dual and 20.2 dB lower in Bed, with full Proximity and
+65% Anti-Salience. These are measured level changes, not measured subjective
+distance. See `build/panner-proximity/results/report.json` after a run.
+
+Design context: [spectrum and distance experiments](https://pmc.ncbi.nlm.nih.gov/articles/PMC5479918/)
+and [nearby-source spectrum experiments](https://pmc.ncbi.nlm.nih.gov/articles/PMC3188969/).
+These motivate combining cues; the particular control curves are artistic choices.
+
 ## Original-model optimization
 
 Fixed five-coefficient updates, six-filter cascades and the 28-ear-path loop use constant offsets with preserved arithmetic/state-update order. All 168 fitted filters, geometry cadence, four-point interpolation, propagation, smoothing and original late field remain. Native builds use Legacy graphics. The pre-promotion source is preserved in `tests/faust/reference/3DPanner-before-fast.jsfx`.
