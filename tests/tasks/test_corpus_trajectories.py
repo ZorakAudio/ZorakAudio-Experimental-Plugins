@@ -9,7 +9,7 @@ def main():
         return line if line.count('(')==line.count(')') else source[a:source.index('\n);',a)+3]
     source=(root/'plugins/Spectral/Corpus/src/Corpus.jsfx').read_text(encoding='utf-8')
     out=args.out or root/'build/tasks/corpus-trajectories';out.mkdir(parents=True,exist_ok=True)
-    helpers=['cp_clamp','cp_01','tr_curve_eval_samples','tr_curve_eval','tr_fill_linear_samples','tr_param_notify','tr_param_id','tr_param_set','tr_store_lane','tr_sync_params','tr_enabled','tr_time','tr_fold_mode','tr_fold','tr_lane','tr_progress','tr_lane_value','tr_prepare','tr_penalty_raw','tr_penalty','tr_future_penalty','tr_reset_lane','tr_set_linear','tr_history_clear','tr_clear_all','tr_brush_begin','tr_brush_data','tr_brush_commit','tr_preset','tr_meta','tr_candidates','ui_notify','ui_end_gesture']
+    helpers=['cp_clamp','cp_01','cp_desc_count','ui_desc_rows','ui_desc_row_id','ui_desc_id_row','ui_desc_from_menu','tr_curve_eval_samples','tr_curve_eval','tr_fill_linear_samples','tr_param_notify','tr_param_id','tr_param_set','tr_store_lane','tr_sync_params','tr_enabled','tr_time','tr_fold_mode','tr_fold','tr_lane','tr_progress','tr_lane_value','tr_prepare','tr_penalty_raw','tr_penalty','tr_future_penalty','tr_reset_lane','tr_set_linear','tr_history_clear','tr_clear_all','tr_brush_begin','tr_brush_data','tr_brush_commit','tr_preset','tr_meta','tr_candidates','ui_notify','ui_end_gesture']
     fixture='\n'.join(l for l in source.splitlines() if l.startswith('slider'))+'''\noptions:maxmem=65536
 @init
 function cp_desc(id d) (features[id*53+d];);
@@ -39,6 +39,9 @@ test_op==8 ? (ui_notify(test_id,test_u,1);ui_end_gesture(test_id););
 test_op==9 ? tr_brush_commit();
 test_op==10 ? tr_prepare(test_u,test_du);
 test_op==11 ? test_result=tr_penalty_raw(test_id,test_u,-1);
+test_op==12 ? test_result=ui_desc_row_id(test_id);
+test_op==13 ? test_result=ui_desc_id_row(test_id);
+test_op==14 ? test_result=ui_desc_from_menu(test_id);
 '''
     (out/'fixture.jsfx').write_text(fixture);(out/'native.cpp').write_text(NATIVE)
     obj=out/('fixture.obj' if os.name=='nt' else 'fixture.o');exe=out/('native.exe' if os.name=='nt' else 'native')
@@ -102,6 +105,15 @@ int main(){
  f.set("test_u",.5);f.op(5);CHECK(f.get("candidate_n")>0 && f.get("candidate_n")<=24);CHECK(f.heap[7000]>=7 && f.heap[7000]<=9);
  for(int id=81;id<=241;++id){changed=automated=ended=-1;f.set("test_id",id);f.set("test_u",.37);f.op(8);CHECK(changed==id-1 && automated==id-1 && ended==id-1);}
  std::cout<<"PASS loop-aware lookahead, bounded candidate route, and every exact host notification 81..241\n";
+ // Every descriptor travels through the same menu row -> metadata command ->
+ // saved host parameter route. Stable IDs do not imply display ordering.
+ Fixture picker;std::vector<bool> seen(54);int count=0;
+ for(int row=0;row<62;++row){picker.set("test_id",row);int d=int(picker.op(12));picker.set("test_id",row+1);CHECK(picker.op(14)==d);if(d<0)continue;CHECK(d<54&&!seen[d]);seen[d]=true;++count;
+  picker.set("test_id",d);CHECK(picker.op(13)==row);picker.set("test_arg",16+d);picker.op(4);CHECK(picker.heap[1]==d&&picker.heap[0]==1&&picker.heap[4]==1);CHECK(int(picker.s.sliders[85])%64==d);
+ }
+ CHECK(count==54);picker.set("test_id",2);CHECK(picker.op(12)==53);picker.set("test_id",53);CHECK(picker.op(13)==2);picker.set("test_arg",69);picker.op(4);CHECK(picker.heap[1]==53);picker.set("test_arg",70);picker.op(4);CHECK(picker.heap[1]==53);
+ std::cout<<"PASS Length picker: all54 IDs selectable by command, display order independent, Core second Length=53, shared native/custom menu mapping and exact saved descriptor ID\n";
+
 }
 '''
 if __name__=='__main__':main()

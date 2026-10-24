@@ -4,7 +4,7 @@ template<class Read> void corpusDetectionCheck(juce::AudioProcessor* p,juce::Aud
  auto process=[&](){audio.clear();midi.clear();p->processBlock(audio,midi);};
  auto wait=[&](){for(int i=0;i<180000;++i){process();if(i%32==0)juce::MessageManager::getInstance()->runDispatchLoopUntil(1);if(i>100 && value("ready")>0 && value("pe_ready")>0 && value("pg_ready")>0 && value("pg_initializing")==0 && value("auto_settings_pending")==0 && value("rebuild_request")==0 && value("cg_stage")==0)return;std::this_thread::sleep_for(std::chrono::milliseconds(1));}throw std::runtime_error("Detection preparation timed out");};
  auto heap=[&](const char* key,int count){std::vector<double> v(count);check(za_native_gfx_heap_copy(p,key,v.data(),count)==count,"heap copy");return v;};
- check(p->getParameters().size()==249,"248 controls + oversampling");check(corpusGet(p,242)==1 && corpusGet(p,243)==.5 && corpusGet(p,244)==0,"default inference controls");
+ check(p->getParameters().size()==250,"249 controls + oversampling");check(corpusGet(p,242)==1 && corpusGet(p,243)==.5 && corpusGet(p,244)==0,"default inference controls");
  juce::MemoryBlock oldState;p->getStateInformation(oldState);auto xml=juce::AudioProcessor::getXmlFromBinary(oldState.getData(),int(oldState.getSize()));check(bool(xml),"state XML");auto tree=juce::ValueTree::fromXml(*xml);for(int id=242;id<=244;++id){auto node=tree.getChildWithProperty("id","slider"+juce::String(id));if(node.isValid())tree.removeChild(node,nullptr);}auto oldXml=tree.createXml();juce::AudioProcessor::copyXmlToBinary(*oldXml,oldState);
  std::ofstream csv(path);csv<<"style,grains,min_ms,median_ms,p90_ms,max_ms,cached_span_matches\n";int counts[3]{};double medians[3]{};
  for(int mode: {1,0,2}){

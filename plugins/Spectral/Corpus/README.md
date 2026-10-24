@@ -2,6 +2,32 @@
 
 Corpus loads recordings, learns their acoustic structure, and plays new paths through them from MIDI notes.
 
+## Repeat a take from MIDI
+
+After a generated take finishes, the main toolbar offers two separate actions:
+
+- **Play immediately** repeats it now.
+- **Play on next note** silently arms it for the next MIDI Note On or Sampler MIDI Hub Start. The button changes to **Next note: armed**. Click again to cancel.
+
+The armed trigger uses the recorded grain choices, source windows, timing,
+pitch, child cleanup and full amplitude envelope. Incoming note pitch, velocity,
+early Note Off and Hub duration/ADSR overrides do not reshape this take. Hub
+Continue only transfers its packet ID; End does not truncate it. Explicit Stop,
+All Sound Off and transport stop still stop playback. Output, Transient Smear
+and final peak catch remain live.
+
+The arm is used once. Arm it again before another playback or render attempt;
+subsequent unarmed notes generate normally. Generate cancels the arm and makes
+a fresh take. An incomplete, overflowed or invalid recording cannot be armed.
+This is an instance-local capture, not a take saved in a project or preset.
+
+A same-rate host render prepare retains the armed take and its current immutable
+source bank, including during pre-roll. A pending re-commit is adopted after the
+take finishes; when it rebuilds the same corpus, the completed take is restored
+for another attempt. Changing engine sample rate (including oversampling) clears
+the arm because the recorded timing is sample-indexed. Source or analysis changes
+invalidate it. These changes are confined to Corpus; the compiler/runtime is unchanged.
+
 ## Grain detection styles
 
 **Grain Detection** is always in the main header, beside Source channels at
@@ -56,7 +82,7 @@ policy; a deliberately low Energy Target or Ceiling also permits quiet material.
 An all-quiet eligible scope falls back to that scope instead of producing no plan.
 No detection boundaries or learned ECs are changed by this policy.
 
-**Length** is a descriptor under the **SIZE** group, available to trajectories,
+**Length** is the second descriptor under **CORE**, immediately after Energy, available to trajectories,
 map axes, the browser, identity locks and pruning. It describes the detected
 source span before pitch, using a logarithmic shortest-to-longest range within
 the loaded corpus. Equal lengths use the midpoint. The trajectory ruler and
@@ -446,3 +472,36 @@ steps around sharp transients without changing the cloud windows, source offsets
 grain decisions, shared stereo processing or zero-amount bypass. It adds no
 per-sample coefficient calculation. The grain detector, EC learning and adaptive
 inference of a Coherent limit are unchanged in this release.
+
+## Child Cleanup
+
+Explore and Controls / **Child Cloud** have one **Cleanup / Children** amount. Off is the
+default for new and older instances. Turn it up to lower quiet backgrounds and
+tails within child grains before they combine; the primary is always untouched.
+Threshold, depth, timing and stereo linking are handled automatically. This is
+gentle downward expansion with a limited attenuation range, not destructive
+trimming: source spans, passage boundaries, trajectory selection, grain windows
+and event ADSR are retained. Strong settings intentionally remove more quiet
+texture. New child grains capture the current amount; REPEAT retains its
+recorded cleanup even after the control changes.
+
+The existing full PCM preparation pass caches a linked RMS envelope at roughly
+10 ms resolution, using no additional source reads or FFTs. A fixed cache budget
+automatically coarsens exceptionally large banks; cleanup backs off when that
+evidence becomes too coarse. A robust per-grain reference, gentle knee,
+anticipation, hold and smooth gain recovery protect active detail. Gain is
+attenuation-only, applied after the grain/event windows and overlap level so
+normalization cannot undo it. It does not remove sustained loud overlap;
+Cloud Level and Grain Density remain the controls for that.
+
+Slot 249 appends the automatable amount; all prior parameter identities and
+defaults are retained. The change uses the existing custom compiler/runtime,
+private analysis arena and explicit model adoption. No shared runtime changes.
+
+## v2.3.2 Length picker correction
+
+Length is selectable through the normal trajectory picker. The selection
+command now validates against the shared descriptor count, including Length
+(stable descriptor ID 53). The descriptor menu puts Length immediately after
+Energy in Core and opens at the top. Map, trajectory, browser and pruning
+pickers use that display order without changing saved descriptor IDs or targets.

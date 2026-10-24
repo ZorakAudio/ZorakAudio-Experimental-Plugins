@@ -1,4 +1,4 @@
-desc:Corpus v2.3.0 - Audible Trajectories
+desc:Corpus v2.3.3 - Repeat to MIDI
 tags:instrument sampler granular synthesis ui
 // #GFX_RESIZE: responsive
 // #FILE: Corpus sources {Slot 0: use Open Multiple, as in Sample v71. A single long file is valid.}
@@ -508,6 +508,8 @@ slider246:0<0,1,1>--Map X Length override (internal)
 slider247:0<0,1,1>--Map Y Length override (internal)
 // #NATIVE_DEFAULT: slider248=0 legacy=0
 slider248:0<0,3,1>--Length browser filter (internal)
+// #NATIVE_DEFAULT: slider249=0 legacy=0
+slider249:0<0,1,0.001>--Child cleanup
 
 @init
 
@@ -1262,6 +1264,7 @@ function tr_param_notify(id) (
   id==243 ? sliderchange(slider243) :
   id==246 ? sliderchange(slider246) :
   id==247 ? sliderchange(slider247) :
+  id==249 ? sliderchange(slider249) :
   id==248 ? sliderchange(slider248) :
   id==245 ? sliderchange(slider245) :
   id==244 ? sliderchange(slider244) :
@@ -1421,7 +1424,7 @@ function tr_meta(id) local(lane code p q j) (
       code==2 ? tr_reset_lane(lane,p[1],1);
       code==3 ? p[0]=1-p[0];
       code==4 ? (j=0;q=-1;while(j<12 && q<0)(tr_lane(j)[4]<0.5 ? q=j;j+=1;);q>=0 ? (memcpy(tr_lane(q),p,40);tr_store_lane(q);););
-      code>=16 && code<=68 ? (p[4]<0.5 ? tr_reset_lane(lane,code-16,1);p[1]=code-16;p[0]=1;p[4]=1;);
+      code>=16 && code<16+cp_desc_count() ? (p[4]<0.5 ? tr_reset_lane(lane,code-16,1);p[1]=code-16;p[0]=1;p[4]=1;);
       code>=80 && code<=82 ? p[2]=code-80;
       code>=96 && code<=98 ? p[6]=code-96;
       code>=128 && code<=383 ? p[3]=(code-128)/255;
@@ -1934,7 +1937,7 @@ function cg_fail(reason) (
   cg_failures+=1;cg_last_failure=reason;cg_last_fail_stage=task_arena_progress(cg_arena,0);
   cg_cancel();cg_disabled=1;cg_failed_key=cg_retry_key;rebuild_request=1;poll_left=0;
 );
-function cg_publish() (task_arena_adopt(cg_arena,source_mono,passage_mode,passage_sensitivity,passage_limit,passage_run,a_bin,a_binpeak,a_binpower,a_burst_count,a_burst_ready,a_burst_start,a_diff,a_envdiff,a_envsum,a_g,a_headn,a_headpower,a_inburst,a_last_l,a_last_r,a_lowpower,a_lowref,a_lp_l,a_lp_r,a_lpc,a_max_env,a_ndiff,a_num,a_peak,a_peak_bin,a_power,a_prev_env,a_rise,a_sidepower,a_tailn,a_tailpower,a_tile_ready,analysis_points,apply_saved_edits,auto_budget_coarsened,auto_budget_scale,auto_desired_cells,auto_quiet_n,auto_s,auto_scout_sparse,auto_window_max,auto_window_min,browse_dirty,build_phase,corpus_key,edit_cursor,edits_inactive,edits_match,effective_window,fc_built_key,fc_cfg_key,fc_class_cursor,fc_cursor,fc_epoch,fc_iter,fc_last_norm,fc_lo,fc_member_cursor,fc_model_key,fc_n,fc_pc,fc_phase,fc_ready,fc_subphase,fill_grain,grain_count,h_best0,h_best1,h_best2,h_bestdist,h_boundary,h_cleanup_done,h_cluster_cap,h_coarsened,h_coverage_lost,h_cursor,h_detail,h_empty_classes,h_epoch,h_excluded,h_finalize_stage,h_level,h_link_sources,h_ls,h_macro_gap_n,h_macro_lost,h_macro_singletons,h_mend,h_merges,h_mflags,h_micro_only_short,h_min_macro,h_min_meso,h_monsets,h_mopen,h_mseconds,h_msource,h_msource_start,h_mstart,h_mtrans,h_pair_n,h_part_direction,h_part_distribution,h_part_motion,h_part_role,h_part_timing,h_phase,h_range_end,h_range_hi,h_range_lo,h_range_start,h_ready,h_rebuild_requested,h_refine_pass,h_rest_amp,h_rest_db,h_rest_seconds,h_rest_seed_conf,h_sensitive,h_status,h_step,h_weight0,h_weight1,h_weight2,h_xcount,h_xend,h_xflags,h_xopen,h_xscan,h_xseconds,h_xsource,h_xstart,hm_k,hm_n,hm_radius,hm_transitions,hx_k,hx_n,hx_radius,hx_transitions,invalid_audio,invalid_sources,layout_cursor,max_grain_seconds,merge_active,merge_done,merge_new_count,merge_new_start,merge_orig_end,merge_orig_start,merge_read,merge_source,merge_write,meta_cursor,norm_cursor,pe_count,pe_cross,pe_cursor,pe_diff,pe_epoch,pe_ffts,pe_fits,pe_frame_read,pe_frames,pe_last_l,pe_last_r,pe_lpow,pe_model_key,pe_nfft,pe_nr,pe_offset,pe_peak,pe_phase,pe_read_errors,pe_reads,pe_ready,pe_ref_mode,pe_rpow,pe_subphase,pg_load_pending,pg_ready,play_frames,play_run_limited,play_srcpos,playable_grains,posting_count,ready,scan_previous_tail,scan_source,scan_tile,scout_diff,scout_in,scout_l,scout_n,scout_peak,scout_probe,scout_r,scout_reads,scout_source,scout_started,scout_step,scout_sum,selected_id,silent_grains,source_count,tile_total,total_seconds,ui_left,xc_built_ceiling,xc_coarse_n,xc_coarse_window,xc_coverage_limited,xc_cross,xc_cursor,xc_descriptor_count,xc_epoch,xc_fft_count,xc_fft_size,xc_frame,xc_grammar_epoch,xc_grammar_overflow,xc_grammar_ready,xc_map_costsum,xc_map_count,xc_map_cursor,xc_map_epoch,xc_map_phase,xc_map_ready,xc_map_source,xc_map_target,xc_map_unmatched,xc_mapping_misses,xc_matrix_cursor,xc_pcm_reads,xc_peak,xc_phase,xc_pool_n,xc_post_cursor,xc_post_phase,xc_pow_l,xc_pow_r,xc_precompute_comparisons,xc_quality,xc_read_count,xc_read_i,xc_read_start,xc_ready,xc_recurrences,xc_request_hierarchy,xc_runtime_comparisons,xc_schema,xc_sparse_sources,xc_spectral_frames,xc_subphase,xc_terminal_examples,xc_triples););
+function cg_publish() (task_arena_adopt(cg_arena,cc_used,cc_scale,source_mono,passage_mode,passage_sensitivity,passage_limit,passage_run,a_bin,a_binpeak,a_binpower,a_burst_count,a_burst_ready,a_burst_start,a_diff,a_envdiff,a_envsum,a_g,a_headn,a_headpower,a_inburst,a_last_l,a_last_r,a_lowpower,a_lowref,a_lp_l,a_lp_r,a_lpc,a_max_env,a_ndiff,a_num,a_peak,a_peak_bin,a_power,a_prev_env,a_rise,a_sidepower,a_tailn,a_tailpower,a_tile_ready,analysis_points,apply_saved_edits,auto_budget_coarsened,auto_budget_scale,auto_desired_cells,auto_quiet_n,auto_s,auto_scout_sparse,auto_window_max,auto_window_min,browse_dirty,build_phase,corpus_key,edit_cursor,edits_inactive,edits_match,effective_window,fc_built_key,fc_cfg_key,fc_class_cursor,fc_cursor,fc_epoch,fc_iter,fc_last_norm,fc_lo,fc_member_cursor,fc_model_key,fc_n,fc_pc,fc_phase,fc_ready,fc_subphase,fill_grain,grain_count,h_best0,h_best1,h_best2,h_bestdist,h_boundary,h_cleanup_done,h_cluster_cap,h_coarsened,h_coverage_lost,h_cursor,h_detail,h_empty_classes,h_epoch,h_excluded,h_finalize_stage,h_level,h_link_sources,h_ls,h_macro_gap_n,h_macro_lost,h_macro_singletons,h_mend,h_merges,h_mflags,h_micro_only_short,h_min_macro,h_min_meso,h_monsets,h_mopen,h_mseconds,h_msource,h_msource_start,h_mstart,h_mtrans,h_pair_n,h_part_direction,h_part_distribution,h_part_motion,h_part_role,h_part_timing,h_phase,h_range_end,h_range_hi,h_range_lo,h_range_start,h_ready,h_rebuild_requested,h_refine_pass,h_rest_amp,h_rest_db,h_rest_seconds,h_rest_seed_conf,h_sensitive,h_status,h_step,h_weight0,h_weight1,h_weight2,h_xcount,h_xend,h_xflags,h_xopen,h_xscan,h_xseconds,h_xsource,h_xstart,hm_k,hm_n,hm_radius,hm_transitions,hx_k,hx_n,hx_radius,hx_transitions,invalid_audio,invalid_sources,layout_cursor,max_grain_seconds,merge_active,merge_done,merge_new_count,merge_new_start,merge_orig_end,merge_orig_start,merge_read,merge_source,merge_write,meta_cursor,norm_cursor,pe_count,pe_cross,pe_cursor,pe_diff,pe_epoch,pe_ffts,pe_fits,pe_frame_read,pe_frames,pe_last_l,pe_last_r,pe_lpow,pe_model_key,pe_nfft,pe_nr,pe_offset,pe_peak,pe_phase,pe_read_errors,pe_reads,pe_ready,pe_ref_mode,pe_rpow,pe_subphase,pg_load_pending,pg_ready,play_frames,play_run_limited,play_srcpos,playable_grains,posting_count,ready,scan_previous_tail,scan_source,scan_tile,scout_diff,scout_in,scout_l,scout_n,scout_peak,scout_probe,scout_r,scout_reads,scout_source,scout_started,scout_step,scout_sum,selected_id,silent_grains,source_count,tile_total,total_seconds,ui_left,xc_built_ceiling,xc_coarse_n,xc_coarse_window,xc_coverage_limited,xc_cross,xc_cursor,xc_descriptor_count,xc_epoch,xc_fft_count,xc_fft_size,xc_frame,xc_grammar_epoch,xc_grammar_overflow,xc_grammar_ready,xc_map_costsum,xc_map_count,xc_map_cursor,xc_map_epoch,xc_map_phase,xc_map_ready,xc_map_source,xc_map_target,xc_map_unmatched,xc_mapping_misses,xc_matrix_cursor,xc_pcm_reads,xc_peak,xc_phase,xc_pool_n,xc_post_cursor,xc_post_phase,xc_pow_l,xc_pow_r,xc_precompute_comparisons,xc_quality,xc_read_count,xc_read_i,xc_read_start,xc_ready,xc_recurrences,xc_request_hierarchy,xc_runtime_comparisons,xc_schema,xc_sparse_sources,xc_spectral_frames,xc_subphase,xc_terminal_examples,xc_triples););
 function cg_step() local(rc phase cursor stage) (
   cg_retire();
   cg_stage==0 && !cg_disabled && !cg_retiring && !xc_task_retiring && !rebuild_request && !pending_adoption && pool_state!=1 && pool_state!=2 && build_phase==1 && loaded_count>0 && cp_hold_count()==0 && cp_busy()==0 ? (
@@ -1958,8 +1961,10 @@ function cg_step() local(rc phase cursor stage) (
       cg_keep==4 ? rc=task_arena_preserve(cg_arena,xc_params,16);
       cg_keep==5 ? rc=task_arena_preserve(cg_arena,pe_event_locks,32);
       cg_keep==6 ? rc=task_arena_preserve(cg_arena,gr_record,gr_memory_end-gr_record);
+      cg_keep==7 ? rc=task_arena_preserve(cg_arena,cc_voices,cc_memory_end-cc_voices);
+      cg_keep==8 ? rc=task_arena_preserve(cg_arena,repeat_hold,repeat_memory_end-repeat_hold);
       rc>0 ? cg_keep+=1;
-      cg_keep>=7 ? cg_stage=2;
+      cg_keep>=9 ? cg_stage=2;
     ) : rc==5 ? (cg_cancel();cg_disabled=1;cg_failed_key=cg_retry_key;rebuild_request=1;poll_left=0;);
   );
   cg_stage==2 ? (cg_t0=defer_arena(cg_arena,0,cg_index(););cg_t0>0 ? cg_stage=3 : cg_t0!=-2 ? (cg_cancel();cg_disabled=1;cg_failed_key=cg_retry_key;rebuild_request=1;poll_left=0;););
@@ -3190,10 +3195,10 @@ function pe_begin() local(i p) (
   pe_nfft=quality_request<1 ? 512 : (quality_request>1 ? 2048 : 1024);
   memset(pe_vectors,0,grain_count*16);memset(pe_stats,0,grain_count*16);memset(pe_source_hash,0,source_count*4);
   i=0;loop(source_count,p=pe_source_hash+i*4;p[0]=104729;p[1]=130363;p[2]=cp_s(i)[2];p[3]=cp_s(i)[3];i+=1;);
-  pe_frame_read=0;pe_subphase=0;pg_ready=0;
+  pe_frame_read=0;pe_subphase=0;pg_ready=0;cc_begin();
 );
 function pe_frame_begin() local(g n) (
-  g=cp_g(pe_cursor);pe_count=min(pe_nfft,g[3]-pe_offset);pe_frame_read=0;
+  g=cp_g(pe_cursor);pe_offset==0 ? cc_grain_begin(pe_cursor);pe_count=min(pe_nfft,g[3]-pe_offset);pe_frame_read=0;
   memset(pe_fft_l,0,pe_nfft*2);memset(pe_fft_r,0,pe_nfft*2);memset(pe_tmp,0,32);
   pe_lpow=0;pe_rpow=0;pe_cross=0;pe_peak=0;pe_diff=0;pe_last_l=0;pe_last_r=0;pe_subphase=1;
 );
@@ -3215,7 +3220,7 @@ function pe_frame_end() local(g v p i k power freq total sum second flat peak ba
   pe_tmp[15]=cp_01(sqrt(pe_diff/max(0.000000000000000001,pe_lpow+pe_rpow))*0.5);
   i=0;loop(16,v[i]+=cp_01(pe_tmp[i])*pe_count;i+=1;);p[13]+=1;
   pe_offset+=pe_count;pe_frames+=1;pe_subphase=0;
-  pe_offset>=g[3] ? (i=0;loop(16,v[i]/=max(1,g[3]);i+=1;);p[8]=hm_grainmap[pe_cursor];p[14]/=max(1,g[3]);pe_offset=0;pe_cursor+=1;);
+  pe_offset>=g[3] ? (cc_grain_end(pe_cursor);i=0;loop(16,v[i]/=max(1,g[3]);i+=1;);p[8]=hm_grainmap[pe_cursor];p[14]/=max(1,g[3]);pe_offset=0;pe_cursor+=1;);
 );
 function pe_build(work) local(g p l r x win take i z hash key d prev q) (
   pe_phase==1 ? (
@@ -3223,7 +3228,7 @@ function pe_build(work) local(g p l r x win take i z hash key d prev q) (
       !pe_subphase ? pe_frame_begin();g=cp_g(pe_cursor);hash=pe_source_hash+g[1]*4;take=min(work,pe_count-pe_frame_read);
       loop(take,
         sample_read2(bank_pool,g[0],g[2]+pe_offset+pe_frame_read,l,r) && l==l && r==r && abs(l)<=1000000 && abs(r)<=1000000 ? pe_p(pe_cursor)[14]+=1 : (l=0;r=0;pe_read_errors+=1;);
-        source_mono ? (l=cp_fold(l,r);r=l;);
+        source_mono ? (l=cp_fold(l,r);r=l;);cc_feed((l*l+r*r)*0.5);
         win=pe_count>1 ? 0.5-0.5*cos(2*$pi*pe_frame_read/(pe_count-1)) : 1;
         pe_fft_l[pe_frame_read*2]=l*win;pe_fft_r[pe_frame_read*2]=r*win;
         pe_lpow+=l*l;pe_rpow+=r*r;pe_cross+=l*r;pe_peak=max(pe_peak,max(abs(l),abs(r)));
@@ -3661,6 +3666,7 @@ function cp_scout_step(work) local(s a lo hi start frame l r power diff n val b 
 
 function cp_begin() local(n cap avail)
 (
+  repeat_hold[0]=0;!repeat_after_prepare ? repeat_hold[6]=0;
   cg_cancel();cg_retry_key=generation+(floor(slider242)-1)*4194304+slider243*8388608+slider244*16777216+slider5+slider6*2048+slider21*16384+slider22*65536+slider61*0.001+slider60*524288+slider63*1048576+floor(slider69)*2097152;cg_failed_key!=cg_retry_key ? cg_disabled=0;
   xc_tasks_cancel();
   // Must only be called at a block boundary with no current/pending voices.
@@ -4049,7 +4055,7 @@ function cp_index_work(work) local(s id frames sr nch cells i b w pos l r energy
 );
 function cp_build(work) (
   cp_index_work(work);
-  build_phase==0 ? freembuf(max(postings+posting_count+64,max(pe_memory_end,max(gr_memory_end,td_memory_end))));
+  build_phase==0 ? freembuf(max(postings+posting_count+64,max(repeat_memory_end,max(pe_memory_end,max(gr_memory_end,td_memory_end)))));
 );
 // Four constant-time status reads detect a loader transition on the first
 // available callback, even if the periodic poll has not expired. No PCM access.
@@ -4068,7 +4074,10 @@ function cp_poll() local(gen state adopted signature)
   pool_ram=sample_pool_ram_mb(bank_pool); gen=sample_pool_generation(bank_pool);
   signature=gen+pool_loaded*8191+pool_failed*131+pool_state*17+pool_selected*32771;
   (signature!=loaded_signature || rebuild_request || !have_generation) && pool_state!=1 && pool_state!=2 ? pending_adoption=1;
-  pending_adoption && cp_busy()==0 && cp_hold_count()==0 && pool_state!=1 && pool_state!=2 ? (
+  // During a render prepare, finish the armed take from its current immutable
+  // bank before adopting the host's re-commit of those same files.
+  pending_adoption && repeat_hold[0]>0 && !repeat_after_prepare ? repeat_hold[0]=0;
+  pending_adoption && repeat_hold[0]<=0 && cp_busy()==0 && cp_hold_count()==0 && pool_state!=1 && pool_state!=2 ? (
     adopted=sample_pool_adopt(bank_pool);
     adopted>=0 ? (
       generation=sample_pool_generation(bank_pool);gen=generation;have_generation=1;
@@ -4185,6 +4194,71 @@ function pt_read(v age) local(h j u f rate span step low high period ca cb a b l
   );
 );
 function pt_walk_rate(w fallback) (w[47]>0 ? w[47] : fallback;);
+// ---------- v2.3.1 automatic child cleanup ----------
+// Fixed cache budget. The existing PE pass supplies every PCM frame; there is
+// no extra source read, FFT, task or playback allocation. Approx. 10ms bins
+// coarsen automatically for very large banks, never growing the fixed heap.
+function cc_begin() (
+  cc_used=0;cc_scale=max(1,total_seconds/max(0.01,(524288-grain_count)*0.010));
+  memset(cc_meta,0,grain_count*4);
+);
+function cc_grain_begin(id) local(g p n reserve) (
+  g=cp_g(id);p=cc_meta+id*4;reserve=max(0,grain_count-id-1);
+  n=max(1,min(524288-cc_used-reserve,ceil(g[3]/max(1,g[4]*0.010*cc_scale))));
+  p[0]=cc_used;p[3]=max(1,ceil(g[3]/n));p[1]=ceil(g[3]/p[3]);p[2]=0;cc_used+=p[1];
+  cc_at=p[0];cc_step=p[3];cc_frames=g[3];cc_samples=0;cc_count=0;cc_energy=0;cc_power=0;cc_peak_rms=0;
+);
+function cc_feed(power) local(rms) (
+  cc_energy+=power;cc_count+=1;cc_samples+=1;
+  cc_count>=cc_step || cc_samples>=cc_frames ? (
+    rms=sqrt(max(0,cc_energy/max(1,cc_count)));cc_envelope[cc_at]=rms;cc_at+=1;
+    cc_peak_rms=max(cc_peak_rms,rms);cc_power+=cc_energy;cc_count=0;cc_energy=0;
+  );
+);
+function cc_grain_end(id) local(p) (
+  p=cc_meta+id*4;
+  // A lone spike cannot set an arbitrarily high threshold for the whole grain.
+  p[2]=max(0.000000000001,min(cc_peak_rms,2.5*sqrt(cc_power/max(1,cc_frames))));
+);
+function cc_prepare() (
+  cc_open=1-exp(-1/max(1,srate*0.0015));cc_close=1-exp(-1/max(1,srate*0.060));cc_srate=srate;
+);
+function cc_voice_begin(vi v amount) local(p) (
+  p=cc_voices+vi*16;memset(p,0,16);p[1]=1;p[4]=-1;
+  cc_srate!=srate ? cc_prepare();
+  // Parent, audition and off voices are exact bypasses. Never infer children
+  // from source level: their explicit recorded kind owns this scope.
+  v[26]>=0 && v[27]>0 && pe_ready ? p[0]=cp_01(amount);
+  p[10]=cp_amp(-30+12*p[0]);p[11]=cp_amp(-24*p[0]);
+);
+function cc_apply(vi v age) local(p frame id g q n u ix f level t target scale) (
+  p=cc_voices+vi*16;
+  p[0]>0 ? (
+    p[3]<=0 ? (
+      // Follow the excerpt's source motion in Tape and time-preserving
+      // Coherent playback. Anticipate by 5ms without reading outside the span.
+      frame=min(v[6]-1,v[5]+age*(v[6]-v[5])/max(1,v[3]-v[2])+cp_g(v[1])[4]*0.005);
+      id=floor(p[4]);
+      id<0 || frame<p[5] || frame>=p[6] ? (
+        id=pe_at(cp_g(v[1])[1],frame);g=cp_g(id);q=cc_meta+id*4;
+        p[4]=id;p[5]=g[2];p[6]=g[2]+g[3];p[7]=q[0];p[8]=q[1];p[9]=q[3];p[15]=q[2];
+      );
+      n=floor(p[8]);target=1;
+      n>=2 && p[9]>0 && p[15]>0.000000000001 ? (
+        u=cp_clamp((frame-p[5])/p[9]-0.5,0,n-1);ix=min(n-2,floor(u));f=u-ix;
+        level=cc_envelope[p[7]+ix]+(cc_envelope[p[7]+ix+1]-cc_envelope[p[7]+ix])*f;
+        t=cp_01(level/max(0.000000000001,p[15]*p[10]));
+        t>=1 ? p[14]=max(1,srate*0.020) : p[14]=max(0,p[14]-32);
+        // Smooth expansion knee; bounded attenuation, never makeup gain.
+        target=p[14]>0 ? 1 : p[11]+(1-p[11])*t*t*(3-2*t);
+        // Broad cache cells are uncertain: back off automatically, not chatter.
+        scale=min(1,cp_g(v[1])[4]*0.10/max(1,p[9]));target=1-(1-target)*scale;
+      );p[2]=target;p[3]=32;
+    );
+    p[3]-=1;p[1]+=(p[2]-p[1])*(p[2]>p[1] ? cc_open : cc_close);p[1];
+  ) : 1;
+);
+
 // Cached excerpt-level estimate: at most 64 metadata tiles, never PCM reads.
 // RMS knee is 6 dB at 0.16, ratio 4:1. Peak evidence independently limits to
 // 0.9 per voice before summation. Both branches attenuate only; no makeup gain.
@@ -4231,6 +4305,7 @@ function cp_voice(id role t gain pitch ei kind srcpos frames pan serial group) l
       v[14]=endtime;v[15]=max(1,v[10]);v[16]=role;v[17]=serial;v[20]=pan;
       v[24]=min(1,1-pan);v[25]=min(1,1+pan);v[26]=ei;v[27]=kind;v[28]=pitch;
       v[23]=pt_half;pt_periods[found]=pt_period;
+      cc_voice_begin(found,v,!replaying ? slider249 : 0);
       voice_list[voice_list_n]=found;voice_list_n+=1;
     ) : found=-1;
   ) : (found=-1;dropped_voices+=1;);
@@ -4247,7 +4322,7 @@ function cp_record_voice(vi prev bridge sc relax fit phase) local(v p e k g gp) 
       p[16]=score_target;p[17]=score_identity;p[18]=score_seam;p[19]=score_history;
       gp=gr_record+record_n*8;gp[0]=v[9];gp[1]=v[10];gp[2]=v[21];
       gp[3]=v[31]>=0 ? v[31]%walker_per_event : -1;gp[4]=v[22];
-      gp[5]=v[23];gp[6]=pt_periods[vi];gp[7]=v[3]-v[2];gt_record[record_n]=gt_amounts[vi];
+      gp[5]=v[23];gp[6]=pt_periods[vi];gp[7]=v[3]-v[2];gt_record[record_n]=gt_amounts[vi];cc_record[record_n]=cc_voices[vi*16];
       h_active ? p[15]=min(v[3],v[14])-v[2];
       h_rp=h_record_tags+record_n*6;memset(h_rp,-1,6);h_rp[5]=0;h_fp=h_record_fades+record_n*2;h_fp[0]=-1;h_fp[1]=0;
       h_active && h_current>=0 ? (
@@ -4400,7 +4475,708 @@ function cp_emit(wi when) local(w e id g prev role dur rate frames srcpos gain v
     e[40]>0 && e[18]>0 ? w[3]=min(w[3],e[41]);
   );
 );
+// v2.3.3: one-use MIDI handoff of the current completed take. This small
+// instance-local header also retains model scalars across same-rate host prepare.
+// The immutable source bank and existing plan stay in their original heap ranges.
+function cp_repeat_save_model() (
+  repeat_model[0]=cc_used;
+  repeat_model[1]=cc_scale;
+  repeat_model[2]=source_mono;
+  repeat_model[3]=passage_mode;
+  repeat_model[4]=passage_sensitivity;
+  repeat_model[5]=passage_limit;
+  repeat_model[6]=passage_run;
+  repeat_model[7]=a_bin;
+  repeat_model[8]=a_binpeak;
+  repeat_model[9]=a_binpower;
+  repeat_model[10]=a_burst_count;
+  repeat_model[11]=a_burst_ready;
+  repeat_model[12]=a_burst_start;
+  repeat_model[13]=a_diff;
+  repeat_model[14]=a_envdiff;
+  repeat_model[15]=a_envsum;
+  repeat_model[16]=a_g;
+  repeat_model[17]=a_headn;
+  repeat_model[18]=a_headpower;
+  repeat_model[19]=a_inburst;
+  repeat_model[20]=a_last_l;
+  repeat_model[21]=a_last_r;
+  repeat_model[22]=a_lowpower;
+  repeat_model[23]=a_lowref;
+  repeat_model[24]=a_lp_l;
+  repeat_model[25]=a_lp_r;
+  repeat_model[26]=a_lpc;
+  repeat_model[27]=a_max_env;
+  repeat_model[28]=a_ndiff;
+  repeat_model[29]=a_num;
+  repeat_model[30]=a_peak;
+  repeat_model[31]=a_peak_bin;
+  repeat_model[32]=a_power;
+  repeat_model[33]=a_prev_env;
+  repeat_model[34]=a_rise;
+  repeat_model[35]=a_sidepower;
+  repeat_model[36]=a_tailn;
+  repeat_model[37]=a_tailpower;
+  repeat_model[38]=a_tile_ready;
+  repeat_model[39]=analysis_points;
+  repeat_model[40]=apply_saved_edits;
+  repeat_model[41]=auto_budget_coarsened;
+  repeat_model[42]=auto_budget_scale;
+  repeat_model[43]=auto_desired_cells;
+  repeat_model[44]=auto_quiet_n;
+  repeat_model[45]=auto_s;
+  repeat_model[46]=auto_scout_sparse;
+  repeat_model[47]=auto_window_max;
+  repeat_model[48]=auto_window_min;
+  repeat_model[49]=browse_dirty;
+  repeat_model[50]=build_phase;
+  repeat_model[51]=corpus_key;
+  repeat_model[52]=edit_cursor;
+  repeat_model[53]=edits_inactive;
+  repeat_model[54]=edits_match;
+  repeat_model[55]=effective_window;
+  repeat_model[56]=fc_built_key;
+  repeat_model[57]=fc_cfg_key;
+  repeat_model[58]=fc_class_cursor;
+  repeat_model[59]=fc_cursor;
+  repeat_model[60]=fc_epoch;
+  repeat_model[61]=fc_iter;
+  repeat_model[62]=fc_last_norm;
+  repeat_model[63]=fc_lo;
+  repeat_model[64]=fc_member_cursor;
+  repeat_model[65]=fc_model_key;
+  repeat_model[66]=fc_n;
+  repeat_model[67]=fc_pc;
+  repeat_model[68]=fc_phase;
+  repeat_model[69]=fc_ready;
+  repeat_model[70]=fc_subphase;
+  repeat_model[71]=fill_grain;
+  repeat_model[72]=grain_count;
+  repeat_model[73]=h_best0;
+  repeat_model[74]=h_best1;
+  repeat_model[75]=h_best2;
+  repeat_model[76]=h_bestdist;
+  repeat_model[77]=h_boundary;
+  repeat_model[78]=h_cleanup_done;
+  repeat_model[79]=h_cluster_cap;
+  repeat_model[80]=h_coarsened;
+  repeat_model[81]=h_coverage_lost;
+  repeat_model[82]=h_cursor;
+  repeat_model[83]=h_detail;
+  repeat_model[84]=h_empty_classes;
+  repeat_model[85]=h_epoch;
+  repeat_model[86]=h_excluded;
+  repeat_model[87]=h_finalize_stage;
+  repeat_model[88]=h_level;
+  repeat_model[89]=h_link_sources;
+  repeat_model[90]=h_ls;
+  repeat_model[91]=h_macro_gap_n;
+  repeat_model[92]=h_macro_lost;
+  repeat_model[93]=h_macro_singletons;
+  repeat_model[94]=h_mend;
+  repeat_model[95]=h_merges;
+  repeat_model[96]=h_mflags;
+  repeat_model[97]=h_micro_only_short;
+  repeat_model[98]=h_min_macro;
+  repeat_model[99]=h_min_meso;
+  repeat_model[100]=h_monsets;
+  repeat_model[101]=h_mopen;
+  repeat_model[102]=h_mseconds;
+  repeat_model[103]=h_msource;
+  repeat_model[104]=h_msource_start;
+  repeat_model[105]=h_mstart;
+  repeat_model[106]=h_mtrans;
+  repeat_model[107]=h_pair_n;
+  repeat_model[108]=h_part_direction;
+  repeat_model[109]=h_part_distribution;
+  repeat_model[110]=h_part_motion;
+  repeat_model[111]=h_part_role;
+  repeat_model[112]=h_part_timing;
+  repeat_model[113]=h_phase;
+  repeat_model[114]=h_range_end;
+  repeat_model[115]=h_range_hi;
+  repeat_model[116]=h_range_lo;
+  repeat_model[117]=h_range_start;
+  repeat_model[118]=h_ready;
+  repeat_model[119]=h_rebuild_requested;
+  repeat_model[120]=h_refine_pass;
+  repeat_model[121]=h_rest_amp;
+  repeat_model[122]=h_rest_db;
+  repeat_model[123]=h_rest_seconds;
+  repeat_model[124]=h_rest_seed_conf;
+  repeat_model[125]=h_sensitive;
+  repeat_model[126]=h_status;
+  repeat_model[127]=h_step;
+  repeat_model[128]=h_weight0;
+  repeat_model[129]=h_weight1;
+  repeat_model[130]=h_weight2;
+  repeat_model[131]=h_xcount;
+  repeat_model[132]=h_xend;
+  repeat_model[133]=h_xflags;
+  repeat_model[134]=h_xopen;
+  repeat_model[135]=h_xscan;
+  repeat_model[136]=h_xseconds;
+  repeat_model[137]=h_xsource;
+  repeat_model[138]=h_xstart;
+  repeat_model[139]=hm_k;
+  repeat_model[140]=hm_n;
+  repeat_model[141]=hm_radius;
+  repeat_model[142]=hm_transitions;
+  repeat_model[143]=hx_k;
+  repeat_model[144]=hx_n;
+  repeat_model[145]=hx_radius;
+  repeat_model[146]=hx_transitions;
+  repeat_model[147]=invalid_audio;
+  repeat_model[148]=invalid_sources;
+  repeat_model[149]=layout_cursor;
+  repeat_model[150]=max_grain_seconds;
+  repeat_model[151]=merge_active;
+  repeat_model[152]=merge_done;
+  repeat_model[153]=merge_new_count;
+  repeat_model[154]=merge_new_start;
+  repeat_model[155]=merge_orig_end;
+  repeat_model[156]=merge_orig_start;
+  repeat_model[157]=merge_read;
+  repeat_model[158]=merge_source;
+  repeat_model[159]=merge_write;
+  repeat_model[160]=meta_cursor;
+  repeat_model[161]=norm_cursor;
+  repeat_model[162]=pe_count;
+  repeat_model[163]=pe_cross;
+  repeat_model[164]=pe_cursor;
+  repeat_model[165]=pe_diff;
+  repeat_model[166]=pe_epoch;
+  repeat_model[167]=pe_ffts;
+  repeat_model[168]=pe_fits;
+  repeat_model[169]=pe_frame_read;
+  repeat_model[170]=pe_frames;
+  repeat_model[171]=pe_last_l;
+  repeat_model[172]=pe_last_r;
+  repeat_model[173]=pe_lpow;
+  repeat_model[174]=pe_model_key;
+  repeat_model[175]=pe_nfft;
+  repeat_model[176]=pe_nr;
+  repeat_model[177]=pe_offset;
+  repeat_model[178]=pe_peak;
+  repeat_model[179]=pe_phase;
+  repeat_model[180]=pe_read_errors;
+  repeat_model[181]=pe_reads;
+  repeat_model[182]=pe_ready;
+  repeat_model[183]=pe_ref_mode;
+  repeat_model[184]=pe_rpow;
+  repeat_model[185]=pe_subphase;
+  repeat_model[186]=pg_load_pending;
+  repeat_model[187]=pg_ready;
+  repeat_model[188]=play_frames;
+  repeat_model[189]=play_run_limited;
+  repeat_model[190]=play_srcpos;
+  repeat_model[191]=playable_grains;
+  repeat_model[192]=posting_count;
+  repeat_model[193]=ready;
+  repeat_model[194]=scan_previous_tail;
+  repeat_model[195]=scan_source;
+  repeat_model[196]=scan_tile;
+  repeat_model[197]=scout_diff;
+  repeat_model[198]=scout_in;
+  repeat_model[199]=scout_l;
+  repeat_model[200]=scout_n;
+  repeat_model[201]=scout_peak;
+  repeat_model[202]=scout_probe;
+  repeat_model[203]=scout_r;
+  repeat_model[204]=scout_reads;
+  repeat_model[205]=scout_source;
+  repeat_model[206]=scout_started;
+  repeat_model[207]=scout_step;
+  repeat_model[208]=scout_sum;
+  repeat_model[209]=selected_id;
+  repeat_model[210]=silent_grains;
+  repeat_model[211]=source_count;
+  repeat_model[212]=tile_total;
+  repeat_model[213]=total_seconds;
+  repeat_model[214]=ui_left;
+  repeat_model[215]=xc_built_ceiling;
+  repeat_model[216]=xc_coarse_n;
+  repeat_model[217]=xc_coarse_window;
+  repeat_model[218]=xc_coverage_limited;
+  repeat_model[219]=xc_cross;
+  repeat_model[220]=xc_cursor;
+  repeat_model[221]=xc_descriptor_count;
+  repeat_model[222]=xc_epoch;
+  repeat_model[223]=xc_fft_count;
+  repeat_model[224]=xc_fft_size;
+  repeat_model[225]=xc_frame;
+  repeat_model[226]=xc_grammar_epoch;
+  repeat_model[227]=xc_grammar_overflow;
+  repeat_model[228]=xc_grammar_ready;
+  repeat_model[229]=xc_map_costsum;
+  repeat_model[230]=xc_map_count;
+  repeat_model[231]=xc_map_cursor;
+  repeat_model[232]=xc_map_epoch;
+  repeat_model[233]=xc_map_phase;
+  repeat_model[234]=xc_map_ready;
+  repeat_model[235]=xc_map_source;
+  repeat_model[236]=xc_map_target;
+  repeat_model[237]=xc_map_unmatched;
+  repeat_model[238]=xc_mapping_misses;
+  repeat_model[239]=xc_matrix_cursor;
+  repeat_model[240]=xc_pcm_reads;
+  repeat_model[241]=xc_peak;
+  repeat_model[242]=xc_phase;
+  repeat_model[243]=xc_pool_n;
+  repeat_model[244]=xc_post_cursor;
+  repeat_model[245]=xc_post_phase;
+  repeat_model[246]=xc_pow_l;
+  repeat_model[247]=xc_pow_r;
+  repeat_model[248]=xc_precompute_comparisons;
+  repeat_model[249]=xc_quality;
+  repeat_model[250]=xc_read_count;
+  repeat_model[251]=xc_read_i;
+  repeat_model[252]=xc_read_start;
+  repeat_model[253]=xc_ready;
+  repeat_model[254]=xc_recurrences;
+  repeat_model[255]=xc_request_hierarchy;
+  repeat_model[256]=xc_runtime_comparisons;
+  repeat_model[257]=xc_schema;
+  repeat_model[258]=xc_sparse_sources;
+  repeat_model[259]=xc_spectral_frames;
+  repeat_model[260]=xc_subphase;
+  repeat_model[261]=xc_terminal_examples;
+  repeat_model[262]=xc_triples;
+  repeat_model[263]=memory_schema;
+  repeat_model[264]=pe_schema;
+  repeat_model[265]=xc_config_schema;
+  repeat_model[266]=traj_schema;
+  repeat_model[267]=state_schema;
+  repeat_model[268]=fc_schema;
+  repeat_model[269]=grain_base;
+  repeat_model[270]=postings;
+  repeat_model[271]=grain_capacity;
+  repeat_model[272]=source_capacity;
+  repeat_model[273]=have_generation;
+  repeat_model[274]=generation;
+  repeat_model[275]=loaded_signature;
+  repeat_model[276]=loaded_count;
+  repeat_model[277]=window_setting;
+  repeat_model[278]=window_request;
+  repeat_model[279]=budget_request;
+  repeat_model[280]=quality_request;
+  repeat_model[281]=quiet_mode;
+  repeat_model[282]=quiet_db;
+  repeat_model[283]=h_last_mode;
+  repeat_model[284]=pg_changed;
+  repeat_model[285]=pg_bypass;
+  repeat_model[286]=pg_initializing;
+  repeat_model[287]=pg_layer_count;
+  repeat_model[288]=pg_live_n;
+  repeat_model[289]=pg_available_n;
+  repeat_model[290]=pg_epoch;
+  repeat_model[291]=pg_saved_valid;
+  repeat_model[292]=pg_saved_layer_count;
+  repeat_model[293]=pg_saved_n;
+  repeat_model[294]=pg_saved_sources;
+  repeat_model[295]=pg_saved_seg;
+  repeat_model[296]=pg_scope_kind;
+  repeat_model[297]=pg_scope_src;
+  repeat_model[298]=pg_scope_start;
+  repeat_model[299]=pg_scope_end;
+  repeat_model[300]=pg_scope_cls;
+  repeat_model[301]=pg_min_conf;
+  repeat_model[302]=pg_history_n;
+  repeat_model[303]=pg_history_pos;
+  repeat_model[304]=pg_scope_n;
+  repeat_model[305]=pg_scope_pool_n;
+  repeat_model[306]=pe_locks;
+  repeat_model[307]=cc_srate;
+  repeat_model[308]=record_done;
+  repeat_model[309]=record_n;
+  repeat_model[310]=record_epoch;
+  repeat_model[311]=record_overflow;
+  repeat_model[312]=record_event;
+  repeat_model[313]=record_ei;
+  repeat_model[314]=record_start;
+  repeat_model[315]=index_epoch;
+  repeat_model[316]=burst_limit;
+  repeat_model[317]=auto_last_config;
+  repeat_model[318]=auto_change_clock;
+  repeat_model[319]=browse_done;
+  repeat_model[320]=browse_count;
+  repeat_model[321]=browse_cursor;
+  repeat_model[322]=path_count;
+  repeat_model[323]=path_axis_x;
+  repeat_model[324]=path_axis_y;
+  repeat_model[325]=path_epoch;
+  repeat_model[326]=edit_key;
+  repeat_model[327]=edit_count;
+  repeat_model[328]=map_stratum_page;
+  repeat_model[329]=rng_state;
+  repeat_model[330]=selection_serial;
+  repeat_model[331]=recent_write;
+);
+function cp_repeat_restore_model() (
+  cc_used=repeat_model[0];
+  cc_scale=repeat_model[1];
+  source_mono=repeat_model[2];
+  passage_mode=repeat_model[3];
+  passage_sensitivity=repeat_model[4];
+  passage_limit=repeat_model[5];
+  passage_run=repeat_model[6];
+  a_bin=repeat_model[7];
+  a_binpeak=repeat_model[8];
+  a_binpower=repeat_model[9];
+  a_burst_count=repeat_model[10];
+  a_burst_ready=repeat_model[11];
+  a_burst_start=repeat_model[12];
+  a_diff=repeat_model[13];
+  a_envdiff=repeat_model[14];
+  a_envsum=repeat_model[15];
+  a_g=repeat_model[16];
+  a_headn=repeat_model[17];
+  a_headpower=repeat_model[18];
+  a_inburst=repeat_model[19];
+  a_last_l=repeat_model[20];
+  a_last_r=repeat_model[21];
+  a_lowpower=repeat_model[22];
+  a_lowref=repeat_model[23];
+  a_lp_l=repeat_model[24];
+  a_lp_r=repeat_model[25];
+  a_lpc=repeat_model[26];
+  a_max_env=repeat_model[27];
+  a_ndiff=repeat_model[28];
+  a_num=repeat_model[29];
+  a_peak=repeat_model[30];
+  a_peak_bin=repeat_model[31];
+  a_power=repeat_model[32];
+  a_prev_env=repeat_model[33];
+  a_rise=repeat_model[34];
+  a_sidepower=repeat_model[35];
+  a_tailn=repeat_model[36];
+  a_tailpower=repeat_model[37];
+  a_tile_ready=repeat_model[38];
+  analysis_points=repeat_model[39];
+  apply_saved_edits=repeat_model[40];
+  auto_budget_coarsened=repeat_model[41];
+  auto_budget_scale=repeat_model[42];
+  auto_desired_cells=repeat_model[43];
+  auto_quiet_n=repeat_model[44];
+  auto_s=repeat_model[45];
+  auto_scout_sparse=repeat_model[46];
+  auto_window_max=repeat_model[47];
+  auto_window_min=repeat_model[48];
+  browse_dirty=repeat_model[49];
+  build_phase=repeat_model[50];
+  corpus_key=repeat_model[51];
+  edit_cursor=repeat_model[52];
+  edits_inactive=repeat_model[53];
+  edits_match=repeat_model[54];
+  effective_window=repeat_model[55];
+  fc_built_key=repeat_model[56];
+  fc_cfg_key=repeat_model[57];
+  fc_class_cursor=repeat_model[58];
+  fc_cursor=repeat_model[59];
+  fc_epoch=repeat_model[60];
+  fc_iter=repeat_model[61];
+  fc_last_norm=repeat_model[62];
+  fc_lo=repeat_model[63];
+  fc_member_cursor=repeat_model[64];
+  fc_model_key=repeat_model[65];
+  fc_n=repeat_model[66];
+  fc_pc=repeat_model[67];
+  fc_phase=repeat_model[68];
+  fc_ready=repeat_model[69];
+  fc_subphase=repeat_model[70];
+  fill_grain=repeat_model[71];
+  grain_count=repeat_model[72];
+  h_best0=repeat_model[73];
+  h_best1=repeat_model[74];
+  h_best2=repeat_model[75];
+  h_bestdist=repeat_model[76];
+  h_boundary=repeat_model[77];
+  h_cleanup_done=repeat_model[78];
+  h_cluster_cap=repeat_model[79];
+  h_coarsened=repeat_model[80];
+  h_coverage_lost=repeat_model[81];
+  h_cursor=repeat_model[82];
+  h_detail=repeat_model[83];
+  h_empty_classes=repeat_model[84];
+  h_epoch=repeat_model[85];
+  h_excluded=repeat_model[86];
+  h_finalize_stage=repeat_model[87];
+  h_level=repeat_model[88];
+  h_link_sources=repeat_model[89];
+  h_ls=repeat_model[90];
+  h_macro_gap_n=repeat_model[91];
+  h_macro_lost=repeat_model[92];
+  h_macro_singletons=repeat_model[93];
+  h_mend=repeat_model[94];
+  h_merges=repeat_model[95];
+  h_mflags=repeat_model[96];
+  h_micro_only_short=repeat_model[97];
+  h_min_macro=repeat_model[98];
+  h_min_meso=repeat_model[99];
+  h_monsets=repeat_model[100];
+  h_mopen=repeat_model[101];
+  h_mseconds=repeat_model[102];
+  h_msource=repeat_model[103];
+  h_msource_start=repeat_model[104];
+  h_mstart=repeat_model[105];
+  h_mtrans=repeat_model[106];
+  h_pair_n=repeat_model[107];
+  h_part_direction=repeat_model[108];
+  h_part_distribution=repeat_model[109];
+  h_part_motion=repeat_model[110];
+  h_part_role=repeat_model[111];
+  h_part_timing=repeat_model[112];
+  h_phase=repeat_model[113];
+  h_range_end=repeat_model[114];
+  h_range_hi=repeat_model[115];
+  h_range_lo=repeat_model[116];
+  h_range_start=repeat_model[117];
+  h_ready=repeat_model[118];
+  h_rebuild_requested=repeat_model[119];
+  h_refine_pass=repeat_model[120];
+  h_rest_amp=repeat_model[121];
+  h_rest_db=repeat_model[122];
+  h_rest_seconds=repeat_model[123];
+  h_rest_seed_conf=repeat_model[124];
+  h_sensitive=repeat_model[125];
+  h_status=repeat_model[126];
+  h_step=repeat_model[127];
+  h_weight0=repeat_model[128];
+  h_weight1=repeat_model[129];
+  h_weight2=repeat_model[130];
+  h_xcount=repeat_model[131];
+  h_xend=repeat_model[132];
+  h_xflags=repeat_model[133];
+  h_xopen=repeat_model[134];
+  h_xscan=repeat_model[135];
+  h_xseconds=repeat_model[136];
+  h_xsource=repeat_model[137];
+  h_xstart=repeat_model[138];
+  hm_k=repeat_model[139];
+  hm_n=repeat_model[140];
+  hm_radius=repeat_model[141];
+  hm_transitions=repeat_model[142];
+  hx_k=repeat_model[143];
+  hx_n=repeat_model[144];
+  hx_radius=repeat_model[145];
+  hx_transitions=repeat_model[146];
+  invalid_audio=repeat_model[147];
+  invalid_sources=repeat_model[148];
+  layout_cursor=repeat_model[149];
+  max_grain_seconds=repeat_model[150];
+  merge_active=repeat_model[151];
+  merge_done=repeat_model[152];
+  merge_new_count=repeat_model[153];
+  merge_new_start=repeat_model[154];
+  merge_orig_end=repeat_model[155];
+  merge_orig_start=repeat_model[156];
+  merge_read=repeat_model[157];
+  merge_source=repeat_model[158];
+  merge_write=repeat_model[159];
+  meta_cursor=repeat_model[160];
+  norm_cursor=repeat_model[161];
+  pe_count=repeat_model[162];
+  pe_cross=repeat_model[163];
+  pe_cursor=repeat_model[164];
+  pe_diff=repeat_model[165];
+  pe_epoch=repeat_model[166];
+  pe_ffts=repeat_model[167];
+  pe_fits=repeat_model[168];
+  pe_frame_read=repeat_model[169];
+  pe_frames=repeat_model[170];
+  pe_last_l=repeat_model[171];
+  pe_last_r=repeat_model[172];
+  pe_lpow=repeat_model[173];
+  pe_model_key=repeat_model[174];
+  pe_nfft=repeat_model[175];
+  pe_nr=repeat_model[176];
+  pe_offset=repeat_model[177];
+  pe_peak=repeat_model[178];
+  pe_phase=repeat_model[179];
+  pe_read_errors=repeat_model[180];
+  pe_reads=repeat_model[181];
+  pe_ready=repeat_model[182];
+  pe_ref_mode=repeat_model[183];
+  pe_rpow=repeat_model[184];
+  pe_subphase=repeat_model[185];
+  pg_load_pending=repeat_model[186];
+  pg_ready=repeat_model[187];
+  play_frames=repeat_model[188];
+  play_run_limited=repeat_model[189];
+  play_srcpos=repeat_model[190];
+  playable_grains=repeat_model[191];
+  posting_count=repeat_model[192];
+  ready=repeat_model[193];
+  scan_previous_tail=repeat_model[194];
+  scan_source=repeat_model[195];
+  scan_tile=repeat_model[196];
+  scout_diff=repeat_model[197];
+  scout_in=repeat_model[198];
+  scout_l=repeat_model[199];
+  scout_n=repeat_model[200];
+  scout_peak=repeat_model[201];
+  scout_probe=repeat_model[202];
+  scout_r=repeat_model[203];
+  scout_reads=repeat_model[204];
+  scout_source=repeat_model[205];
+  scout_started=repeat_model[206];
+  scout_step=repeat_model[207];
+  scout_sum=repeat_model[208];
+  selected_id=repeat_model[209];
+  silent_grains=repeat_model[210];
+  source_count=repeat_model[211];
+  tile_total=repeat_model[212];
+  total_seconds=repeat_model[213];
+  ui_left=repeat_model[214];
+  xc_built_ceiling=repeat_model[215];
+  xc_coarse_n=repeat_model[216];
+  xc_coarse_window=repeat_model[217];
+  xc_coverage_limited=repeat_model[218];
+  xc_cross=repeat_model[219];
+  xc_cursor=repeat_model[220];
+  xc_descriptor_count=repeat_model[221];
+  xc_epoch=repeat_model[222];
+  xc_fft_count=repeat_model[223];
+  xc_fft_size=repeat_model[224];
+  xc_frame=repeat_model[225];
+  xc_grammar_epoch=repeat_model[226];
+  xc_grammar_overflow=repeat_model[227];
+  xc_grammar_ready=repeat_model[228];
+  xc_map_costsum=repeat_model[229];
+  xc_map_count=repeat_model[230];
+  xc_map_cursor=repeat_model[231];
+  xc_map_epoch=repeat_model[232];
+  xc_map_phase=repeat_model[233];
+  xc_map_ready=repeat_model[234];
+  xc_map_source=repeat_model[235];
+  xc_map_target=repeat_model[236];
+  xc_map_unmatched=repeat_model[237];
+  xc_mapping_misses=repeat_model[238];
+  xc_matrix_cursor=repeat_model[239];
+  xc_pcm_reads=repeat_model[240];
+  xc_peak=repeat_model[241];
+  xc_phase=repeat_model[242];
+  xc_pool_n=repeat_model[243];
+  xc_post_cursor=repeat_model[244];
+  xc_post_phase=repeat_model[245];
+  xc_pow_l=repeat_model[246];
+  xc_pow_r=repeat_model[247];
+  xc_precompute_comparisons=repeat_model[248];
+  xc_quality=repeat_model[249];
+  xc_read_count=repeat_model[250];
+  xc_read_i=repeat_model[251];
+  xc_read_start=repeat_model[252];
+  xc_ready=repeat_model[253];
+  xc_recurrences=repeat_model[254];
+  xc_request_hierarchy=repeat_model[255];
+  xc_runtime_comparisons=repeat_model[256];
+  xc_schema=repeat_model[257];
+  xc_sparse_sources=repeat_model[258];
+  xc_spectral_frames=repeat_model[259];
+  xc_subphase=repeat_model[260];
+  xc_terminal_examples=repeat_model[261];
+  xc_triples=repeat_model[262];
+  memory_schema=repeat_model[263];
+  pe_schema=repeat_model[264];
+  xc_config_schema=repeat_model[265];
+  traj_schema=repeat_model[266];
+  state_schema=repeat_model[267];
+  fc_schema=repeat_model[268];
+  grain_base=repeat_model[269];
+  postings=repeat_model[270];
+  grain_capacity=repeat_model[271];
+  source_capacity=repeat_model[272];
+  have_generation=repeat_model[273];
+  generation=repeat_model[274];
+  loaded_signature=repeat_model[275];
+  loaded_count=repeat_model[276];
+  window_setting=repeat_model[277];
+  window_request=repeat_model[278];
+  budget_request=repeat_model[279];
+  quality_request=repeat_model[280];
+  quiet_mode=repeat_model[281];
+  quiet_db=repeat_model[282];
+  h_last_mode=repeat_model[283];
+  pg_changed=repeat_model[284];
+  pg_bypass=repeat_model[285];
+  pg_initializing=repeat_model[286];
+  pg_layer_count=repeat_model[287];
+  pg_live_n=repeat_model[288];
+  pg_available_n=repeat_model[289];
+  pg_epoch=repeat_model[290];
+  pg_saved_valid=repeat_model[291];
+  pg_saved_layer_count=repeat_model[292];
+  pg_saved_n=repeat_model[293];
+  pg_saved_sources=repeat_model[294];
+  pg_saved_seg=repeat_model[295];
+  pg_scope_kind=repeat_model[296];
+  pg_scope_src=repeat_model[297];
+  pg_scope_start=repeat_model[298];
+  pg_scope_end=repeat_model[299];
+  pg_scope_cls=repeat_model[300];
+  pg_min_conf=repeat_model[301];
+  pg_history_n=repeat_model[302];
+  pg_history_pos=repeat_model[303];
+  pg_scope_n=repeat_model[304];
+  pg_scope_pool_n=repeat_model[305];
+  pe_locks=repeat_model[306];
+  cc_srate=repeat_model[307];
+  record_done=repeat_model[308];
+  record_n=repeat_model[309];
+  record_epoch=repeat_model[310];
+  record_overflow=repeat_model[311];
+  record_event=repeat_model[312];
+  record_ei=repeat_model[313];
+  record_start=repeat_model[314];
+  index_epoch=repeat_model[315];
+  burst_limit=repeat_model[316];
+  auto_last_config=repeat_model[317];
+  auto_change_clock=repeat_model[318];
+  browse_done=repeat_model[319];
+  browse_count=repeat_model[320];
+  browse_cursor=repeat_model[321];
+  path_count=repeat_model[322];
+  path_axis_x=repeat_model[323];
+  path_axis_y=repeat_model[324];
+  path_epoch=repeat_model[325];
+  edit_key=repeat_model[326];
+  edit_count=repeat_model[327];
+  map_stratum_page=repeat_model[328];
+  rng_state=repeat_model[329];
+  selection_serial=repeat_model[330];
+  recent_write=repeat_model[331];
+);
+function cp_repeat_ready() (
+  ready && pe_ready && pg_ready && !pg_initializing && record_done && record_n>0 && !record_overflow && record_epoch==index_epoch && record_env[30]==srate;
+);
+function cp_repeat_copy_plan(restore) local(n) (
+  n=restore ? repeat_hold[7] : record_n;
+  restore ? (
+    memcpy(record_env,repeat_plan,64);memcpy(record_amp_curve,repeat_plan+64,40);
+    memcpy(record_base,repeat_plan+104,n*20);memcpy(gr_record,repeat_plan+20584,n*8);
+    memcpy(gt_record,repeat_plan+28776,n);memcpy(cc_record,repeat_plan+29800,n);
+    memcpy(h_record_tags,repeat_plan+30824,n*6);memcpy(h_record_fades,repeat_plan+36968,n*2);
+    record_n=n;record_done=1;record_overflow=0;record_epoch=index_epoch;record_event=-1;
+  ) : (
+    repeat_hold[7]=n;repeat_hold[8]=corpus_key;repeat_hold[9]=srate;
+    memcpy(repeat_plan,record_env,64);memcpy(repeat_plan+64,record_amp_curve,40);
+    memcpy(repeat_plan+104,record_base,n*20);memcpy(repeat_plan+20584,gr_record,n*8);
+    memcpy(repeat_plan+28776,gt_record,n);memcpy(repeat_plan+29800,cc_record,n);
+    memcpy(repeat_plan+30824,h_record_tags,n*6);memcpy(repeat_plan+36968,h_record_fades,n*2);
+    repeat_hold[6]=1;
+  );
+);
+function cp_repeat_arm() (
+  repeat_hold[0]>0 ? repeat_hold[0]=0 : (
+    cp_repeat_ready() && cp_hold_count()==0 && !cg_stage && !cg_retiring && !auto_settings_pending && !auto_hier_pending && !rebuild_request && !pending_adoption ? (
+      repeat_hold[1]=2330;repeat_hold[2]=srate;repeat_hold[3]=corpus_key;repeat_hold[4]=index_epoch;
+      repeat_hold[5]=sample_pool_generation(bank_pool);cp_repeat_save_model();
+      memcpy(repeat_guard,cc_record,1024);cp_repeat_copy_plan(0);repeat_hold[0]=1;
+    ) : replay_unavailable+=1;
+  );ui_left=0;
+);
 function cp_start(velocity note chan when duration ext attackpct releasepct seedadd) local(i ei e w old a de r total scale mode anchor d g seed) (
+  repeat_hold[0]=0;repeat_hold[6]=0;repeat_after_prepare=0;
   cp_hold_count()==0 ? (audible_ref_ready=0;audible_ref=0;audible_hole_run=0;);
   ei=-1;
   ready && pe_ready && pg_ready && !pg_initializing && (!pg_changed || pg_bypass || pg_live_n>0 || pg_preview) && playable_grains>0 ? (
@@ -4442,7 +5218,7 @@ function cp_replay_step(ei limitclock) local(e p when vi id gp gv group) (
       vi>=0 ? (
         gv=cp_v(vi);gv[9]=gp[0];gv[10]=gp[1];gv[21]=gp[2];gv[22]=gp[4];gv[15]=max(1,gv[10]);
         gv[23]=gp[5];pt_periods[vi]=gp[6];gt_amounts[vi]=gt_record[replay_cursor];gp[7]>0 ? gv[3]=gv[2]+gp[7];
-        gv[14]=min(gv[3],min(e[10],e[14]+e[15]));
+        gv[14]=min(gv[3],min(e[10],e[14]+e[15]));cc_voice_begin(vi,gv,cc_record[replay_cursor]);
         h_p=h_record_tags+replay_cursor*6;h_f=h_record_fades+replay_cursor*2;h_replay_tag=h_p[5];(h_replay_tag>=2 || (h_f[0]>=0 && h_f[1]>0)) ? (h_v=cp_v(vi);h_replay_end=when+p[15];h_v[14]=min(h_v[14],h_replay_end);h_f[0]>=0 && h_f[1]>0 ? (h_v[29]=when+h_f[0];h_v[30]=h_v[29]+h_f[1];h_v[14]=min(h_v[14],h_v[30]);););
         score_target=p[16];score_identity=p[17];score_seam=p[18];score_history=p[19];
         cp_trace(id,p[9],p[10],when,p[15],p[11],p[12],p[13],p[14],p[5],e[1],p[6],p[7],p[3],p[8]);
@@ -4482,16 +5258,35 @@ function cp_collect() local(i j e v refs endt w) (
     );e[0]>0 ? event_count+=1;
   );i+=1;);
 );
-function cp_replay(when) local(i ei e fade) (
-  ready && record_done && record_n>0 && !record_overflow && record_epoch==index_epoch && !replaying && record_env[30]==srate ? (
-    fade=max(8,srate*0.003);cp_stop_all(when,fade,-1);ei=-1;i=0;
+function cp_replay_at(when note chan ext padding) local(i ei e fade) (
+  ei=-1;
+  cp_repeat_ready() && !replaying ? (
+    fade=max(8,srate*0.003);cp_stop_all(when,fade,-1);i=0;
     while(i<8 && ei<0)(event_base[i*64]<=0 ? ei=i;i+=1;);
     ei>=0 ? (
-      e=cp_e(ei);memcpy(e,record_env,64);memcpy(amp_evt(ei),record_amp_curve,40);event_serial+=1;e[1]=event_serial;e[4]=0;
-      when+=fade;e[5]+=when;e[6]+=when;e[7]+=when;e[9]+=when;e[10]+=when;e[14]+=when;
+      e=cp_e(ei);memcpy(e,record_env,64);memcpy(amp_evt(ei),record_amp_curve,40);event_serial+=1;e[1]=event_serial;
+      e[2]=note;e[3]=chan;e[4]=ext;when+=padding;
+      e[5]+=when;e[6]+=when;e[7]+=when;e[9]+=when;e[10]+=when;e[14]+=when;
+      // Captured duration is authoritative, including a finished gated release.
+      // Trigger note/velocity and Hub A/R/duration must not reinterpret the take.
+      e[12]=1;e[18]=0;e[40]=0;e[31]=e[10];e[33]=when;e[34]=0;
       replaying=1;replay_ei=ei;replay_cursor=0;e[23]=1;
     ) : replay_unavailable+=1;
-  ) : replay_unavailable+=1;
+  ) : replay_unavailable+=1;ei;
+);
+function cp_replay(when) (
+  repeat_hold[0]=0;cp_replay_at(when,-1,-1,0,max(8,srate*0.003));
+);
+function cp_midi_start(velocity note chan when duration ext attackpct releasepct seedadd) local(ei) (
+  repeat_hold[0]>0 ? (
+    ei=-1;
+    repeat_hold[1]==2330 && repeat_hold[2]==srate && repeat_hold[3]==corpus_key && repeat_hold[4]==index_epoch && (repeat_after_prepare || repeat_hold[5]==sample_pool_generation(bank_pool)) ? (
+      ei=cp_replay_at(when,note,chan,ext,0);
+      ei>=0 ? (repeat_hold[0]=0;ui_left=0;);
+    ) : (repeat_hold[0]=0;replay_unavailable+=1;ui_left=0;);
+    // Never silently substitute a fresh random take for a failed armed trigger.
+    ei;
+  ) : cp_start(velocity,note,chan,when,duration,ext,attackpct,releasepct,seedadd);
 );
 function cp_preview(id) local(g fade) (
   ready && id>=0 && id<grain_count ? (
@@ -4589,7 +5384,7 @@ function cp_packet_execute(p chan when) local(action id target ticks seconds val
     action==7 ? (
       // End at the declared boundary is idempotent: same-offset Continue can
       // transfer ownership before any new grain is emitted.
-      ei>=0 ? (e=cp_e(ei);when<e[31]-1 ? cp_stop_event(ei,when,max(1,min(e[19],srate*0.003))););
+      ei>=0 ? (e=cp_e(ei);e[23]!=1 && when<e[31]-1 ? cp_stop_event(ei,when,max(1,min(e[19],srate*0.003))););
       packet_accepted+=1;
     ) : (
       ei>=0 ? (packet_rejected+=1;packet_last_reason=5;) : (
@@ -4600,6 +5395,8 @@ function cp_packet_execute(p chan when) local(action id target ticks seconds val
             action==4 ? (cp_stop_event(old,when,max(1,min(srate*0.020,seconds*srate)));packet_accepted+=1;) : (
               action==6 ? (
                 e=cp_e(old);
+                // A frozen take may transfer packet ownership, never restart walkers.
+                e[23]==1 ? (e[4]=id;packet_accepted+=1;) : (
                 // Preserve already-scheduled samples and extend this SAME family.
                 oldgain=cp_env(e,when);oldend=e[10];
                 cp_env_save(e,when) ? (
@@ -4615,11 +5412,12 @@ function cp_packet_execute(p chan when) local(action id target ticks seconds val
                   e[1]==record_event ? record_overflow=2; // edited envelope: do not mislabel replay exact
                   packet_accepted+=1;
                 ) : (packet_rejected+=1;packet_last_reason=9;);
+                );
               ) : (
-                ei=cp_start(p[7]/127,p[6],chan,when,seconds,id,p[17],p[18],p[19]);
+                ei=cp_midi_start(p[7]/127,p[6],chan,when,seconds,id,p[17],p[18],p[19]);
                 ei>=0 ? (
                   e=cp_e(ei);total=max(1,floor(seconds*srate+0.5));
-                  cp_packet_envelope(e,when,total,p[8],p[17],p[18]);
+                  e[23]!=1 ? cp_packet_envelope(e,when,total,p[8],p[17],p[18]);
                   action==5 && old>=0 ? cp_stop_event(old,when,max(1,srate*0.005));
                   packet_accepted+=1;
                 ) : (packet_rejected+=1;packet_last_reason=7;);
@@ -5084,7 +5882,7 @@ function cp_action(packet) local(op arg x y) (
   op==1 ? cp_preview(arg);
   op==2 ? cp_preview_desc(arg);
   op==3 ? cp_start(0.5,-1,-1,clock,0,0,127,127,0);
-  op==4 ? cp_replay(clock);
+  op==4 ? (arg==1 ? cp_repeat_arm() : cp_replay(clock));
   op==5 ? cp_stop_all(clock,max(8,srate*0.003),-1);
   op==6 ? (rebuild_request=1;cp_stop_all(clock,max(8,srate*0.003),-1);poll_left=0;);
   op==7 ? pg_single(arg);op==8 ? cp_edit(arg,op);
@@ -5323,7 +6121,7 @@ function cp_ui_publish() local(h i j g s id rec n page lm w e ei count lo total 
     ei>=0 ? (w=cp_w(ei*walker_per_event+i);memcpy(rec,w,64););i+=1;
   );
   memcpy(ui_path,path_base,64);
-  h[90]=record_event;h[91]=record_start;h[92]=memory_schema;h[93]=last_block_rms;h[94]=last_block_peak;h[95]=last_block_rest;h[96]=last_block_gap;h[97]=last_block_lowsal;h[98]=last_block_voices;h[99]=continuity_gap_samples/max(1,srate);
+  h[127]=repeat_hold[0];h[90]=record_event;h[91]=record_start;h[92]=memory_schema;h[93]=last_block_rms;h[94]=last_block_peak;h[95]=last_block_rest;h[96]=last_block_gap;h[97]=last_block_lowsal;h[98]=last_block_voices;h[99]=continuity_gap_samples/max(1,srate);
   h[100]=last_block_hole;h[101]=last_block_sourcehole;h[102]=last_block_coverage;h[103]=audible_floor;h[104]=source_run_limited;h_publish();xc_publish();pg_publish();
   a09=57184;memset(a09,0,128);
   a09[0]=auto_quiet_n;a09[1]=auto_window_min<1000000 ? auto_window_min : 0;a09[2]=auto_window_max;
@@ -5342,6 +6140,11 @@ function cp_ui_publish() local(h i j g s id rec n page lm w e ei count lo total 
   );
 );
 
+// Instance-local handoff metadata and frozen plan. No source PCM duplication.
+// 40,552 cells; nine preserved ranges total252,260, below the262,144 cap.
+repeat_hold=24951424;repeat_model=repeat_hold+32;repeat_guard=repeat_hold+512;repeat_plan=repeat_hold+1536;repeat_memory_end=repeat_plan+39016;
+repeat_restore=repeat_hold[0]>0 && repeat_hold[1]==2330 && repeat_hold[2]==srate;
+repeat_restore ? cp_repeat_restore_model() : repeat_hold[0]=0;
 // ---------------- Fixed memory map (all pointers in cells/doubles) ----------------
 voice_base=0;voice_list=2048;event_base=2176;recent_base=4480;
 walker_per_event=13;walker_total=8*walker_per_event;walker_base=18320000;walker_memory_end=walker_base+walker_total*64;
@@ -5459,6 +6262,9 @@ desc_cursor_new=23942976; // 159 cells
 desc_reservoir=24077000;desc_res_counts=24104648;desc_cursor=24105512;
 pg_reservoir=24105696;pg_res_counts=24133344;
 pg_live_res=24134208;pg_live_counts=24161856;desc_value_range=24162720;pe_memory_end=24162882;
+// Child cleanup: 4 cells/grain + fixed RMS cache; 64 voices + 1024 replay amounts.
+cc_meta=24162912;cc_envelope=24425056;cc_voices=24949344;cc_record=24950368;cc_memory_end=24951392;pe_memory_end=cc_memory_end;
+memset(cc_voices,0,2048);cc_srate=-1;cc_prepare();
 pe_schema!=1900 ? (
   pe_schema=1900;pe_ready=0;pe_phase=0;pe_epoch=-1;pe_locks=0;pg_ready=0;pg_layer_count=0;pg_saved_valid=0;pg_saved_layer_count=0;pg_saved_n=0;pg_saved_sources=0;
   memset(pg_layers,0,65536);memset(pg_meta,0,512);memset(pg_rules,0,16);pg_rules[1]=51;pg_rules[3]=1;pg_rules[6]=52;pg_rules[8]=1;pg_rules[11]=1;pg_rules[13]=1;
@@ -5497,6 +6303,9 @@ last_seed=slider11;za_keep_awake=1;pdc_delay=0;
 memset(h_state,0,768);h_active=0;h_last_mode=floor(slider56);path_staging=0;path_stage_n=0;pending_excl_n=0;continuity_gap_samples=0;source_run_limited=0;meter_sum=0;meter_peak_block=0;meter_n=0;meter_rest_sum=0;meter_gap_sum=0;meter_lowsal_sum=0;meter_hole_sum=0;meter_sourcehole_sum=0;meter_coverage_sum=0;audible_hole_run=0;audible_ref=0;audible_ref_ready=0;audible_floor=cp_amp(-96);
 
 memset(xc_states,0,512);xc_runtime_transfer=0;xc_run=0;xc_last_audition=-1000000000000;
+// prepareToPlay clears guest scalars but retains the instance heap. Only an
+// explicitly armed take opts into restoring its ready model at the same rate.
+repeat_restore ? (cp_repeat_restore_model();memcpy(cc_record,repeat_guard,1024);repeat_after_prepare=1;);
 // ---------------- Snapshot-only responsive interface ----------------
 function ui_color(r g b a) (gfx_r=r;gfx_g=g;gfx_b=b;gfx_a=a;);
 function ui_hit(x y w h) (
@@ -5710,6 +6519,7 @@ function ui_notify(id value automate) local(mask) (
   id==243 ? (sliderchange(slider243);automate ? slider_automate(slider243,0);) :
   id==246 ? (sliderchange(slider246);automate ? slider_automate(slider246,0);) :
   id==247 ? (sliderchange(slider247);automate ? slider_automate(slider247,0);) :
+  id==249 ? (sliderchange(slider249);automate ? slider_automate(slider249,0);) :
   id==248 ? (sliderchange(slider248);automate ? slider_automate(slider248,0);) :
   id==245 ? (sliderchange(slider245);automate ? slider_automate(slider245,0);) :
   id==244 ? (sliderchange(slider244);automate ? slider_automate(slider244,0);) :
@@ -5899,6 +6709,7 @@ function ui_end_gesture(id) (
   id==243 ? slider_automate(slider243,1) :
   id==246 ? slider_automate(slider246,1) :
   id==247 ? slider_automate(slider247,1) :
+  id==249 ? slider_automate(slider249,1) :
   id==248 ? slider_automate(slider248,1) :
   id==245 ? slider_automate(slider245,1) :
   id==244 ? slider_automate(slider244,1) :
@@ -6045,6 +6856,7 @@ function ui_slider_tip(id) (
  id==78 ? strcpy(#ui_tip_body,"Companion grain density. Higher values shorten the hops for more overlap. Body bed receives extra overlap. Saved, automatable and captured by new notes.");
  id==79 ? strcpy(#ui_tip_body,"Variation in companion start and hop timing. Zero is orderly; high values spread timing while keeping the same grain playback speed. Captured per event; Fixed seed stays reproducible.");
  id==80 ? strcpy(#ui_tip_body,"Grain: long windowed micro-grains create increasingly dense phase smearing, with identical processing in both channels. Classic: the previous short all-pass transient softener. Fresh instances use Grain; older projects retain Classic until changed.");
+ id==249 ? strcpy(#ui_tip_body,"Automatically lowers quiet background and tails inside child grains before they combine. The primary stays untouched. Corpus handles threshold and timing; 0 is exact bypass. New child grains capture this amount and REPEAT preserves it. Higher values reduce more quiet texture.");
  id==81 ? strcpy(#ui_tip_body,"Overall trajectory pull. Zero removes trajectory scoring AND trajectory candidate injection. 100% uses normal lane strengths; higher values emphasize the request. Existing source scope and explicit locks still apply.");
  id==82 ? strcpy(#ui_tip_body,"Event fits a known one-shot or incoming duration. Held notes repeat over Seconds until Note Off. Once runs one timed pass then holds. Repeat wraps. Bounce runs forward and back. Each new note starts its own clock.");
  id==83 ? strcpy(#ui_tip_body,"Seconds for one pass in Once, Repeat and Bounce, and for a held Event-clock note. Known Event durations fit automatically. Bounce needs two passes for a complete return.");
@@ -6062,7 +6874,7 @@ function ui_control(id x y w label lo hi def fmt) local(value hot n dx nv step) 
     );
   );
   fmt==5 ? (abs(value)<0.0005 ? strcpy(#ui_val,"LINEAR") : sprintf(#ui_val,"%s %.0f %%",value<0 ? "FAST" : "SLOW",abs(value)*100););
-  id==5 && value<=0 ? strcpy(#ui_val,"AUTO");
+  id==5 && value<=0 ? strcpy(#ui_val,"AUTO");id==249 && value<=0 ? strcpy(#ui_val,"OFF");
   id==244 && value<=0 ? strcpy(#ui_val,"NO FIXED LIMIT");
   ui_text(x+10,y+25,w-16,21,#ui_val,0.90,0.95,0.96);
   ui_box(x+10,y+59,w-20,3,0.14,0.20,0.25);ui_box(x+10,y+59,(w-20)*cp_01(n),3,0.31,0.73,0.65);
@@ -6157,56 +6969,49 @@ function ui_desc_name(d) (
   d==52 ? strcpy(#ui_dim,"EC PE");d==53 ? strcpy(#ui_dim,"Length");
 );
 function ui_dim(d) (ui_desc_name(d););
-function ui_desc_from_menu(n) local(d) (
-  d=-1;
-  n>=2 && n<=9 ? d=n-2;
-  n>=11 && n<=22 ? d=8+n-11;
-  n>=24 && n<=31 ? d=20+n-24;
-  n>=33 && n<=45 ? d=28+n-33;
-  n>=47 && n<=49 ? d=41+n-47;
-  n>=51 && n<=53 ? d=44+n-51;
-  n>=55 && n<=58 ? d=47+n-55;n>=60 && n<=61 ? d=51+n-60;n==63 ? d=53;d;
-);
+// Descriptor IDs remain stable; display order is independent of those IDs.
+function ui_desc_rows() (cp_desc_count()+8;);
+function ui_desc_from_menu(n) (n>0 ? ui_desc_row_id(n-1) : -1;);
 function ui_desc_menu() local(n) (
   gfx_x=mouse_x;gfx_y=mouse_y;
-  n=gfx_showmenu("#CORE|Energy|Brightness|LF weight|Motion|Onset|Crest|Decay|Width|#SPECTRAL|Sub 125 Hz|125-250 Hz|250-500 Hz|500 Hz-1 kHz|1-2 kHz|2-4 kHz|4-8 kHz|8 kHz+|Spectral centroid|Spectral spread|Spectral flatness|Spectral tilt|#TEMPORAL|Local stability|Periodicity|Pulse confidence|Pulse rate|Spectral evolution|Energy direction|Centroid direction|Boundary activity|#TONAL|Harmonicity|Chroma C|Chroma C#|Chroma D|Chroma D#|Chroma E|Chroma F|Chroma F#|Chroma G|Chroma G#|Chroma A|Chroma A#|Chroma B|#SPATIAL|Stereo correlation|L/R balance|Spatial evolution|#CONTEXT|Recurrence|Adjacency confidence|Replaceability|#LEARNED FROM THIS CORPUS|Corpus Axis 1|Corpus Axis 2|Corpus Axis 3|Corpus Axis 4|#PREDICTION ERROR|Region PE|EC PE|#SIZE|Length");
+  n=gfx_showmenu("#CORE|Energy|Length|Brightness|LF weight|Motion|Onset|Crest|Decay|Width|#SPECTRAL|Sub 125 Hz|125-250 Hz|250-500 Hz|500 Hz-1 kHz|1-2 kHz|2-4 kHz|4-8 kHz|8 kHz+|Spectral centroid|Spectral spread|Spectral flatness|Spectral tilt|#TEMPORAL|Local stability|Periodicity|Pulse confidence|Pulse rate|Spectral evolution|Energy direction|Centroid direction|Boundary activity|#TONAL|Harmonicity|Chroma C|Chroma C#|Chroma D|Chroma D#|Chroma E|Chroma F|Chroma F#|Chroma G|Chroma G#|Chroma A|Chroma A#|Chroma B|#SPATIAL|Stereo correlation|L/R balance|Spatial evolution|#CONTEXT|Recurrence|Adjacency confidence|Replaceability|#LEARNED FROM THIS CORPUS|Corpus Axis 1|Corpus Axis 2|Corpus Axis 3|Corpus Axis 4|#PREDICTION ERROR|Region PE|EC PE");
   ui_desc_from_menu(n);
 );
 function ui_desc_row_id(row) local(d) (
   d=-1;
-  row>=1 && row<=8 ? d=row-1;
-  row>=10 && row<=21 ? d=8+row-10;
-  row>=23 && row<=30 ? d=20+row-23;
-  row>=32 && row<=44 ? d=28+row-32;
-  row>=46 && row<=48 ? d=41+row-46;
-  row>=50 && row<=52 ? d=44+row-50;
-  row>=54 && row<=57 ? d=47+row-54;
-  row>=59 && row<=60 ? d=51+row-59;row==62 ? d=53;
-  d;
+  row==1 ? d=0;row==2 ? d=53;
+  row>=3 && row<=9 ? d=row-2;
+  row>=11 && row<=22 ? d=8+row-11;
+  row>=24 && row<=31 ? d=20+row-24;
+  row>=33 && row<=45 ? d=28+row-33;
+  row>=47 && row<=49 ? d=41+row-47;
+  row>=51 && row<=53 ? d=44+row-51;
+  row>=55 && row<=58 ? d=47+row-55;
+  row>=60 && row<=61 ? d=51+row-60;d;
 );
 function ui_desc_row_category(row) (
   row==0 ? strcpy(#ui_desc_cat,"CORE");
-  row==9 ? strcpy(#ui_desc_cat,"SPECTRAL");
-  row==22 ? strcpy(#ui_desc_cat,"TEMPORAL");
-  row==31 ? strcpy(#ui_desc_cat,"TONAL");
-  row==45 ? strcpy(#ui_desc_cat,"SPATIAL");
-  row==49 ? strcpy(#ui_desc_cat,"CONTEXT");
-  row==53 ? strcpy(#ui_desc_cat,"LEARNED FROM THIS CORPUS");
-  row==58 ? strcpy(#ui_desc_cat,"PREDICTION ERROR");row==61 ? strcpy(#ui_desc_cat,"SIZE");
+  row==10 ? strcpy(#ui_desc_cat,"SPECTRAL");
+  row==23 ? strcpy(#ui_desc_cat,"TEMPORAL");
+  row==32 ? strcpy(#ui_desc_cat,"TONAL");
+  row==46 ? strcpy(#ui_desc_cat,"SPATIAL");
+  row==50 ? strcpy(#ui_desc_cat,"CONTEXT");
+  row==54 ? strcpy(#ui_desc_cat,"LEARNED FROM THIS CORPUS");
+  row==59 ? strcpy(#ui_desc_cat,"PREDICTION ERROR");
 );
-function ui_desc_id_row(d) local(row) (
-  d=cp_clamp(floor(d),0,53);row=d+1;
-  d>=8 ? row+=1;d>=20 ? row+=1;d>=28 ? row+=1;d>=41 ? row+=1;d>=44 ? row+=1;d>=47 ? row+=1;d>=51 ? row+=1;d==53 ? row=62;row;
+function ui_desc_id_row(d) local(row found) (
+  d=cp_clamp(floor(d),0,cp_desc_count()-1);row=0;found=0;
+  while(row<ui_desc_rows())(ui_desc_row_id(row)==d ? found=row;row+=1;);found;
 );
 function ui_desc_popup_open(id) local(d lane p) (
   ui_desc_popup=id;ui_desc_popup_x=mouse_x;ui_desc_popup_y=mouse_y;
-  id>=100 && id<112 ? (lane=id-100;p=ui_traj+lane*40;d=floor(p[1]);) : (id>=200 && id<203 ? d=61216[32+(id-200)*5+1] : d=floor(slider(id)));
-  ui_desc_popup_scroll=max(0,ui_desc_id_row(d)-4);ui_desc_popup_drag=0;ui_desc_popup_just=1;
+  id>=100 && id<112 ? (lane=id-100;p=ui_traj+lane*40;d=floor(p[1]);) : (id>=200 && id<203 ? d=61216[32+(id-200)*5+1] : d=ui_axis_value(id));
+  ui_desc_popup_scroll=0;ui_desc_popup_drag=0;ui_desc_popup_just=1;
 );
 function ui_desc_choice(id x y w label) local(d) (
   d=cp_clamp(ui_axis_value(id),0,53);ui_desc_name(d);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
   ui_button(x,y,w,34,#ui_choice_label,ui_desc_popup==id) ? ui_desc_popup_open(id);
-  ui_hit(x,y,w,34) ? ui_tip("Unified Corpus descriptor registry. Click for the scrollable categorized picker; mouse wheel or drag its scrollbar. Spectral/spatial evidence is universal; tonal/pulse axes are confidence-gated; Corpus Axes are learned from this load during preprocessing.");
+  ui_hit(x,y,w,34) ? ui_tip("Unified Corpus descriptor registry. Core includes Length near the top. Click for the scrollable categorized picker; mouse wheel or drag its scrollbar. Spectral/spatial evidence is universal; tonal/pulse axes are confidence-gated; Corpus Axes are learned from this load during preprocessing.");
 );
 function ui_desc_popup_draw() local(px py pw ph headh rowh total vis maxscroll first count i row d ry current inside tracky trackh thumbh thumby rel) (
   ui_desc_popup>0 ? (
@@ -6214,7 +7019,7 @@ function ui_desc_popup_draw() local(px py pw ph headh rowh total vis maxscroll f
     pw=max(190,min(360,gfx_w-16));ph=max(190,min(590,gfx_h-16));
     px=cp_clamp(ui_desc_popup_x-pw*0.18,8,max(8,gfx_w-pw-8));
     py=cp_clamp(ui_desc_popup_y-36,8,max(8,gfx_h-ph-8));
-    headh=42;rowh=28;total=63;vis=max(3,floor((ph-headh-10)/rowh));maxscroll=max(0,total-vis);
+    headh=42;rowh=28;total=ui_desc_rows();vis=max(3,floor((ph-headh-10)/rowh));maxscroll=max(0,total-vis);
     inside=mouse_x>=px && mouse_x<px+pw && mouse_y>=py && mouse_y<py+ph;
     inside && ui_wheel!=0 ? (ui_desc_popup_scroll-=ui_wheel/120*3;ui_wheel=0;);
     ui_desc_popup_scroll=cp_clamp(ui_desc_popup_scroll,0,maxscroll);
@@ -6870,11 +7675,11 @@ function ui_child_cloud(x y w) local(start count mode cols cw rows i xx yy selec
   i=1;loop(count,k=count>1 ? -1+2*(i-1)/(count-1) : 0;px=x+w/2+k*(w*0.40)*spread;py=cy+((i%2)*2-1)*(10+18*scatter);
     ui_line(x+w/2,cy,px,py,0.21,0.46,0.44,0.8);ui_circle(px,py,4,0.35,0.81,0.69,1);i+=1;);
   ui_text(x+8,y+3,w-16,13,"CLOUD PREVIEW / gold = primary",0.57,0.72,0.76);y+=84;
-  cols=max(1,min(3,floor((w+8)/204)));nrows=ceil(5/cols);i=0;row=0;
-  loop(nrows,nrow=min(cols,5-i);cw=(w-(nrow-1)*8)/nrow;j=0;loop(nrow,
-    id=i==0 ? 37 : (i==1 ? 78 : (i==2 ? 53 : (i==3 ? 38 : 79)));
-    i==0 ? strcpy(#ui_txt,"CLOUD LEVEL");i==1 ? strcpy(#ui_txt,"GRAIN DENSITY");i==2 ? strcpy(#ui_txt,"STEREO WIDTH");i==3 ? strcpy(#ui_txt,"SIMILARITY");i==4 ? strcpy(#ui_txt,"TIMING SPREAD");
-    ui_control(id,x+j*(cw+8),y+row*78,cw,#ui_txt,0,1,i==0 ? 0.25 : (i==1 ? 0.60 : (i==2 ? 0.30 : (i==3 ? 0.85 : 0.20))),0);i+=1;j+=1;);row+=1;);
+  cols=max(1,min(3,floor((w+8)/204)));nrows=ceil(6/cols);i=0;row=0;
+  loop(nrows,nrow=min(cols,6-i);cw=(w-(nrow-1)*8)/nrow;j=0;loop(nrow,
+    id=i==0 ? 37 : (i==1 ? 78 : (i==2 ? 53 : (i==3 ? 38 : (i==4 ? 79 : 249))));
+    i==0 ? strcpy(#ui_txt,"CLOUD LEVEL");i==1 ? strcpy(#ui_txt,"GRAIN DENSITY");i==2 ? strcpy(#ui_txt,"STEREO WIDTH");i==3 ? strcpy(#ui_txt,"SIMILARITY");i==4 ? strcpy(#ui_txt,"TIMING SPREAD");i==5 ? strcpy(#ui_txt,"CLEANUP / CHILDREN");
+    ui_control(id,x+j*(cw+8),y+row*78,cw,#ui_txt,0,1,i==0 ? 0.25 : (i==1 ? 0.60 : (i==2 ? 0.30 : (i==3 ? 0.85 : (i==4 ? 0.20 : 0)))),0);i+=1;j+=1;);row+=1;);
   y+=nrows*78;ui_text(x,y,w,13,"Saved + automatable / new notes capture the cloud",0.55,0.72,0.76);y+=29;y-start;
 );
 
@@ -6918,7 +7723,7 @@ function ui_curve_editor(lane amplitude x y w h) local(base interpidx i steps u 
 );
 function ui_traj_desc_choice(lane x y w label) local(p d) (
   p=ui_traj+lane*40;d=cp_clamp(floor(p[1]),0,53);ui_desc_name(d);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
-  ui_button(x,y,w,34,#ui_choice_label,ui_desc_popup==100+lane) ? (ui_desc_popup=100+lane;ui_desc_popup_x=mouse_x;ui_desc_popup_y=mouse_y;ui_desc_popup_scroll=max(0,ui_desc_id_row(d)-4);ui_desc_popup_drag=0;ui_desc_popup_just=1;);
+  ui_button(x,y,w,34,#ui_choice_label,ui_desc_popup==100+lane) ? (ui_desc_popup=100+lane;ui_desc_popup_x=mouse_x;ui_desc_popup_y=mouse_y;ui_desc_popup_scroll=0;ui_desc_popup_drag=0;ui_desc_popup_just=1;);
   ui_hit(x,y,w,34) ? ui_tip("Choose any Core, Spectral, Temporal, Tonal, Spatial, Context, or corpus-derived Learned axis for this trajectory lane.");
 );
 function ui_traj_mode_choice(lane x y w) local(p mode n) (
@@ -7536,6 +8341,7 @@ slider11!=last_seed ? (rng_state=max(1,floor(slider11));last_seed=slider11;);
 
 @block
 tr_sync_params();
+cc_srate!=srate ? cc_prepare();
 source_mix_srate!=srate ? (source_mix_a=1-exp(-1/max(1,srate*0.005));source_mix_srate=srate;);
 cg_retire();
 xc_tasks_retire();
@@ -7609,6 +8415,12 @@ pg_preview_pending && cp_hold_count()==0 && cp_busy()==0 ? (
   pg_preview_save();pg_preview=1;pg_preview_pending=0;pg_preview_running=1;cp_start(0.5,-1,-1,clock,slider25/1000,0,127,127,0);
 );
 pg_preview_running && cp_hold_count()==0 && cp_busy()==0 ? pg_preview_restore();
+// A same-rate host prepare may re-commit the identical source bank after the
+// render has started. Recover its completed take once the same model is ready.
+repeat_after_prepare && repeat_hold[6]>0 && ready && pe_ready && pg_ready && !pg_initializing && !cg_stage && !pending_adoption && !rebuild_request && cp_hold_count()==0 && record_done==0 ? (
+  repeat_hold[8]==corpus_key && repeat_hold[9]==srate ? cp_repeat_copy_plan(1);
+  repeat_after_prepare=0;repeat_hold[6]=0;
+);
 
 block_midi_count=0;block_note_count=0;walk_clock=block_start_clock;
 while(midirecv(moff,m1,m23)) (
@@ -7618,7 +8430,7 @@ while(midirecv(moff,m1,m23)) (
   at_clock>=walk_clock ? (cp_walk_until(at_clock);walk_clock=at_clock;);
   block_midi_count<2048 ? (
     mstatus==144 && mvel>0 ? (
-      block_note_count<32 ? (cp_start(mvel/127,mnote,mchan,at_clock,0,0,127,127,0);block_note_count+=1;) : dropped_triggers+=1;
+      block_note_count<32 ? (cp_midi_start(mvel/127,mnote,mchan,at_clock,0,0,127,127,0);block_note_count+=1;) : dropped_triggers+=1;
     ) : (
       mstatus==128 || (mstatus==144 && mvel==0) ? cp_midi_noteoff(mnote,mchan,at_clock) : (
         mstatus==176 ? cp_midi_cc(mchan,mnote,mvel,at_clock);
@@ -7683,7 +8495,7 @@ vi=0;while(vi<voice_list_n)(
       source_mix>=1 ? (vl=source_mid;vr=source_mid;) : (vl+=(source_mid-vl)*source_mix;vr+=(source_mid-vr)*source_mix;);
     );
     grain_guard=gt_guard(max(abs(vl),abs(vr))*abs(vv[8]),gt_amounts[voice_list[vi]]);
-    vg=vv[8]*env*grain_guard;out_l+=vl*vg*vv[24];out_r+=vr*vg*vv[25];
+    vg=vv[8]*env*grain_guard;cc_voices[voice_list[vi]*16]>0 ? vg*=cc_apply(voice_list[vi],vv,age);out_l+=vl*vg*vv[24];out_r+=vr*vg*vv[25];
   );vi+=1;
 );
 // Transient Diffusion is deliberately post-selection. The selected source
@@ -7758,12 +8570,13 @@ gfx_w>570 ? (
   ui_hit(154,8,gfx_w-326,31) ? ui_load_tip();
 );
 ui_btn(12,47,96,31,"GENERATE",0,"Generate with the current controls. Natural runs to a learned ending or its cap; otherwise this button creates a one-shot. MIDI also supports Gated playback.") ? ui_enqueue(3,0);
-ui_btn(116,47,76,31,"REPEAT",ui_h[31]>0.5 && ui_h[32]==0,"Replay the completed recorded event exactly. Output and peak catch remain live. Incomplete or invalid plans cannot be replayed.") ? ui_enqueue(4,0);
-ui_btn(200,47,64,31,"STOP",0,"Fade all active voices and walkers, allowing a pending source or hierarchy rebuild to proceed.") ? ui_enqueue(5,0);
-gfx_w>560 ? (
+ui_btn(116,47,146,31,"PLAY IMMEDIATELY",ui_h[31]>0.5 && ui_h[32]==0,"Repeat the completed take now. Output and peak catch remain live. Generate makes a fresh take.") ? ui_enqueue(4,0);
+ui_btn(270,47,170,31,ui_h[127]>0 ? "NEXT NOTE: ARMED" : "PLAY ON NEXT NOTE",ui_h[127]>0,"Use the completed take once on the next MIDI note or Hub Start. Keeps its full recorded envelope, pitch and grain timing; incoming duration/velocity do not resize it. Output, Smear and peak catch remain live. Click again to cancel. Arm again for another render. Available after the take finishes; instance-local, not saved in projects.") ? ui_enqueue(4,1);
+ui_btn(448,47,64,31,"STOP",0,"Fade all active voices and walkers, allowing a pending source or hierarchy rebuild to proceed.") ? ui_enqueue(5,0);
+gfx_w>820 ? (
   slider5<=0 ? sprintf(#ui_status,"%+.1f dB   %s %.0f-%.0f ms / avg %.0f",slider7,slider242==2 ? "COHERENT" : (slider242==0 ? "AGGRESSIVE" : "AUTO MICRO"),ui_auto[1]*1000,ui_auto[2]*1000,ui_h[17]*1000) : sprintf(#ui_status,"%+.1f dB   MANUAL GRAIN %.0f-%.0f ms",slider7,ui_auto[1]*1000,ui_auto[2]*1000);
-  ui_text(282,55,gfx_w-296,14,#ui_status,0.67,0.82,0.84);
-  ui_hit(282,47,gfx_w-296,31) ? ui_tip("Auto Micro reports the FINAL variable-duration acoustic units, not the short internal scout probes. Inspector exposes both scales and budget coarsening.");
+  ui_text(530,55,gfx_w-544,14,#ui_status,0.67,0.82,0.84);
+  ui_hit(530,47,gfx_w-544,31) ? ui_tip("Auto Micro reports the FINAL variable-duration acoustic units, not the short internal scout probes. Inspector exposes both scales and budget coarsening.");
 );
 gfx_w>=790 ? (
   ui_btn(12,87,128,31,"STRUCTURE",ui_page==4,"Source chronology and learned behavioural classes. The main workspace.") ? ui_notify(55,4,0);

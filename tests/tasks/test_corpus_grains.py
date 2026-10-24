@@ -32,17 +32,18 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     source = source_path.read_text(encoding='utf-8')
     sliders = '\n'.join(line for line in source.splitlines()
-                        if any(line.startswith(f'slider{i}:') for i in range(65, 81)))
+                        if any(line.startswith(f'slider{i}:') for i in list(range(65, 81))+[249]))
     helpers = '\n'.join(function(source, name) for name in (
         'cp_clamp', 'cp_01', 'cp_db', 'cp_amp', 'cp_fold', 'cp_g', 'cp_s', 'cp_e', 'cp_v',
         'gr_prepare', 'gr_window', 'gr_accumulate', 'gr_level',
         'pt_config', 'pt_center', 'pt_read', 'pt_walk_rate',
         'gt_gain', 'gt_guard',
+        'cc_begin','cc_grain_begin','cc_feed','cc_grain_end','cc_prepare','cc_voice_begin','cc_apply',
         'cp_voice', 'cp_record_voice', 'cp_replay_step',
         'ui_notify', 'ui_end_gesture'))
     mixer = source.split('@sample\n', 1)[1].split(
         '// Transient Diffusion is deliberately post-selection.', 1)[0]
-    fixture = sliders + '\noptions:maxmem=65536\n@init\n' + '''
+    fixture = sliders + '\noptions:maxmem=100000\n@init\n' + '''
 function cp_env(e t) (e[8];);
 function cp_valid(id) (id>=0 && id<grain_count;);
 function pg_limit_span(id start frames) (pg_span_start=start;pg_span_frames=frames;);
@@ -50,12 +51,12 @@ function h_m(i) (hm_episodes+i*96;);
 function cp_trace(a b c d e f g h i j k l m n o) (1;);
 function xc_ok(id) (test_tonal>0 && id==3;);
 function xc_g(id) (6200+id*112;);
-function pe_at(src frame) (frame<24000 ? 3 : 4;);
+function pe_at(src frame) (test_cleanup_map ? 3 : (frame<24000 ? 3 : 4););
 ''' + helpers + '''
 voice_base=0;voice_list=2048;event_base=2176;grain_base=4096;source_base=6000;
 walker_per_event=13;walker_total=104;record_base=10000;h_record_tags=40000;
 h_record_fades=47000;gr_record=48000;gr_norm=57000;pt_periods=gr_norm+walker_total*4;
-gt_amounts=pt_periods+64;gt_record=gt_amounts+64;
+gt_amounts=pt_periods+64;gt_record=gt_amounts+64;cc_meta=60000;cc_envelope=62500;cc_voices=65000;cc_record=67000;cc_srate=-1;
 grain_count=8;voice_list_n=0;clock=0;srate=48000;
 @block
 // Retain the entry points for native checks, including exact slider selectors.
@@ -70,6 +71,12 @@ test_op==8 ? test_result=cp_fold(1,-1);
 test_op==9 ? test_result=pt_walk_rate(30000,123);
 test_op==10 ? test_result=gt_gain(3,test_start,test_frames,test_gain,test_amount);
 test_op==11 ? test_result=gt_guard(test_peak,test_amount);
+test_op==12 ? cc_grain_begin(test_id);
+test_op==13 ? cc_feed(test_power);
+test_op==14 ? cc_grain_end(test_id);
+test_op==15 ? cc_voice_begin(0,0,test_amount);
+test_op==16 ? test_result=cc_apply(0,0,test_age);
+test_op==17 ? cc_begin();
 @sample
 ''' + mixer + '\nspl0=out_l;spl1=out_r;clock+=1;\n'
     (out / 'fixture.jsfx').write_text(fixture, encoding='utf-8')
@@ -154,7 +161,7 @@ static bool near(double a,double b,double tol=1e-10){return std::abs(a-b)<=tol;}
 int main(){
   spectral=std::make_unique<za::jsfx::SpectralSamplePitch>();spectral->prepare();
   DSPJSFX_State s{};za::jsfx::StateVariables vars;vars.bind(s,DSPJSFX_VARS_COUNT);
-  std::vector<DSPJSFX_Cell> memory(65536);s.mem=memory.data();s.memN=memory.size();s.srate=48000;
+  std::vector<DSPJSFX_Cell> memory(100000);s.mem=memory.data();s.memN=memory.size();s.srate=48000;
   jsfx_init(&s);
   auto reset=[&](){for(auto& x:memory)x=0;jsfx_init(&s);set(s,"output_faults",0);};
   auto prepare=[&](int shape,double softness,double balance){memory[9]=30;memory[10]=45;jsfx_fn_gr_prepare(&s,0,400,shape,softness,balance);};
@@ -320,6 +327,38 @@ int main(){
   jsfx_fn_cp_record_voice(&s,gv/32,-1,0,0,0,0,0);memory[gv]=0;set(s,"voice_list_n",0);set(s,"replay_cursor",0);set(s,"steps_this_block",0);set(s,"replaying",1);s.sliders[73]=0;
   jsfx_fn_cp_replay_step(&s,0,1);int gr=int(memory[2048])*32;assert(near(double(memory[gr+8]),fixedGain) && memory[57480+gr/32]==1);
   std::cout<<"PASS per-grain taming: cached RMS/peak/expanded span, attenuation only, exact bypass, soft-knee continuity, bounded stereo-linked peak guard, independent quiet voices and replay without double gain reduction\n";
+  // Cache derives from the actual complete PCM energy stream, retaining tail
+  // resolution even when a Coherent passage is long. It never reads PCM here.
+  reset();set(s,"grain_count",4);set(s,"total_seconds",1);set(s,"test_op",17);jsfx_block(&s);
+  int cg=4096+3*64;memory[cg+2]=0;memory[cg+3]=48000;memory[cg+4]=48000;
+  set(s,"test_id",3);set(s,"test_op",12);jsfx_block(&s);
+  for(int i=0;i<48000;++i){double level=i<4800 || i>=38400 ? .2 : .001;set(s,"test_power",level*level);set(s,"test_op",13);jsfx_block(&s);}
+  set(s,"test_op",14);jsfx_block(&s);assert(memory[60012+1]==100 && memory[60012+3]==480 && near(double(memory[60012+2]),.2));assert(get(s,"cc_samples")==48000 && get(s,"cc_used")==100);
+  set(s,"pe_ready",1);set(s,"test_cleanup_map",1);memory[1]=3;memory[5]=0;memory[6]=48000;memory[26]=0;
+  auto cleanup=[&](double amount,int kind,int duration){memory[3]=duration;memory[27]=kind;set(s,"test_amount",amount);set(s,"test_op",15);jsfx_block(&s);};
+  auto gain=[&](int age){set(s,"test_age",age);set(s,"test_op",16);jsfx_block(&s);return get(s,"test_result");};
+  for(double rate:{32000.,44100.,48000.,96000.,192000.})for(int pitch:{-24,0,24}){
+   s.srate=rate;int duration=int(rate/std::pow(2.,pitch/12.));cleanup(1,3,duration);double low=1,delta=0,last=1;
+   for(int t=0;t<duration;++t){double q=gain(t);assert(std::isfinite(q)&&q>=std::pow(10.,-24./20.)-1e-12&&q<=1);delta=std::max(delta,std::abs(q-last));last=q;if(t>duration*.4&&t<duration*.75)low=std::min(low,q);if(t<duration*.05)assert(q==1);}
+   assert(low<.3 && last>.98 && delta<.025);
+  }
+  s.srate=48000;cleanup(0,3,48000);for(int t=0;t<48000;t+=31)assert(gain(t)==1);cleanup(1,0,48000);assert(memory[65000]==0);for(int t=0;t<48000;t+=31)assert(gain(t)==1);
+  memory[26]=-1;cleanup(1,3,48000);assert(memory[65000]==0);memory[26]=0;set(s,"pe_ready",0);cleanup(1,3,48000);assert(memory[65000]==0);set(s,"pe_ready",1);
+  // Quiet recordings retain the exact relative behavior; absolute recording
+  // level is not the threshold. Constant low-level content stays fully open.
+  cleanup(.7,3,48000);std::vector<double> relative;for(int t=0;t<48000;++t)relative.push_back(gain(t));
+  memory[60014]*=.0001;for(int i=0;i<100;++i)memory[62500+i]*=.0001;
+  cleanup(.7,3,48000);for(int t=0;t<48000;++t)assert(near(gain(t),relative[t],1e-10));
+  memory[60014]=.000001;for(int i=0;i<100;++i)memory[62500+i]=.000001;cleanup(1,3,48000);for(int t=0;t<48000;++t)assert(gain(t)==1);
+  // Missing, single-bin or silent evidence is safe; broad cells back off.
+  memory[60013]=1;cleanup(1,3,48000);for(int t=0;t<1000;++t)assert(gain(t)==1);memory[60013]=100;memory[60014]=1e-12;cleanup(1,3,48000);for(int t=0;t<1000;++t)assert(gain(t)==1);
+  set(s,"test_id",249);set(s,"test_op",7);int ends=gestureEnds;jsfx_block(&s);assert(lastChanged==248&&lastAutomated==248&&gestureEnds==ends+1);
+  // Large-bank allocation reserves at least one cell for every later grain.
+  set(s,"grain_count",512);set(s,"total_seconds",51200000);set(s,"test_op",17);jsfx_block(&s);
+  for(int id=0;id<512;++id){int q=4096+id*64;memory[q+3]=48000.*100000;memory[q+4]=48000;set(s,"test_id",id);set(s,"test_op",12);jsfx_block(&s);int m=60000+id*4;assert(memory[m]>=0&&memory[m+1]>=1&&memory[m]+memory[m+1]<=524288);}
+  assert(get(s,"cc_used")<=524288&&get(s,"cc_scale")>1);
+  std::cout<<"PASS child cleanup: full RMS bins, automatic relative reference, five rates/three source-motion speeds, bounded smooth attenuation, opening protection, exact Off/parent/audition bypass, quiet-source invariance, safe fallback, automation and fixed cache capacity\n";
+
 }
 '''
 

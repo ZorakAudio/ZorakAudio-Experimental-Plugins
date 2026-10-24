@@ -20,12 +20,15 @@ extern "C" int za_native_gfx_heap_copy(juce::AudioProcessor*,const char*,double*
 #include "corpus_pitch_check.h"
 #include "corpus_duration_check.h"
 #include "corpus_cloud_check.h"
+#include "corpus_repeat_check.h"
 #include "corpus_trajectory_check.h"
 #include "corpus_follow_diagnostic.h"
 #include "corpus_auto_diagnostic.h"
 #include "corpus_detection_check.h"
 #include "corpus_live_check.h"
 #include "corpus_live_capture.h"
+#include "corpus_cleanup_check.h"
+#include "corpus_picker_check.h"
 using Clock=std::chrono::steady_clock;
 static double seconds(Clock::duration d){return std::chrono::duration<double>(d).count();}
 static double cpu(){
@@ -122,6 +125,10 @@ int main(int argc,char** argv)try{
  if(option("--compare-triggers") && ready)corpusCompare(p.get(),audio,midi,value,std::string(argv[2])+".triggers.csv");
  if(option("--check-mono") && ready)corpusMono(p.get(),audio,midi,value);
  for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--live-screenshots" && ready)corpusLiveCapture(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));
+ for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--check-picker" && ready)corpusPickerCheck(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));
+ for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--check-repeat" && ready)corpusRepeatCheck(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));
+ if(option("--check-cleanup") && ready)corpusCleanupCheck(p.get(),audio,midi,value,std::string(argv[2])+".cleanup.csv");
+ for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--cleanup-screenshots" && ready)corpusCleanupCapture(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));
  if(option("--check-live") && ready)corpusLiveCheck(p.get(),audio,midi,value,std::string(argv[2])+".live.csv");
  if(option("--check-detection") && ready)corpusDetectionCheck(p.get(),audio,midi,value,std::string(argv[2])+".detection.csv");
  for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--detection-screenshots" && ready)corpusDetectionCapture(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));

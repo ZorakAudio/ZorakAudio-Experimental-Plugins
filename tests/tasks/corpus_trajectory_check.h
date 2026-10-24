@@ -10,7 +10,7 @@ template<class Read> void corpusTrajectoryCheck(juce::AudioProcessor* p,juce::Au
  auto command=[&](int op,int arg){int serial=(int(value("cmd_seen")/1048576)+1)%16;za_test_gfx_button(p,24,serial*1048576+arg*16+op);process();messages();process();};
  auto decls=parseJsfxSliderDecls("slider1:0.2<0,1,.001>Existing\nslider99:1<0,3,1>Old bound\nslider100:7<0,10,1>Hundred\nslider241:8<0,10,1>Curve\nslider256:9<0,10,1>Last valid\nslider257:1<0,2,1>Invalid\nslider999:1<0,2,1>Invalid\nslider1000:1<0,2,1>Invalid\n");
  check(decls.size()==5 && decls[0].index0==0 && decls[1].index0==98 && decls[2].index0==99 && decls[3].index0==240 && decls[4].index0==255,"wrapper declaration parser boundaries");
- check(p->getParameters().size()==249,"expected 248 slots + oversampling; actual "+std::to_string(p->getParameters().size()));
+ check(p->getParameters().size()==250,"expected 249 slots + oversampling; actual "+std::to_string(p->getParameters().size()));
  check(corpusGet(p,81)==1 && corpusGet(p,85)==-1,"fresh trajectory defaults");
  std::vector<std::pair<int,float>> saved{{81,1.37f},{82,3},{83,3.42f},{84,.17f},{85,2}};
  for(int l=0;l<12;++l){int base=86+l*13;int meta=3072+(l*4)%53+(l%3)*64+(l%3)*256;saved.emplace_back(base,float(meta));saved.emplace_back(base+1,float(l+1)/12);

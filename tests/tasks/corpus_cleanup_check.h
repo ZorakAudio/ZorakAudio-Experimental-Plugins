@@ -1,0 +1,42 @@
+#pragma once
+template<class Read> void corpusCleanupCheck(juce::AudioProcessor* p,juce::AudioBuffer<float>& audio,juce::MidiBuffer& midi,Read value,const std::string& path){
+ auto check=[](bool ok,const char* why){if(!ok)throw std::runtime_error(why);};
+ auto process=[&](){audio.clear();midi.clear();p->processBlock(audio,midi);};
+ auto wait=[&](){for(int i=0;i<180000;++i){process();if(i%32==0)juce::MessageManager::getInstance()->runDispatchLoopUntil(1);if(i>100&&value("ready")>0&&value("pe_ready")>0&&value("pg_ready")>0&&value("pg_initializing")==0&&value("auto_settings_pending")==0&&value("cg_stage")==0)return;std::this_thread::sleep_for(std::chrono::milliseconds(1));}throw std::runtime_error("Cleanup prepare timeout");};
+ auto heap=[&](const char* name,int count){std::vector<double> x(count);check(za_native_gfx_heap_copy(p,name,x.data(),count)==count,"Cleanup heap read");return x;};
+ check(p->getParameters().size()==250&&corpusGet(p,249)==0,"Cleanup parameter/default");
+ corpusSet(p,249,.68f);process();juce::MemoryBlock saved;p->getStateInformation(saved);corpusSet(p,249,0);p->setStateInformation(saved.getData(),int(saved.getSize()));wait();check(std::abs(corpusGet(p,249)-.68)<.002,"Cleanup preset persistence");
+ auto xml=juce::AudioProcessor::getXmlFromBinary(saved.getData(),int(saved.getSize()));auto tree=juce::ValueTree::fromXml(*xml);tree.removeChild(tree.getChildWithProperty("id","slider249"),nullptr);juce::MemoryBlock old;auto oldXml=tree.createXml();juce::AudioProcessor::copyXmlToBinary(*oldXml,old);p->setStateInformation(old.getData(),int(old.getSize()));wait();check(corpusGet(p,249)==0,"Older state did not restore Cleanup Off");
+ int n=int(value("grain_count"));auto g=heap("grain_base",n*64),meta=heap("cc_meta",n*4);int cells=0;double maxCellMs=0;
+ for(int id=0;id<n;++id){auto* q=meta.data()+id*4;auto* z=g.data()+id*64;check(q[0]==cells&&q[1]>=1&&q[2]>0&&std::isfinite(q[2])&&q[3]>=1,"Invalid cleanup cache");check(q[1]==std::ceil(z[3]/q[3]),"Cleanup cache dropped source frames");cells+=int(q[1]);check(cells<=524288,"Cleanup cache capacity");maxCellMs=std::max(maxCellMs,q[3]/z[4]*1000);}
+ check(cells==int(value("cc_used"))&&value("cc_memory_end")<=25165824,"Cleanup model adoption/bounds");std::cout<<"CLEANUP cache: grains="<<n<<" cells="<<cells<<" max_cell_ms="<<maxCellMs<<" fixed_end="<<value("cc_memory_end")<<std::endl;
+ for(auto [id,x]:std::vector<std::pair<int,float>>{{10,0},{12,1},{11,12345},{25,2200},{76,0},{77,6},{78,.6f},{79,.2f},{37,.5f},{53,.3f},{45,0},{81,0},{73,0}})corpusSet(p,id,x);process();
+ struct Render{std::vector<float> samples;std::vector<double> records;double childMin=1,peak=0,p95=0;};
+ auto render=[&](int children,float amount){corpusSet(p,76,float(children));corpusSet(p,249,amount);process();Render x;std::vector<double> times;
+  for(int b=0;b<500;++b){audio.clear();midi.clear();if(!b)midi.addEvent(juce::MidiMessage::noteOn(1,60,juce::uint8(100)),0);auto start=std::chrono::steady_clock::now();p->processBlock(audio,midi);if(value("voice_list_n")>0)times.push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
+   auto v=heap("voice_base",2048),cc=heap("cc_voices",1024);for(int i=0;i<64;++i)if(v[i*32]>0){check(cc[i*16+1]>=0&&cc[i*16+1]<=1,"Cleanup gain not attenuation-only");if(v[i*32+27]==0)check(cc[i*16]==0&&cc[i*16+1]==1,"Cleanup touched primary");else if(cc[i*16]>0)x.childMin=std::min(x.childMin,cc[i*16+1]);}
+   for(int i=0;i<audio.getNumSamples();++i)for(int c=0;c<2;++c){float sample=audio.getSample(c,i);check(std::isfinite(sample),"Nonfinite cleanup audio");x.peak=std::max(x.peak,std::abs(double(sample)));x.samples.push_back(sample);}
+  }x.records=heap("record_base",int(value("record_n"))*20);std::sort(times.begin(),times.end());x.p95=times.empty()?0:times[size_t(.95*(times.size()-1))];return x;};
+ auto mainOff=render(0,0),mainOn=render(0,1);check(mainOff.samples==mainOn.samples,"Cleanup changed primary-only waveform");
+ auto off=render(6,0),on=render(6,1);check(off.records==on.records,"Cleanup changed selections/windows/ADSR/gains");check(on.childMin<.99&&on.peak>1e-8,"Cleanup did not affect quiet child portions");double delta=0;for(size_t i=0;i<on.samples.size();++i)delta=std::max(delta,std::abs(double(on.samples[i])-off.samples[i]));check(delta>1e-7,"Cleanup audio unchanged with children");
+ std::cout<<"CLEANUP primary exact; children min_gain="<<on.childMin<<" same records="<<on.records.size()/20<<" peak="<<on.peak<<" p95_ms_off/on="<<off.p95<<'/'<<on.p95<<std::endl;
+ // Stored child amount survives live automation and a different cloud plan.
+ corpusSet(p,249,0);corpusSet(p,76,12);corpusSet(p,77,0);int serial=(int(value("cmd_seen")/1048576)+1)%16;za_test_gfx_button(p,24,serial*1048576+4);double error=0;size_t at=0;for(int b=0;b<502;++b){process();for(int i=0;i<audio.getNumSamples();++i)for(int c=0;c<2;++c){constexpr size_t pad=144*2;double expected=at<pad||at-pad>=on.samples.size()?0:on.samples[at-pad];error=std::max(error,std::abs(double(audio.getSample(c,i))-expected));++at;}}check(error<1e-6,"Cleanup REPEAT waveform mismatch");
+ std::ofstream report(path);report<<"grains,cache_cells,max_cell_ms,primary_exact,child_min_gain,off_on_same_plan,repeat_error,p95_off_ms,p95_on_ms\n"<<n<<','<<cells<<','<<maxCellMs<<",1,"<<on.childMin<<",1,"<<error<<','<<off.p95<<','<<on.p95<<'\n';
+ uint32_t dsp=0,gfx=0;za_native_gfx_faults(p,&dsp,&gfx);check(!dsp&&!gfx&&value("output_faults")==0&&value("pe_read_errors")==0,"Cleanup runtime fault");std::cout<<"CLEANUP actual processor: presets/legacy Off, complete cache, primary exact bypass, same child decisions, bounded gain, REPEAT error="<<error<<" faults0/0\n";
+}
+
+template<class Read> void corpusCleanupCapture(juce::AudioProcessor* p,juce::AudioBuffer<float>& audio,juce::MidiBuffer& midi,Read value,const juce::File& folder){
+ folder.createDirectory();corpusSet(p,55,2);corpusSet(p,76,6);corpusSet(p,249,.6f);for(int i=0;i<16;++i){audio.clear();midi.clear();p->processBlock(audio,midi);}
+ std::unique_ptr<juce::AudioProcessorEditor> editor(p->createEditor());if(!editor)throw std::runtime_error("No Cleanup editor");editor->setTopLeftPosition(-10000,-10000);editor->addToDesktop(juce::ComponentPeer::windowIsTemporary);editor->setVisible(true);editor->setSize(1180,1180);
+ auto find=[&](auto&& self,juce::Component& c)->juce::Component*{if(c.getName()=="Native JSFX graphics"||c.getName()=="EEL JSFX graphics")return &c;for(auto* ch:c.getChildren())if(auto* v=self(self,*ch))return v;return nullptr;};auto* view=find(find,*editor);if(!view)throw std::runtime_error("No Cleanup canvas");
+ auto event=[&](juce::Point<float> point,bool down=false){auto local=view->getLocalPoint(editor.get(),point);auto now=juce::Time::getCurrentTime();return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(),local,juce::ModifierKeys(down?juce::ModifierKeys::leftButtonModifier:0),1,0,0,0,0,view,view,now,local,now,1,false);};
+ auto frames=[&](int n=100){for(int i=0;i<n;++i){audio.clear();midi.clear();p->processBlock(audio,midi);juce::MessageManager::getInstance()->runDispatchLoopUntil(3);}};
+ auto wheel=[&](float delta){juce::MouseWheelDetails w{};w.deltaY=delta;view->mouseWheelMove(event({800,650}),w);frames();};
+ auto save=[&](const char* name){view->mouseMove(event({4,4}));frames();auto stream=folder.getChildFile(name).createOutputStream();if(!stream)throw std::runtime_error("Cleanup screenshot");stream->setPosition(0);stream->truncate();juce::PNGImageFormat png;if(!png.writeImageToStream(editor->createComponentSnapshot(editor->getLocalBounds()),*stream))throw std::runtime_error("Cleanup image write");};
+ frames();wheel(-12);save("Corpus-Child-Cleanup.png");
+ // The first native capture grounds Cleanup's control at this position.
+ view->mouseMove(event({900,500}));view->mouseDown(event({900,500},true));frames(18);view->mouseDrag(event({924,500},true));frames(24);view->mouseUp(event({924,500}));frames();if(corpusGet(p,249)<.65||corpusGet(p,249)>.75)throw std::runtime_error("Cleanup native drag did not update host parameter");
+ std::cout<<"CLEANUP native slider drag updates saved parameter249="<<corpusGet(p,249)<<std::endl;
+ corpusSet(p,249,0);save("Corpus-Child-Cleanup-Off.png");corpusSet(p,249,.6f);editor->setSize(1120,920);save("Corpus-Child-Cleanup-Compact.png");p->editorBeingDeleted(editor.get());editor.reset();std::cout<<"CLEANUP native UI wide/compact/Off captured\n";
+}
