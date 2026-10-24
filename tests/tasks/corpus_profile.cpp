@@ -20,6 +20,12 @@ extern "C" int za_native_gfx_heap_copy(juce::AudioProcessor*,const char*,double*
 #include "corpus_pitch_check.h"
 #include "corpus_duration_check.h"
 #include "corpus_cloud_check.h"
+#include "corpus_trajectory_check.h"
+#include "corpus_follow_diagnostic.h"
+#include "corpus_auto_diagnostic.h"
+#include "corpus_detection_check.h"
+#include "corpus_live_check.h"
+#include "corpus_live_capture.h"
 using Clock=std::chrono::steady_clock;
 static double seconds(Clock::duration d){return std::chrono::duration<double>(d).count();}
 static double cpu(){
@@ -54,14 +60,18 @@ int main(int argc,char** argv)try{
      if(value(item.first)>0)return std::string(item.second)+"/"+std::to_string(int(value(item.first)));
    return std::string(value("ready")>0?"Coordinator":"Decode/load");
  };
- const char* paths[]={argv[1]};auto start=Clock::now();double cpuStart=cpu();za_sample_gfx_load_bank(p.get(),paths,1);
+ for(int i=3;i+1<argc;++i){if(std::string(argv[i])=="--grain-budget"){int count=std::stoi(argv[i+1]);int index=int(std::round(std::log2(count/4096.)));if(index<0 || index>4 || count!=(4096<<index))throw std::runtime_error("Budget must be4096/8192/16384/32768/65536");corpusSet(p.get(),6,float(index));}if(std::string(argv[i])=="--micro-ms")corpusSet(p.get(),5,std::stof(argv[i+1]));}
+ for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--detection-style")corpusSet(p.get(),242,std::stof(argv[i+1]));
+ std::vector<std::string> bankNames;std::vector<const char*> bankPaths;
+ if(option("--load-directory")){juce::Array<juce::File> files;juce::File(juce::String::fromUTF8(argv[1])).getParentDirectory().findChildFiles(files,juce::File::findFiles,false,"*.wav");std::sort(files.begin(),files.end());for(auto& file:files)bankNames.push_back(file.getFullPathName().toStdString());}else bankNames.push_back(argv[1]);for(auto& name:bankNames)bankPaths.push_back(name.c_str());
+ auto start=Clock::now();double cpuStart=cpu();za_sample_gfx_load_bank(p.get(),bankPaths.data(),int(bankPaths.size()));
  juce::AudioBuffer<float> audio(std::max(2,p->getTotalNumOutputChannels()),blockSize);juce::MidiBuffer midi;
  std::map<std::string,Stats> stats;std::string last;uint64_t blocks=0;bool ready=false;
  auto next=start;auto lastReport=start;
  while(seconds(Clock::now()-start)<3600){
    auto label=stage();if(label!=last){std::cout<<seconds(Clock::now()-start)<<" s: "<<label<<std::endl;last=label;}
    if(!reloaded && (option("--reload-at-index") && value("cg_stage")==7 && value("build_phase")==3 || option("--reload-at-pe") && value("cg_stage")>=6 && value("pe_phase")==1 || option("--reload-at-copy") && value("cg_stage")==7 && value("pe_phase")==2)) {
-     reloadGeneration=value("generation");za_sample_gfx_load_bank(p.get(),paths,1);reloaded=true;std::cout<<"Reloading the same supplied recording during the graph"<<std::endl;
+     reloadGeneration=value("generation");za_sample_gfx_load_bank(p.get(),bankPaths.data(),int(bankPaths.size()));reloaded=true;std::cout<<"Reloading the same supplied recording during the graph"<<std::endl;
    }
    auto before=Clock::now();double c=cpu();audio.clear();midi.clear();auto callbackStart=Clock::now();p->processBlock(audio,midi);
    double callback=seconds(Clock::now()-callbackStart);auto& st=stats[label];st.blocks++;st.dsp+=callback;st.max=std::max(st.max,callback);st.calls.push_back(callback);st.overruns+=callback>period;
@@ -111,6 +121,14 @@ int main(int argc,char** argv)try{
  std::cout<<"GRAPH completed="<<value("cg_completed")<<" disabled="<<value("cg_disabled")<<" pe_read_errors="<<value("pe_read_errors")<<" spectral_read_errors="<<value("invalid_audio")<<std::endl;
  if(option("--compare-triggers") && ready)corpusCompare(p.get(),audio,midi,value,std::string(argv[2])+".triggers.csv");
  if(option("--check-mono") && ready)corpusMono(p.get(),audio,midi,value);
+ for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--live-screenshots" && ready)corpusLiveCapture(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));
+ if(option("--check-live") && ready)corpusLiveCheck(p.get(),audio,midi,value,std::string(argv[2])+".live.csv");
+ if(option("--check-detection") && ready)corpusDetectionCheck(p.get(),audio,midi,value,std::string(argv[2])+".detection.csv");
+ for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--detection-screenshots" && ready)corpusDetectionCapture(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));
+ if(option("--diagnose-auto") && ready)corpusAutoDiagnostic(p.get(),audio,midi,value,argv[1],std::string(argv[2])+".auto");
+ if(option("--diagnose-follow") && ready)corpusFollowDiagnostic(p.get(),audio,midi,value,std::string(argv[2])+".follow");
+ if(option("--check-trajectories") && ready)corpusTrajectoryCheck(p.get(),audio,midi,value,std::string(argv[2])+".trajectories.csv");
+ for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--trajectory-screenshots" && ready)corpusTrajectoryCapture(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));
  if(option("--check-cloud") && ready)corpusCloudCheck(p.get(),audio,midi,value,std::string(argv[2])+".cloud.csv");
  for(int i=3;i+1<argc;++i)if(std::string(argv[i])=="--cloud-screenshots" && ready)corpusCloudCapture(p.get(),audio,midi,value,juce::File(juce::String::fromUTF8(argv[i+1])));
  if(option("--check-duration") && ready)corpusDurationCheck(p.get(),audio,midi,value,std::string(argv[2])+".duration.csv");

@@ -2,6 +2,71 @@
 
 Corpus loads recordings, learns their acoustic structure, and plays new paths through them from MIDI notes.
 
+## Grain detection styles
+
+**Grain Detection** is always in the main header, beside Source channels at
+wide sizes and on its own row at compact sizes. All three styles are saved,
+automatable, and rebuild analysis after current events finish. Existing projects
+and fresh instances default to **Auto**, preserving the former behavior.
+
+| Style | Detection and playback |
+| --- | --- |
+| Aggressive | Shorter duration targets and more sensitive local change cuts. Playback uses the detected unit itself. |
+| Auto | Existing variable Micro inference, adaptive region expansion and playback ceiling. |
+| Coherent | Sustained pauses and persistent acoustic changes close longer passages. Brief dips do not force cuts, and there is no fixed duration limit by default. Playback preserves the detected region. |
+
+Coherent exposes **Boundary Sensitivity** and **Limit / ms (0 = None)** directly
+under the header. Higher sensitivity allows more cuts. The optional limit uses
+a logarithmic millisecond control, with fine Shift-drag and Alt-wheel adjustment.
+Its cuts follow the internal sensor grid. For old preset and automation compatibility,
+the host parameter retains its original seconds domain; the editor converts to ms. A zero limit allows a steady
+source to remain one passage, even beyond several seconds. The source end is
+always a boundary; different files never merge. A limit splits an overlong region
+into successive grains; it does not discard the remaining audio.
+
+These are acoustic styles, not sentence recognition. Long passages can contain
+changing timbre or multiple words, and their aggregate descriptors cannot track
+rapid trajectory turns inside the sounding passage. Increase sensitivity for
+more responsiveness. Aggressive and Coherent require **Micro = Auto**; a positive
+manual Micro setting takes precedence. Coherent shows an Enable Auto button in
+that case.
+
+Coherent bypasses Auto's 610/680 ms inference bounds, adaptive excerpt ceiling,
+and event-fraction/path excerpt caps. It uses short edge fades and near-end
+crossfades, rather than overlapping whole long phrases. Event duration, Note Off,
+stops, pruning, source bounds, and intentional Macro REST still apply. An 800 ms
+one-shot cannot finish a five-second passage: choose a longer one-shot or hold a
+Gated note to hear longer passages. Tape pitch changes playback duration;
+Coherent pitch retains it as before. REPEAT stores the actual source windows,
+fades, pitch settings, and scheduled decisions.
+
+Preparation scans and aggregates a bounded number of sensors per step, including
+the incremental fallback. It does not add audio-thread PCM analysis or change the
+shared compiler/runtime. Host slots 242-244 append Detection, Coherent Sensitivity
+and Coherent Limit; slots 1-241 retain their identities.
+
+## Quiet grains and Length
+
+The main header's **Quiet grains: Avoid gaps** is enabled by default. Cached
+source-relative level and quiet-bin coverage reduce selection of long, nearly
+silent grains when audible eligible material exists. This is an attenuation-free
+selection policy, not an audio gate. Short soft details and recordings whose
+whole level is low are retained. **Allow** restores the unrestricted selection
+policy; a deliberately low Energy Target or Ceiling also permits quiet material.
+An all-quiet eligible scope falls back to that scope instead of producing no plan.
+No detection boundaries or learned ECs are changed by this policy.
+
+**Length** is a descriptor under the **SIZE** group, available to trajectories,
+map axes, the browser, identity locks and pruning. It describes the detected
+source span before pitch, using a logarithmic shortest-to-longest range within
+the loaded corpus. Equal lengths use the midpoint. The trajectory ruler and
+request/actual readout show milliseconds. Long sounding passages still finish
+before the next selection; a Length request cannot trim a passage midway.
+
+New instances start in **Coherent pitch**. Existing saved Tape choices and
+older states missing the pitch selector retain Tape. Grain-detection Auto
+remains the default. These are separate choices.
+
 ## Quick start
 
 1. Insert the current Corpus VST3/CLAP and open **Corpus sources**.
@@ -15,6 +80,100 @@ Corpus loads recordings, learns their acoustic structure, and plays new paths th
 The custom canvas owns the hidden slider parameters and their saved/automation values. **Force target**, **Variation**, **Coherence** and **Detail density** guide traversal; **Source scope**, **Identity anchor** and role/descriptor filters restrict eligible material. Map descriptor axes, focus and drawn paths steer where it travels.
 
 **MIDI lifecycle** selects One-shot, Gated or Natural. Attack/Decay/Sustain/Release shape playback; Pitch changes generated tuning, Velocity influence scales note response, and Output is the final trim. Analysis quality and grain budget trade preparation detail for work and memory. Pool RAM budget controls residency. Changing source/configuration cancels obsolete analysis rather than publishing it as the current model.
+
+## Trajectories
+
+The editor's Y axis automatically fits the observed descriptor range in the
+loaded corpus, with a small margin. The ruler, curve, actual-choice trace,
+support bars, drawing, point edits and shape buttons share this scale. Descriptor
+scores and saved curve targets keep their original units: loading a different
+corpus changes the view without rewriting the curve. Previously saved targets
+outside the view remain saved and are drawn at its edges. The range describes
+corpus evidence before source scope, locks and pruning; their restrictions can
+further narrow what can be selected. Empty evidence uses the full range and a
+uniform descriptor gets a finite centered range.
+
+**Event** fits a known one-shot or duration-CC event. For an unknown-duration
+Gated note it repeats over **Seconds** while held, so trajectories keep moving
+beyond the first pass. Explicit **Once** still reaches its end and holds.
+Repeat and Bounce retain their existing behavior. The clock guides future
+grain selections; it does not force cuts inside a long Coherent passage.
+
+The **Trajectories** workspace replaces the buried Explore editor. Add up to
+twelve descriptor lanes, or choose a starting point such as **Bright to dark**
+or **Smooth ending**. Each lane offers its own descriptor, Strength, mode,
+interpolation, mute, Solo and Duplicate. Muting retains the curve; Remove frees
+the slot. **All lanes** exits Solo without unmuting anything.
+
+**Points** exposes eight fixed time handles. Drag a handle vertically to reshape
+its neighboring segments. **Draw** paints finer detail across all 32 samples.
+Flat, Rise, Fall, Arch, Dip, Pulse and Stairs replace the shape; Reverse and
+Invert transform it. **Undo** swaps the current and preceding shape for that
+lane during the current editing session. Smooth, Linear and Step interpolation
+remain available. Step now includes the final endpoint correctly.
+
+| Mode | Request |
+| --- | --- |
+| Target | Favor descriptor values near the curve. |
+| Ceiling (Maximum) | Penalize values above it; values below remain compliant. |
+| Floor (Minimum) | Penalize values below it; values above remain compliant. |
+
+Strength is an absolute weight. Previously it canceled out of the weighted
+average when only one lane was enabled. Lanes now contribute independent costs,
+so fading one to zero does not amplify the others. **Influence** scales their
+combined pull from 0 to 200%; zero bypasses trajectory scoring and candidate
+injection. Bypass/Resume retains the previous UI influence amount. Source scope,
+eligibility, explicit identity locks and structural choices still apply.
+
+| Clock | Behavior |
+| --- | --- |
+| Event | Fit a known one-shot/duration-CC window, including its envelope ending. Held/Natural events use Seconds for one pass, then hold. |
+| Once | Traverse one timed pass using Seconds, then hold the end. |
+| Repeat | Restart after every timed pass. |
+| Bounce | Traverse forward, then return; the complete cycle takes two passes. |
+
+Each event has its own clock. **Start offset** changes its normalized starting
+position. Cached successor lookahead follows the same clock through Repeat and
+Bounce boundaries. This clock is separate from the older two-axis map gesture
+and amplitude ADSR/MSEG timing.
+
+Teal shows the requested curve. Gold shows the newest event's actual primary
+grain choices, with a moving clock cursor while active. Gray edge bars show
+cached descriptor-bin support across the corpus, before source scope and locks.
+Last error is raw normalized descriptor distance (or one-sided violation);
+evidence reports descriptor confidence separately. A low-confidence tonal/PE
+measurement is not proof of a good match. Bypassed or muted lanes show no false
+achievement trace. Long grains cannot change character halfway through their
+existing excerpt, and recordings cannot provide descriptor values they lack.
+
+The four strongest active lanes reserve up to 24 cached candidates before the
+general acoustic graph fills the search budget. Overall capacity remains 64;
+PE retrieval leaves space for acoustic alternatives. There is no corpus scan,
+PCM analysis, FFT, allocation or new pitch renderer in this selection path.
+A fixed 1600-cell cache stores the three trajectory scoring instants and up to
+256 tagged scores per instant for the current selection. Repeated successor
+checks reuse identical results; collisions recompute rather than approximate.
+
+Influence (81), Clock (82), Seconds (83), Start offset (84), Solo (85), and all
+twelve Strength parameters are saved/automatable host parameters. Strength IDs
+are 87, 100, 113, 126, 139, 152, 165, 178, 191, 204, 217 and 230. Lane metadata and
+curves also save through host parameter state, including painted strokes and
+presets. Internal curve-storage parameters are implementation data; edit curves
+in the workspace. The 32 samples use 0..126 quantization (at most 0.4% rounding
+error); three samples fit exactly in a 21-bit integer even through float host
+state. Each stroke commits through the existing acknowledged staging protocol.
+Analysis reload preserves the committed lanes. Recorded REPEAT retains its
+original grain decisions when live trajectories change. Undo history is not
+saved. Older native states did not store private trajectory tables, so already
+lost curves cannot be recovered; missing new parameters restore empty lanes.
+
+The shared wrapper declaration parser now accepts three-digit slider IDs while
+retaining its existing 1..256 bound. It previously recognized only 1..99 despite
+the compiler/runtime supporting 256. This changes recognition for plugins that
+declare those higher slots; slots below 100 and audio rendering are unchanged.
+No parameter was renumbered. The additional preserved trajectory state/cache uses 1756
+cells; the seven adoption ranges now total 209660 cells, below the 262144 limit.
+
 
 ## Child cloud
 
@@ -82,7 +241,7 @@ and Explore, alongside the amount.
 This is entirely Corpus DSP: fixed buffers, bounded eight-head reads, no new
 native builtin/library, FFT or audio-thread allocation. The delay/window arena
 ends at cell24076624, below the25165824-cell heap. Seven adoption-preservation
-ranges total207904cells, below the262144-cell runtime limit.
+ranges total209660cells, below the262144-cell runtime limit.
 
 ## Duration CC envelope timing
 
@@ -278,3 +437,12 @@ See `docs/Spectral-Sample-Pitch.md` for the native API and ownership rules.
 for general repository regression testing. Do not use that command when a run
 is restricted to a specific input recording. The supplied-file profiling and
 production build can be performed separately with that fixture disabled.
+
+## v2.3.0 render continuity
+
+Transient Smear now uses sample-rate-aware 1.5 ms attack / 6 ms release smoothing
+for its dry/wet blend in both Classic and Grain modes. This reduces abrupt blend
+steps around sharp transients without changing the cloud windows, source offsets,
+grain decisions, shared stereo processing or zero-amount bypass. It adds no
+per-sample coefficient calculation. The grain detector, EC learning and adaptive
+inference of a Coherent limit are unchanged in this release.

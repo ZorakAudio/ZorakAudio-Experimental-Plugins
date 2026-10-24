@@ -1,4 +1,4 @@
-desc:Corpus v2.0.0 - Child Cloud / Grain Smear
+desc:Corpus v2.3.0 - Audible Trajectories
 tags:instrument sampler granular synthesis ui
 // #GFX_RESIZE: responsive
 // #FILE: Corpus sources {Slot 0: use Open Multiple, as in Sample v71. A single long file is valid.}
@@ -44,8 +44,8 @@ options:maxmem=25165824 gfx_hz=30
 // #HELP: Structure: click Meso/Macro = re-synthesize with the current engine; Shift+click = original source region; Ctrl+click = pending exclusion.
 // #HELP: EC Focus is an optional second-stage Meso refinement. Essence measures class-defining direction vs corpus background; PC1/PC2/PC3 measure within-class variation. Click/drag member dots to audition originals, Shift-click a dot to re-synthesize it, and drag the lower range strip to preview/retain a slice. FOCUS ON applies that slice to generation; broad EC membership is never destroyed.
 // #HELP: Child walkers share the structural trajectory but own independent Micro lineages; Follow is not a grain-for-grain clone.
-// #HELP: Trajectory Solver adds up to 12 synchronized one-dimensional descriptor lanes (Target / Maximum / Minimum) over event progress. Curves are painted freehand with the mouse; there are no editable control points.
-// #HELP: Descriptor lanes use cached 53-axis evidence and bounded successor lookahead; no FFT or corpus analysis runs from playback.
+// #HELP: Trajectories has its own workspace: twelve saved lanes, eight draggable time handles or freehand Draw, shape presets, per-lane Undo, reverse/invert, mute/solo/duplicate, and requested-versus-actual traces. Target seeks proximity; Ceiling/Maximum and Floor/Minimum penalize only violations. Global Influence and lane Strength are absolute weights; zero bypass removes both scoring and trajectory candidates. Event fits known durations; held notes repeat over Seconds. Once holds its end, Repeat restarts, Bounce travels forward and back. Start Offset changes phase. Curves and lane metadata use float-exact host parameters; no shared-runtime behavior is changed.
+// #HELP: Descriptor lanes use cached 54-axis evidence and bounded successor lookahead; no FFT or corpus analysis runs from playback.
 // #HELP: Transient Diffusion is a separate post-selection renderer and a real host parameter (slider45), so copy/paste, presets and automation use normal JSFX parameter state. Zero is exact bypass. Grain uses eight windowed unity-speed grains with identical L/R timing; high amounts create a diffuse cloud without adding stereo width. Classic retains the former all-pass renderer. Selection is unchanged, and event deadlines still cap the result.
 // #HELP: Grain Tame attenuates overly loud fragments before they are mixed: a cached RMS/peak estimate sets a fixed gain per new voice, and a stereo-linked gentle soft peak guard catches missed spikes. No quiet-grain makeup, pumping envelope or live PCM analysis is used. Zero bypasses exactly; one gives full taming. Source auditions stay original and REPEAT preserves the recorded gain/guard.
 // #HELP: Pitch behavior selects Tape (speed/duration pitching) or Coherent (texture-aware spectral resynthesis at the original excerpt timing). Coherent transposes the low/mid body while progressively shifting upper noisy frequencies less. Cached tonal confidence sets the crossover; attacks favor texture retention. Stereo phase relationships are linked. Native engines are prepared before playback; bounded lookahead stays within the chosen excerpt, avoiding MIDI latency. Zero pitch bypasses exactly and very short spans retain Tape. REPEAT captures pitch, texture confidence and duration. This is a perceptual effect: upper frequencies do not all transpose by the full requested interval.
@@ -57,7 +57,7 @@ options:maxmem=25165824 gfx_hz=30
 // #HELP: Right-click resets both ordinary and newer cloud/coherence controls to their documented defaults.
 // #HELP: Explore is the performance surface: child cloud, lifecycle, ADSR, overlap/coherence and descriptor map are reachable without changing pages.
 // #HELP: Up to 12 non-recursive child walkers can act as Follow, Resonance, Debris, Contrast, Shadow, Body bed (formerly Fill-gaps), or Mixed companions. Count, mode, density and timing spread are real saved/automatable host parameters 76-79; Level, Similarity and Width retain their existing parameters. Child Level is total-cloud intent and is energy-compensated as count rises.
-// #HELP: Auto Micro uses short internal probes but merges them into variable-duration acoustic units before hierarchy learning.
+// #HELP: Grain detection is visible in the main header. Auto preserves the existing default; Aggressive favors short units and plays their exact spans. Coherent is opt-in: sustained pauses and persistent acoustic changes close units, with no fixed duration limit by default. Sensitivity and an optional seconds limit are saved host parameters. Requires Micro=Auto. Coherent playback uses the indexed region itself, bypasses Auto excerpt/event-fraction caps, uses short edge fades and near-end crossfades; event deadlines, stops, pruning, source bounds and Macro REST remain authoritative. Acoustic continuity is not sentence/semantic recognition. Longer passages respond less quickly to trajectories. Analysis rebuilds when current events finish.
 // #HELP: All panes scroll. Small windows use tabs; no minimum-size blocker.
 // #HELP: Sample Hub CC118/119 v1 packets: Play/Retrigger/Continue/Choke/End supported.
 // #HELP: Unsupported modifier packets are rejected and counted, not misinterpreted.
@@ -123,7 +123,7 @@ slider51:0.95<0,1,0.001>--Identity lock strength
 slider52:1200<80,1500,1>--Adaptive playback ceiling (ms)
 slider53:0.3<0,1,0.001>--Branch stereo spread
 slider54:0<0,1,1{Navigate,Draw}>--Map mouse mode
-slider55:4<0,5,1{Explore,Inspector,Controls,Inspector legacy,Structure,Prune}>--Interface page
+slider55:4<0,6,1{Explore,Inspector,Controls,Inspector legacy,Structure,Prune,Trajectories}>--Interface page
 
 // v0.8.0: source-local chronology, soft behavioural ECs, explicit durations,
 // ordered member scaffolds, optional hierarchical rendering and Structure view.
@@ -149,7 +149,9 @@ slider69:0<0,1,1{Original,Mono}>--Source channels
 slider70:0<-1,1,0.001>--Attack curve
 slider71:0<-1,1,0.001>--Decay curve
 slider72:0<-1,1,0.001>--Release curve
-slider73:0<0,1,1{Tape,Coherent}>--Pitch behavior
+// #NATIVE_DEFAULT: slider73=1 legacy=0
+// Numeric host control allows explicit factory/legacy defaults; UI supplies the labels.
+slider73:1<0,1,1>--Pitch behavior
 slider74:1<0,1,0.001>--Grain tame
 slider75:1<0,1,1{Absolute,Relative}>--Duration CC envelope timing
 // #NATIVE_DEFAULT: slider76=0 legacy=-1
@@ -163,9 +165,350 @@ slider79:0.2<0,1,0.001>--Child timing spread
 // #NATIVE_DEFAULT: slider80=1 legacy=0
 slider80:1<0,1,1>--Smear engine (0=Classic; 1=Grain)
 
+// #NATIVE_DEFAULT: slider81=1 legacy=1
+slider81:1<0,2,.001>--Trajectory influence
+// #NATIVE_DEFAULT: slider82=0 legacy=0
+slider82:0<0,3,1>--Trajectory clock (0=Event; 1=Once; 2=Repeat; 3=Bounce)
+// #NATIVE_DEFAULT: slider83=2 legacy=2
+slider83:2<0.2,20,.01>--Trajectory seconds per pass
+// #NATIVE_DEFAULT: slider84=0 legacy=0
+slider84:0<0,1,.001>--Trajectory start offset
+// #NATIVE_DEFAULT: slider85=-1 legacy=-1
+slider85:-1<-1,11,1>--Trajectory solo lane (-1=all)
+// #NATIVE_DEFAULT: slider86=0 legacy=0
+slider86:0<0,4095,1>--Trajectory 1 configuration (internal)
+// #NATIVE_DEFAULT: slider87=.85 legacy=.85
+slider87:.85<0,1,.001>--Trajectory 1 Strength
+// #NATIVE_DEFAULT: slider88=1040319 legacy=1040319
+slider88:1040319<0,2097151,1>--Trajectory 1 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider89=1040319 legacy=1040319
+slider89:1040319<0,2097151,1>--Trajectory 1 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider90=1040319 legacy=1040319
+slider90:1040319<0,2097151,1>--Trajectory 1 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider91=1040319 legacy=1040319
+slider91:1040319<0,2097151,1>--Trajectory 1 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider92=1040319 legacy=1040319
+slider92:1040319<0,2097151,1>--Trajectory 1 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider93=1040319 legacy=1040319
+slider93:1040319<0,2097151,1>--Trajectory 1 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider94=1040319 legacy=1040319
+slider94:1040319<0,2097151,1>--Trajectory 1 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider95=1040319 legacy=1040319
+slider95:1040319<0,2097151,1>--Trajectory 1 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider96=1040319 legacy=1040319
+slider96:1040319<0,2097151,1>--Trajectory 1 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider97=1040319 legacy=1040319
+slider97:1040319<0,2097151,1>--Trajectory 1 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider98=8127 legacy=8127
+slider98:8127<0,2097151,1>--Trajectory 1 curve storage 11 (internal)
+// #NATIVE_DEFAULT: slider99=0 legacy=0
+slider99:0<0,4095,1>--Trajectory 2 configuration (internal)
+// #NATIVE_DEFAULT: slider100=.85 legacy=.85
+slider100:.85<0,1,.001>--Trajectory 2 Strength
+// #NATIVE_DEFAULT: slider101=1040319 legacy=1040319
+slider101:1040319<0,2097151,1>--Trajectory 2 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider102=1040319 legacy=1040319
+slider102:1040319<0,2097151,1>--Trajectory 2 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider103=1040319 legacy=1040319
+slider103:1040319<0,2097151,1>--Trajectory 2 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider104=1040319 legacy=1040319
+slider104:1040319<0,2097151,1>--Trajectory 2 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider105=1040319 legacy=1040319
+slider105:1040319<0,2097151,1>--Trajectory 2 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider106=1040319 legacy=1040319
+slider106:1040319<0,2097151,1>--Trajectory 2 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider107=1040319 legacy=1040319
+slider107:1040319<0,2097151,1>--Trajectory 2 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider108=1040319 legacy=1040319
+slider108:1040319<0,2097151,1>--Trajectory 2 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider109=1040319 legacy=1040319
+slider109:1040319<0,2097151,1>--Trajectory 2 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider110=1040319 legacy=1040319
+slider110:1040319<0,2097151,1>--Trajectory 2 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider111=8127 legacy=8127
+slider111:8127<0,2097151,1>--Trajectory 2 curve storage 11 (internal)
+// #NATIVE_DEFAULT: slider112=0 legacy=0
+slider112:0<0,4095,1>--Trajectory 3 configuration (internal)
+// #NATIVE_DEFAULT: slider113=.85 legacy=.85
+slider113:.85<0,1,.001>--Trajectory 3 Strength
+// #NATIVE_DEFAULT: slider114=1040319 legacy=1040319
+slider114:1040319<0,2097151,1>--Trajectory 3 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider115=1040319 legacy=1040319
+slider115:1040319<0,2097151,1>--Trajectory 3 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider116=1040319 legacy=1040319
+slider116:1040319<0,2097151,1>--Trajectory 3 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider117=1040319 legacy=1040319
+slider117:1040319<0,2097151,1>--Trajectory 3 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider118=1040319 legacy=1040319
+slider118:1040319<0,2097151,1>--Trajectory 3 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider119=1040319 legacy=1040319
+slider119:1040319<0,2097151,1>--Trajectory 3 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider120=1040319 legacy=1040319
+slider120:1040319<0,2097151,1>--Trajectory 3 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider121=1040319 legacy=1040319
+slider121:1040319<0,2097151,1>--Trajectory 3 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider122=1040319 legacy=1040319
+slider122:1040319<0,2097151,1>--Trajectory 3 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider123=1040319 legacy=1040319
+slider123:1040319<0,2097151,1>--Trajectory 3 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider124=8127 legacy=8127
+slider124:8127<0,2097151,1>--Trajectory 3 curve storage 11 (internal)
+// #NATIVE_DEFAULT: slider125=0 legacy=0
+slider125:0<0,4095,1>--Trajectory 4 configuration (internal)
+// #NATIVE_DEFAULT: slider126=.85 legacy=.85
+slider126:.85<0,1,.001>--Trajectory 4 Strength
+// #NATIVE_DEFAULT: slider127=1040319 legacy=1040319
+slider127:1040319<0,2097151,1>--Trajectory 4 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider128=1040319 legacy=1040319
+slider128:1040319<0,2097151,1>--Trajectory 4 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider129=1040319 legacy=1040319
+slider129:1040319<0,2097151,1>--Trajectory 4 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider130=1040319 legacy=1040319
+slider130:1040319<0,2097151,1>--Trajectory 4 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider131=1040319 legacy=1040319
+slider131:1040319<0,2097151,1>--Trajectory 4 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider132=1040319 legacy=1040319
+slider132:1040319<0,2097151,1>--Trajectory 4 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider133=1040319 legacy=1040319
+slider133:1040319<0,2097151,1>--Trajectory 4 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider134=1040319 legacy=1040319
+slider134:1040319<0,2097151,1>--Trajectory 4 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider135=1040319 legacy=1040319
+slider135:1040319<0,2097151,1>--Trajectory 4 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider136=1040319 legacy=1040319
+slider136:1040319<0,2097151,1>--Trajectory 4 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider137=8127 legacy=8127
+slider137:8127<0,2097151,1>--Trajectory 4 curve storage 11 (internal)
+// #NATIVE_DEFAULT: slider138=0 legacy=0
+slider138:0<0,4095,1>--Trajectory 5 configuration (internal)
+// #NATIVE_DEFAULT: slider139=.85 legacy=.85
+slider139:.85<0,1,.001>--Trajectory 5 Strength
+// #NATIVE_DEFAULT: slider140=1040319 legacy=1040319
+slider140:1040319<0,2097151,1>--Trajectory 5 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider141=1040319 legacy=1040319
+slider141:1040319<0,2097151,1>--Trajectory 5 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider142=1040319 legacy=1040319
+slider142:1040319<0,2097151,1>--Trajectory 5 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider143=1040319 legacy=1040319
+slider143:1040319<0,2097151,1>--Trajectory 5 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider144=1040319 legacy=1040319
+slider144:1040319<0,2097151,1>--Trajectory 5 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider145=1040319 legacy=1040319
+slider145:1040319<0,2097151,1>--Trajectory 5 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider146=1040319 legacy=1040319
+slider146:1040319<0,2097151,1>--Trajectory 5 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider147=1040319 legacy=1040319
+slider147:1040319<0,2097151,1>--Trajectory 5 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider148=1040319 legacy=1040319
+slider148:1040319<0,2097151,1>--Trajectory 5 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider149=1040319 legacy=1040319
+slider149:1040319<0,2097151,1>--Trajectory 5 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider150=8127 legacy=8127
+slider150:8127<0,2097151,1>--Trajectory 5 curve storage 11 (internal)
+// #NATIVE_DEFAULT: slider151=0 legacy=0
+slider151:0<0,4095,1>--Trajectory 6 configuration (internal)
+// #NATIVE_DEFAULT: slider152=.85 legacy=.85
+slider152:.85<0,1,.001>--Trajectory 6 Strength
+// #NATIVE_DEFAULT: slider153=1040319 legacy=1040319
+slider153:1040319<0,2097151,1>--Trajectory 6 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider154=1040319 legacy=1040319
+slider154:1040319<0,2097151,1>--Trajectory 6 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider155=1040319 legacy=1040319
+slider155:1040319<0,2097151,1>--Trajectory 6 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider156=1040319 legacy=1040319
+slider156:1040319<0,2097151,1>--Trajectory 6 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider157=1040319 legacy=1040319
+slider157:1040319<0,2097151,1>--Trajectory 6 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider158=1040319 legacy=1040319
+slider158:1040319<0,2097151,1>--Trajectory 6 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider159=1040319 legacy=1040319
+slider159:1040319<0,2097151,1>--Trajectory 6 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider160=1040319 legacy=1040319
+slider160:1040319<0,2097151,1>--Trajectory 6 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider161=1040319 legacy=1040319
+slider161:1040319<0,2097151,1>--Trajectory 6 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider162=1040319 legacy=1040319
+slider162:1040319<0,2097151,1>--Trajectory 6 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider163=8127 legacy=8127
+slider163:8127<0,2097151,1>--Trajectory 6 curve storage 11 (internal)
+// #NATIVE_DEFAULT: slider164=0 legacy=0
+slider164:0<0,4095,1>--Trajectory 7 configuration (internal)
+// #NATIVE_DEFAULT: slider165=.85 legacy=.85
+slider165:.85<0,1,.001>--Trajectory 7 Strength
+// #NATIVE_DEFAULT: slider166=1040319 legacy=1040319
+slider166:1040319<0,2097151,1>--Trajectory 7 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider167=1040319 legacy=1040319
+slider167:1040319<0,2097151,1>--Trajectory 7 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider168=1040319 legacy=1040319
+slider168:1040319<0,2097151,1>--Trajectory 7 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider169=1040319 legacy=1040319
+slider169:1040319<0,2097151,1>--Trajectory 7 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider170=1040319 legacy=1040319
+slider170:1040319<0,2097151,1>--Trajectory 7 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider171=1040319 legacy=1040319
+slider171:1040319<0,2097151,1>--Trajectory 7 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider172=1040319 legacy=1040319
+slider172:1040319<0,2097151,1>--Trajectory 7 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider173=1040319 legacy=1040319
+slider173:1040319<0,2097151,1>--Trajectory 7 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider174=1040319 legacy=1040319
+slider174:1040319<0,2097151,1>--Trajectory 7 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider175=1040319 legacy=1040319
+slider175:1040319<0,2097151,1>--Trajectory 7 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider176=8127 legacy=8127
+slider176:8127<0,2097151,1>--Trajectory 7 curve storage 11 (internal)
+// #NATIVE_DEFAULT: slider177=0 legacy=0
+slider177:0<0,4095,1>--Trajectory 8 configuration (internal)
+// #NATIVE_DEFAULT: slider178=.85 legacy=.85
+slider178:.85<0,1,.001>--Trajectory 8 Strength
+// #NATIVE_DEFAULT: slider179=1040319 legacy=1040319
+slider179:1040319<0,2097151,1>--Trajectory 8 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider180=1040319 legacy=1040319
+slider180:1040319<0,2097151,1>--Trajectory 8 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider181=1040319 legacy=1040319
+slider181:1040319<0,2097151,1>--Trajectory 8 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider182=1040319 legacy=1040319
+slider182:1040319<0,2097151,1>--Trajectory 8 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider183=1040319 legacy=1040319
+slider183:1040319<0,2097151,1>--Trajectory 8 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider184=1040319 legacy=1040319
+slider184:1040319<0,2097151,1>--Trajectory 8 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider185=1040319 legacy=1040319
+slider185:1040319<0,2097151,1>--Trajectory 8 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider186=1040319 legacy=1040319
+slider186:1040319<0,2097151,1>--Trajectory 8 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider187=1040319 legacy=1040319
+slider187:1040319<0,2097151,1>--Trajectory 8 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider188=1040319 legacy=1040319
+slider188:1040319<0,2097151,1>--Trajectory 8 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider189=8127 legacy=8127
+slider189:8127<0,2097151,1>--Trajectory 8 curve storage 11 (internal)
+// #NATIVE_DEFAULT: slider190=0 legacy=0
+slider190:0<0,4095,1>--Trajectory 9 configuration (internal)
+// #NATIVE_DEFAULT: slider191=.85 legacy=.85
+slider191:.85<0,1,.001>--Trajectory 9 Strength
+// #NATIVE_DEFAULT: slider192=1040319 legacy=1040319
+slider192:1040319<0,2097151,1>--Trajectory 9 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider193=1040319 legacy=1040319
+slider193:1040319<0,2097151,1>--Trajectory 9 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider194=1040319 legacy=1040319
+slider194:1040319<0,2097151,1>--Trajectory 9 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider195=1040319 legacy=1040319
+slider195:1040319<0,2097151,1>--Trajectory 9 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider196=1040319 legacy=1040319
+slider196:1040319<0,2097151,1>--Trajectory 9 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider197=1040319 legacy=1040319
+slider197:1040319<0,2097151,1>--Trajectory 9 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider198=1040319 legacy=1040319
+slider198:1040319<0,2097151,1>--Trajectory 9 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider199=1040319 legacy=1040319
+slider199:1040319<0,2097151,1>--Trajectory 9 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider200=1040319 legacy=1040319
+slider200:1040319<0,2097151,1>--Trajectory 9 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider201=1040319 legacy=1040319
+slider201:1040319<0,2097151,1>--Trajectory 9 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider202=8127 legacy=8127
+slider202:8127<0,2097151,1>--Trajectory 9 curve storage 11 (internal)
+// #NATIVE_DEFAULT: slider203=0 legacy=0
+slider203:0<0,4095,1>--Trajectory 10 configuration (internal)
+// #NATIVE_DEFAULT: slider204=.85 legacy=.85
+slider204:.85<0,1,.001>--Trajectory 10 Strength
+// #NATIVE_DEFAULT: slider205=1040319 legacy=1040319
+slider205:1040319<0,2097151,1>--Trajectory 10 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider206=1040319 legacy=1040319
+slider206:1040319<0,2097151,1>--Trajectory 10 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider207=1040319 legacy=1040319
+slider207:1040319<0,2097151,1>--Trajectory 10 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider208=1040319 legacy=1040319
+slider208:1040319<0,2097151,1>--Trajectory 10 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider209=1040319 legacy=1040319
+slider209:1040319<0,2097151,1>--Trajectory 10 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider210=1040319 legacy=1040319
+slider210:1040319<0,2097151,1>--Trajectory 10 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider211=1040319 legacy=1040319
+slider211:1040319<0,2097151,1>--Trajectory 10 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider212=1040319 legacy=1040319
+slider212:1040319<0,2097151,1>--Trajectory 10 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider213=1040319 legacy=1040319
+slider213:1040319<0,2097151,1>--Trajectory 10 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider214=1040319 legacy=1040319
+slider214:1040319<0,2097151,1>--Trajectory 10 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider215=8127 legacy=8127
+slider215:8127<0,2097151,1>--Trajectory 10 curve storage 11 (internal)
+// #NATIVE_DEFAULT: slider216=0 legacy=0
+slider216:0<0,4095,1>--Trajectory 11 configuration (internal)
+// #NATIVE_DEFAULT: slider217=.85 legacy=.85
+slider217:.85<0,1,.001>--Trajectory 11 Strength
+// #NATIVE_DEFAULT: slider218=1040319 legacy=1040319
+slider218:1040319<0,2097151,1>--Trajectory 11 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider219=1040319 legacy=1040319
+slider219:1040319<0,2097151,1>--Trajectory 11 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider220=1040319 legacy=1040319
+slider220:1040319<0,2097151,1>--Trajectory 11 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider221=1040319 legacy=1040319
+slider221:1040319<0,2097151,1>--Trajectory 11 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider222=1040319 legacy=1040319
+slider222:1040319<0,2097151,1>--Trajectory 11 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider223=1040319 legacy=1040319
+slider223:1040319<0,2097151,1>--Trajectory 11 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider224=1040319 legacy=1040319
+slider224:1040319<0,2097151,1>--Trajectory 11 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider225=1040319 legacy=1040319
+slider225:1040319<0,2097151,1>--Trajectory 11 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider226=1040319 legacy=1040319
+slider226:1040319<0,2097151,1>--Trajectory 11 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider227=1040319 legacy=1040319
+slider227:1040319<0,2097151,1>--Trajectory 11 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider228=8127 legacy=8127
+slider228:8127<0,2097151,1>--Trajectory 11 curve storage 11 (internal)
+// #NATIVE_DEFAULT: slider229=0 legacy=0
+slider229:0<0,4095,1>--Trajectory 12 configuration (internal)
+// #NATIVE_DEFAULT: slider230=.85 legacy=.85
+slider230:.85<0,1,.001>--Trajectory 12 Strength
+// #NATIVE_DEFAULT: slider231=1040319 legacy=1040319
+slider231:1040319<0,2097151,1>--Trajectory 12 curve storage 1 (internal)
+// #NATIVE_DEFAULT: slider232=1040319 legacy=1040319
+slider232:1040319<0,2097151,1>--Trajectory 12 curve storage 2 (internal)
+// #NATIVE_DEFAULT: slider233=1040319 legacy=1040319
+slider233:1040319<0,2097151,1>--Trajectory 12 curve storage 3 (internal)
+// #NATIVE_DEFAULT: slider234=1040319 legacy=1040319
+slider234:1040319<0,2097151,1>--Trajectory 12 curve storage 4 (internal)
+// #NATIVE_DEFAULT: slider235=1040319 legacy=1040319
+slider235:1040319<0,2097151,1>--Trajectory 12 curve storage 5 (internal)
+// #NATIVE_DEFAULT: slider236=1040319 legacy=1040319
+slider236:1040319<0,2097151,1>--Trajectory 12 curve storage 6 (internal)
+// #NATIVE_DEFAULT: slider237=1040319 legacy=1040319
+slider237:1040319<0,2097151,1>--Trajectory 12 curve storage 7 (internal)
+// #NATIVE_DEFAULT: slider238=1040319 legacy=1040319
+slider238:1040319<0,2097151,1>--Trajectory 12 curve storage 8 (internal)
+// #NATIVE_DEFAULT: slider239=1040319 legacy=1040319
+slider239:1040319<0,2097151,1>--Trajectory 12 curve storage 9 (internal)
+// #NATIVE_DEFAULT: slider240=1040319 legacy=1040319
+slider240:1040319<0,2097151,1>--Trajectory 12 curve storage 10 (internal)
+// #NATIVE_DEFAULT: slider241=8127 legacy=8127
+slider241:8127<0,2097151,1>--Trajectory 12 curve storage 11 (internal)
+
 // v1.9.0: PE is fitted once during loading, with generation gated until ready.
 // Region and EC errors have independent support. Pruning uses cached evidence.
 // No prediction, PCM analysis, FFT, or hierarchy fitting is performed by playback.
+// Opt-in only; missing controls in older projects retain Classic.
+// #NATIVE_DEFAULT: slider242=1 legacy=1
+slider242:1<0,2,1{Aggressive,Auto,Coherent}>--Grain detection
+// #NATIVE_DEFAULT: slider243=0.5 legacy=0.5
+slider243:0.5<0,1,0.001>--Coherent boundary sensitivity
+// #NATIVE_DEFAULT: slider244=0 legacy=0
+// Host state/automation retain seconds for compatibility; the editor uses ms.
+slider244:0<0,120,0.001>--Coherent passage limit (seconds; editor in ms, 0=no fixed limit)
+// #NATIVE_DEFAULT: slider245=1 legacy=1
+slider245:1<0,1,1{Allow,Avoid gaps}>--Quiet grain policy
+// Stable extension slots avoid rescaling old normalized map/filter automation.
+// #NATIVE_DEFAULT: slider246=0 legacy=0
+slider246:0<0,1,1>--Map X Length override (internal)
+// #NATIVE_DEFAULT: slider247=0 legacy=0
+slider247:0<0,1,1>--Map Y Length override (internal)
+// #NATIVE_DEFAULT: slider248=0 legacy=0
+slider248:0<0,3,1>--Length browser filter (internal)
+
 @init
 
 function cp_clamp(x a b) ( min(b,max(a,x)); );
@@ -231,6 +574,9 @@ function td_prepare() local(n) (
   td_peak_rel=exp(-1/max(1,srate*0.015));
   td_param_a=1-exp(-1/max(1,srate*0.004)); // automation-safe coefficient glide
   td_energy_a=1-exp(-1/max(1,srate*0.025));
+  // Smooth transient blend changes without changing cloud offsets/windows.
+  td_mix_attack_a=1-exp(-1/max(1,srate*0.0015));
+  td_mix_release_a=1-exp(-1/max(1,srate*0.006));
   n=0;loop(1024,td_window[n]=0.5-0.5*cos(2*$pi*n/1023);n+=1;);
   td_srate=srate;
 );
@@ -282,7 +628,7 @@ function td_process(l r amount mode endgain) local(haze peak ceiling d desired) 
   td_transient=cp_01((td_fast-td_slow*1.12)/max(0.000001,td_fast*0.82))*td_gate;
   mode<0.5 ? (
     td_target_mix=td_amt*td_transient;
-    td_target_mix>td_mix ? td_mix+=(td_target_mix-td_mix)*0.45 : td_mix+=(td_target_mix-td_mix)*0.015;
+    td_target_mix>td_mix ? td_mix+=(td_target_mix-td_mix)*td_mix_attack_a : td_mix+=(td_target_mix-td_mix)*td_mix_release_a;
     td_dry_peak=max(td_abs,td_dry_peak*td_peak_rel);td_g=0.30+0.30*td_amt;
     td_stage(l,r,0,td_len0,td_g);td_wet_l=td_work_l;td_wet_r=td_work_r;
     td_stage(td_wet_l,td_wet_r,1,td_len1,min(0.64,td_g+0.04));td_wet_l=td_work_l;td_wet_r=td_work_r;
@@ -296,7 +642,7 @@ function td_process(l r amount mode endgain) local(haze peak ceiling d desired) 
     haze=cp_01((td_amt-0.20)/0.80);haze=haze*haze*(3-2*haze);
     td_abs>0.00000002 ? td_tail_left=max(1,floor(srate*0.14)) : td_tail_left=max(0,td_tail_left-1);
     td_target_mix=td_amt*td_amt*(0.30*td_transient+0.70*haze)*(td_tail_left>0);
-    td_target_mix>td_mix ? td_mix+=(td_target_mix-td_mix)*0.45 : td_mix+=(td_target_mix-td_mix)*0.015;
+    td_target_mix>td_mix ? td_mix+=(td_target_mix-td_mix)*td_mix_attack_a : td_mix+=(td_target_mix-td_mix)*td_mix_release_a;
     td_mix_now=cp_01(td_mix);td_proc_l=l*(1-td_mix_now)+td_work_l*td_mix_now*endgain;td_proc_r=r*(1-td_mix_now)+td_work_r*td_mix_now*endgain;
     // Linked soft guard catches cloud peaks; no dry-peak follower can erase
     // the diffuse grains after their source transient has already decayed.
@@ -337,8 +683,8 @@ function pg_allowed(id) local(a g) (
 );
 function pg_member_ok(id) (pg_preview ? pg_meso_stage[id]>0 : (pg_bypass || !pg_changed || !pg_ready ? 1 : pg_meso_count[id]>0););
 function pe_active_request() local(i p active) (
-  active=slider40>=51 && (slider44>0 || (path_count>1 && slider39>0)) || slider41>=51 && (slider44>0 || (path_count>1 && slider39>0)) || pe_locks>0;
-  i=0;loop(12,p=traj_base+i*40;p[0]>0.5 && p[1]>=51 ? active=1;i+=1;);active;
+  active=(cp_axis(0)==51 || cp_axis(0)==52) && (slider44>0 || (path_count>1 && slider39>0)) || (cp_axis(1)==51 || cp_axis(1)==52) && (slider44>0 || (path_count>1 && slider39>0)) || (floor(pe_locks)%4)>0;
+  i=0;loop(12,p=traj_base+i*40;tr_enabled(i) && p[1]>=51 && p[1]<=52 ? active=1;i+=1;);active;
 );
 function pe_at(src frame) local(s lo hi mid g) (
   s=cp_s(src);lo=s[5];hi=lo+s[6];while(lo<hi)(mid=floor((lo+hi)/2);g=cp_g(mid);g[2]+g[3]<=frame ? lo=mid+1 : hi=mid;);min(s[5]+s[6]-1,lo);
@@ -420,11 +766,49 @@ function cp_quiet(id) local(g a floorv low prev p) (
   g=cp_g(id);floorv=cp_quiet_floor(g[1]);low=floorv;
   id>0 ? (p=cp_g(id-1);p[1]==g[1] && p[60]<0.5 ? low*=0.501187233627272;);
   g[60]=(g[6]<low && g[7]<floorv*3.98107170553497) || g[6]<=0.00001;
-  g[60]>0.5 ? auto_quiet_n+=1;
+  g[60]>0.5 ? auto_quiet_n+=1;cp_gap_cache(id);
 );
 // Analysis anchors and playback grains are intentionally different scales.
 // Anchors preserve local descriptor resolution; emitted regions may extend into
 // adjacent source material when stability supports a longer, safer splice.
+// Two formerly unused grain cells cache relative weakness and quiet coverage.
+// No low-salience flags, boundaries or EC learning inputs are changed.
+function cp_gap_cache(id) local(g a s ref floorv i quiet) (
+  g=cp_g(id);a=cp_auto(g[1]);s=cp_s(g[1]);ref=max(0.000001,max(a[2],s[7]*0.10));
+  g[62]=cp_01((cp_db(ref)-cp_db(max(0.000000001,g[6]))-24)/24);
+  floorv=ref*0.04;i=0;quiet=0;loop(16,g[24+i]<floorv ? quiet+=1;i+=1;);g[63]=quiet/16;
+);
+function cp_gap_request() local(i p target) (
+  gap_active=slider245>=0.5 && target_base[0]>=0.18;i=0;
+  loop(12,p=tr_lane(i);gap_active && tr_enabled(i) && p[1]==0 && p[2]<1.5 ? (
+    target=tr_lane_value(i,traj_u);target<0.25 ? gap_active=0;
+  );i+=1;);
+);
+function cp_gap_cost(id) local(g) (
+  g=cp_g(id);gap_active ? g[62]*g[63]*(0.25+0.75*min(1,g[3]/max(1,g[4])/0.35)) : 0;
+);
+// Never turn an all-quiet scope into an empty selection. Recovery is bounded
+// and still respects source scope, pruning, exclusions and Transfer separation.
+function cp_gap_filter(src) local(i j k good pooln lo n cursor id ok) (
+  gap_active && candidate_n>0 ? (
+    good=0;i=0;loop(candidate_n,cp_gap_cost(candidates[i*2])<0.40 ? good+=1;i+=1;);
+    good==0 ? (
+      pooln=cp_range(28,src);lo=range_lo;n=min(64,pooln);cursor=floor(cp_rng()*max(1,pooln));i=0;
+      while(i<n && good<8)(
+        id=postings[lo+(cursor+min(pooln-1,floor((i+0.5)*pooln/max(1,n))))%max(1,pooln)];
+        ok=xc_runtime_transfer ? xc_allowed(id,src,1,xc_runtime_guide) : cp_valid(id);
+        ok && cp_gap_cost(id)<0.40 ? (
+          j=0;while(j<good && candidates[j*2]!=id)(j+=1;);
+          j==good ? (candidates[good*2]=id;candidates[good*2+1]=-1;good+=1;candidate_n=max(candidate_n,good););
+        );i+=1;
+      );good>0 ? gap_recoveries+=1;
+    );
+    good>0 ? (
+      i=0;k=0;loop(candidate_n,cp_gap_cost(candidates[i*2])<0.40 ? (candidates[k*2]=candidates[i*2];candidates[k*2+1]=candidates[i*2+1];k+=1;) : gap_rejected+=1;i+=1;);candidate_n=k;
+    ) : gap_fallbacks+=1;
+  );
+);
+
 function cp_play_seconds(id kind) local(g stable motion onset detail lo hi) (
   g=cp_g(id);motion=cp_feat(id,3);onset=g[41];detail=g[43];
   stable=cp_01(0.50*g[48]+0.25*(1-motion)+0.15*(1-onset)+0.10*(1-detail));
@@ -441,7 +825,9 @@ function cp_bin_active(id bin) local(g floorv peakv) (
   g[9]<0.5 && peakv>floorv;
 );
 function cp_play_region(id kind) local(g s seconds want center abin bestbd besti b i li lb ri rb gg left right cand span start frames sid first last steps ok) (
-  g=cp_g(id);sid=g[1];s=cp_s(sid);seconds=cp_play_seconds(id,kind);want=min(s[2],max(1,floor(seconds*s[3])));
+  g=cp_g(id);
+  (passage_run || (passage_mode==0 && window_setting<=0)) ? (play_srcpos=g[2];play_frames=g[3];play_run_limited=0;) : (
+  sid=g[1];s=cp_s(sid);seconds=cp_play_seconds(id,kind);want=min(s[2],max(1,floor(seconds*s[3])));
   center=g[2]+g[3]*(kind==0 ? (0.18+0.68*g[40]) : 0.5);
   abin=cp_clamp(floor((center-g[2])/max(1,g[3])*16),0,15);
   !cp_bin_active(id,abin) ? (
@@ -470,6 +856,7 @@ function cp_play_region(id kind) local(g s seconds want center abin bestbd besti
     frames=min(want,g[3]);start=floor(center-frames*(kind==0 ? 0.25 : 0.5));
     play_srcpos=cp_clamp(start,g[2],max(g[2],g[2]+g[3]-frames));play_frames=max(1,frames);play_run_limited=1;
   );
+  ); // Auto region expansion
 );
 function h_meso_floor(src) local(a base) (
   a=cp_auto(src);base=max(0.06,max(a[0],a[4]));cp_clamp(max(0.16,base*2.50),0.16,0.75);
@@ -513,7 +900,7 @@ function cp_stop_all(when fade channel) local(i e) (
 function tr_curve_eval_samples(data n interp u) local(x i q ym y0 y1 yp q2 q3 z) (
   n=cp_clamp(floor(n),2,32);interp=cp_clamp(floor(interp),0,2);u=cp_01(u);x=u*(n-1);i=min(n-2,floor(x));q=x-i;
   y0=data[i];y1=data[i+1];
-  interp==2 ? y0 : (interp==1 ? y0+(y1-y0)*q : (
+  interp==2 ? (u>=1 ? y1 : y0) : (interp==1 ? y0+(y1-y0)*q : (
     ym=data[max(0,i-1)];yp=data[min(n-1,i+2)];q2=q*q;q3=q2*q;
     z=0.5*((2*y0)+(-ym+y1)*q+(2*ym-5*y0+4*y1-yp)*q2+(-ym+3*y0-3*y1+yp)*q3);cp_01(z);
   ));
@@ -640,12 +1027,28 @@ function xc_allowed(id src transfer guide) local(g yes) (
 // IDs 0..50 are the single user-facing topology. The old eight remain CORE;
 // rich cached observations, contextual evidence and four corpus-derived axes
 // are addressed through the same cp_desc()/cp_desc_conf() interface.
-function cp_desc_count() (53;);
+function cp_desc_count() (54;);
+function cp_axis(which) (which==0 ? (slider246>=0.5 ? 53 : floor(slider40)) : (slider247>=0.5 ? 53 : floor(slider41)););
+function cp_filter_code() (slider248>=0.5 ? 158+floor(slider248) : floor(slider16)-1;);
+function cp_length_value(id) local(g lo hi span) (
+  g=cp_g(id);lo=max(0.000001,auto_window_min);hi=max(lo,max_grain_seconds);span=log(hi/lo);
+  span>0.000001 ? cp_01(log(max(0.000001,g[3]/max(1,g[4]))/lo)/span) : 0.5;
+);
+function cp_length_index(id) local(k n slot) (
+  cp_desc_extent(53,cp_length_value(id));k=53*16+min(15,floor(cp_length_value(id)*16));n=desc_res_counts[k];desc_res_counts[k]=n+1;
+  slot=n<32 ? n : ((id*127+k*8191)%max(1,n+1));slot<32 ? desc_reservoir[k*32+slot]=id;
+);
+// Cached actual descriptor extent: lo, hi, supported count. UI only;
+// retrieval scores and stored curve coordinates retain their original units.
+function cp_desc_extent(d value) local(p) (
+  p=desc_value_range+d*3;
+  p[2]<=0 ? (p[0]=value;p[1]=value;) : (p[0]=min(p[0],value);p[1]=max(p[1],value););p[2]+=1;
+);
 function cp_desc_rate(period) local(hz) (
   period>0 ? (hz=1/period;cp_01(log(max(0.25,min(12,hz))/0.25)/log(48))) : 0.5;
 );
 function cp_desc(id d) local(g p q c i v sum) (
-  d=cp_clamp(floor(d),0,52);g=cp_g(id);v=0.5;
+  d=cp_clamp(floor(d),0,53);g=cp_g(id);v=0.5;
   d<8 ? v=cp_feat(id,d);
   d>=8 && d<51 && xc_ok(id) ? (
     p=xc_g(id);
@@ -677,11 +1080,11 @@ function cp_desc(id d) local(g p q c i v sum) (
     d==46 ? (q=xc_n(id);v=q[8]>=0 ? cp_01(1/(1+max(0,q[12]))) : 0.5;);
     d>=47 ? v=cp_01(p[96+d-47]);
   );
-  d>=51 ? v=pe_value(id,d-51);
+  d>=51 && d<=52 ? v=pe_value(id,d-51);d==53 ? v=cp_length_value(id);
   cp_01(v);
 );
 function cp_desc_conf(id d) local(p c v) (
-  d=cp_clamp(floor(d),0,52);v=0;
+  d=cp_clamp(floor(d),0,53);v=0;
   d<8 || d==20 || d==27 ? v=1;
   d>=8 && d<51 && xc_ok(id) ? (
     p=xc_g(id);
@@ -696,51 +1099,290 @@ function cp_desc_conf(id d) local(p c v) (
     d==45 || d==46 ? v=1;
     d>=47 ? v=(xd_eval[d-47]>0.0000001 ? 1 : 0);
   );
-  d>=51 ? v=(pe_span_use && id==pe_span_id ? pe_span_value[2+d-51] : pe_conf(id,d-51));
+  d>=51 && d<=52 ? v=(pe_span_use && id==pe_span_id ? pe_span_value[2+d-51] : pe_conf(id,d-51));d==53 ? v=1;
   cp_01(v);
 );
-// ---------- v1.6 Constraint Trajectory Solver ----------
+function tr_param_notify(id) (
+  id==86 ? sliderchange(slider86) :
+  id==87 ? sliderchange(slider87) :
+  id==88 ? sliderchange(slider88) :
+  id==89 ? sliderchange(slider89) :
+  id==90 ? sliderchange(slider90) :
+  id==91 ? sliderchange(slider91) :
+  id==92 ? sliderchange(slider92) :
+  id==93 ? sliderchange(slider93) :
+  id==94 ? sliderchange(slider94) :
+  id==95 ? sliderchange(slider95) :
+  id==96 ? sliderchange(slider96) :
+  id==97 ? sliderchange(slider97) :
+  id==98 ? sliderchange(slider98) :
+  id==99 ? sliderchange(slider99) :
+  id==100 ? sliderchange(slider100) :
+  id==101 ? sliderchange(slider101) :
+  id==102 ? sliderchange(slider102) :
+  id==103 ? sliderchange(slider103) :
+  id==104 ? sliderchange(slider104) :
+  id==105 ? sliderchange(slider105) :
+  id==106 ? sliderchange(slider106) :
+  id==107 ? sliderchange(slider107) :
+  id==108 ? sliderchange(slider108) :
+  id==109 ? sliderchange(slider109) :
+  id==110 ? sliderchange(slider110) :
+  id==111 ? sliderchange(slider111) :
+  id==112 ? sliderchange(slider112) :
+  id==113 ? sliderchange(slider113) :
+  id==114 ? sliderchange(slider114) :
+  id==115 ? sliderchange(slider115) :
+  id==116 ? sliderchange(slider116) :
+  id==117 ? sliderchange(slider117) :
+  id==118 ? sliderchange(slider118) :
+  id==119 ? sliderchange(slider119) :
+  id==120 ? sliderchange(slider120) :
+  id==121 ? sliderchange(slider121) :
+  id==122 ? sliderchange(slider122) :
+  id==123 ? sliderchange(slider123) :
+  id==124 ? sliderchange(slider124) :
+  id==125 ? sliderchange(slider125) :
+  id==126 ? sliderchange(slider126) :
+  id==127 ? sliderchange(slider127) :
+  id==128 ? sliderchange(slider128) :
+  id==129 ? sliderchange(slider129) :
+  id==130 ? sliderchange(slider130) :
+  id==131 ? sliderchange(slider131) :
+  id==132 ? sliderchange(slider132) :
+  id==133 ? sliderchange(slider133) :
+  id==134 ? sliderchange(slider134) :
+  id==135 ? sliderchange(slider135) :
+  id==136 ? sliderchange(slider136) :
+  id==137 ? sliderchange(slider137) :
+  id==138 ? sliderchange(slider138) :
+  id==139 ? sliderchange(slider139) :
+  id==140 ? sliderchange(slider140) :
+  id==141 ? sliderchange(slider141) :
+  id==142 ? sliderchange(slider142) :
+  id==143 ? sliderchange(slider143) :
+  id==144 ? sliderchange(slider144) :
+  id==145 ? sliderchange(slider145) :
+  id==146 ? sliderchange(slider146) :
+  id==147 ? sliderchange(slider147) :
+  id==148 ? sliderchange(slider148) :
+  id==149 ? sliderchange(slider149) :
+  id==150 ? sliderchange(slider150) :
+  id==151 ? sliderchange(slider151) :
+  id==152 ? sliderchange(slider152) :
+  id==153 ? sliderchange(slider153) :
+  id==154 ? sliderchange(slider154) :
+  id==155 ? sliderchange(slider155) :
+  id==156 ? sliderchange(slider156) :
+  id==157 ? sliderchange(slider157) :
+  id==158 ? sliderchange(slider158) :
+  id==159 ? sliderchange(slider159) :
+  id==160 ? sliderchange(slider160) :
+  id==161 ? sliderchange(slider161) :
+  id==162 ? sliderchange(slider162) :
+  id==163 ? sliderchange(slider163) :
+  id==164 ? sliderchange(slider164) :
+  id==165 ? sliderchange(slider165) :
+  id==166 ? sliderchange(slider166) :
+  id==167 ? sliderchange(slider167) :
+  id==168 ? sliderchange(slider168) :
+  id==169 ? sliderchange(slider169) :
+  id==170 ? sliderchange(slider170) :
+  id==171 ? sliderchange(slider171) :
+  id==172 ? sliderchange(slider172) :
+  id==173 ? sliderchange(slider173) :
+  id==174 ? sliderchange(slider174) :
+  id==175 ? sliderchange(slider175) :
+  id==176 ? sliderchange(slider176) :
+  id==177 ? sliderchange(slider177) :
+  id==178 ? sliderchange(slider178) :
+  id==179 ? sliderchange(slider179) :
+  id==180 ? sliderchange(slider180) :
+  id==181 ? sliderchange(slider181) :
+  id==182 ? sliderchange(slider182) :
+  id==183 ? sliderchange(slider183) :
+  id==184 ? sliderchange(slider184) :
+  id==185 ? sliderchange(slider185) :
+  id==186 ? sliderchange(slider186) :
+  id==187 ? sliderchange(slider187) :
+  id==188 ? sliderchange(slider188) :
+  id==189 ? sliderchange(slider189) :
+  id==190 ? sliderchange(slider190) :
+  id==191 ? sliderchange(slider191) :
+  id==192 ? sliderchange(slider192) :
+  id==193 ? sliderchange(slider193) :
+  id==194 ? sliderchange(slider194) :
+  id==195 ? sliderchange(slider195) :
+  id==196 ? sliderchange(slider196) :
+  id==197 ? sliderchange(slider197) :
+  id==198 ? sliderchange(slider198) :
+  id==199 ? sliderchange(slider199) :
+  id==200 ? sliderchange(slider200) :
+  id==201 ? sliderchange(slider201) :
+  id==202 ? sliderchange(slider202) :
+  id==203 ? sliderchange(slider203) :
+  id==204 ? sliderchange(slider204) :
+  id==205 ? sliderchange(slider205) :
+  id==206 ? sliderchange(slider206) :
+  id==207 ? sliderchange(slider207) :
+  id==208 ? sliderchange(slider208) :
+  id==209 ? sliderchange(slider209) :
+  id==210 ? sliderchange(slider210) :
+  id==211 ? sliderchange(slider211) :
+  id==212 ? sliderchange(slider212) :
+  id==213 ? sliderchange(slider213) :
+  id==214 ? sliderchange(slider214) :
+  id==215 ? sliderchange(slider215) :
+  id==216 ? sliderchange(slider216) :
+  id==217 ? sliderchange(slider217) :
+  id==218 ? sliderchange(slider218) :
+  id==219 ? sliderchange(slider219) :
+  id==220 ? sliderchange(slider220) :
+  id==221 ? sliderchange(slider221) :
+  id==222 ? sliderchange(slider222) :
+  id==223 ? sliderchange(slider223) :
+  id==224 ? sliderchange(slider224) :
+  id==225 ? sliderchange(slider225) :
+  id==226 ? sliderchange(slider226) :
+  id==227 ? sliderchange(slider227) :
+  id==228 ? sliderchange(slider228) :
+  id==229 ? sliderchange(slider229) :
+  id==230 ? sliderchange(slider230) :
+  id==231 ? sliderchange(slider231) :
+  id==232 ? sliderchange(slider232) :
+  id==233 ? sliderchange(slider233) :
+  id==234 ? sliderchange(slider234) :
+  id==235 ? sliderchange(slider235) :
+  id==236 ? sliderchange(slider236) :
+  id==237 ? sliderchange(slider237) :
+  id==238 ? sliderchange(slider238) :
+  id==239 ? sliderchange(slider239) :
+  id==240 ? sliderchange(slider240) :
+  id==242 ? sliderchange(slider242) :
+  id==243 ? sliderchange(slider243) :
+  id==246 ? sliderchange(slider246) :
+  id==247 ? sliderchange(slider247) :
+  id==248 ? sliderchange(slider248) :
+  id==245 ? sliderchange(slider245) :
+  id==244 ? sliderchange(slider244) :
+  id==241 ? sliderchange(slider241) :
+  0;
+);
+// Host-backed lane state. Three 0..126 samples fit in 21 bits, exactly in the
+// host's float parameters (63 is exactly 50%). Never pack 28-bit integers.
+// Numeric storage is hidden from the custom UI; Strength remains automatable.
+function tr_param_id(lane) (86+floor(lane)*13;);
+function tr_param_set(id value) (
+  slider(id)=value;tr_param_notify(id);
+);
+function tr_store_lane(lane) local(p id j k packed q) (
+  p=tr_lane(lane);id=tr_param_id(lane);
+  packed=floor(p[1])+floor(p[2])*64+floor(p[6])*256+(p[0]>0.5 ? 1024 : 0)+(p[4]>0.5 ? 2048 : 0);
+  tr_param_set(id,packed);tr_param_set(id+1,cp_01(p[3]));j=0;
+  loop(11,packed=0;k=0;loop(3,q=j*3+k;q<32 ? packed+=floor(cp_01(p[8+q])*126+0.5)*pow(128,k);k+=1;);
+    tr_param_set(id+2+j,packed);j+=1;
+  );
+  j=0;loop(13,tr_param_cache[lane*13+j]=slider(id+j);j+=1;);
+);
+function tr_sync_params() local(lane id j k q packed p changed) (
+  lane=0;changed=0;tr_param_trace_reset=0;
+  loop(12,id=tr_param_id(lane);j=0;tr_param_changed=0;
+    loop(13,tr_param_cache[lane*13+j]!=slider(id+j) ? tr_param_changed=1;j+=1;);
+    tr_param_changed ? (
+      tr_param_cache[lane*13]!=slider(id) ? tr_param_trace_reset=1;
+      p=tr_lane(lane);packed=cp_clamp(floor(slider(id)+0.5),0,4095);
+      p[0]=floor(packed/1024)%2;p[4]=floor(packed/2048)%2;
+      p[1]=min(53,packed%64);p[2]=min(2,floor(packed/64)%4);p[6]=min(2,floor(packed/256)%4);
+      p[3]=cp_01(slider(id+1));p[5]=32;j=0;
+      loop(11,packed=max(0,floor(slider(id+2+j)+0.5));k=0;
+        loop(3,q=j*3+k;q<32 ? p[8+q]=min(126,packed%128)/126;packed=floor(packed/128);k+=1;);j+=1;
+      );j=0;loop(13,tr_param_cache[lane*13+j]=slider(id+j);j+=1;);changed=1;
+    );lane+=1;
+  );changed ? (tr_param_trace_reset ? tr_history_clear();traj_epoch+=1;);
+);
+function tr_enabled(i) local(p) (
+  p=tr_lane(i);slider81>0.000001 && p[0]>0.5 && p[3]>0.000001 && (slider85<0 || floor(slider85)==i);
+);
+// Event fits known deadlines; unknown-duration held notes repeat over Seconds.
+// The lookahead uses the same unfolded clock so it crosses loop ends correctly.
+function tr_time(e t) local(den) (
+  den=floor(slider82)==0 && e[12]>0 ? max(1,e[10]-e[5]) : max(1,srate*slider83);
+  max(0,(t-e[5])/den)+cp_01(slider84);
+);
+function tr_fold_mode(u mode) (
+  mode==2 ? u-floor(u) : (mode==3 ? (u=u-floor(u/2)*2;u>1 ? 2-u : u;) : cp_01(u));
+);
+
+function tr_fold(u) local(mode) (mode=floor(slider82);mode==0 && traj_clock_gated ? mode=2;tr_fold_mode(u,mode););
+
+// ---------- Saved constraint trajectories ----------
 // Twelve arbitrary descriptor lanes share normalized event time. They are
 // retrieval constraints, not DSP filters. Candidate search remains bounded and
-// all descriptor values are read from the precomputed 53-axis registry.
+// all descriptor values are read from the precomputed 54-axis registry.
 function tr_lane(i) (traj_base+cp_clamp(floor(i),0,11)*40;);
-function tr_progress(e t) local(den) (
-  e[12]>0 ? cp_01((t-e[5])/max(1,e[10]-e[5])) : cp_01((t-e[5])/max(1,e[50]));
+function tr_progress(e t) local(mode) (
+  mode=floor(slider82);mode==0 && e[12]<=0 ? mode=2;tr_fold_mode(tr_time(e,t),mode);
 );
-function tr_lane_value(i u) local(p) (p=tr_lane(i);tr_curve_eval(p,5,6,u););
-function tr_penalty(id u) local(i p mode strength target value conf err total wt active) (
+function tr_lane_value(i u) local(p) (p=tr_lane(i);tr_curve_eval(p,5,6,tr_fold(u)););
+function tr_penalty_raw(id u phase) local(i p mode strength target value conf err total wt active) (
   total=0;wt=0;active=0;i=0;
-  loop(12,p=tr_lane(i);p[0]>0.5 ? (
-    mode=cp_clamp(floor(p[2]),0,2);strength=cp_01(p[3]);target=tr_curve_eval(p,5,6,u);
+  loop(12,p=tr_lane(i);(phase>=0 ? tr_eval_base[36+i] : tr_enabled(i)) ? (
+    mode=cp_clamp(floor(p[2]),0,2);strength=cp_01(p[3]);target=phase>=0 ? tr_eval_base[phase*12+i] : tr_lane_value(i,u);
     value=cp_desc(id,p[1]);conf=cp_desc_conf(id,p[1]);
     mode==0 ? err=abs(value-target) : (mode==1 ? err=max(0,value-target) : err=max(0,target-value));
     // Maximum/Minimum are constraint-like: small compliance errors are cheap;
     // violations become progressively more authoritative at high strength.
     err=mode==0 ? err : err*(1.15+1.85*err);
-    p[1]>=51 ? (err=conf*err+(1-conf)*0.75;total+=err*strength;wt+=strength;) : (total+=err*strength*max(0.12,conf);wt+=strength*max(0.12,conf););active+=1;
-  );i+=1;);tr_active_eval=active;wt>0 ? total/wt : 0;
+    p[1]>=51 && p[1]<=52 ? (err=conf*err+(1-conf)*0.75;total+=err*strength;wt+=1;) : (total+=err*strength*max(0.12,conf);wt+=max(0.12,conf););active+=1;
+  );i+=1;);tr_active_eval=active;
+  // Independent absolute costs: no denominator can cancel Strength or make
+  // another lane jump in influence when a lane is faded down to zero.
+  cp_01(slider81/2)*2*total;
 );
+// Three scoring instants per selection, 256 direct-mapped entries each. Both
+// targets and results are valid only for this cp_target call. Collision replaces
+// a tag; it never changes a result. No allocation, RNG or PCM work is involved.
+function tr_prepare(u du) local(i j p) (
+  tr_cache_prepared=1;tr_cache_n=0;tr_cache_u0=u;tr_cache_u1=u+du;tr_cache_u2=u+du*2;
+  i=0;loop(12,tr_eval_base[36+i]=tr_enabled(i);tr_cache_n+=tr_eval_base[36+i];i+=1;);
+  tr_cache_n>0 ? (
+    memset(tr_eval_tags,-1,768);i=0;loop(12,tr_eval_base[36+i] ? (
+      tr_eval_base[i]=tr_lane_value(i,u);tr_eval_base[12+i]=tr_lane_value(i,u+du);tr_eval_base[24+i]=tr_lane_value(i,u+du*2);
+    );i+=1;);
+  );
+);
+function tr_penalty(id u) local(phase key result) (
+  phase=-1;tr_cache_prepared ? (u==tr_cache_u0 ? phase=0 : (u==tr_cache_u1 ? phase=1 : (u==tr_cache_u2 ? phase=2;)););
+  phase>=0 && tr_cache_n<=0 ? (tr_active_eval=0;0;) : (
+    key=phase*256+id%256;
+    phase>=0 && tr_eval_tags[key]==id ? (tr_active_eval=tr_cache_n;tr_eval_values[key];) : (
+      result=tr_penalty_raw(id,u,phase);
+      phase>=0 ? (tr_eval_values[key]=result;tr_eval_tags[key]=id;);result;
+    );
+  );
+);
+
 function tr_future_penalty(id u du) local(n i j q cand c best1 bestid best2 q2) (
   best1=100;bestid=-1;best2=100;
   xc_ok(id) ? (
-    n=xc_n(id);i=0;loop(4,cand=n[i];(pe_active_request() ? xc_allowed(cand,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(cand)) ? (c=tr_penalty(cand,min(1,u+du));c<best1 ? (best1=c;bestid=cand;););i+=1;);
-    q=xc_next(id);(pe_active_request() ? xc_allowed(q,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(q)) ? (c=tr_penalty(q,min(1,u+du));c<best1 ? (best1=c;bestid=q;););
+    n=xc_n(id);i=0;loop(4,cand=n[i];(pe_active_request() ? xc_allowed(cand,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(cand)) ? (c=tr_penalty(cand,u+du);c<best1 ? (best1=c;bestid=cand;););i+=1;);
+    q=xc_next(id);(pe_active_request() ? xc_allowed(q,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(q)) ? (c=tr_penalty(q,u+du);c<best1 ? (best1=c;bestid=q;););
     bestid>=0 ? (
-      q2=xc_n(bestid);j=0;loop(4,cand=q2[j];(pe_active_request() ? xc_allowed(cand,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(cand)) ? (c=tr_penalty(cand,min(1,u+du*2));best2=min(best2,c););j+=1;);
-      q=xc_next(bestid);(pe_active_request() ? xc_allowed(q,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(q)) ? best2=min(best2,tr_penalty(q,min(1,u+du*2)));
+      q2=xc_n(bestid);j=0;loop(4,cand=q2[j];(pe_active_request() ? xc_allowed(cand,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(cand)) ? (c=tr_penalty(cand,u+du*2);best2=min(best2,c););j+=1;);
+      q=xc_next(bestid);(pe_active_request() ? xc_allowed(q,floor(slider14),xc_runtime_transfer,xc_runtime_guide) : cp_valid(q)) ? best2=min(best2,tr_penalty(q,u+du*2));
     );
   );
-  best1>=100 ? best1=tr_penalty(id,min(1,u+du));best2>=100 ? best2=best1;
+  best1>=100 ? best1=tr_penalty(id,u+du);best2>=100 ? best2=best1;
   0.70*best1+0.30*best2;
 );
 function tr_reset_lane(i desc enable) local(p j) (
-  p=tr_lane(i);memset(p,0,40);p[0]=enable;p[1]=cp_clamp(floor(desc),0,52);p[2]=0;p[3]=0.85;p[5]=32;p[6]=0;
+  p=tr_lane(i);memset(p,0,40);p[0]=enable;p[1]=cp_clamp(floor(desc),0,53);p[2]=0;p[3]=0.85;p[4]=enable;p[5]=32;p[6]=0;
   j=0;loop(32,p[8+j]=0.5;j+=1;);
 );
 function tr_set_linear(i desc mode y0 y1 strength) local(p) (
   tr_reset_lane(i,desc,1);p=tr_lane(i);p[2]=cp_clamp(floor(mode),0,2);p[3]=cp_01(strength);tr_fill_linear_samples(p,y0,y1);
 );
-function tr_history_clear() (traj_runtime_base[0]=1;traj_runtime_base[1]=0;traj_runtime_base[2]=0;traj_runtime_base[3]=0;traj_runtime_base[4]=0;memset(traj_history_base,0,832););
+function tr_history_clear() (traj_runtime_base[0]=1;traj_runtime_base[1]=0;traj_runtime_base[2]=0;traj_runtime_base[3]=0;traj_runtime_base[4]=0;traj_runtime_base[5]=-1;traj_runtime_base[6]=-1;memset(traj_history_base,0,832););
 function tr_clear_all() local(i) (i=0;loop(12,tr_reset_lane(i,i,0);i+=1;);tr_history_clear(););
 function tr_brush_begin(lane) (
   tr_brush_active=1;tr_brush_lane=cp_clamp(floor(lane),0,12);tr_brush_pair=0;memset(traj_brush_stage,0,32);
@@ -753,7 +1395,7 @@ function tr_brush_data(arg) local(idx a b) (
 function tr_brush_commit() local(p) (
   tr_brush_active && tr_brush_pair==16 ? (
     p=tr_brush_lane==12 ? amp_curve_base : tr_lane(tr_brush_lane);p=tr_brush_lane==12 ? p+8 : p+8;memcpy(p,traj_brush_stage,32);
-    tr_brush_lane==12 ? (p[0]=0;p[31]=0;) : tr_history_clear();traj_epoch+=1;
+    tr_brush_lane==12 ? (p[0]=0;p[31]=0;) : (tr_store_lane(tr_brush_lane);tr_history_clear(););traj_epoch+=1;
   );tr_brush_active=0;tr_brush_lane=-1;tr_brush_pair=0;
 );
 function tr_migrate_freehand() local(i j p a tmp) (
@@ -770,17 +1412,20 @@ function tr_preset(which) (
   which==4 ? tr_set_linear(0,2,0,0.92,0.00,0.95);
   which==5 ? tr_set_linear(0,5,0,0.92,0.08,0.95);
 );
-function tr_meta(id) local(lane code p q) (
-  id>=7000 ? (id==7000 ? tr_clear_all() : tr_preset(id-7000);) : (
+function tr_meta(id) local(lane code p q j) (
+  id>=7000 ? (id==7000 ? tr_clear_all() : tr_preset(id-7000);j=0;loop(12,tr_store_lane(j);j+=1;);) : (
     lane=floor(id/512);code=id-lane*512;lane>=0 && lane<12 ? (
       p=tr_lane(lane);
-      code==0 ? p[0]=0;
-      code==1 ? p[0]=1;
+      code==0 ? (p[0]=0;p[4]=0;);
+      code==1 ? (p[0]=1;p[4]=1;);
       code==2 ? tr_reset_lane(lane,p[1],1);
-      code>=16 && code<=68 ? (p[1]=code-16;p[0]=1;);
+      code==3 ? p[0]=1-p[0];
+      code==4 ? (j=0;q=-1;while(j<12 && q<0)(tr_lane(j)[4]<0.5 ? q=j;j+=1;);q>=0 ? (memcpy(tr_lane(q),p,40);tr_store_lane(q);););
+      code>=16 && code<=68 ? (p[4]<0.5 ? tr_reset_lane(lane,code-16,1);p[1]=code-16;p[0]=1;p[4]=1;);
       code>=80 && code<=82 ? p[2]=code-80;
       code>=96 && code<=98 ? p[6]=code-96;
       code>=128 && code<=383 ? p[3]=(code-128)/255;
+      tr_store_lane(lane);
     );
   );tr_history_clear();traj_epoch+=1;
 );
@@ -808,15 +1453,17 @@ function amp_meta(code) local(a) (
   traj_epoch+=1;
 );
 function tr_capture(id e t) local(r i p req got err conf strength total wt rec head) (
+  e[5]>=traj_runtime_base[5] ? (
   pe_excerpt(id,cp_w(floor((e-event_base)/64)*walker_per_event)[41],cp_w(floor((e-event_base)/64)*walker_per_event)[42]);pe_span_use=1;
-  r=traj_runtime_base;r[2]=tr_progress(e,t);total=0;wt=0;r[1]=0;i=0;
-  loop(12,p=tr_lane(i);p[0]>0.5 ? (
+  r=traj_runtime_base;e[5]!=r[5] || e!=r[6] ? (tr_history_clear();r[5]=e[5];r[6]=e;);r[2]=tr_progress(e,t);total=0;wt=0;r[1]=0;i=0;
+  loop(12,p=tr_lane(i);tr_enabled(i) ? (
     req=tr_curve_eval(p,5,6,r[2]);got=cp_desc(id,p[1]);conf=cp_desc_conf(id,p[1]);
     p[2]==0 ? err=abs(got-req) : (p[2]==1 ? err=max(0,got-req) : err=max(0,req-got));
     strength=cp_01(p[3]);r[8+i*4]=req;r[9+i*4]=got;r[10+i*4]=err;r[11+i*4]=conf;total+=err*strength;wt+=strength;r[1]+=1;
   ) : (r[8+i*4]=0;r[9+i*4]=0;r[10+i*4]=0;r[11+i*4]=0;);i+=1;);
   r[0]=wt>0 ? cp_01(1-total/wt) : 1;
   head=floor(r[4]);rec=traj_history_base+head*13;rec[0]=r[2];i=0;loop(12,rec[1+i]=r[9+i*4];i+=1;);r[4]=(head+1)%64;r[3]=min(64,r[3]+1);pe_span_use=0;
+  );
 );
 // Body spectral cost: occupancy and timbre; not interchangeable with join cost.
 function xc_distance(a b tone) local(i p q z v harm conf tot) (
@@ -876,7 +1523,7 @@ function xc_prepare() local(i) (
   xc_coarse_n=0;xc_matrix_cursor=0;xc_coverage_limited=0;xc_sparse_sources=0;xc_mapping_misses=0;xc_recurrences=0;
   xc_built_ceiling=slider52;xc_quality=quality_request;xc_fft_size=quality_request<1 ? 512 : (quality_request>1 ? 4096 : 2048);
   memset(xc_stats,0,256);i=0;loop(8,xc_weights[i]=1;i+=1;);
-  memset(xc_res_counts,0,128);memset(xc_states,0,512);memset(desc_cursor,0,159);
+  memset(xc_res_counts,0,128);memset(xc_states,0,512);memset(desc_cursor,0,162);
   xc_schema=1400;xc_request_hierarchy=1;
 );
 function xc_frame_setup() local(g s p length offset) (
@@ -1161,8 +1808,9 @@ function xd_score_normalize(id) local(p c lo hi) (
   p=xc_g(id);c=0;loop(4,lo=xd_minmax[c*2];hi=xd_minmax[c*2+1];p[96+c]=hi-lo>0.000000001 ? cp_01((p[96+c]-lo)/(hi-lo)) : 0.5;c+=1;);
 );
 function xd_res_add(id) local(d conf value bin k n slot) (
-  d=0;loop(51,conf=cp_desc_conf(id,d);conf>0.05 ? (value=cp_desc(id,d);bin=min(15,max(0,floor(value*16)));k=d*16+bin;n=desc_res_counts[k];desc_res_counts[k]=n+1;
+  d=0;loop(51,conf=cp_desc_conf(id,d);conf>0.05 ? (value=cp_desc(id,d);cp_desc_extent(d,value);bin=min(15,max(0,floor(value*16)));k=d*16+bin;n=desc_res_counts[k];desc_res_counts[k]=n+1;
     slot=n<32 ? n : ((id*127+k*8191)%max(1,n+1));slot<32 ? desc_reservoir[k*32+slot]=id;);d+=1;);
+  cp_length_index(id);
 );
 function xc_features_work(work) local(budget g p s n frame l r win i j a b c idx count variance mean total)
 (
@@ -1215,7 +1863,7 @@ function xc_features_work(work) local(budget g p s n frame l r win i j a b c idx
       xc_coarse_n>0 ? (a=xc_coarse_sources[g[1]*2];n=xc_coarse_sources[g[1]*2+1];p[110]=a+min(n-1,floor((g[2]+g[3]*0.5)/s[2]*n)););
       xc_neighbor_one(xc_cursor);xc_cursor+=1;i+=1;
     );
-    xc_cursor>=grain_count ? (memset(desc_res_counts,0,816);xc_cursor=0;xc_phase=10;);
+    xc_cursor>=grain_count ? (memset(desc_res_counts,0,864);memset(desc_value_range,0,162);xc_cursor=0;xc_phase=10;);
   ) : xc_phase==10 ? (
     i=0;while(i<8 && xc_cursor<grain_count)(xd_res_add(xc_cursor);xc_cursor+=1;i+=1;);
     xc_cursor>=grain_count ? (xc_phase=0;xc_ready=1;xc_epoch=index_epoch;xc_request_hierarchy=1;h_rebuild_requested=1;);
@@ -1286,7 +1934,7 @@ function cg_fail(reason) (
   cg_failures+=1;cg_last_failure=reason;cg_last_fail_stage=task_arena_progress(cg_arena,0);
   cg_cancel();cg_disabled=1;cg_failed_key=cg_retry_key;rebuild_request=1;poll_left=0;
 );
-function cg_publish() (task_arena_adopt(cg_arena,source_mono,a_bin,a_binpeak,a_binpower,a_burst_count,a_burst_ready,a_burst_start,a_diff,a_envdiff,a_envsum,a_g,a_headn,a_headpower,a_inburst,a_last_l,a_last_r,a_lowpower,a_lowref,a_lp_l,a_lp_r,a_lpc,a_max_env,a_ndiff,a_num,a_peak,a_peak_bin,a_power,a_prev_env,a_rise,a_sidepower,a_tailn,a_tailpower,a_tile_ready,analysis_points,apply_saved_edits,auto_budget_coarsened,auto_budget_scale,auto_desired_cells,auto_quiet_n,auto_s,auto_scout_sparse,auto_window_max,auto_window_min,browse_dirty,build_phase,corpus_key,edit_cursor,edits_inactive,edits_match,effective_window,fc_built_key,fc_cfg_key,fc_class_cursor,fc_cursor,fc_epoch,fc_iter,fc_last_norm,fc_lo,fc_member_cursor,fc_model_key,fc_n,fc_pc,fc_phase,fc_ready,fc_subphase,fill_grain,grain_count,h_best0,h_best1,h_best2,h_bestdist,h_boundary,h_cleanup_done,h_cluster_cap,h_coarsened,h_coverage_lost,h_cursor,h_detail,h_empty_classes,h_epoch,h_excluded,h_finalize_stage,h_level,h_link_sources,h_ls,h_macro_gap_n,h_macro_lost,h_macro_singletons,h_mend,h_merges,h_mflags,h_micro_only_short,h_min_macro,h_min_meso,h_monsets,h_mopen,h_mseconds,h_msource,h_msource_start,h_mstart,h_mtrans,h_pair_n,h_part_direction,h_part_distribution,h_part_motion,h_part_role,h_part_timing,h_phase,h_range_end,h_range_hi,h_range_lo,h_range_start,h_ready,h_rebuild_requested,h_refine_pass,h_rest_amp,h_rest_db,h_rest_seconds,h_rest_seed_conf,h_sensitive,h_status,h_step,h_weight0,h_weight1,h_weight2,h_xcount,h_xend,h_xflags,h_xopen,h_xscan,h_xseconds,h_xsource,h_xstart,hm_k,hm_n,hm_radius,hm_transitions,hx_k,hx_n,hx_radius,hx_transitions,invalid_audio,invalid_sources,layout_cursor,max_grain_seconds,merge_active,merge_done,merge_new_count,merge_new_start,merge_orig_end,merge_orig_start,merge_read,merge_source,merge_write,meta_cursor,norm_cursor,pe_count,pe_cross,pe_cursor,pe_diff,pe_epoch,pe_ffts,pe_fits,pe_frame_read,pe_frames,pe_last_l,pe_last_r,pe_lpow,pe_model_key,pe_nfft,pe_nr,pe_offset,pe_peak,pe_phase,pe_read_errors,pe_reads,pe_ready,pe_ref_mode,pe_rpow,pe_subphase,pg_load_pending,pg_ready,play_frames,play_run_limited,play_srcpos,playable_grains,posting_count,ready,scan_previous_tail,scan_source,scan_tile,scout_diff,scout_in,scout_l,scout_n,scout_peak,scout_probe,scout_r,scout_reads,scout_source,scout_started,scout_step,scout_sum,selected_id,silent_grains,source_count,tile_total,total_seconds,ui_left,xc_built_ceiling,xc_coarse_n,xc_coarse_window,xc_coverage_limited,xc_cross,xc_cursor,xc_descriptor_count,xc_epoch,xc_fft_count,xc_fft_size,xc_frame,xc_grammar_epoch,xc_grammar_overflow,xc_grammar_ready,xc_map_costsum,xc_map_count,xc_map_cursor,xc_map_epoch,xc_map_phase,xc_map_ready,xc_map_source,xc_map_target,xc_map_unmatched,xc_mapping_misses,xc_matrix_cursor,xc_pcm_reads,xc_peak,xc_phase,xc_pool_n,xc_post_cursor,xc_post_phase,xc_pow_l,xc_pow_r,xc_precompute_comparisons,xc_quality,xc_read_count,xc_read_i,xc_read_start,xc_ready,xc_recurrences,xc_request_hierarchy,xc_runtime_comparisons,xc_schema,xc_sparse_sources,xc_spectral_frames,xc_subphase,xc_terminal_examples,xc_triples););
+function cg_publish() (task_arena_adopt(cg_arena,source_mono,passage_mode,passage_sensitivity,passage_limit,passage_run,a_bin,a_binpeak,a_binpower,a_burst_count,a_burst_ready,a_burst_start,a_diff,a_envdiff,a_envsum,a_g,a_headn,a_headpower,a_inburst,a_last_l,a_last_r,a_lowpower,a_lowref,a_lp_l,a_lp_r,a_lpc,a_max_env,a_ndiff,a_num,a_peak,a_peak_bin,a_power,a_prev_env,a_rise,a_sidepower,a_tailn,a_tailpower,a_tile_ready,analysis_points,apply_saved_edits,auto_budget_coarsened,auto_budget_scale,auto_desired_cells,auto_quiet_n,auto_s,auto_scout_sparse,auto_window_max,auto_window_min,browse_dirty,build_phase,corpus_key,edit_cursor,edits_inactive,edits_match,effective_window,fc_built_key,fc_cfg_key,fc_class_cursor,fc_cursor,fc_epoch,fc_iter,fc_last_norm,fc_lo,fc_member_cursor,fc_model_key,fc_n,fc_pc,fc_phase,fc_ready,fc_subphase,fill_grain,grain_count,h_best0,h_best1,h_best2,h_bestdist,h_boundary,h_cleanup_done,h_cluster_cap,h_coarsened,h_coverage_lost,h_cursor,h_detail,h_empty_classes,h_epoch,h_excluded,h_finalize_stage,h_level,h_link_sources,h_ls,h_macro_gap_n,h_macro_lost,h_macro_singletons,h_mend,h_merges,h_mflags,h_micro_only_short,h_min_macro,h_min_meso,h_monsets,h_mopen,h_mseconds,h_msource,h_msource_start,h_mstart,h_mtrans,h_pair_n,h_part_direction,h_part_distribution,h_part_motion,h_part_role,h_part_timing,h_phase,h_range_end,h_range_hi,h_range_lo,h_range_start,h_ready,h_rebuild_requested,h_refine_pass,h_rest_amp,h_rest_db,h_rest_seconds,h_rest_seed_conf,h_sensitive,h_status,h_step,h_weight0,h_weight1,h_weight2,h_xcount,h_xend,h_xflags,h_xopen,h_xscan,h_xseconds,h_xsource,h_xstart,hm_k,hm_n,hm_radius,hm_transitions,hx_k,hx_n,hx_radius,hx_transitions,invalid_audio,invalid_sources,layout_cursor,max_grain_seconds,merge_active,merge_done,merge_new_count,merge_new_start,merge_orig_end,merge_orig_start,merge_read,merge_source,merge_write,meta_cursor,norm_cursor,pe_count,pe_cross,pe_cursor,pe_diff,pe_epoch,pe_ffts,pe_fits,pe_frame_read,pe_frames,pe_last_l,pe_last_r,pe_lpow,pe_model_key,pe_nfft,pe_nr,pe_offset,pe_peak,pe_phase,pe_read_errors,pe_reads,pe_ready,pe_ref_mode,pe_rpow,pe_subphase,pg_load_pending,pg_ready,play_frames,play_run_limited,play_srcpos,playable_grains,posting_count,ready,scan_previous_tail,scan_source,scan_tile,scout_diff,scout_in,scout_l,scout_n,scout_peak,scout_probe,scout_r,scout_reads,scout_source,scout_started,scout_step,scout_sum,selected_id,silent_grains,source_count,tile_total,total_seconds,ui_left,xc_built_ceiling,xc_coarse_n,xc_coarse_window,xc_coverage_limited,xc_cross,xc_cursor,xc_descriptor_count,xc_epoch,xc_fft_count,xc_fft_size,xc_frame,xc_grammar_epoch,xc_grammar_overflow,xc_grammar_ready,xc_map_costsum,xc_map_count,xc_map_cursor,xc_map_epoch,xc_map_phase,xc_map_ready,xc_map_source,xc_map_target,xc_map_unmatched,xc_mapping_misses,xc_matrix_cursor,xc_pcm_reads,xc_peak,xc_phase,xc_pool_n,xc_post_cursor,xc_post_phase,xc_pow_l,xc_pow_r,xc_precompute_comparisons,xc_quality,xc_read_count,xc_read_i,xc_read_start,xc_ready,xc_recurrences,xc_request_hierarchy,xc_runtime_comparisons,xc_schema,xc_sparse_sources,xc_spectral_frames,xc_subphase,xc_terminal_examples,xc_triples););
 function cg_step() local(rc phase cursor stage) (
   cg_retire();
   cg_stage==0 && !cg_disabled && !cg_retiring && !xc_task_retiring && !rebuild_request && !pending_adoption && pool_state!=1 && pool_state!=2 && build_phase==1 && loaded_count>0 && cp_hold_count()==0 && cp_busy()==0 ? (
@@ -2370,17 +3018,19 @@ function h_add_candidate(id bridge src) local(g i exists) (
     );
   );
 );
-function tr_candidates(src) local(pass l best bests usedmask p d mode target b0 b1 b key n j ix id) (
-  usedmask=0;pass=0;
+function tr_candidates(src) local(pass l best bests usedmask p d mode target b key n j ix id counts entries limit passlimit) (
+  usedmask=0;pass=0;limit=min(40,candidate_n+24);tr_candidate_added=0;
+  counts=pg_preview ? pg_res_counts : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_counts : desc_res_counts);
+  entries=pg_preview ? pg_reservoir : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_res : desc_reservoir);
   loop(4,
-    best=-1;bests=-1;l=0;loop(12,p=tr_lane(l);p[0]>0.5 && p[3]>0.05 && (floor(usedmask/pow(2,l))%2)==0 ? (p[3]>bests ? (bests=p[3];best=l;););l+=1;);
+    best=-1;bests=-1;l=0;loop(12,p=tr_lane(l);tr_enabled(l) && (floor(usedmask/pow(2,l))%2)==0 ? (p[3]>bests ? (bests=p[3];best=l;););l+=1;);
     best>=0 ? (
-      usedmask+=pow(2,best);p=tr_lane(best);d=cp_clamp(floor(p[1]),0,52);mode=cp_clamp(floor(p[2]),0,2);target=tr_curve_eval(p,5,6,traj_u);b0=min(15,floor(target*16));b1=b0;
-      mode==1 ? b0=max(0,b0-2);mode==2 ? b1=min(15,b1+2);
-      b=max(0,b0-1);while(b<=min(15,b1+1) && candidate_n<64)(
-        xc_ready ? (key=d*16+b;n=min(32,(pg_preview ? pg_res_counts : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_counts : desc_res_counts))[key]);j=0;loop(min(4,n),ix=min(n-1,floor((j+0.5)*n/max(1,min(4,n))));id=(pg_preview ? pg_reservoir : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_res : desc_reservoir))[key*32+ix];h_add_candidate(id,-5,src);j+=1;);) : (
-          d<8 ? (key=d*16+b;n=min(64,path_res_counts[key]);j=0;loop(min(4,n),ix=min(n-1,floor((j+0.5)*n/max(1,min(4,n))));id=path_reservoir[key*64+ix];h_add_candidate(id,-5,src);j+=1;););
-        );b+=1;
+      usedmask+=pow(2,best);p=tr_lane(best);d=cp_clamp(floor(p[1]),0,53);mode=cp_clamp(floor(p[2]),0,2);target=tr_lane_value(best,traj_u);passlimit=min(limit,candidate_n+6);b=0;
+      loop(3,key=mode==0 ? cp_clamp(floor(target*16)+b-1,0,15) : (mode==1 ? floor(min(15,target*16)*b/2) : floor(min(15,target*16)+(15-min(15,target*16))*b/2));
+        key=d*16+key;n=xc_ready ? min(32,counts[key]) : (d<8 ? min(64,path_res_counts[key]) : 0);j=0;
+        loop(min(2,n),candidate_n<passlimit ? (
+          ix=min(n-1,floor((j+0.5)*n/max(1,min(2,n))));id=xc_ready ? entries[key*32+ix] : path_reservoir[key*64+ix];h_add_candidate(id,-5,src);tr_candidate_added=1;
+        );j+=1;);b+=1;
       );
     );pass+=1;
   );
@@ -2588,11 +3238,11 @@ function pe_build(work) local(g p l r x win take i z hash key d prev q) (
     );pe_cursor>=grain_count ? (pe_phase=2;pe_cursor=0;);
   ) : pe_phase==2 ? (
     pe_cursor<grain_count ? (pe_region_refs(pe_cursor);pe_fit(pe_cursor,0);pe_ec_refs(pe_cursor);pe_ec_fit(pe_cursor);pe_fits+=2;pe_cursor+=1;);
-    pe_cursor>=grain_count ? (pe_phase=3;pe_cursor=0;memset(pe_sum,0,4);memset(desc_res_counts+816,0,32););
+    pe_cursor>=grain_count ? (pe_phase=3;pe_cursor=0;memset(pe_sum,0,4);memset(desc_res_counts+816,0,32);memset(desc_value_range+153,0,6););
   ) : pe_phase==3 ? (
     i=0;while(i<256 && pe_cursor<grain_count)(g=cp_g(pe_cursor);p=pe_p(pe_cursor);q=pe_prefix+pe_cursor*4;d=0;
       loop(2,pe_sum[d*2]+=p[d]*p[d+2]*g[3];pe_sum[d*2+1]+=p[d+2]*g[3];q[d*2]=pe_sum[d*2];q[d*2+1]=pe_sum[d*2+1];
-        p[d+2]>0.05 ? (key=(51+d)*16+min(15,floor(p[d]*16));z=desc_res_counts[key];desc_res_counts[key]+=1;hash=z<32 ? z : ((pe_cursor*127+key*8191)%max(1,z+1));hash<32 ? desc_reservoir[key*32+hash]=pe_cursor;);d+=1;
+        p[d+2]>0.05 ? (cp_desc_extent(51+d,p[d]);key=(51+d)*16+min(15,floor(p[d]*16));z=desc_res_counts[key];desc_res_counts[key]+=1;hash=z<32 ? z : ((pe_cursor*127+key*8191)%max(1,z+1));hash<32 ? desc_reservoir[key*32+hash]=pe_cursor;);d+=1;
       );pe_cursor+=1;i+=1;
     );pe_cursor>=grain_count ? (pe_phase=0;pe_ready=1;pe_model_key=corpus_key;pg_load_pending=1;);
   );
@@ -2605,7 +3255,7 @@ function xc_runtime_begin(w e when) local(st index d anchor)
   st[0]!=e[1] ? (
     memset(st,0,64);st[0]=e[1];st[1]=floor(slider56);st[2]=xc_ready && xc_epoch==index_epoch && xc_params[0]>0.5;
     st[3]=cp_clamp(floor(slider64)-1,0,max(0,source_count-1));st[4]=index_epoch;st[10]=-1;st[11]=-1;
-    anchor=w[5];d=0;loop(2,pe_event_locks[index*4+d]=anchor>=0 ? pe_value(anchor,d) : 0.5;pe_event_locks[index*4+2+d]=anchor>=0 ? pe_conf(anchor,d) : 0;d+=1;);d=0;loop(51,st[12+d]=anchor>=0 && cp_valid(anchor) ? cp_desc(anchor,d) : 0.5;d+=1;);
+    anchor=w[5];d=0;loop(2,pe_event_locks[index*4+d]=anchor>=0 ? pe_value(anchor,d) : 0.5;pe_event_locks[index*4+2+d]=anchor>=0 ? pe_conf(anchor,d) : 0;d+=1;);d=0;loop(51,st[12+d]=anchor>=0 && cp_valid(anchor) ? cp_desc(anchor,d) : 0.5;d+=1;);st[63]=anchor>=0 && cp_valid(anchor) ? cp_length_value(anchor) : 0.5;
   );
   xc_lock_state=st;
   xc_run=st[2]>0 && st[4]==index_epoch && xc_ready && xc_params[0]>0.5;
@@ -2681,8 +3331,8 @@ function xc_runtime_cost(id w) local(prev p q au matching join context adjacency
 
 function cp_target(w e t) local(d x pressure m lockv f basev px py axisx axisy bx by csign density den) (
   cp_phase(e,t);
-  traj_u=tr_progress(e,t);den=e[12]>0 ? max(1,e[10]-e[5]) : max(1,e[50]);
-  traj_du=cp_clamp(max(srate*0.035,w[11])/den,0.025,0.20);
+  traj_clock_gated=e[12]<=0;traj_u=tr_time(e,t);den=floor(slider82)==0 && e[12]>0 ? max(1,e[10]-e[5]) : max(1,srate*slider83);
+  traj_du=cp_clamp(max(srate*0.035,w[11])/den,0.025,0.20);tr_prepare(traj_u,traj_du);
   path_u=e[12]>0 ? cp_01((t-e[5])/max(1,e[10]-e[5])) : max(0,(t-e[5])/max(1,srate*slider47))*2;
   e[12]<=0 ? (path_u=path_u-floor(path_u/2)*2;path_u>1 ? path_u=2-path_u;);
   cp_path_eval(path_u);
@@ -2712,7 +3362,7 @@ function cp_target(w e t) local(d x pressure m lockv f basev px py axisx axisy b
   );
   // Map/path guidance is registry-wide. Rich axes use the previous audible
   // grain as their neutral baseline; focus/path then move that target explicitly.
-  axisx=cp_clamp(floor(slider40),0,52);axisy=cp_clamp(floor(slider41),0,52);
+  axisx=cp_clamp(cp_axis(0),0,53);axisy=cp_clamp(cp_axis(1),0,53);
   bx=axisx<8 ? target_base[axisx] : (w[5]>=0 && cp_valid(w[5]) ? cp_desc(w[5],axisx) : 0.5);
   by=axisy<8 ? target_base[axisy] : (w[5]>=0 && cp_valid(w[5]) ? cp_desc(w[5],axisy) : 0.5);
   map_target_x=bx*(1-slider44)+slider42*slider44;map_target_y=by*(1-slider44)+slider43*slider44;
@@ -2730,7 +3380,7 @@ function cp_target(w e t) local(d x pressure m lockv f basev px py axisx axisy b
   w[4]==3 ? (target_role[0]*=0.45;target_role[1]=1;);
   w[4]==4 ? (target_role[0]*=0.35;target_role[1]=0.85;target_role[2]=max(target_role[2],0.45););
   w[4]==5 ? (target_role[0]*=0.18;target_role[1]=1;target_role[3]=max(target_role[3],0.40););
-  w[4]==6 ? (target_role[0]*=0.12;target_role[1]=0.95;target_role[2]=max(target_role[2],0.72););
+  w[4]==6 ? (target_role[0]*=0.12;target_role[1]=0.95;target_role[2]=max(target_role[2],0.72););  cp_gap_request();
 );
 function cp_hist_penalty(id w) local(g i old o age dist p near) (
   p=0;g=cp_g(id);
@@ -2780,7 +3430,7 @@ function cp_score(id w bridge) local(d g prev p cost ident seam hist same fit n 
   pe_ready && pe_active_request() ? (
     xc_run && xc_ok(id) ? (pe_plan_start=xc_g(id)[88];pe_plan_frames=xc_g(id)[89];) : (cp_play_region(id,w[4]==2 ? 2 : (phase_stage==0 ? 0 : 1));pe_plan_start=play_srcpos;pe_plan_frames=play_frames;);
     pe_plan_event=cp_e(w[1]);pe_plan_kind=w[4]==2 ? 2 : (phase_stage==0 ? 0 : 1);
-    pe_plan_event[12]>0 ? (pe_plan_sec=max(0.001,(pe_plan_event[10]-pe_plan_event[5])/srate);pe_plan_cap=max(pe_plan_kind==0 || pe_plan_kind==2 ? 0.050 : 0.075,min(slider52/1000,pe_plan_sec*(pe_plan_kind==0 ? 0.32 : 0.55)));pe_plan_frames=min(pe_plan_frames,max(1,floor(pe_plan_cap*g[4])));) : (path_count>1 ? pe_plan_frames=min(pe_plan_frames,max(1,floor(max(0.075,min(slider52/1000,slider47/10))*g[4]))););
+    !passage_run ? (pe_plan_event[12]>0 ? (pe_plan_sec=max(0.001,(pe_plan_event[10]-pe_plan_event[5])/srate);pe_plan_cap=max(pe_plan_kind==0 || pe_plan_kind==2 ? 0.050 : 0.075,min(slider52/1000,pe_plan_sec*(pe_plan_kind==0 ? 0.32 : 0.55)));pe_plan_frames=min(pe_plan_frames,max(1,floor(pe_plan_cap*g[4])));) : (path_count>1 ? pe_plan_frames=min(pe_plan_frames,max(1,floor(max(0.075,min(slider52/1000,slider47/10))*g[4])));););
     pg_limit_span(id,pe_plan_start,pe_plan_frames);pe_plan_start=pg_span_start;pe_plan_frames=pg_span_frames;
     pe_excerpt(id,pe_plan_start,pe_plan_frames);pe_span_use=1;
   );cost=0;ident=0;d=0;
@@ -2797,17 +3447,18 @@ function cp_score(id w bridge) local(d g prev p cost ident seam hist same fit n 
   hist=cp_hist_penalty(id,w);
   score_target=cost/5.35;score_identity=ident;score_seam=seam;score_history=hist;score_role=fit;
   cost=1.65*score_target+slider3*(0.30*ident+0.15*seam+0.04*(1-same))+0.45*(1-fit)+slider34*0.62*hist;
-  g[60]>0.5 ? cost+=0.42;
+  g[60]>0.5 ? cost+=0.42;gap_active ? cost+=2*cp_gap_cost(id);
   w[4]>0 ? cost+=2.40*cp_child_diversity(id,w);
   bridge>=0 ? cost+=0.08*(1-cp_member(id,bridge));
   h_active ? cost+=0.35*h_effect*(1-h_fit(id));
-  axisx=cp_clamp(floor(slider40),0,52);axisy=cp_clamp(floor(slider41),0,52);
+  axisx=cp_clamp(cp_axis(0),0,53);axisy=cp_clamp(cp_axis(1),0,53);
   dx=abs(cp_desc(id,axisx)-map_target_x)*cp_desc_conf(id,axisx);dy=abs(cp_desc(id,axisy)-map_target_y)*cp_desc_conf(id,axisy);
-  axisx>=51 ? dx+=(1-cp_desc_conf(id,axisx))*0.75;axisy>=51 ? dy+=(1-cp_desc_conf(id,axisy))*0.75;
+  axisx>=51 && axisx<=52 ? dx+=(1-cp_desc_conf(id,axisx))*0.75;axisy>=51 && axisy<=52 ? dy+=(1-cp_desc_conf(id,axisy))*0.75;
   slider44>0 ? cost+=1.8*slider44*(dx+dy)*0.5;
   path_count>1 && slider39>0 ? (score_path=(dx+dy)*0.5;cost+=3.5*slider39*score_path;) : score_path=0;
   tnow=tr_penalty(id,traj_u);tr_active_eval>0 ? (tfuture=tr_future_penalty(id,traj_u,traj_du);cost+=2.75*tnow+0.85*tfuture;);
   pe_locks>0 && xc_lock_state>0 ? (d=0;loop(2,(floor(pe_locks/pow(2,d))%2)>0 && pe_event_locks[floor((xc_lock_state-xc_states)/64)*4+2+d]>0.05 ? cost+=0.55*slider51*(cp_desc_conf(id,51+d)*abs(cp_desc(id,51+d)-pe_event_locks[floor((xc_lock_state-xc_states)/64)*4+d])+(1-cp_desc_conf(id,51+d))*0.75);d+=1;););
+  (floor(pe_locks/4)%2)>0 && xc_lock_state>0 ? cost+=0.55*slider51*abs(cp_length_value(id)-xc_lock_state[63]);
   cost+=xc_runtime_cost(id,w);pe_span_use=0;pe_plan_id=id;1/(1+max(0,cost));
 );
 // Up to three shared feature posting lists + an explicit all-corpus safety route.
@@ -2816,13 +3467,13 @@ function cp_path_candidates(src) local(axis pass b bin k n i ix id g dist j at t
   path_candidates_n=0;
   path_count>1 && slider39>0 ? (
     memset(path_best,-1,32);total=0;pass=0;
-    loop(2,axis=pass==0 ? cp_clamp(floor(slider40),0,52) : cp_clamp(floor(slider41),0,52);b=min(15,floor((pass==0 ? map_target_x : map_target_y)*16));bin=max(0,b-1);
+    loop(2,axis=pass==0 ? cp_clamp(cp_axis(0),0,53) : cp_clamp(cp_axis(1),0,53);b=min(15,floor((pass==0 ? map_target_x : map_target_y)*16));bin=max(0,b-1);
       while(bin<=min(15,b+1))(
         use_rich=xc_ready; k=axis*16+bin;
         n=use_rich ? min(32,(pg_preview ? pg_res_counts : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_counts : desc_res_counts))[k]) : (axis<8 ? min(64,path_res_counts[axis*16+bin]) : 0);i=0;
         loop(min(16,n),ix=min(n-1,floor((i+0.5)*n/max(1,min(16,n))));id=use_rich ? (pg_preview ? pg_reservoir : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_res : desc_reservoir))[k*32+ix] : path_reservoir[(axis*16+bin)*64+ix];
           cp_valid(id) ? (g=cp_g(id);src<=0 || g[1]==src-1 ? (
-            dist=abs(cp_desc(id,cp_clamp(floor(slider40),0,52))-map_target_x)+abs(cp_desc(id,cp_clamp(floor(slider41),0,52))-map_target_y);
+            dist=abs(cp_desc(id,cp_clamp(cp_axis(0),0,53))-map_target_x)+abs(cp_desc(id,cp_clamp(cp_axis(1),0,53))-map_target_y);
             at=0;while(at<total && path_best[at*2]!=id)(at+=1;);
             at==total ? (at=0;while(at<total && path_best[at*2+1]<=dist)(at+=1;);at<12 ? (j=min(11,total);while(j>at)(path_best[j*2]=path_best[(j-1)*2];path_best[j*2+1]=path_best[(j-1)*2+1];j-=1;);path_best[at*2]=id;path_best[at*2+1]=dist;total=min(12,total+1);););
           ););i+=1;
@@ -2837,12 +3488,12 @@ function pe_candidates(src) local(d lane p target strength best key bin lo hi n 
   counts=pg_preview ? pg_res_counts : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_counts : desc_res_counts);
   entries=pg_preview ? pg_reservoir : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_res : desc_reservoir);
   d=51;loop(2,best=-1;target=0.5;
-    slider40==d && (slider44>0 || path_count>1 && slider39>0) ? (target=map_target_x;best=max(slider44,slider39));
-    slider41==d && (slider44>0 || path_count>1 && slider39>0) ? (target=map_target_y;best=max(slider44,slider39));
-    lane=0;loop(12,p=tr_lane(lane);p[0]>0.5 && p[1]==d && p[3]>best ? (target=tr_lane_value(lane,traj_u);best=p[3];);lane+=1;);
+    cp_axis(0)==d && (slider44>0 || path_count>1 && slider39>0) ? (target=map_target_x;best=max(slider44,slider39));
+    cp_axis(1)==d && (slider44>0 || path_count>1 && slider39>0) ? (target=map_target_y;best=max(slider44,slider39));
+    lane=0;loop(12,p=tr_lane(lane);tr_enabled(lane) && p[1]==d && p[3]>best ? (target=tr_lane_value(lane,traj_u);best=p[3];);lane+=1;);
     best>=0 ? (bin=min(15,floor(cp_01(target)*16));lo=max(0,bin-1);hi=min(15,bin+1);
       while(lo<=hi)(key=d*16+lo;n=min(32,counts[key]);j=0;
-        loop(min(4,n),id=entries[key*32+min(n-1,floor((j+0.5)*n/max(1,min(4,n))))];h_add_candidate(id,-7,src);j+=1;);lo+=1;
+        loop(min(4,n),candidate_n<(tr_candidate_added ? 48 : 64) ? (id=entries[key*32+min(n-1,floor((j+0.5)*n/max(1,min(4,n))))];h_add_candidate(id,-7,src););j+=1;);lo+=1;
       );
     );d+=1;
   );
@@ -2857,7 +3508,7 @@ function cp_pick(w e t) local(d b v weight total src pass n lo hi j id k found s
     src>0 ? (lo=0;hi=pg_available_n;while(lo<hi)(k=floor((lo+hi)/2);cp_g(pg_search_pool[k])[1]<src-1 ? lo=k+1 : hi=k;);pg_search_lo=lo;hi=pg_available_n;while(lo<hi)(k=floor((lo+hi)/2);cp_g(pg_search_pool[k])[1]<=src-1 ? lo=k+1 : hi=k;);pg_available_n=lo-pg_search_lo;);
     j=0;n=min(16,pg_available_n);loop(n,id=pg_search_pool[pg_search_lo+min(pg_available_n-1,floor((j+0.5)*pg_available_n/max(1,n)))];h_add_candidate(id,-6,src);j+=1;);
   );
-  pe_active_request() ? pe_candidates(src);xc_candidates(w,src);cp_path_candidates(src);tr_candidates(src);
+  tr_candidates(src);pe_active_request() ? pe_candidates(src);xc_candidates(w,src);cp_path_candidates(src);
   h_active ? h_candidates(src);
   loop(24,bridge_weights[pass]=0;pass+=1;);pass=0;
   loop(3,
@@ -2901,12 +3552,13 @@ function cp_pick(w e t) local(d b v weight total src pass n lo hi j id k found s
       k>=0 && k<source_count && k!=xc_runtime_guide ? (p_xc=cp_s(k);xc_candidate_add(p_xc[5]+floor(p_xc[6]*0.5),src););j+=1;
     );
   );
+  cp_gap_filter(src);
   best=-1;bestsc=-1;sum=0;j=0;pooln=0;
   loop(candidate_n,
     id=candidates[j*2];bridge=candidates[j*2+1];sc=cp_score(id,w,bridge);
     sc>bestsc ? (bestsc=sc;best=j;);
     // Relative temperature, not an unbounded random jump.
-    value=exp((sc-1)/max(0.008,0.015+0.12*slider2));sum+=value;
+    value=exp((sc-1)/max(0.008,0.015+0.12*slider2)-4*cp_gap_cost(id));sum+=value;
     cp_rng()*sum<value ? pooln=j;
     pick_checked+=1;j+=1;
   );
@@ -3009,7 +3661,7 @@ function cp_scout_step(work) local(s a lo hi start frame l r power diff n val b 
 
 function cp_begin() local(n cap avail)
 (
-  cg_cancel();cg_retry_key=generation+slider5+slider6*2048+slider21*16384+slider22*65536+slider61*0.001+slider60*524288+slider63*1048576+floor(slider69)*2097152;cg_failed_key!=cg_retry_key ? cg_disabled=0;
+  cg_cancel();cg_retry_key=generation+(floor(slider242)-1)*4194304+slider243*8388608+slider244*16777216+slider5+slider6*2048+slider21*16384+slider22*65536+slider61*0.001+slider60*524288+slider63*1048576+floor(slider69)*2097152;cg_failed_key!=cg_retry_key ? cg_disabled=0;
   xc_tasks_cancel();
   // Must only be called at a block boundary with no current/pending voices.
   pe_ready=0;pe_phase=0;pe_epoch=-1;pg_ready=0;pg_stage=0;pg_apply=0;pg_preview=0;pg_preview_pending=0;
@@ -3028,6 +3680,9 @@ function cp_begin() local(n cap avail)
   total_seconds=0; ready=0; selected_id=-1; preview_id=-1;
   window_setting=slider5;window_request=slider5<=0 ? 0 : cp_clamp(slider5,30,1000)/1000;
   quiet_mode=floor(slider22);quiet_db=slider61;source_mono=cp_clamp(floor(slider69),0,1);
+  passage_mode=cp_clamp(floor(slider242),0,2);passage_sensitivity=cp_01(slider243);passage_limit=max(0,slider244);passage_run=passage_mode==2 && window_setting<=0;
+  memset(passage_work,0,64);
+  passage_mode!=1 && window_setting<=0 ? (cp_fingerprint_add(2200+passage_mode);cp_fingerprint_add(passage_sensitivity*1000);cp_fingerprint_add(passage_limit*10););
   scout_source=0;scout_started=0;scout_reads=0;auto_quiet_n=0;auto_budget_coarsened=0;
   auto_window_min=1000000000;auto_window_max=0;auto_scout_sparse=0;auto_desired_cells=0;
   memset(path_res_counts,0,128);path_misses=0;
@@ -3108,7 +3763,7 @@ function cp_micro_target(id first last) local(g a b change instability transient
   transient=cp_01(0.58*g[15]+0.42*g[45]);
   target=0.11+0.50*pow(max(0,1-instability),1.35);
   transient>0.72 ? target=min(target,0.16);
-  cp_clamp(target,0.09,0.61);
+  passage_mode==0 ? cp_clamp(target*0.30,0.035,0.16) : cp_clamp(target,0.09,0.61);
 );
 function cp_merge_group(src firstid endid outid) local(first last out i j g frames total power bright body motion edge width conf peak head tail rms crest decay tb pos rel maxbin maxv raw d bin sampleid startframe endframe sr nch) (
   first=cp_g(firstid);last=cp_g(endid-1);sampleid=first[0];startframe=first[2];endframe=last[2]+last[3];sr=first[4];nch=first[5];head=first[21];tail=last[22];
@@ -3126,10 +3781,74 @@ function cp_merge_group(src firstid endid outid) local(first last out i j g fram
   cp_fingerprint_add(out[2]);cp_fingerprint_add(out[3]);
   auto_window_min=min(auto_window_min,out[3]/out[4]);auto_window_max=max(auto_window_max,out[3]/out[4]);max_grain_seconds=max(max_grain_seconds,out[3]/out[4]);
 );
+// Opt-in passage segmentation. No duration target: sustained pauses and
+// persistent acoustic changes close a unit. Short phonetic fluctuations do not.
+// Scratch lives in the private preparation heap. Both scanning and aggregation
+// consume sensor budgets, including the incremental non-worker fallback.
+function cp_passage_finish() local(p first last out total rms crest decay j raw d bin maxbin maxv sid startframe endframe sr nch head tail) (
+  p=passage_work;first=cp_g(p[1]);last=cp_g(p[2]-1);
+  sid=first[0];startframe=first[2];endframe=last[2]+last[3];sr=first[4];nch=first[5];head=first[21];tail=last[22];
+  total=max(1,p[20]);rms=sqrt(p[21]/total);crest=cp_01(log(max(1,p[28]/max(0.000000001,rms)))/log(16));decay=cp_01((head-tail)/max(0.000000001,head+tail));
+  out=cp_g(merge_write);memset(out,0,64);out[0]=sid;out[1]=merge_source;out[2]=startframe;out[3]=max(1,endframe-startframe);out[4]=sr;out[5]=nch;
+  out[6]=rms;out[7]=p[28];out[8]=1;out[10]=-1;out[11]=cp_01((cp_db(rms)+84)/84);out[12]=p[22]/total;out[13]=p[23]/total;out[14]=p[24]/total;out[15]=p[25];
+  out[21]=head;out[22]=tail;out[23]=cp_clamp(0.16/max(0.000001,rms),0.35,2);out[45]=crest;out[46]=decay;out[47]=sqrt(cp_01(p[26]/total));out[49]=p[27]/total;
+  maxbin=0;maxv=-1;j=0;loop(16,out[24+j]=p[32+j];p[32+j]>maxv ? (maxv=p[32+j];maxbin=j;);j+=1;);out[40]=maxbin/15;
+  cp_quiet(merge_write);rms<0.00001 ? silent_grains+=1;
+  out[60]<0.5 ? (d=0;loop(8,raw=d<5 ? out[11+d] : out[45+d-5];bin=floor(cp_clamp(raw*127,0,127));hist[d*128+bin]+=1;d+=1;););
+  cp_fingerprint_add(out[2]);cp_fingerprint_add(out[3]);auto_window_min=min(auto_window_min,out[3]/sr);auto_window_max=max(auto_window_max,out[3]/sr);max_grain_seconds=max(max_grain_seconds,out[3]/sr);
+  merge_read=p[2];merge_write+=1;merge_new_count+=1;p[0]=0;
+);
+function cp_passage_step(work) local(budget p s a g first last dt quietfloor quiet change pendingtype hold boundary nextseconds alpha j pos rel tb frames totalspan) (
+  budget=max(1,floor(work/64));p=passage_work;
+  while(budget>0 && merge_source<source_count)(
+    s=cp_s(merge_source);a=cp_auto(merge_source);
+    !merge_active ? (merge_orig_start=s[5];merge_orig_end=s[5]+s[6];merge_read=merge_orig_start;merge_new_start=merge_write;merge_new_count=0;merge_active=1;p[0]=0;);
+    merge_read>=merge_orig_end ? (
+      s[5]=merge_new_start;s[6]=max(1,merge_new_count);a[4]=s[2]/s[3]/max(1,s[6]);merge_active=0;merge_source+=1;
+    ) : (
+      quietfloor=max(0.000003,max(cp_quiet_floor(merge_source)*1.6,a[2]*0.08));
+      p[0]==0 ? (
+        memset(p,0,64);g=cp_g(merge_read);p[0]=1;p[1]=merge_read;p[2]=merge_read+1;p[3]=merge_read+1;p[4]=g[3]/g[4];
+        p[5]=g[6];p[6]=g[12];p[7]=g[13];p[8]=g[47];p[9]=g[6]<quietfloor;p[10]=-1;
+      );
+      p[0]==1 ? (
+        boundary=0;
+        p[3]>=merge_orig_end ? boundary=1 : (
+          g=cp_g(p[3]);dt=g[3]/g[4];nextseconds=p[4]+dt;
+          passage_limit>0 && nextseconds>passage_limit+0.5/g[4] ? boundary=1 : (
+            quiet=g[6]<quietfloor*(p[9]>0.5 ? 1.6 : 1);
+            change=0.30*min(1,abs(cp_db(max(0.000001,g[6]))-cp_db(max(0.000001,p[5])))/24)+0.40*abs(g[12]-p[6])+0.18*abs(g[13]-p[7])+0.12*abs(g[47]-p[8]);
+            pendingtype=quiet!=p[9] ? 1 : (!quiet && p[4]>=0.35 && change>0.40-0.22*passage_sensitivity ? 2 : 0);
+            pendingtype>0 ? (
+              p[10]<0 || p[12]!=pendingtype ? (p[10]=p[3];p[11]=0;p[12]=pendingtype;);p[11]+=dt;
+              hold=pendingtype==1 ? (p[9]>0.5 ? 0.04 : 0.10+0.22*(1-passage_sensitivity)) : 0.40-0.20*passage_sensitivity;
+              p[11]>=hold ? (p[2]=max(p[1]+1,p[10]);boundary=1;);
+            ) : (
+              p[10]=-1;p[11]=0;p[12]=0;alpha=min(0.15,dt/0.8);
+              p[5]+=(g[6]-p[5])*alpha;p[6]+=(g[12]-p[6])*alpha;p[7]+=(g[13]-p[7])*alpha;p[8]+=(g[47]-p[8])*alpha;
+            );
+            !boundary ? (p[4]=nextseconds;p[3]+=1;p[2]=p[3];);
+          );
+        );
+        boundary ? (p[0]=2;p[3]=p[1];memset(p+20,0,28););
+        budget-=1;
+      ) : (
+        first=cp_g(p[1]);last=cp_g(p[2]-1);totalspan=max(1,last[2]+last[3]-first[2]);g=cp_g(p[3]);frames=max(1,g[3]);
+        p[20]+=frames;p[21]+=g[6]*g[6]*frames;p[22]+=g[12]*frames;p[23]+=g[13]*frames;p[24]+=g[14]*frames;p[25]=max(p[25],g[15]);p[26]+=g[47]*g[47]*frames;p[27]+=g[49]*frames;p[28]=max(p[28],g[7]);
+        j=0;loop(16,pos=g[2]+g[3]*(j+0.5)/16;rel=(pos-first[2])/totalspan;tb=min(15,max(0,floor(rel*16)));p[32+tb]=max(p[32+tb],g[24+j]);j+=1;);
+        p[3]+=1;budget-=1;p[3]>=p[2] ? cp_passage_finish();
+      );
+    );
+  );
+  merge_source>=source_count && !merge_done ? (grain_count=merge_write;tile_total=grain_count;effective_window=total_seconds/max(1,grain_count);merge_done=1;build_phase=8;);
+);
+
 function cp_merge_begin() (
+  memset(passage_work,0,64);
   merge_source=0;merge_active=0;merge_write=0;merge_done=0;auto_window_min=1000000000;auto_window_max=0;auto_quiet_n=0;silent_grains=0;max_grain_seconds=0;memset(hist,0,1024);
 );
 function cp_merge_step(work) local(groups s a first target seconds id boundary minsec groupend stop rem k) (
+  passage_run ? cp_passage_step(work) : (
   groups=max(1,floor(work/64));
   while(groups>0 && merge_source<source_count)(
     s=cp_s(merge_source);a=cp_auto(merge_source);
@@ -3139,10 +3858,10 @@ function cp_merge_step(work) local(groups s a first target seconds id boundary m
     ) : (
       first=merge_read;groupend=first+1;
       window_setting<=0 ? (
-        target=cp_micro_target(first,merge_orig_start,merge_orig_end);seconds=cp_g(first)[3]/cp_g(first)[4];minsec=0.09;stop=0;
-        while(groupend<merge_orig_end && seconds<0.68 && !stop)(
+        target=cp_micro_target(first,merge_orig_start,merge_orig_end);seconds=cp_g(first)[3]/cp_g(first)[4];minsec=passage_mode==0 ? 0.035 : 0.09;stop=0;
+        while(groupend<merge_orig_end && seconds<(passage_mode==0 ? 0.24 : 0.68) && !stop)(
           boundary=cp_sensor_change(groupend-1,groupend);
-          seconds>=minsec && (seconds>=target || boundary>=0.62) ? stop=1 : (seconds+=cp_g(groupend)[3]/cp_g(groupend)[4];groupend+=1;);
+          seconds>=minsec && (seconds>=target || boundary>=(passage_mode==0 ? 0.24 : 0.62)) ? stop=1 : (seconds+=cp_g(groupend)[3]/cp_g(groupend)[4];groupend+=1;);
         );
         while(groupend<merge_orig_end && seconds<minsec)(seconds+=cp_g(groupend)[3]/cp_g(groupend)[4];groupend+=1;);
         // Never strand a tiny Auto tail as its own Micro unit. If the complete
@@ -3157,6 +3876,7 @@ function cp_merge_step(work) local(groups s a first target seconds id boundary m
     );
   );
   merge_source>=source_count && !merge_done ? (grain_count=merge_write;tile_total=grain_count;effective_window=total_seconds/max(1,grain_count);merge_done=1;build_phase=8;);
+  ); // Aggressive / Auto / manual merge
 );
 function cp_quantiles() local(d j sum lo hi ql qh span center) (
   d=0;loop(8,
@@ -3506,7 +4226,7 @@ function cp_voice(id role t gain pitch ei kind srcpos frames pan serial group) l
       v[8]=gain*gt_gain(id,srcpos,frames,gain,gt_amounts[found]);v[9]=role==4 ? min(dur*0.1,srate*0.002) : (role==0 ? min(dur*0.10,srate*0.0012) : (role==2 ? min(dur*(0.18+0.12*shortx),srate*(0.012+0.008*shortx)) : min(dur*(0.25+0.15*shortx),srate*(0.030+0.015*shortx))));
       v[10]=role==4 ? min(dur*0.15,srate*0.004) : min(dur*(0.32+0.13*shortx),srate*(0.045+0.015*shortx));
       v[31]=ei>=0 && group>=0 && group<walker_total ? floor(group) : -1;
-      ei>=0 ? (gr_prepare(v,dur,slider65,slider66,slider67);v[22]=cp_clamp(floor(slider68),0,2););
+      ei>=0 ? (gr_prepare(v,passage_run ? min(dur,srate*0.4) : dur,slider65,slider66,slider67);v[22]=cp_clamp(floor(slider68),0,2););
       v[11]=g[5];v[12]=ei>=0 ? e[2] : -1;v[13]=ei>=0 ? e[3] : -2;
       v[14]=endtime;v[15]=max(1,v[10]);v[16]=role;v[17]=serial;v[20]=pan;
       v[24]=min(1,1-pan);v[25]=min(1,1+pan);v[26]=ei;v[27]=kind;v[28]=pitch;
@@ -3603,7 +4323,7 @@ function cp_emit(wi when) local(w e id g prev role dur rate frames srcpos gain v
     id>=0 ? (
       g=cp_g(id);rate=g[4]/max(8000,srate)*pow(2,slider8/12);
       playkind=kind==2 ? 2 : (stage==0 ? 0 : 1);xc_run && xc_ok(id) ? (play_srcpos=xc_g(id)[88];play_frames=xc_g(id)[89];play_run_limited=0;) : cp_play_region(id,playkind);frames=play_frames;srcpos=play_srcpos;
-      e[12]>0 ? (eventsec=max(0.001,(e[10]-e[5])/srate);eventcap=max(playkind==0 || playkind==2 ? 0.050 : 0.075,min(slider52/1000,eventsec*(playkind==0 ? 0.32 : 0.55)));frames=min(frames,max(1,floor(eventcap*g[4])));) : (path_count>1 ? (eventcap=max(0.075,min(slider52/1000,slider47/10));frames=min(frames,max(1,floor(eventcap*g[4])));););
+      !passage_run ? (e[12]>0 ? (eventsec=max(0.001,(e[10]-e[5])/srate);eventcap=max(playkind==0 || playkind==2 ? 0.050 : 0.075,min(slider52/1000,eventsec*(playkind==0 ? 0.32 : 0.55)));frames=min(frames,max(1,floor(eventcap*g[4])));) : (path_count>1 ? (eventcap=max(0.075,min(slider52/1000,slider47/10));frames=min(frames,max(1,floor(eventcap*g[4]))););););
       pe_ready && pe_active_request() && pe_plan_id==id ? (srcpos=pe_plan_start;frames=min(frames,pe_plan_frames););
       pg_limit_span(id,srcpos,frames);srcpos=pg_span_start;frames=pg_span_frames;
       // Hierarchy boundaries retarget the next selection. They do NOT truncate
@@ -3663,10 +4383,15 @@ function cp_emit(wi when) local(w e id g prev role dur rate frames srcpos gain v
         kind==6 ? hopfrac*=1-0.22*density;
         hopfrac*=1+(w[45]-0.5)*0.18*scatter;
       );hopfrac=cp_clamp(hopfrac,0.30,0.88);
-      w[3]=when+max(floor(srate*0.005),floor(dur*hopfrac));
+      passage_run ? (
+        // Preserve the passage interior; Flow controls an edge crossfade,
+        // rather than superimposing entire multi-second phrases.
+        eventcap=min(dur*0.40,max(srate*(0.015+0.20*slider30),vi>=0 ? cp_v(vi)[10] : 0));
+        w[3]=when+max(floor(srate*0.005),floor(dur-eventcap));
+      ) : w[3]=when+max(floor(srate*0.005),floor(dur*hopfrac));
       // Normal overlap drives Micro retargeting. Only the current Meso/behaviour
       // boundary can force an earlier selection; Micro analysis tiles never do.
-      h_active ? w[3]=max(when+1,min(w[3],h_schedule_until));
+      h_active && !passage_run ? w[3]=max(when+1,min(w[3],h_schedule_until));
       play_run_limited ? source_run_limited+=1;
       dur<srate*0.050 ? short_hops+=1;
     ) : ((pg_changed && !pg_bypass || pg_preview) && pg_available_n==0 ? w[0]=0 : w[3]=when+max(16,floor(srate*0.005));missing_candidates+=1;);
@@ -3789,7 +4514,7 @@ function cp_preview_vertex(v) local(n pos id steps found saved) (
 );
 function cp_desc_member(id d b) (cp_desc_conf(id,d)*max(0,1-abs(2*cp_desc(id,d)-b)););
 function cp_preview_desc(code) local(d b pos steps id g saved src role) (
-  code=cp_clamp(floor(code),0,158);d=floor(code/3);b=code-d*3;pos=desc_cursor[code]%max(1,grain_count);steps=0;id=-1;src=floor(slider14);role=floor(slider17)-1;
+  code=cp_clamp(floor(code),0,161);d=floor(code/3);b=code-d*3;pos=desc_cursor[code]%max(1,grain_count);steps=0;id=-1;src=floor(slider14);role=floor(slider17)-1;
   while(steps<grain_count && id<0)(g=cp_g(pos);cp_valid(pos) && (src<=0 || g[1]==src-1) && (role<0 || g[41+role]>=slider48) && cp_desc_member(pos,d,b)>0.12 ? id=pos;pos=(pos+1)%max(1,grain_count);steps+=1;);
   desc_cursor[code]=pos;id>=0 ? (saved=selected_id;cp_preview(id);selected_id=saved;) : empty_auditions+=1;
 );
@@ -4043,7 +4768,7 @@ function pg_load_grain(id) local(g h key k p probes found lo hi mid j old matche
   ) : pg_unresolved+=1;
 );
 function pg_start_pool() (
-  pg_stage=3;pg_scan=0;pg_pool_n=0;memset(pg_res_counts,0,848);memset(pg_meso_stage,0,8192);memset(pg_source_counts,0,source_count*2);
+  pg_stage=3;pg_scan=0;pg_pool_n=0;memset(pg_res_counts,0,864);memset(pg_meso_stage,0,8192);memset(pg_source_counts,0,source_count*2);
 );
 function pg_build() local(i g m match code value p d key n slot run other s a enabled result j hist) (
   pg_stage==10 ? (
@@ -4075,7 +4800,7 @@ function pg_build() local(i g m match code value p d key n slot run other s a en
     i=0;while(i<1024 && pg_scan<grain_count)(g=cp_g(pg_scan);value=pg_draft[pg_scan];enabled=g[6]>0.00001 && (value==0 ? g[9]<0.5 : value==1);
       enabled ? (
         pg_pool[pg_pool_n]=pg_scan;pg_pool_n+=1;pg_source_counts[g[1]*2+1]+=1;m=hm_grainmap[pg_scan];m>=0 ? pg_meso_stage[m]+=1;
-        d=0;loop(53,cp_desc_conf(pg_scan,d)>0.05 ? (
+        d=0;loop(54,cp_desc_conf(pg_scan,d)>0.05 ? (
           key=d*16+min(15,floor(cp_desc(pg_scan,d)*16));n=pg_res_counts[key];pg_res_counts[key]+=1;
           slot=n<32 ? n : ((pg_scan*127+key*8191)%max(1,n+1));slot<32 ? pg_reservoir[key*32+slot]=pg_scan;
         );d+=1;);
@@ -4092,7 +4817,7 @@ function pg_build() local(i g m match code value p d key n slot run other s a en
       );
       pg_error!=1 ? (
         memcpy(pg_active,pg_draft,grain_count);memcpy(pg_left,pg_dleft,grain_count);memcpy(pg_right,pg_dright,grain_count);memcpy(pg_meso_count,pg_meso_stage,8192);
-        memcpy(pg_live_pool,pg_pool,pg_pool_n);pg_live_n=pg_pool_n;memcpy(pg_live_res,pg_reservoir,27136);memcpy(pg_live_counts,pg_res_counts,848);
+        memcpy(pg_live_pool,pg_pool,pg_pool_n);pg_live_n=pg_pool_n;memcpy(pg_live_res,pg_reservoir,27648);memcpy(pg_live_counts,pg_res_counts,864);
         n=0;i=0;loop(source_count,pg_source_counts[i*2]=n;n+=pg_source_counts[i*2+1];i+=1;);
         pg_changed=pg_layer_count>0;pg_epoch+=1;record_done=0;record_n=0;browse_dirty=1;pg_ready=1;
         !pg_initializing || pg_unresolved==0 && pg_restore_ok ? pg_manifest();
@@ -4142,7 +4867,7 @@ function pg_command(arg) local(row code p value i g) (
   pg_apply>0 || pg_preview || pg_preview_pending ? pg_error=5 : (
   arg>=59000 && arg<62000 ? (
     row=floor((arg-59000)/1000);code=(arg-59000)%1000;p=pg_rules+row*5;
-    code<53 ? (p[1]=code;p[0]=1;);
+    code<54 ? (p[1]=code;p[0]=1;);
     code>=64 && code<=319 ? p[2]=min(p[3],(code-64)/255);
     code>=384 && code<=639 ? p[3]=max(p[2],(code-384)/255);
     code>=704 && code<=706 ? p[4]=code-704;
@@ -4168,7 +4893,8 @@ function pg_command(arg) local(row code p value i g) (
     arg>=63200 && arg<=64223 ? (pg_scope_kind=4;pg_scope_start=(arg-63200)/1023*cp_s(pg_scope_src)[2]/cp_s(pg_scope_src)[3];pg_scope_start=min(pg_scope_start,pg_scope_end);pg_request(););
     arg>=64400 && arg<=65423 ? (pg_scope_kind=4;pg_scope_end=(arg-64400)/1023*cp_s(pg_scope_src)[2]/cp_s(pg_scope_src)[3];pg_scope_end=max(pg_scope_start,pg_scope_end);pg_request(););
     arg==63060 ? (pe_locks=floor(pe_locks/2)*2+(1-pe_locks%2));
-    arg==63061 ? (pe_locks=(pe_locks%2)+2*(1-floor(pe_locks/2)));
+    arg==63061 ? pe_locks+=(floor(pe_locks/2)%2)>0 ? -2 : 2;
+    arg==63062 ? pe_locks+=(floor(pe_locks/4)%2)>0 ? -4 : 4;
   );
 );
 );
@@ -4371,7 +5097,7 @@ function cp_action(packet) local(op arg x y) (
           memcpy(path_base,path_stage,path_stage_n*2);path_count=path_stage_n;path_axis_x=path_stage_x;path_axis_y=path_stage_y;path_epoch+=1;
         );path_staging=0;
       ) : (
-        arg==129 ? path_staging=0 : (path_staging=0;path_count=0;path_axis_x=floor(slider40);path_axis_y=floor(slider41);path_epoch+=1;);
+        arg==129 ? path_staging=0 : (path_staging=0;path_count=0;path_axis_x=cp_axis(0);path_axis_y=cp_axis(1);path_epoch+=1;);
       );
     );
   );
@@ -4385,7 +5111,7 @@ function cp_action(packet) local(op arg x y) (
   op==14 ? (
     arg>=59000 && arg<=65423 ? pg_command(arg) : (
     arg>=32000 && arg<58288 ? fc_command(arg) : (
-    arg>=30000 && arg<30016 ? (arg==30000 ? tr_clear_all() : tr_preset(arg-30000);traj_epoch+=1;) : (
+    arg>=30000 && arg<30016 ? (arg==30000 ? tr_clear_all() : tr_preset(arg-30000);tr_save_i=0;loop(12,tr_store_lane(tr_save_i);tr_save_i+=1;);traj_epoch+=1;) : (
       arg>=24576 && arg<25088 ? amp_meta(arg-24576) : (
         arg>=16384 && arg<22528 ? tr_meta(arg-16384) : (
           arg==0 ? (fixed_seed_events=0;rng_state=max(1,floor(slider11));cp_reset_recent();) : (arg==65534 ? pending_excl_n=0 : (arg==65535 ? cp_pending_commit() : cp_pending_stage(arg)))
@@ -4399,10 +5125,10 @@ function cp_action(packet) local(op arg x y) (
   ui_left=0;
 );
 function cp_browse_update() local(key i g id v role ok fd fb) (
-  key=floor(slider14)+floor(slider16)*65537+floor(slider17)*2000000+floor(slider48*1000)*10000000+index_epoch*10000000000;
+  key=floor(slider14)+(cp_filter_code()+1)*65537+floor(slider17)*2000000+floor(slider48*1000)*10000000+index_epoch*10000000000;
   key!=browse_key || browse_dirty ? (browse_key=key;browse_cursor=0;browse_count=0;browse_done=0;browse_dirty=0;);
   ready && !browse_done ? (
-    i=0;v=floor(slider16)-1;role=floor(slider17)-1;fd=v>=0 ? floor(v/3) : -1;fb=v>=0 ? v-fd*3 : 0;
+    i=0;v=cp_filter_code();role=floor(slider17)-1;fd=v>=0 ? floor(v/3) : -1;fb=v>=0 ? v-fd*3 : 0;
     while(i<512 && browse_cursor<grain_count)(
       id=browse_cursor;g=cp_g(id);ok=slider14<=0 || g[1]==floor(slider14)-1;
       fd>=0 ? ok=ok && cp_desc_member(id,fd,fb)>0.12;
@@ -4431,6 +5157,13 @@ function xc_publish() local(h i j id p q z n a b k level c total link)
   h[41]=xc_grammar_overflow;h[42]=xc_mapping_misses;h[43]=xc_epoch;h[44]=xc_memory_end;h[45]=(cp_hold_count()>0 || cp_busy()>0) && (xc_phase>0 || xc_map_phase>0 || xc_post_phase>0);
   memcpy(h+48,xc_params,16);memcpy(h+64,xc_weights,8);
   h[82]=slider45;h[83]=td_last_mix;h[84]=td_last_trans;h[85]=td_last_guard;h[86]=td_last_inpeak;h[87]=td_last_outpeak;
+  // Bounded histogram publication, read only from cached retrieval counts.
+  h[88]=0;h[89]=0;k=-1;total=-1;i=0;loop(8,p=cp_e(i);p[0]>0 && p[5]>=total ? (k=i;total=p[5];);i+=1;);
+  k>=0 ? (h[88]=tr_progress(cp_e(k),clock);h[89]=1;);
+  i=0;loop(12,p=tr_lane(i);j=0;loop(16,
+    64352[i*16+j]=p[4]>0.5 && xc_ready ? (pg_preview ? pg_res_counts : ((pg_changed && !pg_bypass && pg_ready) ? pg_live_counts : desc_res_counts))[floor(p[1])*16+j] : 0;j+=1;
+  );i+=1;);
+  memcpy(64544,desc_value_range,162);
   h[79]=traj_schema;h[80]=traj_epoch;memcpy(h+2304,traj_base,480);memcpy(h+2784,amp_curve_base,40);
   memcpy(h+2824,traj_runtime_base,64);
   // Last 32 primary selections: normalized event progress + achieved values for 12 lanes.
@@ -4547,9 +5280,9 @@ function cp_ui_publish() local(h i j g s id rec n page lm w e ei count lo total 
     loop(28,ui_snapshot_base[160+i]=cp_member(selected_id,i);i+=1;);
     s=cp_s(g[1]);h[76]=s[1]+1;cp_live(selected_id);h[77]=live;h[78]=live_progress;
   );
-  axisx=cp_clamp(floor(slider40),0,52);axisy=cp_clamp(floor(slider41),0,52);
+  axisx=cp_clamp(cp_axis(0),0,53);axisy=cp_clamp(cp_axis(1),0,53);
   h[105]=selected_id>=0 ? cp_desc(selected_id,axisx) : 0.5;h[106]=selected_id>=0 ? cp_desc(selected_id,axisy) : 0.5;
-  h[107]=selected_id>=0 ? cp_desc_conf(selected_id,axisx) : 0;h[108]=selected_id>=0 ? cp_desc_conf(selected_id,axisy) : 0;h[109]=53;h[110]=effective_window;
+  h[107]=selected_id>=0 ? cp_desc_conf(selected_id,axisx) : 0;h[108]=selected_id>=0 ? cp_desc_conf(selected_id,axisy) : 0;h[109]=54;h[110]=effective_window;h[125]=auto_window_min;h[126]=max_grain_seconds;
   h[80]=browse_count;h[81]=browse_done;page=cp_clamp(floor(slider18),0,max(0,ceil(browse_count/20)-1));
   h[82]=page;h[83]=max(1,ceil(browse_count/20));i=0;
   loop(20,
@@ -4647,19 +5380,22 @@ xd_sum=18311488;xd_cross=18311520;xd_vec=18311776;xd_eval=18311840;xd_minmax=183
 desc_cursor=18312032;xc_memory_end=18326656;
 // v1.6 persistent trajectory/MSEG metadata and per-event amplitude snapshots.
 traj_base=18330000;traj_stride=40;traj_lanes=12;amp_curve_base=18330480;traj_runtime_base=18330520;
-traj_history_base=18330584;amp_event_base=18331416;record_amp_curve=18331736;traj_brush_stage=18331776;traj_memory_end=18331808;
+traj_history_base=18330584;amp_event_base=18331416;record_amp_curve=18331736;traj_brush_stage=18331776;tr_param_cache=18331808;tr_eval_base=18331964;tr_eval_tags=tr_eval_base+64;tr_eval_values=tr_eval_tags+768;traj_memory_end=18333564;
 // v1.7 EC Focus metadata: Meso episode descriptor summaries, local axes and project settings.
 focus_ep_vec=18400000;focus_ep_conf=18820000;focus_coords=19240000;focus_class=19280000;focus_cfg=19292000;
 focus_global=19292300;focus_tmp_mean=19292600;focus_tmp_weight=19292664;focus_tmp_u=19292728;focus_tmp_v=19292792;focus_tmp_y=19292856;focus_tmp_used=19292920;focus_memory_end=19293000;
 // v1.8 bounded transient-diffusion delay arena. DSP-owned; never exposed to GFX.
 td_buf_l=24010000;td_buf_r=td_buf_l+32768;td_pos_base=td_buf_l+65536;
 td_heads=td_pos_base+8;td_window=td_pos_base+64;td_memory_end=td_window+1024;
+// Private model scratch; outside all live preserved ranges.
+passage_work=24076624;passage_memory_end=passage_work+64;
 xc_config_schema!=1500 ? (
   memset(xc_params,0,16);xc_params[0]=1;xc_params[1]=0.8;xc_params[2]=0.65;xc_params[3]=0.65;
   xc_params[4]=1;xc_params[5]=1;xc_params[6]=1;xc_params[7]=0.65;xc_params[8]=0.75;xc_params[9]=0.7;
   xc_params[10]=29/119;xc_params[11]=1;
   xc_params[12]=0;xc_params[13]=0;xc_params[14]=0.60;xc_params[15]=0.20;xc_config_schema=1500;
 );
+memset(tr_param_cache,-1,156);tr_cache_prepared=0;
 traj_schema!=1610 ? (memset(traj_runtime_base,0,64);memset(traj_history_base,0,832);tr_clear_all();amp_defaults();traj_runtime_base[0]=1;traj_epoch=0;traj_schema=1610;);tr_brush_active=0;tr_brush_lane=-1;tr_brush_pair=0;
 fc_schema!=1700 ? (fc_cfg_defaults();fc_cfg_key=0;fc_schema=1700;);fc_ready=0;fc_phase=0;fc_epoch=-1;fc_built_key=-1;
 map_stratum_page=0;state_schema==703 ? (map_stratum_page=cp_clamp(floor(slider45),0,255);slider45=td_schema==1800 ? cp_01(td_amount) : 0;sliderchange(pow(2,44));state_schema=704;td_amount=0;);td_schema=1810;td_srate=-1;td_enabled=0;td_prepare();td_clear();td_idle_cleared=1;td_mode=floor(slider80);
@@ -4719,8 +5455,10 @@ pg_recent_save=23914880; // 64 cells
 desc_reservoir_new=23914944; // 27136 cells
 desc_res_counts_new=23942080; // 848 cells
 desc_cursor_new=23942976; // 159 cells
-desc_reservoir=desc_reservoir_new;desc_res_counts=desc_res_counts_new;desc_cursor=desc_cursor_new;
-pe_memory_end=23943135;
+// 54 descriptors; 16 bins x32 entries. Private model storage, not live DSP.
+desc_reservoir=24077000;desc_res_counts=24104648;desc_cursor=24105512;
+pg_reservoir=24105696;pg_res_counts=24133344;
+pg_live_res=24134208;pg_live_counts=24161856;desc_value_range=24162720;pe_memory_end=24162882;
 pe_schema!=1900 ? (
   pe_schema=1900;pe_ready=0;pe_phase=0;pe_epoch=-1;pe_locks=0;pg_ready=0;pg_layer_count=0;pg_saved_valid=0;pg_saved_layer_count=0;pg_saved_n=0;pg_saved_sources=0;
   memset(pg_layers,0,65536);memset(pg_meta,0,512);memset(pg_rules,0,16);pg_rules[1]=51;pg_rules[3]=1;pg_rules[6]=52;pg_rules[8]=1;pg_rules[11]=1;pg_rules[13]=1;
@@ -4808,6 +5546,174 @@ function ui_notify(id value automate) local(mask) (
   id==78 ? (sliderchange(slider78);automate ? slider_automate(slider78,0);) :
   id==79 ? (sliderchange(slider79);automate ? slider_automate(slider79,0);) :
   id==80 ? (sliderchange(slider80);automate ? slider_automate(slider80,0);) :
+  id==81 ? (sliderchange(slider81);automate ? slider_automate(slider81,0);) :
+  id==82 ? (sliderchange(slider82);automate ? slider_automate(slider82,0);) :
+  id==83 ? (sliderchange(slider83);automate ? slider_automate(slider83,0);) :
+  id==84 ? (sliderchange(slider84);automate ? slider_automate(slider84,0);) :
+  id==85 ? (sliderchange(slider85);automate ? slider_automate(slider85,0);) :
+  id==86 ? (sliderchange(slider86);automate ? slider_automate(slider86,0);) :
+  id==87 ? (sliderchange(slider87);automate ? slider_automate(slider87,0);) :
+  id==88 ? (sliderchange(slider88);automate ? slider_automate(slider88,0);) :
+  id==89 ? (sliderchange(slider89);automate ? slider_automate(slider89,0);) :
+  id==90 ? (sliderchange(slider90);automate ? slider_automate(slider90,0);) :
+  id==91 ? (sliderchange(slider91);automate ? slider_automate(slider91,0);) :
+  id==92 ? (sliderchange(slider92);automate ? slider_automate(slider92,0);) :
+  id==93 ? (sliderchange(slider93);automate ? slider_automate(slider93,0);) :
+  id==94 ? (sliderchange(slider94);automate ? slider_automate(slider94,0);) :
+  id==95 ? (sliderchange(slider95);automate ? slider_automate(slider95,0);) :
+  id==96 ? (sliderchange(slider96);automate ? slider_automate(slider96,0);) :
+  id==97 ? (sliderchange(slider97);automate ? slider_automate(slider97,0);) :
+  id==98 ? (sliderchange(slider98);automate ? slider_automate(slider98,0);) :
+  id==99 ? (sliderchange(slider99);automate ? slider_automate(slider99,0);) :
+  id==100 ? (sliderchange(slider100);automate ? slider_automate(slider100,0);) :
+  id==101 ? (sliderchange(slider101);automate ? slider_automate(slider101,0);) :
+  id==102 ? (sliderchange(slider102);automate ? slider_automate(slider102,0);) :
+  id==103 ? (sliderchange(slider103);automate ? slider_automate(slider103,0);) :
+  id==104 ? (sliderchange(slider104);automate ? slider_automate(slider104,0);) :
+  id==105 ? (sliderchange(slider105);automate ? slider_automate(slider105,0);) :
+  id==106 ? (sliderchange(slider106);automate ? slider_automate(slider106,0);) :
+  id==107 ? (sliderchange(slider107);automate ? slider_automate(slider107,0);) :
+  id==108 ? (sliderchange(slider108);automate ? slider_automate(slider108,0);) :
+  id==109 ? (sliderchange(slider109);automate ? slider_automate(slider109,0);) :
+  id==110 ? (sliderchange(slider110);automate ? slider_automate(slider110,0);) :
+  id==111 ? (sliderchange(slider111);automate ? slider_automate(slider111,0);) :
+  id==112 ? (sliderchange(slider112);automate ? slider_automate(slider112,0);) :
+  id==113 ? (sliderchange(slider113);automate ? slider_automate(slider113,0);) :
+  id==114 ? (sliderchange(slider114);automate ? slider_automate(slider114,0);) :
+  id==115 ? (sliderchange(slider115);automate ? slider_automate(slider115,0);) :
+  id==116 ? (sliderchange(slider116);automate ? slider_automate(slider116,0);) :
+  id==117 ? (sliderchange(slider117);automate ? slider_automate(slider117,0);) :
+  id==118 ? (sliderchange(slider118);automate ? slider_automate(slider118,0);) :
+  id==119 ? (sliderchange(slider119);automate ? slider_automate(slider119,0);) :
+  id==120 ? (sliderchange(slider120);automate ? slider_automate(slider120,0);) :
+  id==121 ? (sliderchange(slider121);automate ? slider_automate(slider121,0);) :
+  id==122 ? (sliderchange(slider122);automate ? slider_automate(slider122,0);) :
+  id==123 ? (sliderchange(slider123);automate ? slider_automate(slider123,0);) :
+  id==124 ? (sliderchange(slider124);automate ? slider_automate(slider124,0);) :
+  id==125 ? (sliderchange(slider125);automate ? slider_automate(slider125,0);) :
+  id==126 ? (sliderchange(slider126);automate ? slider_automate(slider126,0);) :
+  id==127 ? (sliderchange(slider127);automate ? slider_automate(slider127,0);) :
+  id==128 ? (sliderchange(slider128);automate ? slider_automate(slider128,0);) :
+  id==129 ? (sliderchange(slider129);automate ? slider_automate(slider129,0);) :
+  id==130 ? (sliderchange(slider130);automate ? slider_automate(slider130,0);) :
+  id==131 ? (sliderchange(slider131);automate ? slider_automate(slider131,0);) :
+  id==132 ? (sliderchange(slider132);automate ? slider_automate(slider132,0);) :
+  id==133 ? (sliderchange(slider133);automate ? slider_automate(slider133,0);) :
+  id==134 ? (sliderchange(slider134);automate ? slider_automate(slider134,0);) :
+  id==135 ? (sliderchange(slider135);automate ? slider_automate(slider135,0);) :
+  id==136 ? (sliderchange(slider136);automate ? slider_automate(slider136,0);) :
+  id==137 ? (sliderchange(slider137);automate ? slider_automate(slider137,0);) :
+  id==138 ? (sliderchange(slider138);automate ? slider_automate(slider138,0);) :
+  id==139 ? (sliderchange(slider139);automate ? slider_automate(slider139,0);) :
+  id==140 ? (sliderchange(slider140);automate ? slider_automate(slider140,0);) :
+  id==141 ? (sliderchange(slider141);automate ? slider_automate(slider141,0);) :
+  id==142 ? (sliderchange(slider142);automate ? slider_automate(slider142,0);) :
+  id==143 ? (sliderchange(slider143);automate ? slider_automate(slider143,0);) :
+  id==144 ? (sliderchange(slider144);automate ? slider_automate(slider144,0);) :
+  id==145 ? (sliderchange(slider145);automate ? slider_automate(slider145,0);) :
+  id==146 ? (sliderchange(slider146);automate ? slider_automate(slider146,0);) :
+  id==147 ? (sliderchange(slider147);automate ? slider_automate(slider147,0);) :
+  id==148 ? (sliderchange(slider148);automate ? slider_automate(slider148,0);) :
+  id==149 ? (sliderchange(slider149);automate ? slider_automate(slider149,0);) :
+  id==150 ? (sliderchange(slider150);automate ? slider_automate(slider150,0);) :
+  id==151 ? (sliderchange(slider151);automate ? slider_automate(slider151,0);) :
+  id==152 ? (sliderchange(slider152);automate ? slider_automate(slider152,0);) :
+  id==153 ? (sliderchange(slider153);automate ? slider_automate(slider153,0);) :
+  id==154 ? (sliderchange(slider154);automate ? slider_automate(slider154,0);) :
+  id==155 ? (sliderchange(slider155);automate ? slider_automate(slider155,0);) :
+  id==156 ? (sliderchange(slider156);automate ? slider_automate(slider156,0);) :
+  id==157 ? (sliderchange(slider157);automate ? slider_automate(slider157,0);) :
+  id==158 ? (sliderchange(slider158);automate ? slider_automate(slider158,0);) :
+  id==159 ? (sliderchange(slider159);automate ? slider_automate(slider159,0);) :
+  id==160 ? (sliderchange(slider160);automate ? slider_automate(slider160,0);) :
+  id==161 ? (sliderchange(slider161);automate ? slider_automate(slider161,0);) :
+  id==162 ? (sliderchange(slider162);automate ? slider_automate(slider162,0);) :
+  id==163 ? (sliderchange(slider163);automate ? slider_automate(slider163,0);) :
+  id==164 ? (sliderchange(slider164);automate ? slider_automate(slider164,0);) :
+  id==165 ? (sliderchange(slider165);automate ? slider_automate(slider165,0);) :
+  id==166 ? (sliderchange(slider166);automate ? slider_automate(slider166,0);) :
+  id==167 ? (sliderchange(slider167);automate ? slider_automate(slider167,0);) :
+  id==168 ? (sliderchange(slider168);automate ? slider_automate(slider168,0);) :
+  id==169 ? (sliderchange(slider169);automate ? slider_automate(slider169,0);) :
+  id==170 ? (sliderchange(slider170);automate ? slider_automate(slider170,0);) :
+  id==171 ? (sliderchange(slider171);automate ? slider_automate(slider171,0);) :
+  id==172 ? (sliderchange(slider172);automate ? slider_automate(slider172,0);) :
+  id==173 ? (sliderchange(slider173);automate ? slider_automate(slider173,0);) :
+  id==174 ? (sliderchange(slider174);automate ? slider_automate(slider174,0);) :
+  id==175 ? (sliderchange(slider175);automate ? slider_automate(slider175,0);) :
+  id==176 ? (sliderchange(slider176);automate ? slider_automate(slider176,0);) :
+  id==177 ? (sliderchange(slider177);automate ? slider_automate(slider177,0);) :
+  id==178 ? (sliderchange(slider178);automate ? slider_automate(slider178,0);) :
+  id==179 ? (sliderchange(slider179);automate ? slider_automate(slider179,0);) :
+  id==180 ? (sliderchange(slider180);automate ? slider_automate(slider180,0);) :
+  id==181 ? (sliderchange(slider181);automate ? slider_automate(slider181,0);) :
+  id==182 ? (sliderchange(slider182);automate ? slider_automate(slider182,0);) :
+  id==183 ? (sliderchange(slider183);automate ? slider_automate(slider183,0);) :
+  id==184 ? (sliderchange(slider184);automate ? slider_automate(slider184,0);) :
+  id==185 ? (sliderchange(slider185);automate ? slider_automate(slider185,0);) :
+  id==186 ? (sliderchange(slider186);automate ? slider_automate(slider186,0);) :
+  id==187 ? (sliderchange(slider187);automate ? slider_automate(slider187,0);) :
+  id==188 ? (sliderchange(slider188);automate ? slider_automate(slider188,0);) :
+  id==189 ? (sliderchange(slider189);automate ? slider_automate(slider189,0);) :
+  id==190 ? (sliderchange(slider190);automate ? slider_automate(slider190,0);) :
+  id==191 ? (sliderchange(slider191);automate ? slider_automate(slider191,0);) :
+  id==192 ? (sliderchange(slider192);automate ? slider_automate(slider192,0);) :
+  id==193 ? (sliderchange(slider193);automate ? slider_automate(slider193,0);) :
+  id==194 ? (sliderchange(slider194);automate ? slider_automate(slider194,0);) :
+  id==195 ? (sliderchange(slider195);automate ? slider_automate(slider195,0);) :
+  id==196 ? (sliderchange(slider196);automate ? slider_automate(slider196,0);) :
+  id==197 ? (sliderchange(slider197);automate ? slider_automate(slider197,0);) :
+  id==198 ? (sliderchange(slider198);automate ? slider_automate(slider198,0);) :
+  id==199 ? (sliderchange(slider199);automate ? slider_automate(slider199,0);) :
+  id==200 ? (sliderchange(slider200);automate ? slider_automate(slider200,0);) :
+  id==201 ? (sliderchange(slider201);automate ? slider_automate(slider201,0);) :
+  id==202 ? (sliderchange(slider202);automate ? slider_automate(slider202,0);) :
+  id==203 ? (sliderchange(slider203);automate ? slider_automate(slider203,0);) :
+  id==204 ? (sliderchange(slider204);automate ? slider_automate(slider204,0);) :
+  id==205 ? (sliderchange(slider205);automate ? slider_automate(slider205,0);) :
+  id==206 ? (sliderchange(slider206);automate ? slider_automate(slider206,0);) :
+  id==207 ? (sliderchange(slider207);automate ? slider_automate(slider207,0);) :
+  id==208 ? (sliderchange(slider208);automate ? slider_automate(slider208,0);) :
+  id==209 ? (sliderchange(slider209);automate ? slider_automate(slider209,0);) :
+  id==210 ? (sliderchange(slider210);automate ? slider_automate(slider210,0);) :
+  id==211 ? (sliderchange(slider211);automate ? slider_automate(slider211,0);) :
+  id==212 ? (sliderchange(slider212);automate ? slider_automate(slider212,0);) :
+  id==213 ? (sliderchange(slider213);automate ? slider_automate(slider213,0);) :
+  id==214 ? (sliderchange(slider214);automate ? slider_automate(slider214,0);) :
+  id==215 ? (sliderchange(slider215);automate ? slider_automate(slider215,0);) :
+  id==216 ? (sliderchange(slider216);automate ? slider_automate(slider216,0);) :
+  id==217 ? (sliderchange(slider217);automate ? slider_automate(slider217,0);) :
+  id==218 ? (sliderchange(slider218);automate ? slider_automate(slider218,0);) :
+  id==219 ? (sliderchange(slider219);automate ? slider_automate(slider219,0);) :
+  id==220 ? (sliderchange(slider220);automate ? slider_automate(slider220,0);) :
+  id==221 ? (sliderchange(slider221);automate ? slider_automate(slider221,0);) :
+  id==222 ? (sliderchange(slider222);automate ? slider_automate(slider222,0);) :
+  id==223 ? (sliderchange(slider223);automate ? slider_automate(slider223,0);) :
+  id==224 ? (sliderchange(slider224);automate ? slider_automate(slider224,0);) :
+  id==225 ? (sliderchange(slider225);automate ? slider_automate(slider225,0);) :
+  id==226 ? (sliderchange(slider226);automate ? slider_automate(slider226,0);) :
+  id==227 ? (sliderchange(slider227);automate ? slider_automate(slider227,0);) :
+  id==228 ? (sliderchange(slider228);automate ? slider_automate(slider228,0);) :
+  id==229 ? (sliderchange(slider229);automate ? slider_automate(slider229,0);) :
+  id==230 ? (sliderchange(slider230);automate ? slider_automate(slider230,0);) :
+  id==231 ? (sliderchange(slider231);automate ? slider_automate(slider231,0);) :
+  id==232 ? (sliderchange(slider232);automate ? slider_automate(slider232,0);) :
+  id==233 ? (sliderchange(slider233);automate ? slider_automate(slider233,0);) :
+  id==234 ? (sliderchange(slider234);automate ? slider_automate(slider234,0);) :
+  id==235 ? (sliderchange(slider235);automate ? slider_automate(slider235,0);) :
+  id==236 ? (sliderchange(slider236);automate ? slider_automate(slider236,0);) :
+  id==237 ? (sliderchange(slider237);automate ? slider_automate(slider237,0);) :
+  id==238 ? (sliderchange(slider238);automate ? slider_automate(slider238,0);) :
+  id==239 ? (sliderchange(slider239);automate ? slider_automate(slider239,0);) :
+  id==240 ? (sliderchange(slider240);automate ? slider_automate(slider240,0);) :
+  id==242 ? (sliderchange(slider242);automate ? slider_automate(slider242,0);) :
+  id==243 ? (sliderchange(slider243);automate ? slider_automate(slider243,0);) :
+  id==246 ? (sliderchange(slider246);automate ? slider_automate(slider246,0);) :
+  id==247 ? (sliderchange(slider247);automate ? slider_automate(slider247,0);) :
+  id==248 ? (sliderchange(slider248);automate ? slider_automate(slider248,0);) :
+  id==245 ? (sliderchange(slider245);automate ? slider_automate(slider245,0);) :
+  id==244 ? (sliderchange(slider244);automate ? slider_automate(slider244,0);) :
+  id==241 ? (sliderchange(slider241);automate ? slider_automate(slider241,0);) :
   (
     mask=pow(2,id-1);sliderchange(mask);automate ? slider_automate(mask,0);
   );
@@ -4829,6 +5735,174 @@ function ui_end_gesture(id) (
   id==78 ? slider_automate(slider78,1) :
   id==79 ? slider_automate(slider79,1) :
   id==80 ? slider_automate(slider80,1) :
+  id==81 ? slider_automate(slider81,1) :
+  id==82 ? slider_automate(slider82,1) :
+  id==83 ? slider_automate(slider83,1) :
+  id==84 ? slider_automate(slider84,1) :
+  id==85 ? slider_automate(slider85,1) :
+  id==86 ? slider_automate(slider86,1) :
+  id==87 ? slider_automate(slider87,1) :
+  id==88 ? slider_automate(slider88,1) :
+  id==89 ? slider_automate(slider89,1) :
+  id==90 ? slider_automate(slider90,1) :
+  id==91 ? slider_automate(slider91,1) :
+  id==92 ? slider_automate(slider92,1) :
+  id==93 ? slider_automate(slider93,1) :
+  id==94 ? slider_automate(slider94,1) :
+  id==95 ? slider_automate(slider95,1) :
+  id==96 ? slider_automate(slider96,1) :
+  id==97 ? slider_automate(slider97,1) :
+  id==98 ? slider_automate(slider98,1) :
+  id==99 ? slider_automate(slider99,1) :
+  id==100 ? slider_automate(slider100,1) :
+  id==101 ? slider_automate(slider101,1) :
+  id==102 ? slider_automate(slider102,1) :
+  id==103 ? slider_automate(slider103,1) :
+  id==104 ? slider_automate(slider104,1) :
+  id==105 ? slider_automate(slider105,1) :
+  id==106 ? slider_automate(slider106,1) :
+  id==107 ? slider_automate(slider107,1) :
+  id==108 ? slider_automate(slider108,1) :
+  id==109 ? slider_automate(slider109,1) :
+  id==110 ? slider_automate(slider110,1) :
+  id==111 ? slider_automate(slider111,1) :
+  id==112 ? slider_automate(slider112,1) :
+  id==113 ? slider_automate(slider113,1) :
+  id==114 ? slider_automate(slider114,1) :
+  id==115 ? slider_automate(slider115,1) :
+  id==116 ? slider_automate(slider116,1) :
+  id==117 ? slider_automate(slider117,1) :
+  id==118 ? slider_automate(slider118,1) :
+  id==119 ? slider_automate(slider119,1) :
+  id==120 ? slider_automate(slider120,1) :
+  id==121 ? slider_automate(slider121,1) :
+  id==122 ? slider_automate(slider122,1) :
+  id==123 ? slider_automate(slider123,1) :
+  id==124 ? slider_automate(slider124,1) :
+  id==125 ? slider_automate(slider125,1) :
+  id==126 ? slider_automate(slider126,1) :
+  id==127 ? slider_automate(slider127,1) :
+  id==128 ? slider_automate(slider128,1) :
+  id==129 ? slider_automate(slider129,1) :
+  id==130 ? slider_automate(slider130,1) :
+  id==131 ? slider_automate(slider131,1) :
+  id==132 ? slider_automate(slider132,1) :
+  id==133 ? slider_automate(slider133,1) :
+  id==134 ? slider_automate(slider134,1) :
+  id==135 ? slider_automate(slider135,1) :
+  id==136 ? slider_automate(slider136,1) :
+  id==137 ? slider_automate(slider137,1) :
+  id==138 ? slider_automate(slider138,1) :
+  id==139 ? slider_automate(slider139,1) :
+  id==140 ? slider_automate(slider140,1) :
+  id==141 ? slider_automate(slider141,1) :
+  id==142 ? slider_automate(slider142,1) :
+  id==143 ? slider_automate(slider143,1) :
+  id==144 ? slider_automate(slider144,1) :
+  id==145 ? slider_automate(slider145,1) :
+  id==146 ? slider_automate(slider146,1) :
+  id==147 ? slider_automate(slider147,1) :
+  id==148 ? slider_automate(slider148,1) :
+  id==149 ? slider_automate(slider149,1) :
+  id==150 ? slider_automate(slider150,1) :
+  id==151 ? slider_automate(slider151,1) :
+  id==152 ? slider_automate(slider152,1) :
+  id==153 ? slider_automate(slider153,1) :
+  id==154 ? slider_automate(slider154,1) :
+  id==155 ? slider_automate(slider155,1) :
+  id==156 ? slider_automate(slider156,1) :
+  id==157 ? slider_automate(slider157,1) :
+  id==158 ? slider_automate(slider158,1) :
+  id==159 ? slider_automate(slider159,1) :
+  id==160 ? slider_automate(slider160,1) :
+  id==161 ? slider_automate(slider161,1) :
+  id==162 ? slider_automate(slider162,1) :
+  id==163 ? slider_automate(slider163,1) :
+  id==164 ? slider_automate(slider164,1) :
+  id==165 ? slider_automate(slider165,1) :
+  id==166 ? slider_automate(slider166,1) :
+  id==167 ? slider_automate(slider167,1) :
+  id==168 ? slider_automate(slider168,1) :
+  id==169 ? slider_automate(slider169,1) :
+  id==170 ? slider_automate(slider170,1) :
+  id==171 ? slider_automate(slider171,1) :
+  id==172 ? slider_automate(slider172,1) :
+  id==173 ? slider_automate(slider173,1) :
+  id==174 ? slider_automate(slider174,1) :
+  id==175 ? slider_automate(slider175,1) :
+  id==176 ? slider_automate(slider176,1) :
+  id==177 ? slider_automate(slider177,1) :
+  id==178 ? slider_automate(slider178,1) :
+  id==179 ? slider_automate(slider179,1) :
+  id==180 ? slider_automate(slider180,1) :
+  id==181 ? slider_automate(slider181,1) :
+  id==182 ? slider_automate(slider182,1) :
+  id==183 ? slider_automate(slider183,1) :
+  id==184 ? slider_automate(slider184,1) :
+  id==185 ? slider_automate(slider185,1) :
+  id==186 ? slider_automate(slider186,1) :
+  id==187 ? slider_automate(slider187,1) :
+  id==188 ? slider_automate(slider188,1) :
+  id==189 ? slider_automate(slider189,1) :
+  id==190 ? slider_automate(slider190,1) :
+  id==191 ? slider_automate(slider191,1) :
+  id==192 ? slider_automate(slider192,1) :
+  id==193 ? slider_automate(slider193,1) :
+  id==194 ? slider_automate(slider194,1) :
+  id==195 ? slider_automate(slider195,1) :
+  id==196 ? slider_automate(slider196,1) :
+  id==197 ? slider_automate(slider197,1) :
+  id==198 ? slider_automate(slider198,1) :
+  id==199 ? slider_automate(slider199,1) :
+  id==200 ? slider_automate(slider200,1) :
+  id==201 ? slider_automate(slider201,1) :
+  id==202 ? slider_automate(slider202,1) :
+  id==203 ? slider_automate(slider203,1) :
+  id==204 ? slider_automate(slider204,1) :
+  id==205 ? slider_automate(slider205,1) :
+  id==206 ? slider_automate(slider206,1) :
+  id==207 ? slider_automate(slider207,1) :
+  id==208 ? slider_automate(slider208,1) :
+  id==209 ? slider_automate(slider209,1) :
+  id==210 ? slider_automate(slider210,1) :
+  id==211 ? slider_automate(slider211,1) :
+  id==212 ? slider_automate(slider212,1) :
+  id==213 ? slider_automate(slider213,1) :
+  id==214 ? slider_automate(slider214,1) :
+  id==215 ? slider_automate(slider215,1) :
+  id==216 ? slider_automate(slider216,1) :
+  id==217 ? slider_automate(slider217,1) :
+  id==218 ? slider_automate(slider218,1) :
+  id==219 ? slider_automate(slider219,1) :
+  id==220 ? slider_automate(slider220,1) :
+  id==221 ? slider_automate(slider221,1) :
+  id==222 ? slider_automate(slider222,1) :
+  id==223 ? slider_automate(slider223,1) :
+  id==224 ? slider_automate(slider224,1) :
+  id==225 ? slider_automate(slider225,1) :
+  id==226 ? slider_automate(slider226,1) :
+  id==227 ? slider_automate(slider227,1) :
+  id==228 ? slider_automate(slider228,1) :
+  id==229 ? slider_automate(slider229,1) :
+  id==230 ? slider_automate(slider230,1) :
+  id==231 ? slider_automate(slider231,1) :
+  id==232 ? slider_automate(slider232,1) :
+  id==233 ? slider_automate(slider233,1) :
+  id==234 ? slider_automate(slider234,1) :
+  id==235 ? slider_automate(slider235,1) :
+  id==236 ? slider_automate(slider236,1) :
+  id==237 ? slider_automate(slider237,1) :
+  id==238 ? slider_automate(slider238,1) :
+  id==239 ? slider_automate(slider239,1) :
+  id==240 ? slider_automate(slider240,1) :
+  id==242 ? slider_automate(slider242,1) :
+  id==243 ? slider_automate(slider243,1) :
+  id==246 ? slider_automate(slider246,1) :
+  id==247 ? slider_automate(slider247,1) :
+  id==248 ? slider_automate(slider248,1) :
+  id==245 ? slider_automate(slider245,1) :
+  id==244 ? slider_automate(slider244,1) :
+  id==241 ? slider_automate(slider241,1) :
   slider_automate(pow(2,id-1),1);
 );
 // ACKed FIFO prevents path knots/actions being overwritten between audio blocks.
@@ -4948,6 +6022,10 @@ function ui_slider_tip(id) (
  id==57 ? strcpy(#ui_tip_body,"Influence of the chosen Meso member contour on Micro targets. Drawn paths override only their selected axes, not explicit identity locks.");
  id==58 ? strcpy(#ui_tip_body,"Choose alternate Meso classes/member contours while preserving compatible behaviour. Separate from individual-grain texture variation.");
  id==59 ? strcpy(#ui_tip_body,"Variation in Macro class/member arrangements. Meaningful only when Macro evidence supports that layer.");
+ id==242 ? strcpy(#ui_tip_body,"Auto preserves existing inference and playback behavior. Aggressive favors shorter units and exact grain playback. Coherent preserves longer acoustic units with no fixed length by default. Requires Micro Auto; analysis rebuilds when current events finish. Event duration, stops and source bounds still apply.");
+ id==243 ? strcpy(#ui_tip_body,"Coherent sensitivity: higher permits more cuts at sustained pauses and persistent acoustic changes. Brief syllabic/transient changes do not force a split. This is acoustic inference, not sentence recognition. Right-click restores 50 percent.");
+ id==245 ? strcpy(#ui_tip_body,"Avoid gaps uses cached recording-relative level and quiet coverage to avoid near-silent passages when audible alternatives exist. Quiet-only scopes still work. An explicit very-low Energy target can override this policy. Allow restores original selection. No gate or gain boost is applied to the audio.");
+ id==244 ? strcpy(#ui_tip_body,"Optional passage limit in source milliseconds. Drag and Alt-wheel use a logarithmic scale for fine short-duration control. Zero removes the fixed duration ceiling; natural boundaries or the source end determine each passage. Positive limits have internal sensor-grid precision. Event duration remains independent. Right-click restores no fixed limit.");
  id==60 ? strcpy(#ui_tip_body,"Sensitivity to behavioural changes during segmentation. Higher can create more boundaries. Analysis rebuilds automatically when safe.");
  id==61 ? strcpy(#ui_tip_body,"Manual low-salience floor in dBFS, used only when detection is Manual. This affects retrieval bias and Macro rest evidence, not Micro/Meso muting.");
  id==62 ? strcpy(#ui_tip_body,"Scale learned episode durations. Explicit MIDI durations and Note Off still own the final event deadline.");
@@ -4967,10 +6045,15 @@ function ui_slider_tip(id) (
  id==78 ? strcpy(#ui_tip_body,"Companion grain density. Higher values shorten the hops for more overlap. Body bed receives extra overlap. Saved, automatable and captured by new notes.");
  id==79 ? strcpy(#ui_tip_body,"Variation in companion start and hop timing. Zero is orderly; high values spread timing while keeping the same grain playback speed. Captured per event; Fixed seed stays reproducible.");
  id==80 ? strcpy(#ui_tip_body,"Grain: long windowed micro-grains create increasingly dense phase smearing, with identical processing in both channels. Classic: the previous short all-pass transient softener. Fresh instances use Grain; older projects retain Classic until changed.");
+ id==81 ? strcpy(#ui_tip_body,"Overall trajectory pull. Zero removes trajectory scoring AND trajectory candidate injection. 100% uses normal lane strengths; higher values emphasize the request. Existing source scope and explicit locks still apply.");
+ id==82 ? strcpy(#ui_tip_body,"Event fits a known one-shot or incoming duration. Held notes repeat over Seconds until Note Off. Once runs one timed pass then holds. Repeat wraps. Bounce runs forward and back. Each new note starts its own clock.");
+ id==83 ? strcpy(#ui_tip_body,"Seconds for one pass in Once, Repeat and Bounce, and for a held Event-clock note. Known Event durations fit automatically. Bounce needs two passes for a complete return.");
+ id==84 ? strcpy(#ui_tip_body,"Normalized starting position in the trajectory clock. Applies to future selections; changing it can jump the target while audio already sounding keeps its own grain window.");
+ id>=87 && id<=230 && (id-87)%13==0 ? strcpy(#ui_tip_body,"Absolute strength of this lane. Zero bypasses this lane even when it is the only one. Changes apply to future choices; existing sounding grains and recorded REPEAT plans keep their decisions.");
  ui_tip(#ui_tip_body);
 );
 function ui_control(id x y w label lo hi def fmt) local(value hot n dx nv step) (
-  value=slider(id);hot=ui_hit(x,y,w,70);
+  value=slider(id);id==244 ? value*=1000;hot=ui_hit(x,y,w,70);
   n=fmt==3 ? log(1+max(0,value-lo))/log(1+hi-lo) : (value-lo)/max(0.00001,hi-lo);
   ui_box(x,y,w,70,0.078,0.10,0.132);ui_text(x+10,y+5,w-16,14,label,0.64,0.73,0.81);
   fmt==0 ? sprintf(#ui_val,"%.0f %%",value*100) : (
@@ -4980,38 +6063,45 @@ function ui_control(id x y w label lo hi def fmt) local(value hot n dx nv step) 
   );
   fmt==5 ? (abs(value)<0.0005 ? strcpy(#ui_val,"LINEAR") : sprintf(#ui_val,"%s %.0f %%",value<0 ? "FAST" : "SLOW",abs(value)*100););
   id==5 && value<=0 ? strcpy(#ui_val,"AUTO");
+  id==244 && value<=0 ? strcpy(#ui_val,"NO FIXED LIMIT");
   ui_text(x+10,y+25,w-16,21,#ui_val,0.90,0.95,0.96);
   ui_box(x+10,y+59,w-20,3,0.14,0.20,0.25);ui_box(x+10,y+59,(w-20)*cp_01(n),3,0.31,0.73,0.65);
   hot && ui_lpress ? (ui_drag=id;ui_drag_x=mouse_x;ui_drag_y=mouse_y;ui_drag_n=n;);
   ui_down && ui_drag==id ? (
     dx=(mouse_x-ui_drag_x)-(mouse_y-ui_drag_y);nv=cp_01(ui_drag_n+dx/240*((mouse_cap&8) ? 0.12 : 1));
-    nv=fmt==3 ? lo+exp(nv*log(1+hi-lo))-1 : lo+nv*(hi-lo);
-    ui_notify(id,cp_clamp(nv,lo,hi),1);
+    nv=fmt==3 ? lo+exp(nv*log(1+hi-lo))-1 : lo+nv*(hi-lo);id==244 ? nv=floor(nv+0.5);
+    ui_notify(id,cp_clamp(nv,lo,hi)/(id==244 ? 1000 : 1),1);
   );
-  hot && ui_rpress ? ui_notify(id,def,1);
+  hot && ui_rpress ? (ui_notify(id,def,1);id>=81 ? ui_end_gesture(id););
   hot && ui_wheel!=0 && (mouse_cap&16) ? (
-    step=(hi-lo)*((mouse_cap&8) ? 0.001 : 0.01);ui_notify(id,cp_clamp(value+ui_wheel/120*step,lo,hi),1);ui_wheel=0;
+    id==244 ? (step=(mouse_cap&8) ? 0.002 : 0.015;nv=cp_01(n+ui_wheel/120*step);nv=floor(exp(nv*log(1+hi))-1+0.5);ui_notify(id,nv/1000,1);) : (step=(hi-lo)*((mouse_cap&8) ? 0.001 : 0.01);ui_notify(id,cp_clamp(value+ui_wheel/120*step,lo,hi),1););id>=81 ? ui_end_gesture(id);ui_wheel=0;
   );
   hot ? ui_slider_tip(id);
 );
 function ui_choice_default(id) local(v) (
   v=floor(slider(id));
-  id==56 ? v=5; id==10 ? v=0; id==17 ? v=0; id==23 ? v=1; id==22 ? v=1;
-  id==6 ? v=1; id==21 ? v=1; id==12 ? v=0; id==20 ? v=1; id==49 ? v=1;id==65 || id==68 ? v=1;id==69 || id==73 ? v=0;id==75 || id==80 ? v=1;v;
+  id==242 ? v=1;id==56 ? v=5; id==10 ? v=0; id==17 ? v=0; id==23 ? v=1; id==22 ? v=1;
+  id==6 ? v=1; id==21 ? v=1; id==12 ? v=0; id==20 ? v=1; id==49 ? v=1;id==65 || id==68 ? v=1;id==69 ? v=0;id==73 || id==245 ? v=1;id==75 || id==80 ? v=1;id==82 ? v=0;v;
 );
 function ui_choice(id x y w label options) local(n i c selected hot) (
-  selected=floor(slider(id));i=0;n=0;strcpy(#ui_choice_value,"");
+  selected=ui_axis_value(id);i=0;n=0;strcpy(#ui_choice_value,"");
   loop(strlen(options),c=str_getchar(options,i);c==124 ? n+=1 : (n==selected ? sprintf(#ui_choice_value,"%s%c",#ui_choice_value,c););i+=1;);
   sprintf(#ui_choice_label,"%s: %s",label,#ui_choice_value);
   hot=ui_hit(x,y,w,34);
   ui_button(x,y,w,34,#ui_choice_label,0) ? (
-    gfx_x=mouse_x;gfx_y=mouse_y;n=gfx_showmenu(options);n>0 ? ui_notify(id,n-1,1);
+    gfx_x=mouse_x;gfx_y=mouse_y;n=gfx_showmenu(options);n>0 ? (ui_notify(id,n-1,1);id>=81 ? ui_end_gesture(id););
   );
-  hot && ui_rpress ? ui_notify(id,ui_choice_default(id),1);
+  hot && ui_rpress ? (ui_notify(id,ui_choice_default(id),1);id>=81 ? ui_end_gesture(id););
   hot ? ui_slider_tip(id);
 );
+function ui_length_ms(u) local(lo hi) (lo=max(0.000001,ui_snapshot_base[125]);hi=max(lo,ui_snapshot_base[126]);lo*exp(cp_01(u)*log(hi/lo))*1000;);
+function ui_axis_value(id) (id==40 ? cp_axis(0) : (id==41 ? cp_axis(1) : floor(slider(id))););
+function ui_set_axis(id d) (
+  id==40 || id==41 ? (ui_notify(id==40 ? 246 : 247,d==53,1);d<53 ? ui_notify(id,d,1);) : ui_notify(id,d,1);
+);
+function ui_set_filter(code) (ui_notify(248,code>=159 ? code-158 : 0,1);ui_notify(16,code<159 ? code+1 : 0,1););
 function ui_desc_name(d) (
-  d=cp_clamp(floor(d),0,52);strcpy(#ui_dim,"Descriptor");
+  d=cp_clamp(floor(d),0,53);strcpy(#ui_dim,"Descriptor");
   d==0 ? strcpy(#ui_dim,"Energy");
   d==1 ? strcpy(#ui_dim,"Brightness");
   d==2 ? strcpy(#ui_dim,"LF weight");
@@ -5064,7 +6154,7 @@ function ui_desc_name(d) (
   d==49 ? strcpy(#ui_dim,"Corpus Axis 3");
   d==50 ? strcpy(#ui_dim,"Corpus Axis 4");
   d==51 ? strcpy(#ui_dim,"Region PE");
-  d==52 ? strcpy(#ui_dim,"EC PE");
+  d==52 ? strcpy(#ui_dim,"EC PE");d==53 ? strcpy(#ui_dim,"Length");
 );
 function ui_dim(d) (ui_desc_name(d););
 function ui_desc_from_menu(n) local(d) (
@@ -5075,11 +6165,11 @@ function ui_desc_from_menu(n) local(d) (
   n>=33 && n<=45 ? d=28+n-33;
   n>=47 && n<=49 ? d=41+n-47;
   n>=51 && n<=53 ? d=44+n-51;
-  n>=55 && n<=58 ? d=47+n-55;n>=60 && n<=61 ? d=51+n-60;d;
+  n>=55 && n<=58 ? d=47+n-55;n>=60 && n<=61 ? d=51+n-60;n==63 ? d=53;d;
 );
 function ui_desc_menu() local(n) (
   gfx_x=mouse_x;gfx_y=mouse_y;
-  n=gfx_showmenu("#CORE|Energy|Brightness|LF weight|Motion|Onset|Crest|Decay|Width|#SPECTRAL|Sub 125 Hz|125-250 Hz|250-500 Hz|500 Hz-1 kHz|1-2 kHz|2-4 kHz|4-8 kHz|8 kHz+|Spectral centroid|Spectral spread|Spectral flatness|Spectral tilt|#TEMPORAL|Local stability|Periodicity|Pulse confidence|Pulse rate|Spectral evolution|Energy direction|Centroid direction|Boundary activity|#TONAL|Harmonicity|Chroma C|Chroma C#|Chroma D|Chroma D#|Chroma E|Chroma F|Chroma F#|Chroma G|Chroma G#|Chroma A|Chroma A#|Chroma B|#SPATIAL|Stereo correlation|L/R balance|Spatial evolution|#CONTEXT|Recurrence|Adjacency confidence|Replaceability|#LEARNED FROM THIS CORPUS|Corpus Axis 1|Corpus Axis 2|Corpus Axis 3|Corpus Axis 4|#PREDICTION ERROR|Region PE|EC PE");
+  n=gfx_showmenu("#CORE|Energy|Brightness|LF weight|Motion|Onset|Crest|Decay|Width|#SPECTRAL|Sub 125 Hz|125-250 Hz|250-500 Hz|500 Hz-1 kHz|1-2 kHz|2-4 kHz|4-8 kHz|8 kHz+|Spectral centroid|Spectral spread|Spectral flatness|Spectral tilt|#TEMPORAL|Local stability|Periodicity|Pulse confidence|Pulse rate|Spectral evolution|Energy direction|Centroid direction|Boundary activity|#TONAL|Harmonicity|Chroma C|Chroma C#|Chroma D|Chroma D#|Chroma E|Chroma F|Chroma F#|Chroma G|Chroma G#|Chroma A|Chroma A#|Chroma B|#SPATIAL|Stereo correlation|L/R balance|Spatial evolution|#CONTEXT|Recurrence|Adjacency confidence|Replaceability|#LEARNED FROM THIS CORPUS|Corpus Axis 1|Corpus Axis 2|Corpus Axis 3|Corpus Axis 4|#PREDICTION ERROR|Region PE|EC PE|#SIZE|Length");
   ui_desc_from_menu(n);
 );
 function ui_desc_row_id(row) local(d) (
@@ -5091,7 +6181,7 @@ function ui_desc_row_id(row) local(d) (
   row>=46 && row<=48 ? d=41+row-46;
   row>=50 && row<=52 ? d=44+row-50;
   row>=54 && row<=57 ? d=47+row-54;
-  row>=59 && row<=60 ? d=51+row-59;
+  row>=59 && row<=60 ? d=51+row-59;row==62 ? d=53;
   d;
 );
 function ui_desc_row_category(row) (
@@ -5102,11 +6192,11 @@ function ui_desc_row_category(row) (
   row==45 ? strcpy(#ui_desc_cat,"SPATIAL");
   row==49 ? strcpy(#ui_desc_cat,"CONTEXT");
   row==53 ? strcpy(#ui_desc_cat,"LEARNED FROM THIS CORPUS");
-  row==58 ? strcpy(#ui_desc_cat,"PREDICTION ERROR");
+  row==58 ? strcpy(#ui_desc_cat,"PREDICTION ERROR");row==61 ? strcpy(#ui_desc_cat,"SIZE");
 );
 function ui_desc_id_row(d) local(row) (
-  d=cp_clamp(floor(d),0,52);row=d+1;
-  d>=8 ? row+=1;d>=20 ? row+=1;d>=28 ? row+=1;d>=41 ? row+=1;d>=44 ? row+=1;d>=47 ? row+=1;d>=51 ? row+=1;row;
+  d=cp_clamp(floor(d),0,53);row=d+1;
+  d>=8 ? row+=1;d>=20 ? row+=1;d>=28 ? row+=1;d>=41 ? row+=1;d>=44 ? row+=1;d>=47 ? row+=1;d>=51 ? row+=1;d==53 ? row=62;row;
 );
 function ui_desc_popup_open(id) local(d lane p) (
   ui_desc_popup=id;ui_desc_popup_x=mouse_x;ui_desc_popup_y=mouse_y;
@@ -5114,7 +6204,7 @@ function ui_desc_popup_open(id) local(d lane p) (
   ui_desc_popup_scroll=max(0,ui_desc_id_row(d)-4);ui_desc_popup_drag=0;ui_desc_popup_just=1;
 );
 function ui_desc_choice(id x y w label) local(d) (
-  d=cp_clamp(floor(slider(id)),0,52);ui_desc_name(d);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
+  d=cp_clamp(ui_axis_value(id),0,53);ui_desc_name(d);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
   ui_button(x,y,w,34,#ui_choice_label,ui_desc_popup==id) ? ui_desc_popup_open(id);
   ui_hit(x,y,w,34) ? ui_tip("Unified Corpus descriptor registry. Click for the scrollable categorized picker; mouse wheel or drag its scrollbar. Spectral/spatial evidence is universal; tonal/pulse axes are confidence-gated; Corpus Axes are learned from this load during preprocessing.");
 );
@@ -5124,7 +6214,7 @@ function ui_desc_popup_draw() local(px py pw ph headh rowh total vis maxscroll f
     pw=max(190,min(360,gfx_w-16));ph=max(190,min(590,gfx_h-16));
     px=cp_clamp(ui_desc_popup_x-pw*0.18,8,max(8,gfx_w-pw-8));
     py=cp_clamp(ui_desc_popup_y-36,8,max(8,gfx_h-ph-8));
-    headh=42;rowh=28;total=61;vis=max(3,floor((ph-headh-10)/rowh));maxscroll=max(0,total-vis);
+    headh=42;rowh=28;total=63;vis=max(3,floor((ph-headh-10)/rowh));maxscroll=max(0,total-vis);
     inside=mouse_x>=px && mouse_x<px+pw && mouse_y>=py && mouse_y<py+ph;
     inside && ui_wheel!=0 ? (ui_desc_popup_scroll-=ui_wheel/120*3;ui_wheel=0;);
     ui_desc_popup_scroll=cp_clamp(ui_desc_popup_scroll,0,maxscroll);
@@ -5142,14 +6232,14 @@ function ui_desc_popup_draw() local(px py pw ph headh rowh total vis maxscroll f
           ui_desc_row_category(row);ui_box(px+7,ry+2,pw-26,rowh-4,0.055,0.082,0.100);
           ui_text(px+14,ry+7,pw-42,14,#ui_desc_cat,0.48,0.75,0.78);
         ) : (
-          ui_desc_popup>=100 && ui_desc_popup<112 ? (ui_dp=ui_traj+(ui_desc_popup-100)*40;current=floor(ui_dp[1]);) : (ui_desc_popup>=200 && ui_desc_popup<203 ? current=61216[32+(ui_desc_popup-200)*5+1] : current=floor(slider(ui_desc_popup)));
+          ui_desc_popup>=100 && ui_desc_popup<112 ? (ui_dp=ui_traj+(ui_desc_popup-100)*40;current=floor(ui_dp[1]);) : (ui_desc_popup>=200 && ui_desc_popup<203 ? current=61216[32+(ui_desc_popup-200)*5+1] : current=ui_axis_value(ui_desc_popup));
           d==current ? ui_box(px+7,ry+2,pw-26,rowh-4,0.105,0.255,0.255) : (
             mouse_x>=px+7 && mouse_x<px+pw-24 && mouse_y>=ry+2 && mouse_y<ry+rowh-2 ? ui_box(px+7,ry+2,pw-26,rowh-4,0.075,0.125,0.145);
           );
           ui_desc_name(d);ui_text(px+15,ry+7,pw-48,14,#ui_dim,d==current ? 0.91 : 0.77,d==current ? 0.98 : 0.88,d==current ? 0.96 : 0.91);
           d==current ? ui_text(px+pw-49,ry+7,24,14,"*",0.55,0.90,0.78);
           !ui_desc_popup_just && ui_lpress && mouse_x>=px+7 && mouse_x<px+pw-24 && mouse_y>=ry+2 && mouse_y<ry+rowh-2 ? (
-            ui_desc_popup>=100 && ui_desc_popup<112 ? ui_traj_meta(ui_desc_popup-100,16+d) : (ui_desc_popup>=200 && ui_desc_popup<203 ? ui_enqueue(14,59000+(ui_desc_popup-200)*1000+d) : ui_notify(ui_desc_popup,d,1));ui_desc_popup=0;ui_desc_popup_drag=0;
+            ui_desc_popup>=100 && ui_desc_popup<112 ? ui_traj_meta(ui_desc_popup-100,16+d) : (ui_desc_popup>=200 && ui_desc_popup<203 ? ui_enqueue(14,59000+(ui_desc_popup-200)*1000+d) : ui_set_axis(ui_desc_popup,d));ui_desc_popup=0;ui_desc_popup_drag=0;
           );
         );i+=1;
       );
@@ -5167,7 +6257,7 @@ function ui_desc_popup_draw() local(px py pw ph headh rowh total vis maxscroll f
   );
 );
 function ui_desc_pick(x y w label current) local(nd) (
-  current=cp_clamp(floor(current),0,52);ui_desc_name(current);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
+  current=cp_clamp(floor(current),0,53);ui_desc_name(current);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
   ui_button(x,y,w,34,#ui_choice_label,0) ? (nd=ui_desc_menu();nd>=0 ? current=nd;);
   ui_hit(x,y,w,34) ? ui_tip("Choose from Core, Spectral, Temporal, Tonal, Spatial, Context, or corpus-derived Learned axes.");current;
 );
@@ -5229,7 +6319,7 @@ function ui_card(rec x y w) local(id hot k yy value) (
   );
 );
 function ui_graph(x y w h) local(i rec px py x2 y2 near nearD dist prev j old axisx axisy xx yy a b k vertex wt cx cy consumed) (
-  consumed=0;axisx=floor(slider40);axisy=floor(slider41);ui_box(x,y,w,h,0.037,0.054,0.075);ui_border(x,y,w,h,0.18,0.28,0.33);
+  consumed=0;axisx=cp_axis(0);axisy=cp_axis(1);ui_box(x,y,w,h,0.037,0.054,0.075);ui_border(x,y,w,h,0.18,0.28,0.33);
   i=1;loop(3,ui_line(x+i*w/4,y,x+i*w/4,y+h,0.11,0.17,0.21,1);ui_line(x,y+i*h/4,x+w,y+i*h/4,0.11,0.17,0.21,1);i+=1;);
   // Local mouse gesture is visible before the audio-thread ACK arrives.
   ui_local_visible=ui_drawing || ui_path_pending;
@@ -5792,7 +6882,7 @@ function ui_child_cloud(x y w) local(start count mode cols cw rows i xx yy selec
 function ui_curve_pair_arg(a b) (cp_clamp(floor(a*255+0.5),0,255)*256+cp_clamp(floor(b*255+0.5),0,255););
 function ui_curve_eval_samples(data interp u) local(x i q ym y0 y1 yp q2 q3 z) (
   interp=cp_clamp(floor(interp),0,2);u=cp_01(u);x=u*31;i=min(30,floor(x));q=x-i;y0=data[i];y1=data[i+1];
-  interp==2 ? y0 : (interp==1 ? y0+(y1-y0)*q : (
+  interp==2 ? (u>=1 ? y1 : y0) : (interp==1 ? y0+(y1-y0)*q : (
     ym=data[max(0,i-1)];yp=data[min(31,i+2)];q2=q*q;q3=q2*q;
     z=0.5*((2*y0)+(-ym+y1)*q+(2*ym-5*y0+4*y1-yp)*q2+(-ym+3*y0-3*y1+yp)*q3);cp_01(z);
   ));
@@ -5827,18 +6917,18 @@ function ui_curve_editor(lane amplitude x y w h) local(base interpidx i steps u 
   hot ? ui_tip(amplitude ? "FREEHAND AMPLITUDE: hold left mouse and draw the whole envelope directly. Release commits the painted shape. Right-click resets. Gold line is the Gated/Natural sustain marker; amplitude endpoints remain safely at zero." : "FREEHAND TRAJECTORY: hold left mouse and paint the requested descriptor shape directly. Release commits the smooth 32-sample curve. Blue = request; amber = achieved primary selections. Right-click resets this lane.");h;
 );
 function ui_traj_desc_choice(lane x y w label) local(p d) (
-  p=ui_traj+lane*40;d=cp_clamp(floor(p[1]),0,52);ui_desc_name(d);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
+  p=ui_traj+lane*40;d=cp_clamp(floor(p[1]),0,53);ui_desc_name(d);sprintf(#ui_choice_label,"%s: %s",label,#ui_dim);
   ui_button(x,y,w,34,#ui_choice_label,ui_desc_popup==100+lane) ? (ui_desc_popup=100+lane;ui_desc_popup_x=mouse_x;ui_desc_popup_y=mouse_y;ui_desc_popup_scroll=max(0,ui_desc_id_row(d)-4);ui_desc_popup_drag=0;ui_desc_popup_just=1;);
   ui_hit(x,y,w,34) ? ui_tip("Choose any Core, Spectral, Temporal, Tonal, Spatial, Context, or corpus-derived Learned axis for this trajectory lane.");
 );
 function ui_traj_mode_choice(lane x y w) local(p mode n) (
-  p=ui_traj+lane*40;mode=cp_clamp(floor(p[2]),0,2);sprintf(#ui_txt,"MODE: %s",mode==0 ? "TARGET" : (mode==1 ? "MAXIMUM" : "MINIMUM"));
-  ui_btn(x,y,w,34,#ui_txt,0,"Target asks for proximity; Maximum penalizes values above the curve; Minimum penalizes values below it. Right-click resets to Target.") ? (gfx_x=mouse_x;gfx_y=mouse_y;n=gfx_showmenu("Target|Maximum|Minimum");n>0 ? ui_traj_meta(lane,80+n-1););
+  p=ui_traj+lane*40;mode=cp_clamp(floor(p[2]),0,2);sprintf(#ui_txt,"MODE: %s",mode==0 ? "TARGET" : (mode==1 ? "CEILING" : "FLOOR"));
+  ui_btn(x,y,w,34,#ui_txt,0,"Target asks for proximity; Maximum penalizes values above the curve; Minimum penalizes values below it. Right-click resets to Target.") ? (gfx_x=mouse_x;gfx_y=mouse_y;n=gfx_showmenu("Target|Ceiling (maximum)|Floor (minimum)");n>0 ? ui_traj_meta(lane,80+n-1););
   ui_hit(x,y,w,34) && ui_rpress ? ui_traj_meta(lane,80);
 );
 function ui_traj_interp_choice(lane x y w) local(p mode n) (
   p=ui_traj+lane*40;mode=cp_clamp(floor(p[6]),0,2);sprintf(#ui_txt,"CURVE: %s",mode==0 ? "SMOOTH" : (mode==1 ? "LINEAR" : "STEP"));
-  ui_btn(x,y,w,34,#ui_txt,0,"Interpolation across the painted shape samples. Smooth is the default. Right-click resets to Smooth.") ? (gfx_x=mouse_x;gfx_y=mouse_y;n=gfx_showmenu("Smooth|Linear|Step");n>0 ? ui_traj_meta(lane,96+n-1););
+  ui_btn(x,y,w,34,#ui_txt,0,"Smooth rounds the curve, Linear keeps ramps, and Step holds each sample until the next. Right-click resets to Smooth.") ? (gfx_x=mouse_x;gfx_y=mouse_y;n=gfx_showmenu("Smooth|Linear|Step");n>0 ? ui_traj_meta(lane,96+n-1););
   ui_hit(x,y,w,34) && ui_rpress ? ui_traj_meta(lane,96);
 );
 function ui_traj_strength_commit(lane value) (ui_traj_meta(lane,128+cp_clamp(floor(value*255+0.5),0,255)););
@@ -5864,8 +6954,155 @@ function ui_amp_sustain(x y w) local(value hot) (
   hot && ui_rpress ? ui_amp_meta(32+floor(0.65*255+0.5));hot ? ui_tip("Only Gated/Natural uses this hold marker. The pre-hold curve runs to this point, then holds until release. Right-click resets to 65%.");
 );
 function ui_traj_preset(x y w) local(n) (
-  ui_btn(x,y,w,32,"PRESET",0,"Optional starting shapes. They compile into ordinary editable trajectory lanes.") ? (gfx_x=mouse_x;gfx_y=mouse_y;n=gfx_showmenu("Smooth ending|Crescendo + smooth ending|Bright to dark|LF heavy to zero|High crest to low crest");n>0 ? (ui_enqueue(14,30000+n);ui_traj_selected=0;););
+  ui_btn(x,y,w,32,"STARTING POINTS",0,"Optional starting shapes. They compile into ordinary editable trajectory lanes.") ? (gfx_x=mouse_x;gfx_y=mouse_y;n=gfx_showmenu("Smooth ending|Crescendo + smooth ending|Bright to dark|LF heavy to zero|High crest to low crest");n>0 ? (ui_enqueue(14,30000+n);ui_traj_selected=0;););
 );
+// Dedicated trajectory surface. GFX edits go through the acknowledged DSP
+// command queue; audio owns committed curves and publishes their host state.
+function ui_tr_undo_capture(lane) (
+  memcpy(ui_tr_undo+lane*32,ui_traj+lane*40+8,32);ui_tr_undo_mask=ui_tr_undo_mask|pow(2,lane);
+);
+function ui_tr_scale(desc) local(p span pad) (
+  p=ui_tr_range+cp_clamp(floor(desc),0,53)*3;ui_tr_lo=0;ui_tr_hi=1;
+  p[2]>0 ? (
+    span=max(0,p[1]-p[0]);pad=span>0.000001 ? span*0.03 : 0.005;
+    ui_tr_lo=max(0,p[0]-pad);ui_tr_hi=min(1,p[1]+pad);
+  );
+);
+function ui_tr_to_view(v) (cp_01((v-ui_tr_lo)/max(0.000001,ui_tr_hi-ui_tr_lo)););
+function ui_tr_from_view(v) (ui_tr_lo+cp_01(v)*(ui_tr_hi-ui_tr_lo););
+function ui_tr_axis_text(desc v) (
+  desc==53 ? sprintf(#ui_axis_text,"%.0f ms",ui_length_ms(v)) : sprintf(#ui_axis_text,"%.1f%%",v*100);
+);
+function ui_tr_shape(lane shape) local(i u v a p) (
+  ui_tr_undo_capture(lane);p=ui_traj+lane*40;ui_tr_scale(p[1]);ui_curve_draw_begin(lane,p);i=0;
+  loop(32,u=i/31;v=0.5;
+    shape==1 ? v=u;shape==2 ? v=1-u;
+    shape==3 ? v=0.15+0.75*sin($pi*u);
+    shape==4 ? v=0.9-0.75*sin($pi*u);
+    shape==5 ? v=0.15+0.75*(u<0.2 ? u/0.2 : max(0,1-(u-0.2)/0.8));
+    shape==6 ? v=0.15+0.75*floor(u*3.999)/3;
+    shape<7 ? v=ui_tr_from_view(v);
+    shape==7 ? v=p[8+31-i];shape==8 ? v=cp_01(ui_tr_lo+ui_tr_hi-p[8+i]);
+    ui_curve_paint[i]=cp_01(v);i+=1;
+  );ui_curve_draw_commit();
+);
+function ui_tr_undo_shape(lane) local(i v p) (
+  (ui_tr_undo_mask&pow(2,lane))>0 ? (
+    p=ui_traj+lane*40;ui_curve_draw_begin(lane,p);i=0;
+    loop(32,v=ui_tr_undo[lane*32+i];ui_tr_undo[lane*32+i]=p[8+i];ui_curve_paint[i]=v;i+=1;);ui_curve_draw_commit();
+  );
+);
+function ui_tr_points(lane x y w h) local(p data i idx px py u v hot nearest a b left right j z lastx lasty n rec gap count maxbin bin vlo vhi) (
+  p=ui_traj+lane*40;ui_tr_scale(p[1]);data=ui_curve_draw_active && ui_curve_draw_lane==lane ? ui_curve_paint : p+8;
+  ui_box(x,y,w,h,0.030,0.050,0.065);ui_border(x,y,w,h,0.20,0.33,0.38);
+  // Gray edge bars show existing descriptor-bin support, before scope/locks.
+  maxbin=1;i=0;loop(16,maxbin=max(maxbin,ui_tr_cov[lane*16+i]);i+=1;);i=0;
+  loop(16,bin=ui_tr_cov[lane*16+i];vlo=ui_tr_to_view(i/16);vhi=ui_tr_to_view((i+1)/16);
+    bin>0 && vhi>vlo ? ui_box(x+w+8,y+h-vhi*h,24*sqrt(bin/maxbin),max(1,(vhi-vlo)*h-1),0.29,0.37,0.43);i+=1;);
+  i=0;loop(5,u=i/4;ui_line(x+u*w,y,x+u*w,y+h,0.10,0.18,0.22,1);ui_line(x,y+u*h,x+w,y+u*h,0.10,0.18,0.22,1);i+=1;);
+  // Actual selections are a separate trace; don't connect across a loop seam.
+  n=slider81>0.000001 && p[0]>0.5 && p[3]>0.000001 && (slider85<0 || slider85==lane) ? min(32,ui_x[81]) : 0;i=0;lastx=-1;
+  loop(n,rec=ui_thist+i*13;px=x+rec[0]*w;py=y+(1-ui_tr_to_view(rec[1+lane]))*h;
+    lastx>=0 && !(floor(slider82)==2 && px<lastx) ? ui_line(lastx,lasty,px,py,0.90,0.62,0.22,0.30+0.55*i/max(1,n));
+    ui_box(px-2,py-2,4,4,0.98,0.71,0.28);lastx=px;lasty=py;i+=1;
+  );
+  lastx=x;lasty=y+(1-ui_tr_to_view(ui_curve_eval_samples(data,p[6],0)))*h;i=1;
+  loop(128,u=i/128;v=ui_curve_eval_samples(data,p[6],u);px=x+u*w;py=y+(1-ui_tr_to_view(v))*h;
+    ui_line(lastx,lasty,px,py,0.30,0.80,0.86,1);ui_line(lastx,lasty+1,px,py+1,0.30,0.80,0.86,0.45);lastx=px;lasty=py;i+=1;
+  );
+  i=0;loop(8,idx=floor(i*31/7+0.5);px=x+idx*w/31;py=y+(1-ui_tr_to_view(data[idx]))*h;
+    !ui_tr_draw ? (ui_box(px-5,py-5,10,10,0.19,0.66,0.70);ui_border(px-5,py-5,10,10,0.65,0.94,0.94););i+=1;
+  );
+  ui_x[89]>0 ? (px=x+cp_01(ui_x[88])*w;ui_line(px,y,px,y+h,0.84,0.94,0.90,0.5););
+  hot=ui_hit(x-6,y-6,w+12,h+12);
+  hot && ui_lpress ? (
+    ui_tr_undo_capture(lane);ui_curve_draw_begin(lane,p);ui_tr_point_lane=lane;
+    ui_tr_point=cp_clamp(floor(cp_01((ui_mx-x)/w)*7+0.5),0,7);
+    ui_tr_draw ? ui_curve_draw_at(lane,(ui_mx-x)/w,ui_tr_from_view(1-(ui_my-y)/h));
+  );
+  ui_down && ui_curve_draw_active && ui_curve_draw_lane==lane ? (
+    ui_tr_draw ? ui_curve_draw_at(lane,(ui_mx-x)/w,ui_tr_from_view(1-(ui_my-y)/h)) : (
+      i=ui_tr_point;idx=floor(i*31/7+0.5);left=floor(max(0,i-1)*31/7+0.5);right=floor(min(7,i+1)*31/7+0.5);
+      v=ui_tr_from_view(1-(ui_my-y)/h);a=ui_tr_undo[lane*32+left];b=ui_tr_undo[lane*32+right];j=left;
+      while(j<=right)(z=j<=idx ? a+(v-a)*(j-left)/max(1,idx-left) : v+(b-v)*(j-idx)/max(1,right-idx);ui_curve_paint[j]=z;j+=1;);ui_curve_paint[idx]=v;
+    );
+  );
+  hot && ui_rpress ? ui_tr_shape(lane,0);
+  hot ? ui_tip(ui_tr_draw ? "DRAW: paint freely and release to commit. Undo restores the previous shape. Right-click makes a flat curve at the middle of the corpus range." : "POINTS: drag any of eight time handles vertically. Neighboring segments reshape with it. Draw gives finer control. Teal = request; gold = actual primary choices; gray bars = corpus support before scope and locks.");
+);
+function ui_tr_weight(lane x y w) local(id value hot n) (
+  id=tr_param_id(lane)+1;value=cp_01(slider(id));hot=ui_hit(x,y,w,42);
+  ui_box(x,y,w,42,0.078,0.10,0.132);sprintf(#ui_txt,"LANE STRENGTH   %.0f %%",value*100);
+  ui_text(x+10,y+5,w-20,14,#ui_txt,0.80,0.91,0.92);ui_box(x+10,y+31,w-20,3,0.14,0.20,0.25);ui_box(x+10,y+31,(w-20)*value,3,0.31,0.73,0.65);
+  hot && ui_lpress ? (ui_drag=id;ui_drag_x=mouse_x;ui_drag_y=mouse_y;ui_drag_n=value;);
+  ui_down && ui_drag==id ? ui_notify(id,cp_01(ui_drag_n+((mouse_x-ui_drag_x)-(mouse_y-ui_drag_y))/240*((mouse_cap&8) ? 0.12 : 1)),1);
+  hot && ui_rpress ? (ui_notify(id,0.85,1);ui_end_gesture(id););
+  hot && ui_wheel!=0 && (mouse_cap&16) ? (ui_notify(id,cp_01(value+ui_wheel/120*((mouse_cap&8) ? 0.001 : 0.01)),1);ui_end_gesture(id);ui_wheel=0;);
+  hot ? ui_tip("Absolute pull of this lane. Each active lane contributes independently, so fading one to zero does not boost the others. Shift-drag is fine adjustment; right-click resets to 85%. REPEAT keeps its recorded grain choices.");
+);
+
+function ui_trajectories(w) local(x y bw lw ex ew i p lane count rowh sx sy cw n shape active c) (
+  x=18;y=14;bw=w-36;lw=238;ex=x+lw+22;ew=bw-lw-22;lane=cp_clamp(floor(ui_traj_selected),0,11);
+  count=0;active=0;i=0;loop(12,p=ui_traj+i*40;p[4]>0.5 ? count+=1;p[0]>0.5 && p[3]>0 ? active+=1;i+=1;);
+  ui_heading(x,y,bw,"TRAJECTORIES","Shape how the material evolves");y+=26;
+  ui_text(x,y,bw,14,"Guide grain choices over time. Teal is your request; gold is what the recording could supply.",0.65,0.79,0.83);y+=18;
+  ui_control(81,x,y,220,"INFLUENCE / 0 = BYPASS",0,2,1,0);
+  ui_choice(82,x+232,y,224,"Clock","Event|Once|Repeat|Bounce");
+  ui_text(x+232,y+43,224,14,floor(slider82)==0 ? "Fit duration / held: repeat Seconds" : floor(slider82)==1 ? "Reach the end, then hold" : floor(slider82)==2 ? "Restart at each cycle" : "Forward, then return",0.62,0.78,0.80);
+  ui_control(83,x+468,y,168,"SECONDS / ONE PASS",0.2,20,2,4);
+  ui_control(84,x+648,y,156,"START OFFSET",0,1,0,0);
+  ui_btn(x+816,y,max(118,bw-816),32,slider81>0 ? "BYPASS" : "RESUME",slider81<=0,"Compare the same settings with trajectory influence off. Shape data is retained. REPEAT always uses its recorded grain plan.") ? (slider81>0 ? ui_tr_saved_amount=slider81;ui_notify(81,slider81>0 ? 0 : max(0.001,ui_tr_saved_amount),1);ui_end_gesture(81););
+  ui_btn(x+816,y+40,max(118,bw-816),30,"ALL LANES",slider85<0,"Exit Solo without unmuting other lanes.") ? (ui_notify(85,-1,1);ui_end_gesture(85););y+=78;
+  ui_box(x,y,lw,28,0.085,0.12,0.15);sprintf(#ui_txt,"LANES   %d / 12",count);ui_text(x+10,y+6,lw-20,14,#ui_txt,0.69,0.84,0.85);
+  ui_btn(ex,y,120,28,"+ ADD LANE",0,"Add a flat Brightness lane, then choose any of the 54 descriptors. Up to twelve lanes are supported.") ? (
+    i=0;n=-1;while(i<12 && n<0)(p=ui_traj+i*40;p[4]<0.5 ? n=i;i+=1;);n>=0 ? (ui_traj_meta(n,17);ui_traj_selected=n;);
+  );
+  ui_traj_preset(ex+128,y,134);
+  ui_btn(ex+270,y,120,28,"CLEAR ALL",0,"Remove all trajectory lanes. Amplitude and the separate map gesture remain unchanged.") ? ui_enqueue(14,30000);
+  y+=34;sy=y;i=0;
+  loop(12,p=ui_traj+i*40;p[4]>0.5 ? (
+    ui_desc_name(p[1]);sprintf(#ui_txt,"%02d  %s",i+1,#ui_dim);
+    ui_btn(x,sy,lw,62,#ui_txt,i==lane,"Select a lane. Muted lanes keep their shape; Solo compares one lane without deleting the rest.") ? ui_traj_selected=i;
+    sprintf(#ui_txt,"%s  /  %s  /  %.0f%%",p[0]>0.5 ? (slider85<0 || slider85==i ? "ON" : "solo off") : "MUTED",p[2]==0 ? "Target" : (p[2]==1 ? "Ceiling" : "Floor"),p[3]*100);
+    ui_text(x+8,sy+33,lw-16,12,#ui_txt,0.60,0.77,0.80);sy+=70;
+  );i+=1;);
+  count==0 ? (
+    ui_text(x,sy+8,lw,14,"No lanes yet.",0.58,0.73,0.78);
+    ui_box(ex,y,ew,300,0.038,0.064,0.080);ui_text(ex+24,y+24,ew-48,23,"Give the sound a direction",0.82,0.94,0.94);
+    ui_wrap(ex+24,y+68,ew-48,"Start with Bright to dark, or add a lane for Energy, Motion, Onset, LF weight, or any other acoustic descriptor. Shape it with points or draw directly. Strength sets how much that request matters.",4);
+    ui_btn(ex+24,y+190,190,36,"BRIGHT TO DARK",0,"Create a descending Brightness trajectory. All of its settings remain editable and save with the plugin.") ? (ui_enqueue(14,30003);ui_traj_selected=0;);
+    ui_btn(ex+226,y+190,190,36,"SOFT LANDING",0,"Limit onset and crest while favoring stable material toward the end. A multi-lane starting point, not a post-processing filter.") ? (ui_enqueue(14,30001);ui_traj_selected=0;);
+    y+=322;
+  ) : (
+    p=ui_traj+lane*40;p[4]<0.5 ? (i=0;while(i<12 && p[4]<0.5)(p=ui_traj+i*40;p[4]>0.5 ? (ui_traj_selected=i;lane=i;);i+=1;););
+    ui_traj_desc_choice(lane,ex,y,ew-252,"FEATURE");
+    ui_btn(ex+ew-244,y,76,34,p[0]>0.5 ? "ON" : "MUTED",p[0]>0.5,"Mute keeps the lane and shape. Removed lanes free a slot.") ? ui_traj_meta(lane,3);
+    ui_btn(ex+ew-160,y,76,34,"SOLO",slider85==lane,"Hear only this trajectory lane. Other grain selection controls continue to apply.") ? (ui_notify(85,slider85==lane ? -1 : lane,1);ui_end_gesture(85););
+    ui_btn(ex+ew-76,y,76,34,"REMOVE",0,"Remove this lane and free its slot.") ? ui_traj_meta(lane,0);y+=40;
+    cw=(ew-16)/3;ui_traj_mode_choice(lane,ex,y,cw);ui_traj_interp_choice(lane,ex+cw+8,y,cw);
+    ui_btn(ex+2*(cw+8),y,cw,34,"DUPLICATE",0,"Copy this lane to the first empty slot, including its curve and strength.") ? ui_traj_meta(lane,4);y+=40;
+    ui_tr_weight(lane,ex,y,ew);y+=54;
+    cw=(ew-64)/9;i=0;loop(9,
+      i==0 ? strcpy(#ui_txt,"FLAT");i==1 ? strcpy(#ui_txt,"RISE");i==2 ? strcpy(#ui_txt,"FALL");i==3 ? strcpy(#ui_txt,"ARCH");i==4 ? strcpy(#ui_txt,"DIP");i==5 ? strcpy(#ui_txt,"PULSE");i==6 ? strcpy(#ui_txt,"STAIRS");i==7 ? strcpy(#ui_txt,"REVERSE");i==8 ? strcpy(#ui_txt,"INVERT");
+      ui_btn(ex+i*(cw+8),y,cw,28,#ui_txt,0,"Replace this lane's shape. Undo restores its previous curve.") ? ui_tr_shape(lane,i);i+=1;
+    );y+=34;
+    ui_text(ex,y,ew-220,14,"REQUEST  /  ACTUAL CHOICES",0.44,0.82,0.86);
+    ui_btn(ex+ew-212,y-5,66,27,"POINTS",!ui_tr_draw,"Drag eight fixed time handles. The adjacent curve segments follow your edit.") ? ui_tr_draw=0;
+    ui_btn(ex+ew-138,y-5,62,27,"DRAW",ui_tr_draw,"Paint a finer 32-sample curve directly.") ? ui_tr_draw=1;
+    ui_btn(ex+ew-68,y-5,68,27,"UNDO",(ui_tr_undo_mask&pow(2,lane))>0,"Swap the current shape with the previous shape. Undo is per lane for this editing session.") ? ui_tr_undo_shape(lane);y+=24;
+    ui_tr_scale(p[1]);i=0;loop(5,ui_tr_axis_text(p[1],ui_tr_from_view(1-i/4));ui_text(ex,y+1+i*45,68,12,#ui_axis_text,0.51,0.65,0.71);i+=1;);
+    ui_tr_points(lane,ex+72,y+5,ew-114,190);y+=206;
+    ui_text(ex+72,y,ew-112,12,"0%                         EVENT / CYCLE PROGRESS                         100%",0.54,0.70,0.76);y+=22;
+    sprintf(#ui_txt,"Last error %.0f%%   /   evidence %.0f%%",ui_trun[10+lane*4]*100,ui_trun[11+lane*4]*100);
+    p[1]==53 ? sprintf(#ui_txt,"Length request %.0f ms / actual %.0f ms   corpus %.0f - %.0f ms",ui_length_ms(ui_trun[8+lane*4]),ui_length_ms(ui_trun[9+lane*4]),ui_length_ms(0),ui_length_ms(1));
+    ui_x[81]<=0 ? strcpy(#ui_txt,"Play a note or Generate to compare actual grain choices.");
+    slider81<=0.000001 || p[0]<0.5 || p[3]<=0.000001 || slider85>=0 && slider85!=lane ? strcpy(#ui_txt,"This lane is bypassed, muted, or excluded by Solo.");
+    ui_text(ex,y,ew,14,#ui_txt,0.91,0.73,0.42);y+=24;
+    ui_wrap(ex,y,ew,"Y follows the observed corpus range. Gray bars show available descriptor bins before source scope and locks. Existing targets beyond this view stay saved and appear at the edges. Sparse support or low evidence limits how closely a curve can be followed. These are grain choices, so long grains cannot change character midway through a fragment.",3);y+=70;
+  );
+  y=max(y,sy+20);ui_trajectory_h=y+20;
+);
+
 function ui_adsr_preview(x y w h) local(a d r total scale sus ax dx rx i u v px py lastx lasty) (
   total=max(20,slider25);a=max(0,slider26);d=max(0,slider27);r=max(1,slider29);sus=cp_01(slider28);
   scale=min(1,total/max(1,a+d+r));ax=a*scale/total;dx=(a+d)*scale/total;rx=max(dx,1-r*scale/total);
@@ -5895,6 +7132,16 @@ function ui_grains(x y w) local(c2 offset) (
   ui_control(66,x,y+offset,w,"GRAIN SOFTNESS",0,1,0.65,0);
   ui_control(74,x,y+offset+78,w,"GRAIN TAME",0,1,1,0);offset+148;
 );
+function ui_grain_header(x y w) local(labelw bw i) (
+  w<460 ? ui_choice(242,x,y,w,"Grain detection","Aggressive|Auto|Coherent") : (
+    labelw=124;bw=min(124,(w-labelw-16)/3);ui_text(x,y+10,labelw,14,"GRAIN DETECTION",0.66,0.84,0.84);
+    i=0;loop(3,
+      i==0 ? strcpy(#ui_choice_value,"AGGRESSIVE") : (i==1 ? strcpy(#ui_choice_value,"AUTO") : strcpy(#ui_choice_value,"COHERENT"));
+      ui_btn(x+labelw+i*(bw+8),y,bw,34,#ui_choice_value,floor(slider242)==i,"Choose shorter aggressive units, original Auto inference, or longer coherent acoustic passages. Rebuild waits for active events; right-click any style restores Auto.") ? (ui_notify(242,i,1);ui_end_gesture(242););
+      ui_hit(x+labelw+i*(bw+8),y,bw,34) && ui_rpress ? (ui_notify(242,1,1);ui_end_gesture(242););i+=1;
+    );
+  );
+);
 function ui_explore(w include_inspector) local(x y bw mh c3 c2 i p active count lane cw) (
   x=14;y=12;bw=w-28;c3=(bw-16)/3;c2=(bw-8)/2;
   ui_heading(x,y,bw,"EXPLORE","performance / trajectories / descriptor space");y+=39;
@@ -5921,24 +7168,7 @@ function ui_explore(w include_inspector) local(x y bw mh c3 c2 i p active count 
   ui_text(x,y,bw,16,"TRANSIENT RENDERING",0.64,0.82,0.84);y+=24;
   ui_choice(80,x,y,bw,"Smear character","Classic|Grain");y+=43;ui_td_control(x,y,bw);y+=76;ui_td_status(x,y,bw);y+=30;
 
-  ui_text(x,y,bw,16,"TRAJECTORY SOLVER",0.64,0.82,0.84);y+=24;
-  ui_btn(x,y,112,32,"+ ADD LANE",0,"Add a descriptor trajectory lane using the current X descriptor. Up to 12 synchronized lanes are supported.") ? (
-    lane=-1;i=0;while(i<12 && lane<0)(p=ui_traj+i*40;p[0]<0.5 ? lane=i;i+=1;);lane>=0 ? (ui_traj_meta(lane,16+floor(slider40));ui_traj_meta(lane,1);ui_traj_selected=lane;);
-  );
-  ui_btn(x+120,y,100,32,"CLEAR ALL",0,"Remove every descriptor trajectory lane. Amplitude MSEG is separate.") ? (ui_enqueue(14,30000);ui_traj_selected=0;);
-  ui_traj_preset(x+228,y,110);y+=42;
-  count=0;i=0;cw=max(120,(bw-16)/3);loop(12,p=ui_traj+i*40;p[0]>0.5 ? (
-    ui_desc_name(p[1]);sprintf(#ui_txt,"%s%s",i==ui_traj_selected ? "> " : "",#ui_dim);ui_btn(x+(count%3)*(cw+8),y+floor(count/3)*34,cw,30,#ui_txt,i==ui_traj_selected,"Select this synchronized descriptor lane for editing.") ? ui_traj_selected=i;count+=1;
-  );i+=1;);count>0 ? y+=ceil(count/3)*34+8 : (ui_text(x,y,bw,15,"No descriptor constraints. Add a lane or choose a preset.",0.61,0.76,0.82);y+=32;);
-  p=ui_traj+ui_traj_selected*40;p[0]>0.5 ? (
-    ui_traj_desc_choice(ui_traj_selected,x,y,bw,"FEATURE");y+=42;
-    ui_traj_mode_choice(ui_traj_selected,x,y,c2);ui_traj_interp_choice(ui_traj_selected,x+c2+8,y,c2);y+=42;
-    ui_traj_strength(ui_traj_selected,x,y,bw);y+=66;
-    ui_curve_editor(ui_traj_selected,0,x,y,bw,180);y+=190;
-    ui_btn(x,y,c2,32,"RESET SHAPE",0,"Reset this lane to a flat 50% Target shape while retaining its descriptor; then redraw freehand.") ? ui_traj_meta(ui_traj_selected,2);
-    ui_btn(x+c2+8,y,c2,32,"REMOVE LANE",0,"Disable this trajectory lane. Other lanes are unaffected.") ? ui_traj_meta(ui_traj_selected,0);y+=44;
-    sprintf(#ui_txt,"LIVE SATISFACTION %.0f%%   active lanes %.0f",ui_trun[0]*100,ui_trun[1]);ui_text(x,y,bw,15,#ui_txt,0.68,0.84,0.87);y+=29;
-  );
+  ui_btn(x,y,bw,36,"OPEN TRAJECTORIES",0,"Open the dedicated trajectory workspace: saved curves, editing handles, timing, strength, and actual grain-choice traces.") ? ui_notify(55,6,0);y+=50;
 
   ui_text(x,y,bw,16,"BEHAVIOR",0.64,0.82,0.84);y+=24;
   ui_control(3,x,y,c3,"COHERENCE",0,1,0.8,0);ui_control(34,x+c3+8,y,c3,"NOVELTY",0,1,0.65,0);ui_control(35,x+2*(c3+8),y,c3,"IDENTITY STABILITY",0,1,0.8,0);y+=88;
@@ -5949,7 +7179,7 @@ function ui_explore(w include_inspector) local(x y bw mh c3 c2 i p active count 
   ui_btn(x,y,96,32,slider54>0.5 ? "DRAW ON" : "DRAW",slider54>0.5,"Drag on the map, then release to commit the legacy two-axis gesture. Multi-lane trajectories above can constrain any registry axes simultaneously.") ? ui_notify(54,1-slider54,1);
   ui_btn(x+104,y,98,32,"CLEAR",0,"Clear the committed two-axis map path. Constraint Trajectory lanes are separate.") ? ui_enqueue(11,0);
   ui_btn(x+210,y,116,32,"MORE POINTS",0,"Show another stratum of actual grains. This changes visualization only and is not a host parameter.") ? ui_enqueue(0,7*8192+6500+((floor(ui_snapshot_base[111])+1)%max(1,ui_snapshot_base[86])));
-  ui_btn(x+334,y,118,32,"PATH AXES",0,"Return the map to the descriptor axes used by the saved two-axis path.") ? (ui_notify(40,ui_snapshot_base[39],1);ui_notify(41,ui_snapshot_base[40],1););
+  ui_btn(x+334,y,118,32,"PATH AXES",0,"Return the map to the descriptor axes used by the saved two-axis path.") ? (ui_set_axis(40,ui_snapshot_base[39]);ui_set_axis(41,ui_snapshot_base[40]););
   y+=43;
   ui_path_pending ? strcpy(#ui_txt,"PATH: committing...") : (ui_snapshot_base[38]>1 ? sprintf(#ui_txt,"PATH ACTIVE  %d knots   error %.2f",ui_snapshot_base[38],ui_auto[12]) : strcpy(#ui_txt,"No two-axis map path"));ui_text(x,y,bw,15,#ui_txt,0.61,0.82,0.86);y+=34;
   ui_control(39,x,y,c2,"PATH INFLUENCE",0,1,1,0);ui_control(47,x+c2+8,y,c2,"OPEN-EVENT TRAJECTORY / seconds",0.2,20,2,4);y+=82;
@@ -5968,7 +7198,7 @@ function ui_evidence(w) local(x y bw i p yy id n v state b code fd fb active) (
     sprintf(#ui_txt,"PAGE %d / %d",ui_snapshot_base[82]+1,ui_snapshot_base[83]);ui_text(x+49,y+7,bw-98,15,#ui_txt,0.70,0.84,0.87);
     ui_btn(x,y,39,30,"<",0,"Previous page of grain evidence.") ? ui_notify(18,max(0,floor(slider18)-1),0);
     ui_btn(x+bw-39,y,39,30,">",0,"Next page of grain evidence.") ? ui_notify(18,min(ui_snapshot_base[83]-1,floor(slider18)+1),0);y+=42;
-    slider16>0 ? (ui_btn(x,y,bw,30,"CLEAR DESCRIPTOR FILTER",0,"Remove the descriptor/bin filter from this browser. Playback is unchanged.") ? ui_notify(16,0,1);y+=40;);
+    cp_filter_code()>=0 ? (ui_btn(x,y,bw,30,"CLEAR DESCRIPTOR FILTER",0,"Remove the descriptor/bin filter from this browser. Playback is unchanged.") ? ui_set_filter(-1);y+=40;);
     i=0;loop(20,p=ui_cards+i*64;id=p[54];
       p[0]>=0 ? (
         yy=y;ui_box(x,yy,bw,94,0.077,0.105,0.134);
@@ -5983,18 +7213,18 @@ function ui_evidence(w) local(x y bw i p yy id n v state b code fd fb active) (
     );
   ) : (
     ui_feature_desc=ui_desc_pick(x,y,bw,"DESCRIPTOR",ui_feature_desc);y+=46;
-    slider16>0 ? (
-      code=floor(slider16)-1;fd=floor(code/3);fb=code-fd*3;ui_desc_name(fd);fb==0 ? strcpy(#ui_bin,"LOW") : (fb==1 ? strcpy(#ui_bin,"MID") : strcpy(#ui_bin,"HIGH"));
+    cp_filter_code()>=0 ? (
+      code=cp_filter_code();fd=floor(code/3);fb=code-fd*3;ui_desc_name(fd);fb==0 ? strcpy(#ui_bin,"LOW") : (fb==1 ? strcpy(#ui_bin,"MID") : strcpy(#ui_bin,"HIGH"));
       sprintf(#ui_txt,"FILTER: %s / %s",#ui_dim,#ui_bin);ui_text(x,y,bw-112,15,#ui_txt,0.88,0.77,0.43);
-      ui_btn(x+bw-108,y-7,108,29,"CLEAR",0,"Clear descriptor filtering.") ? ui_notify(16,0,1);y+=38;
+      ui_btn(x+bw-108,y-7,108,29,"CLEAR",0,"Clear descriptor filtering.") ? ui_set_filter(-1);y+=38;
     );
     ui_wrap(x,y,bw,"Click LOW / MID / HIGH to audition successive actual members. Right-click a bin to filter the Grain browser. Tonal and pulse dimensions automatically lose authority when confidence is weak.",4);y+=88;
     b=0;loop(3,code=ui_feature_desc*3+b;b==0 ? strcpy(#ui_bin,"LOW") : (b==1 ? strcpy(#ui_bin,"MID") : strcpy(#ui_bin,"HIGH"));
-      active=floor(slider16)==code+1;
+      active=cp_filter_code()==code;
       ui_btn(x,y,bw,36,#ui_bin,active,"Audition the next actual grain with membership in this descriptor band. Right-click applies this descriptor/bin as the Grain filter.") ? ui_enqueue(2,code);
-      ui_hit(x,y,bw,36) && ui_rpress ? (ui_notify(16,active ? 0 : code+1,1);ui_notify(18,0,0););y+=43;b+=1;
+      ui_hit(x,y,bw,36) && ui_rpress ? (ui_set_filter(active ? -1 : code);ui_notify(18,0,0););y+=43;b+=1;
     );
-    y+=9;ui_text(x,y,bw,15,"53 axes: 51 acoustic/context/learned + Region PE / EC PE",0.62,0.79,0.84);y+=31;
+    y+=9;ui_text(x,y,bw,15,"54 axes: 51 acoustic/context/learned + Region PE / EC PE + Length",0.62,0.79,0.84);y+=31;
     ui_text(x,y,bw,15,"Corpus Axis 1-4 are deterministic PCA projections learned from the current load during preprocessing.",0.62,0.79,0.84);y+=31;
   );ui_evidence_h=y+12;
 );
@@ -6045,7 +7275,7 @@ function ui_controls(w) local(x bw) (
     ui_knob(67,"GRAIN BALANCE",0,1,0.5,0);ui_control_row_end();
     ui_knob(39,"PATH INFLUENCE",0,1,1,0);ui_knob(47,"GATED CYCLE / s",0.2,20,2,4);ui_knob(44,"FOCUS INFLUENCE",0,1,0,0);
     ui_knob(42,"FOCUS X",0,1,0.5,0);ui_knob(43,"FOCUS Y",0,1,0.5,0);ui_knob(51,"LOCK STRENGTH",0,1,0.95,0);
-    ui_knob(52,"EXCERPT CEILING / ms",80,1500,1200,3);ui_knob(48,"BROWSER ROLE FIT",0,1,0.35,0);ui_knob(13,"POOL RAM / MB",0,65536,0,4);
+    ui_knob(52,"AUTO EXCERPT CEILING / ms",80,1500,1200,3);ui_knob(48,"BROWSER ROLE FIT",0,1,0.35,0);ui_knob(13,"POOL RAM / MB",0,65536,0,4);
     ui_control_row_end();ui_choice(12,x,ui_ky,bw,"Seed mode","Evolve|Fixed");ui_ky+=44;
     ui_knob(11,"RANDOM SEED",1,16777213,12345,4);ui_control_row_end();
     ui_choice(20,x,ui_ky,bw,"Peak catch","Off|On");ui_ky+=44;
@@ -6081,7 +7311,7 @@ function ui_inspector(x y w) local(h p z i j k yy n d val cw id lev mask state s
         sprintf(#ui_txt,"%.2f",val);ui_text(x+cw-107,yy,49,14,#ui_txt,0.75,0.86,0.90);
         mask=pow(2,i);ui_btn(x+cw-55,yy-3,55,25,(floor(slider50/mask)%2)>0 ? "LOCK" : "free",(floor(slider50/mask)%2)>0,"Toggle this identity lock. Locked descriptors can override path and hierarchy requests; strength is in Controls.") ? ui_notify(50,(floor(slider50/mask)%2)>0 ? slider50-mask : slider50+mask,1);i+=1;
       );y+=254;
-      axisx=cp_clamp(floor(slider40),0,52);axisy=cp_clamp(floor(slider41),0,52);
+      axisx=cp_clamp(cp_axis(0),0,53);axisy=cp_clamp(cp_axis(1),0,53);
       ui_desc_name(axisx);sprintf(#ui_txt,"MAP X  %s   %.3f   confidence %.2f",#ui_dim,h[105],h[107]);ui_text(x,y,cw-72,15,#ui_txt,0.75,0.89,0.91);
       bit=pow(2,axisx);locked=axisx>=51 ? (floor(61216[31]/pow(2,axisx-51))%2)>0 : (floor(slider50/bit)%2)>0;ui_btn(x+cw-68,y-6,68,27,locked ? "LOCK" : "free",locked,"Registry-wide identity lock for the current X descriptor.") ? (axisx>=51 ? ui_enqueue(14,63060+axisx-51) : ui_notify(50,locked ? slider50-bit : slider50+bit,1));y+=31;
       ui_desc_name(axisy);sprintf(#ui_txt,"MAP Y  %s   %.3f   confidence %.2f",#ui_dim,h[106],h[108]);ui_text(x,y,cw-72,15,#ui_txt,0.75,0.89,0.91);
@@ -6134,9 +7364,9 @@ function ui_inspector(x y w) local(h p z i j k yy n d val cw id lev mask state s
   ui_fold(3,x,y,cw,"Analysis / capacity / source inference") ? (
     y+=44;
     sprintf(#ui_txt,"%d grains / %d playable / %d quiet / %d sources",h[3],h[18],ui_auto[0],h[2]);ui_text(x,y,cw,16,#ui_txt,0.75,0.87,0.90);y+=29;
-    sprintf(#ui_txt,"Auto Micro units %.1f - %.1f ms / corpus average %.1f ms",ui_auto[1]*1000,ui_auto[2]*1000,h[17]*1000);ui_text(x,y,cw,15,#ui_txt,0.68,0.81,0.88);y+=29;
+    sprintf(#ui_txt,slider242==2 && slider5<=0 ? "Passage units %.1f - %.1f ms / corpus average %.1f ms" : "Auto Micro units %.1f - %.1f ms / corpus average %.1f ms",ui_auto[1]*1000,ui_auto[2]*1000,h[17]*1000);ui_text(x,y,cw,15,#ui_txt,0.68,0.81,0.88);y+=29;
     sprintf(#ui_txt,"Internal scout probes %.1f ms spacing / variable units are merged before hierarchy learning",ui_auto[30]*1000);ui_text(x,y,cw,15,#ui_txt,0.68,0.81,0.88);y+=29;
-    sprintf(#ui_txt,"Playback ceiling %.0f ms / %d Micro-only short observations / scheduler coverage gaps %.3f s",slider52,54656[59],h[99]);ui_text(x,y,cw,15,#ui_txt,0.68,0.81,0.88);y+=29;
+    sprintf(#ui_txt,slider242==2 && slider5<=0 ? "Coherent bypasses Auto ceiling (%.0f ms) / %d short observations / coverage gaps %.3f s" : "Auto playback ceiling %.0f ms / %d short observations / coverage gaps %.3f s",slider52,54656[59],h[99]);ui_text(x,y,cw,15,#ui_txt,0.68,0.81,0.88);y+=29;
     sprintf(#ui_txt,"Active-run limited spans %d / audible floor %.1f dB",h[104],cp_db(max(0.000001,h[103])));ui_text(x,y,cw,15,#ui_txt,0.68,0.81,0.88);y+=29;
     sprintf(#ui_txt,"Selected source: inferred %.1f ms / actual %.1f ms / quiet %.1f dBFS",ui_auto[24]*1000,ui_auto[28]*1000,ui_auto[25]);ui_text(x,y,cw,15,#ui_txt,0.68,0.81,0.88);y+=29;
     sprintf(#ui_txt,"Scout coverage confidence %.2f / %d probes / spacing %.3f s",ui_auto[27],ui_auto[31],ui_auto[30]);ui_text(x,y,cw,15,#ui_txt,0.68,0.81,0.88);y+=29;
@@ -6237,7 +7467,7 @@ function ui_prune(w) local(z x y bw row p d px ww a b hot nv op i q color label 
   sprintf(#ui_txt,"G%d: Region %s / support %.0f%% / %.1f refs | EC %s / support %.0f%% / %.1f refs",z[145]+1,#ui_pe_region,z[130]*100,z[134],#ui_pe_ec,z[131]*100,z[135]);ui_text(x,y,bw,14,#ui_txt,0.73,0.87,0.86);y+=28;
   sprintf(#ui_txt,"Raw residuals %.3f / %.3f; leading acoustic channels %d / %d; %d measured frames",z[132],z[133],z[137]+1,z[138]+1,z[141]);ui_text(x,y,bw,14,#ui_txt,0.63,0.78,0.80);y+=28;
   ui_btn(x,y,174,30,"LOCK REGION PE",(z[31]%2)>0,"Hold Region PE near the event anchor, using cached confidence.") ? ui_enqueue(14,63060);
-  ui_btn(x+182,y,174,30,"LOCK EC PE",floor(z[31]/2)>0,"Hold EC PE near the event anchor, using cached confidence.") ? ui_enqueue(14,63061);y+=42;
+  ui_btn(x+182,y,174,30,"LOCK EC PE",(floor(z[31]/2)%2)>0,"Hold EC PE near the event anchor, using cached confidence.") ? ui_enqueue(14,63061);y+=42;
   ui_wrap(x,y,bw,"PE is contextual deviation, not a noise or quality label. Low support is Unknown. Pruning never refits these measurements. Values remain fixed until sources or analysis settings reload.",3);y+=70;
   ui_prune_h=y+14;
 );
@@ -6300,10 +7530,12 @@ pe_io_tag==1900 ? (
 ) : pe_io_read ? (pg_saved_valid=0;pg_saved_layer_count=0;pe_locks=0;pg_bypass=0;);
 
 @slider
+tr_sync_params();
 output_target=cp_amp(slider7);
 slider11!=last_seed ? (rng_state=max(1,floor(slider11));last_seed=slider11;);
 
 @block
+tr_sync_params();
 source_mix_srate!=srate ? (source_mix_a=1-exp(-1/max(1,srate*0.005));source_mix_srate=srate;);
 cg_retire();
 xc_tasks_retire();
@@ -6328,9 +7560,9 @@ playing=(play_state&1)>0;
 (last_playing && !playing) || host_transport_discontinuity ? (
   cp_stop_all(clock,max(8,srate*0.003),-1);memset(packet_base,0,512);memset(pedal_base,0,16);
 );last_playing=playing;
-auto_settings_pending=have_generation && (slider5!=window_setting || floor(slider6)!=budget_request || floor(slider21)!=quality_request || floor(slider22)!=quiet_mode || (floor(slider22)==2 && slider61!=quiet_db) || floor(slider69)!=source_mono);
+auto_settings_pending=have_generation && (slider5!=window_setting || floor(slider6)!=budget_request || floor(slider21)!=quality_request || floor(slider22)!=quiet_mode || (floor(slider22)==2 && slider61!=quiet_db) || floor(slider69)!=source_mono || floor(slider242)!=passage_mode || (slider242==2 && (slider243!=passage_sensitivity || slider244!=passage_limit)));
 auto_hier_pending=ready && (slider60!=h_sensitive || slider63!=h_detail);
-auto_config_key=slider5+floor(slider6)*2048+floor(slider21)*16384+floor(slider22)*65536+slider61*0.001+slider60*524288+slider63*1048576+floor(slider69)*2097152;
+auto_config_key=(floor(slider242)-1)*4194304+slider243*8388608+slider244*16777216+slider5+floor(slider6)*2048+floor(slider21)*16384+floor(slider22)*65536+slider61*0.001+slider60*524288+slider63*1048576+floor(slider69)*2097152;
 auto_config_key!=auto_last_config ? (auto_last_config=auto_config_key;auto_change_clock=clock;);
 clock-auto_change_clock>=srate*0.15 ? (
   auto_settings_pending && build_phase==0 ? (rebuild_request=1;poll_left=0;);
@@ -6481,11 +7713,11 @@ peak_meter=max(output_peak,peak_meter*0.9995);meter_sum+=(out_l*out_l+out_r*out_
 za_keep_awake=cg_stage>0 || cg_retiring || xc_task_retiring || voice_list_n>0 || event_count>0 || build_phase>0 || pending_adoption || !browse_done || h_phase>0 || h_rebuild_requested || auto_settings_pending || auto_hier_pending || xc_phase>0 || xc_post_phase>0 || xc_map_phase>0 || fc_phase>0 || pe_phase>0 || pg_stage>0 || pg_load_pending || pg_preview_pending || td_mix>0.0001 || pool_state==1 || pool_state==2;
 
 @gfx 1120 780
-ui_scope=41000;ui_pending=44100;ui_queue=40000;ui_scroll=40400;ui_local_path=40600;ui_curve_paint=44600;ui_auto=57184;
+ui_scope=41000;ui_pending=44100;ui_queue=40000;ui_scroll=40400;ui_local_path=40600;ui_curve_paint=44600;ui_tr_undo=44800;ui_tr_cov=64352;ui_tr_range=64544;ui_auto=57184;
 ui_now=time_precise();ui_key=gfx_getchar();ui_h=ui_snapshot_base;ui_x=57344;ui_traj=59648;ui_amp=60128;ui_trun=60168;ui_thist=60232;
 ui_down=mouse_cap&1;ui_right=mouse_cap&2;ui_lpress=ui_down && !ui_prev_down;ui_rpress=ui_right && !ui_prev_right;
 ui_wheel=mouse_wheel;mouse_wheel=0;ui_page=floor(slider55);ui_page==3 ? ui_page=1;
-!ui_initialized ? (ui_initialized=1;ui_feature_desc=0;ui_traj_selected=0;ui_curve_draw_active=0;ui_curve_draw_lane=-1;ui_curve_draw_prev=-1;ui_curve_draw_prev_y=0;ui_traj_strength_drag=0;ui_td_drag=0;ui_td_value=0;ui_desc_popup=0;ui_desc_popup_scroll=0;ui_desc_popup_drag=0;ui_desc_popup_just=0;ui_folds=0;ui_xdrag=0;ui_brush_capture=0;ui_brush_last=-1;ui_brush_time=-10;ui_structure_h=600;ui_controls_h=2400;ui_explore_h=1250;ui_evidence_h=2100;ui_inspector_h=560;ui_help_h=850;ui_class_filter=0;ui_pending_n=0;ui_scope_n=0;ui_scope_head=0;ui_scope_clock=-1;ui_focus_aud_last=-1;ui_focus_aud_time=-10;ui_focus_cycle=0;ui_focus_drag=0;ui_focus_drag_cls=-1;ui_focus_drag_a=0;ui_focus_drag_b=1;);
+!ui_initialized ? (ui_initialized=1;ui_feature_desc=0;ui_traj_selected=0;ui_trajectory_h=950;ui_tr_saved_amount=1;ui_tr_draw=0;ui_tr_undo_mask=0;ui_curve_draw_active=0;ui_curve_draw_lane=-1;ui_curve_draw_prev=-1;ui_curve_draw_prev_y=0;ui_traj_strength_drag=0;ui_td_drag=0;ui_td_value=0;ui_desc_popup=0;ui_desc_popup_scroll=0;ui_desc_popup_drag=0;ui_desc_popup_just=0;ui_folds=0;ui_xdrag=0;ui_brush_capture=0;ui_brush_last=-1;ui_brush_time=-10;ui_structure_h=600;ui_controls_h=2400;ui_explore_h=1250;ui_evidence_h=2100;ui_inspector_h=560;ui_help_h=850;ui_class_filter=0;ui_pending_n=0;ui_scope_n=0;ui_scope_head=0;ui_scope_clock=-1;ui_focus_aud_last=-1;ui_focus_aud_time=-10;ui_focus_cycle=0;ui_focus_drag=0;ui_focus_drag_cls=-1;ui_focus_drag_a=0;ui_focus_drag_b=1;);
 // A GUI clock detects stale snapshots without touching DSP state or guessing
 // whether the DAW, runtime idle policy or a long callback caused the pause.
 !ui_load_seen_init || ui_load_seen_serial!=ui_h[120] ? (ui_load_seen_init=1;ui_load_seen_serial=ui_h[120];ui_load_seen_time=ui_now;);
@@ -6503,7 +7735,7 @@ ui_path_pending && ui_snapshot_base[41]!=ui_path_before && !ui_wait && ui_qn==0 
   ui_drag=0;ui_scroll_drag=0;
 );
 ui_flush();strcpy(#ui_tooltip,"");ui_scope_update();
-floor(slider40)==floor(slider41) ? ui_notify(41,(floor(slider40)+1)%53,1);
+cp_axis(0)==cp_axis(1) ? ui_set_axis(41,(cp_axis(0)+1)%54);
 ui_key==32 && !ui_help ? ui_enqueue(3,0);
 ui_key==27 ? (
   ui_desc_popup>0 ? ui_desc_popup=0 : (
@@ -6529,30 +7761,46 @@ ui_btn(12,47,96,31,"GENERATE",0,"Generate with the current controls. Natural run
 ui_btn(116,47,76,31,"REPEAT",ui_h[31]>0.5 && ui_h[32]==0,"Replay the completed recorded event exactly. Output and peak catch remain live. Incomplete or invalid plans cannot be replayed.") ? ui_enqueue(4,0);
 ui_btn(200,47,64,31,"STOP",0,"Fade all active voices and walkers, allowing a pending source or hierarchy rebuild to proceed.") ? ui_enqueue(5,0);
 gfx_w>560 ? (
-  slider5<=0 ? sprintf(#ui_status,"%+.1f dB   AUTO MICRO %.0f-%.0f ms / avg %.0f",slider7,ui_auto[1]*1000,ui_auto[2]*1000,ui_h[17]*1000) : sprintf(#ui_status,"%+.1f dB   MANUAL GRAIN %.0f-%.0f ms",slider7,ui_auto[1]*1000,ui_auto[2]*1000);
+  slider5<=0 ? sprintf(#ui_status,"%+.1f dB   %s %.0f-%.0f ms / avg %.0f",slider7,slider242==2 ? "COHERENT" : (slider242==0 ? "AGGRESSIVE" : "AUTO MICRO"),ui_auto[1]*1000,ui_auto[2]*1000,ui_h[17]*1000) : sprintf(#ui_status,"%+.1f dB   MANUAL GRAIN %.0f-%.0f ms",slider7,ui_auto[1]*1000,ui_auto[2]*1000);
   ui_text(282,55,gfx_w-296,14,#ui_status,0.67,0.82,0.84);
   ui_hit(282,47,gfx_w-296,31) ? ui_tip("Auto Micro reports the FINAL variable-duration acoustic units, not the short internal scout probes. Inspector exposes both scales and budget coarsening.");
 );
-gfx_w>=630 ? (
+gfx_w>=790 ? (
   ui_btn(12,87,128,31,"STRUCTURE",ui_page==4,"Source chronology and learned behavioural classes. The main workspace.") ? ui_notify(55,4,0);
   ui_btn(148,87,116,31,"EXPLORE",ui_page==0,"Acoustic descriptor map, point audition and drawn trajectories.") ? ui_notify(55,0,0);
   ui_btn(272,87,122,31,"CONTROLS",ui_page==2,"Envelope, material, variation and advanced settings with hover explanations.") ? ui_notify(55,2,0);
-  ui_btn(402,87,124,31,"INSPECTOR",ui_page==1,"Contextual details, actual walk, evidence and failures. Sections stay collapsed until requested.") ? ui_notify(55,1,0);
-  ui_btn(534,87,84,31,"PRUNE",ui_page==5,"Edit cached grain eligibility without changing prediction references.") ? ui_notify(55,5,0);
+  ui_btn(402,87,148,31,"TRAJECTORIES",ui_page==6,"Shape grain choices over time with saved lanes, editable curves and actual-choice traces.") ? ui_notify(55,6,0);
+  ui_btn(558,87,124,31,"INSPECTOR",ui_page==1,"Contextual details, actual walk, evidence and failures. Sections stay collapsed until requested.") ? ui_notify(55,1,0);
+  ui_btn(690,87,84,31,"PRUNE",ui_page==5,"Edit cached grain eligibility without changing prediction references.") ? ui_notify(55,5,0);
 ) : (
-  ui_page==5 ? strcpy(#ui_nav_label,"PRUNE") : ui_page==4 ? strcpy(#ui_nav_label,"STRUCTURE") : (ui_page==0 ? strcpy(#ui_nav_label,"EXPLORE") : (ui_page==2 ? strcpy(#ui_nav_label,"CONTROLS") : strcpy(#ui_nav_label,"INSPECTOR")));
+  ui_page==6 ? strcpy(#ui_nav_label,"TRAJECTORIES") : ui_page==5 ? strcpy(#ui_nav_label,"PRUNE") : ui_page==4 ? strcpy(#ui_nav_label,"STRUCTURE") : (ui_page==0 ? strcpy(#ui_nav_label,"EXPLORE") : (ui_page==2 ? strcpy(#ui_nav_label,"CONTROLS") : strcpy(#ui_nav_label,"INSPECTOR")));
   sprintf(#ui_txt,"%s  /  switch workspace",#ui_nav_label);
   ui_btn(12,87,max(100,gfx_w-24),31,#ui_txt,0,"Choose Structure, Explore, Controls or Inspector. All panes remain scrollable at this window size.") ? (
-    gfx_x=mouse_x;gfx_y=mouse_y;ui_nav=gfx_showmenu("Structure|Explore|Controls|Inspector|Prune");
-    ui_nav>0 ? ui_notify(55,ui_nav==1 ? 4 : (ui_nav==2 ? 0 : (ui_nav==3 ? 2 : (ui_nav==5 ? 5 : 1))),0);
+    gfx_x=mouse_x;gfx_y=mouse_y;ui_nav=gfx_showmenu("Structure|Explore|Controls|Inspector|Prune|Trajectories");
+    ui_nav>0 ? ui_notify(55,ui_nav==6 ? 6 : ui_nav==1 ? 4 : (ui_nav==2 ? 0 : (ui_nav==3 ? 2 : (ui_nav==5 ? 5 : 1))),0);
   );
 );
-ui_choice(69,12,126,max(180,min(232,gfx_w-24)),"Source channels","Original|Mono");
-gfx_w>560 ? ui_text(254,134,gfx_w-268,14,"All recordings / files stay unchanged",0.64,0.76,0.81);
-ui_body_y=168;ui_body_h=max(28,gfx_h-ui_body_y-32);
+ui_choice(69,12,126,max(100,min(gfx_w>=790 ? 232 : gfx_w-24,gfx_w-24)),"Source channels","Original|Mono");
+gfx_w>=790 ? (
+  ui_grain_header(254,126,gfx_w-266);ui_body_y=168;
+) : (
+  ui_grain_header(12,168,gfx_w-24);ui_body_y=210;
+);
+gfx_w>=1080 ? ui_choice(245,782,126,gfx_w-794,"Quiet grains","Allow|Avoid gaps") : (ui_choice(245,12,ui_body_y,gfx_w-24,"Quiet grains","Allow|Avoid gaps");ui_body_y+=42;);
+slider242==2 ? (
+  ui_passage_cw=min(350,(gfx_w-32)/2);
+  ui_control(243,12,ui_body_y+5,ui_passage_cw,"BOUNDARY SENSITIVITY",0,1,0.5,0);
+  ui_control(244,20+ui_passage_cw,ui_body_y+5,ui_passage_cw,"LIMIT / ms (0 = NONE)",0,120000,0,3);
+  slider5>0 ? (
+    ui_btn(12,ui_body_y+82,max(100,gfx_w-24),28,"ENABLE AUTO MICRO FOR COHERENT DETECTION",0,"Manual Micro takes precedence. Click to enable Auto; Coherent then preserves natural acoustic passages.") ? (ui_notify(5,0,1);ui_end_gesture(5););
+  ) : (
+    ui_text(12,ui_body_y+88,gfx_w-24,14,"No fixed length limit at zero. Event duration still applies; longer notes let passages finish.",0.62,0.80,0.80);
+  );ui_body_y+=118;
+);ui_body_h=max(28,gfx_h-ui_body_y-32);
 ui_main_w=max(40,gfx_w-20);ui_drawer_w=min(374,max(264,gfx_w-20));ui_drawer_x=gfx_w-ui_drawer_w-10;
 ui_drawer && gfx_w>=1040 ? ui_main_w=max(40,gfx_w-ui_drawer_w-32);
 ui_input_blocked=ui_help || ui_desc_popup>0 || (ui_drawer && mouse_x>=ui_drawer_x && mouse_y>=ui_body_y);
+ui_page==6 ? (ui_pane_begin(8,10,ui_body_y,ui_main_w,ui_body_h,max(980,ui_main_w-14),ui_trajectory_h);ui_trajectories(ui_cw);ui_pane_end(););
 ui_page==5 ? (ui_pane_begin(1,10,ui_body_y,ui_main_w,ui_body_h,max(580,ui_main_w-14),max(1200,ui_prune_h));ui_prune(ui_cw);ui_pane_end(););
 ui_page==4 ? (
   ui_pane_begin(5,10,ui_body_y,ui_main_w,ui_body_h,max(560,ui_main_w-14),ui_structure_h);

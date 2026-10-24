@@ -168,7 +168,7 @@ static std::vector<JsfxSliderDecl> parseJsfxSliderDecls (const char* jsfxText, j
         return out;
 
     const std::regex reSlider (
-        R"(^\s*slider\s*([0-9]{1,2})\s*:\s*([^<\r\n;]+)\s*(?:<\s*([^>]+)\s*>)?\s*(.*)$)",
+        R"(^\s*slider\s*([0-9]{1,3})\s*:\s*([^<\r\n;]+)\s*(?:<\s*([^>]+)\s*>)?\s*(.*)$)",
         std::regex::ECMAScript);
 
     const std::regex reTooltip (R"(^\s*\/\/\s*#TOOLTIP:\s*(.*)$)", std::regex::ECMAScript);
